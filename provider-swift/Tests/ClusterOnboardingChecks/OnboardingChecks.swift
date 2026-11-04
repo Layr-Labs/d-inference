@@ -2790,8 +2790,6 @@ import Darwin
         transcript("restart-after-registration-fails", text, keys: run.keys)
     }
 
-    /// (c) Serving through Darkbloom needs both Macs logged in: a Mac without a login is named before the Start step
-    /// starts anything, with `darkbloom login` or local-only serving offered.
     /// The 0.10.8 candidate on pair-2 (c3, B14): "Serve locally only" at the first setup's login check started the plan
     /// made for serving through Darkbloom, so Qwen tensor parallel ran without its assistant (15.7 tok/s against 36–39
     /// with its local plan). The list is planned for the scope the start names; a login check that turns it local plans
@@ -2831,6 +2829,8 @@ import Darwin
         transcript("leader-devnet-commands", text, keys: run.keys)
     }
 
+    /// (c) Serving through Darkbloom needs both Macs logged in: a Mac without a login is named before the Start step
+    /// starts anything, with `darkbloom login` or local-only serving offered.
     static func missingLoginIsSaidBeforeTheStart() {
         let both = [ClusterOnboardingMacName.this, ClusterOnboardingMacName.other(named: "Apple M3 Ultra, 256 GB")]
         let recorder = Recorder()

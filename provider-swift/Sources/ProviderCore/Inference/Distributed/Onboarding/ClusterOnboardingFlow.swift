@@ -294,10 +294,6 @@ public struct ClusterOnboardingModelChoice: Codable, Sendable, Equatable {
     }
 }
 
-/// A start's pending check with Darkbloom (`ClusterSetupRecord.registrationPendingPID` and `registrationPendingStarted`),
-/// as the leader's status reads it: pending while that start's process runs, the same process (its start time matches,
-/// so a pid the system has given to another process never counts). A start that died before it asked leaves its mark
-/// behind; it is cleared once seen gone, and only while the record still holds that mark, so a new start's is never wiped.
 /// The command the cluster screens tell the person to run: the running identity's CLI name (the live operations set it
 /// from `BuildEnvironment.current.cliName`; "darkbloom-dev" in the DevNet app), so a Mac with both apps is never told to
 /// run the production command (the candidate on pair-2, c3 B13). The console names every command in backticks with it.
@@ -314,6 +310,10 @@ public enum ClusterOnboardingCommand {
     }
 }
 
+/// A start's pending check with Darkbloom (`ClusterSetupRecord.registrationPendingPID` and `registrationPendingStarted`),
+/// as the leader's status reads it: pending while that start's process runs, the same process (its start time matches,
+/// so a pid the system has given to another process never counts). A start that died before it asked leaves its mark
+/// behind; it is cleared once seen gone, and only while the record still holds that mark, so a new start's is never wiped.
 public enum ClusterOnboardingPendingRegistration {
     /// The start's process: its pid and when it started (microseconds since 1970); `started` nil never counts.
     public struct Mark: Equatable, Sendable {
@@ -1753,9 +1753,7 @@ public enum ClusterOnboardingDriver {
     /// What controls the pair once it runs, as `darkbloom start` ends (on a paired Mac they act on both Macs).
     public static var pairCommands: [String] {
         let cli = ClusterOnboardingCommand.name
-        func padded(_ command: String) -> String { command.padding(toLength: cli.count + 10, withPad: " ", startingAt: 0) }
-        return [padded("\(cli) stop") + "Stop both Macs", padded("\(cli) restart") + "Restart with the current model",
-                padded("\(cli) status") + "Check status"]
+        return ["\(cli) stop     Stop both Macs", "\(cli) restart  Restart with the current model", "\(cli) status   Check status"]
     }
 
     /// Where the cluster service writes (`ClusterService.paths().log`).
@@ -1949,8 +1947,8 @@ public enum ClusterOnboardingDriver {
             }
         }
         if let notice = operations.developerNotice() { console.say(notice) }
-        let choices: [ClusterOnboardingModelChoice]
         operations.planScope(scope)
+        let choices: [ClusterOnboardingModelChoice]
         switch busy(console, "Planning each model for both Macs", operations.planModels) {
         case .success(let value): choices = value
         case .failure(let failure):

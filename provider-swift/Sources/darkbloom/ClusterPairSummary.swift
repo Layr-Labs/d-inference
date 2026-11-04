@@ -82,12 +82,12 @@ struct ClusterPairSummary: Sendable, Equatable {
 
     var pairingUnreadable: Bool { state == .pairingUnreadable }
 
-    /// What to do when the pairing record couldn't be read.
     /// The command this build answers to (`BuildEnvironment.current.cliName`: "darkbloom-dev" in the DevNet app), in every
     /// command the summary prints (the candidate on pair-2, c3 B13).
     static let cli = BuildEnvironment.current.cliName
 
-    static let checkPairingLine = "Run `\(ClusterPairSummary.cli) cluster` on this Mac to check it."
+    /// What to do when the pairing record couldn't be read.
+    static let checkPairingLine = "Run `\(Self.cli) cluster` on this Mac to check it."
 
     /// "This Mac's pairing record couldn't be read (pairings.json is malformed; …), so it may be in a two-Mac cluster."
     private var unsureSentence: String {
@@ -136,12 +136,12 @@ struct ClusterPairSummary: Sendable, Equatable {
     func actingLine(_ action: String) -> String { "This Mac is in a two-Mac cluster with \(otherMac): \(action)." }
 
     static let stoppedLine =
-        "Stopped on both Macs. They stay stopped after a restart; `\(ClusterPairSummary.cli) start` on either Mac starts the pair again."
+        "Stopped on both Macs. They stay stopped after a restart; `\(Self.cli) start` on either Mac starts the pair again."
     /// A stop both Macs accepted whose parts haven't all ended yet (`stop` waits for them, bounded).
     static let stopAskedLine =
-        "Asked both Macs to stop; they stay stopped after a restart, and `\(ClusterPairSummary.cli) start` on either Mac starts the pair again."
+        "Asked both Macs to stop; they stay stopped after a restart, and `\(Self.cli) start` on either Mac starts the pair again."
     static let memoryFreedLine = "Memory freed on both Macs \u{2713}"
-    static let restartNotStartedLine = "Not started again: run `\(ClusterPairSummary.cli) restart` once both parts have ended (`\(ClusterPairSummary.cli) status`)."
+    static let restartNotStartedLine = "Not started again: run `\(Self.cli) restart` once both parts have ended (`\(Self.cli) status`)."
 
     /// Both Macs report nothing left running (`cluster verify-teardown`'s lines).
     static func bothFreed(_ lines: [String]) -> Bool {
@@ -152,8 +152,8 @@ struct ClusterPairSummary: Sendable, Equatable {
     static func memoryNotCheckedLine(_ failure: [String]) -> String {
         "Memory: not checked (" + (failure.first ?? "no answer") + ")"
     }
-    static let unreachableLine = "This Mac's cluster can't be reached from this command; run `\(ClusterPairSummary.cli) cluster` on this Mac to see it."
-    static let noModelLine = "No model was chosen for the pair yet: run `\(ClusterPairSummary.cli) start` in a terminal to choose one."
+    static let unreachableLine = "This Mac's cluster can't be reached from this command; run `\(Self.cli) cluster` on this Mac to see it."
+    static let noModelLine = "No model was chosen for the pair yet: run `\(Self.cli) start` in a terminal to choose one."
 
     /// After a stop, what each Mac has left running (`cluster verify-teardown`'s lines): one line when nothing is.
     static func memoryLines(_ lines: [String]) -> [String] {
@@ -165,8 +165,8 @@ struct ClusterPairSummary: Sendable, Equatable {
     /// record can't be read: it can't tell which pair to act on, so nothing changes, and `--solo` acts on single-Mac
     /// serving alone.
     func unsureRefusal(_ command: String, _ done: String) -> [String] {
-        [pairSentence, "`\(ClusterPairSummary.cli) \(command)` can't tell which pair to \(command), so nothing was \(done).",
-         "To \(command) single-Mac serving on this Mac only: `\(ClusterPairSummary.cli) \(command) --solo`. " + Self.checkPairingLine]
+        [pairSentence, "`\(Self.cli) \(command)` can't tell which pair to \(command), so nothing was \(done).",
+         "To \(command) single-Mac serving on this Mac only: `\(Self.cli) \(command) --solo`. " + Self.checkPairingLine]
     }
 
     /// `darkbloom start` without `--solo` while this Mac's pairing record can't be read: refused, since single-Mac
@@ -174,7 +174,7 @@ struct ClusterPairSummary: Sendable, Equatable {
     var startRefusal: [String] {
         [pairSentence,
          "Single-Mac serving next to a cluster would compete for this Mac's memory. To serve on this Mac alone, run "
-            + "`\(ClusterPairSummary.cli) cluster` on this Mac to check the pairing first, or pass --solo."]
+            + "`\(Self.cli) cluster` on this Mac to check the pairing first, or pass --solo."]
     }
 
     /// `darkbloom start` with single-Mac options (`--model`, `--local`, …) but no `--solo` on a Mac in a cluster:
@@ -184,10 +184,10 @@ struct ClusterPairSummary: Sendable, Equatable {
         let list = named.count < 2 ? named.joined() : named.dropLast().joined(separator: ", ") + " and " + named.last!
         var lines = ["This Mac is in a two-Mac cluster with \(otherMac): \(list) \(named.count == 1 ? "is" : "are") for "
                         + "single-Mac serving, so nothing was started.",
-                     "To choose the pair's model, run `\(ClusterPairSummary.cli) start` in a terminal; to serve this Mac alone with "
+                     "To choose the pair's model, run `\(Self.cli) start` in a terminal; to serve this Mac alone with "
                         + "\(named.count == 1 ? "it" : "them"), add --solo."]
         if options.contains(where: { $0 == "--local" || $0 == "--local-endpoint" }) {
-            lines.append("To serve the pair on the leading Mac's own API only: `\(ClusterPairSummary.cli) cluster local`.")
+            lines.append("To serve the pair on the leading Mac's own API only: `\(Self.cli) cluster local`.")
         }
         return lines
     }
@@ -198,8 +198,8 @@ struct ClusterPairSummary: Sendable, Equatable {
             return "Starting single-Mac serving (--solo) although this Mac's pairing record couldn't be read: if it is in a "
                 + "two-Mac cluster, both use this Mac's memory."
         }
-        return "This Mac is in a two-Mac cluster with \(otherMac), which is stopped. Stop single-Mac serving (`\(ClusterPairSummary.cli) stop "
-            + "--solo`) before you start the pair again (`\(ClusterPairSummary.cli) start`)."
+        return "This Mac is in a two-Mac cluster with \(otherMac), which is stopped. Stop single-Mac serving (`\(Self.cli) stop "
+            + "--solo`) before you start the pair again (`\(Self.cli) start`)."
     }
 
     /// This Mac's part serves: single-Mac serving can't run beside it (both take this Mac's one serving lock,
@@ -209,12 +209,12 @@ struct ClusterPairSummary: Sendable, Equatable {
     /// `darkbloom start --solo` while this Mac's part of the pair serves.
     var soloBesideServingRefusal: [String] {
         [pairSentence, "This Mac's part of the pair holds its serving lock, so single-Mac serving can't start beside it. Stop "
-            + "the pair first (`\(ClusterPairSummary.cli) stop`), then `\(ClusterPairSummary.cli) start --solo`."]
+            + "the pair first (`\(Self.cli) stop`), then `\(Self.cli) start --solo`."]
     }
 
     /// `darkbloom stop --solo` where no single-Mac serving runs on a Mac in a cluster.
     var soloStopNothing: [String] {
-        ["`\(ClusterPairSummary.cli) stop --solo` stops single-Mac serving, and none runs on this Mac: nothing was stopped.", soloLeftPair("stop")]
+        ["`\(Self.cli) stop --solo` stops single-Mac serving, and none runs on this Mac: nothing was stopped.", soloLeftPair("stop")]
     }
 
     /// After `darkbloom stop --solo` (or `--uninstall`) stopped single-Mac serving on a Mac in a cluster.
@@ -222,7 +222,7 @@ struct ClusterPairSummary: Sendable, Equatable {
 
     /// `darkbloom restart --solo` where no single-Mac serving is installed.
     var restartRefusal: [String] {
-        [pairSentence, "`\(ClusterPairSummary.cli) restart --solo` restarts single-Mac serving, and this Mac has none: nothing was restarted.",
+        [pairSentence, "`\(Self.cli) restart --solo` restarts single-Mac serving, and this Mac has none: nothing was restarted.",
          soloLeftPair("restart")]
     }
 
@@ -234,7 +234,7 @@ struct ClusterPairSummary: Sendable, Equatable {
     /// `--solo` left the pair alone: "The pair was not stopped; `darkbloom stop` stops both Macs."
     private func soloLeftPair(_ command: String) -> String {
         if pairingUnreadable { return Self.checkPairingLine }
-        return "The pair was not \(command == "stop" ? "stopped" : "restarted"); `\(ClusterPairSummary.cli) \(command)` \(command)s both Macs."
+        return "The pair was not \(command == "stop" ? "stopped" : "restarted"); `\(Self.cli) \(command)` \(command)s both Macs."
     }
 
     /// The end of `darkbloom start` and `restart` on a Mac in a cluster, shaped like single-Mac start's block.
@@ -257,7 +257,7 @@ struct ClusterPairSummary: Sendable, Equatable {
         guard paired else { return "Cluster: not in a cluster" }
         if pairingUnreadable {
             return "Cluster: this Mac's pairing record couldn't be read" + (reason.map { " (\($0))" } ?? "")
-                + " · run `\(ClusterPairSummary.cli) cluster` to check it (details: `\(ClusterPairSummary.cli) cluster status`)"
+                + " · run `\(Self.cli) cluster` to check it (details: `\(Self.cli) cluster status`)"
         }
         var parts = [role.map { $0 == .leader ? "this Mac leads" : "this Mac follows" } ?? "this Mac is paired", otherMac]
         if let model { parts.append("\(model) \(servesWords)") }
@@ -271,15 +271,15 @@ struct ClusterPairSummary: Sendable, Equatable {
         case .notPaired, .unknown, .pairingUnreadable: now = started ? "started" : "stopped"
         }
         parts.append(now)
-        return "Cluster: " + parts.joined(separator: " · ") + " (details: `\(ClusterPairSummary.cli) cluster status`)"
+        return "Cluster: " + parts.joined(separator: " · ") + " (details: `\(Self.cli) cluster status`)"
     }
 
     /// `darkbloom status --solo` instead of "Daemon: not running (run `darkbloom start`)" on a Mac in a cluster.
     static let singleMacServingOffLine =
-        "Single-Mac serving: off (this Mac serves in its two-Mac cluster: `\(ClusterPairSummary.cli) cluster status`)"
+        "Single-Mac serving: off (this Mac serves in its two-Mac cluster: `\(Self.cli) cluster status`)"
     /// The same when this Mac's pairing record couldn't be read.
     static let singleMacServingOffUnsureLine =
-        "Single-Mac serving: off (this Mac may be in a two-Mac cluster: `\(ClusterPairSummary.cli) cluster status`)"
+        "Single-Mac serving: off (this Mac may be in a two-Mac cluster: `\(Self.cli) cluster status`)"
 }
 
 // MARK: - darkbloom cluster status
@@ -346,33 +346,33 @@ extension ClusterPairSummary {
     var next: String? {
         switch state {
         case .notPaired:
-            return (leftoverService ? "To remove it: `\(ClusterPairSummary.cli) cluster stop --service`. " : "")
-                + "To set up a cluster: `\(ClusterPairSummary.cli) cluster` on each Mac."
-        case .serving: return "To stop or change it: `\(ClusterPairSummary.cli) cluster` on \(leadingMac)."
-        case .loading: return "Loading takes a few minutes for a large model; check again with `\(ClusterPairSummary.cli) cluster status`."
+            return (leftoverService ? "To remove it: `\(Self.cli) cluster stop --service`. " : "")
+                + "To set up a cluster: `\(Self.cli) cluster` on each Mac."
+        case .serving: return "To stop or change it: `\(Self.cli) cluster` on \(leadingMac)."
+        case .loading: return "Loading takes a few minutes for a large model; check again with `\(Self.cli) cluster status`."
         case .stopped:
-            return "`\(ClusterPairSummary.cli) start` on either Mac starts the pair again."
-                + (serviceRunning ? "" : " This Mac's cluster service is off; `\(ClusterPairSummary.cli) start` here turns it back on.")
+            return "`\(Self.cli) start` on either Mac starts the pair again."
+                + (serviceRunning ? "" : " This Mac's cluster service is off; `\(Self.cli) start` here turns it back on.")
         case .otherMacAway:
             return "\(ClusterOnboardingMacName.sentence(otherMac)) isn't answering over the cable. Its cluster service may "
-                + "have been turned off with `\(ClusterPairSummary.cli) cluster stop --service`, or that Mac is asleep, off, or waiting for "
-                + "someone to log in. On that Mac, run `\(ClusterPairSummary.cli) start` (or `\(ClusterPairSummary.cli) cluster`)."
+                + "have been turned off with `\(Self.cli) cluster stop --service`, or that Mac is asleep, off, or waiting for "
+                + "someone to log in. On that Mac, run `\(Self.cli) start` (or `\(Self.cli) cluster`)."
         case .notServing:
             let reason = reason ?? ""
             if ClusterOnboardingNotServing.isMissingLogin(reason) {
-                return "Run `\(ClusterPairSummary.cli) login` on each Mac named, then `\(ClusterPairSummary.cli) cluster` on \(leadingMac). Or serve "
-                    + "locally only: `\(ClusterPairSummary.cli) cluster local` on \(leadingMac)."
+                return "Run `\(Self.cli) login` on each Mac named, then `\(Self.cli) cluster` on \(leadingMac). Or serve "
+                    + "locally only: `\(Self.cli) cluster local` on \(leadingMac)."
             }
             if reason.contains("isn't verified by Apple yet") {
-                return "Leave both Macs running: Darkbloom retries by itself. Or serve locally only: `\(ClusterPairSummary.cli) cluster local` "
+                return "Leave both Macs running: Darkbloom retries by itself. Or serve locally only: `\(Self.cli) cluster local` "
                     + "on \(leadingMac)."
             }
             if reason.contains("lacks free memory") {
                 return "Quit apps on that Mac; the cluster starts again by itself. Or choose a smaller model: "
-                    + "`\(ClusterPairSummary.cli) cluster` on \(leadingMac)."
+                    + "`\(Self.cli) cluster` on \(leadingMac)."
             }
-            return "Both Macs keep trying by themselves; `\(ClusterPairSummary.cli) cluster` on \(leadingMac) shows more."
-        case .unknown: return "`\(ClusterPairSummary.cli) cluster` on \(leadingMac) shows more."
+            return "Both Macs keep trying by themselves; `\(Self.cli) cluster` on \(leadingMac) shows more."
+        case .unknown: return "`\(Self.cli) cluster` on \(leadingMac) shows more."
         case .pairingUnreadable: return Self.checkPairingLine
         }
     }
@@ -399,7 +399,7 @@ extension ClusterPairSummary {
                         : "This Mac isn't in a cluster.", "Next: " + (next ?? "")]
         }
         var out = ["Cluster: " + rolesWords, "Model: " + modelWords]
-        out.append("Serves: " + servesWords + (localOnly ? " (API key: `\(ClusterPairSummary.cli) local` on the Mac that serves it)" : ""))
+        out.append("Serves: " + servesWords + (localOnly ? " (API key: `\(Self.cli) local` on the Mac that serves it)" : ""))
         out.append(contentsOf: stateLines)
         if let next { out.append("Next: " + next) }
         return out
@@ -540,11 +540,11 @@ extension ClusterPairSummary {
     var linkRemoveWarning: [String] {
         if pairingUnreadable {
             return [pairSentence, "--remove undoes this Mac's cable port setup: a cluster that uses it stops serving on both "
-                + "Macs until the port is set up again with `\(ClusterPairSummary.cli) cluster` (or `\(ClusterPairSummary.cli) cluster link --fix`)."]
+                + "Macs until the port is set up again with `\(Self.cli) cluster` (or `\(Self.cli) cluster link --fix`)."]
         }
         return ["This Mac is paired with \(otherMac), and the cable carries their cluster.",
          "--remove undoes the cable port setup that works now: the cluster stops serving on both Macs until the port is "
-            + "set up again with `\(ClusterPairSummary.cli) cluster` (or `\(ClusterPairSummary.cli) cluster link --fix`)."]
+            + "set up again with `\(Self.cli) cluster` (or `\(Self.cli) cluster link --fix`)."]
     }
 
     static let linkRemoveQuestion = "Remove it? [y/N] "
@@ -554,7 +554,7 @@ extension ClusterPairSummary {
     /// `darkbloom cluster stop` on the Mac that follows a started cluster: the leading Mac stops both Macs, as the
     /// menu's Stop does (it no longer leaves the leader waiting for a member that went away).
     static func memberStopNote(leader: String) -> String {
-        "This Mac follows \(leader), which leads: `\(ClusterPairSummary.cli) cluster stop` stops the cluster on both Macs."
+        "This Mac follows \(leader), which leads: `\(Self.cli) cluster stop` stops the cluster on both Macs."
     }
 
     /// When the leading Mac could not stop the cluster: nothing changed here, and how to stop this Mac alone.
@@ -565,7 +565,7 @@ extension ClusterPairSummary {
         if first.contains("did not answer over the cable"), !first.contains("timed out") { return [memberStopFailedLine] }
         // It may have got it and still be draining (its stop can outlast the forward's wait).
         if first.contains("timed out") {
-            return ["The leading Mac didn't confirm the stop in time; it may still be finishing. `\(ClusterPairSummary.cli) status` shows where "
+            return ["The leading Mac didn't confirm the stop in time; it may still be finishing. `\(Self.cli) status` shows where "
                 + "both Macs stand.", stopThisMacAloneLine]
         }
         // The leading Mac answered with its own reason (it may have stopped, without reaching this Mac): as it said.
@@ -573,7 +573,7 @@ extension ClusterPairSummary {
     }
 
     static let stopThisMacAloneLine =
-        "To stop only this Mac: `\(ClusterPairSummary.cli) cluster stop --local-only` (the other Mac then serves alone, or waits for this one)."
+        "To stop only this Mac: `\(Self.cli) cluster stop --local-only` (the other Mac then serves alone, or waits for this one)."
 
     static let memberStopFailedLine = "Nothing was stopped on this Mac. " + stopThisMacAloneLine
 }

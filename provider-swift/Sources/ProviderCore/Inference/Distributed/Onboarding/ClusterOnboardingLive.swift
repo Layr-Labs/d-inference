@@ -678,18 +678,22 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     func planModels() -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure> {
-        let request = ClusterControlRequest(op: .planModels, scope: lock.withLock { plannedScope } ?? context.settings.servingScope)
+        let request = ClusterControlRequest(op: .planModels, scope: runScope)
         let result = routed(request, seconds: 240, acting: false, local: { localPlanModels() }) { $0.choices ?? [] }
         if case .success(let listed) = result { lock.withLock { listedChoices = listed } }
         return result
     }
 
-    /// How the cluster will serve the setup being planned: the way a forwarded command names, else the one this run
-    /// was asked for (`darkbloom cluster local`), else the one saved on this Mac. A cluster served through Darkbloom
-    /// is planned for its coordinator (`ClusterPlacementTensorAssistantSelection.discoveryMode`).
+    /// How the cluster will serve the setup being planned: the way a forwarded command names, else this run's
+    /// (`runScope`), else the one saved on this Mac. A cluster served through Darkbloom is planned for its coordinator
+    /// (`ClusterPlacementTensorAssistantSelection.discoveryMode`).
     func planningScope(_ named: ClusterServingScope? = nil) -> ClusterServingScope {
-        named ?? lock.withLock { plannedScope } ?? context.settings.servingScope ?? leadership?.scope ?? .publicServing
+        named ?? runScope ?? leadership?.scope ?? .publicServing
     }
+
+    /// The way of serving this run's plan and adopt are for, and send to the control leader: the one the screen named
+    /// (`usePlanningScope`), else the one this run was asked for (`darkbloom cluster local`); nil keeps the saved one.
+    private var runScope: ClusterServingScope? { lock.withLock { plannedScope } ?? context.settings.servingScope }
 
     /// The screen names the way of serving its coming plan and adopt are for: a start whose scope changed after the list
     /// was planned (the login check's "Serve locally only") is planned and adopted for that way (B14).
@@ -1159,7 +1163,7 @@ final class OnboardingLive: @unchecked Sendable {
         let model = lock.withLock { listedChoices.indices.contains(index) ? (listedChoices[index].modelID ?? listedChoices[index].title) : nil }
         // The leader may stop both parts (up to 5 minutes to drain), wait for their memory (`releaseWaitSeconds`), plan
         // again and retry the device lease: the reply can take that long.
-        let request = ClusterControlRequest(op: .adopt, index: index, model: model, scope: lock.withLock { plannedScope } ?? context.settings.servingScope)
+        let request = ClusterControlRequest(op: .adopt, index: index, model: model, scope: runScope)
         return routed(request, seconds: 600, acting: true, local: { localAdopt(index) }) { $0.lines }
     }
 

@@ -55,6 +55,8 @@ private struct Fixture {
     let paths: ProviderUninstallPaths
     let launchd: FakeLaunchd
     let calls = Calls()
+    /// Every path the run asked to delete, in order.
+    let deletes = Calls()
 
     var agents: URL { home.appendingPathComponent("Library/LaunchAgents") }
     var desktopPlist: URL { agents.appendingPathComponent("io.darkbloom.desktop-api.plist") }
@@ -126,6 +128,13 @@ private struct Fixture {
 
     func remove() { try? FileManager.default.removeItem(at: root) }
 
+    /// The same Mac with `models location` set to `folder`.
+    func choosingModels(_ folder: URL) -> Fixture {
+        var paths = paths
+        paths.savedModelCache = folder
+        return Fixture(root: root, home: home, outside: outside, paths: paths, launchd: launchd)
+    }
+
     var pairing: ProviderUninstallPairing {
         .init(peers: [.init(pin: Self.pin, name: "M3 Ultra, 512 GB")], otherMacName: "M3 Ultra, 512 GB", role: .leader)
     }
@@ -180,6 +189,10 @@ private struct Fixture {
                 calls.add("link remove")
                 if linkFails { throw ProviderUninstall.StepFailure("the macOS prompt was declined; nothing was changed") }
                 return .done()
+            },
+            delete: { [deletes] in
+                deletes.add($0.path)
+                try FileManager.default.removeItem(at: $0)
             },
             availableBytes: {
                 free.add("measured")
@@ -333,6 +346,11 @@ struct ProviderUninstallTests {
             "  2) Keep models",
             "     Removes everything else; a reinstall reuses the \(ProviderUninstall.formatBytes(plan.modelBytes)) of models"])
         #expect(ProviderUninstall.choicePrompt == "  Choose 1 or 2 (Esc cancels): ")
+        // Pressing 1 asks once more, naming what can't come back.
+        let question = ProviderUninstall.everythingQuestion(plan)
+        transcript("everything-question", [question], fixture)
+        #expect(question == "  Remove everything, including \(ProviderUninstall.formatBytes(plan.modelBytes)) of models? "
+            + "This can't be undone. [y/N]: ")
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         let json = try encoder.encode(ProviderUninstall.dryRunDocument(plan, modes: ProviderUninstall.Mode.allCases))
@@ -400,8 +418,80 @@ struct ProviderUninstallTests {
                 "refused links are not removed either")
         #expect(fixture.exists(movedSettings.appendingPathComponent("provider.toml")))
         #expect(!fixture.exists(fixture.paths.installDirectory))
-        #expect(report.steps.filter { $0.detail?.hasPrefix("refused: ") == true }.count == 3)
+        #expect(report.steps.filter { $0.detail?.hasPrefix("not removed: ") == true }.count == 3)
         #expect(status(report, "Delete Settings") == .skipped)
+        // What it refused is still Darkbloom's: the summary does not call it removed, and the command exits 1.
+        #expect(report.incomplete && !report.failed)
+        let summary = ProviderUninstall.summary(report, plan: fixture.plan(pairing: nil))
+        transcript("everything-summary-settings-link", summary, fixture)
+        #expect(summary.first == "Darkbloom is not fully removed from this Mac: some of its folders were not removed (see below).")
+        #expect(summary.contains("  skipped  Delete Settings: not removed: it resolves to \(movedSettings.path), outside Darkbloom's folders"))
+    }
+
+    @Test("blocker: a model folder the person chose inside ~/.darkbloom is kept in both modes, named, and the rest goes")
+    func chosenModelsInsideDarkbloomFolderAreKept() async throws {
+        for mode in ProviderUninstall.Mode.allCases {
+            let base = try Fixture.make()
+            defer { base.remove() }
+            // The validator's case: `darkbloom models location ~/.darkbloom/models`, and the store the provider puts beside it.
+            let chosen = base.paths.installDirectory.appendingPathComponent("models", isDirectory: true)
+            let model = chosen.appendingPathComponent("models--org--chosen/snapshots/rev1/model.safetensors")
+            try base.write(model)
+            try base.write(chosen.appendingPathComponent("models--org--chosen/snapshots/rev1/.darkbloom-manifest.json"))
+            let store = base.paths.installDirectory.appendingPathComponent("darkbloom-cluster-models/org--chosen/model.safetensors")
+            try base.clone(model, to: store)
+            let fixture = base.choosingModels(chosen)
+            let plan = fixture.plan(pairing: nil)
+            let screen = ProviderUninstall.screen(plan)
+            let dryRun = ProviderUninstall.dryRun(plan, mode: mode)
+            transcript("screen-chosen-inside", screen + [ProviderUninstall.choicePrompt], fixture)
+            transcript("dry-run-\(mode.rawValue)-chosen-inside", dryRun, fixture)
+            for lines in [screen, dryRun] {
+                #expect(lines.contains { $0.contains("Kept: Models in the folder you chose") && $0.contains(chosen.path) }, "\(mode)")
+                #expect(lines.contains { $0.contains("Kept: Cluster model store beside the folder you chose") }, "\(mode)")
+            }
+            #expect(dryRun.contains { $0.contains("Delete Darkbloom folder") && $0.contains("except the models you chose") }, "\(mode)")
+
+            let report = await fixture.run(mode, items: plan.items, pairing: nil)
+            #expect(fixture.exists(model) && fixture.exists(store), "\(mode): the chosen folder and the store beside it stay")
+            for gone in [fixture.paths.appBundleName, "provider.log", "auth_token", "cluster-pairing", "bin"] {
+                #expect(!fixture.exists(fixture.paths.installDirectory.appendingPathComponent(gone)), "\(mode): \(gone) is deleted")
+            }
+            #expect(!fixture.exists(fixture.paths.configDirectory), "\(mode): settings are deleted")
+            #expect(fixture.deletes.all.last == fixture.paths.installDirectory.appendingPathComponent(fixture.paths.appBundleName).path,
+                    "\(mode): the app is deleted last")
+            #expect(!report.failed && !report.incomplete, "\(mode): \(report.steps)")
+            let summary = ProviderUninstall.summary(report, plan: plan)
+            transcript("\(mode.rawValue)-summary-chosen-inside", summary, fixture)
+            #expect(summary.contains { $0.hasPrefix("Kept: Models in the folder you chose") && $0.contains(chosen.path) })
+            #expect(summary.contains { $0.hasPrefix("Kept: Cluster model store beside the folder you chose") })
+        }
+    }
+
+    @Test("the cluster model store beside a chosen model folder outside Darkbloom's folders is listed and never touched")
+    func storeBesideAChosenFolderIsListed() async throws {
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+        let store = fixture.savedModels.deletingLastPathComponent().appendingPathComponent("darkbloom-cluster-models/org--big/model.safetensors")
+        try fixture.write(store)
+        let plan = fixture.plan(pairing: nil)
+        for mode in ProviderUninstall.Mode.allCases {
+            #expect(ProviderUninstall.dryRun(plan, mode: mode).contains {
+                $0.hasPrefix("  Never touched: Cluster model store beside the folder you chose") && $0.contains(store.deletingLastPathComponent().deletingLastPathComponent().path)
+            }, "\(mode)")
+        }
+        _ = await fixture.run(.everything, items: plan.items, pairing: nil)
+        #expect(fixture.exists(store))
+    }
+
+    @Test("a disk mounted at a folder is told from one that is not")
+    func mountPointsAreDetected() throws {
+        // devfs is mounted at /dev; /usr is on the same volume as /.
+        #expect(ProviderUninstall.isMountPoint(URL(fileURLWithPath: "/dev")))
+        #expect(!ProviderUninstall.isMountPoint(URL(fileURLWithPath: "/usr")))
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+        #expect(!ProviderUninstall.isMountPoint(fixture.paths.cacheDirectory))
     }
 
     @Test("(d) a model cache that is itself a link, or shared with another install, is kept")
@@ -438,6 +528,20 @@ struct ProviderUninstallTests {
                 == .run(.keepModels, confirm: false))
         #expect(ProviderUninstall.invocation(everything: false, keepModels: false, yes: false, dryRun: true, interactive: false)
                 == .dryRun([.everything, .keepModels]))
+        // Run as root (`sudo`), it would read root's home and miss this person's Darkbloom: refused, dry run too.
+        let root = ProviderUninstall.rootRefusal(cli: "darkbloom")
+        #expect(root == "Run `darkbloom uninstall` as yourself, not with sudo: it removes your own Darkbloom, "
+            + "and asks for your password when a step needs it.")
+        for (everything, keepModels, yes, dryRun) in [(false, false, false, false), (true, false, true, false),
+                                                      (false, true, true, false), (false, false, false, true)] {
+            #expect(ProviderUninstall.invocation(everything: everything, keepModels: keepModels, yes: yes, dryRun: dryRun,
+                                                 interactive: true, userID: 0, cli: "darkbloom") == .refuse(root))
+        }
+        #expect(ProviderUninstall.invocation(everything: true, keepModels: false, yes: true, dryRun: false, interactive: false,
+                                             userID: 501) == .run(.everything, confirm: false))
+        // After 1 on the screen, one more question; anything but y or yes keeps everything.
+        for answer in ["y", "yes", " Y "] { #expect(ProviderUninstall.confirmed(answer)) }
+        for answer in [nil, "", "n", "no", "1"] as [String?] { #expect(!ProviderUninstall.confirmed(answer)) }
         // The screen's keys: 1 or 2 choose, Esc cancels, an arrow key's sequence or another key waits.
         #expect(ProviderUninstall.key(Array("1".utf8)) == .choose(.everything))
         #expect(ProviderUninstall.key(Array("2".utf8)) == .choose(.keepModels))

@@ -94,7 +94,10 @@ limits and verification. These checks do not certify disk firmware.
 reinstalling it when the plist changed and restarting it once when the running
 API reports a different version than the invoking CLI.
 The desktop frontend sends validated actions to existing CLI operations and
-keeps the provider independent of its window lifetime. Internal
+keeps the provider independent of its window lifetime. On a Mac in a two-Mac
+cluster its Stop and Restart run `darkbloom stop` and `darkbloom restart`, which
+act on both Macs; its local mode serves this Mac alone, so `desktop start-local`
+refuses there and says why instead of reporting a start (`Desktop.StartLocal.pairRefusal`). Internal
 `desktop start-local --model <id>`, `stop-local`, and `restart-local` commands
 (each accepting `--config`) retain the native provider owner and termination handler. Cooling uses
 `desktop configure-cooling --enabled <bool> --speed <percent> --temperature <celsius>`
@@ -218,8 +221,8 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `--force` | flag | `false` | Explicitly permit cancellation if the old provider cannot drain |
 | `--solo` | flag | `false` | On a Mac in a two-Mac cluster: start single-Mac serving on this Mac instead of the pair |
 
-On a Mac in a two-Mac cluster (a pairing, or the cluster service running or set
-to start at login), `start` starts the pair, as `darkbloom cluster` does
+On a Mac in a two-Mac cluster (one that holds a pairing; a cluster service left
+without one is a leftover, which `darkbloom cluster status` names), `start` starts the pair, as `darkbloom cluster` does
 (`Start.pairStart`, `ClusterPairCommands`). It first says so in one line
 (`This Mac is in a two-Mac cluster with the other Mac (…): starting the pair.`):
 
@@ -245,7 +248,10 @@ This Mac is in a two-Mac cluster with the other Mac (Apple M5 Max, 128 GB): star
   darkbloom status   Check status
 ```
 
-`--solo` starts single-Mac serving on this Mac instead, after one line. The
+`--solo` starts single-Mac serving on this Mac instead, after one line, while
+the pair is stopped: single-Mac serving and this Mac's part of the pair take
+the same serving lock, so `start --solo` while the part serves is refused
+(stop the pair first). The
 cluster's own starts (`--cluster-member`, `--distributed`, the cluster
 service's solo part) and launchd's `--foreground` child are never redirected,
 and a replacement drains only the provider service's process, never the
@@ -707,7 +713,7 @@ present, `null` when unknown; keys are only ever added
 | Key | Type | Value |
 |---|---|---|
 | `schema` | integer | `1` |
-| `paired` | bool? | This Mac holds a pairing, or its cluster service runs or starts at login; `null` when its pairing record couldn't be read |
+| `paired` | bool? | This Mac holds a pairing (a leftover cluster service without one is `false`); `null` when its pairing record couldn't be read |
 | `role` | string? | `leader` or `member` |
 | `this_mac` | string? | This Mac's own name (System Settings) |
 | `other_mac` | object? | `name` (its hardware, as pairing showed it), `answers` (bool, `null` when not asked) |
@@ -1411,7 +1417,7 @@ Drain accepted requests and their terminal usage before persistently stopping
 the launchd service.
 
 ```bash
-darkbloom stop [--timeout <seconds>] [--force] [--uninstall]
+darkbloom stop [--timeout <seconds>] [--force] [--uninstall] [--solo]
 ```
 
 | Flag | Type / valid range | Default | Effect |
@@ -1434,7 +1440,8 @@ leading Mac drains and stops both Macs' parts, as Stop in `darkbloom cluster`
 does, and the Mac that follows asks it to. The pair is saved as stopped, so
 neither Mac serves it again at login or after a restart; both cluster services
 stay up, idle with nothing loaded, so `darkbloom start` on either Mac starts the
-pair again. It ends with each Mac's memory check (`cluster verify-teardown`):
+pair again. It waits up to a minute until both Macs' parts have ended (each
+Mac's memory check, `cluster verify-teardown`), then says so:
 
 ```text
 This Mac is in a two-Mac cluster with the other Mac (Apple M5 Max, 128 GB): stopping both Macs.
@@ -1442,11 +1449,16 @@ Stopped on both Macs. They stay stopped after a restart; `darkbloom start` on ei
 Memory freed on both Macs ✓
 ```
 
-When the leading Mac doesn't answer, nothing is stopped; it names the Mac and
-says how to stop this Mac alone (`darkbloom cluster stop --local-only`), exit 1.
-Two rarer endings: on the Mac that follows, a pair that is already stopped gives
-``The pair is already stopped; `darkbloom start` on either Mac starts it again.``
-(exit 0); when this Mac's cluster can't be reached from the command, it says
+If a part hasn't ended by then, it says ``Asked both Macs to stop; they stay stopped after a restart, and `darkbloom start` on either Mac starts the pair again.``
+and what each Mac has left (or `Memory: not checked (…)` when the check didn't
+answer), exit 1. On the Mac that follows, the stop always goes to the leading
+Mac. When that Mac never got it (refused, unreachable), nothing is stopped: it
+names the Mac and says how to stop this Mac alone
+(`darkbloom cluster stop --local-only`), exit 1. When it timed out, the leading
+Mac may still be finishing, and `darkbloom status` shows where both stand; when
+it answered with its own reason, that reason is shown
+(`ClusterPairSummary.memberStopFailureLines`). When this Mac's cluster can't be
+reached from the command, it says
 ``This Mac's cluster can't be reached from this command; run `darkbloom cluster` on this Mac to see it.``
 (exit 1). `darkbloom cluster stop` refuses the same way as `stop` when this
 Mac's pairing record can't be read, and points to `--service` to stop this
@@ -1507,7 +1519,7 @@ Code: `provider-swift/Sources/darkbloom/ServiceDrain.swift` (`DrainOptions`,
 Show local configuration, hardware, schedule, and live daemon state.
 
 ```bash
-darkbloom status
+darkbloom status [--solo]
 ```
 
 On a Mac in a two-Mac cluster, `status` starts with the pair in the words of
@@ -2385,6 +2397,7 @@ qualification or performance. Sources:
 | `130` | `darkbloom sandbox setup` stopped with Ctrl-C while the add-on installer ran |
 | `2`, `3`, `4`, other | `darkbloom sandbox setup` exits with a failing add-on installer's own status ([what each means](#installer-progress-events)); `sandbox logs` and `sandbox uninstall` with `tail`'s or the add-on's |
 | `3`, `4`, `5`, `6`, `7` | `darkbloom cluster status`: not serving yet, stopped, the other Mac isn't answering, not in a cluster, this Mac's pairing record couldn't be read ([`darkbloom cluster status`](#darkbloom-cluster-status)) |
+| `0`, `1`, `3`, `4`, `5`, `64` | `darkbloom start` without a terminal and `darkbloom restart` on a paired Mac: serving; not started (no model chosen, the cluster unreachable, a part still releasing); not serving yet; stopped; the other Mac isn't answering; single-Mac options without `--solo` ([`darkbloom start`](#darkbloom-start)) |
 
 ## Paths and identifiers
 
@@ -2753,7 +2766,7 @@ Code: `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/Startup/Work
 
 ### `cluster stop`: failed retirement
 
-On a paired leader, `darkbloom cluster stop` waits for its owned part to retire
+On a paired leader, `darkbloom cluster stop --service` waits for its owned part to retire
 before asking the member to stop and removing the local login service. A local
 retirement timeout or missing peer acknowledgement exits with status 1 and prints
 the pair's reason (a runtime failure, not a usage error, so no usage text follows),
@@ -2764,8 +2777,8 @@ already stopped local part does not require another model load.
 When the other Mac is gone for good (wiped, sold, or no longer cabled),
 `darkbloom cluster stop --local-only` stops only this Mac. It skips the drain and
 the member acknowledgement, removes the login service, and says that the other Mac
-was not asked to stop. If that Mac comes back, run `darkbloom cluster stop` there
-too.
+was not asked to stop. If that Mac comes back, run `darkbloom cluster stop --service`
+there too.
 
 Source: `provider-swift/Sources/darkbloom/ClusterServiceCommand.swift`
 (`Cluster.Stop.finishStop`). See [planned stop ordering](../architecture/inference.md#planned-cluster-stop-ordering)

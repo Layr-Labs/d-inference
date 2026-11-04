@@ -47,6 +47,10 @@ enum ClusterPairCommands {
         var seconds: Double
         var interval: Double
         static let standard = Wait(seconds: 600, interval: 5)
+        /// How long `stop` waits for both parts to end (the member stops its part after acknowledging).
+        static let teardown = Wait(seconds: 60, interval: 3)
+        /// How long `restart` waits for both parts to release their memory, as the screen's model change does.
+        static let restartTeardown = Wait(seconds: 300, interval: 3)
     }
 
     /// Tests see the call instead of the screen, choose whether a terminal is attached, and how long a start waits.
@@ -69,24 +73,47 @@ enum ClusterPairCommands {
     /// `darkbloom stop` (and `darkbloom cluster stop`): the pair stops on both Macs and is saved as stopped, so neither
     /// Mac serves it again at login or after a restart. Both cluster services stay up, idle with nothing loaded, so
     /// `darkbloom start` on either Mac brings the pair back.
-    static func stop(_ pair: ClusterPairSummary, actions: ClusterPairActions?, say: Say = printLine) -> Int32 {
+    /// The Mac that follows always asks the leading Mac (its own record may lag; the stop is idempotent). "Stopped on both
+    /// Macs" is said only once both report nothing left running (the member stops its part after acknowledging), else
+    /// "Asked both Macs to stop" with what is left, exit 1.
+    static func stop(_ pair: ClusterPairSummary, actions: ClusterPairActions?, teardown: Wait = .teardown,
+                     say: Say = printLine) -> Int32 {
         say(pair.actingLine("stopping both Macs"))
         guard let actions else { say(ClusterPairSummary.unreachableLine); return 1 }
-        let resume = actions.resume()
-        if resume.role == .member, !resume.serving {
-            say(ClusterPairSummary.alreadyStoppedLine)
-            return 0
-        }
+        let role = actions.resume().role
         if case .failure(let failure) = actions.stop() {
-            sayStopFailed(failure, role: resume.role, say: say)
+            sayStopFailed(failure, role: role, say: say)
             return 1
         }
-        say(ClusterPairSummary.stoppedLine)
-        if case .success(let lines) = actions.verifyTeardown() {
+        switch awaitTeardown(actions, wait: teardown) {
+        case .success(let lines) where ClusterPairSummary.bothFreed(lines):
+            say(ClusterPairSummary.stoppedLine)
+            say(ClusterPairSummary.memoryFreedLine)
+            return 0
+        case .success(let lines):
+            say(ClusterPairSummary.stopAskedLine)
             for line in ClusterPairSummary.memoryLines(lines) { say(line) }
+            return 1
+        case .failure(let failure):
+            say(ClusterPairSummary.stopAskedLine)
+            say(ClusterPairSummary.memoryNotCheckedLine(failure.lines))
+            return 1
         }
-        return 0
     }
+
+    /// Asks each Mac what it has left running (`cluster verify-teardown`) until both have ended or `seconds` pass.
+    private static func awaitTeardown(_ actions: ClusterPairActions, wait: Wait) -> Result<[String], ClusterOnboardingFailure> {
+        let deadline = Date().addingTimeInterval(wait.seconds)
+        while true {
+            let result = actions.verifyTeardown()
+            if case .success(let lines) = result, ClusterPairSummary.bothFreed(lines) { return result }
+            if Date() >= deadline { return result }
+            Thread.sleep(forTimeInterval: wait.interval)
+        }
+    }
+
+    /// `stop`'s wait for both parts to end, read where a test's wait is bound (detached tasks don't inherit it).
+    static var teardownWait: Wait { waitForTesting ?? .teardown }
 
     /// `darkbloom start` without a terminal (scripts): the pair starts with its saved model on both Macs; then the command
     /// waits until it serves, or says why not, and ends with a result block like single-Mac start's. The exit status is
@@ -109,6 +136,17 @@ enum ClusterPairCommands {
             sayStopFailed(failure, role: role, say: say)
             return 1
         }
+        // As the screen's model change: both parts release their memory before the pair starts again.
+        let wait = waitForTesting ?? .restartTeardown
+        let teardown = await Task.detached { awaitTeardown(actions, wait: wait) }.value
+        guard case .success(let left) = teardown, ClusterPairSummary.bothFreed(left) else {
+            switch teardown {
+            case .success(let lines): for line in ClusterPairSummary.memoryLines(lines) { say("  " + line) }
+            case .failure(let failure): say("  " + ClusterPairSummary.memoryNotCheckedLine(failure.lines))
+            }
+            say(ClusterPairSummary.restartNotStartedLine)
+            return 1
+        }
         say("  Stopped on both Macs; starting it again.")
         return await serve(actions, config: config, say: say)
     }
@@ -124,7 +162,7 @@ enum ClusterPairCommands {
     /// A pair stop that failed: its reasons and, on the Mac that follows, how to stop this Mac alone.
     private static func sayStopFailed(_ failure: ClusterOnboardingFailure, role: ClusterOnboardingRole?, say: Say) {
         for line in failure.lines { say("  " + line) }
-        if role == .member { say(ClusterPairSummary.memberStopFailedLine) }
+        if role == .member { for line in ClusterPairSummary.memberStopFailureLines(failure.lines) { say(line) } }
     }
 
     private enum Started: Sendable { case asked, serviceFailed([String]), notEverywhere([String]) }
@@ -160,7 +198,12 @@ enum ClusterPairCommands {
         while true {
             let summary = await ClusterPairSummary.live(config: config)
             switch summary.state {
-            case .serving, .notServing, .notPaired, .pairingUnreadable: return summary
+            case .serving, .notPaired, .pairingUnreadable: return summary
+            case .notServing:
+                // A reason the Macs mend by themselves (an Apple verification retry, memory freeing, the coordinator
+                // retrying) is waited through, as the setup screen does; a final one ends the wait.
+                if ClusterPairSummary.isFinalReason(summary.reason) { return summary }
+                if let line = summary.lines.first, line != said { say("  " + line); said = line }
             case .stopped:
                 stoppedLooks += 1
                 if stoppedLooks > 3 { return summary }

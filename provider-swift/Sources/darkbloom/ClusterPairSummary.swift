@@ -53,11 +53,13 @@ struct ClusterPairSummary: Sendable, Equatable {
     var reason: String?
     /// The status as `darkbloom cluster` shows it (`cluster status` only; empty elsewhere).
     var lines: [String] = []
+    /// Not in a cluster, yet a cluster service runs or has a login agent here: left from an earlier pairing.
+    var leftoverService: Bool = false
 
     static let notPaired = ClusterPairSummary(paired: false, state: .notPaired)
 
-    /// Where the summary starts from what this Mac holds: not in a cluster, or in one (it holds a pairing, or its
-    /// cluster service runs or has a login agent). A pairing record that can't be read is never "not in a cluster"
+    /// Where the summary starts from what this Mac holds: in a cluster when it holds a pairing; a cluster service
+    /// without one is a leftover (`leftoverService`). A pairing record that can't be read is never "not in a cluster"
     /// (as `ClusterService.holdsNoPairing`): the commands act as if this Mac were in one, and say why.
     static func membership(_ pairing: PairingRead, serviceRunning: Bool, loginAgentInstalled: Bool,
                            startsAtLogin: Bool) -> ClusterPairSummary {
@@ -66,8 +68,11 @@ struct ClusterPairSummary: Sendable, Equatable {
         case .unreadable(let reason):
             summary = ClusterPairSummary(paired: true, state: .pairingUnreadable)
             summary.reason = reason
-        case .held, .none:
-            guard pairing == .held || serviceRunning || loginAgentInstalled else { return .notPaired }
+        case .none:
+            // A cluster service without any pairing serves no pair: it is left from an earlier pairing.
+            summary = .notPaired
+            summary.leftoverService = serviceRunning || loginAgentInstalled
+        case .held:
             summary = ClusterPairSummary(paired: true)
         }
         summary.serviceRunning = serviceRunning
@@ -128,13 +133,27 @@ struct ClusterPairSummary: Sendable, Equatable {
 
     static let stoppedLine =
         "Stopped on both Macs. They stay stopped after a restart; `darkbloom start` on either Mac starts the pair again."
-    static let alreadyStoppedLine = "The pair is already stopped; `darkbloom start` on either Mac starts it again."
+    /// A stop both Macs accepted whose parts haven't all ended yet (`stop` waits for them, bounded).
+    static let stopAskedLine =
+        "Asked both Macs to stop; they stay stopped after a restart, and `darkbloom start` on either Mac starts the pair again."
+    static let memoryFreedLine = "Memory freed on both Macs \u{2713}"
+    static let restartNotStartedLine = "Not started again: run `darkbloom restart` once both parts have ended (`darkbloom status`)."
+
+    /// Both Macs report nothing left running (`cluster verify-teardown`'s lines).
+    static func bothFreed(_ lines: [String]) -> Bool {
+        lines.count >= 2 && lines.allSatisfy { $0.hasSuffix(": nothing left running") }
+    }
+
+    /// The memory check didn't answer: said, never left out.
+    static func memoryNotCheckedLine(_ failure: [String]) -> String {
+        "Memory: not checked (" + (failure.first ?? "no answer") + ")"
+    }
     static let unreachableLine = "This Mac's cluster can't be reached from this command; run `darkbloom cluster` on this Mac to see it."
     static let noModelLine = "No model was chosen for the pair yet: run `darkbloom start` in a terminal to choose one."
 
     /// After a stop, what each Mac has left running (`cluster verify-teardown`'s lines): one line when nothing is.
     static func memoryLines(_ lines: [String]) -> [String] {
-        if lines.count >= 2, lines.allSatisfy({ $0.hasSuffix(": nothing left running") }) { return ["Memory freed on both Macs \u{2713}"] }
+        if bothFreed(lines) { return [memoryFreedLine] }
         return ["Memory:"] + lines.map { "  " + $0 }
     }
 
@@ -169,16 +188,24 @@ struct ClusterPairSummary: Sendable, Equatable {
         return lines
     }
 
-    /// `darkbloom start --solo` on a Mac in a cluster: one line, and single-Mac serving starts.
+    /// `darkbloom start --solo` on a Mac in a stopped cluster: one line, and single-Mac serving starts.
     var startNote: String {
         if pairingUnreadable {
             return "Starting single-Mac serving (--solo) although this Mac's pairing record couldn't be read: if it is in a "
                 + "two-Mac cluster, both use this Mac's memory."
         }
-        return started
-            ? "Starting single-Mac serving beside the two-Mac cluster with \(otherMac) (--solo): both use this Mac's memory."
-            : "This Mac is in a two-Mac cluster with \(otherMac), which is stopped. Stop single-Mac serving (`darkbloom stop "
-                + "--solo`) before you start the pair again (`darkbloom start`)."
+        return "This Mac is in a two-Mac cluster with \(otherMac), which is stopped. Stop single-Mac serving (`darkbloom stop "
+            + "--solo`) before you start the pair again (`darkbloom start`)."
+    }
+
+    /// This Mac's part serves: single-Mac serving can't run beside it (both take this Mac's one serving lock,
+    /// `provider.pid.lock`).
+    var partServes: Bool { started && serviceRunning && !pairingUnreadable }
+
+    /// `darkbloom start --solo` while this Mac's part of the pair serves.
+    var soloBesideServingRefusal: [String] {
+        [pairSentence, "This Mac's part of the pair holds its serving lock, so single-Mac serving can't start beside it. Stop "
+            + "the pair first (`darkbloom stop`), then `darkbloom start --solo`."]
     }
 
     /// `darkbloom stop --solo` where no single-Mac serving runs on a Mac in a cluster.
@@ -276,6 +303,18 @@ extension ClusterPairSummary {
     /// to serve alone (`ClusterServiceStatus.control.mode`).
     static let otherMacAwayModes: Set<String> = ["waiting", "alone", "cannotServe"]
 
+    /// The coordinator's pairing, in the status line's reason place: progress, not a reason (`pairLook`'s wait).
+    static let pairingProgress: Set<String> = ["the coordinator paired both Macs", "waiting for the coordinator to pair both Macs"]
+
+    /// A reason that ends a start's wait: one that needs a person (a login, the clock, a coordinator rule, matching
+    /// builds). Others (Apple verification retrying, memory freeing, a busy or reconnecting Mac, the coordinator
+    /// retrying) are waited through, as the setup screen does, within the bounded wait.
+    static func isFinalReason(_ reason: String?) -> Bool {
+        guard let reason else { return true }
+        return ClusterOnboardingNotServing.isMissingLogin(reason) || reason.contains("The clock of")
+            || reason.contains("doesn't let") || reason.contains("run different Darkbloom builds")
+    }
+
     /// The state the status lines of `darkbloom cluster` say, read as the other Mac's window reads them
     /// (`ClusterOnboardingDriver.showOutcome`): "Serving …" serves, "<model> is not serving yet: <reason>." does not.
     /// `leaderMode`: this Mac's own control mode when it leads (the lines are its own then).
@@ -285,10 +324,11 @@ extension ClusterPairSummary {
         }
         if first.hasPrefix("Serving ") { return (.serving, nil) }
         if let reason = ClusterOnboardingNotServing.reason(inStatusLine: first) {
-            return (reason == "the coordinator paired both Macs" ? .loading : .notServing, reason)
+            return (Self.pairingProgress.contains(reason) ? .loading : .notServing, reason)
         }
         if first.hasPrefix("Stopped") { return (.stopped, nil) }
-        if first.hasPrefix("Loading ") || first.hasPrefix("Starting ") || first == ClusterOnboardingUpdate.statusLine {
+        if first.hasPrefix("Loading ") || first.hasPrefix("Starting ") || first == ClusterOnboardingUpdate.statusLine
+            || first.contains("registering both Macs with the coordinator") {
             return (.loading, nil)
         }
         if let leaderMode, otherMacAwayModes.contains(leaderMode) {
@@ -301,7 +341,9 @@ extension ClusterPairSummary {
     /// What to do next, in commands.
     var next: String? {
         switch state {
-        case .notPaired: return "To set up a cluster: `darkbloom cluster` on each Mac."
+        case .notPaired:
+            return (leftoverService ? "To remove it: `darkbloom cluster stop --service`. " : "")
+                + "To set up a cluster: `darkbloom cluster` on each Mac."
         case .serving: return "To stop or change it: `darkbloom cluster` on \(leadingMac)."
         case .loading: return "Loading takes a few minutes for a large model; check again with `darkbloom cluster status`."
         case .stopped:
@@ -348,7 +390,10 @@ extension ClusterPairSummary {
     /// screens' words) and what to do.
     var clusterStatusLines: [String] {
         if pairingUnreadable { return [pairSentence, "Next: " + Self.checkPairingLine] }
-        guard paired else { return ["This Mac isn't in a cluster.", "Next: " + (next ?? "")] }
+        guard paired else {
+            return [leftoverService ? "This Mac isn't in a cluster, but a cluster service is still set up on it (left from an earlier pairing)."
+                        : "This Mac isn't in a cluster.", "Next: " + (next ?? "")]
+        }
         var out = ["Cluster: " + rolesWords, "Model: " + modelWords]
         out.append("Serves: " + servesWords + (localOnly ? " (API key: `darkbloom local` on the Mac that serves it)" : ""))
         out.append(contentsOf: stateLines)
@@ -509,7 +554,22 @@ extension ClusterPairSummary {
     }
 
     /// When the leading Mac could not stop the cluster: nothing changed here, and how to stop this Mac alone.
-    static let memberStopFailedLine =
-        "Nothing was stopped on this Mac. To stop only this Mac: `darkbloom cluster stop --local-only` (the other Mac then "
-            + "serves alone, or waits for this one)."
+    /// What the Mac that follows says after its forwarded stop failed.
+    static func memberStopFailureLines(_ failure: [String]) -> [String] {
+        let first = failure.first ?? ""
+        // The leading Mac never got it (refused, unreachable): nothing stopped anywhere.
+        if first.contains("did not answer over the cable"), !first.contains("timed out") { return [memberStopFailedLine] }
+        // It may have got it and still be draining (its stop can outlast the forward's wait).
+        if first.contains("timed out") {
+            return ["The leading Mac didn't confirm the stop in time; it may still be finishing. `darkbloom status` shows where "
+                + "both Macs stand.", stopThisMacAloneLine]
+        }
+        // The leading Mac answered with its own reason (it may have stopped, without reaching this Mac): as it said.
+        return [stopThisMacAloneLine]
+    }
+
+    static let stopThisMacAloneLine =
+        "To stop only this Mac: `darkbloom cluster stop --local-only` (the other Mac then serves alone, or waits for this one)."
+
+    static let memberStopFailedLine = "Nothing was stopped on this Mac. " + stopThisMacAloneLine
 }

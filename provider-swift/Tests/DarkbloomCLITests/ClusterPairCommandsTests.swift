@@ -111,8 +111,7 @@ struct ClusterPairHabitCommandsTests {
     func startDecision() throws {
         #expect(Start.pairStart(pair(), solo: false, terminal: true) == .openScreen)
         #expect(Start.pairStart(pair(role: .member, started: false, serviceRunning: false), solo: false, terminal: false) == .startPair)
-        #expect(Start.pairStart(pair(), solo: true, terminal: true) == .single(note:
-            "Starting single-Mac serving beside the two-Mac cluster with \(otherMac) (--solo): both use this Mac's memory."))
+        #expect(Start.pairStart(pair(), solo: true, terminal: true) == .refuse(soloBesideServingRefusal))
         #expect(Start.pairStart(pair(started: false), solo: true, terminal: false) == .single(note: "This Mac is in a "
             + "two-Mac cluster with \(otherMac), which is stopped. Stop single-Mac serving (`darkbloom stop --solo`) before "
             + "you start the pair again (`darkbloom start`)."))
@@ -391,8 +390,10 @@ struct ClusterPairClusterCommandsTests {
                                     forwarded: true) { removed = true; return [] }
             Issue.record("a failed forwarded stop throws")
         } catch let failure as Stop.Failure {
-            #expect(failure.lines.last == "Nothing was stopped on this Mac. To stop only this Mac: `darkbloom cluster stop "
-                + "--local-only` (the other Mac then serves alone, or waits for this one).")
+            #expect(failure.lines.suffix(2) == [
+                "The leading Mac didn't confirm the stop in time; it may still be finishing. `darkbloom status` shows where both "
+                    + "Macs stand.",
+                "To stop only this Mac: `darkbloom cluster stop --local-only` (the other Mac then serves alone, or waits for this one)."])
         }
         #expect(!removed)
         #expect(try Stop.finishStop(.success(["Stopping both Macs. Run `darkbloom cluster` to serve again."]), forwarded: true) { ["label"] }
@@ -430,7 +431,7 @@ struct ClusterPairTruthTests {
             == "This Mac's pairing record couldn't be read, so it may be in a two-Mac cluster.")
         // What this Mac holds otherwise is unchanged.
         #expect(ClusterPairSummary.membership(.none, serviceRunning: false, loginAgentInstalled: false, startsAtLogin: false) == .notPaired)
-        #expect(ClusterPairSummary.membership(.none, serviceRunning: true, loginAgentInstalled: false, startsAtLogin: false).paired)
+        #expect(!ClusterPairSummary.membership(.none, serviceRunning: true, loginAgentInstalled: false, startsAtLogin: false).paired)
         #expect(ClusterPairSummary.membership(.held, serviceRunning: false, loginAgentInstalled: false, startsAtLogin: false).state == .unknown)
         #expect(ClusterPairSummary.shownReason(StoreError(description: "pairings.json could not be read.")) == "pairings.json could not be read")
         #expect(ClusterPairSummary.shownReason(NSError(domain: "NSCocoaErrorDomain", code: 257)) == nil)
@@ -531,18 +532,38 @@ struct ClusterPairTruthTests {
 }
 
 /// The pair's actions for a test; each call is said on standard error as `pair action: <name>`.
+private let freed = ["This Mac: nothing left running", "The other Mac (Apple M5 Max, 128 GB): nothing left running"]
+private let stillRunning = ["This Mac: nothing left running",
+                            "The other Mac (Apple M5 Max, 128 GB): still running: this Mac's part of the model is still running"]
+
+/// Values handed out in turn; the last one repeats.
+private final class Looks<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [Value]
+    init(_ values: [Value]) { self.values = values }
+    func next() -> Value { lock.withLock { values.count > 1 ? values.removeFirst() : values[0] } }
+}
+
 private func pairActions(role: ClusterOnboardingRole = .leader, serving: Bool = true,
                          stop: Result<[String], ClusterOnboardingFailure> = .success(["Stopping both Macs. Run `darkbloom cluster` to serve again."]),
                          serve: Result<[String], ClusterOnboardingFailure> = .success(["Started the other Mac's part over the cable."]),
-                         teardown: [String] = ["This Mac: nothing left running", "The other Mac (Apple M5 Max, 128 GB): nothing left running"])
+                         teardown: [Result<[String], ClusterOnboardingFailure>] = [.success(freed)])
     -> ClusterPairActions {
     @Sendable func said(_ action: String) { FileHandle.standardError.write(Data("pair action: \(action)\n".utf8)) }
+    let teardownLooks = Looks(teardown)
     return ClusterPairActions(
         resume: { ClusterOnboardingResume(role: role, peerName: "Apple M5 Max, 128 GB", serving: serving, modelName: "EigenLabs/Qwen3.8-27B-4bit-mtp") },
         ensureService: { said("ensureService"); return .success(()) },
         serve: { said("serve"); return serve },
         stop: { said("stop"); return stop },
-        verifyTeardown: { said("verifyTeardown"); return .success(teardown) })
+        verifyTeardown: { said("verifyTeardown"); return teardownLooks.next() })
+}
+
+/// The pair as `cluster status` reads a status line (`read(status:)`, the production classifier).
+private func observed(_ line: String, role: ClusterPairSummary.Role = .leader) -> ClusterPairSummary {
+    var summary = pair(role: role)
+    summary.read(status: [line], leaderMode: nil)
+    return summary
 }
 
 private func pairActionCalls(_ stderr: String) -> [String] {
@@ -606,8 +627,9 @@ struct ClusterPairControlTests {
         #expect(lines(result?.standardOutputContent) == [
             "This Mac is in a two-Mac cluster with \(otherMac): stopping both Macs.",
             "  The other Mac (Apple M5 Max, 128 GB) did not answer over the cable: timed out",
-            "Nothing was stopped on this Mac. To stop only this Mac: `darkbloom cluster stop --local-only` (the other Mac then "
-                + "serves alone, or waits for this one).", ""])
+            "The leading Mac didn't confirm the stop in time; it may still be finishing. `darkbloom status` shows where both "
+                + "Macs stand.",
+            "To stop only this Mac: `darkbloom cluster stop --local-only` (the other Mac then serves alone, or waits for this one).", ""])
         #expect(pairActionCalls(text(result?.standardErrorContent)) == ["stop"])
     }
 
@@ -668,8 +690,9 @@ struct ClusterPairControlTests {
         ]
         #expect(Start.pairStart(pair(), solo: false, terminal: true, singleMacOptions: ["--model"]) == .refuseOptions(refusal))
         #expect(Start.pairStart(pair(), solo: false, terminal: false, singleMacOptions: ["--model"]) == .refuseOptions(refusal))
-        #expect(Start.pairStart(pair(), solo: true, terminal: false, singleMacOptions: ["--model"]) == .single(note:
-            "Starting single-Mac serving beside the two-Mac cluster with \(otherMac) (--solo): both use this Mac's memory."))
+        #expect(Start.pairStart(pair(started: false), solo: true, terminal: false, singleMacOptions: ["--model"]) == .single(note:
+            "This Mac is in a two-Mac cluster with \(otherMac), which is stopped. Stop single-Mac serving (`darkbloom stop "
+                + "--solo`) before you start the pair again (`darkbloom start`)."))
         #expect(Start.pairStart(.notPaired, solo: false, terminal: false, singleMacOptions: ["--model"]) == .single(note: nil))
         #expect(pair().singleMacOptionsRefusal(["--local", "--port", "--bind"]) == [
             "This Mac is in a two-Mac cluster with \(otherMac): `--local`, `--port` and `--bind` are for single-Mac serving, so "
@@ -749,7 +772,7 @@ struct ClusterPairControlTests {
         #expect(lines(result?.standardOutputContent) == [
             "This Mac is in a two-Mac cluster with \(otherMac): restarting both Macs.",
             "  Stopped on both Macs; starting it again."] + servingBlock + [""])
-        #expect(pairActionCalls(text(result?.standardErrorContent)) == ["stop", "ensureService", "serve"])
+        #expect(pairActionCalls(text(result?.standardErrorContent)) == ["stop", "verifyTeardown", "ensureService", "serve"])
     }
 
     @Test("`darkbloom status` leads with the pair block, then this Mac's fields, and no single-Mac Daemon/Traffic lines")
@@ -786,6 +809,183 @@ struct ClusterPairControlTests {
         #expect(stdout.contains("\nCluster: this Mac leads · \(otherMac) · Qwen 3.8 27B through Darkbloom · serving "
             + "(details: `darkbloom cluster status`)\n"))
         #expect(stdout.contains("\nSingle-Mac serving: off (this Mac serves in its two-Mac cluster: `darkbloom cluster status`)\n"))
+    }
+}
+
+private let soloBesideServingRefusal = [
+    "This Mac serves in a two-Mac cluster with \(otherMac): it leads; Qwen 3.8 27B through Darkbloom.",
+    "This Mac's part of the pair holds its serving lock, so single-Mac serving can't start beside it. Stop the pair first "
+        + "(`darkbloom stop`), then `darkbloom start --solo`.",
+]
+
+private let askedLine = "Asked both Macs to stop; they stay stopped after a restart, and `darkbloom start` on either Mac starts the pair again."
+
+@Suite("the validator's findings: rollback advice, the pairing wait, stop output that is true, leftovers and the app")
+struct ClusterPairValidatorFindingsTests {
+    @Test("`update --rollback` says to turn the cluster service off with `cluster stop --service`")
+    func rollbackAdviceTurnsTheServiceOff() {
+        #expect(UpdateRollback.clusterRefusal.contains("Stop this Mac's cluster service (`darkbloom cluster stop --service`)"))
+    }
+
+    @Test("the coordinator's pairing wait and the registering line are loading, not a reason")
+    func coordinatorWaitIsLoading() {
+        #expect(observed("Qwen 3.8 27B is not serving yet: waiting for the coordinator to pair both Macs.").state == .loading)
+        #expect(observed("Qwen 3.8 27B: registering both Macs with the coordinator for pairing.").state == .loading)
+        #expect(observed("Qwen 3.8 27B is not serving yet: This Mac isn't logged in to Darkbloom, so the coordinator won't pair it.")
+            .state == .notServing)
+    }
+
+    @Test("a script start waits through the coordinator's pairing and an Apple verification retry until it serves; exit 0")
+    func startWaitsThroughThePairingWait() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent, \.standardErrorContent]) {
+            let looks = Looks([
+                observed("Qwen 3.8 27B: registering both Macs with the coordinator for pairing."),
+                observed("Qwen 3.8 27B is not serving yet: waiting for the coordinator to pair both Macs."),
+                observed("Qwen 3.8 27B is not serving yet: The other Mac (Apple M5 Max, 128 GB) isn't verified by Apple yet; "
+                    + "Darkbloom retries by itself within minutes. Don't restart either Mac until then."),
+                observed("Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel)."),
+            ])
+            try await exitWithPair(pair(), actions: pairActions()) { _ in
+                try await ClusterPairSummary.$readerForTesting.withValue({ live in live ? looks.next() : pair() }) {
+                    try await ClusterPairCommands.$waitForTesting.withValue(.init(seconds: 60, interval: 0)) {
+                        try await runCLICommand(Start.self, ["start"])
+                    }
+                }
+            }
+        }
+        let out = lines(result?.standardOutputContent)
+        #expect(out.contains("  Qwen 3.8 27B is not serving yet: waiting for the coordinator to pair both Macs."))
+        #expect(out.contains("✓ Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel)."))
+    }
+
+    @Test("stop says \"Stopped on both Macs\" only once both parts ended, after waiting for the other Mac's part")
+    func stopSaysStoppedOnlyOnceBothPartsEnded() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent, \.standardErrorContent]) {
+            try await exitWithPair(servingPair(role: .member),
+                                   actions: pairActions(role: .member, teardown: [.success(stillRunning), .success(freed)])) { _ in
+                try await ClusterPairCommands.$waitForTesting.withValue(.init(seconds: 30, interval: 0)) {
+                    try await runCLICommand(Stop.self, ["stop"])
+                }
+            }
+        }
+        #expect(lines(result?.standardOutputContent) == ["This Mac is in a two-Mac cluster with \(otherMac): stopping both Macs.",
+            ClusterPairSummary.stoppedLine, "Memory freed on both Macs ✓", ""])
+        #expect(pairActionCalls(text(result?.standardErrorContent)) == ["stop", "verifyTeardown", "verifyTeardown"])
+    }
+
+    @Test("a stop whose parts haven't ended says it asked, shows what is left, and exits 1")
+    func stopThatHasNotEndedSaysAsked() async {
+        let result = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            try await exitWithPair(servingPair(), actions: pairActions(teardown: [.success(stillRunning)])) { _ in
+                try await ClusterPairCommands.$waitForTesting.withValue(.init(seconds: 0, interval: 0)) {
+                    try await runCLICommand(Stop.self, ["stop"])
+                }
+            }
+        }
+        #expect(lines(result?.standardOutputContent) == ["This Mac is in a two-Mac cluster with \(otherMac): stopping both Macs.",
+            askedLine, "Memory:"] + stillRunning.map { "  " + $0 } + [""])
+    }
+
+    @Test("the follower's stop never ends without a memory line: a check that didn't answer is said")
+    func stopWithoutAMemoryCheckSaysSo() async {
+        let result = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            try await exitWithPair(servingPair(role: .member), actions: pairActions(role: .member,
+                teardown: [.failure(.init("The other Mac (Apple M5 Max, 128 GB) did not answer over the cable: timed out"))])) { _ in
+                try await ClusterPairCommands.$waitForTesting.withValue(.init(seconds: 0, interval: 0)) {
+                    try await runCLICommand(Stop.self, ["stop"])
+                }
+            }
+        }
+        #expect(lines(result?.standardOutputContent) == ["This Mac is in a two-Mac cluster with \(otherMac): stopping both Macs.",
+            askedLine, "Memory: not checked (The other Mac (Apple M5 Max, 128 GB) did not answer over the cable: timed out)", ""])
+    }
+
+    @Test("a failed stop on the follower says what is known: refused, timed out, or stopped there but not here")
+    func stopFailureSaysWhatIsKnown() {
+        let localOnly = "To stop only this Mac: `darkbloom cluster stop --local-only` (the other Mac then serves alone, or waits for this one)."
+        #expect(ClusterPairSummary.memberStopFailureLines(["The other Mac (Apple M5 Max, 128 GB) did not answer over the cable: connection refused"])
+            == ["Nothing was stopped on this Mac. " + localOnly])
+        #expect(ClusterPairSummary.memberStopFailureLines(["The other Mac (Apple M5 Max, 128 GB) did not answer over the cable: timed out"])
+            == ["The leading Mac didn't confirm the stop in time; it may still be finishing. `darkbloom status` shows where both "
+                + "Macs stand.", localOnly])
+        #expect(ClusterPairSummary.memberStopFailureLines(["The other Mac (Apple M5 Max, 128 GB) stopped serving; this Mac did not "
+            + "answer (connection reset). Its cluster service tells it to stop as soon as it answers again."]) == [localOnly])
+    }
+
+    @Test("the follower's stop always asks the leading Mac, even when its own record says stopped")
+    func memberStopAlwaysAsksTheLeader() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent, \.standardErrorContent]) {
+            try await exitWithPair(servingPair(role: .member), actions: pairActions(role: .member, serving: false)) { _ in
+                try await runCLICommand(Stop.self, ["stop"])
+            }
+        }
+        let out = lines(result?.standardOutputContent)
+        #expect(out.contains(ClusterPairSummary.stoppedLine))
+        #expect(pairActionCalls(text(result?.standardErrorContent)) == ["stop", "verifyTeardown"])
+    }
+
+    @Test("restart doesn't start again until both parts have ended; exit 1 when they haven't")
+    func restartWaitsForBothPartsToEnd() async {
+        let result = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent, \.standardErrorContent]) {
+            try await exitWithPair(servingPair(), actions: pairActions(teardown: [.success(stillRunning)])) { _ in
+                try await ClusterPairCommands.$waitForTesting.withValue(.init(seconds: 0, interval: 0)) {
+                    try await runCLICommand(Restart.self, ["restart"])
+                }
+            }
+        }
+        let out = lines(result?.standardOutputContent)
+        #expect(out.contains("Not started again: run `darkbloom restart` once both parts have ended (`darkbloom status`)."))
+        #expect(pairActionCalls(text(result?.standardErrorContent)) == ["stop", "verifyTeardown"])
+    }
+
+    @Test("a cluster service without any pairing is a leftover, not a cluster")
+    func leftoverServiceIsNotACluster() {
+        let leftover = ClusterPairSummary.membership(.none, serviceRunning: true, loginAgentInstalled: true, startsAtLogin: true)
+        #expect(!leftover.paired && leftover.exitCode == 6)
+        #expect(leftover.clusterStatusLines == [
+            "This Mac isn't in a cluster, but a cluster service is still set up on it (left from an earlier pairing).",
+            "Next: To remove it: `darkbloom cluster stop --service`. To set up a cluster: `darkbloom cluster` on each Mac.",
+        ])
+        #expect(Stop.pairedStop(leftover, solo: false, uninstall: false) == .stopSingleMac)
+    }
+
+    @Test("--solo can't start beside this Mac's serving part of the pair: refused, and said why")
+    func soloRefusedWhileThisMacsPartServes() {
+        #expect(Start.pairStart(pair(), solo: true, terminal: false) == .refuse(soloBesideServingRefusal))
+        #expect(Start.pairStart(pair(started: false), solo: true, terminal: false) == .single(note: "This Mac is in a two-Mac "
+            + "cluster with \(otherMac), which is stopped. Stop single-Mac serving (`darkbloom stop --solo`) before you start the "
+            + "pair again (`darkbloom start`)."))
+    }
+
+    @Test("the app's local mode on a paired Mac refuses plainly instead of reporting a start")
+    func desktopLocalModeRefusesOnAPairedMac() {
+        #expect(Desktop.StartLocal.pairRefusal(pair()) == [
+            "This Mac is in a two-Mac cluster with \(otherMac): the app's local mode serves this Mac alone, so nothing was started.",
+            "To serve the pair locally: `darkbloom cluster local` on the leading Mac. To serve this Mac alone: stop the pair "
+                + "(`darkbloom stop`), then `darkbloom start --solo --local --model <id>`.",
+        ])
+        #expect(Desktop.StartLocal.pairRefusal(.notPaired) == nil)
+    }
+}
+
+@Suite("commands built in code are parsed: their options read without ArgumentParser's fatal error")
+struct ParsedInCodeTests {
+    @Test("`desktop start-local`'s drain options read as `darkbloom stop`'s defaults")
+    func desktopLocalStartDrainOptionsAreParsed() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            let options = try Desktop.StartLocal.drainOptions()
+            print("timeout \(options.timeout) force \(options.force)")
+        }
+        #expect(text(result?.standardOutputContent) == "timeout \(DrainOptions.defaultTimeout) force false\n")
+    }
+
+    @Test("unenrollment's stop is `darkbloom stop --solo`, parsed")
+    func unenrollStopIsParsed() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            let stop = try Unenroll.stopCommand()
+            print("solo \(stop.solo) uninstall \(stop.uninstall) timeout \(stop.drain.timeout)")
+        }
+        #expect(text(result?.standardOutputContent) == "solo true uninstall false timeout \(DrainOptions.defaultTimeout)\n")
     }
 }
 

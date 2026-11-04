@@ -45,9 +45,10 @@ struct Stop: AsyncParsableCommand {
         look.open("Darkbloom stop")
         if stop == .stopPair {
             let actions = ClusterPairActions.live(config: nil)
+            let teardown = ClusterPairCommands.teardownWait
             let say = look.saying(ClusterPairCommands.printLine)
             let code = await look.working("Stopping both Macs") {
-                await Task.detached { ClusterPairCommands.stop(pair, actions: actions, say: say) }.value
+                await Task.detached { ClusterPairCommands.stop(pair, actions: actions, teardown: teardown, say: say) }.value
             }
             if code != 0 { throw ExitCode(code) }
             return

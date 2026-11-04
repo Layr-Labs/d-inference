@@ -173,7 +173,8 @@ extension Cluster {
             switch Self.mode(pair, localOnly: localOnly, service: service) {
             case .pair:
                 let actions = ClusterPairActions.live(config: configOptions.config, worker: worker)
-                let code = await Task.detached { ClusterPairCommands.stop(pair, actions: actions) }.value
+                let teardown = ClusterPairCommands.teardownWait
+                let code = await Task.detached { ClusterPairCommands.stop(pair, actions: actions, teardown: teardown) }.value
                 if code != 0 { throw ExitCode(code) }
                 return
             case .refuse:
@@ -247,7 +248,7 @@ extension Cluster {
                 switch stopped {
                 case .success(let said): lines = said
                 case .failure(let failure):
-                    throw Failure(lines: failure.lines + (forwarded ? [ClusterPairSummary.memberStopFailedLine] : []))
+                    throw Failure(lines: failure.lines + (forwarded ? ClusterPairSummary.memberStopFailureLines(failure.lines) : []))
                 }
             }
             let removed = try removeFromLogin()

@@ -67,8 +67,7 @@ class ParallelClassTests(unittest.TestCase):
                 self.assertNotIn("ProviderCore", seen)
 
     def test_serial_targets_that_link_mlx_are_never_parallel(self):
-        for module in ("ProviderCoreTests", "DarkbloomCLITests", "ServingQualificationTests",
-                       "GPTOSSOptimizationTests"):
+        for module in ("ProviderCoreTests", "DarkbloomCLITests", "ServingQualificationTests"):
             self.assertNotIn(module, shards.PARALLEL_MODULES)
 
 
@@ -154,6 +153,26 @@ class PartitionTests(unittest.TestCase):
         _, loads = shards.assignment(1, {})
         self.assertEqual(loads, [shards.FIRST_SHARD_EXTRA_SECONDS + shards.PARITY_SHARD_EXTRA_SECONDS
                                  + shards.LAST_SHARD_EXTRA_SECONDS])
+
+    def test_job_level_extras_load_every_selection_of_their_job(self):
+        first, parity, last = (shards.FIRST_SHARD_EXTRA_SECONDS, shards.PARITY_SHARD_EXTRA_SECONDS,
+                               shards.LAST_SHARD_EXTRA_SECONDS)
+        # One selection per job: the extras sit on selections 1, PARITY_SHARD and N.
+        _, loads = shards.assignment(6, {})
+        self.assertEqual(loads, [first, parity, 0.0, 0.0, 0.0, last])
+        # Three per job: Prompt Parity runs after job 1's processes and the
+        # isolated processes after job 2's, so they load each selection there.
+        _, loads = shards.assignment(6, {}, processes=3)
+        self.assertEqual(loads, [first + parity, parity, parity, last, last, last])
+        with self.assertRaisesRegex(ValueError, "do not make jobs"):
+            shards.assignment(5, {}, processes=3)
+        # Every listed test still runs in exactly one selection of a job plan
+        # (2 jobs of 2 processes: this fixture has 5 serial suites).
+        plans = {selection: shards.planned(self.tests, selection, ISOLATED, self.weights, 2)
+                 for selection in ("parallel", *(f"{index}/4" for index in range(1, 5)))}
+        selected = [test for plan in plans.values() for test in plan]
+        self.assertEqual(len(selected), len(set(selected)))
+        self.assertEqual(set(selected), {test for test in self.tests if not re.search(ISOLATED, test)})
 
     def test_arguments_and_shard_validation(self):
         self.assertEqual(shards.arguments("parallel", ISOLATED, self.weights),

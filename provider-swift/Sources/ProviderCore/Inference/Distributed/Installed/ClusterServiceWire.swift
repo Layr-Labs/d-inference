@@ -20,6 +20,9 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
         /// a recycled process number never passes for it), and whether it is the solo server (degraded serving alone).
         public var pid: Int32? = nil
         public var startedAt: Double? = nil
+        /// How long this Mac's last part ran before it ended by itself (seconds; a stop this service made leaves it
+        /// as it was), nil before the first such end and from an older build.
+        public var lastRunSeconds: Double? = nil
         public var solo: Bool? = nil
         /// While it runs: `ClusterLocalServing.notice` when this part (rank 0) serves on its local API only because the
         /// coordinator cannot take the cluster member role; nil when it serves publicly or is not rank 0.

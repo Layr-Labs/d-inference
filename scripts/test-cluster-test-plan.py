@@ -65,6 +65,10 @@ class ClusterTestPlanTests(unittest.TestCase):
                     self.assertEqual(cwd, plan.PACKAGE)
                     self.assertEqual(argv[0], str(ROOT / "scripts/run-nested-suite.sh"))
                     self.assertEqual(argv[-1], "--no-parallel")
+                    # Only a grouped selection runs beside others on one build,
+                    # so only it skips SwiftPM's lock on .build.
+                    self.assertEqual("--ignore-lock" in argv, selection.group is not None)
+                    self.assertEqual(argv[1], plan.swift_arguments(selection)[0])
                 else:
                     self.assertEqual(cwd, ROOT)
                     self.assertTrue(Path(argv[1]).is_file(), argv)

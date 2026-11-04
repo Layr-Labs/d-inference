@@ -156,7 +156,7 @@ The last provider shard runs the MiMo audio gate (`testNativeAudioRelease`),
 whose fixture needs the 1.87 GB pinned audio codec, only when the gate's
 inputs change (`MIMO_AUDIO` in `scripts/ci-component-paths.py`: the MiMo,
 audio and media provider code, the MiMo tests, the MLX pins, the audio and
-provider fixture scripts and the gate's recipe) and on every `master` push, which runs every
+provider fixture scripts and the gate's recipe) and on every `master` and `dev` push, which runs every
 component. A pull request outside those inputs neither downloads the codec
 nor runs the gate.
 
@@ -417,19 +417,12 @@ a runtime prohibition. `GLM5ToolFailureTests` separately exercises streaming
 suffix rejection, including a valid call followed by malformed output, before
 fallback text or partial calls can escape.
 
-The provider test host also carries the SDK's `GLM5NextAlignedPayloadReaderTests`
-(eight filesystem/resource tests), `GLM5NextArtifactCachePolicyTests` (three
-filesystem policy/cleanup tests), their inventory fixture and suite namespaces,
-and `GLM5NextArtifactLoaderTests` (eight native tiny-artifact tests). The first
-two suites exercise real files without creating MLX arrays. The loader suite
-creates arrays and belongs in an authorized native test window. Sources live in
-`provider-swift/Tests/ProviderCoreTests/Inference/Models/GLM5Next/`.
-Use an immutable SDK revision containing `GLM5NextAlignedPayloadReader`,
-`verificationHostBytes`, `payloadReadScratchAllowanceBytes` and the internal
-descriptor-policy test initializer. An older SDK pin cannot compile this host;
-resolve the dependency in the SDK rather than weakening the tests or importing
-cluster-stage APIs. These tests retain full-artifact verification, aligned
-windows, mutation/truncation refusal, cancellation and resource charges.
+The SDK's `GLM5NextAlignedPayloadReaderTests`, `GLM5NextArtifactCachePolicyTests`
+and `GLM5NextArtifactLoaderTests` run in the Fork Tests workflow of
+Layr-Labs/mlx-swift-lm. The provider test host does not carry copies of them.
+Their inventory fixture, `GLM5NextArtifactCachePolicySDKFixtures.swift`, stays in
+`provider-swift/Tests/ProviderCoreTests/Inference/Models/GLM5Next/` because the
+provider's GLM cluster tests use it.
 
 The metadata-only `GLM5NextDiscoveryLoadFootprintTests`,
 `GLM5NextDiscoveryTests` and `rawDiscoveryQuotationMatchesManagedTinyFixture`
@@ -1273,8 +1266,9 @@ in selections that `scripts/cluster-test-plan.py` defines. Each selection runs
 in a process of its own through `scripts/run-nested-suite.sh`, which fails when
 the selection runs no test or skips a test. Runtime shard 1 runs `base`, the
 longest selection, alone. Shard 2 runs two groups at the same time, each in
-plan order with its own `TMPDIR` (the CPU batch-session suite and the GLM,
-TF32 and Gemma selections; the Qwen GPU chain), then the share probe alone,
+plan order with its own `TMPDIR` (the CPU batch-session suite with the GLM
+paged-KV, invariance and census, TF32 and Gemma selections; the Qwen GPU chain
+with `glm53-prefix-ssd`), then the share probe alone,
 whose 1.5 s budget includes the first use of the Qwen TP kernels on the Mac. Every process starts with
 `MLX_QMV_BATCH_INVARIANT=1`, as every cluster process does.
 
@@ -1759,6 +1753,7 @@ make changelog-check
 python3 scripts/test-provider-release-resolution.py
 python3 scripts/test-provider-release-resume.py
 python3 scripts/test-provider-release-publication.py
+python3 scripts/test-provider-release-notes.py
 python3 scripts/test-provider-cluster-runtime-models.py
 python3 scripts/test-release-dev-branch.py
 python3 scripts/test-provider-release-pipeline.py
@@ -1806,6 +1801,23 @@ app (its digests are that app's; its grant and parity qualifications are this
 build's declaration, so its evidence digest and `qualified_at` follow
 `ClusterPublicModels`), and check that registration sends the block in its
 canonical form.
+`scripts/test-provider-release-notes.py` builds a local origin repository with
+GitHub's shapes: merge-commit and squash pull requests, `refs/pull/<N>/head`
+refs and release tags. Its five releases are two squash promotions, a hotfix
+without a promotion, a merge-commit promotion and a release whose only
+promotion is its Prepare pull request, cut from `dev`. They include a `dev` pull
+request merged after the promoted snapshot, a sync of `master` into `dev` and
+Prepare pull requests. The tests check each release's pull requests through
+`dev` and directly on `master`, and that release pull requests are named once.
+They publish v1.1.0 through `publish_github_release` with a fake `gh`, once
+with GitHub's answer and once with the `FORBIDDEN` answer a token without pull
+request access gets. The second still lists every pull request, with its title
+from git, escaped as on the first, and an author only where a noreply address
+names one. They also check the `CHANGELOG.md` section, the 125,000-character
+fallback and a failed generation. Titles and authors are fixture data, and no
+test uses the network.
+The test needs git 2.31 or newer, as the release notes do, and stops with that
+message on an older git.
 `scripts/test-provider-cluster-runtime-models.py` runs the release's
 model-metadata fetch against a local HTTP registry: the environment's catalog and
 CDN, candidate selection, the manifest and `config.json` checks, each candidate's

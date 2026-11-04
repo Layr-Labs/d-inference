@@ -145,6 +145,8 @@ import Darwin
         pairingSaysWhatToCheckWhenTheOtherMacIsNotFound()
         // R-3 (the pair-2 re-test, 2026-11-04): the hint's firewall line named production's app in the DevNet app.
         pairingLinesNameTheApp()
+        // R-8 (the round-3 re-test): a stopped DevNet pair's status named `darkbloom local`.
+        theServingLinesNameThisBuildsCommand()
         alreadyServingTestsAgainOrSaysWhyNot()
         aDeadPendingStartIsClearedOnlyWhileStillRecorded()
         modeChoiceOffersBothWithTheFastestMeasuredFirst()
@@ -2870,6 +2872,28 @@ import Darwin
         let named = dim.filter { $0.contains("darkbloom-dev") }
         expect(!named.isEmpty && named.allSatisfy { $0.replacingOccurrences(of: "\u{2026}", with: "").count <= 45 - 6 },
                "dev row: named, then fitted to its room: \(named)")
+    }
+
+    /// The pair-2 re-test of the DevNet build (round 3, R-8): a stopped local-only pair's status said "When it starts: Local
+    /// only, on this Mac's networks; API key: `darkbloom local`." in the DevNet app, whose command is `darkbloom-dev local`.
+    /// These lines reach `cluster status` as they are, never through the console's rename, so they name the running
+    /// identity's command themselves: the scope's line, the API line of a pair the other Mac serves, and the missing-login
+    /// remedy. Production's text is unchanged.
+    static func theServingLinesNameThisBuildsCommand() {
+        let scope = ClusterServingScope.localOnly(bind: ClusterServingScope.localOnlyDefaultBind)
+        let ready = ClusterOnboardingReady(servedBy: ClusterOnboardingMacName.other(named: "Apple M3 Ultra, 256 GB"), port: 8000,
+                                           network: true)
+        let login = ClusterOnboardingNotServing.notLoggedIn([ClusterOnboardingMacName.this])
+        expect(scope.line == "Local only, on this Mac's networks; API key: `darkbloom local`"
+               && ready.apiLine.hasSuffix("; this Mac answers too (`darkbloom local` shows its address)")
+               && ClusterOnboardingNotServing.remedy(forReason: login) == "Run `darkbloom login` on each Mac named, then Retry; or serve locally only.",
+               "R-8: production's command, as before: \(scope.line) / \(ready.apiLine)")
+        ClusterOnboardingCommand.use("darkbloom-dev")
+        defer { ClusterOnboardingCommand.use("darkbloom") }
+        expect(scope.line == "Local only, on this Mac's networks; API key: `darkbloom-dev local`", "R-8: the DevNet app's line: \(scope.line)")
+        expect(ready.apiLine.hasSuffix("; this Mac answers too (`darkbloom-dev local` shows its address)"), "R-8: \(ready.apiLine)")
+        expect(ClusterOnboardingNotServing.remedy(forReason: login) == "Run `darkbloom-dev login` on each Mac named, then Retry; or serve "
+               + "locally only.", "R-8: the remedy")
     }
 
     static func theDevNetAppNamesItsOwnCommand() {

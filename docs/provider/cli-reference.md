@@ -721,11 +721,13 @@ ends. The DevNet app names "Darkbloom Dev" and `darkbloom-dev`.
   the cable: macOS keeps Darkbloom off the local network" and `next` is "On this Mac: System Settings → Privacy &
   Security → Local Network → turn on “Darkbloom” (on a Mac with no display, through Screen Sharing); then run
   `darkbloom start` here, or choose Retry in `darkbloom cluster` on the other Mac."
-- On the leading Mac, once its part has run about 20 seconds (the ✗'s rule; it then asks the other Mac's status),
+- On the leading Mac, from about 20 seconds into its part (the ✗'s rule; it then asks the other Mac's status), and
+  then steadily while the other Mac stays refused, also while its part ends on the missing link and starts again,
   `reason` is "The other Mac can't reach this Mac over the cable: macOS keeps Darkbloom there off the local network"
   and `next` names that Mac: "The other Mac (Apple M5 Max, 128 GB): System Settings → Privacy & Security → Local
   Network → turn on “Darkbloom” (on a Mac with no display, through Screen Sharing). Then run `darkbloom start` here,
-  or choose Retry in `darkbloom cluster`."
+  or choose Retry in `darkbloom cluster`." Once the setting is on, it clears when that Mac's follower gets through.
+- On both Macs, `lines` then holds that state's line, "Not serving: <reason>.", as the plain output's ✗ line does.
 
 A stopped pair reads `stopped` (exit 4) even while the other Mac isn't answering, as after a stop the other Mac asked
 for before it left (its uninstall does): `lines` are "Stopped; last model …" and "The other Mac (…) isn't answering
@@ -752,8 +754,8 @@ present, `null` when unknown; keys are only ever added
 | `this_mac` | string? | This Mac's own name (System Settings) |
 | `other_mac` | object? | `name` (its hardware, as pairing showed it), `answers`: on the Mac that follows, whether the leading Mac answered; on the leading Mac, `true` while both run the cluster (or confirm its leader), `false` while the other Mac is away, `null` when not known |
 | `model` | object? | `id`, `name` (catalog name, `null` when none) |
-| `mode` | string? | `tensor parallel`, `pipeline`, `pipeline with speculative decoding`, … (`ClusterOnboardingDeployment.modeWords`) |
-| `split` | string? | Each Mac's share, such as `M3 Ultra 40 layers / M5 Ultra 24 layers` |
+| `mode` | string? | `tensor parallel`, `pipeline`, `pipeline with speculative decoding`, … (`ClusterOnboardingDeployment.modeWords`), from the deployment line the leading Mac recorded at the start, whatever the model's name; without one, the mode the ✓ line marks (`tensor parallel` or `pipeline`). The plain output's `Model:` line shows it |
+| `split` | string? | Each Mac's share, such as `M3 Ultra 40 layers / M5 Ultra 24 layers` (pipeline) or `M3 Ultra 50% / M5 Max 50%` (tensor parallel), from the same deployment line; `null` without one |
 | `serves` | string? | `darkbloom` or `local` |
 | `state` | string | `serving`, `loading`, `not_serving`, `stopped`, `other_mac_away`, `not_paired`, `unknown`, `pairing_unreadable` |
 | `reason` | string? | Why it does not serve, in the screens' words |

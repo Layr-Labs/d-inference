@@ -322,10 +322,12 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 restores = [step for step in steps
                             if "actions/cache/restore@" in step and field(step, "id") != "git-cache"]
                 if lane == "provider":
-                    self.assertEqual(len(restores), 1)
-                    self.assertEqual(field(restores[0], "id"), "mimo-audio-cache")
-                    self.assertIn("mimo-audio-source-v2-", restores[0])
-                    self.assertGreater(steps.index(restores[0]), steps.index(builds[0]))
+                    # The verified MiMo metadata downloads, then the audio codec.
+                    self.assertEqual([field(step, "id") for step in restores], ["mimo-metadata-cache", "mimo-audio-cache"])
+                    self.assertIn("mimo-metadata-v1-", restores[0])
+                    self.assertIn("mimo-audio-source-v2-", restores[1])
+                    for restore in restores:
+                        self.assertGreater(steps.index(restore), steps.index(builds[0]))
                 else:
                     self.assertEqual(restores, [])
                 self.assertNotIn("spm-v3-", self.jobs[job_id])
@@ -466,7 +468,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         upload = next(step for step in steps if field(step, "name", indent=6) == "Upload provider test diagnostics")
         self.assertEqual(field(upload, "if"), "${{ !cancelled() && steps.provider-unit-tests.outcome != 'skipped' }}")
         self.assertEqual(field(upload, "uses"), "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1")
-        self.assertEqual(field(upload, "path", indent=10), "${{ runner.temp }}/provider-test-diagnostics")
+        self.assertIn("          path: |\n            ${{ runner.temp }}/provider-test-diagnostics\n"
+                      "            ${{ runner.temp }}/provider-unit-shard/slot-*.out\n", upload)
         self.assertEqual(field(upload, "retention-days", indent=10), "7")
         self.assertNotIn("continue-on-error:", self.jobs["test-provider"])
 

@@ -30,7 +30,8 @@ PROVIDER = (
     "scripts/run-exclusive-native-gpu-test.sh", "scripts/provider-test-shards.py",
     "scripts/provider-test-shard-weights.json",
     "scripts/cluster-test-plan.py", "scripts/cluster-stage-content-inventory.py",
-    "scripts/prepare-mimo-*-fixtures.py", "scripts/verify-*-prompt-parity.sh",
+    "scripts/prepare-mimo-*-fixtures.py", "scripts/verified_download_cache.py",
+    "scripts/verify-*-prompt-parity.sh",
     "scripts/prepare-prompt-fixtures.py", "scripts/test-prepare-prompt-fixtures.py",
     "scripts/verify-prompt-parity.sh", "scripts/test-qwen4-packaged-resources.py",
     "scripts/test-profile-inventory-auth.py", "scripts/test-desktop-api.py", "scripts/install.sh",
@@ -90,7 +91,7 @@ CLUSTER = (
 # 1.87 GB pinned audio codec: the MiMo, audio and media provider code, the MiMo
 # tests, the MLX pins, the fixture scripts (the audio one runs the provider
 # fixture generator with --audio-source) and the gate's recipe. Every one is
-# also a provider input. Default-branch pushes run the gate regardless.
+# also a provider input. Pushes to master and dev run the gate regardless.
 MIMO_AUDIO = (
     "provider-swift/Package.swift", "provider-swift/Package.resolved",
     "provider-swift/Sources/*MiMo*", "provider-swift/Sources/*Audio*", "provider-swift/Sources/*Media*",
@@ -159,9 +160,11 @@ def main():
     args = parser.parse_args()
     event = json.loads(Path(args.event_path).read_text())
     paths = changed_paths(args.event_name, event)
-    # Default-branch pushes retain full coverage after validating the diff.
+    # Pushes to master and dev retain full coverage after validating the diff.
+    # CI (dev) cancels a waiting push run when a newer push comes, so a dev
+    # push run covers every push since the last run, not only its own diff.
     full = paths is None or (args.event_name == "push" and event.get("ref") in
-                             ("refs/heads/master", "refs/heads/main"))
+                             ("refs/heads/master", "refs/heads/main", "refs/heads/dev"))
     selected = dict.fromkeys(COMPONENTS, True) if full else classify(paths)
     # Pushes keep the cluster jobs wherever they run the provider lanes.
     if args.event_name == "push":

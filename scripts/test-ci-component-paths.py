@@ -78,6 +78,7 @@ class ComponentPathsTests(unittest.TestCase):
             "scripts/run-paged-kernel-tests.sh": {"provider", "sdk"},
             "scripts/run-provider-tests.sh": {"provider"},
             "scripts/provider-ci-cold-retry.sh": {"provider", "sdk", "cluster"},
+            "scripts/verified_download_cache.py": {"provider"},
             "scripts/provider-test-shards.py": {"provider"},
             "scripts/cluster-test-plan.py": {"provider", "cluster"},
             "coordinator/store/postgres/users.go": set(),
@@ -241,7 +242,7 @@ class GitDiffTests(unittest.TestCase):
         provider_only = self.commit()
         self.assertEqual(self.pr(head, provider_only),
                          {"provider": True, "sdk": False, "cluster": False, "mimo_audio": False})
-        self.assertEqual(self.run_detector("push", {"before": head, "after": provider_only, "ref": "refs/heads/dev"}),
+        self.assertEqual(self.run_detector("push", {"before": head, "after": provider_only, "ref": "refs/heads/topic"}),
                          {"provider": True, "sdk": False, "cluster": True, "mimo_audio": False})
         self.write("libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/New.swift")
         cluster = self.commit()
@@ -251,7 +252,9 @@ class GitDiffTests(unittest.TestCase):
         self.write("provider-swift/Tests/ProviderCoreTests/MiMo/MiMoV26ManagedAudioProviderTests.swift")
         audio = self.commit()
         self.assertEqual(self.pr(cluster, audio), {"provider": True, "sdk": False, "cluster": False, "mimo_audio": True})
-        for ref in ("refs/heads/master", "refs/heads/main"):
+        # Pushes to master and dev run every component: a dev push run also
+        # stands in for the pushes whose waiting runs CI (dev) cancelled.
+        for ref in ("refs/heads/master", "refs/heads/main", "refs/heads/dev"):
             self.assertTrue(all(self.run_detector("push", {**event, "ref": ref}).values()))
         self.assertTrue(all(self.run_detector("push", {**event, "before": "0" * 40}).values()))
         self.assertTrue(all(self.run_detector("workflow_dispatch", {}).values()))

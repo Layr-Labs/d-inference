@@ -12,7 +12,7 @@ extension Cluster {
                 the Mac that follows, the leading Mac is asked over the cable. Nothing is started or changed.
 
                 Exit status: 0 serving; 3 not serving yet (loading, or a reason); 4 stopped; 5 the other Mac isn't \
-                answering; 6 this Mac isn't in a cluster. --json prints the same as one JSON object with the same exit \
+                answering; 6 this Mac isn't in a cluster; 7 this Mac's pairing record couldn't be read. --json prints the same as one JSON object with the same exit \
                 status. --details prints the saved setup and the leading Mac's session for support, as earlier \
                 versions printed by default (with --json, that report).
                 """)

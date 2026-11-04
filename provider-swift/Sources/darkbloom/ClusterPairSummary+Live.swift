@@ -20,6 +20,10 @@ extension ClusterPairSummary {
         readerForTesting ?? processReaderForTesting
     }
 
+    /// False while a test gives the commands a pair: then nothing of this Mac's own cluster is read (also
+    /// `darkbloom status`'s cluster service lines).
+    static var readsThisMacsCluster: Bool { testReader == nil }
+
     /// What this Mac knows by itself, without asking the other Mac: the pairing, the leader's saved choice (model,
     /// split, how it serves, started or stopped), this Mac's cluster service and its own view of its part.
     static func local() -> ClusterPairSummary {
@@ -37,7 +41,7 @@ extension ClusterPairSummary {
     /// The provider pid of the cluster's running part on this Mac, which writes the same daemon state as single-Mac
     /// serving (`ServiceDrain.soloProviderState`). Nil while a test gives the pair.
     static func runningPartPID() -> Int32? {
-        guard testReader == nil else { return nil }
+        guard readsThisMacsCluster else { return nil }
         return ClusterService.publishedLive().flatMap { $0.child.running ? $0.child.pid : nil }
     }
 
@@ -137,7 +141,7 @@ extension ClusterPairSummary {
 
     /// Whether the cluster service of this Mac started this process (its solo part, `start --local`, serving alone).
     static func startedByClusterService(parent: Int32 = getppid()) -> Bool {
-        guard testReader == nil, ClusterService.running(), let file = try? ClusterService.paths().pid,
+        guard readsThisMacsCluster, ClusterService.running(), let file = try? ClusterService.paths().pid,
               let text = try? String(contentsOf: file, encoding: .utf8) else { return false }
         return Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)) == parent
     }

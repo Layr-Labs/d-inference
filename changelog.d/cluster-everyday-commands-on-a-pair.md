@@ -10,8 +10,10 @@
 - `darkbloom cluster status` now answers in plain words: who leads, the model and how it is split, whether it serves
   through Darkbloom or locally, whether it serves now and if not why (the same reasons `darkbloom cluster` shows), and
   what to do. `--json` gives the same for scripts and agents, and the exit status says it too (0 serving, 3 not
-  serving yet, 4 stopped, 5 the other Mac isn't answering, 6 not in a cluster). The earlier detailed report is
-  `--details`.
+  serving yet, 4 stopped, 5 the other Mac isn't answering, 6 not in a cluster, 7 this Mac's pairing record can't be
+  read). The earlier detailed report is `--details`.
+- A Mac whose pairing record can't be read is never reported as "not in a cluster": the commands say the record
+  couldn't be read and how to check it (`darkbloom cluster`), and `darkbloom start` and `restart` need `--solo` there.
 - `darkbloom cluster --help` lists the other cluster commands and what each is for.
 - `darkbloom cluster link --remove` on a paired Mac warns first that it undoes the working cable setup and stops the
   cluster on both Macs, and asks once (`--yes` for scripts).

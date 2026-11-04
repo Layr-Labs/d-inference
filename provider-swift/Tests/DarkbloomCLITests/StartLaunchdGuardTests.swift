@@ -52,6 +52,7 @@ private func exitIsolated(_ body: () async throws -> Void) async throws -> Never
     let home = FileManager.default.temporaryDirectory
         .appendingPathComponent("start-launchd-home-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+    keepCommandsOffThisMacsCluster()
     let code: Int32
     do {
         defer { try? FileManager.default.removeItem(at: home) }

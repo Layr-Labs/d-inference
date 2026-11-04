@@ -221,6 +221,16 @@ cluster service's solo part) and launchd's `--foreground` child are never asked,
 and a replacement drains only the provider service's process, never the
 cluster's part (`Start.pairGuard`, `ServiceDrain.soloProviderState`).
 
+A Mac whose pairing record can't be read is never taken for "not in a cluster"
+(as `ClusterService.holdsNoPairing`): `start` and `restart` refuse without
+`--solo` whether or not the cluster service runs, and say why
+(`ClusterPairSummary.membership`):
+
+```text
+This Mac's pairing record couldn't be read (pairings.json is malformed; nothing is trusted from it), so it may be in a two-Mac cluster.
+Single-Mac serving next to a cluster would compete for this Mac's memory. To serve on this Mac alone, run `darkbloom cluster` on this Mac to check the pairing first, or pass --solo.
+```
+
 Exit 1 (`ExitCode.failure`) when `--local` and `--local-endpoint` are combined,
 a debugger is attached, RAM is below 8 GB, Metal is unavailable, hardware
 detection fails, no model is selected, or the local server does not bind within
@@ -639,6 +649,16 @@ Next: Leave both Macs running: Darkbloom retries by itself. Or serve locally onl
 | `4` | `stopped` | Stopped (Stop in `darkbloom cluster`, or `darkbloom cluster stop`) |
 | `5` | `other_mac_away` | The other Mac isn't answering over the cable (its cluster service is off, it sleeps, or waits for a login) |
 | `6` | `not_paired` | This Mac isn't in a cluster |
+| `7` | `pairing_unreadable` | This Mac's pairing record couldn't be read, so it may be in a cluster; `reason` says why when known |
+
+When the pairing record can't be read, the plain output is the reason and what
+to do, and `--json` gives `paired`, `role`, `other_mac`, `model` and `serves` as
+`null`:
+
+```text
+This Mac's pairing record couldn't be read (pairings.json is malformed; nothing is trusted from it), so it may be in a two-Mac cluster.
+Next: Run `darkbloom cluster` on this Mac to check it.
+```
 
 `--json` prints one object with the same exit status. Schema 1; every key is
 present, `null` when unknown; keys are only ever added
@@ -647,7 +667,7 @@ present, `null` when unknown; keys are only ever added
 | Key | Type | Value |
 |---|---|---|
 | `schema` | integer | `1` |
-| `paired` | bool | This Mac holds a pairing, or its cluster service runs or starts at login |
+| `paired` | bool? | This Mac holds a pairing, or its cluster service runs or starts at login; `null` when its pairing record couldn't be read |
 | `role` | string? | `leader` or `member` |
 | `this_mac` | string? | This Mac's own name (System Settings) |
 | `other_mac` | object? | `name` (its hardware, as pairing showed it), `answers` (bool, `null` when not asked) |
@@ -655,7 +675,7 @@ present, `null` when unknown; keys are only ever added
 | `mode` | string? | `tensor parallel`, `pipeline`, `pipeline with speculative decoding`, … (`ClusterOnboardingDeployment.modeWords`) |
 | `split` | string? | Each Mac's share, such as `M3 Ultra 40 layers / M5 Ultra 24 layers` |
 | `serves` | string? | `darkbloom` or `local` |
-| `state` | string | `serving`, `loading`, `not_serving`, `stopped`, `other_mac_away`, `not_paired`, `unknown` |
+| `state` | string | `serving`, `loading`, `not_serving`, `stopped`, `other_mac_away`, `not_paired`, `unknown`, `pairing_unreadable` |
 | `reason` | string? | Why it does not serve, in the screens' words |
 | `next` | string? | What to do, in commands |
 | `lines` | [string] | The status lines `darkbloom cluster` shows |
@@ -2309,7 +2329,7 @@ qualification or performance. Sources:
 | `64` | swift-argument-parser validation error (unknown flag, missing positional, `fan configure` with no option) |
 | `130` | `darkbloom sandbox setup` stopped with Ctrl-C while the add-on installer ran |
 | `2`, `3`, `4`, other | `darkbloom sandbox setup` exits with a failing add-on installer's own status ([what each means](#installer-progress-events)); `sandbox logs` and `sandbox uninstall` with `tail`'s or the add-on's |
-| `3`, `4`, `5`, `6` | `darkbloom cluster status`: not serving yet, stopped, the other Mac isn't answering, not in a cluster ([`darkbloom cluster status`](#darkbloom-cluster-status)) |
+| `3`, `4`, `5`, `6`, `7` | `darkbloom cluster status`: not serving yet, stopped, the other Mac isn't answering, not in a cluster, this Mac's pairing record couldn't be read ([`darkbloom cluster status`](#darkbloom-cluster-status)) |
 
 ## Paths and identifiers
 

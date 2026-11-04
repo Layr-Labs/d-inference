@@ -6,6 +6,7 @@ extension Status {
     /// now, and its supervisor's phase (review finding 12). Empty on a Mac that
     /// is not part of a cluster.
     static func clusterServiceLines() -> [String] {
+        guard ClusterPairSummary.readsThisMacsCluster else { return [] }
         let now = Date().timeIntervalSince1970
         let directory = try? ClusterService.paths().lock.deletingLastPathComponent()
         let supervisor = directory.flatMap {
@@ -21,7 +22,7 @@ extension Status {
     /// No running provider (no state, or a stale one): on a Mac in a cluster single-Mac serving is off, which
     /// `darkbloom start` would not fix. `unsure`: its pairing record couldn't be read.
     static func daemonNotRunningLine(paired: Bool, unsure: Bool = false, staleStateFile: Bool = false) -> String {
-        if paired { return ClusterPairSummary.singleMacServingOffLine }
+        if paired { return unsure ? ClusterPairSummary.singleMacServingOffUnsureLine : ClusterPairSummary.singleMacServingOffLine }
         return staleStateFile ? "Daemon: not running (stale state file)" : "Daemon: not running (run `\(BuildEnvironment.current.cliName) start`)"
     }
 

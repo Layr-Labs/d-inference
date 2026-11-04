@@ -3876,6 +3876,26 @@ away; mixed pairs are first-class).
   assistant guard).
 - **Default:** the fastest measured family, else the planner's
   (`ClusterOnboardingMode.defaultIndex`).
+- **Local Network truth:** the follower the service runs is the process that
+  dials the other Mac, so its last dial decides (`ClusterService.followerRefusal`:
+  the refusal macOS gave it, or a link it opened since, or a dial that failed
+  another way since). A running follower publishes that refusal as its
+  `lastError` (`runningPartRefusal`: only a link follower's log is read, and only
+  once it grew), and an ended part's reason reads the same last dial
+  (`ClusterService.lastError`), so a stop after a link opened is a clean stop.
+  Only a running follower's refusal blocks: the service's Local Network state
+  (`ClusterLocalNetworkAccess.state`), whatever the probe's broadcast found, and
+  the leading Mac's wait (`OnboardingLive.otherMacRefused`), which ends on it once
+  its own part, which hosts the listener the follower dials, has run
+  `refusalSettleSeconds` (the follower redials at most about 1.25 s apart and
+  logs only a change, so a setting just turned on clears first;
+  `refusalIsCurrent`). The ✗ is worded for the screen that shows it
+  (`OnboardingLive.localNetworkLine`): a wait the joining Mac forwarded names
+  that Mac.
+- **The person's family:** `useMode` keeps the chosen family for every model
+  (`OnboardingLive.keptFamily`), never inferred from the listing's order, which
+  says nothing of the plan; `localAdopt` plans again in it only when the listed
+  plan's mode isn't in it (`OnboardingLive.replansInFamily`).
 - **The scope a plan is for:** `chooseAndServe` names the scope before it plans
   the list (`ClusterOnboardingOperations.planScope`, `OnboardingLive.usePlanningScope`,
   carried in `ClusterControlRequest.scope`); a start whose scope changes before

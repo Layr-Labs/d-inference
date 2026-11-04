@@ -996,6 +996,42 @@ Mac's service restarts its worker without reporting it, so its line says what
 can't be read from here instead of "running, no error". In the DevNet app, the
 screens and `status` name its own command (`darkbloom-dev …`).
 
+The mode chosen at "How should both Macs split <model>?" is the one that loads,
+for every model that runs both ways (GLM-5.3-Flash included). Which Mac's
+worker keeps ending is read from the leading Mac's incident log: a
+`worker_crashed` carrying this Mac's own worker-exit record
+(`worker-exit-v1 rank=<this Mac's rank>`) names this Mac, and one carrying what
+the other Mac's link follower said (`rank <its rank> follower said: …`) names
+the other Mac's side, as above. When neither (or both) is recorded, when that
+log is missing or can't be read, or on the Mac that doesn't lead, the ✗ says it
+can't tell which side closed the link and blames neither. When the
+other Mac can't dial because macOS keeps it off the local network, the ✗ gives
+that reason instead of "make sure it is on". A planned switch's stops (a part
+that stopped, or ended with exit 0 and no reason) aren't shown as ends, also
+while both Macs register with Darkbloom.
+
+macOS's Local Network privacy can keep a Mac's link follower, the process that
+dials the other Mac, off the cable even when the cluster service's own check
+passed. The follower's own refusal decides:
+- the joining Mac's window says "This Mac can't reach the other Mac over the
+  cable: macOS keeps Darkbloom off the local network" and what to do there:
+  System Settings → Privacy & Security → Local Network → turn on "Darkbloom"
+  (or "Darkbloom Dev"); on a Mac with no display, through Screen Sharing;
+- the leading Mac's ✗ says the same of the other Mac without waiting for the
+  start to give up, once the leading Mac's part has run about 20 seconds (long
+  enough for the follower to dial it again, so a setting just turned on shows
+  first); a start run from the joining Mac's own window says it of that Mac;
+- once the follower has connected, or a later dial failed another way, an
+  earlier refusal no longer counts, and a part that has stopped counts as not
+  blocked until its new follower dials;
+- `darkbloom start` ends its wait with the same instruction, and says first
+  when it replaces a cluster service running from a terminal session with the
+  login agent.
+
+Retry in the ✗ starts a stopped pair again, and q, Esc or Ctrl-C leave a
+start's wait at once. While it waits, the joining Mac's window shows each state
+of the leading Mac's start, and where to choose Retry when a part keeps ending.
+
 - **No macOS prompt can be shown** (for example with no one logged in to the desktop):
   the check writes the exact commands the prompt would run to an owner-only
   script, and the setup runs it with `sudo` in the same terminal (type this

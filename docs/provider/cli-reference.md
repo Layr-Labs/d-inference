@@ -262,6 +262,13 @@ service's solo part) and launchd's `--foreground` child are never redirected,
 and a replacement drains only the provider service's process, never the
 cluster's part (`ServiceDrain.soloProviderState`).
 
+On a paired Mac, `darkbloom start` says first when it replaces a cluster service
+running from a terminal session with the login agent. When macOS's Local Network
+setting keeps this Mac's link follower off the cable, it ends its wait at once
+with where to turn it on (System Settings → Privacy & Security → Local Network →
+"Darkbloom", or "Darkbloom Dev"; through Screen Sharing on a Mac with no
+display), and exits 1.
+
 Options on a paired Mac (`Start.singleMacOptions`, `ClusterPairSummary.singleMacOptionsRefusal`):
 
 | Options | Without `--solo` on a paired Mac |
@@ -2861,7 +2868,11 @@ The `cluster` setup installs its background service with the enclosing app's
 Local Network identity. A signed app keeps serving after the setup terminal
 closes. A development fallback names its session lifetime limitation on screen;
 keep that Terminal or SSH session open. See [cluster service
-permissions](cluster-always-on.md#permissions-asked-once).
+permissions](cluster-always-on.md#permissions-asked-once). When macOS keeps a
+Mac's link follower off the local network, its log says `this process may not
+reach the local network: macOS refused the dial before the cable was tried…`,
+and the leading Mac's ✗ gives that as the other Mac's reason instead of asking
+whether it is on.
 
 ## GPT-OSS native pair batch qualification
 

@@ -26,13 +26,10 @@ extension UpdateRecoveryStore {
             to: copied.bundle)
 
         try verifySignature(bundle: copied.bundle, binary: copied.binary)
-        let release = InstalledReleaseRecord(
+        let release = try releaseRecord(
+            ofAppIn: nextRoot,
             version: version,
             releaseBundleHash: releaseBundleHash,
-            installedBundleHash: try UpdateAtomicFilesystem.treeHash(root: copied.bundle),
-            binaryHash: try UpdateAtomicFilesystem.sha256(file: copied.binary),
-            enclaveHash: try UpdateAtomicFilesystem.sha256(file: copied.enclave),
-            metallibHash: try UpdateAtomicFilesystem.sha256(file: copied.metallib),
             installGeneration: installGeneration,
             installedAt: stateInstallDateFallback(now)
         )
@@ -79,14 +76,10 @@ extension UpdateRecoveryStore {
     /// The installed app recorded as the updater records an install it made, as release `version`.
     func installedAppRecord(version: String, generation: UInt64, now: Double) throws -> InstalledReleaseRecord {
         try requireLiveApp()
-        let paths = artifactPaths(root: installRoot)
-        return InstalledReleaseRecord(
+        return try releaseRecord(
+            ofAppIn: installRoot,
             version: version,
             releaseBundleHash: nil,
-            installedBundleHash: try UpdateAtomicFilesystem.treeHash(root: paths.bundle),
-            binaryHash: try UpdateAtomicFilesystem.sha256(file: paths.binary),
-            enclaveHash: try UpdateAtomicFilesystem.sha256(file: paths.enclave),
-            metallibHash: try UpdateAtomicFilesystem.sha256(file: paths.metallib),
             installGeneration: generation,
             installedAt: stateInstallDateFallback(now)
         )
@@ -107,14 +100,10 @@ extension UpdateRecoveryStore {
         generation: UInt64,
         now: Double
     ) throws -> InstalledReleaseRecord {
-        let paths = artifactPaths(root: staged.extractedApp.deletingLastPathComponent())
-        return InstalledReleaseRecord(
+        try releaseRecord(
+            ofAppIn: staged.extractedApp.deletingLastPathComponent(),
             version: staged.release.version,
             releaseBundleHash: staged.release.bundleHash,
-            installedBundleHash: try UpdateAtomicFilesystem.treeHash(root: paths.bundle),
-            binaryHash: try UpdateAtomicFilesystem.sha256(file: paths.binary),
-            enclaveHash: try UpdateAtomicFilesystem.sha256(file: paths.enclave),
-            metallibHash: try UpdateAtomicFilesystem.sha256(file: paths.metallib),
             installGeneration: generation,
             installedAt: now
         )
@@ -278,6 +267,28 @@ extension UpdateRecoveryStore {
         else {
             throw StoreError.missingLiveInstall
         }
+    }
+
+    /// The record of the app in `root`: the tree hash of the bundle and the hashes of the files
+    /// `stagingContainsTarget` and `verifyPredecessor` check.
+    private func releaseRecord(
+        ofAppIn root: URL,
+        version: String,
+        releaseBundleHash: String?,
+        installGeneration: UInt64,
+        installedAt: Double
+    ) throws -> InstalledReleaseRecord {
+        let paths = artifactPaths(root: root)
+        return InstalledReleaseRecord(
+            version: version,
+            releaseBundleHash: releaseBundleHash,
+            installedBundleHash: try UpdateAtomicFilesystem.treeHash(root: paths.bundle),
+            binaryHash: try UpdateAtomicFilesystem.sha256(file: paths.binary),
+            enclaveHash: try UpdateAtomicFilesystem.sha256(file: paths.enclave),
+            metallibHash: try UpdateAtomicFilesystem.sha256(file: paths.metallib),
+            installGeneration: installGeneration,
+            installedAt: installedAt
+        )
     }
 
     private func artifactPaths(

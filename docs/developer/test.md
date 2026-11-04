@@ -1137,12 +1137,13 @@ record (0.10.7 installed; the record says 0.9.22 installed, 0.10.6 pending, and
 a rollback copy recorded as 0.9.22 that is a 0.10.2 app) in a temporary install
 root, with apps whose `Info.plist` names their version; an in-process URL
 protocol answers the release check. It checks that the record is reconciled
-before the cluster service starts (nothing pending, no rollback copy), that the
-update slot finds the running release up to date and installs nothing, that
-three ends of the service never restore the copy, that a copy whose app names
-another release than its record is never restored, that an update over such an
-install records its copy as the release that app names, and that the normal
-install, promotion and rollback are unchanged.
+before the cluster service starts (nothing pending, no rollback copy) and that a
+reconcile that died part-way is finished at the next start; that the update slot
+finds the running release up to date and installs nothing; that three ends of
+the service never restore the copy; that a copy whose app names another release
+than its record is never restored; that an update over such an install keeps a
+copy of the installed app, recorded as the release that app names; and that the
+normal install, promotion and rollback are unchanged.
 `Tests/ClusterSupervisionChecks/run.sh` checks the progress rules
 (`ClusterPairUpdate.partnerState`) with plain `swiftc`.
 

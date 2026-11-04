@@ -779,9 +779,9 @@ or recovery holds the lease,
 no release is kept for rollback, the installed release is already that
 release, the installed `Darkbloom.app` is not the recorded release, or the kept
 release fails its hash or signature check (`RollbackRefusal`). On a
-`darkbloom cluster` Mac whose app was installed outside the updater, the cluster
-service removed the kept release at its next start, so no release is kept until
-the next update
+`darkbloom cluster` Mac whose app an install outside the updater changed, the
+cluster service removed the kept release at its next start, so no release is
+kept until the next update
 ([an install outside the updater](./cluster-always-on.md#an-install-outside-the-updater)). A refusal at
 the swap, after the drain, restarts the drained provider on the installed
 release; when another provider took the instance lock during the drain, it is

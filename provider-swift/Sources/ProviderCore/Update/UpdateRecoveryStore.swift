@@ -325,13 +325,14 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         return predecessor.release.version
     }
 
-    /// The record must name the installed app as the installed release, and the rollback copy as the release its app
-    /// is signed as. An install outside the updater (`install.sh`, a copied app) leaves it naming another release:
-    /// then the installed app, as the release its `Info.plist` names (else `runningVersion`), becomes the installed
-    /// release, and the pending release and the rollback copy go. A pair forms only between Macs on the same build
-    /// (`ClusterConfiguration.peerBuildDiffers`), and that copy was kept for an install that is gone, so no other Mac
-    /// keeps it to follow a rollback to it. A copy signed as another release than its record goes too. Nothing is rolled
-    /// back until the next update keeps a copy of the installed release. Nil when the record already matched.
+    /// The record's installed release (the pending candidate, else `current`) must be the installed app: the hashes
+    /// the updater recorded, and the version its signed `Info.plist` names when it names one. An install outside the
+    /// updater (`install.sh`, a copied app) breaks that: the installed app becomes `current`, as the release its
+    /// `Info.plist` names (else `runningVersion`), and the pending release and the rollback copy go. A pair forms only
+    /// between Macs on the same build (`ClusterConfiguration.peerBuildDiffers`), and that copy was kept for an install
+    /// that is gone, so no other Mac keeps it to follow a rollback to it. A copy whose app names another release than
+    /// its record goes too. Nothing is rolled back until the next update keeps a copy of the installed release. Nil when
+    /// the record already matched.
     func reconcileWithInstalledApp(runningVersion: String, now: Double) throws -> UpdateRecoveryReconciliation? {
         var state = try loadState()
         if let recorded = state.candidate?.release ?? state.current {
@@ -343,12 +344,11 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         guard let copy = state.predecessor, let signed = try signedVersion(ofApp: resolvedRecoveryPath(copy.bundlePath)),
               signed != copy.release.version
         else { return nil }
-        state.predecessor = nil
-        try writeState(state)
-        try removeRollbackCopy()
+        try discardRollbackCopy(in: &state)
         return .rollbackCopyIsAnotherRelease(recordedAs: copy.release.version, signed: signed)
     }
 
+    /// The installed app becomes `current`, as release `version`; the pending release and the rollback copy go.
     private func recordInstalledApp(as version: String, in state: inout UpdateRecoveryState,
                                     now: Double) throws -> UpdateRecoveryReconciliation {
         let (generation, overflow) = state.installGeneration.addingReportingOverflow(1)
@@ -360,17 +360,21 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             installed: version, recorded: state.current?.version, pending: state.candidate?.release.version,
             removedCopy: state.predecessor?.release.version)
         state.candidate = nil
-        // The record stops naming the copy before its tree goes (`loadState` refuses a record that names a missing
-        // copy), and names the installed app last: a death in between leaves the same mismatch for the next reconcile.
-        if state.predecessor != nil {
-            state.predecessor = nil
-            try writeState(state)
-            try removeRollbackCopy()
-        }
+        try discardRollbackCopy(in: &state)
+        // Named last: a death before this write leaves the same mismatch for the next reconcile to finish.
         state.installGeneration = generation
         state.current = installed
         try writeState(state)
         return change
+    }
+
+    /// The record stops naming the rollback copy before its tree goes (`removeRollbackCopy`): `loadState` refuses a
+    /// record that names a missing copy, and a death in between leaves the copy's manifest naming it again.
+    private func discardRollbackCopy(in state: inout UpdateRecoveryState) throws {
+        guard state.predecessor != nil else { return }
+        state.predecessor = nil
+        try writeState(state)
+        try removeRollbackCopy()
     }
 
     func verifyPredecessor(_ predecessor: VerifiedPredecessor) throws {
@@ -438,9 +442,9 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         return try snapshotInstalledApp(state: &state, currentVersion: currentVersion, now: now)
     }
 
-    /// Keeps a copy of the installed app for rollback, recorded as the release its app is signed as. A record naming
-    /// another release describes an install that one outside the updater replaced: it labels neither the copy nor the
-    /// installed release.
+    /// Keeps a copy of the installed app for rollback, recorded as the release its app is signed as. `current` lends the
+    /// copy its version, release hash and install generation only when it names that release (or the app names none);
+    /// otherwise it describes an app replaced outside the updater, and the copy's record becomes `current` instead.
     private func snapshotInstalledApp(
         state: inout UpdateRecoveryState,
         currentVersion: String,

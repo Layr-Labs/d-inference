@@ -80,14 +80,14 @@ func checkMemoryFit(golden: URL, _ checks: PlacementChecks) throws {
         } == true)
 
     // (c) Qwen3.8 27B's tensor-parallel share on the 128 GB member, 2026-11-03 (49.08 GiB, the worker's own refusal):
-    // 0.17 GiB free, the rest in file cache and about 53 GB of applications. At normal pressure the gate counts the
-    // cache and admits the share, so the plan says it fits now. The refusal was the gate's compression limit at normal
-    // pressure: the part start had read the model into the file cache, the load took memory from it page by page
-    // while applications were compressed, and 515 MiB compressed since the load's first check (limit 512 MiB)
-    // withdrew the cache. No plan's sample can foresee that; dropping the model's cache before the load is the remedy.
-    // Separately, above normal pressure the gate counts no cache at all, so the plan must not call that cache room.
+    // 0.17 GiB free, as the refusal reported. At normal pressure the gate counts the file cache and admits the share,
+    // so the plan says it fits now. The refusal was the gate's compression limit at normal pressure: the part start
+    // had read the model into the file cache, the load took memory from it page by page while applications were
+    // compressed, and 515 MiB compressed since the load's first check (limit 512 MiB) withdrew the cache. No plan's
+    // sample can foresee that; dropping the model's cache before the load is the remedy. Separately, above normal
+    // pressure the gate counts no cache at all, so the plan must not call the cache the kernel would give room.
     let share = Int((49.08 * Double(gib)).rounded(.up))
-    var member = SyntheticMac(physicalGiB: 128, freeGiB: 0.17, inactiveCacheGiB: 40, activeCacheGiB: 21, wiredGiB: 11.6, compressorGiB: 6.2)
+    var member = SyntheticMac(physicalGiB: 128, freeGiB: 0.17, inactiveCacheGiB: 70, activeCacheGiB: 25, wiredGiB: 7.7, compressorGiB: 6.2)
     let normal = ClusterDeviceMemory.gate(member.observation, now: SyntheticMac.now)
     checks.require("memory fit (c): at normal pressure the member's gate admits the 49.08 GiB share on its file cache, and the plan says it fits now",
         normal.admits(share) && normal.fit(share) == .now)

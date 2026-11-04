@@ -35,9 +35,19 @@ extension ClusterPairSummary {
     /// follows comes from the leading Mac over the cable.
     /// `slow` hears when the leading Mac's answer is slow (`boundedStatus`).
     static func live(config: String?, slow: ClusterPairCommands.Say? = nil) async -> ClusterPairSummary {
+        liveReadForTesting?(true)
         if let reader = testReader { return reader(true) }
         let noticeAfter = ClusterPairCommands.progressDelay
         return await Task.detached { liveFacts(config: config, slow: slow, noticeAfter: noticeAfter) }.value
+    }
+
+    /// Tests see each `live` read: whether it asks for the bounded wait (`statusLines`).
+    @TaskLocal static var liveReadForTesting: (@Sendable (_ bounded: Bool) -> Void)?
+
+    /// The status lines `live` reads (`boundedStatus`).
+    static func statusLines(leads: Bool, slow: ClusterPairCommands.Say?, within seconds: Double = leaderAnswerSeconds,
+                            noticeAfter: Double, _ status: @escaping @Sendable () -> [String]) -> [String]? {
+        boundedStatus(within: seconds, noticeAfter: noticeAfter, slow: slow, status)
     }
 
     /// How long `cluster status` and `status` wait for the leading Mac's answer on the Mac that follows. The forward

@@ -1544,3 +1544,45 @@ struct ClusterPairTwoFindingsTests {
         #expect(quiet.all.isEmpty)
     }
 }
+
+@Suite("Review closures: the bounded wait only for a person's status on the Mac that follows")
+struct ClusterBoundedWaitScopeTests {
+    @Test("the leading Mac's status and a script start's looks wait as long as the answer takes, and say nothing")
+    func onlyAFollowersStatusIsBounded() {
+        let leader = SaidLines()
+        let own = ClusterPairSummary.statusLines(leads: true, slow: { leader.add($0) }, within: 1, noticeAfter: 0.05) {
+            Thread.sleep(forTimeInterval: 1.3); return ["Serving"]
+        }
+        #expect(own == ["Serving"], "the leading Mac's own status is never cut short")
+        #expect(leader.all.isEmpty, "\(leader.all)")
+        let looks = ClusterPairSummary.statusLines(leads: false, slow: nil, within: 1, noticeAfter: 0.05) {
+            Thread.sleep(forTimeInterval: 1.3); return ["Loading"]
+        }
+        #expect(looks == ["Loading"], "a script start's look is never cut short")
+        let follower = SaidLines()
+        let late = ClusterPairSummary.statusLines(leads: false, slow: { follower.add($0) }, within: 1, noticeAfter: 0.05) {
+            Thread.sleep(forTimeInterval: 1.3); return ["late"]
+        }
+        #expect(late == nil)
+        #expect(follower.all == ["  Waiting for the leading Mac's answer (up to 1 s).",
+                                 "  The leading Mac didn't answer in 1 s; this is this Mac's own view."])
+    }
+
+    @Test("a script start's looks never ask for the bounded wait; cluster status does")
+    func scriptStartNeverAsksForTheBoundedWait() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await exitWithPair(servingPair(), actions: pairActions()) { _ in
+                try await ClusterPairSummary.$liveReadForTesting.withValue({ print("live read: " + ($0 ? "bounded" : "unbounded")) }) {
+                    try await runCLICommand(Start.self, ["start"])
+                    print("-- cluster status --")
+                    try await runCLICommand(Cluster.Status.self, ["cluster", "status"])
+                }
+            }
+        }
+        let out = text(result?.standardOutputContent).components(separatedBy: "-- cluster status --")
+        #expect(out.count == 2, "\(out)")
+        let start = out.first ?? "", status = out.last ?? ""
+        #expect(start.contains("live read: unbounded") && !start.contains("live read: bounded"), "\(start)")
+        #expect(status.contains("live read: bounded") && !status.contains("live read: unbounded"), "\(status)")
+    }
+}

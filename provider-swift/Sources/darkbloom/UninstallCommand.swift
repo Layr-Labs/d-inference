@@ -18,7 +18,7 @@ struct Uninstall: AsyncParsableCommand {
             models folder you chose, and the cluster model store beside it, are never deleted, even inside \
             Darkbloom's own folder; nor are Keychain keys. Run it as yourself, not with sudo. With both the \
             production and the DevNet app on this Mac, the pairing, cluster setup and cable port setup stay for the \
-            other one.
+            other one, and only this install's own cluster service is removed.
             """)
 
     @Flag(help: "Remove everything: the app, settings, pairing, logs and all models.")

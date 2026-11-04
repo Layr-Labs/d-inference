@@ -125,6 +125,10 @@ public struct ProviderUninstallItem: Codable, Sendable, Equatable {
     var keepingWhat = ""
     /// The other install whose cluster state this item keeps: the pairing and the cable port setup stay with it.
     var sharedWith: String?
+    /// This install's own cluster service agent (`ClusterServiceAgentPlan.label` of its app), and its file when
+    /// installed. Beside another install, step 2 removes only this one.
+    var ownClusterAgent: String?
+    var ownClusterAgentPlist: String?
     /// Kept although it lies inside one of Darkbloom's folders, because the person chose it for models.
     var keptInDarkbloomFolder = false
 
@@ -236,6 +240,9 @@ extension ProviderUninstall {
     static let chosenStoreLabel = "Cluster model store beside the folder you chose"
     static let clusterStoreLabel = "Cluster model store"
     static let chosenInsideReason = "you chose this folder for models, so it stays, with the folders that lead to it"
+    static let chosenWhat = "the models you chose"
+    static let chosenFolderIsItReason = "it is the models folder you chose, which is never deleted"
+    static let chosenFolderHoldsItReason = "it is inside the models folder you chose, which is never deleted"
     static let chosenStoreInsideReason = "it holds the cluster's copies of the models you chose, so it stays too"
 
     /// Everything `--everything` would delete or keep, in deletion order: the install folder (with the app this
@@ -266,7 +273,7 @@ extension ProviderUninstall {
             guard var kept = item(label, folder, paths: paths, keep: inside ? insideReason : "outside Darkbloom's folders") else { continue }
             kept.keptInDarkbloomFolder = inside
             items.append(kept)
-            protected.append((folder.path, "the models you chose"))
+            protected.append((folder.path, chosenWhat))
         }
         add("Settings", paths.configDirectory)
         add("Encrypted prompt caches", paths.cacheDirectory)
@@ -280,21 +287,38 @@ extension ProviderUninstall {
             var shared = ProviderUninstallItem(label: sharedClusterLabel,
                                                path: paths.home.appendingPathComponent(".darkbloom/cluster*").path,
                                                bytes: files.reduce(0) { $0 + measure($1).bytes }, verdict: .keep,
-                                               reason: "\(installName(other)) on this Mac also uses them. "
-                                                   + "Run `\(other.cliName) uninstall` there to remove them")
+                                               reason: "\(installName(other)) on this Mac also uses them; the pair and its "
+                                                   + "cluster service are left as they are. Run `\(other.cliName) uninstall` there to remove them")
             shared.keptInDarkbloomFolder = true
             shared.sharedWith = installName(other)
+            let ownAgent = ClusterServiceAgentPlan.label(executablePath: paths.installDirectory
+                .appendingPathComponent("\(paths.appBundleName)/Contents/MacOS/\(paths.commandLink.lastPathComponent)").path)
+            let ownPlist = paths.home.appendingPathComponent("Library/LaunchAgents/\(ownAgent).plist")
+            shared.ownClusterAgent = ownAgent
+            shared.ownClusterAgentPlist = FileManager.default.fileExists(atPath: ownPlist.path) ? ownPlist.path : nil
             items.append(shared)
             protected += files.map { (ProviderUninstallPaths.canonical($0.path), "the cluster files \(installName(other)) uses") }
         }
-        return items.compactMap { around($0, protected) }
+        // What finishes the uninstall once the models are out: the settings that named the folder are gone by then.
+        let again = "\(paths.installDirectory.path)/bin/\(paths.commandLink.lastPathComponent) uninstall"
+        let advice = ". To finish, move the models you want to keep out of it, then run `\(again)` again, which deletes the rest of it"
+        return items.compactMap { around($0, protected, advice: advice) }
     }
 
     /// `item` with the protected folders inside it left out (and measured without them); nil when it lies inside one.
-    private static func around(_ item: ProviderUninstallItem, _ protected: [(path: String, what: String)]) -> ProviderUninstallItem? {
+    private static func around(_ item: ProviderUninstallItem, _ protected: [(path: String, what: String)],
+                               advice: String) -> ProviderUninstallItem? {
         guard item.verdict == .remove, !protected.isEmpty else { return item }
-        let resolved = ProviderUninstallPaths.canonical(item.path)
-        if protected.contains(where: { resolved == $0.path || resolved.hasPrefix($0.path + "/") }) { return nil }
+        // A link is deleted itself, never what it points to, so where the link is decides (the command link).
+        let resolved = isLink(item.path) ? item.path : ProviderUninstallPaths.canonical(item.path)
+        if let holder = protected.first(where: { resolved == $0.path || resolved.hasPrefix($0.path + "/") }) {
+            // It stays with the folder the person chose for models. Models there are theirs; anything else of
+            // Darkbloom's staying, the app folder above all, means Darkbloom is not fully removed: refused, and named.
+            guard holder.what == chosenWhat, item.kind != .model else { return nil }
+            return ProviderUninstallItem(label: item.label, path: item.path, bytes: item.bytes, verdict: .refused,
+                                         reason: (resolved == holder.path ? chosenFolderIsItReason : chosenFolderHoldsItReason) + advice,
+                                         kind: item.kind)
+        }
         let inside = protected.filter { $0.path.hasPrefix(resolved + "/") }
         guard !inside.isEmpty else { return item }
         let measured = measure(URL(fileURLWithPath: resolved), excluding: inside.map(\.path))

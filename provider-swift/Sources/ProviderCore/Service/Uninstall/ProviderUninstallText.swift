@@ -49,10 +49,15 @@ extension ProviderUninstall {
         var number = 0
         func action(_ text: String) { number += 1; lines.append("  \(number). \(text)") }
         action("\(stopServingStep): drain accepted requests, as `\(plan.cli) stop`")
-        action("\(clusterStep), as `\(plan.cli) cluster stop`: "
-            + (!plan.clusterService.isEmpty ? plan.clusterService.joined(separator: ", ")
-                : plan.clusterServiceRunning ? "no login agent, but a cluster service is running on this Mac; this stops it"
-                : "no cluster service on this Mac"))
+        if let shared = plan.items.first(where: { $0.sharedWith != nil }), let other = shared.sharedWith {
+            action("\(ownClusterStep): \(shared.ownClusterAgentPlist ?? "this install has none"); the pair and \(other)'s "
+                + "cluster service are left as they are")
+        } else {
+            action("\(clusterStep), as `\(plan.cli) cluster stop`: "
+                + (!plan.clusterService.isEmpty ? plan.clusterService.joined(separator: ", ")
+                    : plan.clusterServiceRunning ? "no login agent, but a cluster service is running on this Mac; this stops it"
+                    : "no cluster service on this Mac"))
+        }
         for service in plan.services {
             action("Remove the \(service.name): \(service.path ?? "not installed")")
         }
@@ -77,7 +82,7 @@ extension ProviderUninstall {
             name = installName(this).prefix(1).uppercased() + installName(this).dropFirst()
         }
         let headline = report.failed ? "\(name) is not fully removed from this Mac (see the failed step)."
-            : report.incomplete ? "\(name) is not fully removed from this Mac: some of its folders were not removed (see below)."
+            : report.incomplete ? "\(name) is not fully removed from this Mac: " + incompleteReason(plan)
             : report.mode == .keepModels ? "\(name) is removed from this Mac; its models are kept."
             : "\(name) is removed from this Mac."
         var lines = [headline]
@@ -101,6 +106,15 @@ extension ProviderUninstall {
         }
         if let pairing = plan.pairing, !plan.sharesCluster { lines.append(otherMacLine(pairing, cli: plan.cli)) }
         return lines
+    }
+
+    /// Why the run left something of Darkbloom's: its app folder is (in) the models folder the person chose, or a folder
+    /// was refused.
+    static func incompleteReason(_ plan: Plan) -> String {
+        let reasons = plan.refused.filter { $0.kind == .command }.compactMap(\.reason)
+        return reasons.contains { $0.hasPrefix(chosenFolderIsItReason) } ? "its app folder is your models folder, so it was kept (see below)."
+            : reasons.contains { $0.hasPrefix(chosenFolderHoldsItReason) } ? "its app folder is inside your models folder, so it was kept (see below)."
+            : "some of its folders were not removed (see below)."
     }
 
     /// The models `--keep-models` keeps, with their size and folders.
@@ -215,8 +229,12 @@ extension ProviderUninstall {
     public static func dryRunDocument(_ plan: Plan, modes: [Mode]) -> DryRunDocument {
         let modePlans = modes.map { mode -> DryRunDocument.ModePlan in
             var actions = [DryRunDocument.Action(action: stopServingStep, path: nil, bytes: nil)]
-            let clusterAgents: [String?] = plan.clusterService.isEmpty ? [nil] : plan.clusterService
-            actions += clusterAgents.map { .init(action: clusterStep, path: $0, bytes: nil) }
+            if let shared = plan.items.first(where: { $0.sharedWith != nil }) {
+                actions.append(.init(action: ownClusterStep, path: shared.ownClusterAgentPlist, bytes: nil))
+            } else {
+                let clusterAgents: [String?] = plan.clusterService.isEmpty ? [nil] : plan.clusterService
+                actions += clusterAgents.map { .init(action: clusterStep, path: $0, bytes: nil) }
+            }
             actions += plan.services.map { .init(action: "Remove the \($0.name)", path: $0.path, bytes: nil) }
             actions.append(.init(action: tokenStep, path: nil, bytes: nil))
             if !plan.sharesCluster {

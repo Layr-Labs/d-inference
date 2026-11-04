@@ -635,6 +635,8 @@ struct ProviderUninstallTests {
         #expect(dryRun.contains { $0.hasPrefix("  Not deleted: Darkbloom folder") && $0.contains("it is the models folder you chose") })
         let report = await fixture.run(.everything, items: plan.items, pairing: nil)
         #expect(fixture.exists(install.appendingPathComponent(fixture.paths.appBundleName)), "the folder you chose stays, app included")
+        #expect(!dryRun.contains { $0.contains("Not deleted: The `\(cli)` command link") }, "the link is not in the folder")
+        #expect(!fixture.exists(fixture.paths.commandLink), "the command link, outside the folder, goes")
         #expect(report.incomplete && !report.failed, "\(report.steps)")
         let summary = ProviderUninstall.summary(report, plan: plan)
         transcript("everything-summary-models-in-app-folder", summary, fixture)

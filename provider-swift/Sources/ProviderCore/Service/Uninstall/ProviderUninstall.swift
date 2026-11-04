@@ -80,6 +80,7 @@ public enum ProviderUninstall {
     static let tokenStep = "Revoke this Mac's account token"
     static let cableStep = "Undo the cable port setup"
     static let forgetStep = "Forget this Mac's pairing"
+    static let ownClusterStep = "Remove this install's cluster service"
     static let stillServingReason = "serving did not stop (see the failed step above)"
     static let servicesRunningReason = "a Darkbloom service may still be running (see the failed step above)"
     static let cableRetryReason =
@@ -102,8 +103,16 @@ public enum ProviderUninstall {
                 return false
             }
         }
+        // Another install on this Mac uses the same pair, pairing and cable port setup: they all stay with it.
+        let sharedWith = items.lazy.compactMap(\.sharedWith).first
         let serving = await step(stopServingStep, operations.stopServing)
-        var servicesStopped = await step(clusterStep, operations.stopClusterPart) && serving
+        let clusterHandled: Bool
+        if let other = sharedWith, let own = items.lazy.compactMap(\.ownClusterAgent).first {
+            clusterHandled = await step(ownClusterStep) { try removeOwnClusterAgent(own, keptFor: other) }
+        } else {
+            clusterHandled = await step(clusterStep, operations.stopClusterPart)
+        }
+        var servicesStopped = clusterHandled && serving
         for service in operations.removeServices {
             // As `stop --uninstall`: a provider that did not drain keeps its agents, so nothing interrupts it.
             guard serving else {
@@ -119,8 +128,6 @@ public enum ProviderUninstall {
         } else {
             steps.append(.init(name: tokenStep, status: .skipped, detail: stillServingReason))
         }
-        // Another install on this Mac uses the same pairing and cable port setup: both stay with it.
-        let sharedWith = items.lazy.compactMap(\.sharedWith).first
         let keptForOther = sharedWith.map { "kept: \($0) on this Mac also uses it" }
         if pairing != nil, let keptForOther {
             steps.append(.init(name: forgetStep, status: .skipped, detail: keptForOther))
@@ -184,6 +191,16 @@ public enum ProviderUninstall {
     }
 
     static func notRemoved(_ reason: String) -> String { "not removed: \(reason)" }
+
+    /// Step 2 beside another install that shares the pair: boots out and deletes only this install's own agent. The
+    /// pair is not stopped and the other install's agent is not touched.
+    static func removeOwnClusterAgent(_ label: String, keptFor other: String) throws -> Outcome {
+        let leftAlone = "the pair and \(other)'s cluster service are left as they are"
+        guard FileManager.default.fileExists(atPath: ClusterServiceAgent.plistPath(label: label).path)
+                || ClusterServiceAgent.isLoaded(label: label) else { return .skipped("this install has none; \(leftAlone)") }
+        try ClusterServiceAgent.remove(label: label)
+        return .done("removed \(label); \(leftAlone)")
+    }
 
     static func isLink(_ path: String) -> Bool {
         (try? FileManager.default.destinationOfSymbolicLink(atPath: path)) != nil

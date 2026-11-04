@@ -1361,7 +1361,7 @@ A failed step does not stop the safe steps after it.
 | # | Step | Through | Skipped when |
 |---|---|---|---|
 | 1 | Stop serving on this Mac | the [stop](#darkbloom-stop) drain (`ServiceDrain`) | the provider service was not running |
-| 2 | Stop this Mac's cluster part and remove its service | `darkbloom cluster stop`; when the other Mac does not answer, `cluster stop --local-only` | no cluster service on this Mac. The dry run also names a cluster service running without a login agent (`ClusterService.running`), which this step stops |
+| 2 | Stop this Mac's cluster part and remove its service | `darkbloom cluster stop`; when the other Mac does not answer, `cluster stop --local-only`. Beside another install that shares the pair (below), it is `Remove this install's cluster service` instead: only this install's own agent (`ClusterServiceAgentPlan.label` of its app) goes, through `ProviderUninstall.removeOwnClusterAgent`; the pair is not stopped and the other install's agent is not touched | no cluster service on this Mac (beside another install: this install has none). The dry run also names a cluster service running without a login agent (`ClusterService.running`), which this step stops |
 | 3–5 | Remove the provider, watchdog and desktop API launch agents | what `stop --uninstall` runs (`LaunchAgent.uninstall`, `WatchdogAgent.uninstall`, `DesktopService.uninstall`) | not installed, or serving did not stop in step 1 |
 | 6 | Revoke this Mac's account token, best effort | what `darkbloom logout` does (`Logout.revokeSavedToken`) | no saved token, the coordinator did not confirm it, or serving did not stop. It never fails the uninstall; the token file goes with `~/.darkbloom` |
 | 7 | Forget the pairing with the other Mac | `darkbloom cluster pair --forget <pin>`, once per pairing | this Mac is not paired, or another install on this Mac uses the pairing (below) |
@@ -1393,7 +1393,12 @@ What no choice deletes (the summary lists them):
   `~/.darkbloom/models`) they stay with the folders that lead to them, and the
   screen, the dry run and the summary list them as `Kept:`; elsewhere, as
   `Never touched:`. After a reinstall, `darkbloom models location <folder>` uses
-  the chosen folder again;
+  the chosen folder again. When the chosen folder is `~/.darkbloom` itself (or
+  holds it), the app folder stays with it: the summary's first line says
+  Darkbloom is not fully removed because its app folder is your models folder,
+  the step says to move the models out and run `~/.darkbloom/bin/darkbloom
+  uninstall` again (the settings naming the folder are gone by then, so that run
+  deletes the rest), and the command exits 1;
 - caches in a folder you chose outside Darkbloom's folders
   (`darkbloom cache set --directory`), the default model cache when it is a
   link, and other tools' models;
@@ -1405,7 +1410,8 @@ What no choice deletes (the summary lists them):
   its folder (`ProviderUninstallPaths.otherEnvironment`). Steps 7 and 8 are
   skipped (`kept: <the other install> on this Mac also uses it`), the files
   every install shares stay (`~/.darkbloom/cluster*` and
-  `~/.config/darkbloom/clusters`; the rest of those folders goes). The screen,
+  `~/.config/darkbloom/clusters`; the rest of those folders goes), and step 2
+  removes only this install's own cluster service. The screen,
   the dry run, `--json` and the summary list it, here for `darkbloom-dev
   uninstall`, and the summary's first line names the install it removed
   (`Darkbloom Dev is removed from this Mac.`):

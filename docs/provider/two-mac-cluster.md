@@ -926,7 +926,30 @@ stays) and stops its part; each Mac also removes its own pair records when it
 unpairs.
 `darkbloom cluster stop` stops a Mac's cluster service and keeps it from starting
 at login. On the leader it stops the pair first. When the other Mac is gone for
-good, `darkbloom cluster stop --local-only` stops only this one.
+good, `darkbloom cluster stop --local-only` stops only this one. To take Darkbloom off a Mac
+altogether, see [Uninstall](#uninstall).
+
+## Uninstall
+
+`darkbloom uninstall` takes Darkbloom off one Mac of the pair. It offers
+**Remove everything** or **Keep models**, and both do the same for the pair:
+
+- this Mac stops its part, as `darkbloom cluster stop` does (the leader stops
+  the pair first), and no Darkbloom service starts at login any more;
+- it forgets the pairing, as `darkbloom cluster pair --forget` (a leader tells
+  the other Mac first, over the cable);
+- it undoes the cable port setup, as `darkbloom cluster link --remove` (one
+  approval).
+
+**Keep models** keeps the models and the cluster model store, so after a
+reinstall `darkbloom cluster` pairs again and uses them without copying or
+downloading. **Remove everything** deletes them too.
+
+When the other Mac does not answer, this Mac stops only its own part, as
+`darkbloom cluster stop --local-only`. The other Mac keeps its own pairing, so
+the command ends with one line about it, by name: run `darkbloom uninstall`
+there too, or `darkbloom cluster` on it to pair it with another Mac. Every step
+and path: [CLI reference](./cli-reference.md#darkbloom-uninstall).
 
 ## Cache settings
 

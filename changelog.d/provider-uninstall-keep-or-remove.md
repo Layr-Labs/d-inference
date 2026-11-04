@@ -1,0 +1,7 @@
+### Uninstall Darkbloom: remove everything, or keep the models
+
+- `darkbloom uninstall` takes Darkbloom off a Mac in one step. In a terminal it shows two choices with this Mac's sizes: **Remove everything** (the app, settings, pairing, logs and all models) or **Keep models** (everything else goes; a reinstall reuses the models). Esc cancels.
+- Both choices stop serving the way `darkbloom stop` does, stop this Mac's part of a two-Mac pair, remove every Darkbloom background service, revoke this Mac's account token where the coordinator can confirm it, unpair, undo the cable port setup (macOS asks for your password) and delete Darkbloom's settings, logs, caches, the app and the `darkbloom` command link.
+- **Keep models** leaves the models Darkbloom downloaded and the cluster model store in place: after installing again, `darkbloom start` or `darkbloom cluster` finds them without downloading. The sizes count APFS clones once.
+- It never deletes anything outside Darkbloom's folders, such as models in a folder you chose or links that point elsewhere, and never touches Keychain keys; the summary lists what was kept and where. On a paired Mac it ends with what to run on the other Mac.
+- For scripts and agents: `--everything` or `--keep-models` with `--yes`, and `--dry-run` (with `--json`) to list every action and path without changing anything. `darkbloom stop --uninstall` works as before.

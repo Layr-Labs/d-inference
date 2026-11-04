@@ -9,7 +9,7 @@ struct Stop: AsyncParsableCommand {
 
     @OptionGroup var drain: DrainOptions
 
-    @Flag(help: "Also remove the provider, watchdog and desktop API launchd agents (full uninstall).")
+    @Flag(help: "Also remove the provider, watchdog and desktop API launchd agents; files stay. To take Darkbloom off this Mac, run `\(BuildEnvironment.current.cliName) uninstall`.")
     var uninstall = false
 
     mutating func run() async throws {

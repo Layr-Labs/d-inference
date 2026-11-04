@@ -35,6 +35,9 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
         /// While a coordinator-paired part runs: whether the coordinator's latest trust status for it carries a current
         /// App Attest serving authorization, which pair membership requires; nil when it has sent none yet.
         public var appAttest: Bool? = nil
+        /// Without App Attest: Unix seconds when this Mac's local key-generation safeguard lets the provider make a new
+        /// key (`AppAttestKeyState.generationBlockedUntil`); nil when nothing blocks it or nothing is known.
+        public var appAttestRetryAt: Double? = nil
     }
     public struct Session: Codable, Sendable, Equatable {
         public var observed: Bool

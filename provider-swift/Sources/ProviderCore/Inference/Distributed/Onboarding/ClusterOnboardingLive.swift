@@ -1538,12 +1538,23 @@ final class OnboardingLive: @unchecked Sendable {
         let localRankZero = context.savedConfiguration().configuration?.localRank == 0
         let rankZero = (localRankZero ? own : peer)?.child.pair.flatMap(ClusterOnboardingPairReport.state)
         if case .serving(let test)? = rankZero { return (true, test, "serving", nil) }
-        let progress = rankZero == .starting ? "the coordinator paired both Macs: loading the model on both"
-            : "waiting for the coordinator to pair both Macs"
+        // The wait, then one row per Mac (`ClusterOnboardingLoadRows`): registered, then loading once the coordinator
+        // committed the start (rank 0's part says so for both).
+        func row(_ mac: String, _ child: ClusterServiceStatus.Child?) -> String {
+            let registered = child?.running == true && child?.notice == ClusterLocalServing.offeredNotice
+            let state = rankZero == .starting ? "loading its share"
+                : registered ? "registered; waiting for the coordinator" : "registering with the coordinator"
+            return ClusterOnboardingMacName.sentence(mac) + ": " + state
+        }
+        let progress = (rankZero == .starting ? "the coordinator paired both Macs" : "waiting for the coordinator to pair both Macs")
+            + "\n" + row(here, own?.child) + "\n" + row(there, peer?.child)
         let missing = (AuthTokenStore.load() == nil ? [here] : []) + (peer?.loggedIn == false ? [there] : [])
         if !missing.isEmpty { return (false, nil, progress, ClusterOnboardingNotServing.notLoggedIn(missing)) }
-        if own?.child.appAttest == false { return (false, nil, progress, ClusterOnboardingNotServing.notVerified(here)) }
-        if peer?.child.appAttest == false { return (false, nil, progress, ClusterOnboardingNotServing.notVerified(there)) }
+        // Not verified by Apple yet: with when this Mac's key-generation safeguard lets it try again, when it says.
+        for (mac, child) in [(here, own?.child), (there, peer?.child)] where child?.appAttest == false {
+            return (false, nil, progress,
+                    ClusterOnboardingNotServing.notVerified(mac, retryAt: child?.appAttestRetryAt.map { Date(timeIntervalSince1970: $0) }))
+        }
         if case .stopped(let why)? = rankZero {
             return (false, nil, progress, ClusterOnboardingNotServing.words(reason: why, mac: "one of the Macs"))
         }
@@ -1640,7 +1651,8 @@ final class OnboardingLive: @unchecked Sendable {
                 if look.serving {
                     lines.append(registered.pairServingLine(model: model) + ".")
                 } else {
-                    lines.append("\(model) is not serving yet: " + (look.reason ?? look.progress) + ".")
+                    let wait = look.progress.components(separatedBy: "\n").first ?? look.progress
+                    lines.append("\(model) is not serving yet: " + (look.reason ?? wait) + ".")
                     if let remedy = look.reason.flatMap(ClusterOnboardingNotServing.remedy(forReason:)) { lines.append(remedy) }
                 }
             } else {

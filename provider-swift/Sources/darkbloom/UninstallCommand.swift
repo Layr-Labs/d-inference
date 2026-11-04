@@ -48,6 +48,13 @@ struct Uninstall: AsyncParsableCommand {
             throw ExitCode.validationFailure
         }
         let plan = Self.plan()
+        if case .dryRun = invocation {} else if Self.cableNeedsPromptNoOneCanSee() {
+            // Before anything is stopped or deleted: the cable step's prompt cannot show over SSH, and the uninstall
+            // would otherwise stop part way, after the services and the pairing.
+            ClusterLinkApprovalSession.lines(command: "darkbloom uninstall").forEach { print($0) }
+            print("\(ClusterOnboardingDriver.failed) Nothing changed.")
+            throw ExitCode.failure
+        }
         let mode: ProviderUninstall.Mode
         switch invocation {
         case .refuse: return
@@ -79,6 +86,12 @@ struct Uninstall: AsyncParsableCommand {
         print("")
         ProviderUninstall.summary(report, plan: plan).forEach { print($0) }
         if report.failed || report.incomplete { throw ExitCode.failure }
+    }
+
+    /// Over SSH with no desktop, a cable port setup to undo needs a macOS prompt that cannot show (a dry run tells,
+    /// changing nothing).
+    static func cableNeedsPromptNoOneCanSee() -> Bool {
+        ClusterLinkApprovalSession.cannotPrompt() && ClusterLinkRepair.remove(device: nil, dryRun: true).outcome == .dryRun
     }
 
     /// What this Mac has, read before anything changes.
@@ -160,6 +173,10 @@ struct Uninstall: AsyncParsableCommand {
             forget: { pin in try Cluster.Pair.parse(["--forget", pin]).run() },
             removeCableSetup: {
                 let result = ClusterLinkRepair.remove(device: nil)
+                if result.outcome == .approvalUnavailable, ClusterLinkApprovalSession.cannotPrompt() {
+                    // No prompt was tried over SSH: where to run the uninstall so that it can show.
+                    ClusterLinkApprovalSession.lines(command: "darkbloom uninstall").forEach { print($0) }
+                }
                 result.summaryLines.forEach { print($0) }
                 // As `cluster link --remove` prints them: where no prompt could be, the commands go to standard error.
                 if let script = result.manualScript {

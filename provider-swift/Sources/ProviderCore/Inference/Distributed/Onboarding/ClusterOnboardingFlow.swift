@@ -1276,12 +1276,25 @@ public enum ClusterOnboardingDriver {
         menuLine(mode.label, mode.what + (mode.split.map { " (\($0))" } ?? "") + " · " + mode.speedWords)
     }
 
-    /// The fresh setup's opening (brief: "one screen before 1/4"): what will be asked, and how long it takes.
+    /// The fresh setup's opening (brief: "one screen before 1/4"): what will be asked, where it is answered, and how long
+    /// it takes. The prompts are on each Mac's own screen, and many pair Macs have none (2026-11-04, owner: "it should
+    /// tell you that you need Screen Sharing access to go through the approval prompts").
     public static func firstRunLines(localOnly: Bool) -> [String] {
-        ["You'll be asked for this Mac's password on each Mac (cable port), Local Network access, Yes when both screens show "
-            + "the same code" + (localOnly ? "." : ", and a Darkbloom login to serve through Darkbloom."),
+        ["You'll approve macOS prompts on each Mac's own screen: its password for the cable port, Allow for Local Network, "
+            + "and Yes to the pairing code" + (localOnly ? "." : "; then a Darkbloom login to serve through Darkbloom."),
+         "For a Mac with no display, open Screen Sharing to it first.",
          "It takes about 2 minutes to connect and pair; a model copy or download depends on its size; loading takes a few minutes."]
     }
+
+    /// Over SSH with no desktop, macOS cannot show its approval prompt (the administrator password, Local Network): said
+    /// before the first step that needs one, with where to run `command` instead.
+    public static func noPromptOverSSHLines(command: String = "darkbloom cluster") -> [String] {
+        ["macOS can't show its approval prompt over SSH.",
+         "Run `\(command)` in Terminal on this Mac's own screen, or through Screen Sharing."]
+    }
+    /// The choice after them: Quit (the default, nothing tried) or go on here, typing the password into sudo and
+    /// answering Local Network on this Mac's own screen.
+    public static let overSSHAnswers = ["Quit", "Go on over SSH"]
 
     /// The member's last line: the Mac it follows, by the name pairing showed, and the one thing to do there.
     public static func memberLeaderLine(_ leader: String?) -> String {
@@ -1430,8 +1443,13 @@ public enum ClusterOnboardingDriver {
         remote ? " on this Mac's screen (Screen Sharing if headless)" : ""
     }
 
-    /// Said once paired: both cluster services ask at the same moment, one on each Mac.
-    public static let otherMacAllowLine = "Allow it on the other Mac too."
+    /// Said once paired: both cluster services ask at the same moment, one on each Mac; the other one by the name pairing
+    /// showed, and the way in to a Mac with no display.
+    public static func otherMacAllowLine(_ other: String?) -> String {
+        let mac = ClusterOnboardingMacName.other(named: other)
+        let named = mac == ClusterOnboardingMacName.other ? "" : " " + String(mac.dropFirst(ClusterOnboardingMacName.other.count + 1))
+        return "Approve it on the other Mac's screen too\(named); use Screen Sharing if it has no display."
+    }
 
     /// Connect's first line: every approval the setup asks for on this Mac (2026-11-02 review: "bundle all of the
     /// permissions ahead of time").
@@ -1484,7 +1502,7 @@ public enum ClusterOnboardingDriver {
     /// person takes (they may be at the other Mac, answering its prompt) or until q. A service whose probe tells
     /// nothing gets the prompt's line as an "if". False (with where to turn it on) when the person stopped waiting.
     static func allowLocalNetwork(_ subject: ClusterOnboardingLocalNetworkSubject, _ operations: ClusterOnboardingOperations,
-                                  _ console: ClusterOnboardingConsole) -> Bool {
+                                  _ console: ClusterOnboardingConsole, other: String? = nil) -> Bool {
         let app = subject == .service ? ClusterOnboardingCommand.app : operations.commandApp()
         let remote = operations.remote()
         var state = operations.localNetwork(subject)
@@ -1502,11 +1520,11 @@ public enum ClusterOnboardingDriver {
         case .unknown:
             // This command cannot be probed before the cable has an address, and macOS lets it through by itself
             // (TN3179); the service is a launchd agent, which macOS asks about.
-            if subject == .service { console.say("  " + localNetworkMaybeLine(app, remote: remote) + " " + otherMacAllowLine) }
+            if subject == .service { console.say("  " + localNetworkMaybeLine(app, remote: remote) + " " + otherMacAllowLine(other)) }
             return true
         case .blocked: break
         }
-        console.say("  " + localNetworkLine(app, remote: remote) + (subject == .service ? " " + otherMacAllowLine : ""))
+        console.say("  " + localNetworkLine(app, remote: remote) + (subject == .service ? " " + otherMacAllowLine(other) : ""))
         let started = Date()
         var hinted = false
         while !console.closed {
@@ -1548,6 +1566,15 @@ public enum ClusterOnboardingDriver {
         if opening {
             console.banner(title, "")
             for line in firstRunLines(localOnly: request.scope?.isLocalOnly == true) { console.say("  " + line) }
+        }
+        if operations.remote() {
+            // Said before anything is tried, so the setup does not stop part way at a prompt no one can see.
+            console.say("")
+            for line in noPromptOverSSHLines() { console.say("  " + line) }
+            guard console.choose(overSSHAnswers, selected: 0) == 1 else {
+                console.say("\(failed) Nothing changed. " + noPromptOverSSHLines()[1])
+                return 1
+            }
         }
         console.heading("1/4 Connect")
         console.say("  " + approvalsLine(remote: operations.remote()))
@@ -1635,7 +1662,7 @@ public enum ClusterOnboardingDriver {
                 console.say("Run `darkbloom cluster` again to start it (the pairing is kept).")
                 return 1
             }
-            guard allowLocalNetwork(.service, operations, console) else { return 1 }
+            guard allowLocalNetwork(.service, operations, console, other: peerName) else { return 1 }
             // Nothing else is asked on the Mac that joined, `darkbloom cluster local` included: the Mac that leads is on
             // its own model list by now (2026-10-25: both Macs showed the list). This window follows its start.
             console.say("")
@@ -1714,7 +1741,7 @@ public enum ClusterOnboardingDriver {
                        _ console: ClusterOnboardingConsole, justPaired: Bool, request: ClusterOnboardingRequest = .init(),
                        answered: Bool? = nil) -> Int32 {
         guard startService(operations, console) else { return 1 }
-        if justPaired { guard allowLocalNetwork(.service, operations, console) else { return 1 } }
+        if justPaired { guard allowLocalNetwork(.service, operations, console, other: resume.peerName) else { return 1 } }
         // A pairing kept from earlier whose other Mac does not answer over the cable (a cable on a port that is not set
         // up is said first): the screen says so, with what to run there.
         let silent = !justPaired && resume.unsetCablePort == nil && !(answered ?? otherMacAnswers(operations, console))
@@ -1895,6 +1922,7 @@ public enum ClusterOnboardingDriver {
 
     /// Sets up the port the cable moved to (macOS asks once), and says how it went.
     static func fixPort(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
+        if operations.remote() { console.say("  " + noPromptOverSSHLines()[0]) }
         var result = checkLink(operations, console)
         if !result.ready, let script = result.manualScript, !console.closed, setUpPortWithSudo(script, operations, console) {
             result = checkLink(operations, console)

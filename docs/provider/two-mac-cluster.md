@@ -24,6 +24,29 @@ Remote Login, no IP address and no network setting is typed anywhere.
   cable; a catalog model neither Mac has is downloaded once on the leader, then
   copied ([Models](#models) below).
 
+## Before you start: be at both screens
+
+Setting up a pair raises macOS prompts on each Mac's own screen: its
+administrator password for the cable port (and again to undo it), Allow for
+Local Network, and Yes to the pairing code. Many pair Macs have no display (a
+Mac Studio, a MacBook with its lid closed): open Screen Sharing to such a Mac
+before you start. `darkbloom cluster` opens with the same note on both Macs
+("You'll approve macOS prompts on each Mac's own screen: … For a Mac with no
+display, open Screen Sharing to it first."), and once paired it names the other
+Mac where its prompt is ("Approve it on the other Mac's screen too (<name>); use
+Screen Sharing if it has no display.").
+
+Don't run the setup over SSH. In an SSH session with no desktop macOS can't
+show its approval prompt, so `darkbloom cluster` says so before 1/4, before
+anything is tried ("macOS can't show its approval prompt over SSH. Run
+`darkbloom cluster` in Terminal on this Mac's own screen, or through Screen
+Sharing."), and offers Quit (the default: "✗ Nothing changed. …") or Go on over
+SSH (the password then goes into `sudo` in that terminal, and Local Network is
+still answered on the Mac's own screen). `darkbloom cluster link --fix` and
+`--remove` say the same before they start and try no prompt, and
+`darkbloom uninstall` over SSH stops before it changes anything when a cable
+port setup is left to undo.
+
 ## The steps, once
 
 Run `darkbloom cluster` on each Mac, pick a model, done. The Mac you start on
@@ -67,7 +90,8 @@ Network prompts."). Each prompt's line says what to click:
   cluster service (a launchd agent, which macOS does ask about) asks for as it
   starts (`ClusterLocalNetworkAccess.startServiceProbe`). Pairing ends on both
   Macs at once, so both ask at the same moment: "Click Allow on the Local
-  Network prompt for Darkbloom. Allow it on the other Mac too." The setup
+  Network prompt for Darkbloom. Approve it on the other Mac's screen too
+  (<its name>); use Screen Sharing if it has no display." The setup
   waits until Allow ("✓ Allowed"), however long you
   take at the other Mac, or until q; after 15 s it also names the switch in
   System Settings → Privacy & Security → Local Network. A cluster service that

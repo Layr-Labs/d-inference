@@ -44,8 +44,9 @@ into your Darkbloom balance.
    rules.
    To choose the number of jobs, add `--linux-slots <n>` and `--macos-slots <n>`;
    `--macos-slots 1` keeps one of macOS's two macOS VMs for your own use.
-   To put the VM images and jobs on an external drive, add `--disk <volume>`;
-   see [Use an external drive](#use-an-external-drive).
+   To put the VM images and jobs on an external drive, add `--disk <volume>`,
+   or pick the drive when setup asks; see
+   [Use an external drive](#use-an-external-drive).
 
 2. Approve this Mac in your browser. The installer opens the approval page with
    the code filled in, and setup prints the link and code as well. Sign in with
@@ -69,26 +70,33 @@ or later; with an earlier release setup says so and changes nothing.
    on a drive that goes away is stopped and is not paid.
 2. Format it as APFS in Disk Utility. Erasing deletes everything on the drive.
    Setup never formats a drive.
-3. Turn on ownership, which macOS leaves off for external drives. This needs an
-   administrator, so run it yourself:
+3. Turn on ownership, which macOS leaves off for external drives. Setup offers
+   to do this for you (step 4). To do it yourself:
 
    ```bash
    sudo diskutil enableOwnership /Volumes/FastSSD
    ```
 
-4. Run setup with the drive. Repeat `--disk` for more drives, and add
-   `--disk ~` to keep using the internal disk too:
+4. Run `darkbloom sandbox setup`. On a first setup it lists the drives with
+   room for jobs and asks where the VM images and jobs go. Press Enter to keep
+   the internal disk, or type the drive's number. You can also name the drive.
+   Repeat `--disk` for more drives, and add `--disk ~` to keep using the
+   internal disk too:
 
    ```bash
    darkbloom sandbox setup --disk /Volumes/FastSSD
    ```
 
-Setup checks each drive before it downloads anything. When a drive is not APFS,
-or has ownership off, setup stops and prints the fix, for example the exact
-`diskutil enableOwnership` command. The plan then shows each drive, its free
-space and the jobs it gets. Each drive keeps its own free space: a tenth of the
-drive, 50 to 100 GiB. Running setup again keeps the drives you chose; give
-`--disk` again to change them.
+Setup checks each drive before it installs anything. When ownership is off,
+setup prints the command and asks whether to run it. If you agree, sudo asks
+for your password, and setup checks the drive again. With `--yes`, or without
+a terminal, setup prints the command and stops. When a drive is not APFS, setup
+stops and tells you to erase it as APFS in Disk Utility; setup never formats a
+drive. The plan then shows each drive, its free space and the jobs it gets.
+Each drive keeps its own free space: a tenth of the drive, 50 to 100 GiB.
+Running setup again keeps the drives you chose; give `--disk` again to change
+them. `darkbloom sandbox status` shows each drive, its free space and slots,
+and what to do when one is not connected.
 
 ## Verify
 
@@ -148,8 +156,11 @@ While jobs run, setup skips the check. The
   the waiting enrollment when you run it again. A restart ends that wait; run
   setup again after one.
 - **`[FAIL] Work disk: … ignores file ownership`.** Ownership is off on the
-  drive. Run the `↳ fix:` command (`sudo diskutil enableOwnership …`), then run
-  setup again.
+  drive. Answer yes when setup offers to turn it on, or run the `↳ fix:`
+  command (`sudo diskutil enableOwnership …`) yourself, then run setup again.
+- **`Work disk: … offline` in `darkbloom sandbox status`.** The drive is not
+  connected, so its slots take no jobs. Connect it again; its slots take jobs
+  once its images are checked.
 - **`[FAIL] Work disk: … is not APFS`** or **`is not a mounted drive`.** Format
   the drive as APFS in Disk Utility, or connect it, then run setup again.
 - **`work disks need add-on 1.2.0 or later`.** The add-on release on offer

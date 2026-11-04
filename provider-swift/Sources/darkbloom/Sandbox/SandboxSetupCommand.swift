@@ -20,9 +20,11 @@ extension Sandbox {
             ones; with --yes or without a terminal it applies them only when they add slots and remove none.
 
             With --disk, the VM images and jobs go on that drive instead of the internal disk; the add-on, \
-            its settings and logs stay in ~/DarkbloomSandbox. The drive must be APFS with ownership on: setup \
-            checks both first and prints the command to run when ownership is off. Setup never formats a \
-            drive or runs sudo. Work disks need add-on \(SandboxWorkDisk.minimumAddonVersion) or later.
+            its settings and logs stay in ~/DarkbloomSandbox. Without --disk, at a prompt, setup lists the \
+            external APFS drives with room for jobs and asks which one to use (Enter keeps the internal \
+            disk). The drive must be APFS with ownership on: setup checks both first. When ownership is off \
+            it prints the command and, at a prompt, offers to run it (sudo asks for your password). Setup \
+            never formats a drive. Work disks need add-on \(SandboxWorkDisk.minimumAddonVersion) or later.
             """)
 
         @Flag(name: .shortAndLong, help: "Don't ask for confirmation.")
@@ -153,6 +155,11 @@ struct SandboxSetupFlow {
     }
     /// The volume of each `--disk`.
     var workDiskVolume: @Sendable (String) -> SandboxWorkDisk.Volume? = SandboxWorkDisk.volume(at:)
+    /// The drives to offer when the owner gives no `--disk`.
+    var workDiskCandidates: @Sendable () -> [SandboxWorkDisk.Volume] = { SandboxWorkDisk.candidates() }
+    /// Turns ownership on for the drive mounted there (`sudo diskutil
+    /// enableOwnership`) on this terminal; true when it did.
+    var enableOwnership: @Sendable (String) -> Bool = { SandboxWorkDisk.enableOwnership(mountPoint: $0) }
 
     private var cli: String { Sandbox.cli }
 
@@ -167,14 +174,16 @@ struct SandboxSetupFlow {
             if !options.disks.isEmpty {
                 print("")
                 print(DoctorTerminalStyle.heading("Checking the work disks", color: color))
-                try checkWorkDisks()
+                try checkWorkDisks(options.disks)
             }
             try await withInstaller { try await install($0, script: $1, options: options) }
         case .fresh:
             let eligibility = try await checkMac()
             try await withInstaller { installer, script in
-                guard try await sizeAndConfirm(eligibility, installer: installer, script: script) else { return }
-                try await install(installer, script: script, options: options)
+                let chosen = try chooseWorkDisk(script: script)
+                guard try await sizeAndConfirm(eligibility, installer: installer, script: script, options: chosen)
+                else { return }
+                try await install(installer, script: script, options: chosen)
             }
         }
     }
@@ -213,7 +222,7 @@ struct SandboxSetupFlow {
             print("Could not check whether this Mac now fits other slot counts: \(failure)")
         }) { installer, script in
             let plan = try await withTransientNote("Checking how many jobs this Mac fits now…") {
-                try await requestAddonPlan(installer, script: script)
+                try await requestAddonPlan(installer, script: script, options: options)
             }
             // The same counts (or no plan to compare) keep today's report exactly.
             guard let plan, let change = SandboxSlotChange(installed: status, plan: plan) else {
@@ -277,28 +286,92 @@ struct SandboxSetupFlow {
             print(DoctorTerminalStyle.verdict("Not eligible: \(refusal)", level: .fail, color: color))
             throw ExitCode.failure
         }
-        try checkWorkDisks()
+        try checkWorkDisks(options.disks)
         return eligibility
     }
 
-    /// Prints a `Work disk` line per `--disk`; throws, before anything is
-    /// downloaded, when one is not ready. The fixes are the owner's to run:
-    /// setup never formats a drive or runs `sudo`.
-    private func checkWorkDisks() throws {
-        let checks = options.disks.map { SandboxWorkDisk.check(path: $0, volume: workDiskVolume($0)) }
-        printChecks(checks)
-        guard checks.contains(where: { $0.level == .fail }) else { return }
+    /// Prints a `Work disk` line per disk; throws, before anything is
+    /// installed, when one is not ready. At a prompt it offers to turn
+    /// ownership on (sudo asks for the password), then checks that disk
+    /// again; the other fixes are the owner's. Setup never formats a drive.
+    private func checkWorkDisks(_ disks: [String]) throws {
+        var ready = true
+        for path in disks {
+            let check = SandboxWorkDisk.check(path: path, volume: workDiskVolume(path))
+            printChecks([check])
+            guard check.level == .fail else { continue }
+            if let mount = ownershipToTurnOn(path), turnOnOwnership(mount) {
+                let again = SandboxWorkDisk.check(path: path, volume: workDiskVolume(path))
+                printChecks([again])
+                if again.level != .fail { continue }
+            }
+            ready = false
+        }
+        guard !ready else { return }
         print("")
         print(DoctorTerminalStyle.verdict("A work disk is not ready: follow the fix above, then run setup again. "
             + "Nothing changed.", level: .fail, color: color))
         throw ExitCode.failure
     }
 
+    /// The mount point of the drive at `path` when its one problem is
+    /// ownership off and there is a prompt to offer the fix at.
+    private func ownershipToTurnOn(_ path: String) -> String? {
+        guard !confirmed, interactiveInput, let volume = workDiskVolume(path),
+              SandboxWorkDisk.problem(path: path, volume: volume) == .ownershipOff else { return nil }
+        return volume.mountPoint
+    }
+
+    /// Asks, then runs the fix for ownership off; true when it ran and exited 0.
+    private func turnOnOwnership(_ mount: String) -> Bool {
+        guard SandboxTerminal.confirm("Turn ownership on for \(mount) now? Setup runs the command above; sudo asks "
+            + "for your password.") else { return false }
+        guard enableOwnership(mount) else {
+            print("Ownership is still off on \(mount).")
+            return false
+        }
+        return true
+    }
+
+    /// Without `--disk`, at a prompt, and from a release with work disks:
+    /// lists the external drives that could take the VM images and jobs and
+    /// asks which one to use. Enter (or no drive to offer) keeps the internal
+    /// disk. Returns the options with the chosen drive, checked.
+    private func chooseWorkDisk(script: Data) throws -> SandboxSetupOptions {
+        guard options.disks.isEmpty, !confirmed, interactiveInput, SandboxInstaller.supportsDisks(script) else {
+            return options
+        }
+        let drives = workDiskCandidates()
+        guard !drives.isEmpty else { return options }
+        print("")
+        print(DoctorTerminalStyle.heading("Where the VM images and jobs go", color: color))
+        print("  1) This Mac's internal disk")
+        for (index, drive) in drives.enumerated() {
+            let note = drive.ignoresOwnership ? "; ownership is off, setup can turn it on" : ""
+            print("  \(index + 2)) \(drive.mountPoint): \(drive.freeBytes / SandboxEligibility.gib) GiB free\(note)")
+        }
+        print("  Use an external drive only if it is a Thunderbolt or USB4 NVMe SSD that stays connected: a job on "
+            + "a drive that goes away is stopped and not paid.")
+        let choice = SandboxTerminal.choose(count: drives.count + 1)
+        var chosen = options
+        if choice > 1 {
+            chosen.disks = [drives[choice - 2].mountPoint]
+            print("")
+            print(DoctorTerminalStyle.heading("Checking the work disks", color: color))
+            try checkWorkDisks(chosen.disks)
+        }
+        // The plan's lines follow; they no longer sit under "Checking this Mac".
+        print("")
+        print(DoctorTerminalStyle.heading("The add-on's plan for this Mac", color: color))
+        return chosen
+    }
+
     /// Prints the add-on's plan (else the fallback estimate) and the
     /// trade-off, then asks. False when the owner declines; throws when no job
     /// fits.
-    private func sizeAndConfirm(_ eligibility: SandboxEligibility, installer: URL, script: Data) async throws -> Bool {
-        let reportedPlan = try await requestAddonPlan(installer, script: script)
+    private func sizeAndConfirm(_ eligibility: SandboxEligibility, installer: URL, script: Data,
+                                options: SandboxSetupOptions) async throws -> Bool {
+        let reportedPlan = try await requestAddonPlan(installer, script: script, options: options)
         let plan: SandboxSizingPlan
         if let reportedPlan {
             plan = reportedPlan
@@ -342,7 +415,9 @@ struct SandboxSetupFlow {
     /// release and sizes this Mac without installing anything. Nil, for the
     /// fallback, from an installer without plan mode (it names no `--plan`),
     /// a failed run or one without a `plan` event.
-    private func requestAddonPlan(_ installer: URL, script: Data) async throws -> SandboxSizingPlan? {
+    private func requestAddonPlan(_ installer: URL, script: Data, options: SandboxSetupOptions) async throws
+        -> SandboxSizingPlan?
+    {
         guard SandboxInstaller.supportsPlan(script) else { return nil }
         let output = SandboxOutputTail()
         let errors = SandboxOutputTail()

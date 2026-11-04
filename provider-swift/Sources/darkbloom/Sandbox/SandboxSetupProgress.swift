@@ -483,4 +483,17 @@ enum SandboxTerminal {
         let answer = readInput()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
         return ["y", "yes"].contains(answer) || (defaultYes && answer.isEmpty)
     }
+
+    /// Asks for a number from 1 to `count` until it gets one; an empty answer
+    /// or the end of input is 1.
+    static func choose(count: Int, readInput: () -> String? = { readLine() },
+                       emit: (String) -> Void = { write($0) }) -> Int {
+        while true {
+            emit("Choose 1-\(count) [1]: ")
+            guard let answer = readInput()?.trimmingCharacters(in: .whitespacesAndNewlines), !answer.isEmpty else {
+                return 1
+            }
+            if let number = Int(answer), (1...count).contains(number) { return number }
+        }
+    }
 }

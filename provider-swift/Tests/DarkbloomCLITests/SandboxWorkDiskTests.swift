@@ -88,6 +88,72 @@ struct SandboxWorkDiskTests {
         let unplugged = SandboxWorkDisk.check(path: "/Volumes/FastSSD/sandbox", volume: home)
         #expect(unplugged.level == .fail && unplugged.detail == "/Volumes/FastSSD is not a mounted drive")
         #expect(SandboxWorkDisk.check(path: "/Volumes/FastSSD", volume: nil).level == .fail)
+        #expect(SandboxWorkDisk.problem(path: "/Volumes/FastSSD", volume: Self.ready) == nil)
+        #expect(SandboxWorkDisk.problem(path: "/Volumes/FastSSD", volume: Self.ownershipOff) == .ownershipOff)
+        #expect(SandboxWorkDisk.problem(path: "/Volumes/FastSSD", volume: exFAT) == .notAPFS)
+        #expect(SandboxWorkDisk.problem(path: "/Volumes/FastSSD", volume: nil) == .unreadable)
+        // Another drive that ignores ownership, under the path of one that is unplugged: not mounted comes first.
+        let other = SandboxWorkDisk.Volume(mountPoint: "/Volumes/Other", fileSystem: "apfs", ignoresOwnership: true)
+        #expect(SandboxWorkDisk.problem(path: "/Volumes/FastSSD", volume: other) == .notMounted("/Volumes/FastSSD"))
+    }
+
+    @Test("setup offers only drives mounted at their own /Volumes/<name>, shown in Finder, local, writable, APFS and with room")
+    func candidates() throws {
+        let volumes = FileManager.default.temporaryDirectory.appendingPathComponent("volumes-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: volumes) }
+        let names = ["Zed", "Fast", "Startup", "Share", "Locked", "Backup", "Stick", "Small", ".hidden", "Owners"]
+        for name in names {
+            try FileManager.default.createDirectory(at: volumes.appendingPathComponent(name),
+                                                    withIntermediateDirectories: true)
+        }
+        let root = volumes.path
+        let roomy = SandboxWorkDisk.Volume(mountPoint: "", fileSystem: "apfs", ignoresOwnership: false,
+                                           freeBytes: 900 << 30, volumeBytes: 2_000 << 30)
+        func at(_ name: String, _ change: (inout SandboxWorkDisk.Volume) -> Void = { _ in }) -> SandboxWorkDisk.Volume {
+            var volume = roomy
+            volume.mountPoint = root + "/" + name
+            change(&volume)
+            return volume
+        }
+        let byName: [String: SandboxWorkDisk.Volume] = [
+            "Zed": at("Zed"), "Fast": at("Fast"),
+            // The startup disk's link: another mount point.
+            "Startup": at("Startup") { $0.mountPoint = "/" },
+            "Share": at("Share") { $0.local = false },
+            "Locked": at("Locked") { $0.readOnly = true },
+            "Backup": at("Backup") { $0.hidden = true },
+            "Stick": at("Stick") { $0.fileSystem = "exfat" },
+            // A 2 TB drive keeps 100 GiB free and needs 34 GiB for a Linux job and its images.
+            "Small": at("Small") { $0.freeBytes = 133 << 30 },
+            ".hidden": at(".hidden"),
+            "Owners": at("Owners") { $0.ignoresOwnership = true; $0.freeBytes = 134 << 30 },
+        ]
+        let offered = SandboxWorkDisk.candidates(volumesDirectory: root) { path in
+            byName[(path as NSString).lastPathComponent]
+        }
+        #expect(offered.map(\.mountPoint) == ["Fast", "Owners", "Zed"].map { root + "/" + $0 })
+        #expect(SandboxWorkDisk.minimumFreeBytes(volumeBytes: 2_000 << 30) == 134 << 30)
+        #expect(SandboxWorkDisk.candidates(volumesDirectory: root + "/missing") { _ in roomy }.isEmpty)
+    }
+
+    @Test("the drive choice: Enter or the end of input is 1, and setup asks again until it gets a number in range")
+    func choose() {
+        var answers: [String?] = ["4", "two", "0", " 3 "]
+        var prompts: [String] = []
+        #expect(SandboxTerminal.choose(count: 3, readInput: { answers.removeFirst() }, emit: { prompts.append($0) }) == 3)
+        #expect(prompts == Array(repeating: "Choose 1-3 [1]: ", count: 4))
+        #expect(SandboxTerminal.choose(count: 3, readInput: { "" }, emit: { _ in }) == 1)
+        #expect(SandboxTerminal.choose(count: 3, readInput: { nil }, emit: { _ in }) == 1)
+    }
+
+    @Test("without a terminal in the foreground, setup runs no command for the owner")
+    func foregroundNeedsTerminal() async throws {
+        let result = try await #require(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try replaceStandardInput(with: "")
+            print("status \(SandboxWorkDisk.runInForeground("/usr/bin/true", []).map { "\($0)" } ?? "none")")
+            print("enabled \(SandboxWorkDisk.enableOwnership(mountPoint: "/Volumes/FastSSD"))")
+        }
+        #expect(decodedText(result.standardOutputContent) == "status none\nenabled false\n")
     }
 
     @Test("statfs: the temporary directory's volume, and a drive that is not there")
@@ -116,7 +182,7 @@ struct SandboxWorkDiskTests {
     // MARK: - Setup
 
     static let statusWithDisks = SandboxFixtures.ready.replacingOccurrences(
-        of: #"{"accepting""#, with: #"{"disks":[{"path":"/System/Volumes/Data","state":"online"}],"accepting""#)
+        of: #"{"accepting""#, with: #"{"disks":[{"path":"/System/Volumes/Data","root_volume":true,"state":"online"}],"accepting""#)
 
     @Test("ownership off: setup prints the one-line diskutil command and stops before downloading anything")
     func ownershipOff() async throws {
@@ -133,8 +199,7 @@ struct SandboxWorkDiskTests {
         }
         #expect(decodedText(result.standardOutputContent).hasSuffix("""
               [PASS] Sleep: off on the power adapter
-              [FAIL] Work disk: /Volumes/FastSSD ignores file ownership; turning it on needs an administrator, so \
-            run this yourself, then run setup again
+              [FAIL] Work disk: /Volumes/FastSSD ignores file ownership; turning it on needs an administrator
                      ↳ fix: \(Self.enableOwnership)
 
             A work disk is not ready: follow the fix above, then run setup again. Nothing changed.
@@ -250,6 +315,100 @@ struct SandboxWorkDiskTests {
 
             """))
         #expect(output.hasSuffix("== INSTALL\n--json-progress\n--yes\n--disk\n/Volumes/FastSSD\n"))
+    }
+
+    @Test("at a prompt without --disk, setup lists the drives, and the one chosen goes to the plan")
+    func chooseDrive() async throws {
+        let result = try await #require(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            let sandbox = try CLICommandSandbox.enter(autoRestart: false)
+            defer { sandbox.remove() }
+            CoordinatorStub.install(["/install.sh": .init(status: 200, body: Data(FakeSandboxInstaller.script(
+                plan: [Self.externalPlan], workDisks: true).utf8))])
+            try replaceStandardInput(with: "2\nn\n")
+            var offered = Self.ownershipOff
+            offered.freeBytes = 900 << 30
+            try await SandboxSetupFlow(
+                options: SandboxSetupOptions(server: "https://sandbox.invalid"),
+                confirmed: false, addon: .live(), interactiveInput: true, terminal: false, color: false,
+                probe: { _ in .mac(cores: 16, memoryGiB: 128) }, workDiskVolume: { _ in Self.ready },
+                workDiskCandidates: { [offered] in [offered] }).run()
+            print("== PLAN")
+            print(try String(contentsOf: sandbox.sandboxAddonRoot.appendingPathComponent("plan-arguments"),
+                             encoding: .utf8), terminator: "")
+            let installed = sandbox.sandboxAddonRoot.appendingPathComponent("installer-arguments")
+            print("installed \(FileManager.default.fileExists(atPath: installed.path))")
+        }
+        let output = decodedText(result.standardOutputContent)
+        #expect(output.contains("""
+            Where the VM images and jobs go
+              1) This Mac's internal disk
+              2) /Volumes/FastSSD: 900 GiB free; ownership is off, setup can turn it on
+              Use an external drive only if it is a Thunderbolt or USB4 NVMe SSD that stays connected: a job on a \
+            drive that goes away is stopped and not paid.
+            Choose 1-2 [1]:\u{20}
+            Checking the work disks
+              [PASS] Work disk: /Volumes/FastSSD: APFS, ownership on
+
+            The add-on's plan for this Mac
+              [PASS] CPU: 16 cores; you keep 4
+
+            """))
+        #expect(output.hasSuffix("Set up Darkbloom Sandbox on this Mac? [y/N]: Nothing changed.\n== PLAN\n"
+            + "--plan\n--json-progress\n--disk\n/Volumes/FastSSD\ninstalled false\n"))
+    }
+
+    @Test("ownership off at a prompt: setup offers the command, runs it when the owner agrees, and checks again")
+    func turnOwnershipOn() async throws {
+        let result = try await #require(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            let sandbox = try CLICommandSandbox.enter(autoRestart: false)
+            defer { sandbox.remove() }
+            CoordinatorStub.install(["/install.sh": .init(status: 200, body: Data(FakeSandboxInstaller.script(
+                plan: [Self.externalPlan], workDisks: true).utf8))])
+            try replaceStandardInput(with: "y\nn\n")
+            let marker = sandbox.sandboxAddonRoot.deletingLastPathComponent().appendingPathComponent("ownership").path
+            try await SandboxSetupFlow(
+                options: SandboxSetupOptions(server: "https://sandbox.invalid", disks: ["/Volumes/FastSSD"]),
+                confirmed: false, addon: .live(), interactiveInput: true, terminal: false, color: false,
+                probe: { _ in .mac(cores: 16, memoryGiB: 128) },
+                workDiskVolume: { _ in FileManager.default.fileExists(atPath: marker) ? Self.ready : Self.ownershipOff },
+                workDiskCandidates: { [] },
+                enableOwnership: { FileManager.default.createFile(atPath: marker, contents: Data($0.utf8)) }).run()
+            let enabled = try String(contentsOfFile: marker, encoding: .utf8)
+            print("enabled on \(enabled)")
+        }
+        let output = decodedText(result.standardOutputContent)
+        #expect(output.contains("""
+              [FAIL] Work disk: /Volumes/FastSSD ignores file ownership; turning it on needs an administrator
+                     ↳ fix: \(Self.enableOwnership)
+            Turn ownership on for /Volumes/FastSSD now? Setup runs the command above; sudo asks for your password. \
+            [y/N]:   [PASS] Work disk: /Volumes/FastSSD: APFS, ownership on
+              [PASS] CPU: 16 cores; you keep 4
+
+            """))
+        #expect(output.hasSuffix("Nothing changed.\nenabled on /Volumes/FastSSD\n"))
+    }
+
+    @Test("ownership still off after the command: setup stops before downloading anything")
+    func ownershipStillOff() async throws {
+        let result = try await #require(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            _ = try CLICommandSandbox.enter(autoRestart: false)
+            try replaceStandardInput(with: "y\n")
+            await exitWithCommandStatus {
+                defer { print("requests \(CoordinatorStub.requests.count)") }
+                try await SandboxSetupFlow(
+                    options: SandboxSetupOptions(server: "https://sandbox.invalid", disks: ["/Volumes/FastSSD"]),
+                    confirmed: false, addon: .live(), interactiveInput: true, terminal: false, color: false,
+                    probe: { _ in .mac(cores: 16, memoryGiB: 128) }, workDiskVolume: { _ in Self.ownershipOff },
+                    enableOwnership: { _ in false }).run()
+            }
+        }
+        #expect(decodedText(result.standardOutputContent).hasSuffix("""
+            [y/N]: Ownership is still off on /Volumes/FastSSD.
+
+            A work disk is not ready: follow the fix above, then run setup again. Nothing changed.
+            requests 0
+
+            """))
     }
 
     @Test("a set-up Mac offers --disk only when its add-on takes it")

@@ -167,6 +167,8 @@ are tabulated in [`cli-reference.md`](./cli-reference.md#runtime-constants).
 |---|---|---|
 | The part log (`~/.darkbloom/cluster-setup/rank.log`) repeats `This Mac cannot register the saved roster: This Mac's Secure Enclave key is not the one it paired with; pair again.` | The pairing was made with another Secure Enclave key: the Mac moved between the Darkbloom and DevNet apps, or the official installer made a new key | Run `darkbloom cluster` on each Mac and choose **Pair again** ([pairing again](./two-mac-cluster.md#pairing-again)) |
 | One Mac waits at "2/4 Pair"; the other shows its status and ends, or says "The other Mac doesn't answer over the cable" | The second Mac still holds an earlier pairing, so it never joins the waiting Mac | On the second Mac run `darkbloom cluster` and choose **Pair again** |
+| "3/4 Model" stays on "Reading both Macs over the cable" | The other Mac stopped answering; the screen says why each time the reason changes, and after 2 minutes offers **Try again**, **Pair again** and **Quit** | Run `darkbloom cluster` on the other Mac first, then **Try again**; **Pair again** if it was reinstalled, unpaired or replaced |
+| You want to set the pair up from scratch (after `darkbloom cluster link --remove`, an uninstall or a move to other Macs) | The pairing and the cluster setup stay on each Mac until removed | Run `darkbloom cluster` and choose **Start over (pair again)**, then answer **Yes, start over**; on the other Mac choose **Pair again** if it asks |
 
 ## Models and memory
 

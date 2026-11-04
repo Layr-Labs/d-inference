@@ -150,14 +150,18 @@ check its status, and choose **Test** to try again.
 `darkbloom cluster` run again shows the cluster's status in one line and, on
 the leader, a list: **Test**, **Change model** (**Choose a model** when
 stopped), **Serve locally** or **Serve through Darkbloom**, **Stop**, **Check
-memory is freed** and **Quit**, with **Set up the cable port** first when the
-cable moved to a port not set up yet. On the other Mac it shows the status and
-"Nothing to do here: manage it on the other Mac (`darkbloom cluster`).": its
-part runs by itself, and setting up such a port is the only choice it offers
-([below](#when-something-is-in-the-way)). Either Mac first asks the other over
-the cable; when it does not answer, or when the saved pairing was made with
-another Secure Enclave key, the screen says so and offers **Pair again**
-([pairing again](#pairing-again)).
+memory is freed**, **Start over (pair again)** and **Quit**, with **Set up the
+cable port** first when the cable moved to a port not set up yet. On the other
+Mac it shows the status, then "This Mac follows the other Mac (<its hardware
+name>): to choose or change the model, run `darkbloom cluster` on that Mac.",
+and offers **Start over (pair again)** or **Quit** (enter quits): its part runs
+by itself. A cable port set up from either screen continues to that screen
+([below](#when-something-is-in-the-way)). **Start over (pair again)** asks once
+("Unpair this Mac and pair the two Macs again?", **No** by default), then
+unpairs this Mac and pairs again ([pairing again](#pairing-again)). Either Mac
+first asks the other over the cable; when it does not answer, or when the saved
+pairing was made with another Secure Enclave key, the screen says so and offers
+**Pair again** without the question.
 
 The planner picks tensor parallel or pipeline for your Macs by itself. Phase
 split is off. A model whose artifact ships a speculative (MTP) head can also
@@ -819,8 +823,9 @@ drained for an update yet: its update waits while it serves (the log says
 - **The cable moved to another Thunderbolt port**: an already configured port
   is reused without another configuration prompt. For a port not yet configured,
   run `darkbloom cluster` and choose **Set up the cable port** when offered; macOS asks for administrator
-  approval to configure that port. Recovery RDMA enablement and Local Network
-  privacy permission remain separate steps.
+  approval to configure that port, and the same run goes on to the Mac's usual
+  screen. Recovery RDMA enablement and Local Network privacy permission remain
+  separate steps.
 - **The Macs were paired again** while their cluster services ran
   (`darkbloom cluster` or `darkbloom cluster pair`): each service answers with
   the new pairing within seconds, and its log,
@@ -874,10 +879,14 @@ with "This Mac's Secure Enclave key is not the one it paired with; pair again."
    - "This Mac's Secure Enclave key changed after it paired (…), so the Macs
      must pair again to serve through Darkbloom." (this Mac's key is not the one
      its pairing names; offered with **Quit**);
-   - "The other Mac doesn't answer over the cable: if it is on and connected, it
-     no longer has this pairing (reinstalled, unpaired or replaced), so pair
-     again." (offered with **Try again** and **Quit**; on the leader, in its list
-     before **Quit**).
+   - "The other Mac doesn't answer over the cable: run `darkbloom cluster` on it
+     first; Pair again if it was reinstalled, unpaired or replaced." (offered
+     with **Try again** and **Quit**; on the leader, in its list before **Quit**).
+     The same three choices end a model choice whose other Mac stops answering;
+     while it waits, the screen says why ("Waiting for the other Mac's cluster
+     service: …").
+   - On a pairing that works, **Start over (pair again)** does the same after one
+     question.
 2. Choose **Pair again**. This Mac unpairs as `darkbloom cluster pair --forget`
    does ([undo](#undo)), says "✓ Unpaired this Mac.", then runs the ordinary
    setup and waits at "2/4 Pair".

@@ -3798,6 +3798,12 @@ serve. Two facts end that (`ClusterOnboardingPairingProblem`):
 | `keyChanged` | `OnboardingLive.resume` compares the pairing's local pin with this Mac's current key, read without creating, deleting or repairing one (`ClusterPairingProvider.existingPin`); no key read claims nothing. A roster names the key that paired, so the member start refuses another (`ProviderLoop.nativePairRosterNamesAnotherKey`) | **Pair again**, **Quit** (instead of the leader's list or the member's status) |
 | `otherMacSilent` | One status request over the cable (`OnboardingLive.otherMacAnswers`, `answerSeconds` = `8`), which only a Mac holding this pairing's edge secret answers. Not asked right after pairing, nor when the cable is on a port that is not set up | Member: **Try again**, **Pair again**, **Quit**; leader: **Pair again** before **Quit** in its list |
 
+A pairing that works offers **Start over (pair again)** instead, after one
+confirmation whose default is No (`ClusterOnboardingDriver.startOver`). Reading
+both Macs for the model list says each new reason the other Mac has not answered
+(`reachMembers`'s `waiting`, from `OnboardingLive.localReachMembers`); on a Mac
+paired before the run it ends with **Try again**, **Pair again** and **Quit**.
+
 **Pair again** runs `ClusterUnpairing.run`, the steps of `darkbloom cluster pair
 --forget` (a leader tells its member, the pairing store forgets the peer pin, the
 service leaves login with no pairing left, the pair prefix records are

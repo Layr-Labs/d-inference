@@ -472,7 +472,7 @@ What `darkbloom cluster` status says in each mode:
 | Mode | Status line |
 |---|---|
 | Registered, paired and loaded | `Serving <model> through Darkbloom on both Macs (<split>).` |
-| Registered, not serving yet | `<model> is not serving yet: <reason or progress>.`, then what to do (a missing login, App Attest, memory) |
+| Registered, not serving yet | `<model> is not serving yet: <reason or progress>.` (a missing login, App Attest, memory). The leading Mac's setup screen adds what to do under its ✗; `cluster status` says it in `Next:` |
 | On the leader's local API: not offered | `<model> is not serving yet: not offered to Darkbloom (<why>).`, then `Meanwhile it answers only on the local API at http://localhost:<port> (no Darkbloom traffic).` and the test's line. `<why>` is one of the rows below, never "earning through Darkbloom" |
 | … coordinator gave no answer for the grace | `The coordinator has not answered for 10 minutes: the pair serves on the leader's local API until it answers again, then it is offered again with approval <id>` |
 | … approval no longer listed | `The coordinator no longer lists cluster approval <id>: the pair serves on the leader's local API until it lists a matching one again` |

@@ -1494,6 +1494,14 @@ final class OnboardingLive: @unchecked Sendable {
             + outcome.dropFirst()
     }
 
+    /// The status of a pair offered for pairing that doesn't serve yet: why, or what it waits for, in one line. The
+    /// leading Mac's setup screen adds its next step under its ✗ (`ClusterOnboardingNotServing.remedy`, which names its
+    /// Retry). The status carries none: `cluster status` and the other Mac's window read it, and neither has a Retry
+    /// (the DevNet traffic run, 2026-11-04).
+    static func offeredWaitLines(model: String, reason: String?, wait: String) -> [String] {
+        [ClusterOnboardingNotServing.statusLine(model: model, reason: reason ?? wait)]
+    }
+
     /// The record with the pair's new way of serving (`localSetScope`): no earlier test's result holds for it.
     static func savingScope(_ scope: ClusterServingScope, _ record: inout ClusterSetupRecord) {
         record.leadership?.scope = scope
@@ -2156,8 +2164,7 @@ final class OnboardingLive: @unchecked Sendable {
                     lines.append(registered.pairServingLine(model: model) + ".")
                 } else {
                     let wait = look.progress.components(separatedBy: "\n").first ?? look.progress
-                    lines.append(ClusterOnboardingNotServing.statusLine(model: model, reason: look.reason ?? wait))
-                    if let remedy = look.reason.flatMap(ClusterOnboardingNotServing.remedy(forReason:)) { lines.append(remedy) }
+                    lines += Self.offeredWaitLines(model: model, reason: look.reason, wait: wait)
                 }
             } else {
                 lines.append("\(model): \(ready.line).")

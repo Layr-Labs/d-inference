@@ -139,6 +139,17 @@ struct ClusterOnboardingPeerLabelTests {
             == "m is not serving yet: not offered to Darkbloom (the coordinator could not be reached or has no cluster support).")
     }
 
+    /// The DevNet traffic run (2026-11-04): `cluster status` repeated the setup screen's "Then choose Retry, or serve
+    /// locally only now." under an offered pair's reason, but it has no Retry, and neither has the other Mac's window.
+    @Test func anOfferedPairsWaitNamesNoScreenChoice() {
+        let reason = ClusterOnboardingNotServing.notVerified(ClusterOnboardingMacName.this)
+        let wait = "waiting for the coordinator to pair both Macs"
+        let lines = OnboardingLive.offeredWaitLines(model: "Qwen 3.8 27B", reason: reason, wait: wait)
+        #expect(lines == [ClusterOnboardingNotServing.statusLine(model: "Qwen 3.8 27B", reason: reason)])
+        #expect(!lines.joined().contains("Retry") && ClusterOnboardingNotServing.remedy(forReason: reason)?.contains("Retry") == true)
+        #expect(OnboardingLive.offeredWaitLines(model: "m", reason: nil, wait: wait) == ["m is not serving yet: \(wait)."])
+    }
+
     /// A running start publishes its own outcome: while its mark is live, another test writes nothing.
     @Test func aRunningStartsOutcomeIsNeverOverwrittenByAnotherTest() throws {
         let fixture = try Fixture()

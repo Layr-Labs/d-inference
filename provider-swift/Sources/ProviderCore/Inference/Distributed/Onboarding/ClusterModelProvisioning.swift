@@ -345,12 +345,11 @@ public struct ClusterDiskSpace: Sendable, Equatable {
         return !overflow && freeBytes >= need
     }
 
-    /// "macOS could free up to 202.5 GB more (…)": only when `bytes` and `reserve` do not fit now and that space would
-    /// make room.
-    func purgeableNote(_ bytes: Int64, keeping reserve: Int64) -> String? {
+    /// Whether `bytes` and `reserve` do not fit now but what macOS could purge alone would make room: only then is that
+    /// space said (`ClusterModelProvisioning.diskShortWords`).
+    func purgingWouldMakeRoom(_ bytes: Int64, keeping reserve: Int64) -> Bool {
         let (need, overflow) = bytes.addingReportingOverflow(reserve)
-        guard !overflow, freeBytes < need, purgeableBytes >= need - freeBytes else { return nil }
-        return "macOS could free up to \(ClusterModelProvisioning.gigabytes(purgeableBytes)) more (purgeable files such as local snapshots), but Darkbloom doesn't count on it"
+        return !overflow && freeBytes < need && purgeableBytes >= need - freeBytes
     }
 }
 
@@ -446,10 +445,11 @@ public enum ClusterModelProvisioning {
     public static func gigabytes(_ bytes: Int64) -> String { String(format: "%.1f GB", Double(bytes) / 1e9) }
 
     /// "this Mac has 54.1 GB free; the model needs 172.9 GB and 2.1 GB to spare", then what macOS could purge when that
-    /// would make room (`ClusterDiskSpace.purgeableNote`). `what` is "the model" or "the copy".
+    /// alone would make room (`ClusterDiskSpace.purgingWouldMakeRoom`). `what` is "the model" or "the copy".
     static func diskShortWords(mac: String, disk: ClusterDiskSpace, needs what: String, bytes: Int64) -> String {
         let words = "\(mac) has \(gigabytes(disk.freeBytes)) free; \(what) needs \(gigabytes(bytes)) and \(gigabytes(reserveBytes)) to spare"
-        return disk.purgeableNote(bytes, keeping: reserveBytes).map { words + ". " + $0 } ?? words
+        guard disk.purgingWouldMakeRoom(bytes, keeping: reserveBytes) else { return words }
+        return words + ". macOS could free up to \(gigabytes(disk.purgeableBytes)) more (purgeable files such as local snapshots), but Darkbloom doesn't count on it"
     }
 
     /// "about 4 s", "about 3 min".
@@ -647,12 +647,11 @@ public final class ClusterModelReceiver: @unchecked Sendable {
     /// Something else filled the disk during the copy: stop before it is full (half the reserve is kept for macOS),
     /// with what is staged kept for the resume and the reason in words.
     private func checkFreeDisk() throws {
-        guard let free = diskSpace(store)?.freeBytes else { return }
         let keep = ClusterModelProvisioning.reserveBytes / 2
-        guard free < remaining + keep else { return }
+        guard let disk = diskSpace(store), !disk.holds(remaining, keeping: keep) else { return }
         if let open = current { _ = fsync(open.fd); close(open.fd); current = nil }
         let staged = max(0, artifact.totalBytes - remaining)
-        throw ClusterModelProvisioningError("this Mac's free disk fell to \(ClusterModelProvisioning.gigabytes(free)) during the copy (something else is writing to it); the copy needs \(ClusterModelProvisioning.gigabytes(remaining)) more and \(ClusterModelProvisioning.gigabytes(keep)) to spare, so it stopped with \(ClusterModelProvisioning.gigabytes(staged)) staged and kept for the resume. Free some space and run `darkbloom cluster` again")
+        throw ClusterModelProvisioningError("this Mac's free disk fell to \(ClusterModelProvisioning.gigabytes(disk.freeBytes)) during the copy (something else is writing to it); the copy needs \(ClusterModelProvisioning.gigabytes(remaining)) more and \(ClusterModelProvisioning.gigabytes(keep)) to spare, so it stopped with \(ClusterModelProvisioning.gigabytes(staged)) staged and kept for the resume. Free some space and run `darkbloom cluster` again")
     }
 
     /// The last byte of file `index` arrived: verify its size and digest, then move it to its name.

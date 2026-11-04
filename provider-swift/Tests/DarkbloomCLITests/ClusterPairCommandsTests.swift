@@ -735,3 +735,133 @@ struct ClusterPairControlTests {
         #expect(stdout.contains("\nSingle-Mac serving: off (this Mac serves in its two-Mac cluster: `darkbloom cluster status`)\n"))
     }
 }
+
+// MARK: - The Darkbloom look in a terminal
+
+/// A look as a 120-column UTF-8 terminal gives it (`DarkbloomCommandLook.forTesting`), still, so the stream is exact.
+private func terminalLook() -> DarkbloomCommandLook {
+    DarkbloomCommandLook(mode: .init(decorates: true, animates: false, columns: 120),
+                         environment: ["TERM": "xterm-256color", "LANG": "en_US.UTF-8"], pause: { _ in })
+}
+
+/// The decorated stream less the mark block and the live line: what a transcript would have had.
+private func withoutLook(_ stream: String, title: String) -> String {
+    let mark = "\n" + DarkbloomCommandLook.mark(title, revealed: Int.max, colour: "38;5;27") + "\n"
+    let rest = stream.hasPrefix(mark) ? String(stream.dropFirst(mark.count)) : stream
+    let live = try! NSRegularExpression(pattern: "\r\u{1B}\\[J(  \u{1B}\\[[0-9;]+m.\u{1B}\\[0m \u{1B}\\[2m[^\u{1B}]*\u{2026}\u{1B}\\[0m)?")
+    return live.stringByReplacingMatches(in: rest, range: NSRange(rest.startIndex..., in: rest), withTemplate: "")
+}
+
+@Suite("the everyday commands in a terminal: the Darkbloom mark and the live line, the plain transcript's lines unchanged")
+struct DarkbloomCommandLookRunTests {
+    @Test("`darkbloom stop` opens with the mark beside its title, shows the live line, and says every plain line in order")
+    func stop() async {
+        let plain = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await exitWithPair(servingPair(), actions: pairActions()) { _ in try await runCLICommand(Stop.self, ["stop"]) }
+        }
+        let decorated = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await DarkbloomCommandLook.$forTesting.withValue(terminalLook()) {
+                try await exitWithPair(servingPair(), actions: pairActions()) { _ in try await runCLICommand(Stop.self, ["stop"]) }
+            }
+        }
+        let stream = text(decorated?.standardOutputContent)
+        #expect(stream.hasPrefix("\n" + DarkbloomCommandLook.mark("Darkbloom stop", revealed: Int.max, colour: "38;5;27") + "\n"),
+                "\(stream.debugDescription)")
+        #expect(stream.contains("\u{1B}[2mStopping both Macs\u{2026}\u{1B}[0m"))
+        #expect(withoutLook(stream, title: "Darkbloom stop") == text(plain?.standardOutputContent))
+        #expect(lines(plain?.standardOutputContent) == [
+            "This Mac is in a two-Mac cluster with \(otherMac): stopping both Macs.",
+            "Stopped on both Macs. They stay stopped after a restart; `darkbloom start` on either Mac starts the pair again.",
+            "Memory freed on both Macs ✓", ""])
+        #expect(!stream.contains("\u{1B}[?25l"))
+    }
+
+    @Test("`darkbloom restart` opens with the mark and keeps every plain line in order")
+    func restart() async {
+        let plain = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await exitWithPair(servingPair(), actions: pairActions()) { _ in try await runCLICommand(Restart.self, ["restart"]) }
+        }
+        let decorated = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await DarkbloomCommandLook.$forTesting.withValue(terminalLook()) {
+                try await exitWithPair(servingPair(), actions: pairActions()) { _ in try await runCLICommand(Restart.self, ["restart"]) }
+            }
+        }
+        let stream = text(decorated?.standardOutputContent)
+        #expect(stream.hasPrefix("\n" + DarkbloomCommandLook.mark("Darkbloom restart", revealed: Int.max, colour: "38;5;27") + "\n"),
+                "\(stream.debugDescription)")
+        #expect(stream.contains("\u{1B}[2mRestarting both Macs\u{2026}\u{1B}[0m"))
+        #expect(withoutLook(stream, title: "Darkbloom restart") == text(plain?.standardOutputContent))
+        #expect(lines(plain?.standardOutputContent) == ["This Mac is in a two-Mac cluster with \(otherMac): restarting both Macs.",
+            "  Stopped on both Macs; starting it again."] + servingBlock + [""])
+    }
+
+    @Test("`darkbloom status` opens with the mark, then the pair block as without it")
+    func status() async {
+        let decorated = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await DarkbloomCommandLook.$forTesting.withValue(terminalLook()) {
+                try await exitWithPair(servingPair(), actions: nil) { sandbox in
+                    try await runCLICommand(Status.self, ["status", "--config", sandbox.config.path])
+                }
+            }
+        }
+        let stream = text(decorated?.standardOutputContent)
+        #expect(stream.hasPrefix("\n" + DarkbloomCommandLook.mark("Darkbloom status", revealed: Int.max, colour: "38;5;27") + "\n"
+            + "Cluster: this Mac (Mac Studio) leads · \(otherMac) follows\n"), "\(stream.debugDescription)")
+    }
+
+    @Test("`darkbloom start` on a paired Mac in a terminal opens the cluster's screen, which draws the mark: never twice")
+    func startOpensTheScreen() async {
+        let decorated = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await DarkbloomCommandLook.$forTesting.withValue(terminalLook()) {
+                try await exitWithPair(servingPair(), actions: pairActions()) { _ in
+                    try await ClusterPairCommands.$terminalForTesting.withValue(true) {
+                        try await ClusterPairCommands.$screenForTesting.withValue({ _ in print("screen") }) {
+                            try await runCLICommand(Start.self, ["start"])
+                        }
+                    }
+                }
+            }
+        }
+        #expect(lines(decorated?.standardOutputContent) == [
+            "This Mac is in a two-Mac cluster with \(otherMac): starting the pair.", "screen", ""])
+    }
+
+    @Test("NO_COLOR, TERM=dumb, CI, DARKBLOOM_NO_ANIMATION and a narrow window: plain or still; --json never decorated")
+    func plainAndStill() async throws {
+        for environment in [["NO_COLOR": "1"], ["TERM": "dumb"], ["LANG": "C"]] {
+            let mode = DarkbloomCommandLook.Mode.of(inputIsTerminal: true, outputIsTerminal: true, columns: 120,
+                environment: ["TERM": "xterm-256color", "LANG": "en_US.UTF-8"].merging(environment) { $1 })
+            #expect(mode == .init(decorates: false, animates: false, columns: 120), "\(environment)")
+        }
+        #expect(!DarkbloomCommandLook.Mode.of(inputIsTerminal: true, outputIsTerminal: true, columns: 39,
+            environment: ["TERM": "xterm-256color", "LANG": "en_US.UTF-8"]).decorates)
+        for environment in [["CI": "true"], ["DARKBLOOM_NO_ANIMATION": "1"]] {
+            let mode = DarkbloomCommandLook.Mode.of(inputIsTerminal: true, outputIsTerminal: true, columns: 120,
+                environment: ["TERM": "xterm-256color", "LANG": "en_US.UTF-8"].merging(environment) { $1 })
+            #expect(mode == .init(decorates: true, animates: false, columns: 120), "\(environment)")
+        }
+        // A plain look in a command: the transcript's bytes exactly.
+        let plainLook = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await DarkbloomCommandLook.$forTesting.withValue(DarkbloomCommandLook(mode: .of(inputIsTerminal: true,
+                outputIsTerminal: true, columns: 120, environment: ["TERM": "dumb", "LANG": "en_US.UTF-8"]))) {
+                try await exitWithPair(servingPair(), actions: pairActions()) { _ in try await runCLICommand(Stop.self, ["stop"]) }
+            }
+        }
+        #expect(lines(plainLook?.standardOutputContent) == [
+            "This Mac is in a two-Mac cluster with \(otherMac): stopping both Macs.",
+            "Stopped on both Macs. They stay stopped after a restart; `darkbloom start` on either Mac starts the pair again.",
+            "Memory freed on both Macs ✓", ""])
+        // --json: one object, no terminal code, even with a terminal's look.
+        let json = await #expect(processExitsWith: .exitCode(4), observing: [\.standardOutputContent]) {
+            var summary = pair(started: false)
+            summary.state = .stopped
+            try await DarkbloomCommandLook.$forTesting.withValue(terminalLook()) {
+                try await exitWithPair(summary) { try await runCLICommand(Cluster.Status.self, ["cluster", "status", "--json"]) }
+            }
+        }
+        let bytes = json?.standardOutputContent ?? []
+        #expect(!bytes.contains(0x1B))
+        let object = try #require(try JSONSerialization.jsonObject(with: Data(bytes)) as? [String: Any])
+        #expect(object["state"] as? String == "stopped")
+    }
+}

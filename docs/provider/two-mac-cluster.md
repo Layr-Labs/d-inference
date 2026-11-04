@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-03
+> Last updated: 2026-11-04
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -589,15 +589,11 @@ when two things hold, by the same rule the load-time memory gate uses:
   split whose GPU part is larger is never offered, however much memory is free,
   because its first requests would fail with "Insufficient Memory".
 
-When a model fits only with a higher GPU limit, the plan says so as data
-(`ClusterPlacementMemoryVerdict.needsGPULimitRaise`): each Mac's GPU need, its
-limit now and the most Darkbloom would set, physical memory less 16 GiB (112 GiB
-of 128 GB, 240 GiB of 256 GB, the value the production GLM hosts run; a
-sixteenth of memory from 512 GB). Its question reads, for example: "MiMo needs
-109 GB of GPU memory on this Mac; macOS allows 107 GB by default. Allow
-Darkbloom to raise it to 112 GB? (one password prompt; kept after a restart)".
-MiMo V2.6 Flash fits two 128 GB Macs without a raise in all three modes (per
-Mac at most 95.9 GiB on the GPU, tensor parallel, against 107.52 GiB).
+The plan uses the limit each Mac reports: `iogpu.wired_limit_mb` when it is
+set, else macOS's default. `darkbloom cluster` does not change it, so a model
+whose split needs more GPU memory than these limits is not offered. MiMo V2.6
+Flash fits two 128 GB Macs at the default limit in all three modes (per Mac at
+most 95.9 GiB on the GPU, tensor parallel, against 107.52 GiB).
 
 When several splits predict the same time (two identical Macs, or Macs with
 equal measured speed), the one that leaves each Mac the largest share of its

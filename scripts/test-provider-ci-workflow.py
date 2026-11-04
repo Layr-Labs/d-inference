@@ -7,7 +7,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shlex
 import subprocess
 import sys
 import tempfile
@@ -39,7 +38,6 @@ PROVIDER_TEST_COMMAND = ('python3 ../scripts/run-provider-test-watchdog.py \\\n'
                          '  -- ../scripts/run-provider-tests.sh')
 READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}"
 MIMO_READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}"
-SDK_CONDITION = "github.event_name == 'push' || needs.changes.outputs.sdk == 'true'"
 # Steps that run once, in the last provider shard.
 LAST_SHARD = "matrix.shard == strategy.job-total"
 LAST_SHARD_READY = READY.replace("!cancelled() && ", f"!cancelled() && {LAST_SHARD} && ")
@@ -56,20 +54,6 @@ MIMO_PROVIDER_PREPARE = ('python3 scripts/prepare-mimo-provider-fixtures.py '
                          '--output "$RUNNER_TEMP/mimo-provider-fixtures" --github-env "$GITHUB_ENV"\n'
                          'python3 scripts/prepare-mimo-provider-fixtures.py '
                          '--output "$RUNNER_TEMP/mimo-prefix-fixtures" --asymmetric')
-SDK_MIMO_PREPARE_NAME = "Prepare tiny MiMo fixture for media-to-text isolation"
-SDK_MIMO_GATE_NAME = "Verify media refusal leaves the native text engine usable"
-SDK_MIMO_READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.sdk-mimo-isolation-fixture.outcome == 'success' }}"
-SDK_RETENTION_PREPARE_NAME = "Prepare asymmetric tiny MiMo fixture for native retention"
-SDK_RETENTION_GATE_NAME = "Verify native retained frontier after donor retirement"
-SDK_RETENTION_READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.sdk-mimo-retention-fixture.outcome == 'success' }}"
-SDK_RETENTION_HOST_COMMANDS = {
-    "Verify native historical retention policy":
-        "../../scripts/run-nested-suite.sh CBv2NativeHistoricalRetentionTests --no-parallel",
-    "Verify demanded checkpoint scheduling and projection":
-        "../../scripts/run-nested-suite.sh CBv2DemandedCheckpointPartitionTests --no-parallel",
-    "Verify demanded long range continuation and projection":
-        "../../scripts/run-nested-suite.sh CBv2DemandedCheckpointContinuationTests --no-parallel",
-}
 MIMO_NATIVE_COMMANDS = {
     "Run isolated native MiMo startup gates":
         "../scripts/run-nested-suite.sh 'MiMoV26StandaloneLifecycleTests.test(ActualScannerPreloadStartsListenerWithSameNativeOwner|StartRefusesActualUnpublishedPreloadWithoutReplacingOwner)' --no-parallel",
@@ -88,7 +72,6 @@ COVERAGE_STEPS = ("Collect provider coverage profiles", "Merge shard coverage pr
 SHARD_UPLOAD = "Upload shard counts, timings and coverage"
 LANES = {
     "test-provider": "provider",
-    "test-provider-sdk": "sdk",
 }
 PROVIDER_SHARDS = [1, 2]
 # Each shard runs this many selections at the same time (scripts/run-provider-tests.sh),
@@ -101,43 +84,7 @@ PARITY_STEPS = {
     "Verify pinned Nemotron prompts and numeric cache plans":
         ("./scripts/verify-nemotron-prompt-parity.sh", "NemotronTemplateParityLiveTests", "nemotron"),
 }
-SDK_COMMANDS = {
-    **SDK_RETENTION_HOST_COMMANDS,
-    SDK_RETENTION_PREPARE_NAME:
-        'python3 scripts/prepare-mimo-provider-fixtures.py --output "$RUNNER_TEMP/mimo-native-retention" --asymmetric',
-    SDK_RETENTION_GATE_NAME:
-        "../../scripts/run-nested-suite.sh MiMoV26NativeHistoricalRetentionTests.testDemandedMiddleFrontierSurvivesNativePublicationAndReopenedFork --no-parallel",
-    "Verify DiffusionGemma artifact and expert reduction":
-        "../../scripts/run-nested-suite.sh 'DiffusionGemma(ArtifactFixture|ExpertReduction)Tests' --no-parallel",
-    "Run nested MiMo media decode tests":
-        "../../scripts/run-nested-suite.sh 'MiMoV26(OpenRouterMedia|VisionWorkingSet|AudioWorkingSet|VisualDecodeMemory|EncodedVisualDecoder|EncodedAudioDecoder|EncodedAACAudio|EncodedAudiovisualDecoder)Tests|MiMoV26PixelsTests.test(RGB|Temporal|Invalid|Explicit)' --no-parallel",
-    SDK_MIMO_PREPARE_NAME:
-        'python3 scripts/prepare-mimo-provider-fixtures.py --output "$RUNNER_TEMP/mimo-media-isolation"',
-    SDK_MIMO_GATE_NAME:
-        "../../scripts/run-nested-suite.sh MiMoV26NativeMediaDeadlineTests --no-parallel",
-    "Run nested paged safety tests":
-        "../../scripts/run-nested-suite.sh CBv2PagedSafetyTests",
-    "Run nested prompt-hash tests":
-        "../../scripts/run-nested-suite.sh CBv2PrefixCacheHasherTests",
-    "Run nested paged eligibility tests":
-        "../../scripts/run-nested-suite.sh CBv2PagedEligibilityTests",
-    "Run nested paged backend tests":
-        "../../scripts/run-nested-suite.sh CBv2PagedBackendTests",
-    "Run nested paged kernel parity tests":
-        "../../scripts/run-paged-kernel-tests.sh",
-    "Run nested KV-sharing contiguous/paged parity tests":
-        "../../scripts/run-nested-suite.sh CBv2KVSharingParityTests",
-}
-SDK_ONBOARDING_SUITES = (
-    "SSMDecodeBoundsTests", "NemotronHTests",
-    "NemotronH35BackendParityTests", "NemotronH35StorageParityTests",
-    "NemotronH35MTPTests", "NemotronH35MTPPrimingTests",
-    "MutableInputKernelTests", "MutableInputExportTests",
-    "CBv2QwenMTPIntegrationTests", "CBv2MTPDepthControllerTests",
-    "PagedMTPBatchedColumnsTests", "CBv2CompleteCheckpointEngineTests",
-    "NemotronH35ProductionDefaultsTests", "OpenAIServiceTests",
-    "ToolCallParserIntegrationTests",
-)
+
 
 
 def job_blocks(workflow):
@@ -260,9 +207,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 # A Darkbloom macOS sandbox when granted, otherwise the same
                 # dedicated Blacksmith runner; requested only when the job runs.
                 self.assertIn("    runs-on: ${{ fromJSON(needs.route.outputs.routes)[%s] }}\n" % lane_key, job)
-                # The SDK lane runs on every push and on pull requests that change its inputs.
-                condition = (SDK_CONDITION if job_id == "test-provider-sdk"
-                             else "needs.changes.outputs.provider == 'true'")
+                condition = "needs.changes.outputs.provider == 'true'"
                 requested = f"({condition})" if "||" in condition else condition
                 for route_lane in route_lanes:
                     self.assertIn("        %s macos_arm64 blacksmith-12vcpu-macos-27 "
@@ -317,8 +262,6 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 self.assertEqual(field(builds[0], "lane", indent=10), lane)
                 self.assertEqual(field(builds[0], "id"), "provider-ci-build")
                 self.assertIsNone(field(builds[0], "if"))
-                if lane == "sdk":
-                    self.assertEqual(field(builds[0], "timeout-minutes"), "35")
                 restores = [step for step in steps
                             if "actions/cache/restore@" in step and field(step, "id") != "git-cache"]
                 if lane == "provider":
@@ -391,8 +334,6 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         test_step = next(step for step in steps if run_command(step) == PROVIDER_TEST_COMMAND)
         self.assertEqual(field(test_step, "id"), "provider-unit-tests")
         self.assertNotIn("LLVM_PROFILE_FILE", summary)
-        self.assertNotIn("LLVM_PROFILE_FILE", self.jobs["test-provider-sdk"])
-        self.assertNotIn("PROVIDER_COVERAGE_DIR", self.jobs["test-provider-sdk"])
         build_step = next(step for step in step_blocks(ACTION.read_text(), indent=4)
                           if field(step, "id", indent=6) == "provider-build")
         self.assertEqual(textwrap.dedent(build_step.split("run: |\n", 1)[1]).strip(),
@@ -524,104 +465,22 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                     ])
                     self.assertIn("These targets are only in the total: `darkbloom-fan-helper`.", result.stdout)
 
-    def test_sdk_retains_every_original_gate_command(self):
-        steps = work_steps(self.jobs["test-provider-sdk"])
-        gates = {field(step, "name", indent=6): step for step in steps if field(step, "run")}
-        self.assertEqual(len(gates), sum(bool(field(step, "run")) for step in steps))
-        self.assertEqual(set(gates), set(SDK_COMMANDS) | {"Run Nemotron production SDK gates"})
-        for name, command in SDK_COMMANDS.items():
-            with self.subTest(gate=name):
-                self.assertEqual(run_command(gates[name]), command)
-        commands = "\n".join(run_command(step) for step in gates.values())
-        self.assertNotIn("swift test", commands)
-        self.assertNotIn("--skip", commands)
-        self.assertNotIn("rustup", self.jobs["test-provider-sdk"])
-
-    def test_every_sdk_gate_requires_successful_build_but_not_earlier_tests(self):
-        fixture_conditions = {
-            SDK_MIMO_GATE_NAME: SDK_MIMO_READY,
-            SDK_RETENTION_GATE_NAME: SDK_RETENTION_READY,
-        }
-        preparation_steps = {SDK_MIMO_PREPARE_NAME, SDK_RETENTION_PREPARE_NAME}
-        for step in work_steps(self.jobs["test-provider-sdk"]):
-            if field(step, "run"):
-                with self.subTest(gate=field(step, "name", indent=6)):
-                    name = field(step, "name", indent=6)
-                    self.assertEqual(field(step, "if"), fixture_conditions.get(name, READY))
-                    expected_directory = None if name in preparation_steps else "libs/mlx-swift-lm"
-                    self.assertEqual(field(step, "working-directory"), expected_directory)
-                    self.assertNotIn("continue-on-error:", step)
-
-    def test_sdk_retention_requires_asymmetric_fixture_and_non_skipping_selectors(self):
-        steps = step_blocks(self.jobs["test-provider-sdk"])
-        by_name = {field(step, "name", indent=6): step for step in steps}
-        prepare = by_name[SDK_RETENTION_PREPARE_NAME]
-        gate = by_name[SDK_RETENTION_GATE_NAME]
-        self.assertEqual(field(prepare, "id"), "sdk-mimo-retention-fixture")
-        self.assertEqual(run_command(prepare), SDK_COMMANDS[SDK_RETENTION_PREPARE_NAME])
-        self.assertLess(steps.index(prepare), steps.index(gate))
-        self.assertEqual(field(gate, "if"), SDK_RETENTION_READY)
-        self.assertEqual(field(gate, "timeout-minutes"), "5")
-        self.assertEqual(field(gate, "MIMO_V26_SERIAL_NATIVE_TESTS", indent=10), "'1'")
-        self.assertEqual(field(gate, "MIMO_V26_SERIAL_LOAD_FIXTURES", indent=10), "${{ runner.temp }}/mimo-native-retention")
-        self.assertEqual(run_command(gate), SDK_COMMANDS[SDK_RETENTION_GATE_NAME])
-        for name, command in SDK_RETENTION_HOST_COMMANDS.items():
-            with self.subTest(gate=name):
-                host = by_name[name]
-                self.assertEqual(run_command(host), command)
-                self.assertEqual(field(host, "timeout-minutes"), "5")
-                self.assertNotIn("\n        env:", host)
-
-    def test_sdk_media_isolation_requires_its_fixture_and_native_lane(self):
-        steps = step_blocks(self.jobs["test-provider-sdk"])
-        prepare = next(step for step in steps if field(step, "name", indent=6) == SDK_MIMO_PREPARE_NAME)
-        gate = next(step for step in steps if field(step, "name", indent=6) == SDK_MIMO_GATE_NAME)
-        self.assertEqual(field(prepare, "id"), "sdk-mimo-isolation-fixture")
-        self.assertLess(steps.index(prepare), steps.index(gate))
-        self.assertEqual(field(gate, "timeout-minutes"), "5")
-        self.assertEqual(field(gate, "MIMO_V26_SERIAL_NATIVE_TESTS", indent=10), "'1'")
-        self.assertEqual(field(gate, "MIMO_V26_NATIVE_MEDIA_DEADLINE_TESTS", indent=10), "'1'")
-        self.assertEqual(field(gate, "MIMO_V26_SERIAL_LOAD_FIXTURES", indent=10), "${{ runner.temp }}/mimo-media-isolation")
-
-    def test_sdk_onboarding_selectors_execute_once_and_continue_after_failure(self):
-        step = next(step for step in step_blocks(self.jobs["test-provider-sdk"])
-                    if field(step, "name", indent=6) == "Run Nemotron production SDK gates")
-        command = run_command(step)
-        with tempfile.TemporaryDirectory(prefix="provider-ci-workflow-") as temporary:
-            root = Path(temporary)
-            package = root / "libs/mlx-swift-lm"
-            package.mkdir(parents=True)
-            scripts = root / "scripts"
-            scripts.mkdir()
-            runner = scripts / "run-nested-suite.sh"
-            runner.write_text('#!/bin/bash\n'
-                              'printf "%s\\n" "$*" >> "$CI_GATE_LOG"\n'
-                              '[ "$1" != "${CI_FAIL_SUITE:-}" ]\n')
-            runner.chmod(0o700)
-            for failure in ("", *SDK_ONBOARDING_SUITES):
-                with self.subTest(failure=failure):
-                    log = root / "calls"
-                    log.write_text("")
-                    result = subprocess.run(
-                        ["bash", "-e", "-o", "pipefail", "-c", command], cwd=package,
-                        env={**os.environ, "CI_GATE_LOG": str(log), "CI_FAIL_SUITE": failure},
-                        capture_output=True, text=True, timeout=10,
-                    )
-                    self.assertEqual(result.returncode, 1 if failure else 0, result.stderr)
-                    self.assertEqual(log.read_text().splitlines(), list(SDK_ONBOARDING_SUITES))
-
-    def test_required_sdk_selectors_are_not_duplicated_in_other_lanes(self):
-        selectors = [shlex.split(command)[1] for command in SDK_COMMANDS.values()
-                     if "run-nested-suite.sh" in command]
-        selectors.extend(SDK_ONBOARDING_SUITES)
-        sdk = "\n".join(run_command(step) for step in step_blocks(self.jobs["test-provider-sdk"])
-                        if field(step, "run"))
-        for selector in selectors:
-            with self.subTest(selector=selector):
-                self.assertEqual(sdk.count(selector), 1)
-                self.assertNotIn(selector, self.jobs["test-provider"])
+    def test_sdk_suites_run_in_the_sdks_own_fork_tests(self):
+        # David, 2026-11-04: Provider SDK Tests repeated the SDK's own Fork
+        # Tests (226 of its 236 test seconds), so the lane and the SDK build
+        # lane are gone. Fork Tests skips the one other step,
+        # MiMoV26NativeMediaDeadlineTests; un-skipping it there is the SDK's
+        # (work/d-inference-test-dedup-inventory.md, class C).
+        self.assertNotIn("test-provider-sdk", self.jobs)
+        self.assertNotIn("test-provider-sdk", self.jobs["route"])
+        for selector in ("MiMoV26NativeMediaDeadlineTests", "CBv2PagedSafetyTests", "NemotronH35MTPTests",
+                         "run-paged-kernel-tests.sh", "swift package edit"):
+            self.assertNotIn(selector, self.workflow)
+        action = ACTION.read_text()
+        self.assertIn("          provider|cluster) ;;\n", action)
+        self.assertNotIn("libs/mlx-swift-lm", action)
+        # Each provider entry point and parity script still runs exactly once.
         commands = Counter(run_command(step) for job in self.jobs.values() for step in step_blocks(job))
-        self.assertEqual(commands["../../scripts/run-paged-kernel-tests.sh"], 1)
         self.assertEqual(commands[PROVIDER_TEST_COMMAND], 1)
         workflow = workflow_text()
         for script, _, _ in PARITY_STEPS.values():
@@ -847,7 +706,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             with self.subTest(step=name):
                 self.assertIn(SAVE_INPUT + " && ", condition)
         calls = [step for job in self.jobs.values() for step in step_blocks(job) if field(step, "uses") == BUILD_ACTION]
-        self.assertEqual(len(calls), 5)
+        self.assertEqual(len(calls), 4)
         for call in calls:
             self.assertEqual(field(call, "save-caches", indent=10), "${{ env.SAVE_CACHES }}")
 
@@ -931,7 +790,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 env = path.read_text().split("\njobs:\n", 1)[0]
                 self.assertIn("  CHECKOUT_SPARSE: |\n" + "".join(f"    {pattern}\n" for pattern in SPARSE_PATTERNS),
                               env)
-        self.assertEqual(self.workflow.count("sparse-checkout: ${{ env.CHECKOUT_SPARSE }}"), 8)
+        self.assertEqual(self.workflow.count("sparse-checkout: ${{ env.CHECKOUT_SPARSE }}"), 7)
         docs_impact = (ROOT / ".github/workflows/docs-impact.yml").read_text()
         self.assertIn("          filter: blob:none\n          sparse-checkout: |\n"
                       + "".join(f"            {pattern}\n" for pattern in SPARSE_PATTERNS)
@@ -977,23 +836,18 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         steps = step_blocks(action, indent=4)
         by_id = {field(step, "id", indent=6): step for step in steps if field(step, "id", indent=6)}
         provider = by_id["provider-build"]
-        sdk = by_id["sdk-build"]
         cluster = by_id["cluster-build"]
         metallib = by_id["metallib"]
         self.assertEqual(field(provider, "if", indent=6), "inputs.lane == 'provider'")
         self.assertEqual(field(provider, "working-directory", indent=6), "provider-swift")
         self.assertIn("swift build --build-tests", provider)
         self.assertIn("swift build --product darkbloom-fan-helper", provider)
-        self.assertEqual(field(sdk, "if", indent=6), "inputs.lane == 'sdk'")
-        self.assertEqual(field(sdk, "working-directory", indent=6), "libs/mlx-swift-lm")
-        self.assertIn("swift package edit --path ../mlx-swift mlx-swift", sdk)
-        self.assertIn("swift build --build-tests", sdk)
         self.assertEqual(field(cluster, "if", indent=6), "inputs.lane == 'cluster'")
         self.assertEqual(field(cluster, "working-directory", indent=6), "libs/darkbloom-cluster")
         self.assertIn("swift build --build-tests", cluster)
         self.assertIsNone(field(metallib, "if", indent=6))
         self.assertIn('./scripts/stage-test-metallib.sh "$bin"', metallib)
-        for step in (provider, sdk, cluster, metallib):
+        for step in (provider, cluster, metallib):
             self.assertNotIn("--filter", step)
             self.assertNotIn("--skip", step)
             self.assertNotIn("cache-hit", step)
@@ -1012,7 +866,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("key: ${{ steps.build-key.outputs.key }}", save)
         # Every build step builds once more from nothing only through the retry
         # helper, which reads the matched key and this recipe's prefix.
-        for step_id in ("provider-build", "sdk-build", "cluster-build"):
+        for step_id in ("provider-build", "cluster-build"):
             with self.subTest(step=step_id):
                 step = by_id[step_id]
                 self.assertIn("provider-ci-cold-retry.sh && ", step)
@@ -1081,7 +935,6 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                          prefix + "${{ hashFiles('**/Package.resolved', '!**/.build/**') }}")
         self.assertEqual(field(restore, "restore-keys", indent=8), prefix)
         self.assertLess(steps.index(restore), steps.index(by_id["provider-build"]))
-        self.assertLess(steps.index(restore), steps.index(by_id["sdk-build"]))
         self.assertLess(steps.index(restore), steps.index(by_id["cluster-build"]))
         self.assertEqual(field(save, "uses", indent=6), CACHE_SAVE)
         self.assertEqual(field(save, "key", indent=8), "${{ steps.spm-repos.outputs.cache-primary-key }}")

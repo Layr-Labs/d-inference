@@ -1,6 +1,6 @@
 name: CI (master)
 
-# Pull requests into master and pushes to master run the provider, SDK and
+# Pull requests into master and pushes to master run the provider and
 # cluster tests (.github/workflows/provider-tests.yml), Release Integrity and
 # Docs Lint. Pull requests into dev run only the tests (ci-dev.yml).
 on:

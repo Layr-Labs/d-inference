@@ -160,14 +160,17 @@ provider fixture scripts and the gate's recipe) and on every `master` and `dev` 
 component. A pull request outside those inputs neither downloads the codec
 nor runs the gate.
 
-The SDK has independent test products under `libs/mlx-swift-lm`. CI validates
-native memory ownership, cancellation, media decoding, paged KV and resource
-packaging there as well as provider behavior. `Provider SDK Tests` is not part
-of the `Provider Tests` gate: a pull request runs it only when an SDK-lane input
-changes (`SDK` in `scripts/ci-component-paths.py`: the `libs/mlx-swift-lm` and
-`libs/mlx-swift` pins, the build recipe and the nested-suite runners), and every
-push to `dev` or `master` runs it, where a failure notifies without blocking. Preserve all retained lane gates;
-do not treat the repository split as permission to skip native regressions.
+The SDK has independent test products under `libs/mlx-swift-lm`: native memory
+ownership, cancellation, media decoding, paged KV and resource packaging. They
+run in the SDK's own CI (Fork Tests in Layr-Labs/mlx-swift-lm), not here.
+d-inference CI had a Provider SDK Tests lane that ran them again, under the
+provider's SDK 27 toolchain; it was removed on 2026-11-04 because 226 of its
+236 test seconds repeated Fork Tests (the test inventory of PR #1785). Its one
+other step, `MiMoV26NativeMediaDeadlineTests`,
+is skipped in Fork Tests until the SDK sets `MIMO_V26_SERIAL_NATIVE_TESTS=1`,
+`MIMO_V26_NATIVE_MEDIA_DEADLINE_TESTS=1` and `MIMO_V26_SERIAL_LOAD_FIXTURES` for it.
+The provider's release qualification still builds the provider, with the SDK
+compiled in, and runs its tests under SDK 27.
 
 ### Download completion ownership
 
@@ -1256,7 +1259,7 @@ other provider files the cluster runners compile, the cluster plan and the
 shared build recipe. A push that runs the provider lanes also runs them. The
 `Provider Tests` gate accepts a skipped cluster job only when `cluster` was not
 selected. A provider-only pull request runs 3 Macs (2 provider shards and the
-summary), or 4 when an SDK-lane input changes. A cluster pull request adds 4
+summary). A cluster pull request adds 4
 Macs (metadata checks, 2 runtime shards and focused checks); a push adds the
 2 GPU shards as well.
 

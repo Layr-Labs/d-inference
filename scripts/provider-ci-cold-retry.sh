@@ -16,4 +16,4 @@ case $matched in
     exit 1 ;;
 esac
 echo "::warning title=Build cache::The build failed over a cache entry of another recipe ($matched). Deleting the restored builds and building once from nothing."
-rm -rf "$root/provider-swift/.build" "$root/libs/mlx-swift-lm/.build" "$root/libs/darkbloom-cluster/.build"
+rm -rf "$root/provider-swift/.build" "$root/libs/darkbloom-cluster/.build"

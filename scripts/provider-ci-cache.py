@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Emit compatible cache keys for provider and nested SDK CI.
 
-Run `keys --lane provider|sdk|cluster` after Metal toolchain setup.
+Run `keys --lane provider|cluster` after Metal toolchain setup.
 Redirect scalar stdout to GITHUB_OUTPUT. Swift restore prefixes retain all
 compatibility boundaries;
 the shared metallib key is exact-only. Cache hits never authorize skipping tests
@@ -23,7 +23,6 @@ CACHE_VERSION = "v1"
 SWIFT_CACHE_VERSION = "v2"
 LANE_PURPOSES = {
     "provider": "provider-debug-tests",
-    "sdk": "sdk-nested-debug-tests",
     "cluster": "cluster-runtime-debug-tests",
 }
 MLX_SOURCE = "libs/mlx-swift/Source/Cmlx/mlx"

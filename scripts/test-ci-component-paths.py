@@ -63,21 +63,21 @@ class ComponentPathsTests(unittest.TestCase):
             "provider-swift/Tests/ProviderCoreTests/MiMo/MiMoV26ManagedAudioProviderTests.swift": {"provider", "mimo_audio"},
             "scripts/prepare-mimo-audio-fixtures.py": {"provider", "mimo_audio"},
             # The audio fixture script runs this generator with --audio-source.
-            "scripts/prepare-mimo-provider-fixtures.py": {"provider", "sdk", "mimo_audio"},
-            "libs/mlx-swift-lm": {"provider", "sdk", "cluster", "mimo_audio"},
-            "libs/mlx-swift-lm/Libraries/MLXLMCommon/Generate.swift": {"provider", "sdk", "cluster", "mimo_audio"},
-            "libs/mlx-swift": {"provider", "sdk", "cluster", "mimo_audio"},
+            "scripts/prepare-mimo-provider-fixtures.py": {"provider", "mimo_audio"},
+            "libs/mlx-swift-lm": {"provider", "cluster", "mimo_audio"},
+            "libs/mlx-swift-lm/Libraries/MLXLMCommon/Generate.swift": {"provider", "cluster", "mimo_audio"},
+            "libs/mlx-swift": {"provider", "cluster", "mimo_audio"},
             "libs/mlx": {"provider", "cluster", "mimo_audio"},
             "libs/darkbloom-cluster/Package.swift": {"provider", "cluster"},
             "libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh": {"provider", "cluster"},
             "fixtures/prompt-contract/v1/corpus.json": {"provider"},
-            ".github/actions/provider-ci-build/action.yml": {"provider", "sdk", "cluster"},
-            ".github/workflows/provider-tests.yml": {"provider", "sdk", "cluster", "mimo_audio"},
-            ".github/workflows/ci-dev.yml": {"provider", "sdk", "cluster", "mimo_audio"},
-            ".github/workflows/ci-master.yml": {"provider", "sdk", "cluster", "mimo_audio"},
-            "scripts/run-paged-kernel-tests.sh": {"provider", "sdk"},
+            ".github/actions/provider-ci-build/action.yml": {"provider", "cluster"},
+            ".github/workflows/provider-tests.yml": {"provider", "cluster", "mimo_audio"},
+            ".github/workflows/ci-dev.yml": {"provider", "cluster", "mimo_audio"},
+            ".github/workflows/ci-master.yml": {"provider", "cluster", "mimo_audio"},
+            "scripts/run-paged-kernel-tests.sh": {"provider"},
             "scripts/run-provider-tests.sh": {"provider"},
-            "scripts/provider-ci-cold-retry.sh": {"provider", "sdk", "cluster"},
+            "scripts/provider-ci-cold-retry.sh": {"provider", "cluster"},
             "scripts/verified_download_cache.py": {"provider"},
             "scripts/provider-test-shards.py": {"provider"},
             "scripts/cluster-test-plan.py": {"provider", "cluster"},
@@ -94,9 +94,8 @@ class ComponentPathsTests(unittest.TestCase):
                 self.assertEqual({name for name, value in routing.classify([path]).items() if value}, expected)
         for path in routing.COMMON:
             self.assertTrue(all(routing.classify([path]).values()), path)
-        # Every SDK-lane, cluster and MiMo audio input is also a provider input.
-        for component, patterns in (("sdk", routing.SDK), ("cluster", routing.CLUSTER),
-                                    ("mimo_audio", routing.MIMO_AUDIO)):
+        # Every cluster and MiMo audio input is also a provider input.
+        for component, patterns in (("cluster", routing.CLUSTER), ("mimo_audio", routing.MIMO_AUDIO)):
             for pattern in patterns:
                 path = pattern.replace("**", "x").replace("*", "Cluster" if component == "cluster" else "MiMo")
                 self.assertTrue(routing.classify([path])[component], path)
@@ -206,7 +205,6 @@ class GitDiffTests(unittest.TestCase):
         selected = self.pr(base, head)
         self.assertTrue(selected["provider"], "rename source must be considered")
         self.assertEqual(set(selected), set(routing.COMPONENTS))
-        self.assertFalse(selected["sdk"], "provider sources are not SDK-lane inputs")
         base = head
         self.git("mv", "docs/moved.md", "provider-swift/new.swift")
         head = self.commit()
@@ -241,17 +239,17 @@ class GitDiffTests(unittest.TestCase):
         self.write("provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2.swift")
         provider_only = self.commit()
         self.assertEqual(self.pr(head, provider_only),
-                         {"provider": True, "sdk": False, "cluster": False, "mimo_audio": False})
+                         {"provider": True, "cluster": False, "mimo_audio": False})
         self.assertEqual(self.run_detector("push", {"before": head, "after": provider_only, "ref": "refs/heads/topic"}),
-                         {"provider": True, "sdk": False, "cluster": True, "mimo_audio": False})
+                         {"provider": True, "cluster": True, "mimo_audio": False})
         self.write("libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/New.swift")
         cluster = self.commit()
         self.assertEqual(self.pr(provider_only, cluster),
-                         {"provider": True, "sdk": False, "cluster": True, "mimo_audio": False})
+                         {"provider": True, "cluster": True, "mimo_audio": False})
         # The MiMo audio gate and its 1.87 GB codec run only for their inputs.
         self.write("provider-swift/Tests/ProviderCoreTests/MiMo/MiMoV26ManagedAudioProviderTests.swift")
         audio = self.commit()
-        self.assertEqual(self.pr(cluster, audio), {"provider": True, "sdk": False, "cluster": False, "mimo_audio": True})
+        self.assertEqual(self.pr(cluster, audio), {"provider": True, "cluster": False, "mimo_audio": True})
         # Pushes to master and dev run every component: a dev push run also
         # stands in for the pushes whose waiting runs CI (dev) cancelled.
         for ref in ("refs/heads/master", "refs/heads/main", "refs/heads/dev"):
@@ -306,11 +304,10 @@ class WorkflowRoutingTests(unittest.TestCase):
         self.assertIn("    needs: [changes, route]\n", ci["test-cluster-gpu"])
         self.assertIn("    if: ${{ github.event_name == 'push' && needs.changes.outputs.cluster == 'true' }}\n",
                       ci["test-cluster-gpu"])
-        # The SDK lane runs on every push and on pull requests that change its inputs.
-        self.assertIn("    needs: [changes, route]\n", ci["test-provider-sdk"])
-        self.assertIn("    if: ${{ github.event_name == 'push' || needs.changes.outputs.sdk == 'true' }}\n",
-                      ci["test-provider-sdk"])
-        self.assertNotIn("continue-on-error:", ci["test-provider-sdk"])
+        # The Provider SDK Tests lane is gone (David, 2026-11-04): its suites run
+        # in the SDK's own Fork Tests.
+        self.assertNotIn("test-provider-sdk", ci)
+        self.assertNotIn("sdk", routing.COMPONENTS)
         # The summary runs after failed shards too, but only when the shards were selected.
         self.assertIn("    needs: [changes, route, test-provider]\n", ci["test-provider-summary"])
         self.assertIn("    if: ${{ !cancelled() && needs.changes.outputs.provider == 'true' }}\n",

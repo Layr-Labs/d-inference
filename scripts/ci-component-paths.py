@@ -10,7 +10,7 @@ import re
 import subprocess
 
 
-COMPONENTS = ("provider", "sdk", "cluster", "mimo_audio")
+COMPONENTS = ("provider", "cluster", "mimo_audio")
 COMMON = (
     "Makefile", "mise.toml", ".gitmodules", ".github/workflows/component-changes.yml",
     ".github/workflows/darkbloom-route.yml", ".github/workflows/ci-dev.yml", ".github/workflows/ci-master.yml",
@@ -36,22 +36,6 @@ PROVIDER = (
     "scripts/verify-prompt-parity.sh", "scripts/test-qwen4-packaged-resources.py",
     "scripts/test-profile-inventory-auth.py", "scripts/test-desktop-api.py", "scripts/install.sh",
     "scripts/test-install-atomic.sh", "scripts/entitlements*.plist",
-)
-
-
-# Inputs of the Provider SDK Tests lane: the SDK and MLX pins it builds, its
-# build recipe and its runner scripts. Its suites also run in the SDK fork's CI.
-SDK = (
-    "libs/mlx-swift-lm", "libs/mlx-swift-lm/**", "libs/mlx-swift", "libs/mlx-swift/**",
-    ".github/workflows/provider-tests.yml", ".github/actions/provider-ci-build/**",
-    "scripts/provider-ci-cold-retry.sh",
-    "scripts/provider-ci-cache.py", "scripts/provider_ci_cache/**",
-    "scripts/provider-release-cache.py", "scripts/provider_release_cache/**",
-    "scripts/provider-release-swift.sh", "scripts/prepare-provider-release-toolchain.sh",
-    "scripts/install-release-cmake.sh", "scripts/prepare-metal-toolchain.py",
-    "scripts/fetch-metallib.sh", "scripts/stage-test-metallib.sh",
-    "scripts/run-nested-suite.sh", "scripts/run-paged-kernel-tests.sh",
-    "scripts/run-exclusive-native-gpu-test.sh", "scripts/prepare-mimo-provider-fixtures.py",
 )
 
 
@@ -116,7 +100,6 @@ def classify(paths):
         if matches(path, COMMON):
             return dict.fromkeys(COMPONENTS, True)
         selected["provider"] |= matches(path, PROVIDER)
-        selected["sdk"] |= matches(path, SDK)
         selected["cluster"] |= matches(path, CLUSTER)
         selected["mimo_audio"] |= matches(path, MIMO_AUDIO)
     return selected

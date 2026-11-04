@@ -251,7 +251,7 @@ see [resource and release tooling checks](test.md#focused-tooling-checks).
 
 Two workflows run CI. Both call the same reusable test workflow,
 `.github/workflows/provider-tests.yml`: the component classifier, the route
-job, the provider shards and their summary, the SDK lane, the cluster jobs and
+job, the provider shards and their summary, the cluster jobs and
 the `Provider Tests` gate.
 
 | Workflow | Runs for | Jobs |
@@ -276,7 +276,7 @@ lane, `format('<job>-{0}', matrix.shard)`.
 
 | Workflow | Routed jobs | Fallback |
 |---|---|---|
-| `provider-tests.yml` | `test-provider` (lanes `test-provider-1` and `test-provider-2`, one per shard), `test-provider-summary`, `test-provider-sdk`, `test-cluster-checks`, `test-cluster` (lanes `test-cluster-1` and `test-cluster-2`), `test-cluster-gpu` (lanes `test-cluster-gpu-1` and `test-cluster-gpu-2`, pushes only), `test-cluster-focused` | `blacksmith-12vcpu-macos-27` |
+| `provider-tests.yml` | `test-provider` (lanes `test-provider-1` and `test-provider-2`, one per shard), `test-provider-summary`, `test-cluster-checks`, `test-cluster` (lanes `test-cluster-1` and `test-cluster-2`), `test-cluster-gpu` (lanes `test-cluster-gpu-1` and `test-cluster-gpu-2`, pushes only), `test-cluster-focused` | `blacksmith-12vcpu-macos-27` |
 | `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
 | `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
 | `provider-release-cache.yml` | `warm`, pull requests only | `blacksmith-12vcpu-macos-27` |

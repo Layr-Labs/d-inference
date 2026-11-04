@@ -73,6 +73,16 @@ set up, three commands work from your shell without a terminal:
     options such as `--model` are refused there (exit status 64). Add `--solo`
     only when the human wants single-Mac serving on this Mac alone, and only
     while the pair is stopped: it is refused while this Mac's part of the pair serves.
+12. Before `darkbloom cluster` on a pair, tell the human to be at both Macs'
+    screens, or to open Screen Sharing to each Mac with no display (a Mac
+    Studio, a MacBook with its lid closed): every macOS prompt of the setup
+    (the cable port's password, Local Network's Allow, the pairing code's Yes)
+    is on that Mac's own screen. Never run the setup, `darkbloom cluster link
+    --fix` or `--remove`, or `darkbloom uninstall` on a pair Mac over SSH: macOS
+    can't show its approval prompt there, and Darkbloom says so and stops
+    (``macOS can't show its approval prompt over SSH. Run `darkbloom cluster` in
+    Terminal on this Mac's own screen, or through Screen Sharing.``). Pass that
+    on to the human; never choose "Go on over SSH" for them.
 
 ### What only the human can do
 
@@ -86,7 +96,7 @@ start, then ask for each one when it comes up and wait.
 | Darkbloom login | [Step 2](#2-log-in-and-check-the-mac-every-mac), on each Mac | Opens the URL that `darkbloom login` prints in a browser, signs in, and enters the code it prints |
 | Turn on RDMA over Thunderbolt (two Macs) | [Step 4](#4-two-macs-connect-the-cable-and-check-the-link), once per Mac, as an administrator | On macOS 27: System Settings → Privacy & Security → RDMA over Thunderbolt, then restart. On macOS 26: starts the Mac in Recovery, runs `rdma_ctl enable` in Terminal, then restarts |
 | Plug in the cable (two Macs) | Step 4 | Connects one Thunderbolt 5 cable directly between a Thunderbolt 5 port on each Mac, with no dock or hub |
-| macOS administrator password for the cable port | [Step 5](#5-two-macs-pair-them), once per Mac, only while the port isn't set up | Types it into macOS's prompt. Over SSH, types it into `sudo` in that terminal |
+| macOS administrator password for the cable port | [Step 5](#5-two-macs-pair-them), once per Mac, only while the port isn't set up | Types it into macOS's prompt on that Mac's own screen (Screen Sharing on a Mac with no display). Not over SSH: macOS can't show its prompt there ([rule 12](#rules-for-the-agent)) |
 | Confirm the pairing code | Step 5 | Checks that both screens show the same six digits, then chooses **Yes** on each Mac |
 | Local Network permission | Step 5, right after pairing, on each Mac | At the Mac's own screen (Screen Sharing on a Mac with no display): System Settings → Privacy & Security → Local Network → turns on “Darkbloom” (the DevNet app is listed under that name too). With no such row, macOS has never asked on that Mac: it asks on that Mac's screen the next time the app dials over the cable, and the human clicks **Allow** there. If macOS's firewall is on, also lets Darkbloom accept incoming connections (System Settings → Network → Firewall) |
 | Choose the model | Step 3 or [step 6](#6-two-macs-choose-the-model-on-the-leader), and when changing it later | Picks from the list that you read out |
@@ -362,8 +372,9 @@ with status 1. So the human runs it in Terminal on each Mac and reads the
 screen to you, or pastes it. If you have a real interactive terminal on that
 Mac, you may run `NO_COLOR=1 darkbloom cluster` there yourself: it then prints
 plain lines and numbered choices. Even then, the pairing code and every macOS
-prompt are the human's (rules 6 and 7). A first setup opens with what the
-human will be asked and about how long it takes, then has four steps:
+prompt are the human's (rules 6 and 7). A first setup opens, on both Macs, with what the
+human will be asked on each Mac's own screen (Screen Sharing for a Mac with
+no display) and about how long it takes, then has four steps:
 **1/4 Connect**, **2/4 Pair**, **3/4 Model** and **4/4 Start**
 ([details](two-mac-cluster.md#the-steps-once)).
 

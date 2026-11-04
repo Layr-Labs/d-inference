@@ -56,7 +56,7 @@ extension ClusterOnboardingOperations {
             commandApp: { ClusterLocalNetworkAccess.commandApp() },
             runAsAdministrator: { ClusterLocalNetworkAccess.runLinkScriptWithSudo($0, paths: paths) },
             serviceOutlivesWindow: { live.serviceOutlivesWindow() },
-            remote: { ClusterLocalNetworkAccess.overSSH() },
+            remote: { ClusterLinkApprovalSession.cannotPrompt() },
             thisMacName: { ClusterLocalNetworkAccess.computerName() },
             otherMacAnswers: { live.otherMacAnswers() },
             unpair: { live.unpair() },

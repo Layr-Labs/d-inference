@@ -97,6 +97,9 @@ import Darwin
         arrowKeysDoNotStopAWait()
         qCancelsAListBeforeALetter()
         sshSessionsAreToldWhereThePromptIs()
+        bothMacsSayScreenSharingFirst()
+        otherMacPromptNamesItsScreen()
+        sshSaysBeforeTryingWhereToRun()
         serviceThatCannotTellStillGetsTheAsk()
         otherMacThatDidNotAnswerOffersTryAgain()
         startSaysHowThePairServes()
@@ -772,6 +775,10 @@ import Darwin
 
         var text: String { lock.lock(); defer { lock.unlock() }; return String(decoding: captured, as: UTF8.self).replacingOccurrences(of: "\r\n", with: "\n") }
         var code: Int32? { lock.lock(); defer { lock.unlock() }; return exitCode }
+
+        // Both threads hold the run until they end, so the pseudo-terminal is free by then: a whole run of the checks
+        // otherwise keeps one per flow, and the Mac's limit is shared with every other terminal.
+        deinit { Darwin.close(master); Darwin.close(slave) }
 
         func waitFor(_ needle: String, seconds: Double = 10, count: Int = 1) -> Bool {
             let deadline = Date().addingTimeInterval(seconds)
@@ -2057,12 +2064,14 @@ import Darwin
     /// asked and how long it takes: two lines, 54 words): 27 lines and 180 words on the leader, 14 lines and 125 on the
     /// member. The owner's direction (2026-11-04, "make it similar to how normal darkbloom works") ends the leader's
     /// setup as `darkbloom start` does, with the pair's card and commands instead of "Done": 34 lines and 225 words.
-    // A start through Darkbloom ends once the coordinator has the pair: the offered line and the restart add two lines.
+    // A start through Darkbloom ends once the coordinator has the pair: the offered line and the restart add two lines
+    // and 25 words. The owner's request (2026-11-04, "it should tell you that you need Screen Sharing access to go
+    // through the approval prompts") adds 10 more words to the opening on the leader.
     static let leaderLineBudget = 36
-    static let leaderWordBudget = 250
+    static let leaderWordBudget = 260
     /// The Mac that joined follows the start (O8): its waiting line and the outcome block are part of its screen.
-    static let memberLineBudget = 19
-    static let memberWordBudget = 135
+    static let memberLineBudget = 20
+    static let memberWordBudget = 150
 
     static let codeQuestion = ClusterOnboardingPairing.codeQuestion
 
@@ -2109,11 +2118,79 @@ import Darwin
     static func sshSessionsAreToldWhereThePromptIs() {
         let run = TerminalRun(operations(Recorder(), pairEvents: [], pairResult: .failed([]), localNetwork: refusedThenAllowed(2), remote: true,
             commandApp: "sshd-keygen-wrapper"))
+        expect(run.waitFor(prompt(2)), "SSH: asked first whether to go on here"); run.type("2\r")
         expect(run.waitFor("  " + ClusterOnboardingDriver.approvalsLine(remote: true) + "\n"), "SSH: the approvals, where each is answered")
         expect(run.waitFor("  Click Allow on the Local Network prompt for sshd-keygen-wrapper on this Mac's screen (Screen Sharing if headless).\n"),
                "SSH: the prompt is on the Mac's screen, and the program macOS names")
         expect(run.waitFor("for sshd-keygen-wrapper on this Mac's screen (Screen Sharing if headless).\n  \u{2713} Allowed\n"), "SSH: allowed")
         _ = run.finish()
+    }
+
+    /// 2026-11-04 (owner): "When you run `darkbloom cluster` it should tell you that you need Screen Sharing access to go
+    /// through the approval prompts." Both Macs say it in the opening, before 1/4, at 80 and 40 columns.
+    static func bothMacsSayScreenSharingFirst() {
+        typealias D = ClusterOnboardingDriver
+        let opening = D.firstRunLines(localOnly: false).joined(separator: " ")
+        expect(opening.contains("each Mac's own screen") && opening.contains("open Screen Sharing to it first")
+            && opening.contains("password for the cable port") && opening.contains("Allow for Local Network")
+            && opening.contains("Yes to the pairing code"), "screens: one list, with Screen Sharing: \(opening)")
+        expect(!opening.contains("You'll be asked for this Mac's password"), "screens: the old list is gone, not doubled")
+        for columns: UInt16 in [80, 40] {
+            for (label, role, events) in [("leader", ClusterOnboardingRole.leader, leaderEvents), ("member", .member, memberEvents)] {
+                let run = TerminalRun(operations(Recorder(), pairEvents: events, pairResult: .paired(role: role, peerName: "Apple M3 Ultra, 256 GB")),
+                                      columns: columns)
+                expect(run.waitFor(codeQuestion), "screens, \(label) at \(columns): the code"); run.type("y")
+                if role == .leader { expect(run.waitFor(prompt(2), count: 2), "screens, leader at \(columns): the list"); run.type("\r") }
+                _ = run.finish(seconds: 30)
+                let text = run.text
+                let before = text.components(separatedBy: "1/4 Connect").first ?? ""
+                expect(before.contains("  " + D.firstRunLines(localOnly: false)[1] + "\n"),
+                       "screens, \(label) at \(columns): Screen Sharing before 1/4: \(before)")
+                expect(!text.contains(D.noPromptOverSSHLines()[0]), "screens, \(label) at \(columns): no SSH warning off SSH")
+                transcript("screens-\(label)-\(columns)", text, keys: run.keys)
+            }
+        }
+    }
+
+    /// The first prompt on the other Mac (its cluster service's Local Network) names that Mac and the way in to it.
+    static func otherMacPromptNamesItsScreen() {
+        typealias D = ClusterOnboardingDriver
+        expect(D.otherMacAllowLine("Apple M5 Ultra, 256 GB")
+               == "Approve it on the other Mac's screen too (Apple M5 Ultra, 256 GB); use Screen Sharing if it has no display.",
+               "other Mac: named: \(D.otherMacAllowLine("Apple M5 Ultra, 256 GB"))")
+        expect(D.otherMacAllowLine(nil) == "Approve it on the other Mac's screen too; use Screen Sharing if it has no display.",
+               "other Mac: unnamed")
+        for (label, role, events) in [("member", ClusterOnboardingRole.member, memberEvents), ("leader", .leader, leaderEvents)] {
+            let run = TerminalRun(operations(Recorder(), pairEvents: events, pairResult: .paired(role: role, peerName: "Apple M5 Ultra, 256 GB"),
+                localNetwork: refusedThenAllowed(2, [.service])), columns: 80)
+            expect(run.waitFor(codeQuestion), "other Mac, \(label): the code"); run.type("y")
+            expect(run.waitFor("  " + D.localNetworkLine("Darkbloom") + " " + D.otherMacAllowLine("Apple M5 Ultra, 256 GB") + "\n", seconds: 20),
+                   "other Mac, \(label): its screen, by name: \(run.text)")
+            if role == .leader { expect(run.waitFor(prompt(2), count: 2), "other Mac, leader: the list"); run.type("\r") }
+            _ = run.finish(seconds: 30)
+            transcript("other-mac-\(label)", run.text, keys: run.keys)
+        }
+    }
+
+    /// Over SSH with no desktop macOS cannot show its approval prompt: said before 1/4 at 80 and 40 columns, with where
+    /// to run it instead; Quit (the default) ends with ✗ and that step, before anything is tried.
+    static func sshSaysBeforeTryingWhereToRun() {
+        typealias D = ClusterOnboardingDriver
+        expect(D.noPromptOverSSHLines() == ["macOS can't show its approval prompt over SSH.",
+                                            "Run `darkbloom cluster` in Terminal on this Mac's own screen, or through Screen Sharing."],
+               "SSH: the words: \(D.noPromptOverSSHLines())")
+        for columns: UInt16 in [80, 40] {
+            let recorder = Recorder()
+            let run = TerminalRun(operations(recorder, pairEvents: [], pairResult: .failed([]), remote: true, commandApp: "sshd-keygen-wrapper"),
+                                  columns: columns)
+            expect(run.waitFor(prompt(2)), "SSH at \(columns): the choice"); run.type("\r")
+            expect(run.finish() == 1, "SSH at \(columns): Quit ends with status 1")
+            let text = run.text
+            expect(text.contains(D.noPromptOverSSHLines().map { "  " + $0 + "\n" }.joined()), "SSH at \(columns): said: \(text)")
+            expect(!text.contains("1/4 Connect") && !recorder.all.contains("checkLink"), "SSH at \(columns): nothing tried: \(recorder.all)")
+            expect(text.hasSuffix(D.failed + " Nothing changed. " + D.noPromptOverSSHLines()[1] + "\n"), "SSH at \(columns): ✗ and the next step: \(text)")
+            transcript("ssh-quit-\(columns)", text, keys: run.keys)
+        }
     }
 
     /// A service that does not report its probe (an older build) still gets the prompt's line, as an "if".
@@ -2123,7 +2200,7 @@ import Darwin
             localNetwork: { $0 == .service ? .unknown : .allowed }))
         expect(run.waitFor(codeQuestion), "unknown: the code"); run.type("y")
         expect(run.finish(seconds: 30) == 0, "unknown: the member's setup ends")
-        expect(run.text.contains("  " + ClusterOnboardingDriver.localNetworkMaybeLine("Darkbloom") + " " + ClusterOnboardingDriver.otherMacAllowLine + "\n"),
+        expect(run.text.contains("  " + ClusterOnboardingDriver.localNetworkMaybeLine("Darkbloom") + " " + ClusterOnboardingDriver.otherMacAllowLine("Apple M5 Ultra, 256 GB") + "\n"),
                "unknown: the prompt's line as an if: \(run.text)")
         expect(run.text.contains(ClusterOnboardingDriver.waitingForStartLine("Apple M5 Ultra, 256 GB")), "unknown: nothing to wait for here")
     }
@@ -2274,12 +2351,12 @@ import Darwin
         expect(run.waitFor("  Click Allow on the Local Network prompt for Terminal.\n"), "local network: this command's prompt, in Connect")
         expect(run.waitFor("prompt for Terminal.\n  \u{2713} Allowed\n"), "local network: allowed, then pairing")
         expect(run.waitFor(codeQuestion), "local network: the code"); run.type("y")
-        expect(run.waitFor("  Click Allow on the Local Network prompt for Darkbloom. " + ClusterOnboardingDriver.otherMacAllowLine + "\n"),
+        expect(run.waitFor("  Click Allow on the Local Network prompt for Darkbloom. " + ClusterOnboardingDriver.otherMacAllowLine("Apple M5 Ultra, 256 GB") + "\n"),
                "local network: Darkbloom's, once paired, the other Mac's said too")
         expect(run.finish(seconds: 20) == 0, "local network: member done")
         let text = run.text
         let order = ["1/4 Connect", "prompt for Terminal.\n  \u{2713} Allowed", "2/4 Pair", "Paired.",
-                     "the other Mac too.\n  \u{2713} Allowed", "Waiting for"].compactMap { text.range(of: $0)?.lowerBound }
+                     "if it has no display.\n  \u{2713} Allowed", "Waiting for"].compactMap { text.range(of: $0)?.lowerBound }
         expect(order.count == 6 && order == order.sorted(), "local network: asked in order, each before the next step: \(text)")
         transcript("member-local-network-prompts", text, keys: run.keys)
 

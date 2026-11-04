@@ -222,7 +222,7 @@ public enum ClusterPlacementFlow {
         // What this pair served in each mode, for the reference request, and the mode the plan keeps because of it
         // (`ClusterServedModes.hold`): after a Darkbloom update (`incumbentMode`, the same model on the same pair)
         // the mode the pair served in, unless the planner and the pair's own requests both find another faster;
-        // otherwise, once the pair served two modes, the one it served faster. A developer's forced mode keeps nothing.
+        // otherwise, once the pair served two modes, the one it served faster. A forced or chosen mode keeps nothing.
         let reference = (prompt: policy.promptTokens ?? layout.maximumPromptTokens, output: policy.outputTokens ?? layout.maximumOutputTokens)
         let servedModes = ClusterServedModes.figures(ours, promptTokens: reference.prompt, outputTokens: reference.output)
         if !servedModes.isEmpty {

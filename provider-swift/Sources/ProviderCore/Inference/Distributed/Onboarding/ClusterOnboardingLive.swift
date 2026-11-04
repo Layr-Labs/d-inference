@@ -677,8 +677,20 @@ final class OnboardingLive: @unchecked Sendable {
         named ?? context.settings.servingScope ?? leadership?.scope ?? .publicServing
     }
 
+    /// A planned mode as the screen shows it: each Mac's share in the screen's words ("this Mac 6 layers / the other
+    /// Mac 24 layers", "this Mac 40% / the other Mac 60%") and the decode rate this pair served it at.
+    func screenMode(_ mode: ClusterSetupPlanSummary.Mode) -> ClusterOnboardingMode {
+        let words = mode.shares.map { share -> String in
+            let mac = share.local ? hereShort : thereShort
+            if let fraction = share.share { return "\(mac) \(Int((fraction * 100).rounded()))%" }
+            return "\(mac) \(share.endLayer - share.firstLayer) layers"
+        }
+        return .init(mode: mode.mode, split: words.isEmpty ? nil : words.joined(separator: " / "), measuredTokensPerSecond: mode.servedDecodeTokensPerSecond)
+    }
+
     /// `keeping`: the mode each model id keeps (`LiveContext.plan`); the service's re-plan after an update passes the
     /// mode the pair served the model in. `scope`: the way of serving a forwarded command names (`planningScope`).
+    /// `chosenModes`: the mode family the person chose per model id (`useMode`), placed only in that family.
     func localPlanModels(keeping: [String: ClusterGenerationMode] = [:], scope: ClusterServingScope? = nil,
                          chosenModes: [String: ClusterForcedMode] = [:]) -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure> {
         // The plan judges each Mac by the memory its report sampled. A report taken before this Mac stopped the
@@ -1136,17 +1148,6 @@ final class OnboardingLive: @unchecked Sendable {
     /// `model`: the id of the model the list showed at `index` (a choice forwarded from another Mac). When this Mac's
     /// list is gone (its service restarted) or no longer shows that model there, it plans again and adopts it by id.
     /// `scope`: the way of serving the forwarded choice was listed for; every plan made here follows it.
-    /// A planned mode as the screen shows it: each Mac's share in the screen's words ("this Mac 6 layers / the other
-    /// Mac 24 layers", "this Mac 40% / the other Mac 60%") and the decode rate this pair served it at.
-    func screenMode(_ mode: ClusterSetupPlanSummary.Mode) -> ClusterOnboardingMode {
-        let words = mode.shares.map { share -> String in
-            let mac = share.local ? hereShort : thereShort
-            if let fraction = share.share { return "\(mac) \(Int((fraction * 100).rounded()))%" }
-            return "\(mac) \(share.endLayer - share.firstLayer) layers"
-        }
-        return .init(mode: mode.mode, split: words.isEmpty ? nil : words.joined(separator: " / "), measuredTokensPerSecond: mode.servedDecodeTokensPerSecond)
-    }
-
     func localAdopt(_ index: Int, model: String? = nil, scope: ClusterServingScope? = nil) -> Result<[String], ClusterOnboardingFailure> {
         var index = index
         if let model, lock.withLock({ !choices.indices.contains(index) || choices[index].title != model }) {

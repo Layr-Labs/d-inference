@@ -1009,8 +1009,8 @@ with "This Mac's Secure Enclave key is not the one it paired with; pair again."
      Secure Enclave key changed after it paired (…), so the Macs must pair
      again to serve through Darkbloom." and offers **Pair again** and **Quit**.
    - When the other Mac does not answer, it says "The other Mac (…) isn't
-     answering over the cable. Its cluster service is probably off (…), or that
-     Mac is asleep, off, or waiting for someone to log in. On that Mac, run
+     answering over the cable. Its cluster service is off, or that Mac is asleep,
+     off, or waiting for someone to log in. On that Mac, run `darkbloom start` or
      `darkbloom cluster`." Do that first: a Mac that was only asleep, logged out
      or stopped needs no new pairing. If it was reinstalled, unpaired or replaced, use **Start over** here; the Mac that follows lists it after **Try again**. A
      model choice whose other Mac stops answering ends with **Try again**,

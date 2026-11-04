@@ -1211,6 +1211,23 @@ public enum ClusterOnboardingDriver {
         busy(console, "Asking the other Mac over the cable", operations.otherMacAnswers)
     }
 
+    /// While the other Mac does not answer (`answers` false): why (`otherMacSilentLine`), then Try again, Start over
+    /// (which asks first) or Quit. Nil once it answers; else the run's exit status.
+    static func untilOtherMacAnswers(_ answers: Bool, other: String?, _ operations: ClusterOnboardingOperations,
+                                     _ console: ClusterOnboardingConsole, request: ClusterOnboardingRequest) -> Int32? {
+        var answers = answers
+        while !answers {
+            console.say("  " + otherMacSilentLine(other))
+            console.say("")
+            switch console.choose(["Try again", startOverItem, "Quit"], selected: 0) {
+            case 0?: answers = otherMacAnswers(operations, console)
+            case 1?: return startOver(operations, console, request: request)
+            default: return 0
+            }
+        }
+        return nil
+    }
+
     /// Start over on a pairing that works: one confirmation (No by default), then `pairAgain`.
     static func startOver(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole,
                           request: ClusterOnboardingRequest) -> Int32 {
@@ -1511,18 +1528,9 @@ public enum ClusterOnboardingDriver {
         // The cluster is managed on the other Mac, so it must answer: while it does not, why, and the way on from here
         // (2026-11-03: a member whose other Mac no longer held the pairing said "Nothing to do here" while that Mac
         // waited at Pair). Start over asks first: silence is not a broken pairing (`otherMacSilentLine`).
-        var answers = answered ?? otherMacAnswers(operations, console)
-        while !answers {
-            console.say("  " + otherMacSilentLine(resume.leaderName ?? resume.peerName))
-            console.say("")
-            switch console.choose(["Try again", startOverItem, "Quit"], selected: 0) {
-            case 0?: answers = otherMacAnswers(operations, console)
-            case 1?: return startOver(operations, console, request: request)
-            default: return 0
-            }
-        }
-        let status = operations.status()
-        if !showOutcome(status, console) { for line in status { console.say("  " + line) } }
+        if let ended = untilOtherMacAnswers(answered ?? otherMacAnswers(operations, console), other: resume.leaderName ?? resume.peerName,
+                                            operations, console, request: request) { return ended }
+        showStatus(operations, console)
         console.say("  " + memberRunsByItselfLine)
         console.say("")
         if request.scope != nil || request.model != nil {
@@ -1532,6 +1540,12 @@ public enum ClusterOnboardingDriver {
         console.say(memberLeaderLine(resume.leaderName ?? resume.peerName))
         guard console.choose(["Close", startOverItem], selected: 0) == 1 else { return 0 }
         return startOver(operations, console, request: request)
+    }
+
+    /// The pair's status: the outcome block when it says Serving or why not (`showOutcome`), else its lines (Stopped, …).
+    static func showStatus(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) {
+        let status = operations.status()
+        if !showOutcome(status, console) { for line in status { console.say("  " + line) } }
     }
 
     /// The cluster's status as the outcome block on the other Mac, when its first line tells it: "Serving …" (✓) or
@@ -1583,26 +1597,15 @@ public enum ClusterOnboardingDriver {
             }
             if wanted != resume.scope { return changeScope(to: wanted, resume, startOverRequest: request, operations, console) }
         }
-        // The status as start-truth's outcome block when it says Serving or why not (else its lines: Stopped, …).
-        let status = operations.status()
-        if !showOutcome(status, console) { for line in status { console.say("  " + line) } }
+        showStatus(operations, console)
         if let port = resume.unsetCablePort {
             // A cable moved to a port that was never set up: the one thing to do first (2026-10-16, Thunderbolt 1).
             console.say(unsetPortLine(port))
             guard console.choose([fixPortItem, "Quit"], selected: 0) == 0 else { return 0 }
             guard fixPort(operations, console) == 0 else { return 1 }
         }
-        // The list needs the other Mac: while it does not answer, re-pair's words and choices (UX audit P3).
-        var silent = otherMacSilent
-        while silent {
-            console.say("  " + otherMacSilentLine(resume.peerName))
-            console.say("")
-            switch console.choose(["Try again", startOverItem, "Quit"], selected: 0) {
-            case 0?: silent = !otherMacAnswers(operations, console)
-            case 1?: return startOver(operations, console, request: request)
-            default: return 0
-            }
-        }
+        // The list needs the other Mac: while it does not answer, the member's words and choices (UX audit P3).
+        if let ended = untilOtherMacAnswers(!otherMacSilent, other: resume.peerName, operations, console, request: request) { return ended }
         return chooseAndServe(operations, console, scope: resume.scope, privateImage: request.privateImageQualification,
                               startOverRequest: request, pair: resume, peer: resume.peerName, heading: modelHeading)
     }
@@ -1625,13 +1628,12 @@ public enum ClusterOnboardingDriver {
 
     /// How a run that changed nothing ends: the status again, and the commands.
     static func unchangedEnding(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) {
-        let status = operations.status()
-        if !showOutcome(status, console) { for line in status { console.say("  " + line) } }
+        showStatus(operations, console)
         console.say("")
         for line in pairCommands { console.say("  " + line) }
     }
 
-    /// How a start ends, right under start-truth's ✓ block (one success ending, the block its title), as `darkbloom start`
+    /// How a start ends, right under the start's ✓ block (one success ending, the block its title), as `darkbloom start`
     /// does: the model in its mode and split, the Macs, where requests go, the log, and the commands that control the pair.
     static func startedCard(model: String, ready: ClusterOnboardingReady, scope: ClusterServingScope, peer: String?,
                             _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) {
@@ -1831,7 +1833,7 @@ public enum ClusterOnboardingDriver {
             chosen = open[picked]
         }
         var choice = choices[chosen!]
-        // A model a Mac has no room for on disk now (#1766), or that cannot be copied or downloaded here, is refused before
+        // A model a Mac has no room for on disk now, or that cannot be copied or downloaded here, is refused before
         // anything is asked or stopped, in `provision`'s one wording.
         if let offer = choice.provision, offer.blocker != nil {
             _ = provision(offer, title: choice.title, index: chosen!, operations, console)

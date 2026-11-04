@@ -41,10 +41,10 @@ extension ClusterOnboardingDriver {
     enum FollowedStart: Equatable {
         /// Before the leader started (its status says Stopped), or a status that tells nothing yet.
         case notStarted
-        /// Loading, starting, or registering both Macs with the coordinator.
+        /// Loading, starting, registering both Macs with the coordinator, or serving while the leader's start still asks
+        /// Darkbloom whether to offer the pair (its serving line says so, `offerPendingWords`): the start is not over.
         case starting
-        /// Serving, as the start's outcome: while the leader's start still asks Darkbloom whether to offer the pair, its
-        /// serving line says so (`offerPendingWords`) and the start is not over.
+        /// Serving, as the start's outcome.
         case serving
         /// Offered to Darkbloom and not serving yet: the pair's own wait decides, as on the leading Mac (`pairServing`).
         case offered

@@ -855,7 +855,8 @@ memory holds its share. Unequal shares are for a pair that serves you alone
 (`darkbloom cluster local`): a pair served through Darkbloom is always planned
 with equal shares, because its registration with the coordinator cannot name
 unequal ones yet. A pair saved with unequal shares is not offered for pairing,
-and its status says why; press `m` in `darkbloom cluster` to plan it again.
+and its status says why (`not offered to Darkbloom (…)`); choose the model again
+in `darkbloom cluster` to plan it again.
 
 ## Prompt prefixes on the pair
 

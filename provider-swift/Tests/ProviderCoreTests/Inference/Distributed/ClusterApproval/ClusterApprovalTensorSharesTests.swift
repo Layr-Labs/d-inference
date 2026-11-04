@@ -25,6 +25,19 @@ struct ClusterApprovalTensorSharesTests {
             mode: configuration.selectedGenerationMode, tensorShares: configuration.tensorShares, deviceProfile: profile, edges: [])
     }
 
+    /// The DevNet traffic run (2026-11-04): the refusals said "press m in `darkbloom cluster`", but no item of its list
+    /// starts with m, so the key did nothing. They name the step that plans the model again, in this build's command,
+    /// and still reach the leader whole through the other Mac's refusal and the link's wrapping of it
+    /// (`ClusterSetupLinkExchange`: "the other Mac refused: …"; `ClusterSetupFailure` keeps 240 characters).
+    @Test func theRefusalsNameAStepTheScreenHas() {
+        let cli = ClusterOnboardingCommand.name
+        for refusal in [ClusterApprovalAttachment.unequalTensorSharesServeLocally, ClusterConfiguration.tensorAssistantServesLocally] {
+            #expect(!refusal.contains("press m"), "\(refusal)")
+            #expect(refusal.contains("choose the model again in `\(cli) cluster`"), "\(refusal)")
+            #expect(("the other Mac refused: " + ClusterApprovalSync.peerRefusalPrefix + refusal).count <= 240, "\(refusal)")
+        }
+    }
+
     @Test func aPairPlannedWithEqualSharesIsSavedOnBothMacsAndRegisters() throws {
         let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider", shape: .qwen27TensorParallel(assistant: nil))
         let approval = macs.approval(), facts = try macs.facts()

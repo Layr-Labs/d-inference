@@ -240,16 +240,16 @@ first (else the planner's), the other one keypress away:
 - **Speculative pipeline** (MiMo): a pipeline that drafts several tokens and
   checks them together.
 
-While a model serves, each mode's split reads "decided when it loads": the list
-plans with that model's memory still taken, and the start stops it and plans
-again with its memory free, so a split offered then could differ from the one
-that loads. The card after the start shows the split that loaded.
+The split each mode shows is the one that loads when you choose it: the list
+plans every mode it offers, and the start loads the plan it showed. While a
+model serves, each mode's split reads "decided when it loads": the list plans
+with that model's memory still taken, and the start stops it and plans again
+with its memory free. The card after the start shows the split that loaded.
 
 A mode is offered only if it keeps every feature of the model: Qwen 3.8 27B
 offers tensor parallel only, because pipeline would drop its image, video and
-logprob support. Change the mode on the leading Mac: a model chosen on the
-following Mac is passed to the leading Mac without its mode, so it starts in
-the planner's mode.
+logprob support. A mode chosen on the following Mac goes to the leading Mac
+with the model, so the pair loads it the same way.
 
 Choosing the model that serves, in its mode, sends one test request, the same as
 a start's, and changes nothing else: "Already serving Qwen 3.8 27B; test response

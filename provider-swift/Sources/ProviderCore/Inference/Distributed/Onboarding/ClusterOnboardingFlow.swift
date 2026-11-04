@@ -2163,14 +2163,15 @@ public enum ClusterOnboardingDriver {
         }
         if heading != startHeading { console.heading(heading == nil ? "4/4 Start" : startHeading) }
         console.say("  " + startNotice)
+        let index = chosen!
+        // The mode first: the fit check below checks the plan that mode loads.
+        if let mode, choice.modes?.contains(where: { $0.mode == mode }) == true { operations.useMode(index, mode) }
         // Memory moves while the person reads: the fit is checked again right before anything starts.
-        if let remedy = operations.recheckFit(chosen!) {
+        if let remedy = operations.recheckFit(index) {
             console.say("\(choice.title) doesn't fit in free memory now: \(remedy)")
             console.say("Nothing changed.")
             return 1
         }
-        let index = chosen!
-        if let mode, choice.modes?.contains(where: { $0.mode == mode }) == true { operations.useMode(index, mode) }
         switch busy(console, "Sending the setup to the other Mac", { operations.adopt(index) }) {
         case .success: break
         case .failure(let failure):

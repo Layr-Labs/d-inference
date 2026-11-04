@@ -1,3 +1,5 @@
+import DarkbloomClusterPlacement
+import DarkbloomClusterProtocol
 import Foundation
 import Testing
 @testable import ProviderCore
@@ -22,6 +24,56 @@ struct ClusterOnboardingPeerLabelTests {
         #expect(split([], serving: true) == nil)
         #expect(ClusterOnboardingDeployment.sharesWords(mode: "pipeline_v1", shares: [.init(name: "Apple M5 Ultra", layers: 44, label: "this Mac"),
             .init(name: "Apple M5 Ultra", layers: 1, label: "the other Mac")]) == "this Mac 44 layers / the other Mac 1 layer", "the card's line")
+    }
+
+    /// R4-13 (the M5 Ultra pair's DevNet run, branch.80): with nothing serving, GLM-5.3-Flash's mode question offered
+    /// Pipeline as "this Mac 1 layer / the other Mac 44 layers", and 44 / 1 loaded. The question showed the pipeline in
+    /// the listed tensor-parallel plan's assessment, and the start planned the pipeline again, with this Mac's speed
+    /// measured again: on two Macs of one speed, a pipeline's layers follow whichever measured faster. Each mode now shows
+    /// what loads when it is chosen: the listed plan's split for its own mode, another mode's own plan for that mode.
+    @Test func eachModeShowsThePlanThatLoadsWhenItIsChosen() {
+        typealias Share = ClusterSetupPlanSummary.Mode.Share
+        let tensor = [Share(local: true, firstLayer: 0, endLayer: 45, share: 0.5), Share(local: false, firstLayer: 0, endLayer: 45, share: 0.5)]
+        let assessed = [Share(local: true, firstLayer: 0, endLayer: 1, share: nil), Share(local: false, firstLayer: 1, endLayer: 45, share: nil)]
+        let loads = [Share(local: true, firstLayer: 0, endLayer: 44, share: nil), Share(local: false, firstLayer: 44, endLayer: 45, share: nil)]
+        let listed = [ClusterSetupPlanSummary.Mode(mode: ClusterGenerationMode.tensorParallel.rawValue, shares: tensor, servedDecodeTokensPerSecond: nil),
+                      ClusterSetupPlanSummary.Mode(mode: ClusterGenerationMode.pipeline.rawValue, shares: assessed, servedDecodeTokensPerSecond: 41)]
+        let listedPlan = ClusterSetupPlanning.Loads(shares: tensor)
+        let offered = ClusterSetupPlanning.offered(listed, listed: listedPlan, listedMode: .tensorParallel,
+                                                   families: [ClusterForcedMode.pipeline: .init(shares: loads)])
+        #expect(offered.map(\.shares) == [tensor, loads], "each mode shows its own plan's split")
+        #expect(offered.map(\.servedDecodeTokensPerSecond) == [nil, 41], "the measured speeds stay")
+        func split(_ mode: ClusterSetupPlanSummary.Mode, serving: Bool = false) -> String? {
+            OnboardingLive.modeSplit(mode.shares, here: "this Mac", there: "the other Mac", serving: serving)
+        }
+        #expect(split(offered[1]) == "this Mac 44 layers / the other Mac 1 layer", "the split that loads")
+        // A mode that could not be planned on its own shows no split, rather than one that won't load.
+        let unplanned = ClusterSetupPlanning.offered(listed, listed: listedPlan, listedMode: .tensorParallel, families: [:])
+        #expect(unplanned[0].shares == tensor && unplanned[1].shares.isEmpty && split(unplanned[1]) == nil)
+        // Round 4's R3-3: while a model serves, the start plans again once its memory is back, and the question says so.
+        #expect(split(offered[1], serving: true) == ClusterOnboardingMode.decidedWhenItLoads)
+    }
+
+    /// R4-13: the start adopts the plan the question showed for the mode chosen when nothing serves, instead of planning
+    /// that mode again. While a model serves, it plans again once that memory is back ("decided when it loads").
+    @Test func aChosenModeAdoptsThePlanItWasShown() {
+        #expect(OnboardingLive.adoption(modeDiffers: true, serving: false, shown: true) == .shown, "the plan whose split was shown")
+        #expect(OnboardingLive.adoption(modeDiffers: false, serving: false, shown: false) == .listed)
+        #expect(OnboardingLive.adoption(modeDiffers: true, serving: false, shown: false) == .planAgain, "no plan was made for it")
+        #expect(OnboardingLive.adoption(modeDiffers: true, serving: true, shown: true) == .planAgain, "decided when it loads")
+        #expect(OnboardingLive.adoption(modeDiffers: false, serving: true, shown: false) == .planAgain, "a model change frees memory first")
+    }
+
+    /// R4-13, on both Macs: a choice made on the joining Mac's screen is adopted on the leader, which planned the list. The
+    /// mode chosen there goes with the adopt, so the leader adopts that mode's plan, not its own list's default.
+    @Test func aForwardedAdoptCarriesTheModeChosen() throws {
+        let request = OnboardingLive.adoptRequest(index: 1, model: "glm-5.3-flash", scope: nil, family: .pipeline)
+        let decoded = try JSONDecoder().decode(ClusterControlRequest.self, from: JSONEncoder().encode(request))
+        #expect(decoded.op == .adopt && decoded.index == 1 && decoded.model == "glm-5.3-flash")
+        #expect(decoded.mode == ClusterForcedMode.pipeline.rawValue, "the mode chosen on the joining Mac's screen")
+        // From an older build, with no mode: the leader keeps the one chosen on its own screen, as before.
+        let older = try JSONDecoder().decode(ClusterControlRequest.self, from: Data(#"{"op":"adopt","index":1,"model":"glm-5.3-flash"}"#.utf8))
+        #expect(older.mode == nil && older.op == .adopt)
     }
 
     /// R3-2 (the round-3 re-test): the joining Mac's window ended "After a restart, this Mac serves again by itself"

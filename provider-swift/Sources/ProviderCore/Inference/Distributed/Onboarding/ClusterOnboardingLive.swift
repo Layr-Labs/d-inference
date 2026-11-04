@@ -116,6 +116,9 @@ final class OnboardingLive: @unchecked Sendable {
     private var listedChoices: [ClusterOnboardingModelChoice] = []
     /// The mode family the person chose per model id (`useMode`), for the next adopt of that model.
     private var chosenFamilies: [String: ClusterForcedMode] = [:]
+    /// What adopting each other mode the question offered needs, by folder and family (`ClusterSetupModelOption.familyPlans`):
+    /// the plan whose split the question showed, adopted as it is when nothing serves (`adoption`).
+    private var familyChoices: [String: [ClusterForcedMode: ChoiceKey]] = [:]
     /// Set while this (leader) Mac answers a command forwarded from the other Mac: its lines are shown on that Mac, so
     /// they name the two Macs the other way round (`here`, `there`).
     private var answeringForward = false
@@ -218,10 +221,36 @@ final class OnboardingLive: @unchecked Sendable {
         return ClusterForcedMode.allCases.first(where: { $0.admits(generation) })
     }
 
-    /// Whether the adopt plans again in the kept `family`: the listed plan's mode isn't in it (`localAdopt`).
+    /// Whether the kept `family` is another than the listed plan's mode (`localAdopt`).
     static func replansInFamily(_ family: ClusterForcedMode?, listedPlanMode: String?) -> Bool {
         guard let family else { return false }
         return listedPlanMode.flatMap { ClusterGenerationMode(rawValue: $0) }.map(family.admits) != true
+    }
+
+    /// The plan a start adopts (`localAdopt`).
+    enum Adoption: Equatable {
+        /// The listed plan: its mode is the one chosen.
+        case listed
+        /// The plan the question showed for the mode chosen (`familyChoices`): its split is the one that loads.
+        case shown
+        /// Planned again: a model serves (its memory comes back first, so the question said "decided when it loads"),
+        /// or no plan was made for the mode chosen.
+        case planAgain
+    }
+
+    /// `modeDiffers`: the mode chosen isn't the listed plan's (`replansInFamily`). `shown`: the question showed a plan
+    /// made for it. R4-13: the start planned the chosen mode again, with this Mac's speed measured again, and GLM's
+    /// pipeline offered as 1 / 44 loaded 44 / 1.
+    static func adoption(modeDiffers: Bool, serving: Bool, shown: Bool) -> Adoption {
+        if serving { return .planAgain }
+        guard modeDiffers else { return .listed }
+        return shown ? .shown : .planAgain
+    }
+
+    /// The adopt this Mac forwards to the leader: the mode chosen on this Mac's screen (`useMode`) goes with it, so the
+    /// leader adopts that mode's plan, not its own list's default.
+    static func adoptRequest(index: Int, model: String?, scope: ClusterServingScope?, family: ClusterForcedMode?) -> ClusterControlRequest {
+        ClusterControlRequest(op: .adopt, index: index, model: model, scope: scope, mode: family?.rawValue)
     }
 
     /// One status request over the cable, which only a Mac holding this pairing's link key can answer.
@@ -383,7 +412,9 @@ final class OnboardingLive: @unchecked Sendable {
             case .success(let choices): return .init(lines: [], failed: false, leaderID: leaderID, choices: choices)
             case .failure(let failure): return .init(lines: failure.lines, failed: true, leaderID: leaderID)
             }
-        case .adopt: return lines(localAdopt(request.index ?? -1, model: request.model, scope: request.scope))
+        case .adopt:
+            return lines(localAdopt(request.index ?? -1, model: request.model, scope: request.scope,
+                                    family: request.mode.flatMap(ClusterForcedMode.init(rawValue:))))
         case .serve: return lines(localServe())
         case .stop: return lines(localStop())
         case .readiness:
@@ -800,7 +831,7 @@ final class OnboardingLive: @unchecked Sendable {
             // bytes when its aggregate is the entry's: it is shown by that entry's name.
             let namesByArtifact = Dictionary(catalogAll.compactMap { model in model.aggregateSHA256.map { ($0, model.displayName) } },
                                              uniquingKeysWith: { first, _ in first })
-            var keys = [ChoiceKey]()
+            var keys = [ChoiceKey](), families = [String: [ClusterForcedMode: ChoiceKey]]()
             // A running model is stopped (its memory released) before a new one starts, so its memory is no reason here,
             // and the split planned with it taken is not the one that loads (`modeSplit`). Read once, for the whole list.
             let serving = leadership?.serving == true
@@ -823,6 +854,12 @@ final class OnboardingLive: @unchecked Sendable {
                 let deployment = ClusterOnboardingDeployment.line(model: title, mode: plan.mode, shares: planShares(plan.ranks, localName: localName))
                 keys.append((option.model.folder, ClusterSetupState.planKey(option.model, plan), modelID, plan.alone.filter(\.holds).map(\.memberID),
                              deployment, plan))
+                for other in option.familyPlans ?? [] {
+                    guard let family = Self.keptFamily(other.mode) else { continue }
+                    families[option.model.folder, default: [:]][family] = (option.model.folder, ClusterSetupState.planKey(option.model, other),
+                        modelID, other.alone.filter(\.holds).map(\.memberID),
+                        ClusterOnboardingDeployment.line(model: title, mode: other.mode, shares: planShares(other.ranks, localName: localName)), other)
+                }
                 let remedy = serving || plan.fitsNow ? nil : Self.fitRemedy(plan, local: here, peer: there)
                 // Served for the owner either way. Once chosen: the planner's one-line reason for tensor parallel or
                 // a pipeline, and (serving through Darkbloom) whether public traffic may reach it yet. In the list,
@@ -877,7 +914,10 @@ final class OnboardingLive: @unchecked Sendable {
             let position = Dictionary(uniqueKeysWithValues: presented.enumerated().map { ($0.element.index, $0.offset) })
             catalog = Dictionary(uniqueKeysWithValues: catalog.compactMap { index, model in position[index].map { ($0, model) } })
             fromPeer = Dictionary(uniqueKeysWithValues: fromPeer.compactMap { index, model in position[index].map { ($0, model) } })
-            lock.withLock { self.choices = presented.map { ordered[$0.index].key }; self.catalogChoices = catalog; self.peerChoices = fromPeer }
+            lock.withLock {
+                self.choices = presented.map { ordered[$0.index].key }; self.catalogChoices = catalog; self.peerChoices = fromPeer
+                self.familyChoices = families
+            }
             return .success(presented.map(\.choice))
         }
     }
@@ -970,8 +1010,15 @@ final class OnboardingLive: @unchecked Sendable {
     /// Right before the start: each Mac's memory measured again against what its part needs (memory moves while the
     /// person reads the list). Nil when it fits, or when a running model is stopped first (its memory comes back).
     func recheckFit(_ index: Int) -> String? {
-        guard !forwards, leadership?.serving != true,
-              let plan = lock.withLock({ choices.indices.contains(index) ? choices[index].plan : nil }) else { return nil }
+        // The plan the start adopts: the listed one, or the one the question showed for the mode chosen (`localAdopt`).
+        guard !forwards, leadership?.serving != true, let plan = lock.withLock({ () -> ClusterSetupPlanSummary? in
+            guard choices.indices.contains(index) else { return nil }
+            let listed = choices[index]
+            guard let family = chosenFamilies[listed.title], Self.replansInFamily(family, listedPlanMode: listed.plan?.mode) else {
+                return listed.plan
+            }
+            return familyChoices[listed.folder]?[family]?.plan ?? listed.plan
+        }) else { return nil }
         let localProfile = context.snapshot().local.mac.profile
         var peerProfile: ClusterDeviceProfile?
         if case .reached(let report, _) = context.reachPeer() {
@@ -1221,14 +1268,16 @@ final class OnboardingLive: @unchecked Sendable {
         let model = lock.withLock { listedChoices.indices.contains(index) ? (listedChoices[index].modelID ?? listedChoices[index].title) : nil }
         // The leader may stop both parts (up to 5 minutes to drain), wait for their memory (`releaseWaitSeconds`), plan
         // again and retry the device lease: the reply can take that long.
-        let request = ClusterControlRequest(op: .adopt, index: index, model: model, scope: runScope)
+        let request = Self.adoptRequest(index: index, model: model, scope: runScope, family: model.flatMap { keptFamily(forModel: $0) })
         return routed(request, seconds: 600, acting: true, local: { localAdopt(index) }) { $0.lines }
     }
 
     /// `model`: the id of the model the list showed at `index` (a choice forwarded from another Mac). When this Mac's
     /// list is gone (its service restarted) or no longer shows that model there, it plans again and adopts it by id.
-    /// `scope`: the way of serving the forwarded choice was listed for; every plan made here follows it.
-    func localAdopt(_ index: Int, model: String? = nil, scope: ClusterServingScope? = nil) -> Result<[String], ClusterOnboardingFailure> {
+    /// `scope`: the way of serving the forwarded choice was listed for; every plan made here follows it. `family`: the
+    /// mode chosen on the forwarding Mac's screen; nil keeps the one chosen here (`useMode`).
+    func localAdopt(_ index: Int, model: String? = nil, scope: ClusterServingScope? = nil,
+                    family requested: ClusterForcedMode? = nil) -> Result<[String], ClusterOnboardingFailure> {
         var index = index
         if let model, lock.withLock({ !choices.indices.contains(index) || choices[index].title != model }) {
             if case .failure(let failure) = localReachMembers({ _ in }) { return .failure(failure) }
@@ -1242,11 +1291,16 @@ final class OnboardingLive: @unchecked Sendable {
             return .failure(.init("The list of models is out of date; run `\(Self.cli) cluster` again to choose."))
         }
         var lines = [String]()
-        // The person chose another mode family than the listed plan's (`useMode`): planned again in it before adopting.
-        let family = keptFamily(forModel: choice.title)
+        // The person chose another mode family than the listed plan's (`useMode`): the plan the question showed for it
+        // is adopted, or, while a model serves, it is planned again in that family once the memory is back.
+        let family = requested ?? keptFamily(forModel: choice.title)
         let modeDiffers = Self.replansInFamily(family, listedPlanMode: choice.plan?.mode)
         let serving = leadership?.serving == true || (try? store.readRecord().stopDrain) != nil
-        if serving || modeDiffers {
+        let shown = family.flatMap { family in lock.withLock { familyChoices[choice.folder]?[family] } }
+        switch Self.adoption(modeDiffers: modeDiffers, serving: serving, shown: shown != nil) {
+        case .listed: break
+        case .shown: if let shown { choice = shown }
+        case .planAgain:
             if serving {
                 // A running part holds its Mac's setup and native device lease: a model change drains both Macs first
                 // (each part releases its memory), then changes the setup; `serve` starts the new one.

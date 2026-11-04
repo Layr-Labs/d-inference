@@ -84,6 +84,9 @@ public struct ClusterSetupModelOption: Codable, Sendable, Equatable {
     /// Why it cannot be chosen; nil when it can.
     public var blocker: String?
     public var plan: ClusterSetupPlanSummary?
+    /// The plan of each other mode family the setup's question offers, made as a start makes it once that family is
+    /// chosen; the start adopts it (`ClusterSetupPlanning.offered`). Nil when only `plan`'s family is offered.
+    public var familyPlans: [ClusterSetupPlanSummary]? = nil
 
     public init(model: ClusterSetupLocalModel, onOtherMac: Bool?, blocker: String?, plan: ClusterSetupPlanSummary?) {
         self.model = model; self.onOtherMac = onOtherMac; self.blocker = blocker; self.plan = plan

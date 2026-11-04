@@ -3964,35 +3964,43 @@ away; mixed pairs are first-class).
   reads stopped whatever the other Mac's presence
   (`ClusterPairSummary.state(ofStatus:started:leaderMode:)`).
 - **The split shown:** each mode's share names the Mac that runs it
-  (`OnboardingLive.modeSplit`, "1 layer" for one). While a model serves it reads
-  "decided when it loads": the list's plan counts that model's memory as taken,
-  and the adopt stops it and plans again with its memory free.
+  (`OnboardingLive.modeSplit`, "1 layer" for one). It is the plan that loads
+  when that mode is chosen (`ClusterSetupPlanning.offered`): the listed plan for its own
+  family, and for each other family the plan `ClusterPlacementFlow.decide(chosenMode:)`
+  makes from the same samples, kept with its setup
+  (`ClusterSetupModelOption.familyPlans`, `Decision.familySetups`). A family
+  that can't be planned shows no split. Planning a family again at the start
+  would measure this Mac's speed index again, and on two Macs of one speed a
+  pipeline's layers follow whichever measured faster (offered 1 / 44, loaded
+  44 / 1). While a model serves it reads "decided when it loads": the list's
+  plan counts that model's memory as taken, and the adopt stops it and plans
+  again with its memory free.
 - **The person's family:** `useMode` keeps the chosen family for every model
   (`OnboardingLive.keptFamily`), never inferred from the listing's order, which
-  says nothing of the plan; `localAdopt` plans again in it only when the listed
-  plan's mode isn't in it (`OnboardingLive.replansInFamily`).
+  says nothing of the plan. `localAdopt` adopts the listed plan when it is in
+  that family, else the family's own plan the list showed, and plans again only
+  while a model serves or when no plan was made for it (`OnboardingLive.adoption`).
 - **The scope a plan is for:** `chooseAndServe` names the scope before it plans
   the list (`ClusterOnboardingOperations.planScope`, `OnboardingLive.usePlanningScope`,
   carried in `ClusterControlRequest.scope`); a start whose scope changes before
   it adopts (the login check's "Serve locally only") is planned again for that
   scope, and the same model is adopted from the new plan.
 - **Forwarded choices:** a choice the other Mac forwards to the control leader
-  (`ClusterControlRequest`: op, index, model and scope) carries no mode, so it
-  is placed in the planner's family; the mode is chosen on the leading Mac.
-- **The person's choice:** `useMode` keeps the family for the next adopt of that
-  model; `OnboardingLive.localAdopt` plans that model again with
-  `ClusterPlacementFlow.decide(chosenMode:)`, which places only that family the
-  way the developer setting does (`policy.forcedMode`), while memory fit,
-  qualification records and feature parity still decide, and adopts that plan.
+  (`ClusterControlRequest`: op, index, model, scope and the mode family chosen
+  on that Mac's screen, `OnboardingLive.adoptRequest`) is adopted in that family;
+  a request without a mode, from an earlier build, keeps the leader's own.
+- **The person's choice:** `chosenMode` places only that family the way the
+  developer setting does (`policy.forcedMode`), while memory fit,
+  qualification records and feature parity still decide.
   A re-plan after an update keeps the served mode unless the planner and the
   pair's served requests both find another faster (`ClusterServedModes.hold`).
 
 Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupWizardPlanning.swift`
-(`ClusterSetupPlanning.modes`),
+(`ClusterSetupPlanning.modes`, `ClusterSetupPlanning.offered`),
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementFlow.swift`
 (`ClusterPlacementFlow.decide`), and
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingLive.swift`
-(`useMode`, `localAdopt`, `screenMode`).
+(`useMode`, `localAdopt`, `adoption`, `screenMode`).
 
 ## A saved pairing the onboarding cannot use
 

@@ -207,14 +207,14 @@ On DevNet, use the [DevNet names](#devnet-testers-only) in every command below.
    A newly installed app has its own Secure Enclave key, but it can take over
    the pairing another app made on this Mac (a local build, or the production
    app before DevNet). After installing another app on a paired Mac, run
-   `darkbloom cluster` on both Macs in [step 5](#5-two-macs-pair-them). When it
-   sees that the key changed, it says ``This Mac's Secure Enclave key changed
-   after it paired (…), so the Macs must pair again to serve through
-   Darkbloom.`` and offers only **Pair again** and **Quit**: choose **Pair
-   again** on both Macs. If it shows the old pairing as usual instead, or says
-   the other Mac isn't answering, choose **Start over (unpair and set up
-   again)** → **Yes, start over** on both Macs. Either way, only with the
-   human's go.
+   `darkbloom cluster` on both Macs in [step 5](#5-two-macs-pair-them), and act
+   on what each Mac shows. When it sees that the key changed, it says
+   ``This Mac's Secure Enclave key changed after it paired (…), so the Macs
+   must pair again to serve through Darkbloom.`` and offers only **Pair again**
+   and **Quit**: choose **Pair again** on that Mac. If it shows the old pairing
+   as usual instead, or says the other Mac isn't answering, choose
+   **Start over (unpair and set up again)** → **Yes, start over** on that Mac.
+   Either way, only with the human's go.
 
    With two Macs, both must show the same version. If `darkbloom update`
    can't bring them to the same version, **STOP** and ask.
@@ -344,13 +344,14 @@ On DevNet, use the [DevNet names](#devnet-testers-only) in every command below.
 3. Both Macs need free memory for the pair, and a model that single-Mac
    serving has loaded uses memory. Run `darkbloom status --solo` on each Mac
    (on a paired Mac, plain `darkbloom status` shows the pair instead). On a
-   paired Mac with nothing running beside the pair, it prints ``Single-Mac
-   serving: off (this Mac serves in its two-Mac cluster: `darkbloom cluster
-   status`)`` (on DevNet, `darkbloom-dev cluster status`): go on. If it shows
-   `Daemon: running` and lists warm models, **STOP** and ask the human whether
-   to stop single-Mac serving there before the pair starts. On a Mac that isn't
-   paired yet that is `darkbloom stop`; on one that is paired already,
-   `darkbloom stop --solo`.
+   paired Mac, go on when it prints ``Single-Mac serving: off (this Mac serves
+   in its two-Mac cluster: `darkbloom cluster status`)`` (on DevNet,
+   `darkbloom-dev cluster status`), or when `Daemon: running` comes with
+   ``This is the cluster's part on this Mac, not single-Mac serving (…)``:
+   that is the pair's own part. Otherwise, if it shows `Daemon: running` and
+   lists warm models, **STOP** and ask the human whether to stop single-Mac
+   serving there before the pair starts. On a Mac that isn't paired yet that is
+   `darkbloom stop`; on one that is paired already, `darkbloom stop --solo`.
 
 ### 5. Two Macs: pair them
 
@@ -555,9 +556,9 @@ Check all three:
    | Exit status | `state` | Do |
    |---|---|---|
    | `0` | `serving` | Go on |
-   | `3` | `not_serving`, with `reason` ``This Mac can't reach the other Mac over the cable: macOS keeps Darkbloom off the local network`` or ``The other Mac can't reach this Mac over the cable: macOS keeps Darkbloom there off the local network`` (on DevNet, both name Darkbloom Dev) | macOS keeps that Mac off the local network, and nothing changes until someone turns it on. Don't wait. **STOP**: ask the person to do what `next` says, on the Mac it names: System Settings → Privacy & Security → Local Network → turn on “Darkbloom” (on DevNet, “Darkbloom Dev”), through Screen Sharing on a Mac with no display. Then run `darkbloom start` (on either Mac), or choose **Retry** in `darkbloom cluster` on the leader ([Local Network](#on-a-two-mac-pair)) |
+   | `3` | `not_serving` with `reason` ``This Mac can't reach the other Mac over the cable: macOS keeps Darkbloom off the local network`` or ``The other Mac can't reach this Mac over the cable: macOS keeps Darkbloom there off the local network`` (on DevNet, both name Darkbloom Dev) | macOS keeps that Mac off the local network, and nothing changes until someone turns it on. Don't wait. **STOP**: ask the human to do this on the Mac `next` names: System Settings → Privacy & Security → Local Network → turn on “Darkbloom” (on DevNet, “Darkbloom Dev”), through Screen Sharing on a Mac with no display. Then run `darkbloom start` (on either Mac), or choose **Retry** in `darkbloom cluster` on the leader ([Local Network](#on-a-two-mac-pair)) |
    | `3` | `not_serving` with another `reason` | Follow `next` and [troubleshooting](#troubleshooting) |
-   | `3` | `loading`, `unknown` | Check again every few minutes, for up to 15 minutes, without restarting anything (rule 8) |
+   | `3` | `loading`, `unknown` | Check again every few minutes, for up to 15 minutes, without restarting anything (rule 8). If it still says so after 15 minutes, **STOP**: the human runs `darkbloom cluster` on the leader, which shows more |
    | `4` | `stopped` | The pair is stopped. If the other Mac isn't answering too, the lines add ``The other Mac (…) isn't answering over the cable.``. **STOP**: ask the human, then run `darkbloom start` |
    | `5` | `other_mac_away` | The other Mac isn't answering over the cable. **STOP**: `next` says why and what to run on that Mac |
    | `6` | `not_paired` | This Mac isn't in a pair. Go back to [step 5](#5-two-macs-pair-them) |

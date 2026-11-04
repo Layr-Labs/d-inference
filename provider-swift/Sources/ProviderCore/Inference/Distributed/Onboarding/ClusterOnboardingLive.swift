@@ -62,7 +62,8 @@ extension ClusterOnboardingOperations {
             unpair: { live.unpair() },
             pairServing: { progress in live.pairServing(progress) },
             missingLogins: { live.missingLogins() },
-            login: { live.login() })
+            login: { live.login() },
+            useMode: { index, mode in live.useMode(index, mode) })
     }
 }
 
@@ -94,6 +95,8 @@ final class OnboardingLive: @unchecked Sendable {
     private var chosenTitle: String?
     /// The list `planModels` last returned on this Mac (from the leader when forwarded), so a choice names its model.
     private var listedChoices: [ClusterOnboardingModelChoice] = []
+    /// The mode family the person chose per model id, when it is not the planner's (`useMode`).
+    private var chosenFamilies: [String: ClusterForcedMode] = [:]
     /// Set while this (leader) Mac answers a command forwarded from the other Mac: its lines are shown on that Mac, so
     /// they name the two Macs the other way round (`here`, `there`).
     private var answeringForward = false
@@ -152,6 +155,7 @@ final class OnboardingLive: @unchecked Sendable {
             var resume = ClusterOnboardingResume(role: role, peerName: peerName, serving: leadership.serving, modelName: leadership.modelName)
             resume.scope = leadership.scope
             resume.pairingProblem = problem
+            resume.modelTitle = leadership.modelName.map(modelTitle); resume.servingMode = savedMode
             return resume
         }
         let leads = claim.leaderID == pairing.localMemberID
@@ -164,7 +168,23 @@ final class OnboardingLive: @unchecked Sendable {
         resume.term = claim.term
         resume.localLine = ClusterService.published()?.control?.line
         resume.pairingProblem = problem
+        resume.modelTitle = leadership.modelName.map(modelTitle); resume.servingMode = savedMode
         return resume
+    }
+
+    /// The mode the saved setup serves its model in (a `ClusterGenerationMode` raw value).
+    var savedMode: String? { context.savedConfiguration().configuration?.selectedGenerationMode.rawValue }
+
+    /// The person's mode for the model of choice `index`, as the family the planner places: kept for the next adopt
+    /// of that model (`localAdopt`); the planner's own family needs nothing kept.
+    func useMode(_ index: Int, _ mode: String) {
+        lock.withLock {
+            guard listedChoices.indices.contains(index), let generation = ClusterGenerationMode(rawValue: mode),
+                  let family = ClusterForcedMode.allCases.first(where: { $0.admits(generation) }) else { return }
+            let model = listedChoices[index].modelID ?? listedChoices[index].title
+            let planned = listedChoices[index].modes?.first.flatMap { ClusterGenerationMode(rawValue: $0.mode) }
+            chosenFamilies[model] = planned.map(family.admits) == true ? nil : family
+        }
     }
 
     /// One status request over the cable, which only a Mac holding this pairing's link key can answer.
@@ -659,8 +679,8 @@ final class OnboardingLive: @unchecked Sendable {
 
     /// `keeping`: the mode each model id keeps (`LiveContext.plan`); the service's re-plan after an update passes the
     /// mode the pair served the model in. `scope`: the way of serving a forwarded command names (`planningScope`).
-    func localPlanModels(keeping: [String: ClusterGenerationMode] = [:],
-                         scope: ClusterServingScope? = nil) -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure> {
+    func localPlanModels(keeping: [String: ClusterGenerationMode] = [:], scope: ClusterServingScope? = nil,
+                         chosenModes: [String: ClusterForcedMode] = [:]) -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure> {
         // The plan judges each Mac by the memory its report sampled. A report taken before this Mac stopped the
         // cluster's parts still counts the other Mac's old part (the re-plan after an update stops them first):
         // ask again, so both Macs are priced with that memory given back. 2026-10-22: the other Mac's report was
@@ -677,7 +697,7 @@ final class OnboardingLive: @unchecked Sendable {
         // Folders copied over the cable (no receipt on this Mac) are repaired before the plan describes them.
         ClusterProductModelStore.updateClusterStore(store, providerConfiguration: settings.service.wizard.providerConfiguration,
                                                     accepts: context.workerAcceptsManifest)
-        switch context.plan(peer: peer, keeping: keeping, coordinator: !planningScope(scope).isLocalOnly) {
+        switch context.plan(peer: peer, keeping: keeping, coordinator: !planningScope(scope).isLocalOnly, chosenModes: chosenModes) {
         case .failed(let reason): return .failure(.init("Planning failed: \(reason)"))
         case .ready(let options):
             let localName = ClusterPairingProvider.displayName(chipName: context.snapshot().local.mac.chip)
@@ -720,7 +740,9 @@ final class OnboardingLive: @unchecked Sendable {
                              publicTraffic: context.settings.privateImageQualification
                                 ? "Private unqualified image candidate; public traffic is prohibited." : plan.publicTraffic,
                              tensorParallelNote: plan.tensorParallelNote, validated: approved(option.model.artifactSHA256),
-                             split: ClusterOnboardingDeployment.splitMarker(plan.mode))
+                             split: ClusterOnboardingDeployment.splitMarker(plan.mode),
+                             current: leadership?.serving == true && leadership?.modelName == modelID,
+                             modes: plan.modes.map { $0.map(screenMode) })
             }
             // Open choices first (the models this Mac has), then catalog models no Mac has yet, then the blocked ones.
             typealias Listed = (choice: ClusterOnboardingModelChoice, key: ChoiceKey, artifact: ListedArtifact?)
@@ -1115,6 +1137,17 @@ final class OnboardingLive: @unchecked Sendable {
     /// `model`: the id of the model the list showed at `index` (a choice forwarded from another Mac). When this Mac's
     /// list is gone (its service restarted) or no longer shows that model there, it plans again and adopts it by id.
     /// `scope`: the way of serving the forwarded choice was listed for; every plan made here follows it.
+    /// A planned mode as the screen shows it: each Mac's share in the screen's words ("this Mac 6 layers / the other
+    /// Mac 24 layers", "this Mac 40% / the other Mac 60%") and the decode rate this pair served it at.
+    func screenMode(_ mode: ClusterSetupPlanSummary.Mode) -> ClusterOnboardingMode {
+        let words = mode.shares.map { share -> String in
+            let mac = share.local ? hereShort : thereShort
+            if let fraction = share.share { return "\(mac) \(Int((fraction * 100).rounded()))%" }
+            return "\(mac) \(share.endLayer - share.firstLayer) layers"
+        }
+        return .init(mode: mode.mode, split: words.isEmpty ? nil : words.joined(separator: " / "), measuredTokensPerSecond: mode.servedDecodeTokensPerSecond)
+    }
+
     func localAdopt(_ index: Int, model: String? = nil, scope: ClusterServingScope? = nil) -> Result<[String], ClusterOnboardingFailure> {
         var index = index
         if let model, lock.withLock({ !choices.indices.contains(index) || choices[index].title != model }) {
@@ -1129,13 +1162,20 @@ final class OnboardingLive: @unchecked Sendable {
             return .failure(.init("The list of models is out of date; run `darkbloom cluster` again to choose."))
         }
         var lines = [String]()
-        if leadership?.serving == true || (try? store.readRecord().stopDrain) != nil {
-            // A running part holds its Mac's setup and native device lease: a model change drains both Macs first
-            // (each part releases its memory), then changes the setup; `serve` starts the new one.
-            if case .failure(let failure) = localStop() { return .failure(failure) }
-            lines.append("Stopped both Macs' parts to change the model (each released its memory first).")
-            guard drained(seconds: 300) else {
-                return .failure(.init(lines + ["A part did not stop within 5 minutes, so the setup was not changed; run `darkbloom cluster` again."]))
+        // The person chose another mode family than the one listed (`useMode`): planned again in it before adopting.
+        let family = lock.withLock { chosenFamilies[choice.title] }
+        let listedMode = choice.plan.flatMap { ClusterGenerationMode(rawValue: $0.mode) }
+        let modeDiffers = family.map { family in listedMode.map(family.admits) != true } ?? false
+        let serving = leadership?.serving == true || (try? store.readRecord().stopDrain) != nil
+        if serving || modeDiffers {
+            if serving {
+                // A running part holds its Mac's setup and native device lease: a model change drains both Macs first
+                // (each part releases its memory), then changes the setup; `serve` starts the new one.
+                if case .failure(let failure) = localStop() { return .failure(failure) }
+                lines.append("Stopped both Macs' parts to change the model (each released its memory first).")
+                guard drained(seconds: 300) else {
+                    return .failure(.init(lines + ["A part did not stop within 5 minutes, so the setup was not changed; run `darkbloom cluster` again."]))
+                }
             }
             // The list was planned while the parts held their memory, where a tensor-parallel split may not fit "now"
             // and a pipeline is listed in its place (2026-10-29: GLM-5.3-Flash came back as a pipeline at half the
@@ -1143,8 +1183,12 @@ final class OnboardingLive: @unchecked Sendable {
             // as the re-plan after an update does, and adopt the model's new plan. When planning fails, the listed
             // plan stands (a failed plan replaces neither `choices` nor the decisions `context.adopt` reads): it was
             // priced with less memory than there is now.
-            awaitReleased()
-            if case .success(let replanned) = localPlanModels(scope: scope) {
+            if serving { awaitReleased() }
+            let replan = localPlanModels(scope: scope, chosenModes: family.map { [choice.title: $0] } ?? [:])
+            if modeDiffers, case .failure(let failure) = replan {
+                return .failure(.init(lines + ["\(choice.title) could not be planned in the mode chosen: \(failure.lines.joined(separator: " "))"]))
+            }
+            if case .success(let replanned) = replan {
                 // `localPlanModels` set `choices` in the order of the list it returned. Both are read under one lock,
                 // and the entry must still name the chosen model: a plan forwarded from the other Mac may replace
                 // `choices` meanwhile.
@@ -1159,7 +1203,7 @@ final class OnboardingLive: @unchecked Sendable {
                     return .failure(.init(lines + ["\(choice.title) is not offered on these Macs now (\(reason)); run `darkbloom cluster` again to choose."]))
                 }
                 if picked.again.key != choice.key, let line = replanned[picked.index].lines.first {
-                    lines.append("Planned again with both Macs' memory given back: \(line).")
+                    lines.append((serving ? "Planned again with both Macs' memory given back: " : "Planned in the mode chosen: ") + "\(line).")
                 }
                 choice = picked.again
                 peer = lock.withLock { peerReport } ?? peer

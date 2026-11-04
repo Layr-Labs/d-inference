@@ -3741,6 +3741,41 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/C
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupLinkExchange.swift`
 (`ClusterSetupLinkExchange.Responder`).
 
+## Mode choice on a set-up pair
+
+`darkbloom cluster` offers every mode family the planner could place for these
+Macs, not only its choice (owner, 2026-11-04: tensor parallel and pipeline both
+offered, the fastest measured on this pair by default, the other one keypress
+away; mixed pairs are first-class).
+
+- **Which modes:** `ClusterSetupPlanning.modes` reads the plan's own sharded
+  candidates (`ClusterPlacementResult.shards`). A family is offered when one of
+  its candidates runs here (verdict `chosen`, `slower`,
+  `predictedFasterOnPriorOnly` or `reductionNotMeasured`); not when it doesn't
+  fit, no runtime executes it, a qualification check keeps it out, or it would
+  drop a feature (`dropsFeatures`). One per family (`ClusterForcedMode`): tensor
+  parallel, and the pipeline family's best (plain, compact or speculative).
+- **Measured speed:** `ClusterServedModes.figures` over this build's served
+  records of this model on these Macs (`ClusterServedSpeedRecords.servedBy`), as
+  the planner reads them: a figure from 3 served requests on. Never a
+  prediction; without one the screen says "not measured on these Macs yet".
+- **Default:** the fastest measured family, else the planner's
+  (`ClusterOnboardingMode.defaultIndex`).
+- **The person's choice:** `useMode` keeps the family for the next adopt of that
+  model; `OnboardingLive.localAdopt` plans that model again with
+  `ClusterPlacementFlow.decide(chosenMode:)`, which places only that family the
+  way the developer setting does (`policy.forcedMode`), while memory fit,
+  qualification records and feature parity still decide, and adopts that plan.
+  A re-plan after an update keeps the served mode unless the planner and the
+  pair's served requests both find another faster (`ClusterServedModes.hold`).
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupWizardPlanning.swift`
+(`ClusterSetupPlanning.modes`),
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementFlow.swift`
+(`ClusterPlacementFlow.decide`), and
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingLive.swift`
+(`useMode`, `localAdopt`, `screenMode`).
+
 ## A saved pairing the onboarding cannot use
 
 `darkbloom cluster` resumes a paired Mac only when the pairing it would use can

@@ -147,21 +147,60 @@ Setup reports completion only after the test response succeeds. If that request
 fails, the saved setup remains available: run `darkbloom cluster` on the leader,
 check its status, and choose **Test** to try again.
 
-`darkbloom cluster` run again shows the cluster's status in one line and, on
-the leader, a list: **Test**, **Change model** (**Choose a model** when
-stopped), **Serve locally** or **Serve through Darkbloom**, **Stop**, **Check
-memory is freed**, **Start over (pair again)** and **Quit**, with **Set up the
-cable port** first when the cable moved to a port not set up yet. On the other
-Mac it shows the status, then "This Mac follows the other Mac (<its hardware
-name>): to choose or change the model, run `darkbloom cluster` on that Mac.",
-and offers **Start over (pair again)** or **Quit** (enter quits): its part runs
-by itself. A cable port set up from either screen continues to that screen
-([below](#when-something-is-in-the-way)). **Start over (pair again)** asks once
-("Unpair this Mac and pair the two Macs again?", **No** by default), then
-unpairs this Mac and pairs again ([pairing again](#pairing-again)). Either Mac
-first asks the other over the cable; when it does not answer, or when the saved
-pairing was made with another Secure Enclave key, the screen says so and offers
-**Pair again** without the question.
+`darkbloom cluster` run again opens with both Macs and the cable ("This Mac
+(Studio A) leads · the other Mac (Apple M3 Ultra, 256 GB) follows · cable
+ready"; the other Mac by its hardware name, since no computer name crosses the
+cable), then the cluster's status as the outcome block (`✓ Serving …` or `✗ Not
+serving: <reason>`; "Stopped; last model …" when stopped).
+
+On the leader it says how the pair works ("this Mac runs the setup, and both
+Macs run their part by themselves") and offers one line per item, each saying
+what it does:
+
+| Item | What it does |
+|---|---|
+| **Change model** (**Choose a model** when stopped) | Stops the model that serves and loads another, after one question ("Switch to Gemma 4 26B? Qwen 3.8 27B stops serving on both Macs while Gemma 4 26B loads …", **No** by default) |
+| **Test a response** (serving) | One request through both Macs |
+| **Stop serving** (serving) | Both Macs free their memory |
+| **Serve locally only** or **Serve through Darkbloom** | Switches how the pair serves |
+| **Check memory is freed** (stopped) | Confirms both Macs released the model's memory |
+| **Start over** | Unpairs this Mac and pairs again, after one question ([pairing again](#pairing-again)) |
+| **Quit** | Changes nothing |
+
+**Set up the cable port** comes first when the cable moved to a port not set
+up yet; set up, the same run goes on to the list
+([below](#when-something-is-in-the-way)).
+
+The model list marks the model serving now, and gives each model's modes with
+the decode speed this pair served it at (`ClusterServedModes`: at least 3 served
+requests on these Macs with this build), or "not measured on these Macs yet";
+models these Macs cannot serve are not listed. A model that runs more than one
+way here asks how both Macs split it, the fastest measured mode first (else
+the planner's), the other one keypress away:
+
+- **Tensor parallel**: both Macs work on every layer, each holding a share of it
+  (half each through Darkbloom; local serving balances the shares by speed).
+- **Pipeline**: each Mac runs its share of the layers, uneven on mixed Macs
+  (for example "this Mac 6 layers / the other Mac 46 layers").
+- **Speculative pipeline** (MiMo): a pipeline that drafts several tokens and
+  checks them together.
+
+After **Yes, switch** the screen says "✓ Stopped <old model> on both Macs",
+then the start's progress and its outcome block.
+
+On the other Mac the opening says it follows, the status block, "This Mac runs
+its part by itself.", then "To change the model or stop serving, run `darkbloom
+cluster` on the other Mac (<its hardware name>).", and offers **Start over
+(unpair and set up again)** or **Quit** (enter quits). Either Mac asks the other
+over the cable first; when it does not answer, or when the saved pairing was
+made with another Secure Enclave key, the screen says so and offers **Pair
+again** without the question.
+
+A fresh setup opens with what it will ask (this Mac's password on each Mac for
+the cable port, Local Network access, Yes when both screens show the same code,
+and a Darkbloom login to serve through Darkbloom) and how long it takes (about
+2 minutes to connect and pair, a model copy or download depending on its size,
+a few minutes to load).
 
 The planner picks tensor parallel or pipeline for your Macs by itself. Phase
 split is off. A model whose artifact ships a speculative (MTP) head can also

@@ -477,7 +477,11 @@ incident log, owned by `DarkbloomClusterRemote`
 `~/.darkbloom/cluster/incidents.json`, another install's its own file, such as
 `incidents.dev.json`, which a build from before installs had their own files
 never reads or rewrites; a corrupt one is kept beside it under its own name
-(`incidents.corrupt.json`, `incidents.dev.corrupt.json`). Every reader and writer opens this build's with
+(`incidents.corrupt.json`, `incidents.dev.corrupt.json`). `ClusterIncidentLog.files`
+names a log's files: the log, its lock sidecar and that corrupt copy.
+`darkbloom uninstall` removes an install's own with it while the shared folder
+stays for the other install; production's shared `incidents.json` stays. Every
+reader and writer opens this build's with
 `ClusterIncidentLog.forThisInstall`. Each record also names the install that
 wrote it (`ClusterIncident.install`), and a build reads only its own, counting
 records without one as production's (`ClusterIncidentLog.install`). The

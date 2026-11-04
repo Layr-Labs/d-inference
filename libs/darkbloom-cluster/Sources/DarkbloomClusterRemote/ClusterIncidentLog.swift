@@ -204,6 +204,13 @@ public final class ClusterIncidentLog: @unchecked Sendable {
     }
 
     public let file: URL
+    /// The files this log keeps on disk, in this order: the log, its lock sidecar, and the copy a corrupt log is moved
+    /// aside to. `darkbloom uninstall` removes an install's own with it.
+    public var files: [URL] { [file, lockFile, corruptCopy] }
+    /// Where a corrupt log is moved aside, named after its file, so each install keeps its own.
+    var corruptCopy: URL {
+        file.deletingLastPathComponent().appendingPathComponent(file.deletingPathExtension().lastPathComponent + ".corrupt.json")
+    }
     /// This install, stamped on each record it adds; its feed holds its own records and the older unstamped ones
     /// (`unstampedInstall`). Nil: every record, and the records it adds stay unstamped. Each install also keeps its own
     /// file (`defaultFile(homeDirectory:install:)`); the stamp is the second check.
@@ -360,7 +367,7 @@ public final class ClusterIncidentLog: @unchecked Sendable {
             case .corrupt:
                 // Kept for whoever investigates, never trusted, never blocking; named after its file, so each install
                 // keeps its own (`incidents.corrupt.json`, `incidents.dev.corrupt.json`).
-                let aside = directory.appendingPathComponent(file.deletingPathExtension().lastPathComponent + ".corrupt.json")
+                let aside = corruptCopy
                 _ = unlink(aside.path)
                 _ = rename(file.path, aside.path)
                 stored = .init(schemaVersion: ClusterIncidentFeed.schemaVersion, epoch: Self.newEpoch(), nextSeq: 1, incidents: [])

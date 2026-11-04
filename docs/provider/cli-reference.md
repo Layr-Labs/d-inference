@@ -1626,7 +1626,12 @@ What no choice deletes (the summary lists them):
   skipped (`kept: <the other install> on this Mac also uses it`), the files
   every install shares stay (`~/.darkbloom/cluster*` and
   `~/.config/darkbloom/clusters`; the rest of those folders goes), and step 2
-  removes only this install's own cluster service. The screen,
+  removes only this install's own cluster service. One exception in the shared
+  folder goes: Darkbloom Dev's own incident log, with its lock and corrupt copy
+  (`ClusterIncidentLog.defaultFile(homeDirectory:install:)`, listed as `This
+  install's incident log`), which no other install reads. Production's log there
+  is the shared `incidents.json`, which an older build of the other install still
+  writes, so it stays with the folder. The screen,
   the dry run, `--json` and the summary list it, here for `darkbloom-dev
   uninstall`, and the summary's first line names the install it removed
   (`Darkbloom Dev is removed from this Mac.`):

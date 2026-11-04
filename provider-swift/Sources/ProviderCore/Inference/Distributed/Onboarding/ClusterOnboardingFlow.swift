@@ -158,9 +158,31 @@ public struct ClusterOnboardingResume: Sendable, Equatable {
     /// The cable is on a port Darkbloom has not set up ("Thunderbolt 1 (en1)"): the Macs cannot reach each other
     /// there until it is. Nil when the active port is set up, or nothing could be read.
     public var unsetCablePort: String?
+    /// The saved pairing cannot be used, as this Mac alone can tell (its Secure Enclave key changed); nil when it can,
+    /// or nothing could be read.
+    public var pairingProblem: ClusterOnboardingPairingProblem?
 
     public init(role: ClusterOnboardingRole? = nil, peerName: String? = nil, serving: Bool = false, modelName: String? = nil) {
         self.role = role; self.peerName = peerName; self.serving = serving; self.modelName = modelName
+    }
+}
+
+/// Why a saved pairing cannot be used, said in one sentence on the Mac that holds it, which then offers to pair again
+/// (2026-11-03: a pairing made with the other app's Secure Enclave key looped "pair again" in the part's log while
+/// `darkbloom cluster` showed its usual menu; recovering took the hidden `cluster pair --forget` on both Macs). A
+/// silent other Mac is not one (`ClusterOnboardingDriver.otherMacSilentLine`).
+public enum ClusterOnboardingPairingProblem: Sendable, Equatable {
+    /// This Mac's Secure Enclave key is not the one it paired with: Darkbloom was reinstalled, or this Mac moved between
+    /// the Darkbloom and DevNet apps (each keeps its own key). The roster names the old key, so the coordinator refuses
+    /// the pair's registration.
+    case keyChanged
+
+    public var line: String {
+        switch self {
+        case .keyChanged:
+            return "This Mac's Secure Enclave key changed after it paired (Darkbloom was reinstalled, or this Mac moved between "
+                + "the Darkbloom and DevNet apps), so the Macs must pair again to serve through Darkbloom."
+        }
     }
 }
 
@@ -386,11 +408,14 @@ public struct ClusterOnboardingProvisionOffer: Codable, Sendable, Equatable {
     /// This Mac lacks it and copies it from the other Mac over the cable (with `leaderDownloads`: planned from its
     /// files afterwards, but nothing is downloaded).
     public var fromOtherMac: Bool
+    /// Whether every Mac that receives it has room for it on disk now (`ClusterModelProvisioningPlan.fitsOnDisk`: the
+    /// bytes free now and the room kept free; space macOS could purge is not counted). Nil from an older build.
+    public var fitsOnDisk: Bool?
 
     public init(lines: [String], downloadAlternative: Bool, leaderDownloads: Bool, blocker: String? = nil, quickSeconds: Double? = nil,
-                fromOtherMac: Bool = false) {
+                fromOtherMac: Bool = false, fitsOnDisk: Bool? = nil) {
         self.lines = lines; self.downloadAlternative = downloadAlternative; self.leaderDownloads = leaderDownloads; self.blocker = blocker
-        self.quickSeconds = quickSeconds; self.fromOtherMac = fromOtherMac
+        self.quickSeconds = quickSeconds; self.fromOtherMac = fromOtherMac; self.fitsOnDisk = fitsOnDisk
     }
 }
 
@@ -674,8 +699,9 @@ public struct ClusterOnboardingOperations: Sendable {
     public var answerCode: @Sendable (_ accept: Bool) -> Void
     /// Starts this Mac's cluster service unless it runs (a failure's lines say why it did not).
     public var ensureService: @Sendable () -> Result<Void, ClusterOnboardingFailure>
-    /// Every Mac of the cluster, the leader first, read over the link control channel.
-    public var reachMembers: @Sendable () -> Result<[ClusterOnboardingMachine], ClusterOnboardingFailure>
+    /// Every Mac of the cluster, the leader first, read over the link control channel; `waiting` says each new reason
+    /// the other Mac has not answered yet while it keeps asking.
+    public var reachMembers: @Sendable (_ waiting: @escaping @Sendable (String) -> Void) -> Result<[ClusterOnboardingMachine], ClusterOnboardingFailure>
     public var planModels: @Sendable () -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure>
     /// Saves this Mac's setup for the choice and syncs every member's to it over the link.
     public var adopt: @Sendable (_ index: Int) -> Result<[String], ClusterOnboardingFailure>
@@ -726,6 +752,11 @@ public struct ClusterOnboardingOperations: Sendable {
     /// This Mac's name as System Settings shows it, said on its own screen beside the part it plays (two identical
     /// Macs read the same hardware); nil when unknown.
     public var thisMacName: @Sendable () -> String?
+    /// The other Mac answers over the cable with the saved pairing (one short request).
+    public var otherMacAnswers: @Sendable () -> Bool
+    /// Forgets this Mac's saved pairing as `darkbloom cluster pair --forget` does (a leader tells its member first), so
+    /// the Macs can pair again; its lines say what was done.
+    public var unpair: @Sendable () -> Result<[String], ClusterOnboardingFailure>
     /// A pair offered for pairing (both members registered): waits, bounded, until the coordinator committed it and
     /// both Macs loaded their share and the pair answered its first request; its line is that request's time ("in
     /// 0.84 s"). A failure's first line says why it does not serve, in plain words (`ClusterOnboardingNotServing`).
@@ -741,7 +772,7 @@ public struct ClusterOnboardingOperations: Sendable {
                 pair: @escaping @Sendable (@escaping @Sendable (ClusterOnboardingPairEvent) -> Void) -> ClusterOnboardingPairResult,
                 answerCode: @escaping @Sendable (Bool) -> Void,
                 ensureService: @escaping @Sendable () -> Result<Void, ClusterOnboardingFailure>,
-                reachMembers: @escaping @Sendable () -> Result<[ClusterOnboardingMachine], ClusterOnboardingFailure>,
+                reachMembers: @escaping @Sendable (@escaping @Sendable (String) -> Void) -> Result<[ClusterOnboardingMachine], ClusterOnboardingFailure>,
                 planModels: @escaping @Sendable () -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure>,
                 adopt: @escaping @Sendable (Int) -> Result<[String], ClusterOnboardingFailure>,
                 serve: @escaping @Sendable () -> Result<[String], ClusterOnboardingFailure>,
@@ -766,6 +797,9 @@ public struct ClusterOnboardingOperations: Sendable {
                 serviceOutlivesWindow: @escaping @Sendable () -> Bool = { true },
                 remote: @escaping @Sendable () -> Bool = { false },
                 thisMacName: @escaping @Sendable () -> String? = { nil },
+                otherMacAnswers: @escaping @Sendable () -> Bool = { true },
+                unpair: @escaping @Sendable () -> Result<[String], ClusterOnboardingFailure>
+                    = { .failure(.init("This build cannot pair again from here.")) },
                 pairServing: @escaping @Sendable (@escaping @Sendable (String) -> Void) -> Result<[String], ClusterOnboardingFailure>
                     = { _ in .failure(.init("This build cannot tell whether the coordinator formed the pair.")) },
                 missingLogins: @escaping @Sendable () -> [String] = { [] },
@@ -778,6 +812,7 @@ public struct ClusterOnboardingOperations: Sendable {
         self.developerNotice = developerNotice; self.setScope = setScope; self.register = register
         self.localNetwork = localNetwork; self.commandApp = commandApp; self.runAsAdministrator = runAsAdministrator
         self.serviceOutlivesWindow = serviceOutlivesWindow; self.remote = remote; self.thisMacName = thisMacName
+        self.otherMacAnswers = otherMacAnswers; self.unpair = unpair
         self.pairServing = pairServing; self.missingLogins = missingLogins; self.login = login
     }
 }
@@ -977,11 +1012,109 @@ public enum ClusterOnboardingDriver {
         switch resume.role {
         case .member:
             console.banner(title, followerSubtitle(named: named))
+            if let problem = resume.pairingProblem { return offerPairAgain(problem, operations, console, request: request) }
             return member(resume, operations, console, request: request)
         case .leader:
             console.banner(title, leaderSubtitle(named: named))
+            if let problem = resume.pairingProblem { return offerPairAgain(problem, operations, console, request: request) }
             return leader(resume, operations, console, justPaired: false, request: request)
         case nil: return onboard(operations, console, request: request)
+        }
+    }
+
+    /// The item that unpairs this Mac and pairs the two Macs again, code on both screens (`pairAgain`), offered without a
+    /// question only for a pairing that cannot be used (`ClusterOnboardingPairingProblem`).
+    public static let pairAgainItem = "Pair again"
+    /// Said once this Mac unpaired: the other Mac still holds the old pairing until it pairs again too. This Mac no
+    /// longer answers it, so it offers Start over (or Pair again, when its own pairing cannot be used either).
+    public static let otherMacPairAgainLine =
+        "On the other Mac, run `darkbloom cluster` too; if it offers Start over (pair again) or Pair again, choose it."
+
+    /// What every paired Mac offers while its pairing works (the leader in its list, the member under its next step):
+    /// unpair, then pair again from the start, after one confirmation (No is the default).
+    public static let startOverItem = "Start over (pair again)"
+    public static let startOverQuestion = "Unpair this Mac and pair the two Macs again? The Mac that leads then chooses the model."
+    public static let startOverAnswers = ["Yes, start over", "No"]
+
+    /// The member's last line: the Mac it follows, by the name pairing showed, and the one thing to do there.
+    public static func memberLeaderLine(_ leader: String?) -> String {
+        "This Mac follows \(ClusterOnboardingMacName.other(named: leader)): to choose or change the model, run `darkbloom cluster` on that Mac."
+    }
+
+    /// The other Mac does not answer over the cable: that Mac by the name pairing showed, its likely reasons and the one
+    /// thing to do there. Silence is not a broken pairing, so it is followed by Start over (which asks first), never by
+    /// Pair again (2026-11-04 UX audit P3: a Mac asleep, at its FileVault login after a restart, or with its cluster
+    /// service stopped was offered Pair again after 8 s of silence).
+    public static func otherMacSilentLine(_ other: String?) -> String {
+        ClusterOnboardingMacName.sentence(ClusterOnboardingMacName.other(named: other))
+            + " isn't answering over the cable. Its cluster service is probably off (it was stopped with `darkbloom cluster stop`), "
+            + "or that Mac is asleep, off, or waiting for someone to log in. On that Mac, run `darkbloom cluster`."
+    }
+
+    /// The saved pairing cannot be used: why, in one sentence, then Pair again or Quit (which changes nothing).
+    static func offerPairAgain(_ problem: ClusterOnboardingPairingProblem, _ operations: ClusterOnboardingOperations,
+                               _ console: ClusterOnboardingConsole, request: ClusterOnboardingRequest) -> Int32 {
+        console.say("  " + problem.line)
+        console.say("")
+        guard console.choose([pairAgainItem, "Quit"], selected: 0) == 0 else { return 0 }
+        return pairAgain(operations, console, request: request)
+    }
+
+    /// Unpairs this Mac, then pairs as a Mac with no pairing does: the cable, the code on both screens and, on the Mac
+    /// that leads, the model.
+    static func pairAgain(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole,
+                          request: ClusterOnboardingRequest) -> Int32 {
+        switch busy(console, "Unpairing this Mac", operations.unpair) {
+        case .success(let lines):
+            for line in lines { console.say("  " + line) }
+        case .failure(let failure):
+            for line in failure.lines { console.say(line) }
+            return 1
+        }
+        console.say("  " + otherMacPairAgainLine)
+        return onboard(operations, console, request: request, opening: false)
+    }
+
+    /// Whether the other Mac answers over the cable with the saved pairing, asked with a live line.
+    static func otherMacAnswers(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Bool {
+        busy(console, "Asking the other Mac over the cable", operations.otherMacAnswers)
+    }
+
+    /// Start over on a pairing that works: one confirmation (No by default), then `pairAgain`.
+    static func startOver(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole,
+                          request: ClusterOnboardingRequest) -> Int32 {
+        console.say("  " + startOverQuestion)
+        guard console.choose(startOverAnswers, selected: 1) == 0 else {
+            console.say("Nothing changed.")
+            return 0
+        }
+        return pairAgain(operations, console, request: request)
+    }
+
+    /// Reads both Macs, saying each new reason the other Mac has not answered yet while it keeps asking (2026-11-03,
+    /// the owner's second pair: minutes of "Reading both Macs over the cable" with no reason, 0% CPU, no message).
+    static func readBothMacs(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole)
+        -> Result<[ClusterOnboardingMachine], ClusterOnboardingFailure> {
+        let waiting = ClusterOnboardingMailbox<String>()
+        let finished = ClusterOnboardingMailbox<Result<[ClusterOnboardingMachine], ClusterOnboardingFailure>>()
+        Thread.detachNewThread { finished.post(operations.reachMembers { waiting.post($0) }) }
+        var said: String?
+        func show() {
+            for line in waiting.take() where line != said {
+                console.settle()
+                console.say("  " + line)
+                said = line
+            }
+        }
+        while true {
+            show()
+            if let result = finished.take().first {
+                show()
+                console.settle()
+                return result
+            }
+            console.working("Reading both Macs over the cable")
+            usleep(40_000)
         }
     }
 
@@ -1141,10 +1274,11 @@ public enum ClusterOnboardingDriver {
         }
     }
 
-    /// No pairing yet: checks, then find a waiting leader or become one.
+    /// No pairing yet: checks, then find a waiting leader or become one. `opening`: the setup's name first (a Mac that
+    /// just unpaired to pair again said it already).
     static func onboard(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole,
-                        request: ClusterOnboardingRequest = .init()) -> Int32 {
-        console.banner(title, "")
+                        request: ClusterOnboardingRequest = .init(), opening: Bool = true) -> Int32 {
+        if opening { console.banner(title, "") }
         console.heading("1/4 Connect")
         console.say("  " + approvalsLine(remote: operations.remote()))
         var link = checkLink(operations, console)
@@ -1236,30 +1370,42 @@ public enum ClusterOnboardingDriver {
         }
     }
 
-    /// The member's last line once it is in a cluster: where the cluster is managed.
-    public static let memberNothingLine = "Nothing to do here: manage it on the other Mac (`darkbloom cluster`)."
-
     /// A member: its part runs by itself and the cluster is managed on the Mac that leads, so it shows the cluster as
-    /// it is and says where to manage it (2026-11-02: "why does the member have the choices to change model, test …").
+    /// it is, the Mac it follows and the command to run there (2026-11-02: "why does the member have the choices to
+    /// change model, test …"; 2026-11-03, an end user: "Nothing to do here" said neither which Mac nor what to type).
+    /// Its one choice is to start over.
     static func member(_ resume: ClusterOnboardingResume, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole,
                        request: ClusterOnboardingRequest = .init()) -> Int32 {
         guard startService(operations, console) else { return 1 }
-        let status = operations.status()
-        if !showOutcome(status, console) { for line in status { console.say("  " + line) } }
         if let port = resume.unsetCablePort {
-            // The cable moved to a port that was never set up: the one thing that is this Mac's to do.
-            console.say("")
+            // The cable moved to a port that was never set up: this Mac's first thing to do; the run then goes on
+            // (2026-11-03: it ended at "Cable port set up", leaving no hint of the next step).
             console.say(unsetPortLine(port))
             guard console.choose([fixPortItem, "Quit"], selected: 0) == 0 else { return 0 }
-            return fixPort(operations, console)
+            guard fixPort(operations, console) == 0 else { return 1 }
         }
+        // The cluster is managed on the other Mac, so it must answer: while it does not, why, and the way on from here
+        // (2026-11-03: a member whose other Mac no longer held the pairing said "Nothing to do here" while that Mac
+        // waited at Pair). Start over asks first: silence is not a broken pairing (`otherMacSilentLine`).
+        while !otherMacAnswers(operations, console) {
+            console.say("  " + otherMacSilentLine(resume.leaderName ?? resume.peerName))
+            console.say("")
+            switch console.choose(["Try again", startOverItem, "Quit"], selected: 0) {
+            case 0?: continue
+            case 1?: return startOver(operations, console, request: request)
+            default: return 0
+            }
+        }
+        let status = operations.status()
+        if !showOutcome(status, console) { for line in status { console.say("  " + line) } }
         console.say("")
         if request.scope != nil || request.model != nil {
             console.say(joinedLocalLine)
             return 1
         }
-        console.say(memberNothingLine)
-        return 0
+        console.say(memberLeaderLine(resume.leaderName ?? resume.peerName))
+        guard console.choose([startOverItem, "Quit"], selected: 1) == 0 else { return 0 }
+        return startOver(operations, console, request: request)
     }
 
     /// The cluster's status as the outcome block on the other Mac, when its first line tells it: "Serving …" (✓) or
@@ -1281,29 +1427,34 @@ public enum ClusterOnboardingDriver {
                        _ console: ClusterOnboardingConsole, justPaired: Bool, request: ClusterOnboardingRequest = .init()) -> Int32 {
         guard startService(operations, console) else { return 1 }
         if justPaired { guard allowLocalNetwork(.service, operations, console) else { return 1 } }
+        // A pairing kept from earlier whose other Mac does not answer over the cable (a cable on a port that is not set
+        // up has its own item): the menu says so, with what to run there.
+        let silent = !justPaired && resume.unsetCablePort == nil && !otherMacAnswers(operations, console)
         // Serving, or stopped after a model was chosen: the menu. Only a leader that never chose a model goes straight
-        // to the choice.
-        if !justPaired, resume.serving || resume.modelName != nil {
-            return menu(resume, operations, console, request: request)
+        // to the choice (which first waits for the other Mac to answer).
+        if !justPaired, resume.serving || resume.modelName != nil || silent {
+            return menu(resume, operations, console, request: request, otherMacSilent: silent)
         }
         return chooseAndServe(operations, console, scope: request.scope ?? resume.scope, saveScope: request.scope != nil,
-                              model: request.model, privateImage: request.privateImageQualification)
+                              model: request.model, privateImage: request.privateImageQualification,
+                              startOverRequest: justPaired ? nil : request)
     }
 
     /// One thing the leader's menu does.
-    enum MenuItem { case fixPort, test, model, scope, stop, verify, quit }
+    enum MenuItem { case fixPort, test, model, scope, stop, verify, startOver, quit }
 
     /// The status, then one choice from a list. `darkbloom cluster local` comes here asking for local-only serving: a
     /// cluster that is not serving (or asked for a model by name) goes to the choice and starts that way; a serving
-    /// cluster switches and serves again.
+    /// cluster switches and serves again. `otherMacSilent`: the other Mac does not answer over the cable, said under
+    /// the status (`otherMacSilentLine`).
     static func menu(_ resume: ClusterOnboardingResume, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole,
-                     request: ClusterOnboardingRequest = .init()) -> Int32 {
+                     request: ClusterOnboardingRequest = .init(), otherMacSilent: Bool = false) -> Int32 {
         if let wanted = request.scope {
             if request.model != nil || !resume.serving {
                 return chooseAndServe(operations, console, scope: wanted, saveScope: true, model: request.model,
-                                      privateImage: request.privateImageQualification)
+                                      privateImage: request.privateImageQualification, startOverRequest: request)
             }
-            if wanted != resume.scope { return changeScope(to: wanted, resume, operations, console) }
+            if wanted != resume.scope { return changeScope(to: wanted, resume, startOverRequest: request, operations, console) }
         }
         for line in operations.status() { console.say("  " + line) }
         var items = [(MenuItem, String)]()
@@ -1312,21 +1463,26 @@ public enum ClusterOnboardingDriver {
             console.say(unsetPortLine(port))
             items.append((.fixPort, fixPortItem))
         }
+        if otherMacSilent { console.say("  " + otherMacSilentLine(resume.peerName)) }
         if resume.serving { items.append((.test, "Test")) }
         items.append((.model, resume.serving ? "Change model" : "Choose a model"))
         items.append((.scope, resume.scope.isLocalOnly ? "Serve through Darkbloom" : "Serve locally"))
         if resume.serving { items.append((.stop, "Stop")) }
         items.append((.verify, "Check memory is freed"))
+        // Starting over is always offered, with its question also when the other Mac is silent (2026-11-03: an end user
+        // could only start from scratch by wiping files by hand; 2026-11-04 UX audit P3: silence is not a broken pairing).
+        items.append((.startOver, startOverItem))
         items.append((.quit, "Quit"))
         console.say("")
         guard let index = console.choose(items.map(\.1), selected: 0) else { return 0 }
         switch items[index].0 {
         case .quit: return 0
         case .test: return test(operations, console) ? 0 : 1
-        case .model: return chooseAndServe(operations, console, scope: resume.scope, privateImage: request.privateImageQualification)
+        case .model: return chooseAndServe(operations, console, scope: resume.scope, privateImage: request.privateImageQualification,
+                                           startOverRequest: request)
         case .scope:
             return changeScope(to: resume.scope.isLocalOnly ? .publicServing : .localOnly(bind: ClusterServingScope.localOnlyDefaultBind),
-                               resume, operations, console)
+                               resume, startOverRequest: request, operations, console)
         case .stop:
             switch busy(console, "Stopping both Macs", operations.stop) {
             case .success(let lines):
@@ -1345,7 +1501,13 @@ public enum ClusterOnboardingDriver {
                 for line in failure.lines { console.say(line) }
                 return 1
             }
-        case .fixPort: return fixPort(operations, console)
+        case .fixPort:
+            // Set up, the run goes on to the list (2026-11-03: it ended at "Cable port set up" with no next step).
+            guard fixPort(operations, console) == 0 else { return 1 }
+            var moved = resume
+            moved.unsetCablePort = nil
+            return menu(moved, operations, console, request: request, otherMacSilent: otherMacSilent)
+        case .startOver: return startOver(operations, console, request: request)
         }
     }
 
@@ -1374,8 +1536,9 @@ public enum ClusterOnboardingDriver {
     }
 
     /// Saves the other way to serve on the control leader. A serving cluster starts its leading part again that way
-    /// (the setup and the model stay), so the screen waits for it as it does after a start.
-    static func changeScope(to wanted: ClusterServingScope, _ resume: ClusterOnboardingResume,
+    /// (the setup and the model stay), so the screen waits for it as it does after a start. `startOverRequest`: the
+    /// menu's (its Mac was paired before this run), for the outcome's Change model.
+    static func changeScope(to wanted: ClusterServingScope, _ resume: ClusterOnboardingResume, startOverRequest: ClusterOnboardingRequest?,
                             _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
         switch busy(console, wanted.isLocalOnly ? "Switching to local only" : "Switching to serving through Darkbloom", { operations.setScope(wanted) }) {
         case .success: break
@@ -1392,7 +1555,8 @@ public enum ClusterOnboardingDriver {
         // The same truth as the start (2026-11-04: from the menu, a pair only registered with the coordinator was
         // called serving): ✓ once the pair serves and a request answered, else ✗ with the reason and the choices.
         // Registering with the coordinator stays the start's: the cluster service asks again by itself.
-        return finishStart(title: resume.modelName ?? "the model", scope: wanted, registers: false, operations, console)
+        return finishStart(title: resume.modelName ?? "the model", scope: wanted, registers: false, startOverRequest: startOverRequest,
+                           operations, console)
     }
 
     /// Each reason once, where it first appears.
@@ -1403,20 +1567,31 @@ public enum ClusterOnboardingDriver {
 
     /// The choice, then the start. `scope` is how it will serve; `saveScope` saves it on the control leader first
     /// (`darkbloom cluster local`); `model` names the choice so the list is not asked; `privateImage`: a private image
-    /// candidate, which never takes public traffic.
+    /// candidate, which never takes public traffic. `startOverRequest`: on a Mac paired before this run, the request
+    /// Start over runs with when the other Mac does not answer; nil right after pairing.
     static func chooseAndServe(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole,
                                scope: ClusterServingScope = .publicServing, saveScope: Bool = false, model: String? = nil,
-                               privateImage: Bool = false) -> Int32 {
+                               privateImage: Bool = false, startOverRequest: ClusterOnboardingRequest? = nil) -> Int32 {
         console.heading("3/4 Model")
         var reached: [ClusterOnboardingMachine]?
         while reached == nil {
-            switch busy(console, "Reading both Macs over the cable", operations.reachMembers) {
+            switch readBothMacs(operations, console) {
             case .success(let value): reached = value
             case .failure(let failure):
                 for line in failure.lines { console.say(line) }
+                let gone = "Nothing changed. Run `darkbloom cluster` again when the other Mac is on."
+                if let request = startOverRequest {
+                    // Paired before: the other Mac may no longer hold the pairing, or may only be away (UX audit P3), so
+                    // Start over asks first.
+                    switch console.choose(["Try again", startOverItem, "Quit"], selected: 0) {
+                    case 0?: continue
+                    case 1?: return startOver(operations, console, request: request)
+                    default: console.say(gone); return 1
+                    }
+                }
                 // Once paired, the other Mac's service may still wait for its Allow (both Macs ask at the same moment).
                 guard console.choose(["Try again", "Cancel"], selected: 0) == 0 else {
-                    console.say("Nothing changed. Run `darkbloom cluster` again when the other Mac is on.")
+                    console.say(gone)
                     return 1
                 }
             }
@@ -1430,9 +1605,11 @@ public enum ClusterOnboardingDriver {
             return 1
         }
         // Only models the owner approved for clusters that these Macs can serve, those that fit now first, so enter
-        // picks one that fits (2026-11-02: the list showed the whole catalog).
+        // picks one that fits (2026-11-02: the list showed the whole catalog); last, those a Mac has no room for on disk.
         let listed = choices.indices.filter { choices[$0].listed }
-        let open = listed.filter { choices[$0].fitRemedy == nil } + listed.filter { choices[$0].fitRemedy != nil }
+        let roomy = listed.filter { choices[$0].provision?.fitsOnDisk != false }
+        let open = roomy.filter { choices[$0].fitRemedy == nil } + roomy.filter { choices[$0].fitRemedy != nil }
+            + listed.filter { choices[$0].provision?.fitsOnDisk == false }
         guard !open.isEmpty else {
             console.say("No approved model can run on these Macs now.")
             // One line per reason, the approved models it holds back named before it.
@@ -1463,7 +1640,8 @@ public enum ClusterOnboardingDriver {
             let titles = choices.map(\.title)
             let lines = open.map { index -> String in
                 let line = choices[index].listLine(sameTitleElsewhere: titles.filter { $0 == choices[index].title }.count > 1)
-                return choices[index].fitRemedy == nil ? line : line + " · does not fit now"
+                return line + (choices[index].fitRemedy == nil ? "" : " · does not fit now")
+                    + (choices[index].provision?.fitsOnDisk == false ? " · not enough free disk" : "")
             }
             guard let picked = console.choose(lines, selected: 0) else {
                 console.say("Nothing changed.")
@@ -1543,7 +1721,7 @@ public enum ClusterOnboardingDriver {
             for line in failure.lines { console.say("  " + line) }
             return 1
         }
-        return finishStart(title: choice.title, scope: startScope, operations, console)
+        return finishStart(title: choice.title, scope: startScope, startOverRequest: startOverRequest, operations, console)
     }
 
     /// Serving through Darkbloom needs every Mac logged in: the coordinator pairs only Macs logged in to one account.
@@ -1574,8 +1752,10 @@ public enum ClusterOnboardingDriver {
     /// (2026-11-03: a pair offered for pairing said both while nothing was loaded). A pair that does not serve says why
     /// and stays open with the choices; leaving it never claims success.
     /// `registers`: a pair on the leader's API is registered with the coordinator after its test (the start; the
-    /// menu's switch of scope leaves that to the cluster service).
-    static func finishStart(title: String, scope: ClusterServingScope, registers: Bool = true, _ operations: ClusterOnboardingOperations,
+    /// menu's switch of scope leaves that to the cluster service). `startOverRequest`: as `chooseAndServe`'s, kept for
+    /// Change model, so a Mac paired before this run keeps its choices when the other Mac stops answering.
+    static func finishStart(title: String, scope: ClusterServingScope, registers: Bool = true,
+                            startOverRequest: ClusterOnboardingRequest? = nil, _ operations: ClusterOnboardingOperations,
                             _ console: ClusterOnboardingConsole) -> Int32 {
         var scope = scope
         var mayRegister = registers
@@ -1595,7 +1775,7 @@ public enum ClusterOnboardingDriver {
             case .notServing(let lines):
                 switch notServing(lines, operations, console) {
                 case .retry: continue
-                case .changeModel: return chooseAndServe(operations, console, scope: scope)
+                case .changeModel: return chooseAndServe(operations, console, scope: scope, startOverRequest: startOverRequest)
                 case .localOnly:
                     let local = ClusterServingScope.localOnly(bind: ClusterServingScope.localOnlyDefaultBind)
                     switch busy(console, "Switching to local only", { operations.setScope(local) }) {

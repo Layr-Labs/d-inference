@@ -43,6 +43,30 @@ struct ClusterOnboardingPeerLabelTests {
         #expect(try fixture.store.readRecord().leadership?.peerPin == Fixture.peerPin)
     }
 
+    /// 2026-11-03: the pairing was the production app's and this Mac signed with the DevNet app's key; `darkbloom cluster`
+    /// showed the usual menu while every start failed "pair again". The resume says so; the part this Mac plays stays.
+    @Test func aPairingMadeWithAnotherKeyIsSaidSo() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let changed = fixture.live(peerPin: Fixture.peerPin, currentPin: String(repeating: "d", count: 64)).resume()
+        #expect(changed.pairingProblem == .keyChanged)
+        #expect(changed.role == .leader && changed.modelName == "saved-model")
+        #expect(fixture.live(peerPin: Fixture.peerPin).resume().pairingProblem == nil, "the key it paired with")
+        #expect(fixture.live(peerPin: Fixture.peerPin, currentPin: nil).resume().pairingProblem == nil, "no key read: nothing claimed")
+        #expect(fixture.live(peerPin: String(repeating: "c", count: 64), currentPin: String(repeating: "d", count: 64)).resume()
+            == ClusterOnboardingResume(), "a pairing the record does not name resumes nothing, as before")
+    }
+
+    /// Pair again on a Mac that holds no pairing removes nothing and goes on to pair.
+    @Test func unpairWithoutAPairingChangesNothing() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let live = OnboardingLive(context: fixture.context, store: fixture.store, settings: fixture.settings, readPairing: { nil },
+                                  currentPin: { nil })
+        #expect(try live.unpair().get().isEmpty)
+        #expect(try fixture.store.readRecord().leadership?.peerPin == Fixture.peerPin)
+    }
+
     @Test func peerDisplaySanitizesControlCharactersAndUsesRemoteMemory() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -165,15 +189,18 @@ struct ClusterOnboardingPeerLabelTests {
             _ = try store.updateRecord { $0.leadership = leadership }
         }
 
-        func live(peerPin: String) -> OnboardingLive {
+        /// `currentPin`: this Mac's key as the live lookup would read it (the pairing's own by default; never the keychain).
+        func live(peerPin: String, currentPin: String? = Self.localPin) -> OnboardingLive {
             let pairing = Self.pairing(peerPin: peerPin)
-            return OnboardingLive(context: context, store: store, settings: settings, readPairing: { pairing })
+            return OnboardingLive(context: context, store: store, settings: settings, readPairing: { pairing }, currentPin: { currentPin })
         }
+
+        static let localPin = String(repeating: "a", count: 64)
 
         func remove() { try? FileManager.default.removeItem(at: home) }
 
         private static func pairing(peerPin: String) -> ClusterSetupLinkExchange.Pairing {
-            .init(localPin: String(repeating: "a", count: 64), peerPin: peerPin, clusterID: "fixture",
+            .init(localPin: localPin, peerPin: peerPin, clusterID: "fixture",
                   linkEpoch: "fixture", edgeID: "fixture", secretFile: "/not-read", secret: Data(repeating: 0, count: 32))
         }
     }

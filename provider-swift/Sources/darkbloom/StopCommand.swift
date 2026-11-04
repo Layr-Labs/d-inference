@@ -12,7 +12,7 @@ struct Stop: AsyncParsableCommand {
 
     @OptionGroup var drain: DrainOptions
 
-    @Flag(help: "Also remove the provider, watchdog and desktop API launchd agents (full uninstall).")
+    @Flag(help: "Also remove the provider, watchdog and desktop API launchd agents; files stay. To take Darkbloom off this Mac, run `\(BuildEnvironment.current.cliName) uninstall`.")
     var uninstall = false
 
     @Flag(help: "On a Mac in a two-Mac cluster: stop single-Mac serving on this Mac only; the pair keeps running.")

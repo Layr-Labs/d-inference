@@ -119,12 +119,9 @@ public enum ClusterPairCommandLine {
         return lines.joined(separator: "\n")
     }
 
-    /// `--forget PIN`: the lines to print.
-    public static func forget(pin: String, store: ClusterPairingStore = .default()) throws -> String {
-        do {
-            let record = try store.forget(peerPin: pin)
-            return "Unpaired from \(record.peerPin.prefix(16))… (\(record.peerName)); its pin and link key were removed.\n"
-                + "A setup whose roster names it no longer starts here until the two Macs pair again."
-        } catch { throw Failure(description: "\(error)") }
+    /// `--forget PIN`: the lines to print for the pairing it removed (`ClusterUnpairing`).
+    public static func forgotten(_ record: ClusterPairingRecord) -> String {
+        "Unpaired from \(record.peerPin.prefix(16))… (\(record.peerName)); its pin and link key were removed.\n"
+            + "A setup whose roster names it no longer starts here until the two Macs pair again."
     }
 }

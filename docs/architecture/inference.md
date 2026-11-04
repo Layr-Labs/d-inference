@@ -3110,6 +3110,21 @@ live line (`ClusterOnboardingDriver.move`, `ClusterOnboardingProgress.live`),
 laid out by `TransferProgressLine` through `ClusterTransferReports`; a
 transcript without a live line keeps only the reports
 `TransferProgressLine.takeLogLine` marks and the lines for the record.
+Each Mac that receives a model is judged by its disk as `ClusterDiskSpace`
+counts it (`ClusterModelStore.diskSpace` in `Onboarding/ClusterModelProvisioning.swift`):
+the volume's available capacity, or `statfs`'s free blocks when that is not
+read, with `ClusterModelProvisioning.reserveBytes` kept free. macOS's
+important-usage capacity adds space it could purge (local snapshots, files
+iCloud keeps elsewhere) and may never free: on an M3 Ultra it read 256.6 GB
+with 54.1 GB free, and the list offered a 172.9 GB download (2026-11-03). That
+space is never counted. The refusal names it only when it alone would make room
+(`ClusterModelProvisioning.diskShortWords`). The plan (`ClusterModelProvisioning.plan`),
+the receiving Mac's cluster service (`ClusterModelReceiver.begin`) and the
+setup report each Mac sends (`ClusterSetupReport.modelStoreFreeBytes`,
+`modelStorePurgeableBytes`) use these figures. A choice a Mac has no room for
+carries `ClusterOnboardingProvisionOffer.fitsOnDisk` false and is listed last,
+ending "not enough free disk". A clone from the product's store takes no new
+blocks and is not checked.
 Its restart line reads FileVault with `fdesetup isactive`
 (`OnboardingLive.fileVaultOn`): five seconds, then SIGTERM and two more, and no
 answer reads as unknown. The exit comes from `ProcessExitObserver`, which does not run the calling thread's run loop.
@@ -3145,7 +3160,35 @@ recorded with each decision, not applied. Pressure above normal, or more than
 512 MiB compressed or 64 MiB swapped out since a load's or request's first
 sample, withdraws all of it, and such a refusal stands on the gate's own
 sample: the room-making pass (`QwenDenseStageLoadReclaim`) runs only at normal
-pressure, for file cache the gate does not count.
+pressure, for file cache the gate does not count, and with every file-backed
+page counted there is none, so it does not run.
+
+The kernel gives most of that cache back one page at a time: up to two
+anonymous pages (compressed) for each file page, and only anonymous pages once
+the cache is below its minimum. A load into a cache that holds mostly its own
+model therefore compresses past the guard and is refused, and a restart that
+read the model back into the cache was refused again (MiMo on two 128 GB Macs,
+680 refused starts, 2026-11-01). So the model's own pages leave the cache
+before a load reads them:
+
+- Before this Mac's part starts, the cluster service drops the cached pages of
+  the model folder's regular files and of those one folder down (MiMo's
+  `audio_tokenizer/`), never through a link (`ClusterModelStore.dropCachedPages`,
+  called from `ClusterService.supervise`).
+- When a selected loader turns its payload reads uncached, it drops each weight
+  file's cached pages through the pinned descriptor
+  (`VerifiedCheckpoint.bypassTensorPayloadCache`). The MiMo, Qwen, Gemma and
+  GPT-OSS pipeline and tensor-parallel loads take this path. GLM's prepared
+  tensor-parallel load still reads through the cache on purpose.
+
+Both use `msync(MS_INVALIDATE)` over a read-only shared mapping: no privileges,
+and the files' bytes and identity are unchanged. After each load, or at the
+failure that ended it, the worker writes one `darkbloom-load-memory-v1` line per
+load gate (`QwenDenseStageLoadAdmissionSummary.logLine`): its decisions and
+refusals, the rule that settled it, the numbers of the decision it rests on
+(required, admissible, free, file-backed and counted bytes, the kernel's
+file-cache minimum) and what was compressed and swapped out since its first
+sample.
 
 Explicit placement requests may exceed a layout's default prompt or output
 reference while remaining inside the registered family profile. Both the native
@@ -3740,6 +3783,52 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/C
 (`ensureControlResponder`, `ensureControl`) and
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupLinkExchange.swift`
 (`ClusterSetupLinkExchange.Responder`).
+
+## A saved pairing the onboarding cannot use
+
+`darkbloom cluster` resumes a paired Mac only when the pairing it would use can
+serve. One fact ends that (`ClusterOnboardingPairingProblem`):
+
+| Case | How it is found | What the screen offers |
+|---|---|---|
+| `keyChanged` | `OnboardingLive.resume` compares the pairing's local pin with this Mac's current key, read without creating, deleting or repairing one (`ClusterPairingProvider.existingPin`); no key read claims nothing. A roster names the key that paired, so the member start refuses another (`ProviderLoop.nativePairRosterNamesAnotherKey`) | **Pair again**, **Quit** (instead of the leader's list or the member's status) |
+
+A silent other Mac is not one. Each resumed run asks the other Mac once over the
+cable (`OnboardingLive.otherMacAnswers`, `answerSeconds` = `8`), which only a
+Mac holding this pairing's edge secret answers; it is not asked right after
+pairing, nor when the cable is on a port that is not set up. Silence cannot
+tell a Mac that is only away (asleep, at its login window after a restart, its
+cluster service stopped) from one that no longer holds the pairing. So the
+screen names that Mac, its likely reasons and the command to run there
+(`ClusterOnboardingDriver.otherMacSilentLine`), and keeps **Start over (pair
+again)** with its question: the member offers **Try again**, **Start over (pair
+again)** and **Quit**; the leader keeps its list. It never offers **Pair
+again**, which does not ask.
+
+**Start over (pair again)** is in every resumed Mac's list, after one
+confirmation whose default is No (`ClusterOnboardingDriver.startOver`). Reading
+both Macs for the model list says each new reason the other Mac has not answered
+(`reachMembers`'s `waiting`, from `OnboardingLive.localReachMembers`); on a Mac
+paired before the run it ends with **Try again**, **Start over (pair again)** and
+**Quit**, also when it follows **Change model** in a ✗ outcome
+(`ClusterOnboardingDriver.finishStart` keeps the run's `startOverRequest`).
+
+**Pair again**, and **Start over** once confirmed, run `ClusterUnpairing.run`,
+the steps of `darkbloom cluster pair --forget` (a leader tells its member, the
+pairing store forgets the peer pin, the service leaves login with no pairing
+left, the pair prefix records are reclaimed), then the ordinary pairing
+ceremony, which stores a new record set for the current key
+(`ClusterPairingStore.commit`). Nothing on the other Mac is changed beyond what
+`--forget` already does: while it holds the old pairing, this Mac no longer
+answers it, so it offers **Start over (pair again)** (or **Pair again** when its
+own key changed too).
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift`
+(`ClusterOnboardingDriver.pairAgain`, `startOver`, `otherMacSilentLine`, `member`, `menu`),
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingLive.swift`
+(`OnboardingLive.resume`, `otherMacAnswers`, `unpair`) and
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Pairing/ClusterUnpairing.swift`
+(`ClusterUnpairing`).
 
 ## GLM tool-stream completion
 
@@ -4919,7 +5008,7 @@ See [focused MiMo V2.6 tensor-parallel checks](../developer/test.md#focused-mimo
 
 ## Exact-quote placement
 
-`ClusterPlacementPlanner.rankQuoted` is the model-independent decision seam for adapters that provide exact simultaneous native/host peaks and current bounds. It filters infeasible shapes and unsupported modes, then uses the same hardware-only ordering as `plan`: candidates whose every range fits its Mac's hardware (`ClusterDeviceProfile.hardwareFits`: buffer and allocator limits, need within the GPU working set and the at-rest admissible memory `atRestAdmissibleBytes`), then predicted request time, ties and the tensor-parallel margin. Live free memory and file cache never order candidates; each rank's live fit is reported and the load gate still decides each load. A supported TP adapter must supply TP layout facts and keyed reduction measurements. Neither resource balance nor chip-name rules replace request-time scoring; balance only breaks ties. Candidates whose predicted times differ only by rounding (relative 1e-9, as every serial pipeline cut does on identical Macs) are ordered by `capacityBalance`, the smallest share of a rank's hardware capacity (`min(residentCapacityBytes, atRestAdmissibleBytes)`) left beyond its need, before the lower cut, so identical Macs split evenly and live free memory cannot pick the cut. Every structural boundary, including one layer on a slower member, remains available when its adapter quotes fit.
+`ClusterPlacementPlanner.rankQuoted` is the model-independent decision seam for adapters that provide exact simultaneous native/host peaks and current bounds. It filters infeasible shapes and unsupported modes, then uses the same hardware-only ordering as `plan`: candidates whose every range fits its Mac's hardware (`ClusterDeviceProfile.hardwareFits`: buffer and allocator limits, the GPU-resident part (`ClusterPlacementRank.gpuResidentBytes`, the `withinGPUWorkingSet` figure) within the GPU limit, and the whole need within the at-rest admissible memory `atRestAdmissibleBytes`, physical memory less what macOS wires, because the load gate counts every file-backed page), then predicted request time, ties and the tensor-parallel margin. Live free memory and file cache never order candidates; each rank's live fit is reported and the load gate still decides each load. A supported TP adapter must supply TP layout facts and keyed reduction measurements. Neither resource balance nor chip-name rules replace request-time scoring; balance only breaks ties. Candidates whose predicted times differ only by rounding (relative 1e-9, as every serial pipeline cut does on identical Macs) are ordered by `capacityBalance`, the smallest share of a rank's hardware capacity (`min(residentCapacityBytes, atRestAdmissibleBytes)`) left beyond its need, before the lower cut, so identical Macs split evenly and live free memory cannot pick the cut. Every structural boundary, including one layer on a slower member, remains available when its adapter quotes fit. A candidate is `possible` when every rank fits the hardware, or the live gate admits it now and its GPU part is within the limit: a split the GPU cannot keep resident is never offered because memory happens to be free. `ClusterPlacementMemoryVerdict.assess` runs the caller's planning step on the Macs as they are and, when nothing fits, with each GPU limit raised to `ClusterGPUMemoryLimit.ceilingBytes` (physical memory less 16 GiB, or a sixteenth from 512 GB): `fits`, `needsGPULimitRaise` (each Mac's GPU need, limit now and ceiling, with `ClusterGPULimitRaise.question`) or `doesNotFit`. It is data only: no setup screen calls it yet, and nothing in Darkbloom raises the limit. `ClusterDeviceMemory.fit` reports `gateCountsLess` only on a sample whose gate counts file cache; above normal pressure, where the gate counts none, the answer is `afterApplicationsRelease`. A rank's live fit is the gate's decision on one sample, so it cannot foresee the gate withdrawing the file cache during the load once compression or swap-out since the load's first sample passes its limits (`QwenDenseStageLoadPolicy.maximumCompressedSinceFirstSampleBytes`, described above); the at-rest ceiling assumes the share loads into free pages, not into a file cache full of the model's own files.
 
 GLM's placement family (`GLM5NextPlacementFamily`, `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Metadata/GLM5NextServingMetadata.swift`) offers the two-rank plan `glm5_next_heads_and_expert_channels_v1` whenever the registered row lists `tensor_parallel_v1` and the geometry halves. Each text-layer tensor is divided or replicated exactly as the SDK's `GLM5NextTensorShard.splitAxis` loads it; the embedding, final norm and head are replicated, and the NextN layer and vision tower belong to no text range. Every rank decodes in speculative rounds with the NextN layer, which it holds whole beside its share, so the plan states it (`ClusterTensorParallelFamilyPlan.speculativeHead`, `GLM5NextPlacementFamily.tensorParallelSpeculativeHead`): the planner charges each tensor-parallel rank the layout's `speculativeHead` part (4,183,320,576 stored bytes, each tensor in whole pages, as `mtp_bytes` on the worker's load line) and the request memory the rounds add at the memory plan's context (the larger of the contiguous and the paged NextN charge of `GLM5NextTensorParallelRequestCharge`), and divides a token's predicted decode step by the speed-up the pair measured at the runtime's depth over one token per step (76.0 against 62.6 tok/s at depth 2, `GLM5NextPlacementFamily.measuredTensorParallelDecode`). Served tensor-parallel requests are taken back to one-token steps by the same speed-up before they correct the shares (`ClusterServedCalibration`), so the next plan predicts what was served. Without it the plan priced no NextN bytes and one token per step: it could admit a pair the load gate then refused, and it predicted decode too slow. Three terms of the load gate are not in the plan yet: the vision tower rank 0 holds for media (1.13 GB), the freed-buffer cache (`GLM5NextTensorParallelResidentRuntime.freedBufferCacheBytes`) and the bulk prefill's further workspaces and sealed sums' buffers (`bulkPrefillChunkTokens`). On two M5 Ultra 256 GB, adding them to the planner's estimate as it stands would put each rank's need above the at-rest ceiling (`ClusterDeviceProfile.atRestAdmissibleBytes`), so the pair would no longer plan tensor parallel; they wait for the gate's own charge to replace the estimate rather than be added to it. The plan sums two partials of the 4096-wide residual per layer and one per step (91 per decode step); the partials are the row-parallel projections' bfloat16 outputs, sent as they are and added in float32 with one rounding (`GLM5NextTensorParallelResidentRuntime.partialsTransport`, bound into the load agreement). That is bit-identical to widening them to float32 before the link, as `ClusterTensorParallelTerms.current` (`partialsDType` float32) describes, with half the bytes: GLM's projections never kept float32 partials (flagged for platform review) and holds request state whole on each rank, since the DSA latent cache is replicated. The pipeline's private image profile stays pipeline-only, in both the layout and the capability; tensor parallel serves media under the text profile (below). The hardware prior (`ClusterHardwarePrior.decodeBytesPerToken`) counts a mixture of experts' routed experts at the fraction a token is routed to (`ClusterRoutedExperts`; 8 of GLM's 288), not every expert byte. Of the bytes a step reads, a tensor-parallel share divides only the plan's divided bytes (`dividedDecodeFraction`), because every rank reads its replicated bytes whole. On two identical M5 Ultra 256 GB with GLM measured alone the product's rule (tensor parallel first wherever it fits) places tensor parallel on equal shares with the NextN layer priced, both on a new pair before any load measured the link and after the first load's keyed probe; the planner's own speed comparison (the plan tool without `--tensor-parallel-first`) chooses tensor parallel once the keyed link is measured and a pipeline before (`GLMTensorParallelChecks`; through `ClusterPlacementFlow.decide` in `PlacementSetupCheck.glmTensorParallelPair`). The pair serves it with eight lanes (`DistributedInstalledPlan.tensorParallelBatchLanes`).
 

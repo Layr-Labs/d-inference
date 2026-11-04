@@ -87,6 +87,7 @@ build_module InstalledContract \
   "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingPairServing.swift" \
   "$task_sources/Inference/Distributed/Onboarding/ClusterAutomaticSetupHandoff.swift" \
   "$task_sources/Inference/Distributed/Onboarding/DistributedAutomaticBatchAttempt.swift" \
+  "$task_sources/Diagnostics/GLM5NextGPULimitEligibility.swift" \
   "${task_placement[@]}" \
   "$task_sources"/Inference/Distributed/LinkControl/*.swift \
   "$task_sources/Inference/Distributed/Observability/ClusterObservability.swift" \

@@ -659,6 +659,26 @@ per share of this model within 30 days, by member ID), or from
 any every share is predicted as before. A named file that is not a share probe
 history stops the command.
 
+### `darkbloom cluster gpu-limit`
+
+```bash
+darkbloom cluster gpu-limit [--undo]
+```
+
+| Flag | Type | Default | Effect |
+|---|---|---|---|
+| `--undo` | flag | `false` | Remove the job that keeps the limit raised and return `iogpu.wired_limit_mb` to the macOS default |
+
+Lets this Mac's GPU keep its memory less 16 GiB resident, so GLM-5.3-Flash runs
+on two 128 GB Macs with room for long requests (M5 Macs of 128 or 256 GB only;
+exit 2 elsewhere). It prints the current and the new limit, asks once (`y`), and
+then macOS asks an administrator to approve. Where the limits are already met,
+it installs the boot job that keeps them if that job is missing or differs, and
+changes nothing if it is in place. It needs a terminal; without one it prints
+the commands an administrator can run and exits 2. Values, persistence and
+undo: [GPU memory limit for a GLM pair](../reference/configuration.md#gpu-memory-limit-for-a-glm-pair)
+(`provider-swift/Sources/darkbloom/ClusterGPULimitCommand.swift`).
+
 ### `darkbloom cluster local`
 
 The setup response check uses the model's default reasoning controls. It does not send a binary thinking override; if its token budget ends during reasoning, it reports that the model is still thinking. This is a liveness check, not an answer-quality benchmark. Source: `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupProbeRequest.swift` and `ClusterSetupWizardLiveOperations.prompt`.

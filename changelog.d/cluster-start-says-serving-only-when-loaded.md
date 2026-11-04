@@ -17,5 +17,5 @@
 - The Start step says loading takes a few minutes for a large model; a color terminal shows one live row per Mac with
   its time so far.
 - `darkbloom cluster` status calls a registered pair serving only while it serves, else
-  `<model> is not serving yet: <reason>.`, and says a Mac serving alone is still loading until its solo server answers; the other Mac shows it as the same outcome block, and its setup now ends by
-  pointing to the leader's screen.
+  `<model> is not serving yet: <reason>.`, and says a Mac serving alone is still loading until its solo server answers.
+  The other Mac shows the same outcome block, and its setup ends with the same ✓ or ✗ as the leading Mac.

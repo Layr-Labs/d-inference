@@ -122,10 +122,14 @@ public struct ClusterDeviceProfile: Codable, Equatable, Sendable {
     /// physical memory enters it: what is wired, cached or running now does
     /// not move it. It is the ceiling a split is planned under, not a
     /// promise: the load gate still decides each load on the Mac's own
-    /// sample. (Until 0.10.8 it also kept out the kernel's file-cache minimum,
-    /// which the gate counts: 75.6 GiB of a 128 GiB Mac, below what any split
-    /// of MiMo V2.6 Flash asks a Mac for and below the GLM ranks a 256 GiB
-    /// pair serves.)
+    /// sample. It assumes the share loads into free pages: a file cache full
+    /// of the model's own files is given back page by page while applications
+    /// are compressed, and past 512 MiB compressed the gate withdraws all of
+    /// it mid-load (`QwenDenseStageLoadPolicy.maximumCompressedSinceFirstSampleBytes`),
+    /// so that cache has to be dropped before a load. (Until 2026-11-03
+    /// it also kept out the kernel's file-cache minimum, which the gate counts:
+    /// 75.6 GiB of a 128 GiB Mac, below what any split of MiMo V2.6 Flash asks
+    /// a Mac for and below the GLM ranks a 256 GiB pair serves.)
     public var atRestAdmissibleBytes: Int {
         max(0, physicalMemoryBytes - Self.systemWiredBytes(physical: physicalMemoryBytes))
     }
@@ -280,13 +284,14 @@ public struct ClusterDeviceMemory: Codable, Equatable, Sendable {
         guard judged else { return .afterApplicationsRelease(bytes: required) }
         // Above normal pressure the gate counts no file cache and lets the kernel drop none for a load
         // (`QwenDenseStageLoadWatch`), so cache the kernel would give is no room: applications have to give memory
-        // back first. (A 128 GB member at warning pressure, 0.17 GiB free, refused a 49.08 GiB share, 2026-11-03.)
+        // back first. The gate's other withdrawal, past 512 MiB compressed since a load's first sample, no sample
+        // foresees: at normal pressure it refused the 128 GB member's 49.08 GiB share on 2026-11-03, after the part
+        // start had read the model into the file cache. Dropping that cache before a load is its remedy.
         let gateCountsCache = countedFileCacheBytes > 0 || fileBackedBytes == 0
         if gateCountsCache, required <= kernelWouldGiveBytes { return .gateCountsLess(bytes: max(0, required - admissibleNowBytes)) }
-        if !gateCountsCache, required <= withApplicationsClosedBytes {
-            return .afterApplicationsRelease(bytes: required - admissibleNowBytes)
+        if required <= withApplicationsClosedBytes {
+            return .afterApplicationsRelease(bytes: required - (gateCountsCache ? kernelWouldGiveBytes : admissibleNowBytes))
         }
-        if required <= withApplicationsClosedBytes { return .afterApplicationsRelease(bytes: required - kernelWouldGiveBytes) }
         if required <= afterRestartBytes { return .afterRestart(bytes: required - withApplicationsClosedBytes) }
         return .never(shortBytes: required - afterRestartBytes)
     }

@@ -110,8 +110,8 @@ func checkGateAgreement(_ checks: PlacementChecks) {
         }
     }
     // At warning pressure the gate counts none of the cache and lets the kernel drop none for a load, so cache the
-    // kernel would give is no room: applications must release memory first, by what the gate counts now (0.10.8:
-    // this was "the gate counts less", which the setup read as "nothing has to close", and the load was refused).
+    // kernel would give is no room: applications must release memory first, by what the gate counts now. (This was
+    // "the gate counts less", which the setup reads as "nothing has to close", though the gate refuses that load.)
     checks.require("at warning pressure, within free pages plus cache above the kernel's minimum: applications must release memory, not 'the gate counts less'",
         { if case .afterApplicationsRelease(let bytes) = warned.fit(80 * gib) { return bytes == 80 * gib - warned.admissibleNowBytes } else { return false } }())
     checks.require("beyond the cache the kernel would give up: applications must release memory, and protected cache is not promised",
@@ -373,7 +373,7 @@ func checkDeviceMixes(_ nine: ClusterModelLayout, _ big: ClusterModelLayout, _ c
         let full = [try SyntheticMac(physicalGiB: 12, freeGiB: 0.4, inactiveCacheGiB: 0.2, wiredGiB: 2.5).device("tiny"),
                     try SyntheticMac.idle(512).device("huge")]
         let crowded = try checkRule("12 (nearly full) + 512, 27B", full, big, checks)
-        checks.require("12 (nearly full) + 512: the tiny Mac retains the smallest hardware-fitting share and reports the memory it needs (\(crowded.chosen.map { "\(layers($0, "tiny"))+\(layers($0, "huge"))" } ?? "none"))",
+        checks.require("12 (nearly full) + 512: the tiny Mac retains its hardware-fitting share and reports the memory it needs (\(crowded.chosen.map { "\(layers($0, "tiny"))+\(layers($0, "huge"))" } ?? "none"))",
             crowded.chosen.map { layers($0, "tiny") == 16 && layers($0, "huge") == 48 } == true
                 && crowded.refusal == nil && crowded.chosen?.ranks.first { $0.device == "tiny" }?.hardwareFits == true
                 && crowded.chosen?.ranks.first { $0.device == "tiny" }?.fit.tier == 2
@@ -489,10 +489,11 @@ func checkDeviceMixes(_ nine: ClusterModelLayout, _ big: ClusterModelLayout, _ c
                 embed: Int(0.60 * Double(gib)), head: Int(0.61 * Double(gib)), largestTensor: gib),
             artifactSHA256: "", configurationSHA256: "")
         let result = try checkRule("87 and 44 GiB admissible, 173 GB model, cuts 24 to 44", devices, wide, checks)
-        // Both Macs hold either half at rest (0.10.8: the 128 GiB Mac's at-rest ceiling is the gate's own, 120 GiB),
-        // so the even cut is chosen, in the order speed prefers.
+        // Both Macs hold either half at rest (the 128 GiB Mac's at-rest ceiling is the gate's own, 120 GiB, since
+        // 2026-11-03), so the even cut is chosen; with equal speeds the capacity tie-break gives the 128 GiB Mac the
+        // lighter first half (layers 0 to 23 and the embedding).
         checks.require("when nothing passes now, the cut chosen at rest is still chosen and the small Mac's rank says what is in its way",
-            result.refusal == nil && result.chosen?.cut == 24
+            result.refusal == nil && result.chosen?.cut == 24 && result.chosen?.ranks.first?.device == "b"
                 && (result.chosen?.tier ?? 0) > 0 && result.chosen?.ranks.first { $0.device == "b" }?.fit.possible == true
                 && result.chosen?.ranks.first { $0.device == "b" }?.fit != .now)
         // The same pair once the large Mac is free: a cut now loads on both, so the split moves to the

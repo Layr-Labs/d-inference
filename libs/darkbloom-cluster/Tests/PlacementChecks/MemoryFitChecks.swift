@@ -33,9 +33,9 @@ func mimoProductLayout() throws -> ClusterModelLayout {
     return try mimoWithRounds(priced, configuration: configuration, allocationBound: { $0 + 16_384 })
 }
 
-/// One truth for "fits" (0.10.8): the planner's at-rest ceiling is the load gate's own (it counts all file cache),
-/// the live gate's answer no longer offers a split the GPU cannot keep resident, and a member whose gate counts no
-/// file cache (pressure above normal) is not offered as fitting on cache the gate will not count. Recorded M5 Max
+/// One truth for "fits": the planner's at-rest ceiling is the load gate's own (it counts all file cache), the live
+/// gate's answer no longer offers a split the GPU cannot keep resident, and a member whose gate counts no file cache
+/// (pressure above normal) is not offered as fitting on cache the gate will not count. Recorded M5 Max
 /// (128 GB, 107.52 GiB working set) and M3 Ultra (256 GB, 222.72 GiB) hardware, constructed memory samples.
 func checkMemoryFit(golden: URL, _ checks: PlacementChecks) throws {
     let m5 = golden.appendingPathComponent("profile-mac-b.json"), m3 = golden.appendingPathComponent("profile-mac-a.json")
@@ -79,24 +79,37 @@ func checkMemoryFit(golden: URL, _ checks: PlacementChecks) throws {
             }
         } == true)
 
-    // (c) Qwen3.8 27B's tensor-parallel share on the 128 GB member (49.08 GiB, the worker's own refusal). At normal
-    // pressure the gate counts the file cache and admits it; at warning pressure (0.17 GiB free, as on 2026-11-03)
-    // it counts none, so the plan must not call that cache room.
-    let share = Int(49.08 * Double(gib))
-    var member = SyntheticMac(physicalGiB: 128, freeGiB: 0.17, inactiveCacheGiB: 70, activeCacheGiB: 25, wiredGiB: 7.7, compressorGiB: 6.2)
+    // (c) Qwen3.8 27B's tensor-parallel share on the 128 GB member, 2026-11-03 (49.08 GiB, the worker's own refusal):
+    // 0.17 GiB free, the rest in file cache and about 53 GB of applications. At normal pressure the gate counts the
+    // cache and admits the share, so the plan says it fits now. The refusal was the gate's compression limit at normal
+    // pressure: the part start had read the model into the file cache, the load took memory from it page by page
+    // while applications were compressed, and 515 MiB compressed since the load's first check (limit 512 MiB)
+    // withdrew the cache. No plan's sample can foresee that; dropping the model's cache before the load is the remedy.
+    // Separately, above normal pressure the gate counts no cache at all, so the plan must not call that cache room.
+    let share = Int((49.08 * Double(gib)).rounded(.up))
+    var member = SyntheticMac(physicalGiB: 128, freeGiB: 0.17, inactiveCacheGiB: 40, activeCacheGiB: 21, wiredGiB: 11.6, compressorGiB: 6.2)
     let normal = ClusterDeviceMemory.gate(member.observation, now: SyntheticMac.now)
-    checks.require("memory fit (c): at normal pressure the member's gate admits the 49.08 GiB share on its file cache (no false refusal)",
+    checks.require("memory fit (c): at normal pressure the member's gate admits the 49.08 GiB share on its file cache, and the plan says it fits now",
         normal.admits(share) && normal.fit(share) == .now)
+    var compressed = member
+    compressed.compressionPages = 515 * 1_048_576 / SyntheticMac.page; compressed.liveCompressionPages = compressed.compressionPages
+    let refusal = try QwenDenseStageLoadPolicy.decide(compressed.observation, requiredBytes: share, purpose: "Tensor-parallel shard load",
+        now: SyntheticMac.now, since: QwenDenseStageLoadBaseline(member.observation))
+    checks.require("memory fit (c): the member's refusal was the compression limit at normal pressure, in the worker's words, which the plan's own sample cannot foresee",
+        !refusal.admitted && refusal.stoppedByCompressionOrSwap && refusal.pressureLevel == QwenDenseStageLoadPolicy.normalPressureLevel
+            && refusal.refusal?.hasSuffix("free plus no file cache: 515 MiB was compressed and 0 MiB swapped out since its first check "
+                + "(limits 512 and 64 MiB), so the kernel is taking anonymous memory") == true
+            && ClusterDeviceMemory.gate(compressed.observation, now: SyntheticMac.now).fit(share) == .now)
     member.pressure = 2
     let warning = ClusterDeviceMemory.gate(member.observation, now: SyntheticMac.now)
-    checks.require("memory fit (c): at warning pressure the gate counts no file cache and refuses; the plan says quit apps, not 'fits'",
+    checks.require("memory fit (c): separately, above normal pressure the gate counts no file cache and refuses; the plan says quit apps, not 'fits'",
         !warning.admits(share) && warning.countedFileCacheBytes == 0
             && { if case .afterApplicationsRelease = warning.fit(share) { return true } else { return false } }())
 
     // (d) A mixed pair: M3 Ultra 256 GB and M5 Max 128 GB, a model (298 GiB) the M3 Ultra cannot hold alone and no even
     // split fits. With the M5 Max busy (60 GiB free and cached now) it is offered with 'quit apps first' and split
     // unevenly, each rank within its own Mac's at-rest and GPU limits, the M5 Max at its real capacity: beyond the
-    // 75.6 GiB the planner allowed a 128 GiB Mac until 0.10.8, which refused the pair as too large.
+    // 75.6 GiB the planner allowed a 128 GiB Mac until 2026-11-03, which refused the pair as too large.
     let large = try syntheticLayout(layers: 48, layerGiB: 6.2, modes: [.pipeline])
     let mixed = try [recorded(m3, label: "ultra"),
                      recorded(m5, label: "max", memory: SyntheticMac(physicalGiB: 128, freeGiB: 50, inactiveCacheGiB: 10, wiredGiB: 7.7))]

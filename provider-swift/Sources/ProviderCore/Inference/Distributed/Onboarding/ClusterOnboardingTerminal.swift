@@ -37,6 +37,9 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     private var configured = false
     public private(set) var closed = false
 
+    /// What a signal (Ctrl-C) says before the command ends.
+    static var stoppedLine: String { "Stopped. Run `darkbloom cluster` again to continue where it was." }
+
     /// The mode to put back from a signal handler (one terminal per process).
     nonisolated(unsafe) private static var restoreInput: Int32 = -1
     nonisolated(unsafe) private static var restoreMode = termios()

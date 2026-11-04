@@ -81,6 +81,12 @@ extension ClusterPairSummary {
         return summary
     }
 
+    /// `status`'s lines (on the Mac that follows, the leading Mac's answer over the cable) within `seconds`.
+    static func boundedStatus(within seconds: Double, noticeAfter: Double, slow: ClusterPairCommands.Say?,
+                              _ status: @escaping @Sendable () -> [String]) -> [String]? {
+        status()
+    }
+
     private static func liveFacts(config: String?) -> ClusterPairSummary {
         var summary = localFacts()
         guard summary.paired, summary.role != nil,

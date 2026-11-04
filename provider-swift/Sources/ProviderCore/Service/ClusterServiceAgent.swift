@@ -203,6 +203,9 @@ public enum ClusterServiceAgent {
         public let loaded: Bool
     }
 
+    /// Whether the cluster service running with `environment` starts by itself at login.
+    public static func startsAtLogin(environment: [String: String], installedAgents: () -> [String]) -> Bool { false }
+
     public static func status() -> [Status] {
         installedLabels().map { Status(label: $0, installed: true, loaded: isLoaded(label: $0)) }
     }

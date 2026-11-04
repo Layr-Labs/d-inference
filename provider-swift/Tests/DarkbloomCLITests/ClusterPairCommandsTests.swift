@@ -1485,3 +1485,62 @@ struct ClusterDevNetFindingsTests {
         #expect(ClusterService.logsControl(.stop, lastStatusLog: now.addingTimeInterval(-1), now: now))
     }
 }
+
+private final class SaidLines: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+    func add(_ line: String) { lock.withLock { lines.append(line) } }
+    var all: [String] { lock.withLock { lines } }
+}
+
+@Suite("Pair-2 findings, CLI side: the remaining names, a truthful other Mac, a bounded answer from the leading Mac")
+struct ClusterPairTwoFindingsTests {
+    @Test("P2-2: no-terminal `cluster`, the cluster service status lines and the Ctrl-C line name the DevNet CLI")
+    func remainingTextsNameTheIdentity() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            ClusterOnboardingCommand.use("darkbloom-dev")
+            var lines = [Cluster.Setup.needsTerminalLine, ClusterOnboardingTerminal.stoppedLine]
+            let cases: [([(label: String, loaded: Bool)], Bool)] = [([], true), ([], false), ([("agent", false), ("old", true)], true)]
+            for (agents, running) in cases {
+                lines += ClusterServiceAgentPlan.statusLines(agents: agents, serviceRunning: running, paired: true,
+                                                             supervisor: nil, now: 0, bootTime: 0)
+            }
+            for line in lines { print(line) }
+        }
+        let out = text(result?.standardOutputContent)
+        #expect(out.contains("Run `darkbloom-dev cluster` in a Terminal window on this Mac."), "\(out)")
+        #expect(out.contains("Stopped. Run `darkbloom-dev cluster` again to continue where it was."), "\(out)")
+        #expect(out.contains("(run `darkbloom-dev cluster` to set that up)") && out.contains("login (run `darkbloom-dev cluster`)"), "\(out)")
+        #expect(out.contains("(`darkbloom-dev cluster` keeps one)"), "\(out)")
+        #expect(!out.contains("`darkbloom "), "\(out)")
+    }
+
+    @Test("P2-13: the leading Mac says the other Mac answers while they run the cluster, false while it is away, else unknown")
+    func leaderSaysWhetherTheOtherMacAnswers() {
+        var serving = pair(role: .leader)
+        serving.read(status: ["Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel)."], leaderMode: "cluster")
+        #expect(serving.otherMacAnswers == true)
+        #expect(serving.json.otherMac?.answers == true)
+        var stopped = pair(role: .leader, started: false)
+        stopped.read(status: ["Stopped; last model Qwen 3.8 27B."], leaderMode: "idle")
+        #expect(stopped.otherMacAnswers == nil)
+        var away = pair(role: .leader)
+        away.read(status: ["The other Mac doesn't answer over the cable; this Mac serves alone."], leaderMode: "alone")
+        #expect(away.otherMacAnswers == false)
+    }
+
+    @Test("P2-8: the leading Mac's answer is waited for at most its bound, and a slow one is said")
+    func slowLeaderAnswerIsBoundedAndSaid() {
+        let said = SaidLines()
+        let late = ClusterPairSummary.boundedStatus(within: 1, noticeAfter: 0.05, slow: { said.add($0) }) {
+            Thread.sleep(forTimeInterval: 2); return ["late"]
+        }
+        #expect(late == nil)
+        #expect(said.all == ["  Waiting for the leading Mac's answer (up to 1 s).",
+                             "  The leading Mac didn't answer in 1 s; this is this Mac's own view."])
+        let quiet = SaidLines()
+        let prompt = ClusterPairSummary.boundedStatus(within: 1, noticeAfter: 0.5, slow: { quiet.add($0) }) { ["Serving"] }
+        #expect(prompt == ["Serving"])
+        #expect(quiet.all.isEmpty)
+    }
+}

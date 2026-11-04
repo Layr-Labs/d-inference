@@ -193,6 +193,11 @@ public final class ClusterIncidentLog: @unchecked Sendable {
         homeDirectory.appendingPathComponent(".darkbloom/cluster/incidents.json")
     }
 
+    /// This install's incident log under `homeDirectory` (`install`: "prod", "dev", …).
+    public static func defaultFile(homeDirectory: URL, install: String?) -> URL {
+        defaultFile(homeDirectory: homeDirectory)
+    }
+
     public let file: URL
     /// This install, stamped on each record it adds; its feed holds its own records and the older unstamped ones
     /// (`unstampedInstall`). Nil: every record, and the records it adds stay unstamped.

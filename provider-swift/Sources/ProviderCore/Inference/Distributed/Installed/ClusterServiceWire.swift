@@ -88,6 +88,9 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
     /// This Mac has a Darkbloom login (`darkbloom login`): the coordinator pairs only logged-in Macs. Nil from an
     /// older build, which the leader never reads as "not logged in".
     public var loggedIn: Bool? = nil
+    /// This Mac's cluster service starts by itself at login (`ClusterServiceAgent.startsAtLogin`). Nil from an older
+    /// build, which the other Mac never reads as "not at login".
+    public var startsAtLogin: Bool? = nil
     public struct Control: Codable, Sendable, Equatable {
         public var leaderID: String
         public var leaderName: String

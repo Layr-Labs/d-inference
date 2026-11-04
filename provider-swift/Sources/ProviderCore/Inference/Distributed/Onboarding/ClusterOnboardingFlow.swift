@@ -294,19 +294,28 @@ public struct ClusterOnboardingModelChoice: Codable, Sendable, Equatable {
     }
 }
 
-/// A start's pending check with Darkbloom (`ClusterSetupRecord.registrationPendingPID`), as the leader's status reads it:
-/// pending while that start's process runs. A start that died before it asked leaves its pid behind; it is cleared once
-/// seen dead, and only while the record still holds that pid, so a new start's pid is never wiped (and a reused pid
-/// never reads as a pending check later).
+/// A start's pending check with Darkbloom (`ClusterSetupRecord.registrationPendingPID` and `registrationPendingStarted`),
+/// as the leader's status reads it: pending while that start's process runs, the same process (its start time matches,
+/// so a pid the system has given to another process never counts). A start that died before it asked leaves its mark
+/// behind; it is cleared once seen gone, and only while the record still holds that mark, so a new start's is never wiped.
 public enum ClusterOnboardingPendingRegistration {
-    /// Whether the recorded pid counts, and the pid to clear because its process is gone.
-    public static func look(_ recorded: Int32?, alive: (Int32) -> Bool) -> (pending: Bool, clear: Int32?) {
-        guard let pid = recorded else { return (false, nil) }
-        return alive(pid) ? (true, nil) : (false, pid)
+    /// The start's process: its pid and when it started (microseconds since 1970); `started` nil never counts.
+    public struct Mark: Equatable, Sendable {
+        public var pid: Int32
+        public var started: UInt64?
+        public init(pid: Int32, started: UInt64?) { self.pid = pid; self.started = started }
     }
 
-    /// The record's pid once `dead` is cleared: unchanged unless it still holds `dead`.
-    public static func cleared(_ current: Int32?, dead: Int32) -> Int32? { current == dead ? nil : current }
+    /// Whether the recorded mark counts, and the mark to clear because its process is gone (or its pid is another's).
+    /// `started`: when the process that has `pid` now started; nil when none runs or it can't be read.
+    public static func look(_ recorded: Mark?, started: (Int32) -> UInt64?) -> (pending: Bool, clear: Mark?) {
+        guard let mark = recorded else { return (false, nil) }
+        if let since = mark.started, started(mark.pid) == since { return (true, nil) }
+        return (false, mark)
+    }
+
+    /// The record's mark once `gone` is cleared: unchanged unless it still holds `gone`.
+    public static func cleared(_ current: Mark?, gone: Mark) -> Mark? { current == gone ? nil : current }
 }
 
 /// One way both Macs can run a model (owner, 2026-11-04: tensor parallel and pipeline both offered, the fastest measured
@@ -713,10 +722,20 @@ public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
     /// " (pipeline)" after the outcome's title; empty when the split is unknown or not shown plainly.
     private var splitMarker: String { ClusterOnboardingDeployment.shownMarker(split).map { " (\($0))" } ?? "" }
 
-    /// In the leading Mac's serving line while its start still asks Darkbloom whether to offer the pair (the record's
-    /// `registrationPendingPID`, set by the start's serve and cleared once `register` decides): the start is not over,
+    /// In the leading Mac's status line while its start still asks Darkbloom whether to offer the pair (the record's
+    /// `registrationPendingPID`, set by the screen's start and cleared once `register` decides): the start is not over,
     /// so the Mac that joined keeps following (`ClusterOnboardingDriver.followed`) and never shows an early ✓.
     public static let offerPendingWords = "checking with Darkbloom before it offers the pair"
+
+    /// That status line: a start, not its outcome, so no screen shows it as ✓ (nor its API, which the registration
+    /// may stop).
+    public static func offerPendingLine(model: String) -> String {
+        "Starting \(model): loaded on both Macs; \(offerPendingWords)."
+    }
+
+    /// Under the leading Mac's not-serving line once its start's test request failed (`ClusterSetupRecord
+    /// .startTestFailure`): the start's outcome, so the Mac that joined ends with the same ✗.
+    public static let testFailedNote = "Setup saved, but the test failed: the pair was not offered to Darkbloom."
 
     /// How the line of a pair registered with the coordinator as a cluster member starts (`ClusterLocalServing`). It is
     /// a log line and a prefix matcher, never shown: the screen says `offeredLine(model:)`.
@@ -868,6 +887,10 @@ public struct ClusterOnboardingOperations: Sendable {
     public var useMode: @Sendable (_ index: Int, _ mode: String) -> Void
     /// How the Mac that joined follows the start (`ClusterOnboardingDriver.followStart`).
     public var followTiming = ClusterOnboardingFollowTiming()
+    /// Marks the start that asks the coordinator after its test (`finishStart` with `registers`) until it decides, so
+    /// the leading Mac's status says it is not over (`OnboardingLive.markRegistrationPending`). `serve` alone never
+    /// marks. Not in `init`: only the live operations set it.
+    public var markRegistrationPending: @Sendable () -> Void = {}
 
     public init(resume: @escaping @Sendable () -> ClusterOnboardingResume,
                 checkLink: @escaping @Sendable (@escaping @Sendable (String) -> Void) -> ClusterOnboardingLinkResult,
@@ -1568,6 +1591,8 @@ public enum ClusterOnboardingDriver {
     /// any other status.
     static func showOutcome(_ status: [String], _ console: ClusterOnboardingConsole) -> Bool {
         guard let first = status.first else { return false }
+        // A start still checking with Darkbloom is not its outcome (as the Mac that joined follows it): no ✓.
+        if first.contains(ClusterOnboardingReady.offerPendingWords) { return false }
         if first.hasPrefix("Serving ") {
             console.result(true, first.hasSuffix(".") ? String(first.dropLast()) : first, Array(status.dropFirst()))
             return true
@@ -2035,6 +2060,8 @@ public enum ClusterOnboardingDriver {
                             _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
         var scope = scope
         var mayRegister = registers
+        // Only this start asks the coordinator after its test: the leading Mac's status says so until it decides.
+        if registers, !scope.isLocalOnly { operations.markRegistrationPending() }
         while true {
             switch startOutcome(title: title, scope: scope, mayRegister: &mayRegister, operations, console) {
             case .served(let served, let lines, let ready):

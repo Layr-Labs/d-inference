@@ -8,7 +8,7 @@ import Foundation
 /// How long the Mac that joined follows the start on its own screen.
 public struct ClusterOnboardingFollowTiming: Sendable {
     /// The bound, as the leader's start waits for the pair (`OnboardingLive.pairServingSeconds`): for the leader to
-    /// start, then for the start's outcome.
+    /// start, then for each stage of the start (`followStage`), each with the whole bound again.
     public var seconds: Double
     /// Between two looks at the cluster's status over the cable.
     public var pollSeconds: Double
@@ -21,6 +21,12 @@ extension ClusterOnboardingDriver {
     /// What the Mac that joined waits for, the Mac that leads named as pairing showed it.
     public static func waitingForStartLine(_ leader: String?) -> String {
         "Waiting for \(ClusterOnboardingMacName.other(named: leader)) to choose the model and start\u{2026}"
+    }
+
+    /// Under the ✗ on the Mac that joined when a test request failed: the leading Mac's screen ends the same way
+    /// ("Setup saved, but the test failed. To test again, …"), with no choices.
+    public static func testAgainOnLeaderLine(_ leader: String?) -> String {
+        "To test again, run `darkbloom cluster` on \(ClusterOnboardingMacName.other(named: leader)) and choose the model it serves."
     }
 
     /// Under the ✗ on the Mac that joined: the choices are on the leading Mac's screen.
@@ -48,14 +54,28 @@ extension ClusterOnboardingDriver {
         case serving
         /// Offered to Darkbloom and not serving yet: the pair's own wait decides, as on the leading Mac (`pairServing`).
         case offered
+        /// The start's test request failed (the leader's note under its not-serving line): the start's outcome.
+        case testFailed
     }
 
     static func followed(_ status: [String]) -> FollowedStart {
         guard let first = status.first else { return .notStarted }
         if first.hasPrefix("Serving ") { return first.contains(ClusterOnboardingReady.offerPendingWords) ? .starting : .serving }
-        if ClusterOnboardingNotServing.reason(inStatusLine: first) != nil { return .offered }
+        if ClusterOnboardingNotServing.reason(inStatusLine: first) != nil {
+            return status.dropFirst().contains(ClusterOnboardingReady.testFailedNote) ? .testFailed : .offered
+        }
         let starting = first.hasPrefix("Loading ") || first.hasPrefix("Starting ") || first.contains(": registering both Macs")
         return starting ? .starting : .notStarted
+    }
+
+    /// The stage of the leader's start that `status` shows, after `stage`: 1 loading or starting, 2 its test and check
+    /// with Darkbloom, 3 anything after that check (the registration's stop and restart). Never back, so a status that
+    /// goes back and forth inside one stage never starts its bound again.
+    static func followStage(_ status: [String], after stage: Int) -> Int {
+        guard let first = status.first else { return stage }
+        if first.contains(ClusterOnboardingReady.offerPendingWords) { return max(stage, 2) }
+        if stage >= 2 { return 3 }
+        return followed(status) == .starting ? max(stage, 1) : stage
     }
 
     /// In the serving line of the pair the coordinator formed (`ClusterOnboardingReady.pairServingLine`).
@@ -69,7 +89,7 @@ extension ClusterOnboardingDriver {
         let looks = ClusterOnboardingMailbox<[String]>()
         var asking = false, asked = Date.distantPast
         let begun = Date()
-        var started: Date?, latest: String?
+        var started: Date?, latest: String?, stage = 0
         while true {
             if !asking, Date().timeIntervalSince(asked) >= timing.pollSeconds {
                 asking = true
@@ -80,6 +100,9 @@ extension ClusterOnboardingDriver {
                 asking = false
                 let seen = followed(status)
                 if started == nil, seen != .notStarted { started = Date() }
+                // Each stage has the whole bound, as on the leading Mac (its load, its test and check, its restart).
+                let next = followStage(status, after: stage)
+                if started != nil, next > stage { stage = next; started = Date() }
                 if started != nil, let first = status.first { latest = first.hasSuffix(".") ? String(first.dropLast()) : first }
                 switch seen {
                 case .serving:
@@ -88,6 +111,9 @@ extension ClusterOnboardingDriver {
                 case .offered:
                     console.settle()
                     return followPair(status, leader: leader, operations, console)
+                case .testFailed:
+                    console.settle()
+                    return followTestFailed(status, leader: leader, console)
                 case .starting, .notStarted:
                     break
                 }
@@ -135,12 +161,21 @@ extension ClusterOnboardingDriver {
                 let first = failure.lines.first ?? "The test request failed"
                 console.result(false, ClusterOnboardingNotServing.title(reason: first.hasSuffix(".") ? String(first.dropLast()) : first),
                                Array(failure.lines.dropFirst()))
-                console.say("To test again, run `darkbloom cluster` on \(ClusterOnboardingMacName.other(named: leader)) and choose the model it serves.")
+                console.say(testAgainOnLeaderLine(leader))
                 return 1
             }
         }
         _ = showOutcome(shown, console)
         return followServedEnd(operations, console)
+    }
+
+    /// The leading Mac's start ended with a failed test (`ClusterSetupRecord.startTestFailure`): the same ✗ and reason
+    /// as its screen, and no test of this Mac's own, which could pass and claim the ✓ the leader did not.
+    static func followTestFailed(_ status: [String], leader: String?, _ console: ClusterOnboardingConsole) -> Int32 {
+        let reason = status.first.flatMap(ClusterOnboardingNotServing.reason(inStatusLine:)) ?? "The test request failed"
+        console.result(false, ClusterOnboardingNotServing.title(reason: reason), [ClusterOnboardingReady.testFailedNote])
+        console.say(testAgainOnLeaderLine(leader))
+        return 1
     }
 
     /// Offered to Darkbloom: the pair's own wait, as the leading Mac's (`pairServing`: the coordinator pairs both Macs,

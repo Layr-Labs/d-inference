@@ -93,17 +93,26 @@ follows the start from the cluster's status the two Macs exchange over the cable
 2. Once the leader starts, its live line follows the start (loading, offered to
    Darkbloom, then one row per Mac while Darkbloom pairs them). Serving through
    Darkbloom, the leader's start asks Darkbloom whether to offer the pair after
-   its test; until it has, the leader's status says so ("checking with Darkbloom
-   before it offers the pair") and this Mac keeps following. Offered, it says
-   "Offered to Darkbloom as a pair for <model>; waiting for Darkbloom to accept
-   this pair…" and waits as the leader does, so both screens end the same way.
+   its test; until it has, the leader's status says so ("Starting <model>: loaded
+   on both Macs; checking with Darkbloom before it offers the pair.", with no ✓
+   in `darkbloom cluster` on either Mac) and this Mac keeps following. Offered,
+   it says "Offered to Darkbloom as a pair for <model>; waiting for Darkbloom to
+   accept this pair…" and waits as the leader does, so both screens end the
+   same way. When the leader's test request fails, its status says so ("Setup
+   saved, but the test failed: the pair was not offered to Darkbloom.") and this
+   Mac ends with the same ✗ and reason, without a test of its own. With a leader
+   on an older build, which says none of this, this Mac may show ✓ before
+   Darkbloom accepts the pair.
 3. It ends with the same ✓ or ✗ block as the leader's screen. After ✓: "You can
    close this window." After ✗: the reason, then "Choose Retry on the other Mac
-   (…): its screen shows the choices."
+   (…): its screen shows the choices."; after a failed test, "To test again, run
+   `darkbloom cluster` on the other Mac (…) and choose the model it serves."
 
 q leaves at any time: "The pair keeps going; run `darkbloom cluster` here to see
-it." The follow is bounded like the leader's start (15 minutes for the start to
-begin, then 15 minutes for its outcome), and its end always says why. A signed
+it." The follow is bounded like the leader's start: 15 minutes for the start to
+begin, then 15 minutes for each of its stages (loading; the test and the check
+with Darkbloom; the registration's restart), then the pair's own wait once it is
+offered. Its end always says why. A signed
 Darkbloom.app's login agent keeps serving; without one, as for a development
 build, the screen ends "Keep this window open." and the Mac serves only while
 the window stays open. The Start step opens with "Loading

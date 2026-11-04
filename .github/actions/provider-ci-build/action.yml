@@ -2,7 +2,7 @@ name: Provider CI Build
 description: Build full debug test products with lane-specific caches and source-matched Metal
 inputs:
   lane:
-    description: provider, sdk or cluster; each owns independent build outputs
+    description: provider or cluster; each owns independent build outputs
     required: true
   save-caches:
     description: "'true' to save this lane's caches; provider-tests.yml passes true only for pushes to master and dev"
@@ -16,7 +16,7 @@ runs:
         LANE: ${{ inputs.lane }}
       run: |
         case "$LANE" in
-          provider|sdk|cluster) ;;
+          provider|cluster) ;;
           *) echo "Unknown provider CI lane: $LANE" >&2; exit 2 ;;
         esac
     - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -74,7 +74,6 @@ runs:
       with:
         path: |
           provider-swift/.build
-          libs/mlx-swift-lm/.build
           libs/darkbloom-cluster/.build
         key: ${{ steps.build-key.outputs.key }}
         restore-keys: |
@@ -84,7 +83,7 @@ runs:
       shell: bash
       run: |
         python3 scripts/provider-release-cache.py restore-mtimes
-        for root in provider-swift/.build libs/mlx-swift-lm/.build libs/darkbloom-cluster/.build; do
+        for root in provider-swift/.build libs/darkbloom-cluster/.build; do
           [ -d "$root" ] || continue
           find "$root" -type f -name mlx.metallib -delete
           find "$root" -mindepth 3 -maxdepth 3 -type d \
@@ -106,21 +105,6 @@ runs:
             swift build --product darkbloom-fan-helper --enable-code-coverage
         }
         build || { ../scripts/provider-ci-cold-retry.sh && build; }
-    - name: Build all SDK test products against local MLX
-      if: inputs.lane == 'sdk'
-      id: sdk-build
-      shell: bash
-      working-directory: libs/mlx-swift-lm
-      env:
-        PROVIDER_CI_MATCHED_KEY: ${{ steps.swift-cache.outputs.cache-matched-key }}
-        PROVIDER_CI_STRICT_PREFIX: ${{ steps.keys.outputs.swift-prefix }}
-      run: |
-        build() {
-          { swift package unedit --force mlx-swift >/dev/null 2>&1 || true; } &&
-            swift package edit --path ../mlx-swift mlx-swift &&
-            swift build --build-tests
-        }
-        build || { ../../scripts/provider-ci-cold-retry.sh && build; }
     - name: Build all cluster test products
       if: inputs.lane == 'cluster'
       id: cluster-build
@@ -131,7 +115,7 @@ runs:
         PROVIDER_CI_STRICT_PREFIX: ${{ steps.keys.outputs.swift-prefix }}
       run: swift build --build-tests || { ../../scripts/provider-ci-cold-retry.sh && swift build --build-tests; }
     - name: Record timestamps for successfully built sources
-      if: ${{ !cancelled() && (steps.provider-build.outcome == 'success' || steps.sdk-build.outcome == 'success' || steps.cluster-build.outcome == 'success') }}
+      if: ${{ !cancelled() && (steps.provider-build.outcome == 'success' || steps.cluster-build.outcome == 'success') }}
       id: timestamps
       shell: bash
       run: python3 scripts/provider-release-cache.py snapshot-mtimes
@@ -143,7 +127,6 @@ runs:
       with:
         path: |
           provider-swift/.build
-          libs/mlx-swift-lm/.build
           libs/darkbloom-cluster/.build
         key: ${{ steps.build-key.outputs.key }}
     - name: Save SwiftPM repositories
@@ -167,7 +150,6 @@ runs:
       run: |
         cmake --version
         case "$LANE" in
-          sdk) package=libs/mlx-swift-lm ;;
           cluster) package=libs/darkbloom-cluster ;;
           *) package=provider-swift ;;
         esac

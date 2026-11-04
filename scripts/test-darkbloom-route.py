@@ -40,7 +40,6 @@ FALLBACKS = {"release-integrity": LINUX_FALLBACK, "test-provider": MACOS_FALLBAC
 GRANTED = {"release-integrity": LINUX, "test-provider": MACOS,
            "warm": MACOS, "docs": LINUX_FALLBACK}
 PROVIDER = "${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}"
-SDK = "${{ (github.event_name == 'push' || needs.changes.outputs.sdk == 'true') && 1 || 0 }}"
 CLUSTER = "${{ needs.changes.outputs.cluster == 'true' && 1 || 0 }}"
 CLUSTER_PUSH = "${{ github.event_name == 'push' && needs.changes.outputs.cluster == 'true' && 1 || 0 }}"
 PULL_REQUEST_WARM = "${{ github.event_name == 'pull_request' && 2 || 0 }}"
@@ -50,7 +49,6 @@ ROUTED = {
     "provider-tests.yml": {
         "test-provider": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
         "test-provider-summary": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
-        "test-provider-sdk": ("macos_arm64", MACOS_FALLBACK, SDK),
         "test-cluster-checks": ("macos_arm64", MACOS_FALLBACK, CLUSTER),
         "test-cluster": ("macos_arm64", MACOS_FALLBACK, CLUSTER),
         "test-cluster-gpu": ("macos_arm64", MACOS_FALLBACK, CLUSTER_PUSH),

@@ -1,6 +1,6 @@
 name: CI (dev)
 
-# Pull requests into dev and pushes to dev run the provider, SDK and cluster
+# Pull requests into dev and pushes to dev run the provider and cluster
 # tests (.github/workflows/provider-tests.yml) and nothing else: Release
 # Integrity, Docs Lint and the contribution gates run only for master
 # (.github/workflows/ci-master.yml, docs-impact.yml).

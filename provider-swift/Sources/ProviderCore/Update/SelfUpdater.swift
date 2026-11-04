@@ -179,8 +179,12 @@ public struct SelfUpdater: Sendable {
             processVersion: currentVersion,
             recorded: recoveryState.current?.version
         )
+        // Installed, not yet running. A candidate older than this process is not
+        // pending: the app was replaced outside the updater, so nothing restarts
+        // into it, and it never makes the running release an update target.
         let pendingCandidate = recoveryState.candidate.flatMap {
-            $0.release.version != currentVersion ? $0 : nil
+            ($0.release.version == currentVersion
+                || isNewer(latest: currentVersion, current: $0.release.version)) ? nil : $0
         }
         func restartPendingCandidate(
             _ candidate: PendingReleaseCandidate
@@ -228,7 +232,8 @@ public struct SelfUpdater: Sendable {
                isNewer(
                 latest: release.version,
                 current: pendingCandidate.release.version
-               )
+               ),
+               isNewer(latest: release.version, current: installedVersion)
             {
                 return .updateAvailable(current: installedVersion, latest: release)
             }

@@ -223,8 +223,21 @@ that exact version is blocked; a newer release installs normally.
 
 When the updater installs a release, it keeps the signed release it replaced
 in `~/.darkbloom/recovery/predecessor/` (`provider-swift/Sources/ProviderCore/Update/UpdateInstallLayout.swift`,
-`snapshotLiveAsPredecessor`). A release that runs but regresses can be rolled
-back to it on one Mac, with automatic updates left on:
+`snapshotLiveAsPredecessor`). `install.sh` keeps none. On a `darkbloom cluster`
+Mac, the cluster service removes the kept release at its next start once an
+install outside the updater has changed the app, so the next rollback needs the
+next update ([an install outside the updater](./cluster-always-on.md#an-install-outside-the-updater)).
+A Mac that is not a cluster Mac does not check its record yet. When `install.sh`
+replaces a release that the updater installed and has not promoted yet, the
+watchdog (`WatchdogRecoveryService`) takes the healthy provider for that pending
+release. Each check past its startup window (at least 300 s) counts as a failed
+start and restarts the serving provider; at the third, the watchdog restores
+whatever the kept copy holds (possibly an older release than the one
+`install.sh` installed), quarantines the pending release and restarts on the
+copy. Reinstall only once the pending release is promoted (after
+`defaultStabilizationSeconds` of healthy running).
+A release that runs but regresses can be rolled back to the kept release on one
+Mac, with automatic updates left on:
 
 1. On a Mac that serves in a `darkbloom cluster` pair, first stop its cluster
    service with `darkbloom cluster stop --service`, roll it back, then start it again

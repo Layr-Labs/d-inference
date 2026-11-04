@@ -408,11 +408,14 @@ public struct ClusterOnboardingProvisionOffer: Codable, Sendable, Equatable {
     /// This Mac lacks it and copies it from the other Mac over the cable (with `leaderDownloads`: planned from its
     /// files afterwards, but nothing is downloaded).
     public var fromOtherMac: Bool
+    /// Whether every Mac that receives it has room for it on disk now (`ClusterModelProvisioningPlan.fitsOnDisk`: the
+    /// bytes free now and the room kept free; space macOS could purge is not counted). Nil from an older build.
+    public var fitsOnDisk: Bool?
 
     public init(lines: [String], downloadAlternative: Bool, leaderDownloads: Bool, blocker: String? = nil, quickSeconds: Double? = nil,
-                fromOtherMac: Bool = false) {
+                fromOtherMac: Bool = false, fitsOnDisk: Bool? = nil) {
         self.lines = lines; self.downloadAlternative = downloadAlternative; self.leaderDownloads = leaderDownloads; self.blocker = blocker
-        self.quickSeconds = quickSeconds; self.fromOtherMac = fromOtherMac
+        self.quickSeconds = quickSeconds; self.fromOtherMac = fromOtherMac; self.fitsOnDisk = fitsOnDisk
     }
 }
 
@@ -1602,9 +1605,11 @@ public enum ClusterOnboardingDriver {
             return 1
         }
         // Only models the owner approved for clusters that these Macs can serve, those that fit now first, so enter
-        // picks one that fits (2026-11-02: the list showed the whole catalog).
+        // picks one that fits (2026-11-02: the list showed the whole catalog); last, those a Mac has no room for on disk.
         let listed = choices.indices.filter { choices[$0].listed }
-        let open = listed.filter { choices[$0].fitRemedy == nil } + listed.filter { choices[$0].fitRemedy != nil }
+        let roomy = listed.filter { choices[$0].provision?.fitsOnDisk != false }
+        let open = roomy.filter { choices[$0].fitRemedy == nil } + roomy.filter { choices[$0].fitRemedy != nil }
+            + listed.filter { choices[$0].provision?.fitsOnDisk == false }
         guard !open.isEmpty else {
             console.say("No approved model can run on these Macs now.")
             // One line per reason, the approved models it holds back named before it.
@@ -1635,7 +1640,8 @@ public enum ClusterOnboardingDriver {
             let titles = choices.map(\.title)
             let lines = open.map { index -> String in
                 let line = choices[index].listLine(sameTitleElsewhere: titles.filter { $0 == choices[index].title }.count > 1)
-                return choices[index].fitRemedy == nil ? line : line + " · does not fit now"
+                return line + (choices[index].fitRemedy == nil ? "" : " · does not fit now")
+                    + (choices[index].provision?.fitsOnDisk == false ? " · not enough free disk" : "")
             }
             guard let picked = console.choose(lines, selected: 0) else {
                 console.say("Nothing changed.")

@@ -255,6 +255,20 @@ request answered. Otherwise its line names why
 | `<Mac> lacks free memory for its share` | Quit apps on that Mac, then **Retry**; or **Change model**. |
 | `A part keeps ending the same way: …` | **Diagnostics** saves a redacted file in the home folder to send with a report. |
 
+## Everyday commands on a Mac in a two-Mac cluster
+
+`darkbloom stop`, `start` and `restart` manage single-Mac serving; the cluster is
+managed with `darkbloom cluster` and `darkbloom cluster stop`
+([CLI reference](cli-reference.md#darkbloom-cluster-status)).
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `darkbloom stop` prints `` `darkbloom stop` stops single-Mac serving, and none runs on this Mac: nothing was stopped. `` | The Mac serves in its cluster; `stop` never drains the cluster's part (`Stop.pairedStop`) | `darkbloom cluster stop` (both Macs stop), or Stop in `darkbloom cluster` on the leading Mac |
+| `darkbloom start` prints `Single-Mac serving next to it would compete for this Mac's memory.` | The cluster service runs on this Mac (`Start.pairGuard`) | Stop the cluster first (`darkbloom cluster stop`), or pass `--solo` to serve on this Mac too |
+| Is the pair serving? Why not? | `darkbloom cluster` needs a terminal | `darkbloom cluster status` (or `--json`; exit 0 only while it serves) |
+| `darkbloom cluster link --remove` asks `Remove it? [y/N]` | The Mac is paired; removing the port setup stops the cluster on both Macs until it is set up again | Answer `n` unless the cable port must go; never remove it because of a doctor line alone. `--yes` for scripts |
+| On the Mac that follows, `darkbloom cluster stop` says it stops the cluster on both Macs | The leading Mac stops both Macs' parts, as the menu's Stop does (`Cluster.Stop.pairStop`) | Expected. `--local-only` stops this Mac alone (the other Mac then serves alone, or waits) |
+
 ## Missing base reward
 
 `doctor` billing is local usage reporting, not a coordinator

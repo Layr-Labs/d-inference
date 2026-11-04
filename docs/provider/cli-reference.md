@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-03
+> Last updated: 2026-11-04
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -203,6 +203,23 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `--no-coordinator` | flag | `false` | With `--distributed`: never contact a coordinator; the cluster serves on the local API only (`ClusterLocalServing.leaderArguments`). Rejects `--coordinator-url`. [`darkbloom cluster local`](./two-mac-cluster.md#serving-locally-only) starts it this way |
 | `--timeout <seconds>` | integer, 0–3600 | `600` | Drain a running provider before replacing its process/configuration |
 | `--force` | flag | `false` | Explicitly permit cancellation if the old provider cannot drain |
+| `--solo` | flag | `false` | On a Mac in a two-Mac cluster: start single-Mac serving anyway, beside the cluster (both use this Mac's memory) |
+
+On a Mac in a two-Mac cluster (a pairing, or the cluster service running or set
+to start at login), `start` refuses single-Mac serving while the cluster service
+runs, unless `--solo` is given (exit 1). It names the other Mac and points to
+`darkbloom cluster stop`:
+
+```text
+This Mac serves in a two-Mac cluster with the other Mac (Apple M5 Max, 128 GB): it leads; Qwen 3.8 27B through Darkbloom.
+Single-Mac serving next to it would compete for this Mac's memory. To serve on this Mac alone, stop the cluster first (`darkbloom cluster stop`), or pass --solo.
+```
+
+With `--solo`, or while the cluster service is off, it prints one line and
+starts. The cluster's own starts (`--cluster-member`, `--distributed`, the
+cluster service's solo part) and launchd's `--foreground` child are never asked,
+and a replacement drains only the provider service's process, never the
+cluster's part (`Start.pairGuard`, `ServiceDrain.soloProviderState`).
 
 Exit 1 (`ExitCode.failure`) when `--local` and `--local-endpoint` are combined,
 a debugger is attached, RAM is below 8 GB, Metal is unavailable, hardware
@@ -596,11 +613,73 @@ the leader with `darkbloom cluster local` and ends (exit 0) like `darkbloom clus
 (`ClusterOnboardingDriver.joinedLocalContinueLine`). Steps: [Serving locally only](./two-mac-cluster.md#serving-locally-only)
 (`provider-swift/Sources/darkbloom/ClusterLocalCommand.swift`).
 
-`darkbloom cluster status` prints `MTP: on (decode verifies drafts of the
-model's own speculative head)` when the saved setup decodes with a head (the
-speculative pipeline, Qwen3.8 27B's resident assistant, GLM-5.3-Flash in
-tensor parallel), otherwise `MTP off: <reason>`
-(`provider-swift/Sources/darkbloom/ClusterDiagnosticsCommand.swift`).
+### `darkbloom cluster status`
+
+Says whether the cluster serves now, and if not, why and what to do. Nothing is
+started or changed; on the Mac that follows, the leading Mac is asked over the
+cable. The state and reasons are the status lines `darkbloom cluster` shows
+(`ClusterOnboardingNotServing`), read as the other Mac's window reads them.
+
+```bash
+darkbloom cluster status [--json] [--details] [--config <path>]
+```
+
+```text
+Cluster: this Mac (Mac Studio) leads · the other Mac (Apple M5 Max, 128 GB) follows
+Model: Qwen 3.8 27B · tensor parallel · M3 Ultra 50% / M5 Max 50%
+Serves: through Darkbloom
+✗ Not serving: The other Mac (Apple M5 Max, 128 GB) isn't verified by Apple yet; Darkbloom retries by itself at about 00:34. Don't restart either Mac until then.
+Next: Leave both Macs running: Darkbloom retries by itself. Or serve locally only: `darkbloom cluster local` on this Mac.
+```
+
+| Exit status | `state` | Meaning |
+|---|---|---|
+| `0` | `serving` | The pair serves (through Darkbloom, or on the leading Mac's local API) |
+| `3` | `loading`, `not_serving`, `unknown` | Not serving yet: loading, or a reason in `reason` |
+| `4` | `stopped` | Stopped (Stop in `darkbloom cluster`, or `darkbloom cluster stop`) |
+| `5` | `other_mac_away` | The other Mac isn't answering over the cable (its cluster service is off, it sleeps, or waits for a login) |
+| `6` | `not_paired` | This Mac isn't in a cluster |
+
+`--json` prints one object with the same exit status. Schema 1; every key is
+present, `null` when unknown; keys are only ever added
+(`ClusterPairSummary.JSON`):
+
+| Key | Type | Value |
+|---|---|---|
+| `schema` | integer | `1` |
+| `paired` | bool | This Mac holds a pairing, or its cluster service runs or starts at login |
+| `role` | string? | `leader` or `member` |
+| `this_mac` | string? | This Mac's own name (System Settings) |
+| `other_mac` | object? | `name` (its hardware, as pairing showed it), `answers` (bool, `null` when not asked) |
+| `model` | object? | `id`, `name` (catalog name, `null` when none) |
+| `mode` | string? | `tensor parallel`, `pipeline`, `pipeline with speculative decoding`, … (`ClusterOnboardingDeployment.modeWords`) |
+| `split` | string? | Each Mac's share, such as `M3 Ultra 40 layers / M5 Ultra 24 layers` |
+| `serves` | string? | `darkbloom` or `local` |
+| `state` | string | `serving`, `loading`, `not_serving`, `stopped`, `other_mac_away`, `not_paired`, `unknown` |
+| `reason` | string? | Why it does not serve, in the screens' words |
+| `next` | string? | What to do, in commands |
+| `lines` | [string] | The status lines `darkbloom cluster` shows |
+| `service` | object | `running`, `starts_at_login` (this Mac's cluster service) |
+| `exit_code` | integer | The exit status above |
+
+`--details` prints the saved setup and the leading Mac's session for support, as
+earlier versions printed by default; with `--json`, that report. It prints
+`MTP: on (decode verifies drafts of the model's own speculative head)` when the
+saved setup decodes with a head (the speculative pipeline, Qwen3.8 27B's
+resident assistant, GLM-5.3-Flash in tensor parallel), otherwise
+`MTP off: <reason>`. Code: `provider-swift/Sources/darkbloom/ClusterDiagnosticsCommand.swift`
+(`Cluster.Status`), `provider-swift/Sources/darkbloom/ClusterPairSummary.swift`
+(`ClusterPairSummary`).
+
+### `darkbloom cluster stop` and `darkbloom cluster link --remove`
+
+| Command | On a Mac in a cluster |
+|---|---|
+| `darkbloom cluster stop` | Stops the cluster on both Macs from either Mac: the leading Mac stops both Macs' parts, as Stop in `darkbloom cluster` does (on the Mac that follows: `This Mac follows the other Mac (…), which leads: \`darkbloom cluster stop\` stops the cluster on both Macs.`). This Mac's cluster service then stops and no longer starts at login. `--local-only` stops this Mac alone (`Cluster.Stop.pairStop`) |
+| `darkbloom cluster link --remove` | Says first that it undoes the cable port setup that works now and that the cluster stops serving on both Macs until `darkbloom cluster` (or `link --fix`) sets it up again, then asks `Remove it? [y/N]`. `--yes` (`-y`) removes without asking; without a terminal, or with `--json`, it needs `--yes` (exit 1, nothing changed). `--dry-run` never asks (`Cluster.Link.removalGate`) |
+
+`darkbloom cluster --help` ends with these commands and what each is for
+(`Cluster.commandList`).
 
 Provider-local Chat Completions, Completions and Responses reject negative output
 token limits with HTTP 400 before model invocation or streaming headers. Explicit
@@ -1289,6 +1368,20 @@ with a new deadline, or explicitly pass `--force`. Interrupting the CLI does not
 cancel accepted inference or reopen admission. A running provider without the
 drain control protocol requires an upgrade or an explicit forced interruption.
 
+On a Mac in a two-Mac cluster, `stop` stops single-Mac serving only and never
+drains the cluster's part, which writes the same provider state
+(`ServiceDrain.soloProviderState`). Without single-Mac serving it changes
+nothing and says so (exit 1 while the cluster is started, 0 when it is stopped):
+
+```text
+This Mac serves in a two-Mac cluster with the other Mac (Apple M5 Max, 128 GB): it leads; Qwen 3.8 27B through Darkbloom.
+`darkbloom stop` stops single-Mac serving, and none runs on this Mac: nothing was stopped.
+To stop the cluster: `darkbloom cluster stop` (both Macs stop), or Stop in `darkbloom cluster` on this Mac.
+```
+
+With single-Mac serving it stops that as on any Mac, then adds the pair's line
+and `The cluster was not stopped.` (`Stop.pairedStop`).
+
 Code: `provider-swift/Sources/darkbloom/ServiceDrain.swift` (`DrainOptions`,
 `ServiceDrain.prepare`) and `provider-swift/Sources/darkbloom/StopCommand.swift`
 (`Stop`). See [graceful lifecycle behavior](#graceful-stop-and-restart) for signal
@@ -1310,6 +1403,14 @@ darkbloom restart [--timeout <seconds>] [--force] [--startup-timeout <seconds>] 
 | `--force` | flag | `false` | Explicitly permit interruption of unfinished work before restarting |
 | `--startup-timeout <seconds>` | integer, 1–3600 | `180` | Wait for a new process identity and fresh App Attest, legacy, or owner self-route authorization |
 | `--config <path>` | path | unset | Override the config used to re-arm the watchdog; the provider keeps its recorded config arguments |
+| `--solo` | flag | `false` | On a Mac in a two-Mac cluster: restart single-Mac serving beside a running cluster service |
+
+On a Mac in a two-Mac cluster, `restart` restarts single-Mac serving only.
+Without it installed it says `` `darkbloom restart` restarts single-Mac serving,
+and this Mac has none: nothing was restarted.`` and how the cluster restarts
+(Stop, then start the model again in `darkbloom cluster` on the leading Mac);
+beside a running cluster service it needs `--solo`, as `start` does (exit 1,
+`Restart.pairRefusal`).
 
 A drain timeout returns non-success and leaves the old process draining with
 automatic restart disabled; repeat the command with a new deadline or explicitly
@@ -1334,6 +1435,17 @@ Show local configuration, hardware, schedule, and live daemon state.
 ```bash
 darkbloom status
 ```
+
+On a Mac in a two-Mac cluster, a `Cluster:` line follows the `Cluster service:`
+lines, from what this Mac knows without asking the other Mac
+(`ClusterPairSummary.statusLine`), for example
+`Cluster: this Mac leads · the other Mac (Apple M5 Max, 128 GB) · Qwen 3.8 27B through Darkbloom · serving (details: \`darkbloom cluster status\`)`.
+Without provider state it prints `Single-Mac serving: off (this Mac serves in its two-Mac cluster: \`darkbloom cluster status\`)`
+instead of `Daemon: not running (run \`darkbloom start\`)`, and when the running
+provider is the cluster's part it says so under the `Daemon:` line.
+`darkbloom doctor` prints the same `Cluster:` line under its `Daemon:` line,
+which reads `Daemon: single-Mac serving off (this Mac serves in its two-Mac cluster)`
+there (`Doctor.daemonLine`).
 
 Output includes:
 
@@ -2196,6 +2308,7 @@ qualification or performance. Sources:
 | `64` | swift-argument-parser validation error (unknown flag, missing positional, `fan configure` with no option) |
 | `130` | `darkbloom sandbox setup` stopped with Ctrl-C while the add-on installer ran |
 | `2`, `3`, `4`, other | `darkbloom sandbox setup` exits with a failing add-on installer's own status ([what each means](#installer-progress-events)); `sandbox logs` and `sandbox uninstall` with `tail`'s or the add-on's |
+| `3`, `4`, `5`, `6` | `darkbloom cluster status`: not serving yet, stopped, the other Mac isn't answering, not in a cluster ([`darkbloom cluster status`](#darkbloom-cluster-status)) |
 
 ## Paths and identifiers
 

@@ -296,7 +296,12 @@ the member's App Attest authorization and this Mac's Darkbloom login
 does not serve, the restart after the registration included, ends on its reason
 (`ClusterOnboardingNotServing`, `OnboardingLive.pairLook`) and the driver's
 choices (`ClusterOnboardingDriver.finishStart`); it never says Done. A Mac
-without a login is named before the Start step (`ClusterOnboardingDriver.checkLogins`).
+without a login is named before the Start step (`ClusterOnboardingDriver.checkLogins`). The
+Start step opens with `ClusterOnboardingDriver.startNotice`; the waits draw one live row per Mac
+(`ClusterOnboardingLoadRows`, `ClusterOnboardingConsole.workingRows`), and the setup ends with the
+outcome block (`ClusterOnboardingConsole.result`, `ClusterOnboardingReady.outcome`). A member's
+missing App Attest names its local key-generation safeguard's end (`ClusterServiceStatus.Child.appAttestRetryAt`,
+read from the daemon state's `AppAttestKeyState.generationBlockedUntil`).
 How the approval is fetched, matched,
 checked on each Mac and saved:
 [coordinator-paired member](../reference/configuration.md#coordinator-paired-member).

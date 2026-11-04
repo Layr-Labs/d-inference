@@ -207,7 +207,7 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     }
 
     private func write(_ text: String) {
-        let bytes = Array(text.utf8)
+        let bytes = Array(ClusterOnboardingCommand.named(text).utf8)
         var offset = 0
         while offset < bytes.count {
             let count = bytes[offset...].withUnsafeBytes { Darwin.write(output, $0.baseAddress, $0.count) }

@@ -987,6 +987,15 @@ drained for an update yet: its update waits while it serves (the log says
 
 ## When something is in the way
 
+At the first setup's login check, **Serve locally only** plans the model again
+for serving locally before anything starts, so Qwen 3.8 27B keeps its tensor
+assistant there, as any local start does. When a start's part keeps ending
+because the link to the other Mac keeps closing, the ✗ says so and names the
+other Mac's side ("the other Mac's worker ended or the cable dropped"): that
+Mac's service restarts its worker without reporting it, so its line says what
+can't be read from here instead of "running, no error". In the DevNet app, the
+screens and `status` name its own command (`darkbloom-dev …`).
+
 - **No macOS prompt can be shown** (for example with no one logged in to the desktop):
   the check writes the exact commands the prompt would run to an owner-only
   script, and the setup runs it with `sudo` in the same terminal (type this

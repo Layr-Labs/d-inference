@@ -3876,6 +3876,11 @@ away; mixed pairs are first-class).
   assistant guard).
 - **Default:** the fastest measured family, else the planner's
   (`ClusterOnboardingMode.defaultIndex`).
+- **The scope a plan is for:** `chooseAndServe` names the scope before it plans
+  the list (`ClusterOnboardingOperations.planScope`, `OnboardingLive.usePlanningScope`,
+  carried in `ClusterControlRequest.scope`); a start whose scope changes before
+  it adopts (the login check's "Serve locally only") is planned again for that
+  scope, and the same model is adopted from the new plan.
 - **Forwarded choices:** a choice the other Mac forwards to the control leader
   (`ClusterControlRequest`: op, index, model and scope) carries no mode, so it
   is placed in the planner's family; the mode is chosen on the leading Mac.

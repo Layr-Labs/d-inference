@@ -120,6 +120,8 @@ import Darwin
         offeredPairThatTheCoordinatorRefusesSaysWhy()
         failedRestartAfterTheRegistrationIsNotDone()
         missingLoginIsSaidBeforeTheStart()
+        theDevNetAppNamesItsOwnCommand()
+        aLoginCheckThatTurnsLocalAdoptsTheLocalPlan()
         offeredPairServesOnceLoaded()
         pairReportsAndReasonsInPlainWords()
         // The end user's call (Dylan, 2026-11-03): a clear outcome, a sense of time, the reason with its time.
@@ -2790,6 +2792,45 @@ import Darwin
 
     /// (c) Serving through Darkbloom needs both Macs logged in: a Mac without a login is named before the Start step
     /// starts anything, with `darkbloom login` or local-only serving offered.
+    /// The 0.10.8 candidate on pair-2 (c3, B14): "Serve locally only" at the first setup's login check started the plan
+    /// made for serving through Darkbloom, so Qwen tensor parallel ran without its assistant (15.7 tok/s against 36–39
+    /// with its local plan). The list is planned for the scope the start names; a login check that turns it local plans
+    /// again for local and adopts that model from the new plan, before anything starts.
+    static func aLoginCheckThatTurnsLocalAdoptsTheLocalPlan() {
+        let both = [ClusterOnboardingMacName.this, ClusterOnboardingMacName.other(named: "Apple M3 Ultra, 256 GB")]
+        let recorder = Recorder()
+        var made = operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [],
+            pairResult: .failed([]), choices: switchChoices, replanned: [switchChoices[1], switchChoices[0]],
+            readyResult: .success(localReady), missingLogins: both)
+        made.planScope = { recorder.note("planScope " + ($0.isLocalOnly ? "local" : "public")) }
+        let run = TerminalRun(made)
+        expect(run.waitFor(prompt(2)), "B14: the list"); run.type("\r")
+        expect(run.waitFor("  1) Log in on this Mac\n  2) Serve locally only\n  3) Cancel\n"), "B14: the login check"); run.type("2")
+        _ = run.finish()
+        let calls = recorder.all
+        func at(_ call: String) -> Int { calls.firstIndex(of: call) ?? Int.max }
+        let plans = calls.indices.filter { calls[$0] == "planModels" }
+        expect(plans.count == 2 && at("planScope local") < plans[1] && plans[1] < at("adopt 1") && !calls.contains("adopt 0")
+               && calls.contains { $0.hasPrefix("setScope") }, "B14: planned again for local, and that plan's Qwen adopted: \(calls)")
+        transcript("leader-login-check-local-plans-again", run.text, keys: run.keys)
+    }
+
+    /// The 0.10.8 candidate on pair-2 (c3, B13): the DevNet app's cluster screens told the person to run `darkbloom …`,
+    /// which on a Mac with both apps is the production command. Every command the screens print names the running
+    /// identity's command.
+    static func theDevNetAppNamesItsOwnCommand() {
+        ClusterOnboardingCommand.use("darkbloom-dev")
+        defer { ClusterOnboardingCommand.use("darkbloom") }
+        let run = TerminalRun(operations(Recorder(), pairEvents: leaderEvents, pairResult: .paired(role: .leader, peerName: "Apple M3 Ultra, 256 GB")))
+        expect(run.waitFor(codeQuestion), "dev: the code"); run.type("y")
+        expect(run.waitFor(prompt(2), count: 2), "dev: the list"); run.type("\r")
+        expect(run.finish() == 0, "dev: served")
+        let text = run.text
+        expect(text.contains("  darkbloom-dev stop     Stop both Macs\n") && text.contains("`darkbloom-dev cluster`")
+               && !text.contains("`darkbloom ") && !text.contains("  darkbloom stop"), "dev: its own command everywhere: \(text)")
+        transcript("leader-devnet-commands", text, keys: run.keys)
+    }
+
     static func missingLoginIsSaidBeforeTheStart() {
         let both = [ClusterOnboardingMacName.this, ClusterOnboardingMacName.other(named: "Apple M3 Ultra, 256 GB")]
         let recorder = Recorder()

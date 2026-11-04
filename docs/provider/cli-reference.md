@@ -681,6 +681,9 @@ started or changed; on the Mac that follows, the leading Mac is asked over the
 cable. The state and reasons are the status lines `darkbloom cluster` shows
 (`ClusterOnboardingNotServing`), read as the other Mac's window reads them.
 
+The commands these messages name are this build's own: the DevNet app's `status`, `stop`,
+`start` and `restart` say `darkbloom-dev …`, never the production `darkbloom`.
+
 ```bash
 darkbloom cluster status [--json] [--details] [--config <path>]
 ```

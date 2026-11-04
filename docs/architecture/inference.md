@@ -3759,6 +3759,10 @@ away; mixed pairs are first-class).
   records of this model on these Macs (`ClusterServedSpeedRecords.servedBy`), as
   the planner reads them: a figure from 3 served requests on. Never a
   prediction; without one the screen says "not measured on these Macs yet".
+- **Start again:** a stopped pair's **Start <model> again** names its last model
+  (`chooseAndServe`'s named path, no list) and keeps the mode the saved setup
+  served in when the plan still lists it (`keepMode`, from
+  `ClusterOnboardingResume.servingMode`).
 - **Default:** the fastest measured family, else the planner's
   (`ClusterOnboardingMode.defaultIndex`).
 - **The person's choice:** `useMode` keeps the family for the next adopt of that

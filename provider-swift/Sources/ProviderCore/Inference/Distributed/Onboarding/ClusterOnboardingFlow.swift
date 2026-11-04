@@ -1567,7 +1567,7 @@ public enum ClusterOnboardingDriver {
     }
 
     /// One thing the leader's menu does.
-    enum MenuItem { case fixPort, test, model, scope, stop, verify, startOver, quit }
+    enum MenuItem { case fixPort, startAgain, test, model, scope, stop, verify, startOver, quit }
 
     /// The status, then one choice from a list. `darkbloom cluster local` comes here asking for local-only serving: a
     /// cluster that is not serving (or asked for a model by name) goes to the choice and starts that way; a serving
@@ -1578,7 +1578,8 @@ public enum ClusterOnboardingDriver {
         if let wanted = request.scope {
             if request.model != nil || !resume.serving {
                 return chooseAndServe(operations, console, scope: wanted, saveScope: true, model: request.model,
-                                      privateImage: request.privateImageQualification, startOverRequest: request)
+                                      privateImage: request.privateImageQualification, startOverRequest: request,
+                                      heading: request.model == nil ? "Choose a model" : startHeading)
             }
             if wanted != resume.scope { return changeScope(to: wanted, resume, startOverRequest: request, operations, console) }
         }
@@ -1596,6 +1597,10 @@ public enum ClusterOnboardingDriver {
         // One line per item, saying what it does (owner, 2026-11-04); a running model's own items only while it serves,
         // and the memory check once it stopped (F9).
         let current = resume.modelTitle ?? resume.modelName ?? "the model"
+        // A stopped pair starts its last model again first (UX audit P1: the returning user's "How do I start it again?").
+        if !resume.serving, resume.modelName != nil {
+            items.append((.startAgain, menuLine("Start \(current) again", "both Macs load it again (a few minutes for a large model)")))
+        }
         items.append((.model, resume.serving ? menuLine("Change model", "stop \(current) and load another (you confirm first)")
                                              : menuLine("Choose a model", "load a model on both Macs")))
         if resume.serving {
@@ -1614,12 +1619,24 @@ public enum ClusterOnboardingDriver {
         switch items[index].0 {
         case .quit: return 0
         case .test: return test(operations, console) ? 0 : 1
+        case .startAgain:
+            return chooseAndServe(operations, console, scope: resume.scope, model: resume.modelName, privateImage: request.privateImageQualification,
+                                  startOverRequest: request, keepMode: resume.servingMode, heading: startHeading)
         case .model: return chooseAndServe(operations, console, scope: resume.scope, privateImage: request.privateImageQualification,
-                                           startOverRequest: request, serving: resume.serving ? resume : nil)
+                                           startOverRequest: request, serving: resume.serving ? resume : nil,
+                                           heading: resume.serving ? "Change model" : "Choose a model")
         case .scope:
             return changeScope(to: resume.scope.isLocalOnly ? .publicServing : .localOnly(bind: ClusterServingScope.localOnlyDefaultBind),
                                resume, startOverRequest: request, operations, console)
         case .stop:
+            // A pair served through Darkbloom asks once (UX audit P5), No by default.
+            if !resume.scope.isLocalOnly {
+                console.say("  Stop serving \(current) on both Macs?")
+                guard console.choose(["Yes, stop", "No"], selected: 1) == 0 else {
+                    console.say("Nothing changed: \(current) keeps serving.")
+                    return 0
+                }
+            }
             switch busy(console, "Stopping both Macs", operations.stop) {
             case .success(let lines):
                 for line in lines { console.say(line) }
@@ -1646,6 +1663,9 @@ public enum ClusterOnboardingDriver {
         case .startOver: return startOver(operations, console, request: request)
         }
     }
+
+    /// The start's heading outside the first setup (UX audit P6: "1/4 … 4/4" only in the first setup).
+    static let startHeading = "Start"
 
     /// The cable moved to a port that was never set up (the Macs cannot reach each other there), and the one item that
     /// sets it up (macOS asks for the password).
@@ -1676,6 +1696,11 @@ public enum ClusterOnboardingDriver {
     /// menu's (its Mac was paired before this run), for the outcome's Change model.
     static func changeScope(to wanted: ClusterServingScope, _ resume: ClusterOnboardingResume, startOverRequest: ClusterOnboardingRequest?,
                             _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
+        // Both logins are checked before the working local API stops (UX audit P8a: it stopped, then said "not logged in").
+        if !wanted.isLocalOnly, checkLogins(scope: wanted, operations, console) != wanted {
+            console.say(resume.serving ? "Nothing changed: the pair keeps serving locally only." : "Nothing changed.")
+            return 0
+        }
         switch busy(console, wanted.isLocalOnly ? "Switching to local only" : "Switching to serving through Darkbloom", { operations.setScope(wanted) }) {
         case .success: break
         case .failure(let failure):
@@ -1683,16 +1708,28 @@ public enum ClusterOnboardingDriver {
             console.say("Nothing changed.")
             return 1
         }
-        console.say(wanted.line + ".")
         guard resume.serving else {
-            console.say("Takes effect at the next start.")
-            return 0
+            guard let model = resume.modelName else {
+                console.say(wanted.line + ".")
+                console.say("Takes effect at the next start.")
+                return 0
+            }
+            // A stopped pair is offered its start that way (UX audit P1); Not now keeps the setting for its next start.
+            let title = resume.modelTitle ?? model, how = wanted.isLocalOnly ? "locally only" : "through Darkbloom"
+            console.say("  Start \(title) now, \(how)?")
+            guard console.choose(["Yes, start now", "Not now"], selected: 0) == 0 else {
+                console.say("Saved: the pair serves \(how) from its next start. To start it then, run `darkbloom cluster` and choose Start \(title) again.")
+                return 0
+            }
+            return chooseAndServe(operations, console, scope: wanted, model: model, startOverRequest: startOverRequest,
+                                  keepMode: resume.servingMode, heading: startHeading)
         }
+        console.say(wanted.line + ".")
         // The same truth as the start (2026-11-04: from the menu, a pair only registered with the coordinator was
         // called serving): ✓ once the pair serves and a request answered, else ✗ with the reason and the choices.
         // Registering with the coordinator stays the start's: the cluster service asks again by itself.
-        return finishStart(title: resume.modelName ?? "the model", scope: wanted, registers: false, startOverRequest: startOverRequest,
-                           operations, console)
+        return finishStart(title: resume.modelTitle ?? resume.modelName ?? "the model", scope: wanted, registers: false,
+                           startOverRequest: startOverRequest, operations, console)
     }
 
     /// Each reason once, where it first appears.
@@ -1704,12 +1741,14 @@ public enum ClusterOnboardingDriver {
     /// The choice, then the start. `scope` is how it will serve; `saveScope` saves it on the control leader first
     /// (`darkbloom cluster local`); `model` names the choice so the list is not asked; `privateImage`: a private image
     /// candidate, which never takes public traffic. `startOverRequest`: on a Mac paired before this run, the request
-    /// Start over runs with when the other Mac does not answer; nil right after pairing.
+    /// Start over runs with when the other Mac does not answer; nil right after pairing. `keepMode`: the mode a model
+    /// started again served in, kept when listed. `heading`: nil in the first setup (its numbered steps); on a paired
+    /// Mac, the menu item's name for the choice and then "Start", or "Start" alone for a model started again (UX audit P6).
     static func chooseAndServe(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole,
                                scope: ClusterServingScope = .publicServing, saveScope: Bool = false, model: String? = nil,
                                privateImage: Bool = false, startOverRequest: ClusterOnboardingRequest? = nil,
-                               serving: ClusterOnboardingResume? = nil) -> Int32 {
-        console.heading("3/4 Model")
+                               serving: ClusterOnboardingResume? = nil, keepMode: String? = nil, heading: String? = nil) -> Int32 {
+        console.heading(heading ?? "3/4 Model")
         var reached: [ClusterOnboardingMachine]?
         while reached == nil {
             switch readBothMacs(operations, console) {
@@ -1786,7 +1825,9 @@ public enum ClusterOnboardingDriver {
         var choice = choices[chosen!]
         // How both Macs split it, when it runs more than one way here: the fastest measured on this pair first, the
         // other one keypress away (owner, 2026-11-04). A model named on the command line takes the default.
-        var mode = choice.modes.flatMap { $0.isEmpty ? nil : $0[ClusterOnboardingMode.defaultIndex($0)].mode }
+        var mode = choice.modes.flatMap { modes in
+            modes.first { $0.mode == keepMode }?.mode ?? (modes.isEmpty ? nil : modes[ClusterOnboardingMode.defaultIndex(modes)].mode)
+        }
         if model == nil, let modes = choice.modes, modes.count > 1 {
             console.say("  " + modeQuestion(model: choice.title))
             guard let picked = console.choose(modes.map(modeLine), selected: ClusterOnboardingMode.defaultIndex(modes)) else {
@@ -1848,7 +1889,7 @@ public enum ClusterOnboardingDriver {
             return 0
         }
         let savesScope = saveScope || startScope != scope
-        console.heading("4/4 Start")
+        if heading != startHeading { console.heading(heading == nil ? "4/4 Start" : startHeading) }
         console.say("  " + startNotice)
         // Memory moves while the person reads: the fit is checked again right before anything starts.
         if let remedy = operations.recheckFit(chosen!) {
@@ -1935,7 +1976,7 @@ public enum ClusterOnboardingDriver {
             case .notServing(let lines):
                 switch notServing(lines, operations, console) {
                 case .retry: continue
-                case .changeModel: return chooseAndServe(operations, console, scope: scope, startOverRequest: startOverRequest)
+                case .changeModel: return chooseAndServe(operations, console, scope: scope, startOverRequest: startOverRequest, heading: "Change model")
                 case .localOnly:
                     let local = ClusterServingScope.localOnly(bind: ClusterServingScope.localOnlyDefaultBind)
                     switch busy(console, "Switching to local only", { operations.setScope(local) }) {

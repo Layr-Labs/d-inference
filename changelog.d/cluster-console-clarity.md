@@ -14,3 +14,8 @@
 - The Mac that follows says that its part runs by itself and which command to
   run on the leading Mac.
 - A fresh setup opens with what it will ask and how long it takes.
+- A stopped pair offers **Start <model> again** first: the last model, in the mode it served in, without the list.
+  Switching how a stopped pair serves offers to start it that way.
+- **Serve through Darkbloom** checks both Macs' logins before the local API stops; **Stop serving** asks once on a pair
+  served through Darkbloom.
+- Outside the first setup the steps say **Change model** (or **Choose a model**) and **Start**, not "3/4" and "4/4".

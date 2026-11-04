@@ -159,17 +159,20 @@ what it does:
 
 | Item | What it does |
 |---|---|
+| **Start <model> again** (stopped, after a model served) | Loads the last model on both Macs again, in the mode it served in, without the list |
 | **Change model** (**Choose a model** when stopped) | Stops the model that serves and loads another, after one question ("Switch to Gemma 4 26B? Qwen 3.8 27B stops serving on both Macs while Gemma 4 26B loads …", **No** by default) |
 | **Test a response** (serving) | One request through both Macs |
-| **Stop serving** (serving) | Both Macs free their memory |
-| **Serve locally only** or **Serve through Darkbloom** | Switches how the pair serves |
+| **Stop serving** (serving) | Both Macs free their memory; a pair served through Darkbloom asks first ("Stop serving Qwen 3.8 27B on both Macs?", **No** by default) |
+| **Serve locally only** or **Serve through Darkbloom** | Switches how the pair serves. Serving through Darkbloom checks both Macs' logins first, before the local API stops. On a stopped pair it saves the choice and asks "Start Qwen 3.8 27B now, locally only?" (**Yes, start now** or **Not now**) |
 | **Check memory is freed** (stopped) | Confirms both Macs released the model's memory |
 | **Start over** | Unpairs this Mac and pairs again, after one question ([pairing again](#pairing-again)) |
 | **Quit** | Changes nothing |
 
 **Set up the cable port** comes first when the cable moved to a port not set
 up yet; set up, the same run goes on to the list
-([below](#when-something-is-in-the-way)).
+([below](#when-something-is-in-the-way)). Outside the first setup the steps
+are headed by the item chosen (**Change model** or **Choose a model**) and
+**Start**; the numbered "1/4 … 4/4" steps are the first setup's only.
 
 The model list marks the model serving now, and gives each model's modes with
 the decode speed this pair served it at (`ClusterServedModes`: at least 3 served

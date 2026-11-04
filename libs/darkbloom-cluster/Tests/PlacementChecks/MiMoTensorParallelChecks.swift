@@ -34,12 +34,12 @@ func checkMiMoTensorParallel(golden: URL, _ checks: PlacementChecks) throws {
 /// depth 2 and 512-token chunks (438,426,984 bytes) and the window's rows (36,347,904), both pinned by
 /// `MiMoTensorParallelSpeculativeTests`. The product prices it at the allocator's bound, a few pages more
 /// (`placementQuotesWhatTheLoadGateChargesWithRounds`); its drafter half needs the SDK these checks do not compile.
-private let mimoSpeculativeRequestBytes = 438_426_984 + 36_347_904
+let mimoSpeculativeRequestBytes = 438_426_984 + 36_347_904
 
 /// The layout as the product prices it (`MiMoTensorParallelResidentRuntime.placementRounds`): MiMo tensor
 /// parallel decodes in speculative rounds by default (`ClusterMiMoTensorParallel`), so its plan holds the three
 /// heads whole on every rank and its reserve carries each request's speculative charge, with no speed-up credited.
-private func mimoWithRounds(_ layout: ClusterModelLayout, configuration: Data,
+func mimoWithRounds(_ layout: ClusterModelLayout, configuration: Data,
                             allocationBound: @escaping (Int) throws -> Int) throws -> ClusterModelLayout {
     guard let tp = layout.tensorParallel else { throw ProbeError("the MiMo layout carries no tensor-parallel plan") }
     let budget = try MiMoTensorParallelRequestBudget.derive(plan: MiMoTensorParallelPlan(configuration: configuration),

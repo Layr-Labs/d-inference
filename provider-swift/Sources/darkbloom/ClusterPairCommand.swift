@@ -58,29 +58,25 @@ extension Cluster {
             do {
                 if status { print(try ClusterPairCommandLine.status(json: json)); return }
                 if let forget {
-                    // The leader tells its member first, while the pairing still keys the link:
-                    // the member reclaims the pair's prefix-tier records (its single-Mac cache stays).
-                    if let line = ClusterService.tellMemberOfUnpair(peerPin: forget) { print(line) }
-                    print(try ClusterPairCommandLine.forget(pin: forget))
-                    // Unpaired: this Mac's cluster service has nobody to answer, so it no
-                    // longer starts at login (`darkbloom cluster` pairs and installs it again).
-                    if ClusterService.holdsNoPairing() {
-                        do {
-                            if !(try ClusterService.removeFromLogin(executable: URL(fileURLWithPath: Start.currentExecutablePath()))).isEmpty {
-                                print("This Mac's cluster service is stopped and no longer starts at login.")
-                            }
-                        } catch { printError("note: this Mac's cluster service could not be removed from login: \(error)") }
-                    }
-                    // No rank of this Mac will open the pair's prefix records
-                    // again: reclaim them here (the peer reclaims its own when
-                    // it unpairs; a live rank's plan is left alone).
-                    if let settings = try? ClusterPrefixCacheSettings.resolved(providerConfiguration: ConfigManager.defaultConfigPath()) {
-                        let report = ClusterPrefixSSDReclaim.reclaim(root: settings.root)
-                        if report.removedPlans > 0 || report.keptLive > 0 || !report.problems.isEmpty {
-                            print("Cluster prefix tier: removed \(report.removedPlans) plan\(report.removedPlans == 1 ? "" : "s")"
-                                + (report.keptLive > 0 ? ", \(report.keptLive) in use by a running rank (kept)" : "")
-                                + (report.problems.isEmpty ? "" : "; " + report.problems.joined(separator: "; ")) + ".")
+                    // `ClusterUnpairing` takes the steps, in their order, shared with `darkbloom cluster`'s Pair
+                    // again; this command prints what each step did, the unpairing before the service leaves login.
+                    let outcome: ClusterUnpairing.Outcome
+                    do {
+                        outcome = try ClusterUnpairing.run(peerPin: forget, executable: URL(fileURLWithPath: Start.currentExecutablePath()),
+                                                           providerConfiguration: try? ConfigManager.defaultConfigPath()) { removed, memberLine in
+                            if let memberLine { print(memberLine) }
+                            print(ClusterPairCommandLine.forgotten(removed))
                         }
+                    } catch let failure as ClusterUnpairing.Failure {
+                        if let line = failure.memberLine { print(line) }
+                        throw ValidationError(failure.description)
+                    }
+                    if outcome.serviceRemoved { print("This Mac's cluster service is stopped and no longer starts at login.") }
+                    if let problem = outcome.serviceProblem { printError("note: this Mac's cluster service could not be removed from login: \(problem)") }
+                    if let report = outcome.reclaim, report.removedPlans > 0 || report.keptLive > 0 || !report.problems.isEmpty {
+                        print("Cluster prefix tier: removed \(report.removedPlans) plan\(report.removedPlans == 1 ? "" : "s")"
+                            + (report.keptLive > 0 ? ", \(report.keptLive) in use by a running rank (kept)" : "")
+                            + (report.problems.isEmpty ? "" : "; " + report.problems.joined(separator: "; ")) + ".")
                     }
                     return
                 }

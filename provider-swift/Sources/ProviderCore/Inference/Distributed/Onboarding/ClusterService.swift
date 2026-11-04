@@ -79,6 +79,9 @@ public final class ClusterService: @unchecked Sendable {
     private let beforePartStart: (@Sendable () -> Void)?
     /// The environment this Mac's parts start from (`partEnvironment`); nil: this process's own at each start.
     private let environment: [String: String]?
+    /// The name of this service's power assertions. macOS lists a process's assertions together, so a check that
+    /// runs several services in one process gives each a name of its own.
+    private let powerAssertionReason: String
     /// Main supervision thread only; a pending stop cannot be acknowledged by
     /// a cycle that read the preceding serving intent.
     private var supervisedStopDrainID: UUID?
@@ -164,10 +167,12 @@ public final class ClusterService: @unchecked Sendable {
     }
 
     /// Internal composition of the service's existing stores. Public callers keep the canonical user namespace,
-    /// the normal recovery deadline, the one-second supervision interval and the cable's listeners.
+    /// the normal recovery deadline, the one-second supervision interval, the cable's listeners and the power
+    /// assertions' name.
     init(settings: Settings, paths: ClusterUserPaths, recoveryGraceSeconds: Double = 300,
          supervisionIntervalSeconds: Double = 1, beforePartStart: (@Sendable () -> Void)? = nil,
-         environment: [String: String]? = nil, listening: Listening = .init()) {
+         environment: [String: String]? = nil, listening: Listening = .init(),
+         powerAssertionReason: String = ClusterServicePowerAssertions.servingReason) {
         precondition(recoveryGraceSeconds.isFinite && recoveryGraceSeconds >= 0)
         precondition(supervisionIntervalSeconds.isFinite && supervisionIntervalSeconds > 0)
         self.recoveryGraceSeconds = recoveryGraceSeconds
@@ -175,6 +180,7 @@ public final class ClusterService: @unchecked Sendable {
         self.beforePartStart = beforePartStart
         self.environment = environment
         self.listening = listening
+        self.powerAssertionReason = powerAssertionReason
         pairingStore = .default(home: paths.homeDirectory)
         var wizard = settings.wizard
         wizard.derivedPlacement = true
@@ -265,7 +271,7 @@ public final class ClusterService: @unchecked Sendable {
 
     /// Runs until `stop` is signalled; returns false when a rank had to be left running.
     public func run(stop: DispatchSemaphore, say: @escaping @Sendable (String) -> Void) throws -> Bool {
-        let power = ClusterServicePowerAssertions()
+        let power = ClusterServicePowerAssertions(reason: powerAssertionReason)
         defer { power.release() }
         let files = serviceFiles
         try ClusterConfigurationFiles.ensureDirectory(files.lock.deletingLastPathComponent(), create: true, privateMode: true)
@@ -988,7 +994,7 @@ public final class ClusterService: @unchecked Sendable {
                     startedAt: child?.isRunning == true ? childStartedAt : oldPart?.startedAt,
                     solo: child?.isRunning == true ? childSetup?.hasPrefix("solo:") == true : oldPart?.solo,
                     notice: oldPart != nil ? "the previous run's part is still releasing; waiting before starting another"
-                        : child?.isRunning == true && childSetup?.hasPrefix("solo:") != true ? Self.servingNotice(in: serviceFiles.rankLog) : nil,
+                        : child?.isRunning == true && childSetup?.hasPrefix("solo:") != true ? Self.servingNotice(in: serviceFiles.rankLog, from: childLogOffset) : nil,
                     configurationSHA256: child?.isRunning == true && childSetup?.hasPrefix("cluster:") == true
                         ? String(childSetup!.dropFirst("cluster:".count).prefix(64)) : nil),
                 session: session,
@@ -999,6 +1005,13 @@ public final class ClusterService: @unchecked Sendable {
                 control: controlStatusLocked(model: record?.leadership?.modelName), servicePID: getpid())
             value.updating = updatingLine
             value.localOnly = record?.leadership.map { $0.scope.isLocalOnly }
+            value.loggedIn = AuthTokenStore.load() != nil
+            if child?.isRunning == true, childIsMember {
+                value.child.pair = Self.pairReport(in: serviceFiles.rankLog, from: childLogOffset).map(ClusterOnboardingPairReport.text)
+                let state = DaemonStateFile.read()
+                value.child.appAttest = Self.memberAppAttest(pid: child?.processIdentifier, state: state)
+                value.child.appAttestRetryAt = Self.memberAppAttestRetryAt(pid: child?.processIdentifier, state: state)
+            }
             value.memberQuickEnds = memberQuickEnds
             value.approvalID = configuration?.nativeMember?.clusterApproval?.id ?? ""
             value.pairUpdate = ClusterPairUpdate.readProgress(from: ClusterServiceAgent.updateProgressPath(serviceDirectory: store.paths.directory))
@@ -1230,17 +1243,38 @@ public final class ClusterService: @unchecked Sendable {
         return ClusterConsoleText.plain(ClusterConsoleText.bounded(String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces), maximum: 240))
     }
 
+    /// The latest pair line (`ClusterOnboardingPairReport`) the running coordinator-paired part wrote in `log` since
+    /// `offset`, where it began writing: a line an earlier part wrote is never this part's.
+    /// The line is written once per change and every request adds a line after it, so it is read backwards from the end
+    /// (`ClusterLogScan`), not from a fixed tail.
+    static func pairReport(in log: URL, from offset: UInt64) -> ClusterOnboardingPairReport.State? {
+        ClusterOnboardingPairReport.latest(inLogFile: log, from: offset)
+    }
+
+    /// Whether the coordinator's latest trust status for the running coordinator-paired part (`pid`, the process that
+    /// wrote the daemon state) carries a current App Attest serving authorization; nil when it has sent none yet.
+    static func memberAppAttest(pid: Int32?, state: DaemonState? = DaemonStateFile.read(), now: Double = Date().timeIntervalSince1970) -> Bool? {
+        guard let pid, let state, state.pid == pid, let trust = state.trust else { return nil }
+        return trust.authorization?.hasCurrentAppAttestAuthorization(now: now) ?? false
+    }
+
+    /// When the running coordinator-paired part (`pid`) may make a new App Attest key again: its local key-generation
+    /// safeguard as its daemon state last reported it (read only); nil when nothing blocks it or nothing is known.
+    static func memberAppAttestRetryAt(pid: Int32?, state: DaemonState?, now: Double = Date().timeIntervalSince1970) -> Double? {
+        guard let pid, let state, state.pid == pid, let until = state.appAttest?.key?.generationBlockedUntil, until > now else { return nil }
+        return until
+    }
+
     /// `ClusterLocalServing.notice` when this Mac's running part (rank 0) said it serves on its local API only.
     public static func servingNotice() -> String? {
         (try? paths().rankLog).flatMap { servingNotice(in: $0) }
     }
 
-    private static func servingNotice(in log: URL) -> String? {
-        guard let handle = FileHandle(forReadingAtPath: log.path) else { return nil }
-        defer { try? handle.close() }
-        let size = (try? handle.seekToEnd()) ?? 0
-        try? handle.seek(toOffset: size > 16_384 ? size - 16_384 : 0)
-        return ClusterLocalServing.notice(inLog: String(decoding: handle.readDataToEndOfFile(), as: UTF8.self))
+    /// The same notice in `log` from `offset` on (where the running part began writing): a part writes it once its API
+    /// listens and every request adds a line after it, so it is read backwards from the end (`ClusterLogScan`).
+    static func servingNotice(in log: URL, from offset: UInt64 = 0) -> String? {
+        ClusterLogScan.lastLine(in: log, from: offset) { $0.hasPrefix(ClusterLocalServing.logPrefix) }
+            .flatMap { ClusterLocalServing.notice(inLog: String($0)) }
     }
 
     /// Private local acknowledgement; only the supervision loop can advance
@@ -1491,11 +1525,14 @@ public final class ClusterService: @unchecked Sendable {
         }
         // A cluster part starting again clears the solo record: the next time this Mac is left alone it may try again.
         if case .cluster = want { lock.withLock { soloQuickEnds = nil } }
-        // The model's own pages stay in, and are read into, the file cache while the part starts: the load gate
-        // counts all of it as available (58d7371a), and the rank's load reads cached pages at memory speed instead of
-        // from the SSD (GLM tensor parallel: 101 GB/s against 14 GB/s on an M5 Ultra), most of a restart's time.
+        // The model's own pages leave the file cache before the part starts, so its load reads them from the SSD into
+        // free pages. A load into a cache full of its own model makes macOS compress other memory to free that cache
+        // page by page; past the load gate's compression guard (512 MiB) the gate counts no cache and refuses, and a
+        // restart that read the model back in was refused again (MiMo on two 128 GB Macs, 680 of 680 starts,
+        // 2026-11-01). The worker's hashing and loads read uncached and add none back, except GLM's tensor-parallel
+        // load, which reads through the cache on purpose.
         if case .cluster = want, let configuration = saved.configuration, configuration.peers.indices.contains(configuration.localRank) {
-            ClusterModelStore.prefetchPagesInBackground(folder: URL(fileURLWithPath: configuration.peers[configuration.localRank].modelDirectory))
+            ClusterModelStore.dropCachedPages(folder: URL(fileURLWithPath: configuration.peers[configuration.localRank].modelDirectory))
         }
         let process = Process()
         process.executableURL = settings.wizard.darkbloomExecutable

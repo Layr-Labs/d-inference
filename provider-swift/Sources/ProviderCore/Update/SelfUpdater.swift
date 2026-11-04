@@ -67,6 +67,10 @@ public struct SelfUpdater: Sendable {
     /// constructs; production always uses the no-op default.
     private let recoveryFaultInjector:
         @Sendable (UpdateRecoveryStore.FaultPoint) throws -> Void
+    /// Test seam that observes the LaunchServices re-registration after a swap.
+    /// Nil in production, where only the signature-verified path registers, so
+    /// tests never write the machine's LaunchServices database.
+    private let installedAppRegistrar: (@Sendable (URL) -> Void)?
 
     /// Whether this updater verifies the pinned Darkbloom code signature on
     /// staged/committed/installed artifacts. Always `true` for the public
@@ -123,7 +127,8 @@ public struct SelfUpdater: Sendable {
             Date().timeIntervalSince1970
         },
         recoveryFaultInjector:
-            @escaping @Sendable (UpdateRecoveryStore.FaultPoint) throws -> Void = { _ in }
+            @escaping @Sendable (UpdateRecoveryStore.FaultPoint) throws -> Void = { _ in },
+        installedAppRegistrar: (@Sendable (URL) -> Void)? = nil
     ) {
         // Convert WebSocket URL to HTTP if needed
         var base = WebSocketURLScheme.toHTTP(coordinatorBaseURL)
@@ -139,6 +144,7 @@ public struct SelfUpdater: Sendable {
         self.urlSession = urlSession
         self.now = now
         self.recoveryFaultInjector = recoveryFaultInjector
+        self.installedAppRegistrar = installedAppRegistrar
     }
 
     // MARK: - Version Check
@@ -173,8 +179,12 @@ public struct SelfUpdater: Sendable {
             processVersion: currentVersion,
             recorded: recoveryState.current?.version
         )
+        // Installed, not yet running. A candidate older than this process is not
+        // pending: the app was replaced outside the updater, so nothing restarts
+        // into it, and it never makes the running release an update target.
         let pendingCandidate = recoveryState.candidate.flatMap {
-            $0.release.version != currentVersion ? $0 : nil
+            ($0.release.version == currentVersion
+                || isNewer(latest: currentVersion, current: $0.release.version)) ? nil : $0
         }
         func restartPendingCandidate(
             _ candidate: PendingReleaseCandidate
@@ -222,7 +232,8 @@ public struct SelfUpdater: Sendable {
                isNewer(
                 latest: release.version,
                 current: pendingCandidate.release.version
-               )
+               ),
+               isNewer(latest: release.version, current: installedVersion)
             {
                 return .updateAvailable(current: installedVersion, latest: release)
             }
@@ -622,9 +633,24 @@ public struct SelfUpdater: Sendable {
                 currentVersion: currentVersion,
                 now: now()
             )
+            registerInstalledApp(
+                session.store.installRoot.appendingPathComponent(BuildEnvironment.current.appBundleName),
+                verified: session.store.verifyCodeSignatures)
             return .success(())
         } catch {
             return .failure(.replaceFailed("\(error)"))
+        }
+    }
+
+    /// The swap leaves macOS LaunchServices describing the previous bundle,
+    /// and App Attest reports `is_supported_false` until it is refreshed.
+    /// Registering the new bundle before the relaunch keeps the record current.
+    /// Best effort: a failed registration never fails the update.
+    private func registerInstalledApp(_ app: URL, verified: Bool) {
+        if let installedAppRegistrar {
+            installedAppRegistrar(app)
+        } else if verified {
+            LaunchServicesRegistration.refresh(app)
         }
     }
 

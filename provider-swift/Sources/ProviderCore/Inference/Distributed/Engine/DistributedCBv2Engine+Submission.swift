@@ -81,7 +81,8 @@ extension DistributedCBv2Engine {
                 return .deadlineUnreachable(projectedWork: projected)
             }
             if cancellation.isCancelled || Task.isCancelled {
-                onQueue { stop(admitted.state, reason: .cancelled) }
+                let state = admitted.state
+                onQueueWithoutWaiting { [self] in stop(state, reason: .cancelled) }
                 throw CBv2FirstTokenAdmissionCancellation(
                     stream: admitted.stream, retirement: admitted.state.retirement)
             }

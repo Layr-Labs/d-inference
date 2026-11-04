@@ -33,6 +33,7 @@ struct DistributedHTTPRetirementTests {
         #expect(try await httpDeliveryEventually { entered.cancelCount == 1 })
         #expect(owner.last.send(.token(4))) // raw token does not acknowledge HTTP content
         control.expire(at: deadline)
+        engine.onQueue {} // a cancel is applied in queue order, after it returns
         #expect(owner.last.cancelCount == 1 && owner.last.releaseCount == 0 && control.terminal == nil)
         owner.last.acknowledge()
         await collecting.value

@@ -1298,8 +1298,14 @@ To take Darkbloom off a Mac altogether, see [Uninstall](#uninstall).
   stops first, from either Mac), and no Darkbloom service starts at login any more;
 - it forgets the pairing, as `darkbloom cluster pair --forget` (a leader tells
   the other Mac first, over the cable);
-- it undoes the cable port setup, as `darkbloom cluster link --remove` (one
-  approval).
+- it undoes the cable port setup, as `darkbloom cluster link --remove`: every
+  Thunderbolt port Darkbloom set up (its records, and a "Darkbloom Cluster Link
+  (enN)" service whose record is gone), under one macOS approval, never asking
+  which port. On each port it removes Darkbloom's service first and only then
+  puts the port back in its bridge, and it stops at the first command that
+  fails. If that step fails after the pairing was forgotten, the summary says
+  so, what is left, and the one command that finishes it: `darkbloom uninstall`
+  again (the app and the cable records are kept for that).
 
 **Keep models** keeps the models and the cluster model store, so after a
 reinstall `darkbloom cluster` pairs again and uses them without copying or

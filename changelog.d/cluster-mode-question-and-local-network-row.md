@@ -17,3 +17,8 @@
 - That recommendation is the question's first line and names the model, for example "Recommended for Gemma 4 26B on
   these two Macs: Tensor parallel", with the mode in bold in a colour terminal; in a narrow window the reason is
   shortened, never the names.
+- `darkbloom uninstall` and `darkbloom cluster link --remove` undo every Thunderbolt port Darkbloom set up under one
+  macOS approval, instead of stopping at "More than one port qualifies …; choose one". Each port's own network service
+  is removed before the port goes back into its bridge (it used to end up in both), the removal stops at the first
+  command that fails and says which ports are left, and an uninstall that already forgot the pairing says what is
+  left and that running `darkbloom uninstall` again finishes it.

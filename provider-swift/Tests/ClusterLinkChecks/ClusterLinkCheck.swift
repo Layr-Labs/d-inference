@@ -61,6 +61,7 @@ import Darwin
             ("isolation plans", isolationPlans),
             ("isolation fix outcomes", isolationFixOutcomes),
             ("isolation remove outcomes", isolationRemoveOutcomes),
+            ("isolation remove every port", isolationRemoveEveryPort),
             ("isolation record file", isolationRecordFile),
             ("isolation setup flow", isolationSetupFlow),
             ("isolation vocabulary", isolationVocabulary),

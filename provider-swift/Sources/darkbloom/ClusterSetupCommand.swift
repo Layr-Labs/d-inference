@@ -7,16 +7,19 @@ extension Cluster {
     /// setup only with the options that ask for it.
     struct Setup: AsyncParsableCommand {
         static let configuration = CommandConfiguration(commandName: "setup",
-            abstract: "Set up two or more Macs to serve one model together. Run it on each Mac and follow the screen.",
+            abstract: Cluster.abstract,
             discussion: """
                 Run `darkbloom cluster` in Terminal on each Mac (`darkbloom cluster setup` is the same). The first Mac \
-                checks its Thunderbolt cable and asks macOS for one approval, then says "On your other Mac, run \
-                `darkbloom cluster`". The other Mac finds it by itself; both show the same code; press y on each. \
+                checks its Thunderbolt cable, has you allow macOS's password and Local Network prompts, then says \
+                "Run `darkbloom cluster` on the other Mac." The other Mac finds it by itself; both show the same code; \
+                choose Yes on each. \
                 Then choose a model on the first Mac: Darkbloom works out how to split it across both Macs, copies \
                 it to a Mac that lacks it, starts both Macs and shows one line saying how the model is served. \
                 Nothing else is needed: no SSH, no address and no network setting is typed.
 
                 Run it again on any Mac to see the cluster, change the model or stop it.
+
+                \(Cluster.commandList)
                 """)
         @OptionGroup var configOptions: ConfigOptions
         @Flag(help: ArgumentHelp("Link setup only: print one JSON object at the end instead of a line per step.", visibility: .hidden))

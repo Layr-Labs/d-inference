@@ -10,6 +10,8 @@ enum Gemma4StageGeometry {
     static let slidingWindow = 1024
     static let slidingKVHeads = 8, slidingHeadDimension = 256
     static let fullKVHeads = 2, fullHeadDimension = 512
+    /// Every layer routes each token to 8 of its 128 experts.
+    static let routedExperts = 128, expertsPerToken = 8
     /// Five sliding-window layers, then one full-attention layer, five times.
     static let fullAttentionInterval = 6
     static let slidingKind = "sliding_attention", fullKind = "full_attention"
@@ -44,7 +46,8 @@ enum Gemma4StageGeometry {
             throw ProbeError("Gemma stage metadata requires the original text wrapper")
         }
         let integers = ["num_hidden_layers": layerCount, "hidden_size": hiddenSize, "vocab_size": vocabularySize,
-            "intermediate_size": 2112, "moe_intermediate_size": 704, "num_experts": 128, "top_k_experts": 8,
+            "intermediate_size": 2112, "moe_intermediate_size": 704, "num_experts": routedExperts,
+            "top_k_experts": expertsPerToken,
             "sliding_window": slidingWindow, "num_attention_heads": queryHeads,
             "num_key_value_heads": slidingKVHeads, "num_global_key_value_heads": fullKVHeads,
             "head_dim": slidingHeadDimension, "global_head_dim": fullHeadDimension,

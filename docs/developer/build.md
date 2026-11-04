@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-04
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -34,6 +34,12 @@ selected by `scripts/prepare-provider-release-toolchain.sh`. Do not substitute
 an arbitrary prebuilt metallib or infer GPU qualification from compilation.
 Keep separate worktrees/output directories for independent native builds;
 never share an active Swift scratch path or another suite's GPU reservation.
+
+After changing provider authorization summaries, rebuild the provider test
+product before running the [authorization guidance tests](test.md#provider-authorization-guidance).
+They exercise shared production decisions without invoking status/doctor's
+host probes or native Apple operations; signed-release qualification remains
+separate.
 
 ## Cluster metadata check builds
 
@@ -161,7 +167,11 @@ and linking on that SDK. Ordinary development retains the package's Swift 6.3
 minimum; release evidence must use the selected release toolchain.
 
 Pinned Python 3.12.10 and checksum-verified CMake 3.31.12 provide missing build
-tools. `scripts/prepare-metal-toolchain.py` requires a working compiler probe,
+tools. `scripts/install-release-cmake.sh` uses the CMake 3.31.12 that Darkbloom macOS
+images unpack from the same checksum-verified archive into
+`$RUNNER_TOOL_CACHE/cmake/3.31.12/universal`, when its `universal.complete`
+marker exists and the binary reports that exact version; elsewhere it
+downloads and verifies the 80 MB archive. `scripts/prepare-metal-toolchain.py` requires a working compiler probe,
 not merely a completed component download. It clears stale discovery state,
 waits boundedly for registration, and uses Apple's component export/import
 fallback. The specific transient asset-catalog download error gets at most
@@ -182,6 +192,12 @@ On the `dev` branch a plain `swift build` is a DevNet build:
 `https://api.dev.darkbloom.dev` and nothing else. On master the default is
 `prod`. Set `DARKBLOOM_RELEASE_ENVIRONMENT=prod` to build a production binary
 from the `dev` branch.
+
+CI enforces both defaults. The Release Integrity job runs
+`scripts/provider-build-default.py`: a pull request into master, or a push to
+master, fails unless the default is `prod`; one into or to `dev` fails unless
+it is `dev`. Every release of master runs the same check and stops before the
+build if the default is not `prod`.
 
 Use the `dev` branch to run a provider from source against the DevNet
 coordinator. A push to `dev` that changes the provider publishes the DevNet
@@ -237,13 +253,13 @@ see [resource and release tooling checks](test.md#focused-tooling-checks).
 Darkbloom Sandbox when its plane grants one, otherwise the job's Blacksmith
 fallback. It runs on GitHub-hosted `ubuntu-24.04` with no token permissions or
 checkout. Each routed job runs on `fromJSON(needs.route.outputs.routes)['<lane>']`,
-where the lane is the job's name; each provider shard reads its own lane,
-`format('test-provider-{0}', matrix.shard)`.
+where the lane is the job's name; each shard of a sharded job reads its own
+lane, `format('<job>-{0}', matrix.shard)`.
 
 | Workflow | Routed jobs | Fallback |
 |---|---|---|
 | `ci.yml` | `release-integrity`, `docs` | `blacksmith-4vcpu-ubuntu-2404` |
-| `ci.yml` | `test-provider` (lanes `test-provider-1` to `test-provider-5`, one per shard), `test-provider-summary`, `test-provider-sdk`, `test-cluster-checks` | `blacksmith-12vcpu-macos-27` |
+| `ci.yml` | `test-provider` (lanes `test-provider-1` to `test-provider-3`, one per shard), `test-provider-summary`, `test-provider-sdk`, `test-cluster-checks`, `test-cluster` (lanes `test-cluster-1` to `test-cluster-3`), `test-cluster-gpu` (lanes `test-cluster-gpu-1` and `test-cluster-gpu-2`), `test-cluster-focused` | `blacksmith-12vcpu-macos-27` |
 | `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
 | `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
 | `provider-release-cache.yml` | `warm`, pull requests only | `blacksmith-12vcpu-macos-27` |
@@ -257,13 +273,33 @@ most once after a transient failure. It uses a grant only when the grant
 repeats the exact Darkbloom labels for the job's profile. Errors, timeouts and
 malformed replies keep the fallback; the plane never fails the route job.
 Every job of a lane shares one `runs-on` value, so the plane grants a lane
-whole, for its requested job count, or not at all. Each provider shard is
-therefore a lane of its own and runs on a Darkbloom Mac whenever one is free,
-independently of the other shards.
-Release, signing, publication, model registration, review automation,
-`cache-swift` and `master` or dispatched cache warming keep literal Blacksmith
-labels. The component classifier and the `Provider Tests` gate run on
-`ubuntu-24.04`.
+whole, for its requested job count, or not at all. Each shard is therefore a
+lane of its own and runs on a Darkbloom Mac whenever one is free,
+independently of the other shards. The plane grants only the lanes its
+approval names; any other lane keeps its fallback.
+
+```mermaid
+flowchart LR
+  C["changes<br/>(classifier)"] --> Q{"routing on, same-repo<br/>run, lane count > 0?"}
+  Q -- no --> F["Blacksmith fallback<br/>(macOS: blacksmith-12vcpu-macos-27)"]
+  Q -- yes --> R["one POST /v1/ci/routes<br/>for all requested lanes"]
+  R --> P{"plane grants the lane<br/>with the exact labels?"}
+  P -->|"no, error or timeout"| F
+  P -- yes --> D["Darkbloom Sandbox<br/>(darkbloom-macos-arm64)"]
+  classDef dark fill:#d4f7dc,stroke:#1a7f37,color:#0b2e13
+  classDef fallback fill:#fff4ce,stroke:#9a6700,color:#3b2300
+  class D dark
+  class F fallback
+```
+
+A push run asks exactly as a same-repository pull request does; the request
+names only the repository, run and lanes, and the plane's approval decides
+which pushed branches it admits. Other branches get `branch_not_admitted` and
+keep their fallback, so a push saves caches on Darkbloom only from an admitted
+branch and only in routed lanes ([CI Caching](#ci-caching)).
+Release, signing, publication, model registration, review automation and
+`master` or dispatched cache warming keep literal Blacksmith labels. The
+component classifier and the `Provider Tests` gate run on `ubuntu-24.04`.
 
 Jobs on Darkbloom Sandboxes use GitHub's Actions cache, not Blacksmith's
 colocated cache, so their first runs start without cached build products.
@@ -271,6 +307,92 @@ Darkbloom Linux sandboxes are ARM64; the Blacksmith Linux fallback is x64. The
 decision is fixed for the run: **Re-run failed jobs** reuses it, so turn routing
 off and use **Re-run all jobs** to move a run back to Blacksmith. See the
 [routing checks](test.md#focused-tooling-checks).
+
+## CI Caching
+
+`.github/workflows/ci.yml` and `.github/actions/provider-ci-build/action.yml`
+restore caches in every run. Only pushes to `master` and `dev` save them, when
+the exact key missed: the workflow's `SAVE_CACHES` is
+`github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/dev')`,
+and `ci.yml` passes it to the composite action as `save-caches`. An entry saved
+by a pull request is scoped to its merge ref, so only that pull request could
+restore it, and it evicted its base branch's entries from the repository's
+10 GB quota. A pull request restores its base branch's newest compatible entry,
+then `master`'s. Blacksmith runners keep their own colocated cache, so an entry
+saved there never reaches a Darkbloom Sandbox, and the reverse: a push warms
+the caches of the runners it ran on.
+
+| Cache | Path | Key; restore prefixes | Saved by, on pushes to `master` and `dev` |
+|---|---|---|---|
+| Git objects | `.git` | `git-v1-<os>-<YYYY-MM-DD>`; `git-v1-<os>-<YYYY-MM>-`, then `git-v1-<os>-` | every job that checks out |
+| Full-history Git objects | `.git` | the same under `git-full-v1-`, so shallow jobs never restore it | `docs` |
+| SwiftPM repositories | `~/Library/Caches/org.swift.swiftpm/repositories` | `spm-repos-v1-<os>-<layout>-<lane>-<Package.resolved hash>`; `spm-repos-v1-<os>-<layout>-<lane>-` | each build lane |
+| Swift test build | each lane's `.build` directory | `swift-key`; `swift-prefix` from `scripts/provider-ci-cache.py` | each build lane |
+| Metal library | `$RUNNER_TEMP/metallib-cache` | `metallib-key`, exact only | each build lane |
+| MiMo audio codec | `$RUNNER_TEMP/mimo-audio-source` | `mimo-audio-source-v2-<sha256>`, exact only; fetched only when the audio gate runs ([test guide](test.md)) | the last provider shard |
+| Cluster metadata build | `$RUNNER_TEMP/cluster-native-metadata` | toolchain, submodule pins, manifests and paths, then the commit | `test-cluster-checks` |
+
+Every checkout uses the same five steps. The job computes the UTC day
+(`date -u +%F`) and restores `.git`. A step that cannot fail then deletes the
+restored `.git` unless `git rev-parse --verify HEAD` and
+`git fsck --connectivity-only` accept it. One ordinary `actions/checkout`
+follows: it fetches only the objects `.git` lacks and reuses the submodule
+repositories under `.git/modules`, and its failure fails the job. No step uses
+`continue-on-error`. A `.git` that passes fsck but still breaks the checkout
+fails the job; change the key version, such as `git-v1`, to start over. The
+`.git` key names the day, not the commit, so a branch saves `.git` once a day:
+later runs that day restore the exact key and save nothing. Checkouts set
+`persist-credentials: false`, so the saved `.git/config` holds no job token.
+
+Checkouts download only what their job reads. Every checkout but Docs Lint's
+skips the `.gz` tarballs under `docs/reports/evidence` and `landing/public/media`
+(`CHECKOUT_SPARSE`, 408 MB of evidence tarballs and landing videos): a sparse
+checkout fetches commits and trees without file contents (`blob:none`), then
+only the files it checks out. The reports and the rest of the evidence stay: a
+provider test hashes `docs/reports/2026-10-31-public-cluster-models.md`, and
+`scripts/provider-ci-cache.py` hashes every tracked `Package.swift`, including
+one under `docs/reports/evidence`. Docs Lint
+checks link targets on disk, so it checks out every file, but fetches history
+with `filter: blob:none`; the provenance check then fetches the old document
+versions it reads (about 29 MiB for its 12 checks). Docs Impact
+(`.github/workflows/docs-impact.yml`) needs commits, trees and the docs, so it
+uses both settings.
+
+```mermaid
+flowchart LR
+  W[UTC day] --> R["Restore .git<br/>(today, else newest)"]
+  R --> V{"git fsck<br/>accepts .git?"}
+  V -- no --> D[Delete .git] --> K
+  V -- yes --> K[actions/checkout]
+  K --> G{"master or dev push,<br/>no exact hit?"}
+  G -- yes --> S[Save .git]
+  G -- no --> B
+  S --> B["Restore SwiftPM, build<br/>and Metal caches; build; test"]
+  B --> M{"master or dev push,<br/>no exact hit?"}
+  M -- yes --> T[Save each cache]
+  classDef save fill:#d4f7dc,stroke:#1a7f37,color:#0b2e13
+  classDef fail fill:#ffe1e1,stroke:#cf222e,color:#3d0a0a
+  class S,T save
+  class D fail
+```
+
+- Swift build prefixes contain no pull-request data; the commit is only the
+  key's suffix. A pull request that changes a CI recipe file, a manifest, a
+  lockfile or a submodule pin has a new prefix and builds cold. On a pull
+  request, the provider summary job restores the base branch's build like the
+  shards and rebuilds what the commit changed; on a push it restores the
+  shards' own build.
+- `actions/cache` stores a path outside the workspace relative to the
+  workspace, so the SwiftPM key includes `<layout>`, a hash of `$HOME` and the
+  workspace path. The cluster key reads only each submodule's state, pin and
+  path from `git submodule status`, because its `git describe` text depends on
+  the refs a restored `.git` holds.
+- `actions/cache` compresses with zstd when `zstd` is on `PATH` and with gzip
+  otherwise, and the method is part of each entry's version: a runner without
+  zstd never restores an entry saved with it. Each job logs
+  `actions/cache compressor: zstd` or `gzip` before its first cache step.
+- Concurrent jobs of one push save the same key; one wins, and the others log a
+  `409 Conflict` warning.
 
 ## Dev Build Identity
 

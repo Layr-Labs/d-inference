@@ -1,10 +1,10 @@
 # Provider troubleshooting
 
-> Last updated: 2026-10-27
+> Last updated: 2026-11-04
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
-check names, service lifecycle, coordinator connection, updates, models and the
-KV-backend guard. For operators; every fix is a command you run on the Mac.
+check names, service lifecycle, coordinator connection, updates, models, the
+KV-backend guard and uninstalling. For operators; every fix is a command you run on the Mac.
 
 ## Prerequisites
 
@@ -69,7 +69,7 @@ App Attest, attestation readiness, trust, model fit, runtime, billing, version;
 | `mdm enrollment`, `mdm verification` | Profile installed; coordinator has cross-checked `SecurityInfo` | `darkbloom enroll`; the steps and what to expect: [Reaching and keeping `hardware` trust](./attestation.md#steps) |
 | `console session`, `automatic login`, `auto-logout on idle`, `sleep prevention` | Attestation readiness (`provider-swift/Sources/ProviderCore/Diagnostics/AttestationReadiness.swift`) | A real console user must be logged in; enable automatic login; disable auto-logout; the daemon self-caffeinates while serving |
 | `active se key` | Secure Enclave signing key self-test | `darkbloom-enclave info`; hardware without SE runs at reduced trust |
-| `launch session`, `app attest support`, `apple operation`, `app attest key` | macOS 27+ only: the daemon's last local App Attest observation (`provider-swift/Sources/ProviderCore/Diagnostics/AppAttestLocalDiagnosis.swift`) — GUI session, `is_supported_false`, a stalled DeviceCheck call, stored/enrolled key and local generation safeguard | The coordinator may retry after the displayed local countdown expires. Run the provider inside the logged-in GUI session (`darkbloom restart` after logging in) and keep SIP and Full Security; a stall clears when the provider restarts ([attestation](./attestation.md#app-attest-without-darkbloom-mdm)); never delete the Keychain item |
+| `launch session`, `app attest support`, `apple operation`, `app attest key` | macOS 27+ only: the daemon's last local App Attest observation (`provider-swift/Sources/ProviderCore/Diagnostics/AppAttestLocalDiagnosis.swift`) — GUI session, `is_supported_false`, a stalled DeviceCheck call, stored/enrolled key and local generation safeguard | The coordinator may retry after the displayed local countdown expires. Run the provider inside the logged-in GUI session (`darkbloom restart` after logging in) and keep SIP and Full Security. For `is_supported_false` in the GUI session, typically after a self-update, re-register the app with the `lsregister -f` command that `doctor` prints instead of restarting; a stall clears when the provider restarts ([attestation](./attestation.md#app-attest-without-darkbloom-mdm)); never delete the Keychain item |
 | `gui session` | macOS 27+: the provider runs outside the GUI session. Either a user is logged in at the console but the provider was launched elsewhere (SSH, system daemon), or nobody is logged in (`AppAttestDeepDiagnosis.swift`) | Run `darkbloom restart` from the logged-in desktop (Terminal or Screen Sharing). If nobody is logged in, log in and enable automatic login |
 | `boot security` | SIP or authenticated root is not confirmed enabled. Apple requires Full Security for App Attest | In Recovery: `csrutil enable`, `csrutil authenticated-root enable`, Startup Security Utility → Full Security, restart |
 | `app signing` | A known missing opt-in, invalid environment entitlement, or missing/expired profile fails. Unavailable signing data or unknown expiry warns instead of passing; an explicitly absent environment entitlement can be legitimate | Reinstall a known-bad release (`curl -fsSL https://api.darkbloom.dev/install.sh \| bash`), then restart; for indeterminate evidence, collect a report |
@@ -148,7 +148,8 @@ tail -50 ~/.darkbloom/provider.log ~/.darkbloom/watchdog.log
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `Latest release vX is quarantined on this machine.` | vX crashed `rollbackThreshold` times before surviving `defaultStabilizationSeconds` (`provider-swift/Sources/ProviderCore/Update/UpdateRecoveryState.swift`; values in [runtime constants](./cli-reference.md#runtime-constants)) | Wait for the next release (it installs normally), or `darkbloom update --override-quarantine` |
+| `Latest release vX is quarantined on this machine.` | vX crashed `rollbackThreshold` times before surviving `defaultStabilizationSeconds`, or was rolled back with `darkbloom update --rollback` (`provider-swift/Sources/ProviderCore/Update/UpdateRecoveryState.swift`; values in [runtime constants](./cli-reference.md#runtime-constants)) | Wait for the next release (it installs normally), or `darkbloom update --override-quarantine` |
+| A new release runs but regresses | Automatic updates install every newer release | `darkbloom update --rollback` restores the previous release and quarantines this one; leave automatic updates on ([roll back](./installation.md#roll-back-to-the-previous-release)) |
 | `vX is already installed on disk but this process is vY.` | Update landed, daemon not restarted | `darkbloom restart` |
 | `SHA-256 hash mismatch!` | Download ≠ `bundle_hash`/`binary_hash`/`metallib_hash` | Retry; persistent mismatch means the release record and artifact disagree |
 | `another update/recovery operation is active` | Watchdog recovery or a previous update holds the lock | Wait a minute; retry |
@@ -160,6 +161,17 @@ The check cadence (`autoUpdateInitialDelay`, `autoUpdateInterval`), the
 restart (`provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift`)
 are tabulated in [`cli-reference.md`](./cli-reference.md#runtime-constants).
 
+## Two-Mac pairs
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| The part log (`~/.darkbloom/cluster-setup/rank.log`) repeats `This Mac cannot register the saved roster: This Mac's Secure Enclave key is not the one it paired with; pair again.` | The pairing was made with another Secure Enclave key: the Mac moved between the Darkbloom and DevNet apps, or the official installer made a new key | Run `darkbloom cluster` on each Mac and choose **Pair again** ([pairing again](./two-mac-cluster.md#pairing-again)) |
+| `darkbloom cluster` says "The other Mac (…) isn't answering over the cable" | Its cluster service is off (`darkbloom cluster stop --service` turns it off; plain `darkbloom stop` leaves it running), or that Mac is asleep, off, or waiting for someone to log in (with FileVault on, after a restart its cluster service starts only once someone logs in) | On that Mac, log in if it asks and run `darkbloom start` or `darkbloom cluster`, then choose **Try again** here. Silence is not a broken pairing: use **Start over** only if that Mac was reinstalled, unpaired or replaced |
+| Both Macs wait at "2/4 Pair" and neither finds the other; after about 25 s the screen says "The other Mac isn't found yet" | macOS's firewall on one Mac drops the discovery probe (stealth mode, or Darkbloom not allowed yet), or the other Mac isn't on this screen | Allow Darkbloom in System Settings → Network → Firewall on both Macs and run `darkbloom cluster` on both. Or pair directly: press q, run `darkbloom cluster pair --listen` on one Mac (it prints its cable address), then `darkbloom cluster pair --connect <that address>` on the other, and `darkbloom cluster` on both again |
+| One Mac waits at "2/4 Pair"; the other shows its status and ends, or says "The other Mac (…) isn't answering over the cable" | The second Mac still holds an earlier pairing, so it never joins the waiting Mac | On the second Mac run `darkbloom cluster`, choose **Start over** and answer **Yes, start over** |
+| "3/4 Model" (or "Model", "Change model", "Start") stays on "Reading both Macs over the cable" | The other Mac stopped answering; the screen says why each time the reason changes, and after 2 minutes offers **Try again**, **Start over** and **Quit** | Run `darkbloom cluster` on the other Mac first, then **Try again**; **Start over** only if it was reinstalled, unpaired or replaced |
+| You want to set the pair up from scratch (after `darkbloom cluster link --remove`, an uninstall or a move to other Macs) | The pairing and the cluster setup stay on each Mac until removed | Run `darkbloom cluster` and choose **Start over**, then answer **Yes, start over**; on the other Mac choose **Start over** (or **Pair again**) if it offers it |
+
 ## Models and memory
 
 | Symptom | Cause | Fix |
@@ -167,7 +179,9 @@ are tabulated in [`cli-reference.md`](./cli-reference.md#runtime-constants).
 | `model fits in RAM` FAIL / `Cold load blocked (memory)` in status | The live no-eviction load budget is below the scanner's complete model estimate plus activation and minimum-KV serving reserve, and request-time idle eviction cannot close the gap. The nominal `Inference memory` hardware figure is not live free RAM. Status and doctor show both the preload gap and the smaller eviction-aware cold-load gap ([load gate](../architecture/hardware-support.md#load-gate-modelloadadmission)). A busy machine with an active request gets a temporary verdict instead | Free at least the **cold-load** shortfall with margin, rerun `darkbloom doctor`, then `darkbloom restart` to retry preload when enabled; or select a smaller model ([hardware requirements](./hardware-requirements.md)). A request cannot cold-load at the same memory level. |
 | `Preload skipped (no eviction)` in status | The model does not fit alongside the current resident slots. The request-time allowance can fit it by evicting idle models; startup preload deliberately avoids that churn | Keep the current serving set, or free memory if both models should stay resident. |
 | A load refusal says `Not evictable: <model> (… GB: …)`, or status says `Not evictable for a load now: …` | That resident model cannot be evicted for the load: an Autopilot placement hold (until the UTC time shown), requests in flight, a local request, an Autopilot pin, an unload or an MTP upgrade in progress. `adopted by Autopilot outside the selected models` means an Autopilot operation placed it there, not your selection ([placements](../architecture/model-autopilot.md#placements-after-an-operation)) | Wait for the hold to expire or the requests to finish, then retry the load; a hold also ends when an operation unloads the model or Autopilot is disabled. |
-| `Serving outside the enabled model filter: <model>` in status | The running daemon serves a model your saved `enabled_models` omits: an Autopilot operation adopted it, it is in the running daemon's selection (a changed filter applies only at the next start), or a live Autopilot lease published it | For an adoption see `darkbloom autopilot status`; otherwise `darkbloom restart` applies the saved filter. |
+| `Serving outside the enabled model filter: <model>` in status | The running daemon serves a model your saved `enabled_models` omits: an Autopilot operation adopted it, it is in the running daemon's selection (a hand-edited filter applies only at the next start), or a live Autopilot lease published it. A coordinator command or model rollout never adds one ([operator filter](../reference/configuration.md#provider-model-selection)); on provider 0.10.6 or earlier, see the next row | For an adoption see `darkbloom autopilot status`; otherwise `darkbloom restart` applies the saved filter. |
+| Provider 0.10.6 or earlier: a build you deselected with `darkbloom switch` or deleted with `darkbloom models remove` comes back within minutes, downloads again and replaces the build you selected (for example `gemma-4-26b-qat-4bit` replacing `gemma-4-26b`); status shows `Serving outside the enabled model filter: <build>` | The coordinator moved a public model you serve to `<build>`, and these providers follow that rollout even when `enabled_models` omits it. It reaches every Mac that serves any build of that public model, including its rollback build (`gemma-4-26b-8bit`) | Update the provider. Until then, serve the newest build (pick the public model's name in `darkbloom switch`) or select no build of that public model; a restart, a new login or selecting the rollback build does not stop it. |
+| The log says `desired_models: <model> → <build> is outside the enabled model filter; not converging` | A public model you serve moved to a newer build that your `enabled_models` does not list. The provider keeps serving your build. The coordinator now sends the public model's requests to the newer build first, so your build gets them only when no Mac with the newer build has room | To keep your build, nothing. To take the new build, run `darkbloom switch` and pick the public model's name (the picker shows its newest build under that name and downloads it), with your other models. |
 | Model missing from `darkbloom models list` | Not in `~/.cache/huggingface/hub`, or filtered by `enabled_models` | `darkbloom models download <id>`; `darkbloom models list --all` |
 | Load fails after a catalog update | New build published for the alias | `darkbloom models remove <id>` then `darkbloom models download <id>` |
 | `Skipping <id>: model_type … has no engine-v2 adapter` | Family not served by CBv2 | Use a supported family; the model is never advertised |
@@ -239,12 +253,64 @@ SSD caching remains enabled by default with no resident retention; use
 `DARKBLOOM_PREFIX_CACHE=0` to disable local reuse independently
 ([prefix-cache defaults](../architecture/prefix-cache.md#invariants)).
 
+## A two-Mac cluster says "Not serving yet"
+
+`darkbloom cluster` says Serving only once both Macs loaded the model and a
+request answered. Otherwise its line names why
+([two-Mac cluster](two-mac-cluster.md#the-steps-once)):
+
+| Line | What to do |
+|---|---|
+| `… isn't logged in to Darkbloom, so the coordinator won't pair it` | `darkbloom login` on the Mac named, then **Retry**; or **Serve locally only**. |
+| `<Mac> isn't verified by Apple yet; Darkbloom retries by itself at about <time>` | The coordinator pairs only members with a current App Attest authorization. Leave both Macs running and don't restart either until that time (that Mac's local key-generation safeguard; `darkbloom doctor` shows it on the "app attest key" line), then **Retry**; or **Serve locally only**. |
+| `<Mac> lacks free memory for its share` | Quit apps on that Mac, then **Retry**; or **Change model**. |
+| `A part keeps ending the same way: …` | **Diagnostics** saves a redacted file in the home folder to send with a report. |
+
+## Everyday commands on a Mac in a two-Mac cluster
+
+On a paired Mac `darkbloom stop`, `start`, `restart` and `status` control the pair;
+`--solo` manages single-Mac serving on this Mac
+([CLI reference](cli-reference.md#darkbloom-cluster-status)).
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `darkbloom stop` says `stopping both Macs` on a Mac in a cluster | On a paired Mac `stop` controls the pair, as on one Mac it controls single-Mac serving (`Stop.pairedStop`) | Expected: both Macs stop and stay stopped; `darkbloom start` on either Mac starts the pair again. `darkbloom stop --solo` stops single-Mac serving only |
+| `darkbloom start` opens the cluster's screen, or in a script ends with `✗ Not serving: …` | On a paired Mac `start` starts the pair (`Start.pairStart`); a script gets `darkbloom cluster status`'s exit status | Follow the result block's `Next:` line. `darkbloom start --solo` serves this Mac alone |
+| Is the pair serving? Why not? | `darkbloom cluster` needs a terminal | `darkbloom cluster status` (or `--json`; exit 0 only while it serves) |
+| `This Mac's pairing record couldn't be read (…), so it may be in a two-Mac cluster.` (`cluster status` exit 7) | The pairing store can't be read (a damaged or unsafe file); the commands treat the Mac as maybe in a cluster, so `start`, `stop` and `restart` need `--solo` (`ClusterPairSummary.membership`) | `darkbloom cluster` on this Mac checks the pairing |
+| `darkbloom cluster link --remove` asks `Remove it? [y/N]` | The Mac is paired; removing the port setup stops the cluster on both Macs until it is set up again | Answer `n` unless the cable port must go; never remove it because of a doctor line alone. `--yes` for scripts |
+| `darkbloom stop` on the Mac that follows says the other Mac didn't answer, and `Nothing was stopped on this Mac.` | The leading Mac stops both Macs, and it isn't answering (`ClusterPairCommands.stop`) | Wake or log in to the leading Mac and run it again, or `darkbloom cluster stop --local-only` to stop this Mac alone |
+
 ## Missing base reward
 
 `doctor` billing is local usage reporting, not a coordinator
 `model=base_reward` grant. If last-1000 earnings show no `base_reward` rows
 (or amounts that match a smaller RAM class) while `doctor` is green, follow
 [Check a missing base reward](base-rewards.md).
+
+## Uninstall and start over
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| After `darkbloom stop --uninstall`, the cluster setup, pairing and settings are still there | `stop --uninstall` removes only the provider, watchdog and desktop API agents and keeps every file | `darkbloom uninstall`: choose **Remove everything**, or **Keep models** to reuse the models after a reinstall ([installation](./installation.md#uninstall)) |
+| You want to start from scratch | Saved settings, the pairing and the cluster setup bring the old setup back | `darkbloom uninstall --keep-models` (or `--everything`), then install again: settings, pairing and cable setup start fresh and the kept models are found. Deleting `~/.darkbloom` by hand leaves the cluster service, the pairing on the other Mac and the cable port setup behind |
+| `Usage: darkbloom uninstall --everything\|--keep-models [--yes] [--dry-run [--json]] (no terminal to ask which)` | No terminal to ask in (an agent or a script), and no mode with `--yes` | Pass `--everything` or `--keep-models` with `--yes`; check first with `--dry-run` |
+| `failed   Stop serving on this Mac: …` | The provider did not finish its accepted requests in time, or cannot drain | Run it again with a longer `--timeout`, or `--force` to interrupt them. Its services are kept until it stops |
+| `skipped  Delete …: a Darkbloom service may still be running` | A step that stops a service failed (it is listed above) | Fix that step, then run `darkbloom uninstall` again with the same choice; every step is idempotent |
+| `skipped  Revoke this Mac's account token: …` | No saved token, the coordinator was not reached, or it could not confirm the token | Nothing to do: the token file is deleted with `~/.darkbloom` |
+| After **Keep models** and a reinstall, models in a folder you chose are not listed | That location was saved in the deleted `provider.toml` | `darkbloom models location <folder>` |
+| `failed   Undo the cable port setup: …` | The macOS prompt was declined, or could not show (no screen, over SSH) | `~/.darkbloom` and the `darkbloom` command stay for this. Run `darkbloom uninstall` again at the Mac's screen with the same choice; without a screen, run the printed `sudo sh …` line as an administrator, then run it again |
+| `Run \`darkbloom uninstall\` as yourself, not with sudo: …` (exit 64) | It was run with `sudo`. As root it would read root's home folder, not yours | Run `darkbloom uninstall` without `sudo`; macOS asks for the password when the cable port step needs it |
+| `skipped  Delete …: not removed: …`, and the first line says Darkbloom is not fully removed (exit 1) | The path is a link, resolves outside Darkbloom's folders, or another disk is mounted at it or inside it | Nothing outside Darkbloom's folders is deleted. Remove it yourself if you don't need it, or eject the disk and run `darkbloom uninstall` again |
+| `Darkbloom is not fully removed from this Mac: its app folder is your models folder, so it was kept (see below).` (exit 1) | `darkbloom models location ~/.darkbloom` made the app folder your models folder, and a folder you chose is never deleted | Move the models you want to keep out of `~/.darkbloom`, then run `~/.darkbloom/bin/darkbloom uninstall` again: the settings naming that folder are gone, so it deletes the rest |
+| `~/.darkbloom` is still there after the uninstall, holding your models | You chose a models folder inside it (`darkbloom models location ~/.darkbloom/models`); a folder you chose is never deleted, and the summary lists it as `Kept:` | Move the folder, or delete it yourself if you don't need the models |
+| After uninstalling Darkbloom Dev (or the production Darkbloom), the pairing and cable port setup are still there | The other install on this Mac uses them, so the summary lists them as `Kept:` | Run the other install's uninstall too (`darkbloom uninstall` or `darkbloom-dev uninstall`) to remove them |
+| `failed   Stop this Mac's cluster part and remove its service: another program holds this Mac's cluster service lock (pid …)` (exit 1, nothing deleted; one install only) | The program holding the lock is not a `darkbloom cluster service`, so `cluster stop --service` does not stop it | Stop that program (`ps -p <pid>` shows it), then run `darkbloom uninstall` again |
+| `failed   Check that no cluster service of this install still runs: …` (exit 1, nothing deleted) | A cluster service started from a session (a development build, or a Mac where launchd did not take its agent) still holds this Mac's cluster lock, or one the uninstall can't tell apart does | `darkbloom cluster stop --service`, then run `darkbloom uninstall` again |
+| `The other Mac (…) did not answer, so its part may keep restarting: run darkbloom cluster stop on it.` | The uninstall stopped this Mac's part of a serving pair, beside the other install on this Mac, and asked the pair to stop first, but the other Mac did not answer over the control channel | Run `darkbloom cluster stop` on the other Mac (`darkbloom-dev cluster stop` for Darkbloom Dev) |
+| The other Mac still shows the pair | Each Mac keeps its own pairing | Run `darkbloom uninstall` on it too, or `darkbloom cluster` on it to pair it with another Mac |
+
+Steps, paths and safety rules: [`darkbloom uninstall`](./cli-reference.md#darkbloom-uninstall).
 
 ## Collect a report
 

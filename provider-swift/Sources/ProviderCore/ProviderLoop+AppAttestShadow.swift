@@ -63,6 +63,8 @@ extension ProviderLoop {
             appAttestLocalStatus = published
             writeDaemonState()
         }
+        // Only `ready` carries the availability answer.
+        if prepared { noteAppAttestAvailability(localStatus) }
         // Only these results can leave an unanswered Apple call holding admission.
         if !usesAppAttestWorker && (response.result == "busy" || response.result == "operation_timeout") { startAppAttestStallMonitorIfNeeded() }
         appAttestShadowTask = nil
@@ -97,6 +99,7 @@ extension ProviderLoop {
     /// stopped child can hold the credential lease until it is actually reaped.
     func stopAppAttestWorkerAndWait() async -> Bool {
         cancelAppAttestShadow(stopWorker: true)
+        await awaitOutstandingAppAttestation()
         return await appAttestWorkerRetirement?.value ?? true
     }
 
@@ -105,8 +108,19 @@ extension ProviderLoop {
               servingDrain.owner == .update, appAttestWorkerStopReason != .shutdown else { return false }
         appAttestWorkerStopReason = .update
         cancelAppAttestShadow()
+        await awaitOutstandingAppAttestation()
         let retired = await appAttestWorkerRetirement?.value ?? true
         return retired && appAttestWorkerStopReason == .update
+    }
+
+    /// Cancelling the exchange does not end an attestation Apple already has
+    /// (`AppAttestShadowClient`). Before this process ends, let Apple's answer
+    /// arrive and be persisted, so the next process sends the proof instead of
+    /// retiring the key and waiting an hour for a replacement.
+    private func awaitOutstandingAppAttestation() async {
+        guard let client = appAttestShadowClient,
+              !(await client.waitForOutstandingAttestation(atMostSeconds: appAttestStopWaitSeconds)) else { return }
+        logger.warning("App Attest: Apple has not answered an attestation within \(Int(appAttestStopWaitSeconds)) s; stopping without it")
     }
 
     @discardableResult

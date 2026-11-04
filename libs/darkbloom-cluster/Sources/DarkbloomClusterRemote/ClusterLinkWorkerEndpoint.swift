@@ -294,12 +294,16 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
 
     /// The refusal a relayed command's failure is, when it is one request's:
     /// a reservation the follower's own owner could not take now (`busy`, its
-    /// queue) or could not encode (`profile`). Nothing reached the worker. Any
-    /// other failure (a malformed wire, a closed owner) fences the session.
-    static func requestRefusal(relaying command: ClusterWorkerCommand, failure error: Error) -> ClusterWorkerRefusal? {
+    /// queue), could not encode (`profile`), or that reached this Mac after its
+    /// delivery deadline (`deadline`: a still serving owner closes such a
+    /// send). Nothing reached the worker. Any other failure (a malformed wire,
+    /// a closed owner) fences the session.
+    static func requestRefusal(relaying command: ClusterWorkerCommand, failure error: Error,
+                               deliveryExpired: Bool = false) -> ClusterWorkerRefusal? {
         guard case .reserve = command else { return nil }
         if case .refused(let reason)? = error as? ClusterWorkerOwnerError, reason != .unavailable { return reason }
         if error is ClusterWorkerProtocolError { return .profile }
+        if deliveryExpired, error as? ClusterWorkerOwnerError == .closed { return .deadline }
         return nil
     }
 
@@ -994,13 +998,17 @@ private final class ServerSession: @unchecked Sendable {
             do { local = try wire.localCommand(now: now) } catch { fence(reason: "command refused"); return }
             do {
                 try endpoint?.sendWorkerCommand(local.command, requestID: local.requestID, deadline: local.deliveryDeadline)
-            } catch let error where ClusterLinkWorkerWire.requestRefusal(relaying: local.command, failure: error) != nil {
+            } catch {
+                let expired = DispatchTime.now().uptimeNanoseconds >= local.deliveryDeadline && endpoint?.readiness != nil
+                guard let reason = ClusterLinkWorkerWire.requestRefusal(relaying: local.command, failure: error,
+                                                                        deliveryExpired: expired) else {
+                    fence(reason: "command refused"); return
+                }
                 // A reservation this Mac's owner could not take: nothing reached
                 // the worker (no command sequence was spent), so that request
                 // alone is refused and the session goes on.
-                let reason = ClusterLinkWorkerWire.requestRefusal(relaying: local.command, failure: error)!
                 send({ $0.requestID = local.requestID; $0.detail = reason.rawValue }, kind: .commandRefused)
-            } catch { fence(reason: "command refused") }
+            }
         default:
             fence(reason: "unexpected message")
         }

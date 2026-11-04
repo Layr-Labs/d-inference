@@ -6,6 +6,17 @@ import DarkbloomClusterProtocol
 /// what this Mac runs for each mode (its part, degraded serving alone, or nothing), and `darkbloom cluster` commands
 /// forwarded from any member to the leader.
 extension ClusterService {
+    /// Whether a control request is logged: every command, but a following window's `status` (asked each second while
+    /// it follows a start) once a minute.
+    static func logsControl(_ op: ClusterControlRequest.Operation, lastStatusLog: Date?, now: Date) -> Bool {
+        guard op == .status, let lastStatusLog else { return true }
+        return now.timeIntervalSince(lastStatusLog) >= 60
+    }
+
+    /// When a `status` request was last logged (`logsControl`).
+    private static let statusLogLock = NSLock()
+    nonisolated(unsafe) private static var lastStatusLog: Date?
+
     typealias PartWant = ClusterControlPartChoice
 
     /// The rank lease's own cadence and time-to-live (S03): the control lease renews and expires with it.
@@ -106,16 +117,17 @@ extension ClusterService {
     // MARK: - The control listener
 
     func ensureControlResponder(say: @escaping @Sendable (String) -> Void) {
-        // The lease listener follows the cable to another port too (`cableMove`), or leases never reach this Mac there.
-        if cableMove(of: lock.withLock({ controlResponder }), checked: \.controlCableCheck) != nil {
+        // The lease listener follows the cable to another port and the pairing to a new one too (`listenerChange`), or
+        // leases never reach this Mac; the exchange's listener says so.
+        if listenerChange(of: lock.withLock({ controlResponder }), checked: \.controlCheck) != nil {
             lock.withLock { controlResponder }?.stop()
             lock.withLock { controlResponder = nil }
         }
         guard lock.withLock({ controlResponder == nil }), let pairing = try? ClusterSetupLinkExchange.pairing(store: pairingStore),
-              let selection = try? context.linkSelection() else { return }
+              let selection = try? listenerSelection() else { return }
         do {
             let created = try ClusterSetupLinkExchange.Responder(pairing: pairing, selection: selection,
-                port: ClusterSetupLinkExchange.controlPort, epochLabel: ClusterSetupLinkExchange.controlLabel,
+                port: listening.controlPort, policy: listening.policy, epochLabel: ClusterSetupLinkExchange.controlLabel,
                 answer: { throw ClusterSetupFailure("the control listener reports nothing") },
                 receive: { _ in throw ClusterSetupFailure("the control listener takes no setup") },
                 command: { [weak self] data in
@@ -172,8 +184,13 @@ extension ClusterService {
     // MARK: - Each tick
 
     func ensureControl(pairing: ClusterSetupLinkExchange.Pairing) {
-        // A node of an earlier pairing (this Mac was re-paired with another Mac while the service ran) is dropped.
-        lock.withLock { if let node = control, !node.claim.members.contains(pairing.peerMemberID) { control = nil } }
+        // A node of an earlier pairing (this Mac was re-paired with another Mac, or under a new key of its own, while the
+        // service ran) is dropped.
+        lock.withLock {
+            if let node = control, node.localID != pairing.localMemberID || !node.claim.members.contains(pairing.peerMemberID) {
+                control = nil
+            }
+        }
         guard lock.withLock({ control == nil }), let record = try? store.readRecord(), let leadership = record.leadership,
               leadership.peerPin == pairing.peerPin else { return }
         let local = localControlMember(pairing: pairing, record: record)
@@ -189,7 +206,8 @@ extension ClusterService {
         members.append(local)
         let claim = start.claim
         let node = ClusterControlNode(localID: local.memberID, members: members, claim: claim, rankOrder: rankOrder(),
-                                      now: Self.monotonicSeconds(), ttl: Self.leaseTTLSeconds, soloGrace: Self.soloGraceSeconds)
+                                      now: Self.monotonicSeconds(), ttl: Self.leaseTTLSeconds, soloGrace: Self.soloGraceSeconds,
+                                      preferredLeader: ClusterSetupMemberFacts.memberID(pin: leadership.leaderPin))
         lock.withLock { if control == nil { control = node } }
     }
 
@@ -402,10 +420,16 @@ extension ClusterService {
             return .init(lines: ["The command did not run: " + refusal + "."], failed: true, leaderID: current.claim.leaderID, notLeader: true)
         }
         if Self.actsAsLeader(request.op), !leadershipConfirmed() {
-            return .init(lines: ["The command did not run: the other Mac's leadership is not confirmed yet; run `darkbloom cluster` again."], failed: true,
-                         leaderID: current.claim.leaderID)
+            let line = "The command did not run: the other Mac's leadership is not confirmed yet; run `darkbloom cluster` again."
+            return .init(lines: [ClusterOnboardingCommand.named(line)], failed: true, leaderID: current.claim.leaderID)
         }
-        say("control: running `\(request.op.rawValue)` for \(ClusterOnboardingMacName.other(named: node.members[pairing.peerMemberID]?.name))")
+        let now = Date()
+        let logs = Self.statusLogLock.withLock {
+            guard Self.logsControl(request.op, lastStatusLog: Self.lastStatusLog, now: now) else { return false }
+            if request.op == .status { Self.lastStatusLog = now }
+            return true
+        }
+        if logs { say("control: running `\(request.op.rawValue)` for \(ClusterOnboardingMacName.other(named: node.members[pairing.peerMemberID]?.name))") }
         return controlLive.execute(request, leaderID: node.localID)
     }
 

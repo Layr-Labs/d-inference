@@ -61,19 +61,21 @@ extension ClusterPlacementExplanation {
             // Tensor parallel goes first wherever it fits (`ClusterPlacementPolicy.tensorParallelFirst`): a gain is said
             // only when the prediction shows one; otherwise the rule is the reason.
             let fits = "Tensor parallel: the model fits, so both Macs share every layer of every token."
+            // A family chosen only where faster (`ClusterTensorParallelChoice.fastest`) says its measured step chose it.
+            let measured = assessment?.evidence == .measured ? ", on its own step as measured on both Macs" : ""
             if let theirs = result.alternatives.first(where: { !$0.mode.usesTensorParallelDecode })?.prediction(regime)
                 ?? pipelines.min(by: { $0.requestSeconds < $1.requestSeconds }) {
                 if theirs.requestSeconds <= mine.requestSeconds { return fits }
-                if estimated { return "Tensor parallel: predicted faster than a pipeline for \(request)\(note)." }
+                if estimated { return "Tensor parallel: predicted faster than a pipeline for \(request)\(measured)\(note)." }
                 let gain = (theirs.requestSeconds / mine.requestSeconds - 1) * 100
-                return "Tensor parallel: predicted \(Int(gain.rounded()))% faster than a pipeline for \(request) (\(against(mine, theirs)))."
+                return "Tensor parallel: predicted \(Int(gain.rounded()))% faster than a pipeline for \(request) (\(against(mine, theirs)))\(measured)."
             }
             if let other = assessment?.bestOtherSeconds {
                 if other <= mine.requestSeconds { return fits }
-                if estimated { return "Tensor parallel: predicted faster than a pipeline for \(request)\(note)." }
+                if estimated { return "Tensor parallel: predicted faster than a pipeline for \(request)\(measured)\(note)." }
                 let gain = (other / mine.requestSeconds - 1) * 100
                 return "Tensor parallel: predicted \(Int(gain.rounded()))% faster than a pipeline for \(request) "
-                    + "(\(seconds(mine.requestSeconds)) against \(seconds(other)))."
+                    + "(\(seconds(mine.requestSeconds)) against \(seconds(other)))\(measured)."
             }
             // No pipeline was placed, and the reason is said as it is (2026-10-24: Qwen3.8 27B, whose images, video
             // and logprobs only tensor parallel keeps, read "no pipeline placement fits these Macs"): the policy left
@@ -102,6 +104,18 @@ extension ClusterPlacementExplanation {
             let theirs = tp.prediction(regime)
             return "\(name): tensor parallel is predicted slower for \(request) (\(seconds(theirs.requestSeconds)) against "
                 + "\(seconds(mine.requestSeconds)); \(against(theirs, mine)))."
+        case .predictedFasterOnPriorOnly:
+            // A family chosen only where faster (`ClusterTensorParallelChoice.fastest`) waits for its own measured step.
+            let basis = "from the device index, not its own measured step"
+            let until = "; it can be chosen once its step is measured on both Macs (a share probe at a tensor-parallel load, "
+                + "or requests this build served in tensor parallel)."
+            guard let tp = assessment.tensorParallel, !estimated else {
+                return "\(name): tensor parallel is predicted faster for \(request) \(basis)\(estimated ? note : "")" + until
+            }
+            let theirs = tp.prediction(regime)
+            let gain = (mine.requestSeconds / theirs.requestSeconds - 1) * 100
+            return "\(name): tensor parallel is predicted \(Int(gain.rounded()))% faster for \(request) (\(seconds(theirs.requestSeconds)) "
+                + "against \(seconds(mine.requestSeconds)); \(against(theirs, mine))), but \(basis)" + until
         case .doesNotFit:
             // A tensor-parallel placement that would load once memory is given back, ranked after one that loads now.
             if assessment.tensorParallel != nil || assessment.hybrid != nil {
@@ -110,7 +124,7 @@ extension ClusterPlacementExplanation {
             return "\(name): tensor parallel does not fit in these Macs' memory."
         case .notExecutedByRuntime:
             return "\(name): \(assessment.reason)."
-        case .notQualified:
+        case .notQualified, .dropsFeatures:
             return "\(name): \(assessment.reason)."
         }
     }
@@ -123,6 +137,9 @@ extension ClusterPlacementExplanation {
         case slower = "tensor parallel: slower here"
         /// Predicted faster, but by less than the margin it must win by (`tensorParallelMargin`).
         case aboutAsFast = "tensor parallel: about as fast"
+        /// Predicted faster, but only from the device index: a family chosen only where faster waits for its
+        /// own measured step (`ClusterTensorParallelAssessment.Verdict.predictedFasterOnPriorOnly`).
+        case notMeasuredYet = "tensor parallel: not measured yet"
         /// It would fit once memory is given back; a split that loads now goes first.
         case doesNotFitNow = "tensor parallel: does not fit now"
         case doesNotFit = "tensor parallel: does not fit"
@@ -134,6 +151,9 @@ extension ClusterPlacementExplanation {
         case pipelineKept = "tensor parallel: pipeline kept"
         /// The placement policy leaves tensor parallel out (`modesReason` says why, when it says).
         case excluded = "tensor parallel: excluded here"
+        /// It would drop a feature of the mode it would replace (feature parity,
+        /// `ClusterTensorParallelAssessment.Verdict.dropsFeatures`).
+        case dropsFeature = "tensor parallel: drops a feature"
         /// This runtime does not execute tensor parallel for this model or rank count.
         case notForThisModel = "no tensor parallel for this model"
     }
@@ -168,6 +188,8 @@ extension ClusterPlacementExplanation {
         case .predictedSlower:
             guard let best, best.prediction(regime).requestSeconds < chosen.prediction(regime).requestSeconds else { return .slower }
             return .aboutAsFast
+        case .predictedFasterOnPriorOnly: return .notMeasuredYet
+        case .dropsFeatures: return .dropsFeature
         }
     }
 }

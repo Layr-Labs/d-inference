@@ -60,6 +60,9 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         var layout: VerifiedPredecessor.Layout
         var stagingRoot: String
         var createdAt: Double
+        /// The rollback's quarantine reason, for a replay to record. Absent
+        /// in journals of earlier releases, which ignore it.
+        var reason: String?
 
         enum CodingKeys: String, CodingKey {
             case schema
@@ -69,6 +72,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             case layout
             case stagingRoot = "staging_root"
             case createdAt = "created_at"
+            case reason
         }
     }
 
@@ -88,6 +92,8 @@ final class UpdateRecoveryStore: @unchecked Sendable {
     var predecessorRoot: URL {
         recoveryRoot.appendingPathComponent("predecessor", isDirectory: true)
     }
+    /// A rollback copy on its way out (`removeRollbackCopy`).
+    static let retiredPredecessorPrefix = ".predecessor-retired-"
     private var predecessorManifestPath: URL {
         predecessorRoot.appendingPathComponent("manifest.json")
     }
@@ -208,7 +214,8 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         } else {
             state.completeRollback(
                 now: now,
-                reason: "recovered an interrupted rollback of \(transaction.target.version)"
+                reason: transaction.reason
+                    ?? "recovered an interrupted rollback of \(transaction.target.version)"
             )
         }
         try writeState(state)
@@ -262,16 +269,19 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         try finish(remove: staged.stagingRoot)
     }
 
+    /// Restore the verified predecessor over the installed release (a pending
+    /// candidate, or a promoted release for an operator rollback) and
+    /// quarantine that release.
     func rollback(now: Double, reason: String) throws -> String {
         try recoverInterruptedTransaction(now: now)
         var state = try loadState()
-        guard let candidate = state.candidate else {
-            throw StoreError.missingPredecessor(
-                "there is no pending release candidate to roll back")
-        }
         guard let predecessor = state.predecessor else {
             throw StoreError.missingPredecessor(
-                "v\(candidate.release.version) has no recorded predecessor")
+                "v\(state.rollbackSource?.version ?? state.current?.version ?? "unknown") has no recorded predecessor")
+        }
+        guard state.rollbackSource != nil else {
+            throw StoreError.missingPredecessor(
+                "v\(predecessor.release.version), the recorded predecessor, is already installed")
         }
         try verifyPredecessor(predecessor)
         let (rollbackGeneration, overflow) =
@@ -294,7 +304,8 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             target: predecessor.release,
             layout: predecessor.layout,
             stagingRoot: stagingRoot.path,
-            createdAt: now
+            createdAt: now,
+            reason: reason
         )
         try persist(transaction)
         try faultInjector(.transactionPersisted)
@@ -312,6 +323,80 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         try faultInjector(.statePersisted)
         try finish(remove: stagingRoot)
         return predecessor.release.version
+    }
+
+    /// The record's installed release (the pending candidate, else `current`) must be the installed app: the hashes
+    /// the updater recorded, and the version its signed `Info.plist` names when it names one. Evidence of an install
+    /// outside the updater (`install.sh`, a copied app), a signed version or hashes that differ, re-bases the record:
+    /// the installed app becomes `current`, as the release its `Info.plist` names (else `runningVersion`), and the
+    /// pending release and the rollback copy go. A pair forms only between Macs on the same build
+    /// (`ClusterConfiguration.peerBuildDiffers`), and that copy was kept for an install that is gone, so no other Mac
+    /// keeps it to follow a rollback to it. An installed app that cannot be read is no such evidence: the record stays,
+    /// so failed starts of a damaged release still count toward restoring the verified copy. Nil when nothing changed.
+    func reconcileWithInstalledApp(runningVersion: String, now: Double) throws -> UpdateRecoveryReconciliation? {
+        var state = try loadState()
+        let signed = installedSignedVersion()
+        if let recorded = state.candidate?.release ?? state.current {
+            if (signed != nil && signed != recorded.version) || installedApp(is: recorded) == false {
+                return try recordInstalledApp(as: signed ?? runningVersion, in: &state, now: now)
+            }
+        }
+        // Checked only where apps name their version (every release does): an app that names none cannot vouch for one.
+        guard signed != nil, let copy = state.predecessor else { return nil }
+        return try reconcileRollbackCopy(copy, in: &state, now: now)
+    }
+
+    /// The rollback copy must be recorded as the release its app is signed as. A copy an earlier updater labelled from a
+    /// stale record holds the release that ran here before, the one the other Mac keeps and follows a rollback to: when
+    /// its files are the recorded ones and its signature holds (`verifyPredecessor`) it is relabelled and kept. A copy
+    /// that names no version, or does not verify, is removed (fail closed).
+    private func reconcileRollbackCopy(_ copy: VerifiedPredecessor, in state: inout UpdateRecoveryState,
+                                       now: Double) throws -> UpdateRecoveryReconciliation? {
+        let signed = try signedVersion(ofApp: resolvedRecoveryPath(copy.bundlePath))
+        guard signed != copy.release.version else { return nil }
+        if let signed, (try? verifyPredecessor(copy)) != nil {
+            var relabelled = copy
+            relabelled.release.version = signed
+            relabelled.release.releaseBundleHash = nil
+            relabelled.verifiedAt = now
+            // The manifest inside the copy first: `loadState` takes it over the record, so a death before the record is
+            // written still leaves the new label.
+            try UpdateAtomicFilesystem.writeJSON(relabelled, to: predecessorManifestPath)
+            state.predecessor = relabelled
+            try writeState(state)
+            return .rollbackCopyRelabelled(recordedAs: copy.release.version, signed: signed)
+        }
+        try discardRollbackCopy(in: &state)
+        return .unverifiedRollbackCopyRemoved(recordedAs: copy.release.version)
+    }
+
+    /// The installed app becomes `current`, as release `version`; the pending release and the rollback copy go.
+    private func recordInstalledApp(as version: String, in state: inout UpdateRecoveryState,
+                                    now: Double) throws -> UpdateRecoveryReconciliation {
+        let (generation, overflow) = state.installGeneration.addingReportingOverflow(1)
+        guard !overflow else {
+            throw StoreError.corruptState("install generation overflow")
+        }
+        let installed = try installedAppRecord(version: version, generation: generation, now: now)
+        let change = UpdateRecoveryReconciliation.installedOutsideTheUpdater(
+            installed: version, recorded: state.current?.version, pending: state.candidate?.release.version,
+            removedCopy: state.predecessor?.release.version)
+        state.candidate = nil
+        try discardRollbackCopy(in: &state)
+        // Named last: a death before this write leaves the same mismatch for the next reconcile to finish.
+        state.installGeneration = generation
+        state.current = installed
+        try writeState(state)
+        return change
+    }
+
+    /// The record stops naming the rollback copy before its tree goes (`removeRollbackCopy`): `loadState` refuses a
+    /// record that names a missing copy, and a death in between leaves the copy's manifest naming it again.
+    private func discardRollbackCopy(in state: inout UpdateRecoveryState) throws {
+        guard state.predecessor != nil else { return }
+        state.predecessor = nil
+        try writeState(state)
+        try removeRollbackCopy()
     }
 
     func verifyPredecessor(_ predecessor: VerifiedPredecessor) throws {
@@ -362,7 +447,13 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         currentVersion: String,
         now: Double
     ) throws -> VerifiedPredecessor {
-        if state.candidate != nil {
+        if let candidate = state.candidate {
+            // A pending release that is not the installed app was replaced outside the updater: the installed app,
+            // not the pending release's copy, is what the new release replaces and keeps for rollback.
+            guard try stagingContainsTarget(installRoot, target: candidate.release) else {
+                state.candidate = nil
+                return try snapshotInstalledApp(state: &state, currentVersion: currentVersion, now: now)
+            }
             guard let predecessor = state.predecessor else {
                 throw StoreError.missingPredecessor(
                     "an unproven installed candidate exists without rollback material")
@@ -370,16 +461,28 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             try verifyPredecessor(predecessor)
             return predecessor
         }
+        return try snapshotInstalledApp(state: &state, currentVersion: currentVersion, now: now)
+    }
 
+    /// Keeps a copy of the installed app for rollback, recorded as the release its app is signed as. `current` lends the
+    /// copy its version, release hash and install generation only when it names that release (or the app names none);
+    /// otherwise it describes an app replaced outside the updater, and the copy's record becomes `current` instead.
+    private func snapshotInstalledApp(
+        state: inout UpdateRecoveryState,
+        currentVersion: String,
+        now: Double
+    ) throws -> VerifiedPredecessor {
+        let signed = installedSignedVersion()
+        let recorded = state.current.flatMap { signed == nil || $0.version == signed ? $0 : nil }
         let predecessor = try snapshotLiveAsPredecessor(
-            version: state.current?.version ?? currentVersion,
-            releaseBundleHash: state.current?.releaseBundleHash,
-            installGeneration: state.current?.installGeneration
+            version: recorded?.version ?? signed ?? currentVersion,
+            releaseBundleHash: recorded?.releaseBundleHash,
+            installGeneration: recorded?.installGeneration
                 ?? state.installGeneration,
             now: now
         )
         state.predecessor = predecessor
-        if state.current == nil {
+        if recorded == nil {
             state.current = predecessor.release
         }
         try writeState(state)
@@ -405,6 +508,9 @@ final class UpdateRecoveryStore: @unchecked Sendable {
                 )
             }
         case .rollback:
+            // A replay after the state write (death before the journal was
+            // removed) finds the rollback already recorded: count it once.
+            guard state.rollbackSource != nil else { break }
             let (generation, overflow) =
                 state.installGeneration.addingReportingOverflow(1)
             guard !overflow else {
@@ -413,7 +519,8 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             state.installGeneration = generation
             state.completeRollback(
                 now: now,
-                reason: "recovered rollback after \(state.candidate?.failureCount ?? 0) failed starts"
+                reason: transaction.reason
+                    ?? "recovered rollback after \(state.candidate?.failureCount ?? 0) failed starts"
             )
         }
         try writeState(state)
@@ -466,7 +573,8 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             return
         }
         for entry in entries
-        where entry.lastPathComponent.hasPrefix(".predecessor-next-") {
+        where entry.lastPathComponent.hasPrefix(".predecessor-next-")
+            || entry.lastPathComponent.hasPrefix(Self.retiredPredecessorPrefix) {
             try? fm.removeItem(at: entry)
         }
     }

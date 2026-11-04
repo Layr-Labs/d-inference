@@ -52,6 +52,8 @@ public enum ClusterPlacementFlow {
 
     /// The planning itself, with everything detected already in hand. Pure,
     /// so a check can run the whole decision without a child process.
+    /// `coordinator`: the setup will serve through the coordinator, whose member registration carries no
+    /// tensor-parallel shares (`NativePairMemberRoster`), so it is planned with equal shares only.
     public static func decide(description: ClusterPairDescription, capability: ClusterRuntimeCapability,
                               localMemberID: String, localProfile: ClusterDeviceProfile, peerProfile: ClusterDeviceProfile,
                               layout: ClusterModelLayout, measurements: [ClusterSpeedMeasurement] = [],
@@ -60,12 +62,15 @@ public enum ClusterPlacementFlow {
                               batchScope: ClusterPlacementBatchScope? = nil,
                               tensorAssistantQuote: ClusterPlacementTensorBatchQuote? = nil,
                               tensorWideningQuote: ClusterPlacementTensorBatchQuote? = nil,
+                              tensorWidthQuotes: [ClusterPlacementTensorBatchQuote] = [],
                               regime: ClusterPlacementPolicy.Regime = .rested, leader: String? = nil,
                               served: [ClusterServedSpeedRecords.Entry] = [],
                               link: ClusterLinkCosts = .unmeasured,
                               shareProbes: [String: [ClusterShareRate]] = [:],
                               incumbentMode: ClusterGenerationMode? = nil,
+                              chosenMode: ClusterForcedMode? = nil,
                               incumbentTensorShares: [Int]? = nil,
+                              coordinator: Bool = false,
                               assumeUnmeasuredLink: Bool = true,
                               environment: [String: String] = ProcessInfo.processInfo.environment,
                               benchDebugBuild: Bool = ClusterPlannerBenchCap.isDebugBuild) throws
@@ -77,8 +82,11 @@ public enum ClusterPlacementFlow {
         let handOff = try ClusterHandOffModes.enabled(environment: environment)
         // Developer bench only (`ClusterBenchChip`): a debug build may be told to plan both Macs as another chip.
         let benchChip = try ClusterBenchChip.planningChipName(environment: environment, debugBuild: benchDebugBuild)
-        // Developer only (`ClusterForcedModeSetting`): a debug build may be told which mode family to place.
-        let forced = try ClusterForcedModeSetting.mode(environment: environment, debugBuild: benchDebugBuild)
+        // Developer only (`ClusterForcedModeSetting`): a debug build may be told which mode family to place. The person's
+        // choice in `darkbloom cluster` (`chosenMode`, owner 2026-11-04: both modes offered) places only that family the
+        // same way, keeping feature parity and saying nothing of a developer setting.
+        let developerForced = try ClusterForcedModeSetting.mode(environment: environment, debugBuild: benchDebugBuild)
+        let forced = developerForced ?? chosenMode
         let cappedLocal = try benchCap.map { try localProfile.cappedForBench(admissibleBytes: $0) } ?? localProfile
         let cappedPeer = try benchCap.map { try peerProfile.cappedForBench(admissibleBytes: $0) } ?? peerProfile
         let localProfile = try benchChip.map { try cappedLocal.renamedForBench(chip: $0) } ?? cappedLocal
@@ -104,6 +112,7 @@ public enum ClusterPlacementFlow {
         // replacement (`assumeUnmeasuredLink: false`) prices only the pair's recorded keyed link.
         policy.tensorParallelFirst = true
         policy.tensorParallelAssumesUnmeasuredLink = assumeUnmeasuredLink
+        policy.equalTensorShares = coordinator
         // A model no stage adapter runs is still planned, with the refusal in the plan's words; records never rule a
         // chip, an order or a mode out (owner, 2026-10-14 08:45).
         let granted = try leaderUnderGrant(requested: leader, members: [(local.id, localProfile.chip), (peer.id, peerProfile.chip)],
@@ -131,6 +140,12 @@ public enum ClusterPlacementFlow {
         let admissibleModes = ClusterModelFeaturePolicy.admissibleModes(capability)
         guard !admissibleModes.isEmpty else {
             throw ClusterConfigurationError.invalid(ClusterModelFeaturePolicy.unavailable)
+        }
+        // A chosen (or developer-forced) family this model's features don't admit is refused in its contract's words
+        // (Qwen3.8 27B keeps images, video and committed-token logprobs only in tensor parallel), never a quote's error.
+        if let forced, !admissibleModes.contains(where: forced.admits) {
+            throw ClusterConfigurationError.invalid((forced == .pipeline ? "Pipeline modes" : "Tensor parallel")
+                + " can't serve this model: " + (ClusterModelFeaturePolicy.modesReason(capability) ?? "its features rule them out"))
         }
         policy.modes = admissibleModes
         // Each restriction below says why, so a plan without a pipeline never reads as one where none fits; the
@@ -213,7 +228,7 @@ public enum ClusterPlacementFlow {
         // What this pair served in each mode, for the reference request, and the mode the plan keeps because of it
         // (`ClusterServedModes.hold`): after a Darkbloom update (`incumbentMode`, the same model on the same pair)
         // the mode the pair served in, unless the planner and the pair's own requests both find another faster;
-        // otherwise, once the pair served two modes, the one it served faster. A developer's forced mode keeps nothing.
+        // otherwise, once the pair served two modes, the one it served faster. A forced or chosen mode keeps nothing.
         let reference = (prompt: policy.promptTokens ?? layout.maximumPromptTokens, output: policy.outputTokens ?? layout.maximumOutputTokens)
         let servedModes = ClusterServedModes.figures(ours, promptTokens: reference.prompt, outputTokens: reference.output)
         if !servedModes.isEmpty {
@@ -275,8 +290,17 @@ public enum ClusterPlacementFlow {
             policy.modesReason = policy.modesReason ?? "a capacity change keeps the running tensor-parallel shares"
             policy.requiredTensorShares = incumbentTensorShares
         }
-        let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy, link: link)
-        var lines = (forced.map(ClusterForcedModeSetting.lines) ?? [])
+        // Feature parity (`ClusterModeParity`): tensor parallel is planned only where it keeps every feature of the
+        // mode it would replace, as the worker's capability record declares them, and is left out before anything is
+        // ranked. A developer's forced mode is placed anyway, and the plan says what it drops.
+        let (parity, parityRefusal) = ClusterModeParity.apply(to: &policy, capability: capability, layout: layout,
+            forced: developerForced != nil) { try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: $0, link: link) }
+        // A singleton tensor placement saves the widest width its owner's quotes admit on both Macs now. One call
+        // initializes a constant `result`, so the sizing's plans stay off this frame, which a deep planner stack shares.
+        var batchLanes = batchScope?.lanes
+        let result = try ClusterPlacementTensorWidth.plan(devices: devices, layout: layout, policy: policy, link: link,
+            quotes: tensorWidthQuotes, lanes: &batchLanes)
+        var lines = (developerForced.map(ClusterForcedModeSetting.lines) ?? [])
             + (benchCap.map(ClusterPlannerBenchCap.lines(capBytes:)) ?? []) + (benchChip.map(ClusterBenchChip.lines(chipName:)) ?? [])
             + servedLines
             + ClusterPlacementExplanation.describe(result, devices: devices, layout: layout)
@@ -286,7 +310,19 @@ public enum ClusterPlacementFlow {
         }
         if let why = ClusterPlacementExplanation.deploymentReason(result) {
             lines += ["Tensor parallel or pipeline", "  " + why]
+            // A plan chosen only where faster (`ClusterTensorParallelChoice.fastest`) says so, and what each mode keeps.
+            if layout.tensorParallel?.family.choosesFastest == true, admissibleModes.contains(.tensorParallel) {
+                lines.append("  This model runs tensor parallel only where it is predicted faster than a pipeline on its own step "
+                    + "as measured on both Macs, never on the device index alone; until a load measures the link, tensor parallel "
+                    + "is priced on a slow assumed link.")
+                lines.append("  " + ClusterModeParity.ruleLine)
+                if let note = ClusterModelFeaturePolicy.modeFeatureNote(capability) { lines.append("  " + note) }
+            }
         }
+        if let parity, developerForced != nil, let chosen = result.chosen, parity.modes.contains(chosen.mode) {
+            lines += ["Feature parity", "  " + parity.forcedLine]
+        }
+        if let parityRefusal { lines += ["Feature parity", "  " + parityRefusal] }
         if handOff {
             lines += ClusterHandOffModes.lines(enabled: true)
         } else if let note = lines.firstIndex(where: { $0.hasPrefix("  Phase split, phase split + MTP") }) {
@@ -299,8 +335,8 @@ public enum ClusterPlacementFlow {
                 + "This pair's own figure replaces it once the pair has served the same placement both with and without the rounds.")
         }
         if let note = granted.note { lines.append("Pair serving"); lines.append("  " + note) }
-        if let batchScope {
-            lines += ["Concurrent request memory", "  \(batchScope.lanes) independent histories, charged at the quoted request bound on both Macs. Stage-rate predictions remain single-request estimates; no batch speed is inferred from the lane count."]
+        if let batchLanes {
+            lines += ["Concurrent request memory", "  \(batchLanes) independent histories, charged at the quoted request bound on both Macs. Stage-rate predictions remain single-request estimates; no batch speed is inferred from the lane count."]
         }
         if records.restrictsShapes {
             lines.append("Diverged placements")
@@ -330,7 +366,7 @@ public enum ClusterPlacementFlow {
                 lines.append("  Request deadline " + deadline.basis + ".")
             }
             let value = try ClusterPlacementSetup.synthesize(description: described, capability: capability,
-                chosen: chosen, batchLanes: batchScope?.lanes, tensorAssistant: assistant?.policy)
+                chosen: chosen, batchLanes: batchLanes, tensorAssistant: assistant?.policy)
             lines.append("What happens next")
             lines += value.narration(localMemberID: localMemberID).map { "  " + $0 }
             setup = value

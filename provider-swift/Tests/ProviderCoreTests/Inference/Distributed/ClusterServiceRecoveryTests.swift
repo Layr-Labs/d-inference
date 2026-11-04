@@ -6,7 +6,8 @@ import DarkbloomClusterProcess
 @testable import ProviderCore
 
 /// Runs the actual service loop, process launch/stop, status publication, and
-/// IOKit ownership. Only the path namespace and initial recovery deadline vary.
+/// IOKit ownership. Only the path namespace, initial recovery deadline and the power assertions' name vary
+/// (macOS lists all of this process's assertions together, and other suites run services in it too).
 @Suite(.serialized)
 struct ClusterServiceRecoveryTests {
     @Test func leftoverRecoveryAndPowerOwnershipSurviveTwoServiceLifetimes() throws {
@@ -24,7 +25,8 @@ struct ClusterServiceRecoveryTests {
             // On failed cleanup retain the private directory for diagnosis.
             if completed { try? FileManager.default.removeItem(at: home) }
         }
-        try #require(try serviceAssertionTypes().isEmpty, "this test must start without another service's assertions")
+        let reason = "Cluster recovery test " + UUID().uuidString
+        try #require(try serviceAssertionTypes(reason).isEmpty, "this test must start without another service's assertions")
 
         for lifetime in 0..<2 {
             let directory = home.appendingPathComponent("lifetime-\(lifetime)", isDirectory: true)
@@ -73,7 +75,8 @@ struct ClusterServiceRecoveryTests {
                 darkbloomExecutable: helper, sessionArguments: [], pair: nil, dryRun: true, version: "fixture")
             let service = ClusterService(settings: .init(wizard: wizard, leaderArguments: [], followerArguments: [],
                 soloArguments: ["--service-part-fixture", directory.path, "replacement"]),
-                paths: paths, recoveryGraceSeconds: 0.2, supervisionIntervalSeconds: serviceSupervisionInterval)
+                paths: paths, recoveryGraceSeconds: 0.2, supervisionIntervalSeconds: serviceSupervisionInterval,
+                powerAssertionReason: reason)
             // Existing collaborator: a real control node already past its peer
             // absence grace. No fake launch/supervise/power/publication methods.
             let local = "mac-aaaaaaaaaaaa", peer = "mac-bbbbbbbbbbbb"
@@ -94,7 +97,7 @@ struct ClusterServiceRecoveryTests {
             }, "the real loop must publish the adopted leftover after its cleanup deadline")
             try #require(FileManager.default.fileExists(atPath: directory.appendingPathComponent("leftover-\(oldPID).term").path),
                          "startup cleanup must actually send TERM")
-            let held = try serviceAssertionTypes()
+            let held = try serviceAssertionTypes(reason)
             try #require(held.contains(kIOPMAssertionTypeNoIdleSleep) && held.contains("NetworkClientActive"))
             #expect(Set(held).count == held.count, "at most one assertion of each type")
             var publication = try recoveryPublicationDate(statusFile)
@@ -106,7 +109,7 @@ struct ClusterServiceRecoveryTests {
                 #expect(value.control?.mode == "alone" && value.serving, "a replacement is otherwise wanted")
                 #expect(readyPIDs(in: directory, role: "replacement").isEmpty)
                 #expect(ClusterService.runningPart(oldPart) != nil)
-                #expect(try serviceAssertionTypes() == held)
+                #expect(try serviceAssertionTypes(reason) == held)
             }
 
             // Saved intent alone must not mask a broken leftover-to-power edge.
@@ -114,7 +117,7 @@ struct ClusterServiceRecoveryTests {
             try #require(waitForRecovery { readRecoveryStatus(statusFile)?.serving == false })
             publication = try nextRecoveryPublication(statusFile, after: recoveryPublicationDate(statusFile))
             #expect(readRecoveryStatus(statusFile)?.child.pid == oldPID)
-            #expect(try serviceAssertionTypes() == held)
+            #expect(try serviceAssertionTypes(reason) == held)
             _ = try store.updateRecord { $0.leadership?.serving = true }
             try #require(waitForRecovery { readRecoveryStatus(statusFile)?.serving == true })
 
@@ -134,7 +137,7 @@ struct ClusterServiceRecoveryTests {
                 #expect(readRecoveryStatus(statusFile)?.child.starts == 1)
                 #expect(readRecoveryStatus(statusFile)?.child.pid == replacement.pid)
                 #expect(readyPIDs(in: directory, role: "replacement") == [replacement.pid])
-                #expect(try serviceAssertionTypes() == held)
+                #expect(try serviceAssertionTypes(reason) == held)
             }
 
             if lifetime == 0 {
@@ -147,12 +150,12 @@ struct ClusterServiceRecoveryTests {
             let requested = directory.appendingPathComponent("replacement-\(replacement.pid).term")
             try #require(waitForRecovery { FileManager.default.fileExists(atPath: requested.path) })
             #expect(ClusterService.runningPart(replacement) != nil)
-            #expect(try serviceAssertionTypes() == held, "retirement is requested but has not finished")
+            #expect(try serviceAssertionTypes(reason) == held, "retirement is requested but has not finished")
             try Data().write(to: directory.appendingPathComponent("release-replacement"))
             try #require(waitForRecovery { ClusterService.runningPart(replacement) == nil })
             if lifetime == 0 {
                 try #require(waitForRecovery { readRecoveryStatus(statusFile)?.child.running == false })
-                #expect(try serviceAssertionTypes().isEmpty, "idle service releases after its child stops")
+                #expect(try serviceAssertionTypes(reason).isEmpty, "idle service releases after its child stops")
                 currentRun.requestStop()
             }
             try #require(currentRun.join(seconds: 10), "service did not return: \(currentRun.log)")
@@ -160,7 +163,7 @@ struct ClusterServiceRecoveryTests {
             let final = try #require(readRecoveryStatus(statusFile))
             #expect(!final.child.running && final.child.pid == nil && final.child.starts == 1)
             #expect(!FileManager.default.fileExists(atPath: pidFile.path))
-            #expect(try serviceAssertionTypes().isEmpty, "run's defer releases even with saved serving true")
+            #expect(try serviceAssertionTypes(reason).isEmpty, "run's defer releases even with saved serving true")
             let fd = open(lockFile.path, O_RDONLY | O_CLOEXEC)
             try #require(fd >= 0)
             let acquired = flock(fd, LOCK_EX | LOCK_NB) == 0
@@ -348,6 +351,40 @@ struct ClusterServiceRecoveryTests {
         #expect(!notLeader.running)
     }
 
+    /// The service clears a stop drain in the same supervision tick that publishes child.running=false. A stop
+    /// request that meets that write waits for the record lock; it does not fail with "could not save the stop request".
+    @Test func stopRequestWaitsForAnotherRecordWriterAndALockHeldPastTheBoundStaysBusy() throws {
+        let home = try NativePairMemberFixture.privateRoot()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let store = ClusterSetupStore(paths: .init(paths: try ClusterUserPaths(homeDirectory: home)))
+        _ = try store.updateRecord { _ in }
+        let lockPath = store.paths.record.path + ".lock"
+        // Another open file description: flock excludes it in this process too.
+        let holder = open(lockPath, O_RDWR | O_CLOEXEC)
+        try #require(holder >= 0 && flock(holder, LOCK_EX | LOCK_NB) == 0)
+        let released = DispatchSemaphore(value: 0), start = DispatchTime.now()
+        // The scheduled unlock uses this descriptor; it is closed only after that unlock ran.
+        defer { _ = released.wait(timeout: .now() + 5); close(holder) }
+        DispatchQueue.global().asyncAfter(deadline: start + 0.2) { _ = flock(holder, LOCK_UN); released.signal() }
+        let stopID = UUID()
+        let saved = try store.updateRecord { $0.stopDrain = .init(id: stopID, keepPeerRunning: false) }
+        let waited = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1e9
+        #expect(waited >= 0.2, "the write ran only after the other writer let go (\(waited) s)")
+        let reread = try store.readRecord()
+        #expect(saved.stopDrain?.id == stopID && reread.stopDrain?.id == stopID)
+
+        try #require(released.wait(timeout: .now() + 5) == .success)
+        released.signal() // For the defer.
+        try #require(flock(holder, LOCK_EX | LOCK_NB) == 0)
+        let parent = try ClusterConfigurationFiles.directory(store.paths.directory, privateMode: true)
+        defer { close(parent.descriptor) }
+        let name = store.paths.record.lastPathComponent + ".lock"
+        #expect(throws: ClusterConfigurationError.busy) {
+            try ClusterConfigurationFiles.withLock(parent, name: name, waitSeconds: 0.05) {}
+        }
+        #expect(throws: ClusterConfigurationError.busy) { try ClusterConfigurationFiles.withLock(parent, name: name) {} }
+    }
+
     @Test func plannedStopRejectsUnknownLiveServiceAndDoesNotSignalRecycledIdentity() throws {
         let home = try NativePairMemberFixture.privateRoot()
         defer { try? FileManager.default.removeItem(at: home) }
@@ -496,12 +533,13 @@ private func readyPIDs(in directory: URL, role: String) -> [Int32] {
         .compactMap { Int32($0.dropFirst(role.count + 1).dropLast(".ready".count)) }.sorted()
 }
 
-private func serviceAssertionTypes() throws -> [String] {
+/// The types of this process's assertions named `reason`: the service under test's own.
+private func serviceAssertionTypes(_ reason: String) throws -> [String] {
     var raw: Unmanaged<CFDictionary>?
     try #require(IOPMCopyAssertionsByProcess(&raw) == kIOReturnSuccess)
     let values = try #require(raw?.takeRetainedValue() as? [NSNumber: [[String: Any]]])
     return (values[NSNumber(value: getpid())] ?? []).compactMap {
-        guard $0[kIOPMAssertionNameKey] as? String == "Darkbloom cluster: serving deployment" else { return nil }
+        guard $0[kIOPMAssertionNameKey] as? String == reason else { return nil }
         return $0[kIOPMAssertionTypeKey] as? String
     }.sorted()
 }

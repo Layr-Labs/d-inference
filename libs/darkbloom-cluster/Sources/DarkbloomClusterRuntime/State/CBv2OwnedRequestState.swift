@@ -87,7 +87,8 @@ final class CBv2OwnedRequestState {
     /// `slidingTails`: each sliding-window layer's retained window at the
     /// frontier (its last `min(committed, window)` positions, oldest first),
     /// in place of a whole-history row. `reservedTokens` as for a fresh
-    /// request (full attention only), at least the adopted frontier.
+    /// request, at least the adopted frontier: the rows' pages then grow
+    /// from there as a fresh request's do.
     init(geometry: CBv2RequestGeometry, promptCount: Int, outputCount: Int,
          adoptingCommittedTokens committed: Int,
          attention: [Int: (keys: MLXArray, values: MLXArray)],
@@ -100,7 +101,7 @@ final class CBv2OwnedRequestState {
             (1...(promptCount + outputCount)).contains(committed),
             attention.count + slidingTails.count == geometry.kinds.count,
             adopted.count == geometry.recurrent.layers.count,
-            reservedTokens == nil || slidingTails.isEmpty else {
+            reservedTokens.map({ $0 >= committed }) ?? true else {
             throw ProbeError("CBv2 adopted state exceeds the bounded request context or its layer coverage differs")
         }
         var prefix: [(keys: MLXArray, values: MLXArray, offset: Int)?] = []
@@ -127,7 +128,7 @@ final class CBv2OwnedRequestState {
         let backend: any CBv2KVBackend = geometry.host?.backend ?? CBv2ContiguousKVBackend(config: .init(
             bytesCapacity: geometry.kvCapacityBytes, kvDType: geometry.kvDType))
         let rows: [CBv2SequenceKV?]
-        if let reservedTokens {
+        if let reservedTokens, slidingTails.isEmpty {
             // Full attention only, into rows reserved for their first tokens.
             guard let paged = backend as? PagedKVBackend else {
                 throw ProbeError("A growing CBv2 reservation needs the stage's paged pool")
@@ -144,9 +145,18 @@ final class CBv2OwnedRequestState {
             // A sliding row keeps only its window: fresh rows, each full row
             // written whole, each sliding row moved to its tail's first position
             // and written there, so ring slots, offset and oldest retained
-            // position are what the original frames left.
-            rows = try backend.makeSequenceState(layerKinds: geometry.kinds, promptLength: promptCount,
-                maxLength: promptCount + outputCount)
+            // position are what the original frames left. With `reservedTokens`
+            // the rows are reserved for their first tokens, as a fresh request's.
+            if let reservedTokens {
+                guard let paged = backend as? PagedKVBackend else {
+                    throw ProbeError("A growing CBv2 reservation needs the stage's paged pool")
+                }
+                rows = try paged.makeSequenceState(layerKinds: geometry.kinds, promptLength: promptCount,
+                    maxLength: promptCount + outputCount, reservedTokens: reservedTokens)
+            } else {
+                rows = try backend.makeSequenceState(layerKinds: geometry.kinds, promptLength: promptCount,
+                    maxLength: promptCount + outputCount)
+            }
             guard rows.count == geometry.kinds.count, rows.allSatisfy({ $0 != nil }) else {
                 backend.release(rows)
                 throw ProbeError("CBv2 adopted sliding state lacks a row per layer")

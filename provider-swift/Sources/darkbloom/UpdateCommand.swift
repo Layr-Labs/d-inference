@@ -23,7 +23,7 @@ func loadUpdateConfig(configPath: String?) throws -> ProviderConfig {
 struct Update: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "update",
-        abstract: "Check for updates and self-update the provider binary."
+        abstract: "Check for updates and self-update the provider binary, or roll back to the previous release."
     )
 
     @OptionGroup var configOptions: ConfigOptions
@@ -37,11 +37,37 @@ struct Update: AsyncParsableCommand {
 
     @Flag(
         name: .long,
-        help: "Explicitly reinstall a locally quarantined failed version."
+        help: "Explicitly reinstall a locally quarantined version (failed starts or --rollback)."
     )
     var overrideQuarantine = false
 
+    @Flag(help: "Restore the release this Mac ran before its last update and quarantine the installed one.")
+    var rollback = false
+
+    @Flag(name: .shortAndLong, help: "With --rollback: don't ask for confirmation.")
+    var yes = false
+
+    /// Tests run `update` as root without being root.
+    @TaskLocal static var runsAsRootForTesting: Bool?
+
+    /// Whether this process runs as root: `--rollback` refuses it.
+    static var runsAsRoot: Bool { runsAsRootForTesting ?? (geteuid() == 0) }
+
+    func validate() throws {
+        if rollback, checkOnly || overrideQuarantine || coordinator != nil {
+            throw ValidationError("--rollback cannot be combined with --check-only, --override-quarantine or --coordinator.")
+        }
+        if yes, !rollback {
+            throw ValidationError("--yes applies only to --rollback.")
+        }
+    }
+
     mutating func run() async throws {
+        // Run as root, the locks `--rollback` creates in this home would be root's, and the user's provider and cluster
+        // service could no longer take them: it is refused before any work, so it draws no mark.
+        let refusesRollbackAsRoot = rollback && Self.runsAsRoot
+        let look = DarkbloomCommandLook.forCommand()
+        if !refusesRollbackAsRoot { look.open("Darkbloom update") }
         let config = try loadUpdateConfig(configPath: configOptions.config)
 
         print("\(BuildEnvironment.current.cliName) update")
@@ -51,10 +77,23 @@ struct Update: AsyncParsableCommand {
         let coordinatorURL = coordinator ?? config.coordinator.url
         let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
 
+        if rollback {
+            guard !refusesRollbackAsRoot else {
+                throw ValidationError("Run `\(BuildEnvironment.current.cliName) update --rollback` as the user the provider runs as, not as root.")
+            }
+            try await UpdateRollback(
+                updater: updater,
+                host: .live(drain: drain, configPath: configOptions.config),
+                say: { print($0) }
+            ).run(skipConfirmation: yes)
+            return
+        }
+
         if checkOnly {
-            let result = await updater.checkForUpdate(
-                manualOverride: overrideQuarantine
-            )
+            let manualOverride = overrideQuarantine
+            let result = await look.working("Checking for updates") {
+                await updater.checkForUpdate(manualOverride: manualOverride)
+            }
             switch result {
             case .upToDate(let version):
                 print("Up to date (v\(version)).")
@@ -90,11 +129,14 @@ struct Update: AsyncParsableCommand {
         }
 
         if overrideQuarantine {
-            printError("WARNING: overriding local failed-version quarantine by explicit request.")
-            printError("The failed release may crash this provider again.")
+            printError("WARNING: overriding the local release quarantine by explicit request.")
+            printError("The quarantined release failed its starts or was rolled back; it may fail or regress again.")
         }
         print("Checking for updates...")
-        let result = await updater.update(manualOverride: overrideQuarantine)
+        let manualOverride = overrideQuarantine
+        let result = await look.working("Checking, downloading and staging the update") {
+            await updater.update(manualOverride: manualOverride)
+        }
 
         switch result {
         case .alreadyUpToDate(let version):
@@ -103,7 +145,9 @@ struct Update: AsyncParsableCommand {
         case .updated(let from, let to):
             print("Updated: v\(from) -> v\(to)")
             if LaunchAgent.isLoaded() {
-                try await restartInstalledProvider(updater, operation: "manual-update-restart")
+                try await restartInstalledProvider(updater, operation: "manual-update-restart", look: look)
+            } else if ClusterService.running() {
+                try await restartClusterService(into: to, look: look)
             } else {
                 print("Restart the provider for the new version to take effect.")
             }
@@ -111,13 +155,15 @@ struct Update: AsyncParsableCommand {
         case .restartRequired(let from, let to):
             print("v\(to) is already installed (current process: v\(from)).")
             if LaunchAgent.isLoaded() {
-                try await restartInstalledProvider(updater, operation: "manual-candidate-restart")
+                try await restartInstalledProvider(updater, operation: "manual-candidate-restart", look: look)
+            } else if ClusterService.running() {
+                try await restartClusterService(into: to, look: look)
             } else {
                 print("Restart the provider for v\(to) to take effect.")
             }
 
         case .quarantined(let version, let reason):
-            printError("v\(version) is quarantined after failed starts: \(reason)")
+            printError("v\(version) is quarantined on this Mac: \(reason)")
             printError("A strictly newer release will install automatically.")
             printError("Use --override-quarantine for an explicit operator retry.")
             throw ExitCode.failure
@@ -147,9 +193,9 @@ struct Update: AsyncParsableCommand {
         }
     }
 
-    private func restartInstalledProvider(_ updater: SelfUpdater, operation: String) async throws {
+    private func restartInstalledProvider(_ updater: SelfUpdater, operation: String, look: DarkbloomCommandLook) async throws {
         let previous = LaunchAgent.launchSnapshot()?.process
-        let session = try await ServiceDrain.prepare(options: drain)
+        let session = try await look.working("Draining accepted requests") { try await ServiceDrain.prepare(options: drain) }
         defer { session.release() }
         // A stop that won the update lease while download/install completed
         // must not be resurrected by a late updater restart.
@@ -159,9 +205,11 @@ struct Update: AsyncParsableCommand {
         }
         print("Accepted requests drained. Restarting the installed provider...")
         do {
-            try updater.prepareCandidateLaunch(session: session, baseline: LaunchAgent.launchSnapshot())
-            try await ServiceDrain.stopDrainedProvider(unloadService: false)
-            try LaunchAgent.restartAfterDrain()
+            try await look.working("Restarting the provider") {
+                try updater.prepareCandidateLaunch(session: session, baseline: LaunchAgent.launchSnapshot())
+                try await ServiceDrain.stopDrainedProvider(unloadService: false)
+                try LaunchAgent.restartAfterDrain()
+            }
             ServiceDrain.rearmWatchdog(explicitConfig: configOptions.config)
         } catch {
             session.release()
@@ -169,7 +217,66 @@ struct Update: AsyncParsableCommand {
             throw error
         }
         session.release()
-        try await ServiceDrain.waitForRestart(previous: previous, timeout: 180)
+        try await look.working("Waiting for the restarted provider's fresh authorization") {
+            try await ServiceDrain.waitForRestart(previous: previous, timeout: 180)
+        }
     }
 
+    /// A `darkbloom cluster` Mac: its cluster service supervisor restarts into the installed release together with
+    /// the other Mac, after the pair drained, as at the pair's update slot (`ClusterPairUpdateCycle`).
+    private func restartClusterService(into version: String, look: DarkbloomCommandLook) async throws {
+        let directory = try ClusterService.paths().lock.deletingLastPathComponent()
+        let request = ClusterPairUpdate.Request(createdAt: Date().timeIntervalSince1970)
+        let outcome = try await look.working("Waiting for the cluster service") {
+            try await ClusterServiceUpdateRequest.restart(into: version, request: request, serviceDirectory: directory,
+                timeoutSeconds: drain.timeout, say: look.saying { print($0) })
+        }
+        guard outcome != .failed else { throw ExitCode.failure }
+    }
+
+}
+
+/// `darkbloom update` asks the cluster service supervisor for the pair's restart into the installed release
+/// (`ClusterPairUpdate.Request`) and follows its progress.
+enum ClusterServiceUpdateRequest {
+    enum Outcome: Equatable { case restarting, waiting, failed }
+
+    static func restart(into version: String, request: ClusterPairUpdate.Request, serviceDirectory: URL, timeoutSeconds: Int,
+                        pollSeconds: Double = 1, say: (String) -> Void) async throws -> Outcome {
+        let progressPath = ClusterServiceAgent.updateProgressPath(serviceDirectory: serviceDirectory)
+        // A supervisor of an earlier build neither publishes progress nor reads the request.
+        guard ClusterPairUpdate.readProgress(from: progressPath) != nil else {
+            say("This Mac's cluster service runs a build that does not restart for an update. Log out and back in on both Macs "
+                + "(or restart them) once both have v\(version).")
+            return .waiting
+        }
+        guard ClusterPairUpdate.writeRequest(request, to: ClusterServiceAgent.updateRequestPath(serviceDirectory: serviceDirectory)) else {
+            throw ValidationError("Could not ask this Mac's cluster service to restart (\(serviceDirectory.path) is not writable).")
+        }
+        say("Asked this Mac's cluster service to restart into v\(version) together with the other Mac; the pair finishes its accepted requests first.")
+        say("Run `\(ClusterPairSummary.cli) update` on the other Mac too (or wait for the pair's next update slot): both restart once both have v\(version).")
+        let deadline = Date().addingTimeInterval(Double(timeoutSeconds))
+        var said: String?
+        while Date() < deadline {
+            if let progress = ClusterPairUpdate.readProgress(from: progressPath), progress.request == request.id {
+                if progress.line != said {
+                    said = progress.line
+                    say("  \(progress.line)")
+                }
+                switch progress.phase {
+                case .restarting:
+                    say("The cluster service restarts into v\(version); the cluster sets itself up again once both Macs run it.")
+                    return .restarting
+                case .deferred, .failed:
+                    say("Not restarted now. The pair tries again at its next update slot, or run `\(ClusterPairSummary.cli) update` again.")
+                    return .failed
+                default:
+                    break
+                }
+            }
+            try await Task.sleep(nanoseconds: UInt64(pollSeconds * 1_000_000_000))
+        }
+        say("Still waiting after \(timeoutSeconds) s; the cluster service goes on by itself. Its log: ~/.darkbloom/cluster-setup/service.log")
+        return .waiting
+    }
 }

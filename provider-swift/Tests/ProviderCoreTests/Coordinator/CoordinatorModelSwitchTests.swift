@@ -153,4 +153,41 @@ struct CoordinatorModelSwitchTests {
         #expect(await client.acknowledgedSwitchDrain == nil)
         #expect(mock.snapshot().registers.count == 1)
     }
+
+    /// The registered set is what the coordinator on the live connection was
+    /// told: `register.models`, plus written `models_update`s, replaced by an
+    /// accepted `models_replace`; a reconnect registers it again.
+    @Test func theRegisteredSetFollowsRegisterUpdateAndReplacement() async throws {
+        let mock = MockCoordinator()
+        let url = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+        let client = switchTransportClient(url.mockProviderWebSocketURL())
+        let state = await client.state
+        #expect(state.registeredModelIDs == nil)
+        let (events, send) = await client.start()
+        defer { Task { await client.shutdown() } }
+        for await event in events { if case .connected = event { break } }
+        let reader = Task {
+            for await event in events {
+                if case .drainAck(let id) = event { await client.completeDrainAcknowledgement(id) }
+            }
+        }
+        defer { reader.cancel() }
+        #expect(state.registeredModelIDs == ["old"])
+
+        send(.modelsUpdate(models: [switchTransportModel("added")]))
+        _ = try #require(try await mock.waitForSnapshot { !$0.modelsUpdates.isEmpty })
+        #expect(await modelLoadingWaitUntil { state.registeredModelIDs == ["old", "added"] })
+
+        let drain = try #require(await client.prepareModelSwitch(timeout: .seconds(2)))
+        try await client.validateModelSelectionAfterDrain([switchTransportModel("new")], drainID: drain, timeout: .seconds(2))
+        #expect(state.registeredModelIDs == ["old", "added"])
+        try await client.replaceModelsAfterDrain([switchTransportModel("new")], drainID: drain, timeout: .seconds(2))
+        #expect(state.registeredModelIDs == ["new"])
+        #expect(state.registeredModels == DaemonState.RegisteredModels(models: ["new"], autopilotInventory: []))
+
+        await mock.dropActiveWebSocket()
+        _ = try #require(try await mock.waitForSnapshot(timeout: .seconds(10)) { $0.registers.count == 2 })
+        #expect(await modelLoadingWaitUntil { state.registeredModelIDs == ["new"] })
+    }
 }

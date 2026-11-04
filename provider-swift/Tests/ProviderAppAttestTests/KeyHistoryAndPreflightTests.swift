@@ -214,6 +214,38 @@ final class KeyHistoryAndPreflightTests: XCTestCase {
         XCTAssertEqual(AppAttestPreflight.pathClass(home + "/Applications/Darkbloom.app", home: home), .applications)
     }
 
+    func testEntitlementEvidenceComparesTheRunningTaskWithTheCodeOnDisk() {
+        let started = Date(timeIntervalSince1970: 1_790_000_000)
+        let disk: [String: Any] = [AppAttestEntitlementPolicy.optIn: ["CDhash"],
+                                   AppAttestEntitlementPolicy.environment: "production"]
+        // The disk check passes while the kernel gave the task no App Attest entitlement.
+        let missing = AppAttestEntitlementEvidence.build(runtime: { _ in nil }, diskEntitlements: disk,
+            executableModifiedAt: started.addingTimeInterval(40), processStartedAt: started)
+        XCTAssertEqual(missing.runtimeOptIn, false)
+        XCTAssertEqual(missing.runtimeEnvironment, .absent)
+        XCTAssertEqual(missing.diskOptIn, true)
+        XCTAssertEqual(missing.diskEnvironment, .production)
+        XCTAssertEqual(missing.executableModifiedMinusStartSeconds, 40, "the binary changed after this process started")
+        XCTAssertEqual(missing.line(context: "is_supported_false", startReason: .update),
+            "App Attest entitlement evidence (is_supported_false): start_reason=update runtime_opt_in=false"
+            + " runtime_environment=absent disk_opt_in=true disk_environment=production executable_modified_minus_start_s=40")
+
+        let granted = AppAttestEntitlementEvidence.build(runtime: { disk[$0] }, diskEntitlements: disk,
+            executableModifiedAt: started.addingTimeInterval(-3600), processStartedAt: started)
+        XCTAssertEqual(granted.runtimeOptIn, true)
+        XCTAssertEqual(granted.runtimeEnvironment, .production)
+        XCTAssertEqual(granted.executableModifiedMinusStartSeconds, -3600)
+
+        // Unreadable values are reported as unavailable, never guessed.
+        let unknown = AppAttestEntitlementEvidence.build(runtime: nil, diskEntitlements: nil,
+            executableModifiedAt: nil, processStartedAt: started)
+        XCTAssertEqual(unknown, AppAttestEntitlementEvidence())
+        XCTAssertEqual(unknown.line(context: "startup", startReason: nil),
+            "App Attest entitlement evidence (startup): start_reason=unknown runtime_opt_in=unavailable"
+            + " runtime_environment=unavailable disk_opt_in=unavailable disk_environment=unavailable"
+            + " executable_modified_minus_start_s=unavailable")
+    }
+
     func testRealEmbeddedProfileExpiryDecodesWhenInstalled() throws {
         let url = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".darkbloom/Darkbloom.app/Contents/embedded.provisionprofile")

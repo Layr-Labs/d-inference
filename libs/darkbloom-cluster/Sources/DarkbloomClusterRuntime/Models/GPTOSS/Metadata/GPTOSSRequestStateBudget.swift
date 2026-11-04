@@ -15,7 +15,10 @@ import Foundation
 /// is no recurrent state. A stage also holds one residual chunk coming or
 /// going, and stage 1 one vocabulary row. The workspace term is the largest
 /// transient a forward is known to build: one full-attention layer's score
-/// matrix for a chunk against the whole history, in float32.
+/// matrix for a chunk against the whole history, in float32, and never less
+/// than every full-attention layer's scores for its one decode row at once (a
+/// decode step's command buffers can keep the whole step in flight,
+/// `QwenLayerStageSession.decodeCommandBuffers`).
 struct GPTOSSRequestStateBudget: Encodable, Equatable {
     static let activationBytes = 4, growthStep = 256
     let fullAttentionLayers: Int, slidingLayers: Int
@@ -61,7 +64,9 @@ struct GPTOSSRequestStateBudget: Encodable, Equatable {
         let slidingState = try product([slidingPerLayer, sliding])
         let boundary = try allowance(try product([chunkSize, spec.hidden, activationBytes]), 2)
         let row = rank == 1 ? try allowance(try product([spec.vocabulary, 4]), 2) : 0
-        let workspace = full == 0 ? 0 : try allowance(try product([spec.queryHeads, chunkSize, capacity, 4]), 1)
+        // GPT-OSS decodes one row a request (no verify window): one per full-attention layer.
+        let scoreRows = max(chunkSize, full)
+        let workspace = full == 0 ? 0 : try allowance(try product([spec.queryHeads, scoreRows, capacity, 4]), 1)
         return .init(fullAttentionLayers: full, slidingLayers: sliding, fullAttentionStateBytes: fullState,
             slidingStateBytes: slidingState, boundaryBytes: boundary, rowBytes: row, workspaceBytes: workspace,
             reservedBytes: try sum([fullState, slidingState, boundary, row, workspace]))

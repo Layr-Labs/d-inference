@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-03
 
 Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -100,6 +100,10 @@ Provider `auto_update`, `idle_timeout_mins`, schedule windows, and startup
 preloading retain their existing native configuration. The app writes them
 through the [versioned desktop API](desktop-control.md), using expected revisions.
 
+The Models page reads which models the network registered from the daemon state
+file (`registered_models`), not from configuration. It has no setting. See
+[model registration](desktop-control.md) in the desktop API.
+
 ## Runtime metallib snapshots
 
 The provider creates an anonymous snapshot before binding the runtime metallib.
@@ -198,7 +202,7 @@ mode or update configuration changes are part of this addition.
 
 | Setting | Default / precedence | Consumer |
 |---|---|---|
-| `backend.enabled_models` | `[]` means all eligible local models; a successful `switch` pins its complete nonempty selection | `provider-swift/Sources/ProviderCore/Service/ProviderModelSelection.swift` (`save`) |
+| `backend.enabled_models` | `[]` means all eligible local models; a background `start` and a successful `switch` save their complete nonempty selection. A nonempty list, with the models the daemon started with, is the running daemon's operator filter: without Autopilot, coordinator `load_model`, `prefetch_model` and `desired_models` (including a selected build's alias successor) never load, download or advertise a model outside it. A live `switch` replaces the filter at once; a hand edit applies at the next start. `[]` filters nothing | `provider-swift/Sources/ProviderCore/Service/ProviderModelSelection.swift` (`save`); `provider-swift/Sources/ProviderCore/ProviderLoop+ModelSelection.swift` (`operatorFilterAllows`) |
 | launchd-managed `start --foreground --model` | Explicitly pinned `enabled_models` overrides stale baked arguments, including restart and watchdog recovery | `provider-swift/Sources/darkbloom/Start/StartCommand.swift` (`usesPinnedModelSelection`); `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`runForeground`) |
 | direct manual `start --foreground --model` | Explicit command-line IDs still override the saved selection | `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`runForeground`) |
 | later scheduled serving windows | Read full current Autopilot settings/consent plus saved selection. Disabling between windows restores ordinary `enabled_models` even if unchanged; otherwise keep the initial foreground selection until a live switch or saved selection change. Resolve an empty ordinary list to eligible local models, validate/hash before reopening and retain the original window end. With consent, cached Autopilot builds verified at start or by the previous window's provider (downloads and background checks) stay while their bytes hash unchanged. All other inputs remain frozen | `provider-swift/Sources/darkbloom/ScheduledWindowSelection.swift` (`ScheduledWindowSelection`); `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`runScheduled`) |
@@ -407,7 +411,7 @@ provider or model command is running. Code:
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `DARKBLOOM_NO_UPDATE_CHECK` | any value | unset | `provider-swift/Sources/darkbloom/Darkbloom.swift`; `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift`; `provider-swift/Sources/darkbloom/WatchdogCommand.swift`; `provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift`; forwarded by `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift` | Skips the startup version banner, the in-daemon auto-update loop, the start-mode check and the watchdog's update check; `scripts/install.sh` sets it for the runtime smoke test. |
+| `DARKBLOOM_NO_UPDATE_CHECK` | any value | unset | `provider-swift/Sources/darkbloom/Darkbloom.swift`; `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift`; `provider-swift/Sources/darkbloom/WatchdogCommand.swift`; `provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift`; `provider-swift/Sources/darkbloom/ClusterServiceCommand.swift` (`supervisorConfiguration`); forwarded by `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift` | Skips the startup version banner, the in-daemon auto-update loop, the start-mode check, the watchdog's update check and the `darkbloom cluster` pair's update at its slot; `scripts/install.sh` sets it for the runtime smoke test. It does not stop a pair Mac from following the other Mac's rollback to the release it ran before ([a rollback on one Mac](../provider/cluster-always-on.md#a-rollback-on-one-mac)). |
 | `DARKBLOOM_AUTH_TOKEN_PATH` | file path | `~/.darkbloom/auth_token` | `provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift` | A nonempty explicit path replaces the token path. Without it, the token is read only from `~/.darkbloom/auth_token` (for `sudo darkbloom report`, the invoking user's, read-only through `AuthTokenStore.loadReadOnly`); there is no legacy-path fallback. |
 | `DARKBLOOM_LOCAL_DIR` | directory | `~/.darkbloom` | `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift` | Directory for `local_token` and `local.json` (direct mode). |
 | `DARKBLOOM_STATE_FILE` | file path | `~/.darkbloom/daemon-state.json` | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift` | Daemon state snapshot read by `status`, `doctor` and the watchdog. |
@@ -788,13 +792,14 @@ solo serving is unchanged and the whole surface stays default-off.
 
 | Field | Meaning and bounds | Source |
 |---|---|---|
-| `batchLanes` | Optional integer 2, 4 or 8, or 6 for a Qwen TP row in `tensor_parallel_v1`; omitted in existing setups. Only registered text batch adapters in plain pipeline with serial prefill accept it. It is a requested width, never a capacity grant. | `provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift` (`validate`) |
+| `batchLanes` | Optional integer 2, 4 or 8, or 6 for a Qwen TP row in `tensor_parallel_v1`; omitted in existing setups. Only registered text batch adapters in plain pipeline with serial prefill accept it. It is a requested width, never a capacity grant. The guided setup writes it into both Macs' setups for a Qwen TP placement ([saved width](../architecture/inference.md#qwen-tensor-parallel-saved-width)), and a setup saved for coordinator pairing keeps it beside its approval. | `provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift` (`validate`), `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorWidth.swift` (`widest`) |
 | `DARKBLOOM_CLUSTER_BATCH_LANES` | An explicit diagnostic setting retains precedence; absent settings use the persisted width, then the existing family default. Malformed explicit values fail closed to one lane. | `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift` (`batchLanes`) |
 
 The normal cluster API can persist a wider setup after queued demand, conservative
 memory planning and full release. No environment setting is needed for that
 path. See [automatic local cluster batching](../architecture/inference.md#automatic-local-cluster-batching)
-for exclusions, rollback and the unchanged singleton preference at initial setup.
+for exclusions and rollback, and [the saved width](../architecture/inference.md#qwen-tensor-parallel-saved-width)
+for a Qwen TP placement's width at initial setup.
 
 ### Installed tensor-parallel synchronization
 
@@ -963,20 +968,23 @@ runtime digest, and the provider computes no facts for it
 | `models[].profile_sha256` | the capability's `profileFingerprint` |
 | `models[].resource_policy_sha256` | `DistributedInstalledNativeStart.resourcePolicySHA256` of the capability, the value a native start carries |
 | `models[].pair_serving_grant` | `null`, or exactly `evidence_sha256` and `mode_families` (1 to 4 of `hand_off`, `pipeline`, `pipeline_speculative`, `tensor_parallel`, in byte order). A model the build's public declaration (`ClusterPublicModels`) names by runtime model, catalog ID and artifact: its declared families, with the evidence document's SHA-256. Any other model: the families the build's bundled records grant its artifact (`ClusterPairServingGrants.grant`), with the SHA-256 of the records that grant is computed from (the artifact's passing records, without a pass that a divergence of the same shape contradicts) as canonical JSON Lines (`ClusterPairServingGrant.evidenceSHA256`: each record's `encodedLine` in bundle order, joined by `\n`, no trailing newline); `null` when they grant none |
-| `models[].parity_qualifications` | `[]` unless the model is declared; then one object per declared mode family (in byte order: `pipeline`, then `tensor_parallel`) and schedule (ascending), with the fields below. At most 8 |
+| `models[].parity_qualifications` | `[]` unless the model is declared; then one object per declared mode family (in byte order: `pipeline`, `pipeline_speculative`, then `tensor_parallel`) and schedule (ascending), with the fields below. At most 8 |
 | `…schedule` | `1` or `2`: the derived approval it qualifies |
 | `…numerics_classes` | each rank's `ClusterMemberDeviceProfile.numericsClass` of the evidence placement with this block's `metallib_sha256`, for example `g17d-nax1-mlx-98bab9d7-macos27.0` (Apple M5 Ultra, NAX on, macOS 27.0); two, the members of a derived approval |
-| `…mode`, `…cuts` | `pipeline`: `pipeline_v1` cut at `[num_hidden_layers / 2]` (integer division) of the model's `config.json`, read at the top level or else in `text_config` (`[22]` for GLM-5.3-Flash, `[32]` for Qwen3.8-27B); without a layer count the pipeline's qualifications are left out and the command names the family on standard error. `tensor_parallel`: `tensor_parallel_v1`, `[]` (`ClusterPublicModels.placement`) |
+| `…mode`, `…cuts` | `pipeline`: `pipeline_v1` cut at `[num_hidden_layers / 2]` (integer division) of the model's `config.json`, read at the top level or else in `text_config` (`[22]` for GLM-5.3-Flash, `[32]` for Qwen3.8-27B, `[24]` for MiMo-V2.6-Flash, `[15]` for Gemma 4 26B QAT); without a layer count the pipeline's qualifications are left out and the command names the family on standard error. `pipeline_speculative` (MiMo-V2.6-Flash): `pipeline_mtp_v1`, cut as the pipeline is. `tensor_parallel`: `tensor_parallel_v1`, `[]` (`ClusterPublicModels.placement`) |
 | `…tensor_parallel_shares` | `null`: equal shares |
 | `…promotable`, `…diverged` | `true`, `false` |
 | `…evidence_sha256` | SHA-256 of the evidence document, [`docs/reports/2026-10-31-public-cluster-models.md`](../reports/2026-10-31-public-cluster-models.md) |
-| `…qualified_at` | `2026-10-31T00:00:00Z` |
-| `…request_envelope` | `sampling` and `tools` `true`; `max_prompt_tokens` and `max_output_tokens` 1,048,576 (the coordinator's maximum: only the model's own limits apply); where the placement serves media (`ClusterModelFeaturePolicy.mediaContract`: both declared models in tensor parallel; a pipeline is text only), `vision` when the model's catalog entry in the release's environment lists `image` in `input_modalities`, `video` when it also lists `video` (`ClusterPublicModels.requestEnvelope`). A model given by hand has no catalog entry, so its envelope admits text only |
+| `…qualified_at` | `2026-11-03T00:00:00Z`, the date of the latest declaration |
+| `…request_envelope` | `sampling` and `tools` `true`; `max_prompt_tokens` and `max_output_tokens` 1,048,576 (the coordinator's maximum: only the model's own limits apply); where the placement serves media (`ClusterModelFeaturePolicy.mediaContract`: GLM-5.3-Flash and Qwen3.8-27B in tensor parallel; a pipeline is text only), `vision` when the model's catalog entry in the release's environment lists `image` in `input_modalities`, `video` when it also lists `video` (`ClusterPublicModels.requestEnvelope`). A model given by hand has no catalog entry, so its envelope admits text only |
 
 The public declaration names GLM-5.3-Flash (`registered_glm53_flash`,
 `glm-5.3-flash`) and Qwen3.8-27B (`registered_qwen38_27b`,
-`EigenLabs/Qwen3.8-27B-4bit-mtp`), each in `pipeline` and `tensor_parallel` on
-schedules 1 and 2, on the owner's decisions of 2026-10-31
+`EigenLabs/Qwen3.8-27B-4bit-mtp`) on the owner's decisions of 2026-10-31, and
+MiMo-V2.6-Flash (`registered_mimo_v26_flash_mopd`, `mimo-v2.6-flash-mopd`) and
+Gemma 4 26B QAT (`registered_gemma4_26b_qat_4bit`, `gemma-4-26b-qat-4bit`) on
+those of 2026-11-03, each in `pipeline` and `tensor_parallel` on schedules 1
+and 2, and MiMo-V2.6-Flash also in `pipeline_speculative`, its default split
 ([evidence](../reports/2026-10-31-public-cluster-models.md)). Every other
 model's clusters serve their owner only.
 
@@ -987,11 +995,14 @@ family's promotable records, merged under the request envelope they all allow,
 on any numerics classes, cuts and shares, unless a diverged record of the same
 numerics-class combination withholds it
 ([`parityQualification`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/coordinator/registry/cluster_parity_qualification.go)).
-Under a derived approval, public traffic for GLM-5.3-Flash and Qwen3.8-27B is
+Under a derived approval, public traffic for every declared model is
 therefore admitted in pipeline and tensor parallel on any Apple silicon pair,
-within the envelope. No pipeline of either model ran on two Apple M5 Ultras,
-and GLM-5.3-Flash has no tensor-parallel cross-cable record: both rest on the
-owner's decision of 2026-10-31 and the DevNet serving results. GLM-5.3-Flash's
+within the envelope. No pipeline of GLM-5.3-Flash or Qwen3.8-27B ran on two
+Apple M5 Ultras, and GLM-5.3-Flash has no tensor-parallel cross-cable record:
+both rest on the owner's decision of 2026-10-31 and the DevNet serving results.
+MiMo-V2.6-Flash's and Gemma 4 26B QAT's pipelines rest on their bundled records
+and the owner's decision of 2026-11-03; their tensor parallel rests on that
+decision alone, and serves once its code (#1706, #1707) is in the build. GLM-5.3-Flash's
 runtime serves only the serial prefill schedule (`supportedPrefillSchedules`
 of its registered specification), so its schedule 2 approval, grant and
 qualifications are inert. The setup's public-traffic line says a
@@ -1095,7 +1106,7 @@ pair's placement; [serving a pair](cluster-control-protocol.md#serving-a-pair)).
 |---|---|---|
 | Fetch | `GET <coordinator>/v1/cluster/approvals`, no query, no credential; HTTPS only (plain HTTP only to this Mac's loopback); no redirect; at most `maximumBytes = 512 * 1024` bytes and `maximumApprovals = 128` entries; `timeoutSeconds = 10`. The body is `darkbloom_cluster_catalog_v2` with `cluster_approvals`. Each entry has the fields of one of the two shapes (build-pinned or model approval); one list can hold both. One unknown, missing or malformed field refuses the whole answer. 404 (pair control off: staging, and production until its coordinator derives approvals from releases) and every failure mean no approval. A read error after an HTTP answer is an answer that cannot be used, not "no answer" | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalFetch.swift` (`ClusterApprovalFetch`) |
 | Match | The entry whose `model` is the setup's `publicModelID`, whose `schedule` is its prefill schedule (`1` serial, `2` one-chunk lookahead), and that is still current. A model approval matches when its `artifact_sha256` is the saved setup's `capability.artifactSHA256`; no runtime facts are computed for it. A build-pinned entry matches when its eight digests all equal this Mac's own cluster runtime facts (computed at most once per check from the helpers beside the setup's worker and the setup's model folder). Latest `not_after` first, across both shapes. An entry for another build or another copy of the model does not match | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalLifetime.swift` (`select`) |
-| Check | On each Mac, against its own files: every digest of a build-pinned entry (`ClusterApprovalAttachment.mismatches`), or the artifact of a model approval (refusal: "the approval's artifact_sha256 differs from this Mac's setup"); the member's own start refusals (`requireLocalRankGranted`); the roster of this Mac's pairing (S17); `validate` below | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalAttachment.swift` (`attachment`) |
+| Check | On each Mac, against its own files: no saved unequal `tensorShares`, which the member's registration cannot name (refusal: "Unequal tensor-parallel shares serve local clusters only …", `unequalTensorSharesServeLocally`; a cluster served through Darkbloom is planned with equal shares, `ClusterPlacementPolicy.equalTensorShares`); every digest of a build-pinned entry (`ClusterApprovalAttachment.mismatches`), or the artifact of a model approval (refusal: "the approval's artifact_sha256 differs from this Mac's setup"); the member's own start refusals (`requireLocalRankGranted`); the roster of this Mac's pairing (S17); `validate` below | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalAttachment.swift` (`attachment`) |
 | Save | Both parts stop. The leader checks the entry, sends it to the other Mac over the cable (service command `approval`), and saves it only after the other Mac checked and saved it. A refusal on either Mac saves it on neither. Both parts then start as cluster members | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalSync.swift` (`run`, `receive`) |
 | When | After the guided setup's Test stage passed (control operation `register`, run by the control leader: `OnboardingLive.localRegister`), once at each start of the control leader's cluster service and after an update re-adopted the setups (the re-adopted setups find the same model approval again, because it names no build), and every minute while a serving pair is offered or has its approval kept aside (`ClusterService.checkApproval`). A local-only cluster never asks (`ClusterApprovalSync.asks`) | as named |
 | Lifetime | A saved approval with more than `renewWithinSeconds = 86_400` left is kept. Within that day a later matching entry replaces it. An entry that the operator replaced under the same `id` (other bytes, for example a new `not_after`) is no longer the saved approval: a matching entry replaces it, else it is withdrawn (Serve locally). An ended one is removed: each Mac saves its setup without it before its part starts, and its part then serves on the leader's local API (`ClusterService.supervise`) | `ClusterApprovalLifetime.decide` |
@@ -1389,7 +1400,7 @@ the port serving would use when not, `notObserved` for another active port.
 | `portAddressMissing` | no `inet` on `P` | own service with a fixed address |
 | `clusterServiceMissing`, `clusterServiceMisconfigured` | `/usr/sbin/networksetup -listnetworkserviceorder` and `-getinfo` (manual, recorded address, `255.255.0.0`, no router, IPv6 not `Automatic`) | the service is made, or made afresh |
 | `otherServiceOnPort` | another enabled service on `P` | switched off |
-| `clusterSubnetInUse` | another interface's address or route in `10.219/16` | blocks |
+| `clusterSubnetInUse` | another interface's address in `10.219/16` (`ifconfig -a`), or a route into it through another interface (`netstat -rn -f inet`). A loopback (`lo0`) host route to an address an interface carries counts on that interface, so macOS's route to `P`'s own address does not count | blocks |
 | `serviceNameUnsafe` | a service or hardware port name outside letters, digits, spaces and `( ) - . _` | blocks |
 | `hardwarePortUnknown` | `networksetup -listallhardwareports` lists no port for `P` | blocks |
 | `stateUnreadable` | a reading failed | blocks |
@@ -1619,7 +1630,9 @@ other models (`ClusterRuntimeAdapter.qwenTensorParallelRuntimeModelIDs` names th
 and inconsistent ledger totals. It reads
 registered headers and requires the native allocator metadata bound. Saved
 `batchLanes` may select 2, 4, 6 or 8 in a Qwen TP row's `tensor_parallel_v1`; omission
-keeps one. GLM defaults remain unchanged.
+keeps one. The guided setup reads the quote at each of these widths
+([saved width](../architecture/inference.md#qwen-tensor-parallel-saved-width)).
+GLM defaults remain unchanged.
 Source: `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementTensorBatchQuote.swift`.
 
 ### Qwen27 saved mode compatibility
@@ -1655,3 +1668,5 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/C
 `provider-swift/Sources/darkbloom/ClusterServiceCommand.swift` (`Cluster.Stop`).
 
 The wizard’s optional local stopDrain token is saved with stopped intent and retained after a local timeout. Leases preserve the peer’s prior intent until the local supervisor retires its owned part and outstanding lease. The token is not a wire or user-facing configuration field; older records decode without it. A new serve is refused while it remains, and a model change retries the shared stop first.
+
+Every write of the wizard's record (`~/.darkbloom/cluster-setup/wizard.json`) takes the `wizard.json.lock` flock. When another writer holds that lock, the write waits up to 2 seconds for it (`ClusterSetupStore.recordLockWaitSeconds`). After 2 seconds the write fails with "Configuration or native device lease is currently held". The cluster service writes the record while it holds its own service lock, so it tries once and writes again on its next supervision cycle. Source: `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupWizardStore.swift` (`ClusterSetupStore.updateRecord`).

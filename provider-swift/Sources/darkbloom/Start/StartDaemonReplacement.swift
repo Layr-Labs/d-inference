@@ -7,7 +7,7 @@ extension Start {
     /// Persistence must succeed before the existing process or service is stopped.
     static func completeDaemonReplacement(
         autopilot: Bool, models: [String], configPath: String?,
-        stop: () async throws -> Void = { try await ServiceDrain.stopDrainedProvider() },
+        stop: () async throws -> Void = { try await ServiceDrain.stopDrainedProvider(daemonState: ServiceDrain.soloProviderState()) },
         install: () throws -> Void
     ) async throws {
         try Task.checkCancellation()

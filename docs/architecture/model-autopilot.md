@@ -1,6 +1,6 @@
 # Provider Autopilot
 
-> Last updated: 2026-10-27
+> Last updated: 2026-11-04
 
 Provider Autopilot offers an external controller the models of a Mac whose
 operator saved Autopilot consent: the saved selection plus every verified
@@ -16,6 +16,11 @@ earnings or relaxed memory limits.
 owns consent and the persisted selection. Ordinary startup selection remains
 separate. The provider publishes typed snapshots, validates control leases and
 rechecks actual work, pins, inventory and memory before changing residency.
+`darkbloom autopilot enable` and `autopilot models` enroll through that startup
+selector by running `darkbloom start --autopilot` inside themselves
+(`Autopilot/AutopilotEnrollmentCommands.swift`), with a plain look
+(`DarkbloomCommandLook.runNested`): in a terminal, that inner `start` draws no
+Darkbloom mark of its own.
 
 | Responsibility | Provider source |
 |---|---|
@@ -84,9 +89,14 @@ valid. The coordinator learns inventory metadata (`ModelInfo`) only from
 heartbeat's `selected_models`, and the provider re-registers once
 (`refreshAutopilotInventoryRegistration`, a planned reconnect) on the first
 capacity tick with no busy reason, no operation, no live lease, no running or
-queued download and the background verification finished. A busy provider
-keeps waiting rather than interrupting work; a registration made for any other
-reason also ends the wait (`registeredAutopilotInventoryIDs`).
+queued download and the background verification finished. A registration made
+for any other reason also ends the wait (`registeredAutopilotInventoryIDs`).
+After `autopilotInventoryRegistrationMaxWait` (10 minutes), in-flight work and a
+live lease no longer defer it. The planned reconnect then closes admission, lets
+accepted work finish, and reconnects; it never cancels accepted work. An
+operation, every other busy reason, a download and the verification still
+defer it. `models_update` cannot carry the build: the coordinator would make it
+ordinary and publicly routable.
 
 ## Downloads on the operator's behalf
 
@@ -244,6 +254,12 @@ stops the driver at its next candidate, and the current step finishes normally.
 9. Without saved consent, or with downloads turned off, there is no download, no
    `inventory_downloads` capability and no `download_storage`
    (`autopilotDownloadsEnabled`, `handlePrefetchModelRequest`).
+10. Without Autopilot, coordinator `load_model`, `prefetch_model` and desired
+    builds stay inside the
+    [operator filter](../reference/configuration.md#provider-model-selection), and
+    a selected build's alias successor becomes ordinary only inside it, with or
+    without consent (`autopilotAllowsModel`, `operatorFilterAllows`). Consented
+    downloads and operations keep their own gates.
 
 ## Failure modes
 
@@ -262,12 +278,15 @@ stops the driver at its next candidate, and the current step finishes normally.
   recorded downloads in the set until the next start.
 - Until the provider re-registers, a coordinator sees a newly downloaded build
   only as an ID in `selected_models`; operations on it are refused as not
-  cached. A provider that is never idle keeps waiting.
+  cached. A provider that is never idle at a capacity tick waits at most
+  `autopilotInventoryRegistrationMaxWait`.
 - A build at the 256-ID bound downloads but stays out of the set and its
   download reports `model_not_supported`.
 - A re-registration closes admission briefly, like any planned reconnect, and
   fails coordinator-side operations queued for that machine; it waits for an
-  idle tick and happens once per batch of new builds.
+  idle tick, or for the end of the bounded wait, and happens once per batch of
+  new builds. After the bounded wait it also ends a live lease, as any
+  reconnect does.
 
 ## External Policy
 

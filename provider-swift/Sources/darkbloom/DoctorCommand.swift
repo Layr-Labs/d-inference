@@ -46,6 +46,8 @@ struct Doctor: AsyncParsableCommand {
             snapshot: snapshot,
             coordinatorOverride: coordinator
         ))
+        // A Mac paired for a cluster: the cluster's own checks too (none on a single Mac).
+        checks.append(contentsOf: await buildClusterDoctorChecks(configPath: configOptions.config))
 
         // Operator-facing diagnosis: trust reason, SE key, model fit, runtime,
         // billing, version — the "why am I / aren't I earning?" answers.
@@ -61,7 +63,9 @@ struct Doctor: AsyncParsableCommand {
         print("Model CDN: \(ModelDownloader.resolveCDNURL())")
         let daemonState = DaemonStateFile.read()
         let daemonRunning = doctorDaemonProcessMatches(daemonState: daemonState)
-        print("Daemon: \(daemonRunning ? "running" : "NOT running — run `\(BuildEnvironment.current.cliName) start`")")
+        let pair = ClusterPairSummary.local()
+        print(Self.daemonLine(running: daemonRunning, paired: pair.paired, unsure: pair.pairingUnreadable))
+        if pair.paired { print(pair.statusLine) }
 
         // §16.5: did this box serve the KV backend it was configured for,
         // and is the snapshot that answer comes from still being refreshed?
@@ -355,7 +359,10 @@ func buildCoordinatorDoctorChecks(
     let base = coordinatorHTTPBase(coordinatorOverride ?? snapshot.config.coordinator.url)
     var checks: [DoctorCheck] = []
     let now = Date().timeIntervalSince1970
-    let authorization = DaemonStateFile.read()?.currentProviderAuthorization(
+    let state = DaemonStateFile.read()
+    let authorization = state?.displayedProviderAuthorization(
+        coordinatorURL: coordinatorOverride ?? snapshot.config.coordinator.url, now: now)
+    let removalAuthorization = state?.currentProviderAuthorization(
         coordinatorURL: coordinatorOverride ?? snapshot.config.coordinator.url, now: now)
     let appAttestAuthorized = authorization?.hasCurrentAppAttestAuthorization(now: now) == true
 
@@ -408,7 +415,8 @@ func buildCoordinatorDoctorChecks(
     if let authorization {
         checks.append(.init(name: "serving authorization",
                             status: appAttestAuthorized || authorization.path == "legacy" ? .pass : .warn,
-                            detail: ProviderAuthorizationReadiness.summary(authorization, now: now)))
+                            detail: ProviderAuthorizationReadiness.summary(
+                                authorization, removalAuthorization: removalAuthorization, now: now)))
         return checks
     }
 

@@ -7,6 +7,10 @@ on:
         value: ${{ jobs.changes.outputs.provider }}
       sdk:
         value: ${{ jobs.changes.outputs.sdk }}
+      cluster:
+        value: ${{ jobs.changes.outputs.cluster }}
+      mimo_audio:
+        value: ${{ jobs.changes.outputs.mimo_audio }}
 
 permissions:
   contents: read
@@ -20,6 +24,8 @@ jobs:
     outputs:
       provider: ${{ steps.paths.outputs.provider }}
       sdk: ${{ steps.paths.outputs.sdk }}
+      cluster: ${{ steps.paths.outputs.cluster }}
+      mimo_audio: ${{ steps.paths.outputs.mimo_audio }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:

@@ -204,6 +204,7 @@ public final class ProviderState: @unchecked Sendable {
     private var _modelAutopilot: ModelAutopilotSnapshot? = nil
     private var _autopilotInventory: [ModelInfo]? = nil
     private var _registeredAutopilotInventoryIDs: Set<String>? = nil
+    private var _registeredModelIDs: Set<String>? = nil
     private var _capacityModelAutopilot: ModelAutopilotSnapshot? = nil
     private var _prefixCacheV2Sources: [String: any DurablePrefixCacheEvidenceSource] = [:]
     private var _prefixCacheMemorySources: [String: ResidentPrefixCacheEvidence] = [:]
@@ -264,6 +265,30 @@ public final class ProviderState: @unchecked Sendable {
     var registeredAutopilotInventoryIDs: Set<String>? {
         get { lock.withLock { _registeredAutopilotInventoryIDs } }
         set { lock.withLock { _registeredAutopilotInventoryIDs = newValue } }
+    }
+
+    /// The ordinary model IDs the coordinator on the live connection was
+    /// told about: the `register.models` sent on it, plus each written
+    /// `models_update`, replaced by an accepted `models_replace`. The
+    /// coordinator routes only these. Nil while no registration is live.
+    var registeredModelIDs: Set<String>? {
+        get { lock.withLock { _registeredModelIDs } }
+        set { lock.withLock { _registeredModelIDs = newValue } }
+    }
+
+    /// `models_update` merges into the registered set; it never starts one.
+    func noteModelsUpdateWritten(_ ids: [String]) {
+        lock.withLock { _registeredModelIDs?.formUnion(ids) }
+    }
+
+    /// What the live registration carries, for the daemon state file.
+    var registeredModels: DaemonState.RegisteredModels? {
+        lock.withLock {
+            _registeredModelIDs.map {
+                DaemonState.RegisteredModels(models: $0.sorted(),
+                    autopilotInventory: (_registeredAutopilotInventoryIDs ?? []).sorted())
+            }
+        }
     }
 
     public var modelAutopilot: ModelAutopilotSnapshot? {

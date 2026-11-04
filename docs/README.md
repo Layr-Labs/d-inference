@@ -1,6 +1,6 @@
 # Darkbloom Provider Documentation
 
-> Last updated: 2026-10-28
+> Last updated: 2026-11-04
 
 This repository documents the Swift provider, local native inference and
 landing. Backend, console and admin source, development and operating guides
@@ -10,6 +10,7 @@ belong to
 ## Operate A Provider
 
 - [Installation](provider/installation.md) and [quickstart](provider/quickstart.md)
+- [Set up with an AI agent](provider/agent-setup.md): point your agent at this page to set up one Mac or a two-Mac cluster end to end
 - [CLI reference](provider/cli-reference.md) and [configuration](reference/configuration.md)
 - [Hardware requirements](provider/hardware-requirements.md)
 - [Check a missing base reward](provider/base-rewards.md)

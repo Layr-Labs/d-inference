@@ -26,6 +26,10 @@ enum ClusterSetupPlanning {
         /// the retained split. Absent, the split is chosen by speed alone.
         var tensorWideningQuote: ClusterPlacementTensorBatchQuote? = nil
         var targetFallbackWideningQuote: ClusterPlacementTensorBatchQuote? = nil
+        /// The same owners' complete quotes at the wider widths: the setup
+        /// saves the widest both Macs admit now (`ClusterPlacementTensorWidth`).
+        var tensorWidthQuotes: [ClusterPlacementTensorBatchQuote] = []
+        var targetFallbackWidthQuotes: [ClusterPlacementTensorBatchQuote] = []
     }
 
     typealias PlacementDecision = (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?)
@@ -89,15 +93,18 @@ enum ClusterSetupPlanning {
 
     /// Plans every model folder this Mac has. The local member leads every
     /// plan: the installed session is started from rank 0, over the pinned
-    /// route only this Mac holds.
+    /// route only this Mac holds. `coordinator`: the setup will serve through
+    /// the coordinator, so tensor parallel is planned with equal shares only
+    /// (`ClusterPlacementFlow.decide`).
     static func decide(readings: [ModelReading], description: ClusterPairDescription, localMemberID: String,
                        localProfile: ClusterDeviceProfile, peerProfile: ClusterDeviceProfile, peerModels: [ClusterSetupLocalModel],
                        measurements: [ClusterSpeedMeasurement], leader: String?? = .none,
                        served: [ClusterServedSpeedRecords.Entry] = [], link: ClusterLinkCosts = .unmeasured,
                        shareProbes: ClusterShareProbeHistory? = nil, now: Double = Date().timeIntervalSince1970,
-                       peerMayReceive: Bool = false, keeping: [String: ClusterGenerationMode] = [:]) -> [Decision] {
-        // The wizard's own steps lead from this Mac; the onboarding (`nil`) leaves which Mac leads the
-        // session (rank 0) and which decodes to the planner and the model's pair-serving grant.
+                       peerMayReceive: Bool = false, keeping: [String: ClusterGenerationMode] = [:],
+                       coordinator: Bool = false, chosenModes: [String: ClusterForcedMode] = [:]) -> [Decision] {
+        // The wizard's own steps lead from this Mac; the onboarding and the service's re-plans pass the Mac the cluster
+        // was set up on (`ClusterControlDerivation.planLeader`). A `nil` leader leaves rank 0 to the planner.
         let sessionLeader: String? = leader ?? localMemberID
         let peerID = description.members.first { $0.id != localMemberID }?.id ?? "the other Mac"
         // Developer bench only (`ClusterBenchChip`): both Macs are planned and checked as that chip; a release build
@@ -143,12 +150,16 @@ enum ClusterSetupPlanning {
                 func widening(_ quote: ClusterPlacementTensorBatchQuote?) -> ClusterPlacementTensorBatchQuote? {
                     quote == nil ? nil : quote == discovered ? reading.tensorWideningQuote : reading.targetFallbackWideningQuote
                 }
+                func widths(_ quote: ClusterPlacementTensorBatchQuote?) -> [ClusterPlacementTensorBatchQuote] {
+                    quote == nil ? [] : quote == discovered ? reading.tensorWidthQuotes : reading.targetFallbackWidthQuotes
+                }
                 let selected = try assistantOrTarget(discovered,
                     fallback: try? reading.targetFallbackQuote?.get()) { quote in
                     try ClusterPlacementFlow.decide(description: pair, capability: capability.record, localMemberID: localMemberID,
                         localProfile: localProfile, peerProfile: peerProfile, layout: layout, measurements: measurements,
-                        tensorAssistantQuote: quote, tensorWideningQuote: widening(quote), leader: sessionLeader,
-                        served: served, link: link, shareProbes: probes, incumbentMode: incumbent)
+                        tensorAssistantQuote: quote, tensorWideningQuote: widening(quote), tensorWidthQuotes: widths(quote),
+                        leader: sessionLeader, served: served, link: link, shareProbes: probes, incumbentMode: incumbent,
+                        chosenMode: chosenModes[reading.model.modelID], coordinator: coordinator)
                 }
                 var decided = selected.decision
                 let assistantQuote = selected.quote, fellBack = discovered != nil && selected.quote != discovered
@@ -157,8 +168,9 @@ enum ClusterSetupPlanning {
                     decided = try ClusterPlacementFlow.decide(description: pair.withPorts(.conventional), capability: capability.record,
                         localMemberID: localMemberID, localProfile: localProfile, peerProfile: peerProfile, layout: layout,
                         measurements: measurements, tensorAssistantQuote: assistantQuote,
-                        tensorWideningQuote: widening(assistantQuote), leader: sessionLeader,
-                        served: served, link: link, shareProbes: probes, incumbentMode: incumbent)
+                        tensorWideningQuote: widening(assistantQuote), tensorWidthQuotes: widths(assistantQuote),
+                        leader: sessionLeader, served: served, link: link, shareProbes: probes, incumbentMode: incumbent,
+                        chosenMode: chosenModes[reading.model.modelID], coordinator: coordinator)
                     if fellBack { decided.lines = [assistantDoesNotFit] + decided.lines }
                 }
                 guard let chosen = decided.result.chosen else {
@@ -179,6 +191,7 @@ enum ClusterSetupPlanning {
                 }
                 var plan = summary(decided.result, chosen: chosen, lines: decided.lines, localMemberID: localMemberID,
                     profiles: [localMemberID: localProfile, peerID: peerProfile])
+                plan.modes = modes(decided.result, served: served, pair: pair, localMemberID: localMemberID)
                 plan.publicTraffic = ClusterPairServingGrants.publicTrafficLine(runtimeModelID: capability.record.runtimeModelID,
                     artifactSHA256: capability.record.artifactSHA256, mode: chosen.mode,
                     tensorAssistant: assistantQuote?.assistant != nil && chosen.mode == .tensorParallel)
@@ -218,6 +231,8 @@ enum ClusterSetupPlanning {
     /// Why a model is not offered, plain action or fact first (the screen cuts long reasons).
     static func refusalWords(_ result: ClusterPlacementResult, localMemberID: String, names: [String: String] = [:]) -> String {
         func name(_ device: String) -> String { names[device] ?? device }
+        // Only tensor parallel fits, and it would drop a feature of the model's other modes (`ClusterModeParity`).
+        if result.tensorParallel?.verdict == .dropsFeatures, let why = result.modesReason { return why }
         if let excluded = result.unqualifiedPossible, excluded > 0 {
             let alone = result.alone.first(where: { $0.fit.possible })
                 .map { " \(name($0.device)) can serve it alone in single-Mac Darkbloom." } ?? ""
@@ -231,6 +246,32 @@ enum ClusterSetupPlanning {
             return "Too large for these Macs together: it needs \(total), even with every application closed."
         }
         return "Too large for these Macs together right now."
+    }
+
+    /// The mode families the screen may offer (owner, 2026-11-04: tensor parallel and pipeline both offered), the
+    /// chosen first: the planner's own sharded candidates that run here (not ones that do not fit, no runtime executes,
+    /// a qualification check kept out, or that would drop a feature), one per family (the pipeline family's best:
+    /// plain, compact or speculative), each with the decode rate this pair served it at, read as the planner reads its
+    /// served requests (`ClusterServedModes.figures` over this build's records of this model on these Macs).
+    static func modes(_ result: ClusterPlacementResult, served: [ClusterServedSpeedRecords.Entry], pair: ClusterPairDescription,
+                      localMemberID: String) -> [ClusterSetupPlanSummary.Mode]? {
+        guard let shards = result.shards else { return nil }
+        let runs: Set<ClusterShardOption.Verdict> = [.chosen, .slower, .predictedFasterOnPriorOnly, .reductionNotMeasured]
+        let members = Set(pair.members.map(\.id))
+        let pairServed = served.filter { $0.setup.modelID == pair.publicModelID && ($0.setup.ranks.map { Set($0) == members } ?? false) }
+        let builds = Dictionary(pair.members.map { ($0.id, $0.runtimeBinarySHA256) }, uniquingKeysWith: { first, _ in first })
+        let figures = ClusterServedModes.figures(ClusterServedSpeedRecords.servedBy(builds, pairServed).current,
+                                                 promptTokens: result.promptTokens, outputTokens: result.outputTokens)
+        var families = Set<ClusterForcedMode>(), modes = [ClusterSetupPlanSummary.Mode]()
+        for option in shards.options.sorted(by: { ($0.verdict == .chosen ? 0 : 1) < ($1.verdict == .chosen ? 0 : 1) })
+            where runs.contains(option.verdict) {
+            guard let mode = option.mode, let family = ClusterForcedMode.allCases.first(where: { $0.admits(mode) }),
+                  families.insert(family).inserted else { continue }
+            modes.append(.init(mode: mode.rawValue, shares: option.members.map {
+                .init(local: $0.device == localMemberID, firstLayer: $0.firstLayer, endLayer: $0.endLayer, share: $0.share)
+            }, servedDecodeTokensPerSecond: figures.first { $0.mode == mode }?.decodeTokensPerSecond))
+        }
+        return modes.isEmpty ? nil : modes
     }
 
     static func summary(_ result: ClusterPlacementResult, chosen: ClusterPlacementCandidate, lines: [String], localMemberID: String,

@@ -484,6 +484,44 @@ struct AutopilotDownloadTests {
         #expect(reconnects.requests == 0)
     }
 
+    /// A Mac that is busy at every tick, or always under a lease, still
+    /// reports a new build: after the bounded wait the planned reconnect
+    /// drains accepted work first instead of waiting for an idle tick.
+    @Test func aBusyProviderReRegistersOnceTheWaitIsOverdue() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.release() }
+        let loop = fixture.loop
+        _ = await fixture.installDownloads { id in try fixture.writeBuild(id) }
+        #expect(await loop.prefetchForTesting(Self.downloaded).terminal?.status == .verified)
+        let reconnects = ReconnectLog(accept: true)
+        reconnects.registered = true
+        await loop.setAutopilotRegistrationSeamForTesting(reconnects)
+        let start = ContinuousClock.now
+        let overdue = start.advanced(by: ProviderLoop.autopilotInventoryRegistrationMaxWait)
+
+        // In-flight work and a live lease defer it until the wait is over.
+        await loop.raiseBusyFlagForTesting(.inflightWork)
+        await loop.activateAutopilotForTesting(revision: Fixture.revision)
+        await loop.refreshAutopilotInventoryRegistration(now: start)
+        await loop.refreshAutopilotInventoryRegistration(now: overdue.advanced(by: .seconds(-1)))
+        #expect(reconnects.requests == 0)
+        // Any other busy reason still defers it after the wait.
+        await loop.raiseBusyFlagForTesting(.modelLoading)
+        await loop.refreshAutopilotInventoryRegistration(now: overdue)
+        #expect(reconnects.requests == 0)
+        await loop.lowerBusyFlagForTesting(.modelLoading)
+
+        // Overdue: one planned reconnect for the batch.
+        await loop.refreshAutopilotInventoryRegistration(now: overdue)
+        #expect(reconnects.requests == 1)
+        #expect(await loop.autopilotInventoryAwaitingRegistration.isEmpty)
+        #expect(await loop.autopilotInventoryAwaitingSince == nil)
+        await loop.refreshAutopilotInventoryRegistration(now: overdue)
+        #expect(reconnects.requests == 1)
+        await loop.lowerBusyFlagForTesting(.inflightWork)
+        await loop.clearAutopilotControl()
+    }
+
     @Test func registrationCarriesTheEffectiveInventoryFilteredByTheSet() throws {
         let config = CoordinatorClientConfig(url: "ws://127.0.0.1:0/unused", hardware: ModelLoadingFixtures.defaultHardware,
             models: [], backendName: "mlx-swift", autopilotInventory: [])

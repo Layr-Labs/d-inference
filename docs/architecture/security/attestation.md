@@ -1,6 +1,6 @@
 # Provider Attestation
 
-> Last updated: 2026-10-13
+> Last updated: 2026-11-04
 
 Provider attestation binds keys and reported runtime identity to an approved
 process. It does not prove model correctness, physical uniqueness, certified
@@ -26,7 +26,11 @@ challenges are handled. Delayed model cleanup does not clear a replacement
 connection's grant.
 
 The existing App Attest client and Apple-operation admission still serialize
-proof work. Cancellation cannot cancel Apple's underlying native call. Replies
+proof work. Cancellation cannot cancel Apple's underlying native call. Apple
+attests a key once, so the client also keeps the answer to an attestation: a
+cancelled exchange keeps waiting for it, bounded by the callback deadline, and
+records it as an uncancelled exchange would. Planned stops wait for it too; see
+the [enrollment rules](../../reference/app-attest-shadow.md#bounds-and-credential-lifecycle). Replies
 use the originating-socket `AppAttestShadowReply` capability, which rechecks the
 current transport immediately before submission. A late callback therefore
 cannot send an old proof through a replacement connection even before the

@@ -2,11 +2,15 @@ import DarkbloomClusterProtocol
 import Foundation
 
 /// The named storage of one request on the registered Gemma 4 26B geometry, in
-/// logical bytes. Either rank is charged the whole model's state, as the
-/// registered Qwen allowance charges it: a conservative ledger of named arrays,
-/// not a whole-process peak.
+/// logical bytes. Either pipeline rank is charged the whole model's state, as
+/// the registered Qwen allowance charges it: a conservative ledger of named
+/// arrays, not a whole-process peak. A tensor-parallel rank (`ranks` 2) keeps
+/// only its own KV heads of every layer (4 sliding, 1 full), and the residual
+/// rows and logits whole.
 struct Gemma4StateBudget: Equatable {
     let maximumTokens: Int, chunkSize: Int
+    /// The ranks the KV heads are divided among: 1 for a pipeline stage.
+    let ranks: Int
     let fullLayers: Int, slidingLayers: Int
     /// Keys or values of one full-attention layer at the request's capacity.
     let fullKVBytes: Int
@@ -22,17 +26,19 @@ struct Gemma4StateBudget: Equatable {
     let largestSingleHostStateComponentBytes: Int
     let stateAndBoundaryBytes: Int
 
-    static func estimate(maximumTokens: Int, chunkSize: Int) throws -> Self {
-        guard (1...ClusterWorkerLimits.contextTokens).contains(maximumTokens), (1...512).contains(chunkSize) else {
-            throw ProbeError("Gemma state budget requires bounded tokens and chunk")
+    static func estimate(maximumTokens: Int, chunkSize: Int, ranks: Int = 1) throws -> Self {
+        guard (1...ClusterWorkerLimits.contextTokens).contains(maximumTokens), (1...512).contains(chunkSize),
+              [1, 2].contains(ranks), Gemma4StageGeometry.fullKVHeads % ranks == 0,
+              Gemma4StageGeometry.slidingKVHeads % ranks == 0 else {
+            throw ProbeError("Gemma state budget requires bounded tokens, chunk and ranks")
         }
         let product = QwenLongPrefillCheckedBytes.product, sum = QwenLongPrefillCheckedBytes.sum
         let layers = Gemma4StageGeometry.layerCount
         let full = layers / Gemma4StageGeometry.fullAttentionInterval, sliding = layers - full
         let elementBytes = 2
-        let fullKV = try product([maximumTokens, Gemma4StageGeometry.fullKVHeads,
+        let fullKV = try product([maximumTokens, Gemma4StageGeometry.fullKVHeads / ranks,
                                   Gemma4StageGeometry.fullHeadDimension, elementBytes])
-        let slidingRow = try product([Gemma4StageGeometry.slidingKVHeads,
+        let slidingRow = try product([Gemma4StageGeometry.slidingKVHeads / ranks,
                                       Gemma4StageGeometry.slidingHeadDimension, elementBytes])
         let ring = try product([Gemma4StageGeometry.slidingWindow, slidingRow])
         let view = try product([Gemma4StageGeometry.slidingWindow - 1 + chunkSize, slidingRow])
@@ -41,7 +47,7 @@ struct Gemma4StateBudget: Equatable {
         let total = try sum([product([2, full, fullKV]), product([2, sliding, ring]),
             product([2, sliding, view]), product([4, layers]), max(fullKV, ring),
             product([2, boundary]), product([2, logits])])
-        return .init(maximumTokens: maximumTokens, chunkSize: chunkSize, fullLayers: full, slidingLayers: sliding,
+        return .init(maximumTokens: maximumTokens, chunkSize: chunkSize, ranks: ranks, fullLayers: full, slidingLayers: sliding,
             fullKVBytes: fullKV, ringKVBytes: ring, slidingViewKVBytes: view, boundaryBytes: boundary,
             logitsBytes: logits, largestSingleHostStateComponentBytes: max(fullKV, ring),
             stateAndBoundaryBytes: total)
@@ -86,21 +92,39 @@ struct Gemma4ResidentResourceCeilings: Equatable {
 /// planner prices it beside the KV, oMLX U#3651). Both head dimensions (512 on
 /// a full layer, 256 on a sliding one) take MLX's unfused path, so a frame
 /// materializes float32 scores beside a float32 output: over the whole context
-/// on a full layer, over the window and the frame on a sliding one. Layers run
-/// one after another, so the stage's transient is its largest layer's.
+/// on a full layer, over the window and the frame on a sliding one. Prefill
+/// layers run one after another under the rank's command-buffer limits, so the
+/// frame's transient is its largest layer's. A decode step's command buffers
+/// (`QwenLayerStageSession.decodeCommandBuffers`) can keep every layer's
+/// temporaries alive at once: `decodeRows` a layer over each of `decodeLayers`,
+/// added up, priced the same way, and the larger of the two is charged.
 enum Gemma4PrefillTransient {
-    static func bytes(layers: [QwenLayerStagePlan.Layer], chunkTokens: Int, contextTokens: Int) throws -> Int {
+    static func bytes(layers: [QwenLayerStagePlan.Layer], chunkTokens: Int, contextTokens: Int,
+                      decodeRows: Int = 0, decodeLayers: [QwenLayerStagePlan.Layer] = []) throws -> Int {
+        try bytes(fullAttention: layers.map { $0.kind == Gemma4StageGeometry.fullKind },
+            queryHeads: Gemma4StageGeometry.queryHeads, chunkTokens: chunkTokens, contextTokens: contextTokens,
+            decodeRows: decodeRows, decodeFullAttention: decodeLayers.map { $0.kind == Gemma4StageGeometry.fullKind })
+    }
+
+    /// The same over layers of these kinds with `queryHeads` query heads each
+    /// (a tensor-parallel rank's own half of them). A decode step can keep
+    /// every layer's temporaries alive at once: `decodeRows` a layer over each
+    /// of `decodeFullAttention`'s layers, added up, priced the same way, and
+    /// the larger of the two is charged.
+    static func bytes(fullAttention: [Bool], queryHeads: Int, chunkTokens: Int, contextTokens: Int,
+                      decodeRows: Int = 0, decodeFullAttention: [Bool] = []) throws -> Int {
         typealias G = Gemma4StageGeometry
         let product = QwenLongPrefillCheckedBytes.product, sum = QwenLongPrefillCheckedBytes.sum
+        func transient(full: Bool, queries: Int) throws -> Int {
+            let width = full ? G.fullHeadDimension : G.slidingHeadDimension
+            let keys = full ? contextTokens : min(contextTokens, G.slidingWindow - 1 + queries)
+            return try sum([product([queryHeads, queries, keys, 4]), product([queryHeads, queries, width, 4])])
+        }
         let queries = min(chunkTokens, contextTokens)
         var largest = 0
-        for layer in layers {
-            let full = layer.kind == G.fullKind
-            let width = full ? G.fullHeadDimension : G.slidingHeadDimension
-            let keys = full ? contextTokens : min(contextTokens, G.slidingWindow - 1 + chunkTokens)
-            let value = try sum([product([G.queryHeads, queries, keys, 4]), product([G.queryHeads, queries, width, 4])])
-            largest = max(largest, value)
-        }
-        return largest
+        for full in fullAttention { largest = max(largest, try transient(full: full, queries: queries)) }
+        guard decodeRows > 0 else { return largest }
+        let decode = try sum(decodeFullAttention.map { try transient(full: $0, queries: decodeRows) })
+        return max(largest, decode)
     }
 }

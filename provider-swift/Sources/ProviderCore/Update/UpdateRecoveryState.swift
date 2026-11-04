@@ -302,12 +302,21 @@ public struct UpdateRecoveryState: Codable, Sendable, Equatable {
         return true
     }
 
+    /// The installed release a rollback replaces: the pending candidate, else
+    /// a promoted release that is not the retained predecessor. Nil once a
+    /// rollback has completed (`current` is then the predecessor's record).
+    public var rollbackSource: InstalledReleaseRecord? {
+        if let candidate { return candidate.release }
+        guard let current, let predecessor, current != predecessor.release else { return nil }
+        return current
+    }
+
     public mutating func completeRollback(now: Double, reason: String) {
-        guard let failed = candidate, let predecessor else { return }
+        guard let replaced = rollbackSource, let predecessor else { return }
         current = predecessor.release
         quarantine = FailedReleaseQuarantine(
-            version: failed.release.version,
-            failureCount: failed.failureCount,
+            version: replaced.version,
+            failureCount: candidate?.failureCount ?? 0,
             quarantinedAt: now,
             reason: reason
         )
@@ -344,4 +353,18 @@ public struct UpdateRecoveryState: Codable, Sendable, Equatable {
         guard !manualOverride, let quarantine else { return false }
         return quarantine.version == version
     }
+}
+
+/// What reconciling the update record with the installed app changed
+/// (`UpdateRecoveryStore.reconcileWithInstalledApp`).
+public enum UpdateRecoveryReconciliation: Equatable, Sendable {
+    /// The installed app is not the release the record named (an install outside the updater): the record now names
+    /// `installed`; the release it named (`recorded`), the pending one (`pending`) and the rollback copy, recorded as
+    /// `removedCopy`, are gone from it.
+    case installedOutsideTheUpdater(installed: String, recorded: String?, pending: String?, removedCopy: String?)
+    /// The rollback copy recorded as `recordedAs` is a verified app signed as `signed`: it is now recorded as `signed`.
+    case rollbackCopyRelabelled(recordedAs: String, signed: String)
+    /// The rollback copy recorded as `recordedAs` could not be verified as the release its app is signed as (its app
+    /// names no version, or its files are not the recorded ones): it was removed.
+    case unverifiedRollbackCopyRemoved(recordedAs: String)
 }

@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-10-13
+> Last updated: 2026-11-04
 
 How to check provider verification and retain legacy `hardware` trust where
 eligible. New providers require macOS 27 or later and current qualified App
@@ -68,7 +68,7 @@ and the [wire contract](https://github.com/Layr-Labs/darkbloom-platform/blob/48a
 
 ## App Attest without Darkbloom MDM
 
-A failed initial enrollment can leave an Apple key unusable even when its identifier is still in Keychain. Darkbloom replaces that identifier after non-service-unavailable failures or interrupted attempts, subject to the persisted one-hour replacement cooldown and shared hourly generation budget. Service-unavailable failures keep the same key, and already saved enrollment proofs are retained for retry. Do not delete account, machine, Keychain or employer-management state to force retries. This recovery is not proof that the Mac is authorized; check the coordinator verdict before removing Darkbloom MDM. See the [key lifecycle](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle).
+A failed initial enrollment can leave an Apple key unusable even when its identifier is still in Keychain. Darkbloom replaces that identifier after non-service-unavailable failures, or after an attempt whose answer was lost because the provider ended during the Apple call, subject to the persisted one-hour replacement cooldown and shared hourly generation budget. A crash or forced kill can lose that answer; a disconnect, `darkbloom stop` or a cluster restart lets Apple answer first. Service-unavailable failures keep the same key, and already saved enrollment proofs are retained for retry. Do not delete account, machine, Keychain or employer-management state to force retries. This recovery is not proof that the Mac is authorized; check the coordinator verdict before removing Darkbloom MDM. See the [key lifecycle](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle).
 
 After a macOS upgrade, the running signed app checks App Attest again on its next coordinator connection. If a completed Apple callback reports key-generation failure without a usable ID, Darkbloom can retry after one minute within its persisted hourly budget; timeout, cancellation and busy admission retain the safer one-hour cooldown. A definite Apple service-unavailable assertion gets one local retry using the same key and challenge. These attempts cannot grant access without Apple's verified proof and the coordinator's applicable authorization, build and security checks.
 
@@ -79,7 +79,7 @@ is historical evidence, not the current retry schedule.
 
 When the coordinator asks the provider to enroll a key that this Mac already enrolled, the provider clears that key and answers `key_unregistered`; the next exchange generates a replacement within the one-hour cooldown and shared hourly generation budget. The replacement goes through the full enrollment checks. Do not delete the Keychain item yourself.
 
-`darkbloom doctor` shows the provider's local App Attest state in the `APP ATTEST` section: whether a key is stored and enrolled, any remaining local key-generation safeguard, whether the provider runs in the logged-in GUI session, and a stalled Apple call. The countdown is calculated by the provider; it is not an Apple-supplied deadline or the coordinator's retry time. The coordinator may retry later under its [configured recovery schedule](https://github.com/Layr-Labs/darkbloom-platform/blob/20b821646acfbf0968d1c30239cb583eeb0fa2bc/docs/reference/provider-authorization.md#controls), independently of this local safeguard. The daemon records local state on each coordinator App Attest exchange (`provider-swift/Sources/ProviderCore/Diagnostics/AppAttestLocalDiagnosis.swift`). If Apple reports App Attest as unsupported (`is_supported_false`), log in at the console and run `darkbloom restart` so the provider runs inside the GUI session, and confirm SIP is enabled and Startup Security Utility is set to Full Security.
+`darkbloom doctor` shows the provider's local App Attest state in the `APP ATTEST` section: whether a key is stored and enrolled, any remaining local key-generation safeguard, whether the provider runs in the logged-in GUI session, and a stalled Apple call. The countdown is calculated by the provider; it is not an Apple-supplied deadline or the coordinator's retry time. The coordinator may retry later under its [configured recovery schedule](https://github.com/Layr-Labs/darkbloom-platform/blob/20b821646acfbf0968d1c30239cb583eeb0fa2bc/docs/reference/provider-authorization.md#controls), independently of this local safeguard. The daemon records local state on each coordinator App Attest exchange (`provider-swift/Sources/ProviderCore/Diagnostics/AppAttestLocalDiagnosis.swift`). If Apple reports App Attest as unsupported (`is_supported_false`) for a provider outside the GUI session, log in at the console and run `darkbloom restart` so the provider runs inside the GUI session. For a provider already in the GUI session a restart does not help: re-register the app with LaunchServices instead (see the self-update paragraph below). In both cases, confirm SIP is enabled and Startup Security Utility is set to Full Security.
 
 Local key/history observations refresh after every proof exchange, including repeated assertions without another `prepare`. `doctor` and `report` advance displayed ages between exchanges while retaining the original observation metadata.
 
@@ -98,6 +98,44 @@ when idle; see the [thresholds and limits](../reference/app-attest-shadow.md#bou
 The log line starts with `App Attest: Apple operation stalled`. An explicit
 `darkbloom restart` uses the same graceful lifecycle; it is not instant or proof
 that Apple will accept the next call.
+
+After a self-update, some macOS 27 Macs report App Attest as unsupported
+(`is_supported_false`) although it worked before. Apple's answer also depends on
+macOS LaunchServices' record of the running app, and the update swaps
+`Darkbloom.app` in place. Until LaunchServices registers the new bundle, every
+process reports unsupported, including restarted ones. Fleet data for the 0.10.6
+and 0.10.7 rollouts: 12–15% of updating macOS 27 Macs; it cleared on its own
+after minutes to hours. The updater registers the new bundle with
+LaunchServices (`LSRegisterURL`, as `lsregister -f` does) right after the swap
+(`SelfUpdater.commitStagedBundle`). When Apple answers unsupported, the
+provider also re-registers the running bundle and asks Apple again before
+replying (`AppleAppAttestService.checkAvailability`,
+`provider-swift/Sources/ProviderAppAttest/AppAttestSupport.swift`). It does
+this at most once per process, or once per scheduled window for a provider with
+an availability schedule. To do it by hand:
+
+```bash
+/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f "$HOME/.darkbloom/Darkbloom.app"
+```
+
+Then wait for the next App Attest check (up to 10 minutes) or run
+`darkbloom restart`. The command only refreshes macOS's record of the app; it
+changes no Darkbloom file or key. If the coordinator granted
+this Mac App Attest in the last 7 days and launchd runs the provider, the
+provider restarts once through launchd when the state lasts 5 minutes and the
+provider is idle. It restarts once per verified episode: if the new process
+still reports unsupported, it waits until the coordinator verifies the Mac
+again. This restart shares the stall restart's limit of one per 6 hours.
+
+For root-cause analysis, the provider log (`~/.darkbloom/provider.log`) gets a
+line that starts with `App Attest entitlement evidence` once at startup and at
+each `is_supported_false` answer. It shows the start reason, the App Attest
+entitlements the kernel gave the running process next to the ones in the code
+on disk, and the executable's modification time minus the process start time.
+The line stays on the Mac; it is not sent to the coordinator
+(`provider-swift/Sources/ProviderAppAttest/AppAttestPreflightProbe.swift`,
+`AppAttestEntitlementEvidence`). The log line starts with `App Attest: isSupported is false`. See the
+[thresholds and limits](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle).
 
 The separate [supervised worker candidate](../architecture/security/identity-binding.md#supervised-app-attest-worker-candidate)
 is internal, defaults off and is **not ready for production**. It retires the
@@ -138,6 +176,8 @@ cannot supply missing evidence or repair a mismatch. Do not delete a working
 credential to bypass that check.
 
 New setup on macOS 27 or later skips MDM profile download in both the installer and `darkbloom enroll`. Darkbloom MDM will be deactivated soon; upgrade to macOS 27 to avoid legacy enrollment. A qualified macOS 27 provider can use [App Attest authorization](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/reference/provider-authorization.md) when the coordinator explicitly enables it. Start the signed provider and check `darkbloom status` / `darkbloom doctor` for current App Attest authorization. Company-managed Macs keep their employer profile; they do not enroll into Darkbloom MDM for this path.
+
+When `darkbloom status` or `darkbloom doctor` says App Attest authorizes the connection but MDM removal needs fresh coordinator readiness, keep existing profiles installed and wait for a fresh decision. The displayed serving lease can remain valid after removal readiness becomes stale. Both doctor summaries and status use the separate decisions in `provider-swift/Sources/ProviderCore/Diagnostics/ProviderAuthorizationReadiness.swift` (`summary`); see the [authorization reference](../reference/provider-authorization.md).
 
 After the coordinator enables removal and reports readiness, run `darkbloom unenroll` and choose the App Attest option. Removal guidance requires a coordinator decision received within the last 10 seconds, as well as a current daemon snapshot and unexpired authorization; a local state-file rewrite cannot extend readiness. It requires macOS 27 or later; `--keep-serving` remains a direct shortcut. The command preserves credentials/account data, validates the exact Darkbloom enrollment and guides removal in System Settings. If the read-only administrator inventory is needed, run the command in the foreground of an interactive terminal: `sudo` reads the password with terminal echo disabled. Refusing authentication, running without a terminal, or running as a background job withholds guidance; no profile is removed by the CLI. The full-exit option stops the provider and offers identity cleanup, so choose App Attest to retain provider identity.
 

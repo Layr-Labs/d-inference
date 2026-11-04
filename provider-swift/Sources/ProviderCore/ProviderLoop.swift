@@ -216,8 +216,33 @@ public actor ProviderLoop {
     /// attempt waits until this instant (monotonic; this process only, since a
     /// new process has no stalled call).
     internal var appAttestStallRetryAt: ContinuousClock.Instant?
+    /// When a `ready` in this process first answered `is_supported_false` on a
+    /// Mac that may restart for it; nil once a later `ready` answers otherwise.
+    internal var appAttestUnsupportedSince: Date?
+    /// Last write of `AppAttestVerifiedMarker` by this process.
+    internal var appAttestVerifiedRecordedAt: Date?
+    /// Seam for the launchd boundary: how a restart would reach its new process.
+    internal var appAttestRelaunchRoute: @Sendable () -> ProcessLifecycle.RelaunchRoute = { .current() }
+    /// Seam for Apple's live `DCAppAttestService.isSupported`.
+    internal var appAttestSupportProbe: @Sendable () -> Bool = { AppleAppAttestService.isSupportedNow() }
+    /// Seam for the App Attest restart itself (launchd kickstart or exec).
+    /// Production relaunches for real; tests replace only this boundary.
+    internal typealias AppAttestRestart = @Sendable (ProviderRunMarker.ExitCause, ProcessLifecycle.RelaunchRoute) throws -> Void
+    internal var appAttestRestart: AppAttestRestart = { try ProcessLifecycle.restartAfterUpdate(cause: $0, route: $1) }
+    /// Seam for the install the App Attest restart leases; nil is the running install.
+    internal var appAttestRestartUpdater: SelfUpdater?
+    /// Seam for the local entitlement evidence line written at `is_supported_false`.
+    internal var appAttestEvidenceLog: @Sendable (_ context: String) -> Void = {
+        ProviderProcessRun.logAppAttestEntitlementEvidence(context: $0)
+    }
+    /// How long a planned stop waits for an attestation already with Apple.
+    internal var appAttestStopWaitSeconds = AppAttestShadowClient.outstandingAttestationWaitSeconds
     internal let loopConfig: ProviderLoopConfig
     internal var ordinaryServingModelIDs: Set<String>
+    /// The operator's explicit selection: `enabled_models` with the start
+    /// selection, then each live switch. Nil when `enabled_models` is empty,
+    /// which serves any model the coordinator pushes (`operatorFilterAllows`).
+    internal var operatorModelFilter: Set<String>?
     internal var autopilotSuccessorNeedsInventoryRefresh = false
     internal var autopilotInventoryModels: [String: ModelInfo]
     internal let keyPair: NodeKeyPair
@@ -372,6 +397,9 @@ public actor ProviderLoop {
     /// Builds added to the Autopilot inventory since the last registration;
     /// the coordinator learns inventory metadata only from `register`.
     internal var autopilotInventoryAwaitingRegistration: Set<String> = []
+    /// When the current batch of `autopilotInventoryAwaitingRegistration`
+    /// began to wait; nil while nothing waits.
+    internal var autopilotInventoryAwaitingSince: ContinuousClock.Instant?
     /// Last check that cached Autopilot builds are still on disk.
     internal var autopilotCacheSweepAt: ContinuousClock.Instant?
     /// Background verification of the cached builds the start path left
@@ -563,6 +591,10 @@ public actor ProviderLoop {
     /// processes; released on every non-restart exit and immediately after a
     /// durable commit.
     internal var updateSession: SelfUpdater.UpdateSession?
+    /// Cluster member only: the supervisor's drain for the pair's coordinated update that owns admission (its request
+    /// id), and the task that waits for the accepted requests and then holds the drain (`ProviderLoop+ClusterUpdateDrain`).
+    internal var clusterUpdateDrainID: String?
+    internal var clusterUpdateDrainTask: Task<Void, Never>?
 
     /// Latest desired_models push received while admission is closed. A switch
     /// clears obsolete state before committing, then replays the fresh snapshot
@@ -725,13 +757,12 @@ public actor ProviderLoop {
     /// When the pair slot's engine was first seen wedged ("crashed"), for the
     /// supervisor's liveness guard (S18).
     internal var clusterPairWedgedSince: ContinuousClock.Instant?
-    /// The leader's serving context for committed starts (S10), and the one
-    /// start it serves: its epoch, whether the session asked it to stop, and
-    /// whether the pair is still forming.
+    /// The leader's serving context for committed starts (S10), the one
+    /// start it serves (held from its serve until its session's stop), and
+    /// the last start whose session stopped, which is never served after.
     internal var clusterPairServing: ClusterPairServingContext?
     internal var clusterPairServingEpoch: UUID?
-    internal var clusterPairServingStopped = false
-    internal var clusterPairServingForming = false
+    internal var clusterPairServingEndedEpoch: UUID?
     /// The follower member's link serving of its committed starts; retained
     /// here because the session control holds its serving host weakly.
     internal var clusterPairFollower: DistributedMemberLinkFollower?
@@ -939,6 +970,9 @@ public actor ProviderLoop {
             sink: logSinkForTesting)
         self.loopConfig = config
         self.ordinaryServingModelIDs = Set(config.models.map(\.id))
+        let enabledModels = config.config.backend.enabledModels
+        self.operatorModelFilter = enabledModels.isEmpty
+            ? nil : Set(enabledModels).union(config.models.map(\.id))
         self.autopilotInventoryModels = Dictionary(config.autopilotInventory.filter {
             $0.weightHash?.isEmpty == false && EngineV2SupportedModels.isSupported(model: $0)
                 && ModelRuntimeRequirements.isEligible(modelID: $0.id, available: config.runtimeCapabilities)

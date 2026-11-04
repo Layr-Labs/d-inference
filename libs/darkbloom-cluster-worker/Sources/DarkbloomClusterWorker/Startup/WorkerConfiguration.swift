@@ -16,7 +16,8 @@ struct WorkerConfiguration {
     /// mode, and it must be one the registered model's resident row lists.
     let generationMode: ClusterGenerationMode
     /// `--mtp-depth N` (1...4): the speculative head's fixed draft depth under
-    /// `phase_split_mtp_v1` or `pipeline_mtp_v1` (MiMo: 1...3); nil means the
+    /// `phase_split_mtp_v1` or `pipeline_mtp_v1` (MiMo: 1...3, also MiMo's
+    /// keyed `tensor_parallel_v1` text row); nil means the
     /// product drafter's maximum. Exact keyed Qwen27 TP accepts an explicit depth
     /// at width one; nil keeps ordinary target decoding. Both ranks
     /// bind it into their load agreement, so they must be given the same value.
@@ -178,7 +179,10 @@ struct WorkerConfiguration {
             let tensorAssistant = generationMode == .tensorParallel
                 && fields["--model-id"].map(ClusterQwenTensorAssistantPolicy.runtimeModelIDs.contains) == true
                 && dataPlaneEncrypted && fields["--runtime-profile"] == nil
-            guard generationMode.usesSpeculativeHead || tensorAssistant,
+            // MiMo tensor parallel's speculative rounds (the trained heads replicated on both ranks).
+            let mimoTensorParallelRounds = generationMode == .tensorParallel && registered?.family == .mimoV26
+                && dataPlaneEncrypted && fields["--runtime-profile"] == nil
+            guard generationMode.usesSpeculativeHead || tensorAssistant || mimoTensorParallelRounds,
                   let depth = Int(text), String(depth) == text,
                   let terms = try? QwenMTPTerms(depth: depth) else {
                 throw WorkerFailure.invalid("--mtp-depth takes 1...\(QwenMTPTerms.maximumDepth) and only with keyed Qwen TP on a row with an inline head or a speculative generation mode ("

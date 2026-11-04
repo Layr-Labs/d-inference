@@ -245,6 +245,103 @@ do {
     check(ClusterMemberUpdateSlot.decide(now: slot, slot: slot, busy: false) == .check, "idle at the slot checks")
     check(ClusterMemberUpdateSlot.decide(now: slot + 5, slot: slot, busy: true) == .deferBusy(retryAt: slot + 20), "busy defers")
     check(ClusterMemberUpdateSlot.decide(now: slot + 601, slot: slot, busy: true) == .skip, "busy past 10 min skips the slot")
+    // The cluster service route keys the slot on the pairing's cluster ID, which both Macs read from their pairing.
+    let pairing = "pair-7f3a"
+    let first = ClusterMemberUpdateSlot.nextSlot(after: now + 11, clusterID: pairing)
+    check(first == ClusterMemberUpdateSlot.nextSlot(after: now + 11.6, clusterID: pairing), "both Macs of a pairing share its slot")
+    check(ClusterMemberUpdateSlot.nextSlot(after: first, clusterID: pairing) == first + 1800, "and every slot after it")
+}
+
+// MARK: - The pair's coordinated update (cluster service route)
+
+do {
+    typealias U = ClusterPairUpdate
+    let start = 50_000.0
+    func progress(_ phase: ClusterPairUpdateProgress.Phase, target: String? = "2.0.0", running: String = "1.0.0",
+                  written: Double = start + 1, detail: String? = nil) -> U.Partner {
+        .reported(.init(phase: phase, target: target, running: running, cycleStartedAt: start, writtenAt: written, detail: detail))
+    }
+    func state(_ partner: U.Partner, _ step: U.Step, now: Double = start + 2, requested: Bool = false) -> U.PartnerState {
+        U.partnerState(partner, target: "2.0.0", step: step, cycleStartedAt: start, now: now, requested: requested)
+    }
+    // Neither Mac stops taking requests before both have the release on disk.
+    check(state(progress(.checking), .staged) == .waiting, "the other Mac still downloads: wait")
+    check(state(progress(.checking, target: nil), .staged) == .waiting, "the other Mac has not heard from the coordinator yet: wait")
+    for phase in [ClusterPairUpdateProgress.Phase.staged, .draining, .drained, .restarting] {
+        check(state(progress(phase), .staged) == .ready, "the other Mac has the release (\(phase.rawValue)): drain")
+    }
+    // Neither installs before both drained.
+    check(state(progress(.staged), .drained) == .waiting && state(progress(.draining), .drained) == .waiting,
+          "the other Mac still finishes its accepted requests: wait")
+    check(state(progress(.drained), .drained) == .ready && state(progress(.restarting), .drained) == .ready, "both drained: install")
+    // A Mac that already runs the release (it updated alone, or by hand) lets the other one go on.
+    check(state(progress(.idle, target: nil, running: "2.0.0"), .drained) == .ready, "the other Mac runs the release")
+    // One Mac that cannot take the release stops both: neither installs, both retry at the next slot.
+    if case .gaveUp(let reason) = state(progress(.failed, detail: "hashMismatch"), .staged) {
+        check(reason.contains("hashMismatch") && reason.contains("v2.0.0"), "the other Mac's failure is named: \(reason)")
+    } else { check(false, "a failed download on the other Mac stops this one") }
+    if case .gaveUp = state(progress(.deferred, detail: "1 accepted request(s) were still running"), .drained) {} else {
+        check(false, "a drain the other Mac gave up stops this one")
+    }
+    // An end of an earlier cycle (the two slots reach both Macs seconds apart) is no answer to this one.
+    check(state(progress(.deferred, written: start - 30), .staged) == .waiting, "an earlier cycle's deferral is not this cycle's")
+    check(state(progress(.failed, target: "1.9.0"), .staged) == .waiting, "a failure for another release is not this one's")
+    if case .gaveUp(let reason) = state(progress(.staged, target: "2.1.0"), .staged) {
+        check(reason.contains("v2.1.0"), "another release on the other Mac: \(reason)")
+    } else { check(false, "the two Macs never install different releases") }
+    let disabled = U.Partner.reported(.init(phase: .disabled, running: "1.0.0", writtenAt: 1))
+    if case .gaveUp(let reason) = state(disabled, .staged) {
+        check(reason.contains("off on the other Mac"), "auto_update off on the other Mac: \(reason)")
+    } else { check(false, "the other Mac's automatic updates are off") }
+    // A release the other Mac rolled back and quarantined is installed on neither Mac.
+    let quarantinedThere = U.Partner.reported(.init(phase: .idle, running: "1.0.0", writtenAt: start, quarantined: "2.0.0"))
+    if case .gaveUp(let reason) = state(quarantinedThere, .staged) {
+        check(reason.contains("quarantined v2.0.0"), "the other Mac's quarantine is named: \(reason)")
+    } else { check(false, "a release the other Mac quarantined is not installed here") }
+    // `darkbloom update --override-quarantine` is run on both Macs: a requested cycle waits for the other Mac's.
+    check(state(quarantinedThere, .staged, requested: true) == .waiting, "a requested update waits for the other Mac's override")
+    if case .gaveUp = state(quarantinedThere, .drained, requested: true) {} else {
+        check(false, "a drained Mac does not wait for a Mac that keeps the release quarantined")
+    }
+    // A progress from a build without the quarantine field still decodes, with none.
+    let older = try? JSONDecoder().decode(ClusterPairUpdateProgress.self,
+                                          from: Data(#"{"phase":"idle","running":"1.0.0","writtenAt":1}"#.utf8))
+    check(older != nil && older?.quarantined == nil, "an older build's progress has no quarantine")
+    // `darkbloom update` waits, while serving, for the one run on the other Mac; a drained Mac does not wait for it.
+    check(state(disabled, .staged, requested: true) == .waiting, "a requested update waits for the other Mac's")
+    if case .gaveUp = state(disabled, .drained, requested: true) {} else { check(false, "a drained Mac does not wait for a Mac with updates off") }
+    check(state(progress(.idle, target: nil), .staged) == .waiting, "an idle Mac may start its cycle a little later")
+    // A supervisor that stopped writing, an older build and a Mac that does not answer cannot coordinate.
+    check(state(progress(.staged, written: start - 120), .staged, now: start + 1) == .cannotCoordinate, "a stale progress")
+    check(state(.silent, .staged) == .cannotCoordinate && state(.unreachable, .drained) == .cannotCoordinate,
+          "silent or unreachable: this Mac goes on alone only when no pair runs on it")
+    check(U.drainTimeoutSeconds == 120, "the single-Mac updater's drain bound")
+    check(U.partnerDrainWaitSeconds > U.drainTimeoutSeconds && U.drainedHoldSeconds > U.partnerDrainWaitSeconds,
+          "a drained part waits longer than the pair can take to install")
+    check(U.partnerStageWaitSeconds < ClusterMemberUpdateSlot.periodSeconds, "a cycle ends before the next slot")
+    check(ClusterPairUpdateProgress(phase: .deferred, target: "2.0.0", running: "1.0.0", writtenAt: 0, detail: "busy").line
+          == "v2.0.0 deferred to the next update slot (busy)", "the progress line")
+    // A phase a later build adds neither fails the other Mac's status nor reads as ready.
+    let later = #"{"phase":"verifying","target":"2.0.0","running":"1.0.0","writtenAt":50001}"#
+    let unknown = try? JSONDecoder().decode(ClusterPairUpdateProgress.self, from: Data(later.utf8))
+    check(unknown?.phase == .checking, "an unknown phase decodes as still working")
+    check(unknown.map { state(.reported($0), .staged) == .waiting && state(.reported($0), .drained) == .waiting } == true,
+          "an unknown phase is waited for, never taken for ready")
+
+    // `darkbloom update`'s request is answered once, and a stale one not at all.
+    let directory = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("pair-update-checks-\(getpid())")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let path = directory.appendingPathComponent("service-update-request.json")
+    check(U.writeRequest(.init(id: "r1", createdAt: start), to: path), "request written")
+    check(U.takeRequest(from: path, now: start + 3)?.id == "r1", "the request is taken")
+    check(U.takeRequest(from: path, now: start + 4) == nil, "and only once")
+    check(U.writeRequest(.init(id: "r2", createdAt: start), to: path), "request written")
+    check(U.takeRequest(from: path, now: start + U.Request.maximumAgeSeconds + 1) == nil, "a request older than an hour is dropped")
+    check(!FileManager.default.fileExists(atPath: path.path), "and removed")
+    let written = ClusterPairUpdateProgress(phase: .staged, target: "2.0.0", running: "1.0.0", cycleStartedAt: start,
+                                            request: "r1", writtenAt: start + 1)
+    let progressPath = directory.appendingPathComponent("service-update.json")
+    check(U.writeProgress(written, to: progressPath) && U.readProgress(from: progressPath) == written, "progress round trip")
 }
 
 // MARK: - Files and state summary

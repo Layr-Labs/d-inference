@@ -108,7 +108,7 @@ public struct ClusterPlacementTensorBatchQuote: Codable, Equatable, Sendable {
         guard lanes == 1,
               policy.modes == nil || policy.modes == [.tensorParallel],
               policy.schedules == nil || policy.schedules == [.serial],
-              policy.forcedMode == nil, !policy.handOffModes else {
+              policy.forcedMode == nil || policy.forcedMode == .tensorParallel, !policy.handOffModes else {
             throw ClusterPlacementError("Singleton tensor placement requires its complete serial tensor quote")
         }
         try request.applyCovering(to: &policy, layout: layout)
@@ -128,6 +128,23 @@ public struct ClusterPlacementTensorBatchQuote: Codable, Equatable, Sendable {
         }
         try request.applyCovering(to: &policy, layout: layout)
         policy.tensorParallelBatchQuote = self
+    }
+
+    /// Initial placement at a saved width (`batchLanes`): this owner's
+    /// complete quote at `lanes` takes the place of the singleton quote the
+    /// placement was chosen with (same request envelope, chunk and assistant).
+    /// The envelope covers the planned or served reference, so only memory is
+    /// priced at this width; the prediction stays a single request's.
+    public func applyWidth(to policy: inout ClusterPlacementPolicy, layout: ClusterModelLayout) throws {
+        try validate(layout: layout)
+        guard lanes > 1, let singleton = policy.tensorParallelBatchQuote, singleton.lanes == 1,
+              singleton.request == request, singleton.chunkTokens == chunkTokens,
+              singleton.assistant?.policy == assistant?.policy else {
+            throw ClusterPlacementError("A saved tensor width needs the same owner's singleton quote")
+        }
+        try request.applyCovering(to: &policy, layout: layout)
+        policy.tensorParallelBatchQuote = self
+        policy.tensorParallelWideningQuote = nil
     }
 
     public func requireAssistant(_ expected: ClusterQwenTensorAssistantPolicy?) throws {

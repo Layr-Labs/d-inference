@@ -1001,8 +1001,8 @@ To take Darkbloom off a Mac altogether, see [Uninstall](#uninstall).
 `darkbloom uninstall` takes Darkbloom off one Mac of the pair. It offers
 **Remove everything** or **Keep models**, and both do the same for the pair:
 
-- this Mac stops its part, as `darkbloom cluster stop` does (the leader stops
-  the pair first), and no Darkbloom service starts at login any more;
+- this Mac stops its part, as `darkbloom cluster stop --service` does (the pair
+  stops first, from either Mac), and no Darkbloom service starts at login any more;
 - it forgets the pairing, as `darkbloom cluster pair --forget` (a leader tells
   the other Mac first, over the cable);
 - it undoes the cable port setup, as `darkbloom cluster link --remove` (one

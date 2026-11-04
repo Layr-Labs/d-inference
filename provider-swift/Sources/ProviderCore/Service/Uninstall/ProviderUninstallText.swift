@@ -53,7 +53,7 @@ extension ProviderUninstall {
             action("\(ownClusterStep): \(shared.ownClusterAgentPlist ?? "this install has none"); the pair and \(other)'s "
                 + "cluster service are left as they are")
         } else {
-            action("\(clusterStep), as `\(plan.cli) cluster stop`: "
+            action("\(clusterStep), as `\(plan.cli) cluster stop --service`: "
                 + (!plan.clusterService.isEmpty ? plan.clusterService.joined(separator: ", ")
                     : plan.clusterServiceRunning ? "no login agent, but a cluster service is running on this Mac; this stops it"
                     : "no cluster service on this Mac"))

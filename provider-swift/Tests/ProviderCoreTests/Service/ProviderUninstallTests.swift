@@ -347,7 +347,7 @@ struct ProviderUninstallTests {
         for (lines, mode) in [(everything, ProviderUninstall.Mode.everything), (keepModels, .keepModels)] {
             let text = lines.joined(separator: "\n")
             for action in ["Stop serving on this Mac",
-                           "Stop this Mac's cluster part and remove its service, as `darkbloom cluster stop`: "
+                           "Stop this Mac's cluster part and remove its service, as `darkbloom cluster stop --service`: "
                             + "\(fixture.agents.path)/\(Fixture.clusterLabel).plist",
                            "Remove the provider service: \(fixture.agents.path)/\(LaunchAgent.label).plist",
                            "Remove the watchdog service: \(fixture.agents.path)/\(WatchdogAgent.label).plist",
@@ -569,7 +569,7 @@ struct ProviderUninstallTests {
         for running in [false, true] {
             let plan = ProviderUninstall.Plan(cli: "darkbloom", clusterServiceRunning: running, services: [], items: [], pairing: nil)
             #expect(ProviderUninstall.dryRun(plan, mode: .everything)[2] == "  2. Stop this Mac's cluster part and remove its service, "
-                + "as `darkbloom cluster stop`: "
+                + "as `darkbloom cluster stop --service`: "
                 + (running ? "no login agent, but a cluster service is running on this Mac; this stops it" : "no cluster service on this Mac"))
         }
         let dev = ProviderUninstallPaths(home: FileManager.default.temporaryDirectory.appendingPathComponent("no-such-home"), environment: .dev)

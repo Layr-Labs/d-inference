@@ -83,8 +83,8 @@ struct ClusterPairSummary: Sendable, Equatable {
     var pairingUnreadable: Bool { state == .pairingUnreadable }
 
     /// The command this build answers to (`BuildEnvironment.current.cliName`: `darkbloom-dev` in the DevNet app), in every
-    /// command the summary prints (the candidate on pair-2, c3 B13). `main.swift` names it at startup
-    /// (`ClusterOnboardingCommand.use`), so these commands and ProviderCore's texts say the same name.
+    /// command the summary prints (the candidate on pair-2, c3 B13). ProviderCore's texts and live operations read the same
+    /// `ClusterOnboardingCommand.name`, so all of them say one name.
     static var cli: String { ClusterOnboardingCommand.name }
 
     /// What to do when the pairing record couldn't be read.

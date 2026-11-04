@@ -9,10 +9,12 @@
 - The DevNet app's cluster screens and `status` name its own command (`darkbloom-dev …`), not the production
   `darkbloom`.
 - The mode you choose for a model is now the one that loads, also for GLM-5.3-Flash. When a part keeps ending, the
-  message names the Mac whose worker actually stopped (or says it can't tell), gives the other Mac's own reason when it
-  can't connect (for example, macOS blocking its local network access), and no longer shows a planned model switch as
-  a crash. The DevNet app names its own command in more messages.
+  message names the Mac whose worker actually stopped, this Mac's included (or says it can't tell), gives the other
+  Mac's own reason when it can't connect (for example, macOS blocking its local network access), and no longer shows a
+  planned model switch as a crash. The DevNet app names its own command in more messages.
 - When macOS's Local Network setting keeps a Mac's Darkbloom app from reaching the other Mac, every screen now says so
   and what to do on that Mac (turn on Darkbloom under Privacy & Security → Local Network, through Screen Sharing on a Mac
   with no display), instead of "the other Mac did not answer". Retry starts a stopped pair again, q leaves a start's wait
   at once, and the joining Mac's window shows how the leading Mac's start is going.
+- The card after a start says "Starts by itself at login on both Macs." only when the cluster service on both Macs
+  does; otherwise it names the Mac where it doesn't, or says the other Mac doesn't say (an older Darkbloom there).

@@ -462,10 +462,15 @@ A DevNet build is installed as `Darkbloom Dev.app`, and its CLI is
 check and `cancel-all` know an owner by the CLI name of each build environment
 (`ClusterOrphanReaper.ownerExecutableNames`). The cluster service stop knows
 the service by this build's CLI name (`ClusterService.isClusterService`).
-Every command a build prints for a pair names its CLI: `main.swift` sets the
-name once at startup (`ClusterOnboardingCommand.use`), the pair commands read it
-(`ClusterPairSummary.cli`), and ProviderCore's texts are named with it
-(`ClusterOnboardingCommand.named`). Both apps serve a pair's API on port 8000,
+Every command a build prints for a pair names its CLI: the name starts as this
+build's (`ClusterOnboardingCommand.name`, from `BuildEnvironment.current.cliName`;
+checks that compile the screens without the package set theirs with `use`), the
+pair commands and the live operations read it (`ClusterPairSummary.cli`,
+`OnboardingLive.cli`), and ProviderCore's texts are named with it
+(`ClusterOnboardingCommand.named`). Every line that names the app as macOS
+lists it under Local Network reads `ClusterService.appName`
+(`BuildEnvironment.current.appDisplayName`): the screens and the link
+follower's refusal. Both apps serve a pair's API on port 8000,
 so one of them serves a pair on a Mac at a time. Each keeps its own cluster
 incident log, owned by `DarkbloomClusterRemote`
 (`ClusterIncidentLog.defaultFile(homeDirectory:install:)`): production's is
@@ -3920,7 +3925,9 @@ away; mixed pairs are first-class).
 - **Local Network truth:** the follower the service runs is the process that
   dials the other Mac, so its last dial decides (`ClusterService.followerRefusal`:
   the refusal macOS gave it, or a link it opened since, or a dial that failed
-  another way since). A running follower publishes that refusal as its
+  another way since). The follower writes each of those phrases from the
+  constant the scan reads (`localNetworkRefusal`, `followerLinkOpenedLines`,
+  `followerLinkRefusedLine`). A running follower publishes that refusal as its
   `lastError` (`runningPartRefusal`: only a link follower's log is read, and only
   once it grew), and an ended part's reason reads the same last dial
   (`ClusterService.lastError`), so a stop after a link opened is a clean stop.

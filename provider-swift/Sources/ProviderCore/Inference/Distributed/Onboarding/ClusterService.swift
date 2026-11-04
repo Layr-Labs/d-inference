@@ -1270,17 +1270,25 @@ public final class ClusterService: @unchecked Sendable {
     /// How a part's refusal reads in its Mac's status (`lastError`), which the other Mac's screens read.
     public static let localNetworkReasonPrefix = "its part can't reach the local network"
 
-    /// What the link follower writes once it has opened its link to the other Mac: `ClusterLinkFollowerCommand`'s
-    /// `line("connected")` and `line("session opened")`, under its "link-follower: " prefix. A refusal before them no
-    /// longer holds (`followerRefusal`), so turning Local Network on clears it. Shared the way `localNetworkRefusal` is.
-    public static let followerLinkOpenedLines = ["link-follower: connected", "link-follower: session opened"]
+    /// The prefix of each line the link follower writes (`ClusterLinkFollowerCommand`), and the words after it that
+    /// `followerRefusal` reads: once it has opened its link to the other Mac, and when a dial fails. The follower writes
+    /// them from here, as it does `localNetworkRefusal`.
+    public static let followerLinePrefix = "link-follower: "
+    public static let followerConnected = "connected"
+    public static let followerSessionOpened = "session opened"
+    public static let followerLinkRefused = "link refused: "
 
-    /// The app macOS names in Privacy & Security → Local Network ("Darkbloom", "Darkbloom Dev"): its `CFBundleName`.
+    /// What the link follower writes once it has opened its link to the other Mac. A refusal before them no longer holds
+    /// (`followerRefusal`), so turning Local Network on clears it.
+    public static let followerLinkOpenedLines = [followerConnected, followerSessionOpened].map { followerLinePrefix + $0 }
+
+    /// The app macOS names in Privacy & Security → Local Network ("Darkbloom", "Darkbloom Dev"): its `CFBundleName`. Every
+    /// line that names the app reads it here: the screens (`ClusterOnboardingCommand.app`) and the follower's refusal.
     public static let appName = BuildEnvironment.current.appDisplayName
 
     /// What the link follower writes when a dial fails, before the refusal line for macOS's own refusal. A later one
     /// without that line says its last dial got further and failed another way (`followerRefusal`).
-    public static let followerLinkRefusedLine = "link-follower: link refused: "
+    public static let followerLinkRefusedLine = followerLinePrefix + followerLinkRefused
 
     /// A running part's `lastError`: only a link follower's refusal (another part never writes one, so its log isn't
     /// read), remembered by the log's size since the part started, so a status read with nothing new written reads

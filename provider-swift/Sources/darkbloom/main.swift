@@ -13,9 +13,6 @@ import ProviderCore
 
 let rawArgs = Array(CommandLine.arguments.dropFirst())
 
-// Every command this build prints names its own CLI (`darkbloom-dev` in the DevNet app), here and in ProviderCore.
-ClusterOnboardingCommand.use(BuildEnvironment.current.cliName)
-
 // A worker never enters AppKit, CLI lifecycle, inference or update startup.
 if rawArgs.first == AppAttestWorkerHost.argument {
     await AppAttestWorkerCommand.runIfRequested(rawArgs)

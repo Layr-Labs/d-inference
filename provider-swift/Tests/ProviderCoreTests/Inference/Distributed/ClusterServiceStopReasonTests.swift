@@ -212,7 +212,7 @@ struct ClusterServiceStopReasonTests {
             return file
         }
         func worker(_ file: URL, since time: Substring) throws -> OnboardingLive.OwnWorker {
-            OnboardingLive.ownWorker(inIncidentLog: file, since: try at(time), rank: 0, otherRanks: [1])
+            OnboardingLive.ownWorker(inIncidentLog: ClusterIncidentLog(file: file), since: try at(time), rank: 0, otherRanks: [1])
         }
         let records = Self.devnetIncidents.split(separator: "\n")
         #expect(records.filter { $0.contains("\tleader\t") }.allSatisfy {
@@ -241,6 +241,31 @@ struct ClusterServiceStopReasonTests {
 
         try Data("{\"schema_version\": 1, \"incidents\": [{\"seq\": 1}]}".utf8).write(to: all)
         #expect(try worker(all, since: "07:39:37") == .unknown, "a malformed log: neither Mac")
+    }
+
+    /// A-4 reads this install's incident log (`ClusterIncidentLog.forThisInstall`): with Darkbloom and Darkbloom Dev on one
+    /// Mac, the other install's record of its own worker never names this Mac's.
+    @Test func onlyThisInstallsRecordsNameThisMac() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("incidents-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let since = Date().addingTimeInterval(-60)
+        try ClusterIncidentLog(file: file, install: "prod").record(.init(severity: .error, source: "leader",
+            stateCode: "activation_launch_failed", reasonCode: "worker_crashed", guidanceCode: nil,
+            message: "closed | " + ClusterWorkerOwnerService.workerExitMarker + "0 termination=signalled(9)"))
+        func worker(install: String) -> OnboardingLive.OwnWorker {
+            OnboardingLive.ownWorker(inIncidentLog: ClusterIncidentLog(file: file, install: install), since: since, rank: 0, otherRanks: [1])
+        }
+        #expect(worker(install: "prod") == .ended, "this install's own record")
+        #expect(worker(install: "dev") == .unknown, "another install's record: neither Mac")
+    }
+
+    /// One CLI name and one app name: the screens, the live operations and the cluster service start from this build's
+    /// identity with nothing set at startup, so a DevNet build's texts and its tests say the same names.
+    @Test func theNamesAreThisBuildsWithoutBeingSet() {
+        #expect(ClusterOnboardingCommand.name == BuildEnvironment.current.cliName)
+        #expect(OnboardingLive.cli == BuildEnvironment.current.cliName)
+        #expect(ClusterOnboardingCommand.app == BuildEnvironment.current.appDisplayName)
+        #expect(ClusterService.appName == BuildEnvironment.current.appDisplayName)
     }
 
     /// The pair-2 DevNet run (P2-1) and the M5 Ultra pair's headless Mac B (A-2): macOS kept the member's link follower

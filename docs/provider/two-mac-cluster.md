@@ -149,8 +149,14 @@ two rules, then the pair's card, as `darkbloom start` ends, and the shell:
 ```
 
 A pair served on the local API only says `Local:   http://localhost:8000`
-instead of `Serves:`. With a build whose cluster service lives only as long as
-its window, the card says to keep both windows open instead of the login line.
+instead of `Serves:`. The login line says `on both Macs` only when the cluster
+service starts by itself at login on both Macs. Otherwise it names the Mac where
+it doesn't (`Starts by itself at login on this Mac, not on the other Mac.`). A
+Mac with an older Darkbloom doesn't report it, so the card says the other Mac
+doesn't say. On a Mac named there, `darkbloom cluster` turns its service on
+again. With a build whose cluster service lives only as long as its window, the
+card says to keep that window open instead, or both windows when neither Mac's
+starts at login.
 Darkbloom Dev, the DevNet app, serves a pair's API on the same port, 8000, so
 only one of the two apps can serve a pair on a Mac at a time; its card and
 hints name `darkbloom-dev`.

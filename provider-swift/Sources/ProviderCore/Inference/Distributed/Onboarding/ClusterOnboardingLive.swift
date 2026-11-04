@@ -64,10 +64,9 @@ extension ClusterOnboardingOperations {
             missingLogins: { live.missingLogins() },
             login: { live.login() },
             useMode: { index, mode in live.useMode(index, mode) })
-        ClusterOnboardingCommand.use(BuildEnvironment.current.cliName)
-        ClusterOnboardingCommand.useApp(ClusterService.appName)
         made.markRegistrationPending = { live.markRegistrationPending() }
         made.planScope = { live.usePlanningScope($0) }
+        made.otherMacStartsAtLogin = { live.otherMacStartsAtLogin() }
         return made
     }
 }
@@ -108,9 +107,9 @@ final class OnboardingLive: @unchecked Sendable {
     /// Choices that only the other Mac has (by choice index): it sends them here first.
     private var peerChoices: [Int: ClusterSetupLocalModel] = [:]
     private var chosenTitle: String?
-    /// The command this build answers to (`BuildEnvironment.current.cliName`; "darkbloom-dev" in the DevNet app), in every
+    /// The command this build answers to (`ClusterOnboardingCommand.name`; "darkbloom-dev" in the DevNet app), in every
     /// command these operations and the cluster service write, including the lines `darkbloom cluster stop --service` prints.
-    static let cli = BuildEnvironment.current.cliName
+    static var cli: String { ClusterOnboardingCommand.name }
     /// The way of serving the screen's coming plan and adopt are for (`ClusterOnboardingOperations.planScope`).
     private var plannedScope: ClusterServingScope?
     /// The list `planModels` last returned on this Mac (from the leader when forwarded), so a choice names its model.
@@ -231,6 +230,13 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     static let answerSeconds: Double = 8
+
+    /// The other Mac's `ClusterServiceStatus.startsAtLogin`, from one status request over the cable: nil when it doesn't
+    /// answer or doesn't say (an older build).
+    func otherMacStartsAtLogin() -> Bool? {
+        (try? command(.init(op: .status), seconds: Self.answerSeconds))
+            .flatMap { try? JSONDecoder().decode(ClusterServiceStatus.self, from: $0) }?.startsAtLogin
+    }
 
     /// Pair again: this Mac's saved pairing removed as `darkbloom cluster pair --forget` removes it.
     func unpair() -> Result<[String], ClusterOnboardingFailure> {
@@ -618,7 +624,7 @@ final class OnboardingLive: @unchecked Sendable {
     /// Said when the other Mac's service does not answer: a denied Local Network prompt there is the usual cause on a
     /// fresh pair, and nothing else would tell the person where to undo it.
     static func localNetworkHint(_ mac: String) -> String {
-        "If you denied the Local Network prompt on \(mac), allow Darkbloom in System Settings → Privacy & Security → Local Network there, then run `\(Self.cli) cluster` again."
+        "If you denied the Local Network prompt on \(mac), allow \(ClusterService.appName) in System Settings → Privacy & Security → Local Network there, then run `\(Self.cli) cluster` again."
     }
 
     static func reason(_ error: Error) -> String {
@@ -1596,20 +1602,20 @@ final class OnboardingLive: @unchecked Sendable {
         guard own?.lastError == Self.linkClosedError else { return .notSeen }
         guard let configuration = context.savedConfiguration().configuration, configuration.role == .leader else { return .unknown }
         let rank = configuration.localRank
-        return Self.ownWorker(inIncidentLog: ClusterIncidentLog.defaultFile(homeDirectory: FileManager.default.homeDirectoryForCurrentUser),
-                              since: since, rank: rank, otherRanks: configuration.peers.indices.filter { $0 != rank })
+        return Self.ownWorker(inIncidentLog: .forThisInstall(), since: since, rank: rank,
+                              otherRanks: configuration.peers.indices.filter { $0 != rank })
     }
 
-    /// Whose worker the `worker_crashed` records this Mac's part made since `since` name (`source` "leader", in the
-    /// incident log `file`). The leader records the other Mac's worker ending with that same source and reason, so only
+    /// Whose worker the `worker_crashed` records this Mac's part made since `since` name (`source` "leader", in `log`:
+    /// this install's, `ClusterIncidentLog.forThisInstall`, so another install's records never count). The leader records the other Mac's worker ending with that same source and reason, so only
     /// the message tells (the DevNet run, A-4: the member's kills read "…closed | rank 1 follower said: …", the leader's
     /// own "…closed | <user>-worker-exit-v1 rank=0 termination=signalled(9)"):
     /// - `.ended`: this Mac's rank's own worker exit (`ClusterWorkerOwnerService.workerExitMarker`, whatever its prefix);
     /// - `.notSeen`: what the other Mac's follower said (`DistributedInstalledSession.followerSaid`): B17's words;
     /// - `.unknown`, so neither Mac is blamed: no record says, both do, or the log is missing or can't be read (its
     ///   `loadError`: unreadable, too large, malformed, another schema). A field this build doesn't know is ignored.
-    static func ownWorker(inIncidentLog file: URL, since: Date, rank: Int, otherRanks: [Int]) -> OwnWorker {
-        let feed = ClusterIncidentLog(file: file).feed()
+    static func ownWorker(inIncidentLog log: ClusterIncidentLog, since: Date, rank: Int, otherRanks: [Int]) -> OwnWorker {
+        let feed = log.feed()
         guard feed.loadError == nil, !feed.epoch.isEmpty else { return .unknown }
         let crashes = feed.incidents.filter {
             $0.ts >= since.timeIntervalSince1970 && $0.source == "leader"

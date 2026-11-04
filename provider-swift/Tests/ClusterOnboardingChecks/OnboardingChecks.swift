@@ -90,6 +90,8 @@ import Darwin
         cablePortSetUpWithSudoWhereNoPromptShows()
         codeListEndsWhenThePairingDoes()
         developmentBuildKeepsTheWindowsOpen()
+        // P2-11 (pair-2, 2026-11-04): the card said "on both Macs" from this Mac's service alone.
+        theLoginLineNamesTheMacThatDoesNot()
         // The audit of that change: keys during waits, q, SSH, a probe that tells nothing, a slow Allow on the other
         // Mac, and how the pair serves.
         arrowKeysDoNotStopAWait()
@@ -2160,11 +2162,41 @@ import Darwin
         expect(joined.finish() == 0, "dev member: exit 0")
         expect(joined.text.hasSuffix(ClusterOnboardingDriver.resultRule + "\n" + ClusterOnboardingDriver.keepWindowLine + "\n"), "dev member: keep the window open")
         let leader = Recorder()
-        let led = TerminalRun(operations(leader, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [],
-            pairResult: .failed([]), outlivesWindow: false))
+        var developmentLeader = operations(leader, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [],
+            pairResult: .failed([]), outlivesWindow: false)
+        // The other Mac runs the same build: its service doesn't start at login either (P2-11).
+        developmentLeader.otherMacStartsAtLogin = { false }
+        let led = TerminalRun(developmentLeader)
         expect(led.waitFor(prompt(2)), "dev leader: the list"); led.type("\r")
         expect(led.finish() == 0, "dev leader: exit 0")
         expect(led.text.contains("  Keep both windows open: this build's cluster service stops with them.\n"), "dev leader: keep both windows open")
+    }
+
+    /// The card's login line (P2-11): "on both Macs" only when this Mac's service outlives its window and the other Mac's
+    /// status says its service starts at login; otherwise it names the Mac whose service doesn't, or says the other Mac
+    /// doesn't say (an older build, or no answer). Pair-2's member, started from its window, reported false.
+    static func theLoginLineNamesTheMacThatDoesNot() {
+        let cases: [(outlives: Bool, other: Bool?, line: String)] = [
+            (true, true, "Starts by itself at login on both Macs."),
+            (true, false, "Starts by itself at login on this Mac, not on the other Mac."),
+            (true, nil, "Starts by itself at login on this Mac; the other Mac doesn't say whether it does."),
+            (false, true, "Keep this window open: this Mac's cluster service stops with it. On the other Mac it starts by itself at login."),
+            (false, false, "Keep both windows open: this build's cluster service stops with them."),
+            (false, nil, "Keep this window open: this Mac's cluster service stops with it. The other Mac doesn't say whether its service "
+                + "starts at login."),
+        ]
+        for (outlives, other, line) in cases {
+            let name = "login line (this Mac \(outlives), the other Mac \(other.map { "\($0)" } ?? "nil"))"
+            let recorder = Recorder()
+            var made = operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [],
+                                  pairResult: .failed([]), outlivesWindow: outlives)
+            made.otherMacStartsAtLogin = { other }
+            let run = TerminalRun(made)
+            expect(run.waitFor(prompt(2)), "\(name): the list"); run.type("\r")
+            expect(run.finish() == 0, "\(name): served")
+            expect(run.text.contains("\n  " + line + "\n"), "\(name): the card says \(line)")
+            expect(outlives && other == true || !run.text.contains("at login on both Macs"), "\(name): never at login on both Macs")
+        }
     }
 
     /// The code's list ends by itself when the pairing does meanwhile (the other Mac declined): no answer is waited for.

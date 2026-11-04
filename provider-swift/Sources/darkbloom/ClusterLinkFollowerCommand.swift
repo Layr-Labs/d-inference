@@ -9,14 +9,6 @@ extension Cluster {
     /// configuration exists for such a setup. Runs until SIGTERM or SIGINT,
     /// then fences what runs and waits (bounded) for its owner's release.
     struct LinkFollower: ParsableCommand {
-        /// The app macOS lists under Local Network for the identity named `cli`: `darkbloom` for production, as it
-        /// always said; the DevNet app's own name ("Darkbloom Dev") for `darkbloom-dev`.
-        static func localNetworkApp(cli: String) -> String {
-            guard cli != BuildEnvironment.prod.cliName,
-                  let identity = BuildEnvironment.allCases.first(where: { $0.cliName == cli }) else { return cli }
-            return identity.appDisplayName
-        }
-
         static let configuration = CommandConfiguration(commandName: "link-follower",
             abstract: "Serve this Mac's rank to the leader over the link control channel (follower setups only).", shouldDisplay: false)
         @OptionGroup var configOptions: ConfigOptions
@@ -50,20 +42,20 @@ extension Cluster {
         static func emit(_ event: DistributedInstalledLinkFollower.Event) {
             switch event {
             case .ready: line("ready")
-            case .connected: line("connected")
+            case .connected: line(ClusterService.followerConnected)
             case .disconnected: line("disconnected")
-            case .opened: line("session opened")
+            case .opened: line(ClusterService.followerSessionOpened)
             case .refused(let reason): line("session refused: \(reason)")
             case .fenced(let reason): line("session fenced: \(reason)")
             case .cleanup: line("session cleanup observed")
             case .released(let cleanly): line("session released " + (cleanly ? "cleanly" : "without its owner's proof"))
             case .linkRefused(let reason):
-                line("link refused: \(reason)")
+                line(ClusterService.followerLinkRefused + reason)
                 // macOS answers a dial with "host unreachable" before trying the
                 // cable when this process may not use the local network.
                 if reason.hasSuffix("(unreachable)") {
                     line("this process \(ClusterService.localNetworkRefusal): macOS refused the dial before the cable was tried. "
-                        + "Allow \(Cluster.LinkFollower.localNetworkApp(cli: ClusterPairSummary.cli)) under System Settings > Privacy & Security > Local Network (once), "
+                        + "Allow \(ClusterService.appName) under System Settings > Privacy & Security > Local Network (once), "
                         + "or start the follower from a session that has that access.")
                 }
             }
@@ -71,7 +63,7 @@ extension Cluster {
 
         static func line(_ text: String) {
             let stamp = ISO8601DateFormatter().string(from: Date())
-            FileHandle.standardOutput.write(Data("\(stamp) link-follower: \(text)\n".utf8))
+            FileHandle.standardOutput.write(Data("\(stamp) \(ClusterService.followerLinePrefix)\(text)\n".utf8))
         }
     }
 }

@@ -294,16 +294,23 @@ public struct ClusterOnboardingModelChoice: Codable, Sendable, Equatable {
     }
 }
 
-/// The command the cluster screens tell the person to run: the running identity's CLI name (the live operations set it
-/// from `BuildEnvironment.current.cliName`; `darkbloom-dev` in the DevNet app), so a Mac with both apps is never told to
-/// run the production command (the candidate on pair-2, c3 B13). The console names every command in backticks with it.
+/// The command the cluster screens tell the person to run: the running identity's CLI name
+/// (`BuildEnvironment.current.cliName`; `darkbloom-dev` in the DevNet app), so a Mac with both apps is never told to run
+/// the production command (the candidate on pair-2, c3 B13). The console names every command in backticks with it, and
+/// the live operations' lines read it (`OnboardingLive.cli`). The checks that compile these screens without the package
+/// start from production's names and set theirs with `use` and `useApp`.
 public enum ClusterOnboardingCommand {
     private static let lock = NSLock()
+    #if SWIFT_PACKAGE
+    nonisolated(unsafe) private static var current = BuildEnvironment.current.cliName
+    /// The app macOS names in Privacy & Security → Local Network ("Darkbloom", "Darkbloom Dev"): `ClusterService.appName`.
+    nonisolated(unsafe) private static var currentApp = ClusterService.appName
+    #else
     nonisolated(unsafe) private static var current = "darkbloom"
+    nonisolated(unsafe) private static var currentApp = "Darkbloom"
+    #endif
     public static var name: String { lock.withLock { current } }
     public static func use(_ name: String) { lock.withLock { current = name } }
-    /// The app macOS names in Privacy & Security → Local Network ("Darkbloom", "Darkbloom Dev"), set the same way.
-    nonisolated(unsafe) private static var currentApp = "Darkbloom"
     public static var app: String { lock.withLock { currentApp } }
     public static func useApp(_ app: String) { lock.withLock { currentApp = app } }
     /// `text` with each command in backticks ("`darkbloom …`") named for the running identity.
@@ -941,6 +948,10 @@ public struct ClusterOnboardingOperations: Sendable {
     /// start names, and a start whose scope changes before it adopts is planned again (`OnboardingLive.usePlanningScope`).
     /// Not in `init`: only the live operations set it.
     public var planScope: @Sendable (ClusterServingScope) -> Void = { _ in }
+    /// Whether the other Mac's cluster service starts by itself at login, as its status says
+    /// (`ClusterServiceStatus.startsAtLogin`); nil when it doesn't say (an older build, or no answer). The card says "on
+    /// both Macs" only with this and `serviceOutlivesWindow` (P2-11). Not in `init`: only the live operations set it.
+    public var otherMacStartsAtLogin: @Sendable () -> Bool? = { true }
 
     public init(resume: @escaping @Sendable () -> ClusterOnboardingResume,
                 checkLink: @escaping @Sendable (@escaping @Sendable (String) -> Void) -> ClusterOnboardingLinkResult,
@@ -1833,11 +1844,25 @@ public enum ClusterOnboardingDriver {
         console.say("  Macs:    " + pairLine(.leader, named: shownName(operations.thisMacName()), other: peer, cableReady: false))
         console.say("  " + serves)
         console.say("  Logs:    " + serviceLogPath)
-        console.say("  " + (operations.serviceOutlivesWindow() ? "Starts by itself at login on both Macs."
-                                                              : "Keep both windows open: this build's cluster service stops with them."))
+        console.say("  " + loginLine(thisMac: operations.serviceOutlivesWindow(), otherMac: operations.otherMacStartsAtLogin()))
         if let restart = operations.afterRestart() { console.say("  " + restart) }
         console.say("")
         for line in pairCommands { console.say("  " + line) }
+    }
+
+    /// The card's line about starting at login (P2-11): "on both Macs" only when this Mac's service outlives its window
+    /// and the other Mac's says it starts at login; otherwise the Mac whose service doesn't, or that the other Mac doesn't
+    /// say (an older build, or no answer).
+    static func loginLine(thisMac outlivesWindow: Bool, otherMac startsAtLogin: Bool?) -> String {
+        let keepThisWindow = "Keep this window open: this Mac's cluster service stops with it."
+        switch (outlivesWindow, startsAtLogin) {
+        case (true, true?): return "Starts by itself at login on both Macs."
+        case (true, false?): return "Starts by itself at login on this Mac, not on the other Mac."
+        case (true, nil): return "Starts by itself at login on this Mac; the other Mac doesn't say whether it does."
+        case (false, true?): return keepThisWindow + " On the other Mac it starts by itself at login."
+        case (false, false?): return "Keep both windows open: this build's cluster service stops with them."
+        case (false, nil): return keepThisWindow + " The other Mac doesn't say whether its service starts at login."
+        }
     }
 
     /// "pipeline (this Mac 6 layers / the other Mac 24 layers)" from the start's deployment line ("Serving … across both

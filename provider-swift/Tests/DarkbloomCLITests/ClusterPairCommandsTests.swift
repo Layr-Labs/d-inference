@@ -1426,20 +1426,43 @@ struct ClusterDevNetFindingsTests {
         #expect(!out.contains("darkbloom "), "\(out)")
     }
 
-    @Test("A-1: cluster stop --service, its refusal, cluster local and the follower's hint name the DevNet identity")
+    @Test("A-1: cluster stop --service, its refusal and cluster local name the DevNet identity")
     func clusterTextsNameTheIdentity() async {
         let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
             ClusterOnboardingCommand.use("darkbloom-dev")
             var lines = try Cluster.Stop.finishStop(nil, localOnly: true) { ["agent"] }
             lines += Cluster.Stop.refusal(unreadable()) + [Cluster.Local.needsTerminalLine]
-            lines.append("allow " + Cluster.LinkFollower.localNetworkApp(cli: ClusterOnboardingCommand.name))
             for line in lines { print(line) }
         }
         let out = text(result?.standardOutputContent)
         #expect(out.contains("`darkbloom-dev cluster stop --service` there too") && out.contains("`darkbloom-dev cluster local`"), "\(out)")
-        #expect(out.contains("allow Darkbloom Dev\n"), "\(out)")
         #expect(!out.contains("`darkbloom "), "\(out)")
-        #expect(Cluster.LinkFollower.localNetworkApp(cli: "darkbloom") == "darkbloom")
+    }
+
+    @Test("The follower writes the words the cluster service reads in its log, and its refusal names the app macOS lists")
+    func followerWritesTheWordsTheServiceReads() async throws {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            Cluster.LinkFollower.emit(.linkRefused("connectFailed (unreachable)"))
+            Cluster.LinkFollower.emit(.connected)
+            Cluster.LinkFollower.emit(.opened)
+        }
+        let out = text(result?.standardOutputContent)
+        let lines = out.split(separator: "\n").map { String($0.drop { $0 != " " }.dropFirst()) }
+        // Production's names the app as the ✗ does ("Darkbloom"), not the command; the DevNet app's "Darkbloom Dev".
+        #expect(lines == ["link-follower: link refused: connectFailed (unreachable)",
+                          "link-follower: this process may not reach the local network: macOS refused the dial before the cable was tried. "
+                              + "Allow \(BuildEnvironment.current.appDisplayName) under System Settings > Privacy & Security > Local Network "
+                              + "(once), or start the follower from a session that has that access.",
+                          "link-follower: connected", "link-follower: session opened"], "\(out)")
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("follower-words-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let refused = directory.appendingPathComponent("refused.log"), opened = directory.appendingPathComponent("opened.log")
+        try (out.split(separator: "\n").prefix(2).joined(separator: "\n") + "\n").write(to: refused, atomically: true, encoding: .utf8)
+        try out.write(to: opened, atomically: true, encoding: .utf8)
+        let reason = ClusterService.followerRefusal(in: refused)
+        #expect(reason?.hasPrefix(ClusterService.localNetworkReasonPrefix + ": macOS refused the dial") == true, "\(String(describing: reason))")
+        #expect(ClusterService.followerRefusal(in: opened) == nil, "a link opened after the refusal clears it")
     }
 
     @Test("A-11: restart says what it waits for, and for how long at most, instead of hanging silently")
@@ -1512,6 +1535,20 @@ struct ClusterPairTwoFindingsTests {
         #expect(out.contains("Stopped. Run `darkbloom-dev cluster` again to continue where it was."), "\(out)")
         #expect(out.contains("(run `darkbloom-dev cluster` to set that up)") && out.contains("login (run `darkbloom-dev cluster`)"), "\(out)")
         #expect(out.contains("(`darkbloom-dev cluster` keeps one)"), "\(out)")
+        #expect(!out.contains("`darkbloom "), "\(out)")
+    }
+
+    @Test("P2-2: the onboarding's Local Network hint and the lines its live operations write name the DevNet CLI and app")
+    func onboardingTextsNameTheIdentity() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            ClusterOnboardingCommand.use("darkbloom-dev")
+            print(OnboardingLive.localNetworkHint("the other Mac"))
+            print("cli " + OnboardingLive.cli)
+        }
+        let out = text(result?.standardOutputContent)
+        #expect(out.contains("If you denied the Local Network prompt on the other Mac, allow \(BuildEnvironment.current.appDisplayName) in "
+            + "System Settings → Privacy & Security → Local Network there, then run `darkbloom-dev cluster` again.\n"), "\(out)")
+        #expect(out.hasSuffix("cli darkbloom-dev\n"), "every command the live operations name: \(out)")
         #expect(!out.contains("`darkbloom "), "\(out)")
     }
 

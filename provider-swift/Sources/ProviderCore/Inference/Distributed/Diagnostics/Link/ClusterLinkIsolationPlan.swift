@@ -127,27 +127,31 @@ struct ClusterLinkIsolationRestore: Equatable, Sendable {
         !removeClusterService && servicesToEnable.isEmpty && bridge == nil && addressToRemove == nil && !keeperToRemove
     }
 
-    /// In order. Every command runs, because each undoes one thing on its
-    /// own; what is left afterwards decides how the removal ended.
+    /// In order, and the shell stops at the first that fails
+    /// (`ClusterLinkIsolationRequest.shellCommand`); what is left afterwards
+    /// decides how the removal ended. Darkbloom's service goes first, then
+    /// its address, and only then does the port go back into its bridge: a
+    /// bridge entry written while the service still held the port left it in
+    /// both (pair-2's MacBook, R5-2: "not isolated: member of bridge0"). The
+    /// services switched on after the entry make macOS apply it.
     var commands: [String] {
         var commands = [String]()
         if keeperToRemove {
-            commands.append("/bin/launchctl bootout system/\(ClusterLinkAddressKeeper.label(forInterface: interface))")
+            // A keeper whose file is there but whose job is not loaded has nothing to boot out; what is left is read afterwards.
+            commands.append("/bin/launchctl bootout system/\(ClusterLinkAddressKeeper.label(forInterface: interface)) 2>/dev/null || true")
             commands.append("/bin/rm -f \(ClusterLinkAddressKeeper.plistPath(forInterface: interface))")
-        }
-        if let bridge {
-            // Written before the service changes below, which make the
-            // settings take effect.
-            let entry = ":VirtualNetworkInterfaces:Bridge:\(bridge.bridge):Interfaces:\(bridge.index)"
-            commands.append("/usr/libexec/PlistBuddy -c 'Add \(entry) string \(interface)' \(ClusterLinkIsolationPlan.networkPreferences)")
         }
         if removeClusterService {
             commands.append("/usr/sbin/networksetup -removenetworkservice '\(ClusterLinkServiceName.cluster(interface: interface))'")
         }
-        commands += servicesToEnable.map { "/usr/sbin/networksetup -setnetworkserviceenabled '\($0)' on" }
         if let addressToRemove {
             commands.append("/sbin/ifconfig \(interface) inet \(addressToRemove.dottedDecimal) -alias")
         }
+        if let bridge {
+            let entry = ":VirtualNetworkInterfaces:Bridge:\(bridge.bridge):Interfaces:\(bridge.index)"
+            commands.append("/usr/libexec/PlistBuddy -c 'Add \(entry) string \(interface)' \(ClusterLinkIsolationPlan.networkPreferences)")
+        }
+        commands += servicesToEnable.map { "/usr/sbin/networksetup -setnetworkserviceenabled '\($0)' on" }
         if let bridge {
             commands.append("/sbin/ifconfig \(bridge.bridge) addm \(interface)")
         }
@@ -161,39 +165,50 @@ struct ClusterLinkIsolationRestore: Equatable, Sendable {
 struct ClusterLinkIsolationRequest: Equatable, Sendable {
     enum Purpose: Equatable, Sendable {
         case isolate(ClusterLinkIsolationPlan)
-        case restore(ClusterLinkIsolationRestore)
+        /// Every port in one approval (R5-2: an uninstall undoes all the ports Darkbloom set up, never one of them).
+        case restore([ClusterLinkIsolationRestore])
     }
 
     let purpose: Purpose
 
     /// Nil for a restore with nothing to do.
     init?(_ purpose: Purpose) {
-        if case .restore(let restore) = purpose, restore.isEmpty { return nil }
+        if case .restore(let restores) = purpose {
+            let pending = restores.filter { !$0.isEmpty }
+            guard !pending.isEmpty else { return nil }
+            self.purpose = .restore(pending)
+            return
+        }
         self.purpose = purpose
     }
 
+    /// The single port: the isolation's, or the first restored.
     var interface: String {
         switch purpose {
         case .isolate(let plan): return plan.interface
-        case .restore(let restore): return restore.interface
+        case .restore(let restores): return restores[0].interface
+        }
+    }
+
+    /// Every port the approval changes.
+    var interfaces: [String] {
+        switch purpose {
+        case .isolate(let plan): return [plan.interface]
+        case .restore(let restores): return restores.map(\.interface)
         }
     }
 
     var commands: [String] {
         switch purpose {
         case .isolate(let plan): return plan.commands
-        case .restore(let restore): return restore.commands
+        case .restore(let restores): return restores.flatMap(\.commands)
         }
     }
 
-    /// One shell line: the isolation stops at the first failing command, the
-    /// restore runs every command.
-    var shellCommand: String {
-        switch purpose {
-        case .isolate: return "set -e; " + commands.joined(separator: "; ")
-        case .restore: return commands.joined(separator: "; ")
-        }
-    }
+    /// One shell line that stops at the first failing command, for an
+    /// isolation and a restore alike: a failure is then exactly where it
+    /// says, and nothing after it ran.
+    var shellCommand: String { "set -e; " + commands.joined(separator: "; ") }
 
     var prompt: String {
         switch purpose {
@@ -203,8 +218,11 @@ struct ClusterLinkIsolationRequest: Equatable, Sendable {
             if let bridge = plan.bridge { actions.append("take the port out of \(bridge.bridge)") }
             let sentence = actions.count == 1 ? actions[0] : actions.dropLast().joined(separator: ", ") + " and " + actions[actions.count - 1]
             return "Darkbloom wants to \(sentence), so RDMA can use it."
-        case .restore(let restore):
-            return "Darkbloom wants to restore the network settings of Thunderbolt port \(restore.interface) to how they were before it set the port up."
+        case .restore(let restores):
+            guard restores.count > 1 else {
+                return "Darkbloom wants to restore the network settings of Thunderbolt port \(restores[0].interface) to how they were before it set the port up."
+            }
+            return "Darkbloom wants to restore the network settings of Thunderbolt ports \(ClusterLinkIsolationRequest.list(restores.map(\.interface))) to how they were before it set them up."
         }
     }
 
@@ -218,4 +236,9 @@ struct ClusterLinkIsolationRequest: Equatable, Sendable {
 
     /// For an administrator to run by hand where no prompt can be shown.
     var manualCommands: [String] { commands.map { "sudo " + $0 } }
+
+    /// "en6", "en6 and en1", "en6, en1 and en2".
+    static func list(_ names: [String]) -> String {
+        names.count < 2 ? names.joined() : names.dropLast().joined(separator: ", ") + " and " + names[names.count - 1]
+    }
 }

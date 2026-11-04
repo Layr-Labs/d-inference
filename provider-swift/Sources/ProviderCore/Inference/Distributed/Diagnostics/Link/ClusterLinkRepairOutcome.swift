@@ -92,8 +92,11 @@ public struct ClusterLinkRepairResult: Encodable, Sendable, Equatable {
     public let outcome: ClusterLinkRepairOutcome
     public let device: String?
     public let interface: String?
-    /// The devices to choose among when the outcome is `ambiguousPorts`.
+    /// The devices to choose among when the outcome is `ambiguousPorts`; for a removal of link setup v2 that covers
+    /// several ports, those ports.
     public let candidates: [String]
+    /// A removal that did not finish: the devices with something of Darkbloom's still to undo.
+    public internal(set) var remaining: [String] = []
     /// Whether the fix installs the job that keeps the address, as opposed to
     /// adding the address alone. Nil where no fix was attempted or planned.
     public let durable: Bool?
@@ -135,7 +138,7 @@ public struct ClusterLinkRepairResult: Encodable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schema, operation, outcome, state, unmet, findings, device, interface, candidates, durable, isolated, plannedCommands, manualScript, adopted, message
+        case schema, operation, outcome, state, unmet, findings, device, interface, candidates, remaining, durable, isolated, plannedCommands, manualScript, adopted, message
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -150,6 +153,7 @@ public struct ClusterLinkRepairResult: Encodable, Sendable, Equatable {
         try container.encodeIfPresent(device, forKey: .device)
         try container.encodeIfPresent(interface, forKey: .interface)
         if !candidates.isEmpty { try container.encode(candidates, forKey: .candidates) }
+        if !remaining.isEmpty { try container.encode(remaining, forKey: .remaining) }
         try container.encodeIfPresent(durable, forKey: .durable)
         try container.encodeIfPresent(isolated, forKey: .isolated)
         if !plannedCommands.isEmpty { try container.encode(plannedCommands, forKey: .plannedCommands) }

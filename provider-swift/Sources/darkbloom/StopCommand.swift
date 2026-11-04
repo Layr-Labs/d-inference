@@ -5,8 +5,8 @@ import ProviderCore
 struct Stop: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Drain accepted requests, then persistently stop the provider service.",
-        discussion: "On a Mac in a two-Mac cluster it stops the pair on both Macs, as `darkbloom cluster stop` does: they "
-            + "stay stopped after a restart, and `darkbloom start` on either Mac starts the pair again. With --solo it "
+        discussion: "On a Mac in a two-Mac cluster it stops the pair on both Macs, as `\(ClusterPairSummary.cli) cluster stop` does: they "
+            + "stay stopped after a restart, and `\(ClusterPairSummary.cli) start` on either Mac starts the pair again. With --solo it "
             + "stops single-Mac serving on this Mac only and never touches the pair."
     )
 
@@ -51,10 +51,12 @@ struct Stop: AsyncParsableCommand {
         if stop == .stopPair {
             let look = Self.openLook()
             let actions = ClusterPairActions.live(config: nil)
-            let teardown = ClusterPairCommands.teardownWait
+            let teardown = ClusterPairCommands.teardownWait, progressAfter = ClusterPairCommands.progressDelay
             let say = look.saying(ClusterPairCommands.printLine)
             let code = await look.working("Stopping both Macs") {
-                await Task.detached { ClusterPairCommands.stop(pair, actions: actions, teardown: teardown, say: say) }.value
+                await Task.detached {
+                    ClusterPairCommands.stop(pair, actions: actions, teardown: teardown, progressAfter: progressAfter, say: say)
+                }.value
             }
             if code != 0 { throw ExitCode(code) }
             return

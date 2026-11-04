@@ -440,6 +440,25 @@ A DevNet build is installed as `Darkbloom Dev.app`, and its CLI is
 check and `cancel-all` know an owner by the CLI name of each build environment
 (`ClusterOrphanReaper.ownerExecutableNames`). The cluster service stop knows
 the service by this build's CLI name (`ClusterService.isClusterService`).
+Every command a build prints for a pair names its CLI: `main.swift` sets the
+name once at startup (`ClusterOnboardingCommand.use`), the pair commands read it
+(`ClusterPairSummary.cli`), and ProviderCore's texts are named with it
+(`ClusterOnboardingCommand.named`). Both apps serve a pair's API on port 8000,
+so one of them serves a pair on a Mac at a time. Each keeps its own cluster
+incident log, owned by `DarkbloomClusterRemote`
+(`ClusterIncidentLog.defaultFile(homeDirectory:install:)`): production's is
+`~/.darkbloom/cluster/incidents.json`, another install's its own file, such as
+`incidents.dev.json`, which a build from before installs had their own files
+never reads or rewrites; a corrupt one is kept beside it under its own name
+(`incidents.corrupt.json`, `incidents.dev.corrupt.json`). Every reader and writer opens this build's with
+`ClusterIncidentLog.forThisInstall`. Each record also names the install that
+wrote it (`ClusterIncident.install`), and a build reads only its own, counting
+records without one as production's (`ClusterIncidentLog.install`). The
+leader's service log notes a following window's `status` requests once a minute
+(`ClusterService.logsControl`). Each Mac's cluster service tells the other
+whether it starts at login (`ClusterServiceStatus.startsAtLogin`: it runs under
+its login agent's supervisor and that agent is installed,
+`ClusterServiceAgent.startsAtLogin`).
 
 ## Context
 

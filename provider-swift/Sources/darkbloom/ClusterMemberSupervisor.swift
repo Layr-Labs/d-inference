@@ -65,7 +65,7 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         /// How its log lines start: the member's supervisor, or the cluster service's (login agent).
         var logName: String = "cluster-member supervisor"
         /// What the operator runs to start again after the budget is spent.
-        var restartHint: String = "`darkbloom restart` (or `darkbloom stop` then start)"
+        var restartHint: String = "`\(ClusterPairSummary.cli) restart` (or `\(ClusterPairSummary.cli) stop` then start)"
         /// How often a running member is checked for its end and its next probe.
         var childPollSeconds: Double = 0.5
         /// The cluster service route's coordinated update; nil on the member route, which uses the slot above.

@@ -9,6 +9,14 @@ extension Cluster {
     /// configuration exists for such a setup. Runs until SIGTERM or SIGINT,
     /// then fences what runs and waits (bounded) for its owner's release.
     struct LinkFollower: ParsableCommand {
+        /// The app macOS lists under Local Network for the identity named `cli`: `darkbloom` for production, as it
+        /// always said; the DevNet app's own name ("Darkbloom Dev") for `darkbloom-dev`.
+        static func localNetworkApp(cli: String) -> String {
+            guard cli != BuildEnvironment.prod.cliName,
+                  let identity = BuildEnvironment.allCases.first(where: { $0.cliName == cli }) else { return cli }
+            return identity.appDisplayName
+        }
+
         static let configuration = CommandConfiguration(commandName: "link-follower",
             abstract: "Serve this Mac's rank to the leader over the link control channel (follower setups only).", shouldDisplay: false)
         @OptionGroup var configOptions: ConfigOptions
@@ -55,7 +63,7 @@ extension Cluster {
                 // cable when this process may not use the local network.
                 if reason.hasSuffix("(unreachable)") {
                     line("this process \(ClusterService.localNetworkRefusal): macOS refused the dial before the cable was tried. "
-                        + "Allow darkbloom under System Settings > Privacy & Security > Local Network (once), "
+                        + "Allow \(Cluster.LinkFollower.localNetworkApp(cli: ClusterPairSummary.cli)) under System Settings > Privacy & Security > Local Network (once), "
                         + "or start the follower from a session that has that access.")
                 }
             }

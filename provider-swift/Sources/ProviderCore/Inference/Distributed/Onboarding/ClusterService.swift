@@ -499,7 +499,7 @@ public final class ClusterService: @unchecked Sendable {
     static let memoryReplanSeconds: Double = 600
 
     private func noteMemoryRefusal(key: String, since: Date, model: String, say: @escaping @Sendable (String) -> Void) {
-        let log = ClusterIncidentLog(file: ClusterIncidentLog.defaultFile(homeDirectory: FileManager.default.homeDirectoryForCurrentUser))
+        let log = ClusterIncidentLog.forThisInstall()
         let refused = log.feed().incidents.contains { $0.ts >= since.timeIntervalSince1970 && $0.guidanceCode == "memory_gate_refused" }
         let due = lock.withLock { () -> Bool in
             guard refused else { memoryRefusals = nil; return false }
@@ -943,7 +943,8 @@ public final class ClusterService: @unchecked Sendable {
             return "The other Mac reclaimed its pair cache: removed \(reply.removedPlans) plan\(reply.removedPlans == 1 ? "" : "s")"
                 + (reply.keptLive > 0 ? ", \(reply.keptLive) still in use (removed when its part stops)" : "") + "."
         } catch {
-            return "The other Mac was not reached (\(ClusterConsoleText.bounded(String(describing: error), maximum: 160))): "
+            let reason = (error as? ClusterSetupFailure)?.text ?? String(describing: error)
+            return "The other Mac was not reached (\(ClusterConsoleText.bounded(reason, maximum: 160))): "
                 + "its pair cache stays until it unpairs too (`\(OnboardingLive.cli) cluster pair --forget \(pairing.localPin)` there)."
         }
     }
@@ -1014,6 +1015,8 @@ public final class ClusterService: @unchecked Sendable {
             value.updating = updatingLine
             value.localOnly = record?.leadership.map { $0.scope.isLocalOnly }
             value.loggedIn = AuthTokenStore.load() != nil
+            value.startsAtLogin = ClusterServiceAgent.startsAtLogin(environment: ProcessInfo.processInfo.environment,
+                                                                    installedAgents: ClusterServiceAgent.installedLabels)
             if child?.isRunning == true, childIsMember {
                 value.child.pair = Self.pairReport(in: serviceFiles.rankLog, from: childLogOffset).map(ClusterOnboardingPairReport.text)
                 let state = DaemonStateFile.read()

@@ -83,8 +83,9 @@ struct ClusterPairSummary: Sendable, Equatable {
     var pairingUnreadable: Bool { state == .pairingUnreadable }
 
     /// The command this build answers to (`BuildEnvironment.current.cliName`: `darkbloom-dev` in the DevNet app), in every
-    /// command the summary prints (the candidate on pair-2, c3 B13).
-    static let cli = BuildEnvironment.current.cliName
+    /// command the summary prints (the candidate on pair-2, c3 B13). `main.swift` names it at startup
+    /// (`ClusterOnboardingCommand.use`), so these commands and ProviderCore's texts say the same name.
+    static var cli: String { ClusterOnboardingCommand.name }
 
     /// What to do when the pairing record couldn't be read.
     static let checkPairingLine = "Run `\(Self.cli) cluster` on this Mac to check it."
@@ -245,8 +246,8 @@ struct ClusterPairSummary: Sendable, Equatable {
         out.append("  Macs:    " + rolesWords)
         out.append("  Serves:  " + servesWords)
         if state != .serving, let next { out.append("  Next:    " + next) }
-        out += ["", "  darkbloom stop     Stop both Macs", "  darkbloom restart  Restart with the current model",
-                "  darkbloom status   Check status"]
+        out += ["", "  \(Self.cli) stop     Stop both Macs", "  \(Self.cli) restart  Restart with the current model",
+                "  \(Self.cli) status   Check status"]
         return out
     }
 
@@ -306,6 +307,10 @@ extension ClusterPairSummary {
     /// The leading Mac's control modes while the other Mac isn't answering: waiting for it, serving alone, or unable
     /// to serve alone (`ClusterServiceStatus.control.mode`).
     static let otherMacAwayModes: Set<String> = ["waiting", "alone", "cannotServe"]
+
+    /// The leading Mac's control modes in which every other Mac of the plan answered within its time-to-live
+    /// (`ClusterControlNode.mode`: running the cluster, or confirming its claim).
+    static let otherMacPresentModes: Set<String> = ["cluster", "confirming"]
 
     /// The coordinator's pairing, in the status line's reason place: progress, not a reason (`pairLook`'s wait).
     static let pairingProgress: Set<String> = ["the coordinator paired both Macs", "waiting for the coordinator to pair both Macs"]
@@ -387,6 +392,8 @@ extension ClusterPairSummary {
             otherMacAnswers = state != .otherMacAway
         } else if state == .otherMacAway {
             otherMacAnswers = false
+        } else if let leaderMode, Self.otherMacPresentModes.contains(leaderMode) {
+            otherMacAnswers = true
         }
     }
 

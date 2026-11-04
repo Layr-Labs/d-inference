@@ -341,9 +341,23 @@ answer to a command the other Mac forwarded for that Mac's screen
 service names members the same way in its control lines and refusals
 (`ClusterOnboardingMacName.names`). The deployment line, recorded for both Macs
 with hardware names, is no longer on the screens, which say one serving line
-(`ClusterOnboardingReady.summary`, `ClusterOnboardingDriver.servesWords`). The Mac that joins ends its
-onboarding once paired, also for `darkbloom cluster local`
-(`ClusterOnboardingDriver.joinedLocalContinueLine`). The model list keeps one line per
+(`ClusterOnboardingReady.summary`, `ClusterOnboardingDriver.servesWords`). The Mac that joins asks
+nothing more once paired, also for `darkbloom cluster local`
+(`ClusterOnboardingDriver.joinedLocalLine`): it follows the leader's start from the cluster status
+over the cable and ends with the same ✓/✗ block, bounded like the leader's start
+(`ClusterOnboardingDriver.followStart`, `ClusterOnboardingFollowTiming`). Serving through Darkbloom, the
+leader's start asks the coordinator after its test whether to offer the pair; until it has, the setup record
+says so (`ClusterSetupRecord.registrationPendingPID` and `registrationPendingStarted`, set only by the screen's
+start, `OnboardingLive.markRegistrationPending`, never by `serve` alone as `darkbloom start` and `restart` run
+it; cleared by `localRegister`, a failed test or a stop; honoured only while that start's process runs, the same
+process by its start time) and the leader's status says a start line, "checking with Darkbloom before it offers
+the pair" (`ClusterOnboardingReady.offerPendingLine`), which the Mac that joins follows as a start not yet over
+and no screen shows as ✓. A failed test publishes the start's outcome instead (`ClusterSetupRecord.startTestFailure`,
+under the status's not-serving line `ClusterOnboardingReady.testFailedNote`), so the Mac that joins ends with the
+same ✗ and sends no test of its own. Each stage of the start has the whole bound
+(`ClusterOnboardingDriver.followStage`). So with both Macs on this build a late offer never gives it an early ✓:
+offered, it waits on the pair as the leader does (`pairServing`). With a leader on an older build, the joining Mac
+may show ✓ before Darkbloom accepts the pair. The model list keeps one line per
 artifact and name (`OnboardingLive.presentedChoices`): a choice that cannot be
 served is left out when another offers the same digests under the same name,
 and an artifact this build serves is never called unsupported for a copy the
@@ -362,7 +376,7 @@ against `ClusterPublicModels.declared`); an older leader's choices carry no
 such field and are listed as they come. A member's `darkbloom cluster` shows
 the status and where to manage the cluster, with a list only to set up a cable
 port that is not set up yet (`ClusterOnboardingDriver.member`, `fixPortItem`);
-the leader's is a list of the control operations (`ClusterOnboardingDriver.menu`).
+the leader's is the pair's model list, as `darkbloom start`'s picker, with a line to switch how it serves and one to start over (`ClusterOnboardingDriver.pairScreen`).
 A model's list line is its name, its size and the split's marker ("tensor
 parallel" or "pipeline", `ClusterOnboardingDeployment.splitMarker`), then
 "copy" or "download" when it must reach a Mac first
@@ -3821,6 +3835,56 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/C
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupLinkExchange.swift`
 (`ClusterSetupLinkExchange.Responder`).
 
+## Mode choice on a set-up pair
+
+`darkbloom cluster` offers every mode family the planner could place for these
+Macs, not only its choice (owner, 2026-11-04: tensor parallel and pipeline both
+offered, the fastest measured on this pair by default, the other one keypress
+away; mixed pairs are first-class).
+
+- **Which modes:** `ClusterSetupPlanning.modes` reads the plan's own sharded
+  candidates (`ClusterPlacementResult.shards`). A family is offered when one of
+  its candidates runs here (verdict `chosen`, `slower`,
+  `predictedFasterOnPriorOnly` or `reductionNotMeasured`); not when it doesn't
+  fit, no runtime executes it, a qualification check keeps it out, or it would
+  drop a feature (`dropsFeatures`). One per family (`ClusterForcedMode`): tensor
+  parallel, and the pipeline family's best (plain, compact or speculative).
+- **Measured speed:** `ClusterServedModes.figures` over this build's served
+  records of this model on these Macs (`ClusterServedSpeedRecords.servedBy`), as
+  the planner reads them: a figure from 3 served requests on. Never a
+  prediction; without one the screen says "not measured on these Macs yet".
+- **The current model:** on a set-up pair the list preselects the model serving
+  now (or the last one used); it keeps the mode the saved setup served in when
+  the plan still lists it (`keepMode`, from `ClusterOnboardingResume.servingMode`),
+  so Enter keeps it or starts it again.
+- **What a model's contract allows:** a family the model's features don't admit
+  is never offered, and a chosen or developer-forced one is refused in the
+  contract's words before any quote applies (`ClusterPlacementFlow.decide`):
+  Qwen3.8 27B keeps images, video and committed-token logprobs only in tensor
+  parallel (`ClusterModelFeaturePolicy`), so its list offers tensor parallel
+  alone. A chosen tensor parallel is the family a tensor quote prices, so the
+  singleton and assistant quotes accept it (`applySingleton`, the planner's
+  assistant guard).
+- **Default:** the fastest measured family, else the planner's
+  (`ClusterOnboardingMode.defaultIndex`).
+- **Forwarded choices:** a choice the other Mac forwards to the control leader
+  (`ClusterControlRequest`: op, index, model and scope) carries no mode, so it
+  is placed in the planner's family; the mode is chosen on the leading Mac.
+- **The person's choice:** `useMode` keeps the family for the next adopt of that
+  model; `OnboardingLive.localAdopt` plans that model again with
+  `ClusterPlacementFlow.decide(chosenMode:)`, which places only that family the
+  way the developer setting does (`policy.forcedMode`), while memory fit,
+  qualification records and feature parity still decide, and adopts that plan.
+  A re-plan after an update keeps the served mode unless the planner and the
+  pair's served requests both find another faster (`ClusterServedModes.hold`).
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupWizardPlanning.swift`
+(`ClusterSetupPlanning.modes`),
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementFlow.swift`
+(`ClusterPlacementFlow.decide`), and
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingLive.swift`
+(`useMode`, `localAdopt`, `screenMode`).
+
 ## A saved pairing the onboarding cannot use
 
 `darkbloom cluster` resumes a paired Mac only when the pairing it would use can
@@ -3837,16 +3901,14 @@ pairing, nor when the cable is on a port that is not set up. Silence cannot
 tell a Mac that is only away (asleep, at its login window after a restart, its
 cluster service stopped) from one that no longer holds the pairing. So the
 screen names that Mac, its likely reasons and the command to run there
-(`ClusterOnboardingDriver.otherMacSilentLine`), and keeps **Start over (pair
-again)** with its question: the member offers **Try again**, **Start over (pair
-again)** and **Quit**; the leader keeps its list. It never offers **Pair
+(`ClusterOnboardingDriver.otherMacSilentLine`), and keeps **Start over** with its question: both Macs offer **Try again**, **Start over** and **Quit** (the leader's list needs the other Mac). It never offers **Pair
 again**, which does not ask.
 
-**Start over (pair again)** is in every resumed Mac's list, after one
+**Start over** is in every resumed Mac's list, after one
 confirmation whose default is No (`ClusterOnboardingDriver.startOver`). Reading
 both Macs for the model list says each new reason the other Mac has not answered
 (`reachMembers`'s `waiting`, from `OnboardingLive.localReachMembers`); on a Mac
-paired before the run it ends with **Try again**, **Start over (pair again)** and
+paired before the run it ends with **Try again**, **Start over** and
 **Quit**, also when it follows **Change model** in a ✗ outcome
 (`ClusterOnboardingDriver.finishStart` keeps the run's `startOverRequest`).
 
@@ -3857,11 +3919,11 @@ left, the pair prefix records are reclaimed), then the ordinary pairing
 ceremony, which stores a new record set for the current key
 (`ClusterPairingStore.commit`). Nothing on the other Mac is changed beyond what
 `--forget` already does: while it holds the old pairing, this Mac no longer
-answers it, so it offers **Start over (pair again)** (or **Pair again** when its
+answers it, so it offers **Start over** (or **Pair again** when its
 own key changed too).
 
 Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift`
-(`ClusterOnboardingDriver.pairAgain`, `startOver`, `otherMacSilentLine`, `member`, `menu`),
+(`ClusterOnboardingDriver.pairAgain`, `startOver`, `otherMacSilentLine`, `member`, `pairScreen`),
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingLive.swift`
 (`OnboardingLive.resume`, `otherMacAnswers`, `unpair`) and
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Pairing/ClusterUnpairing.swift`

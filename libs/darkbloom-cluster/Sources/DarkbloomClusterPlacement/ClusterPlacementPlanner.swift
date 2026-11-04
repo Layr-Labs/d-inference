@@ -390,8 +390,9 @@ public enum ClusterPlacementPlanner {
             }
         }
         if policy.tensorParallelBatchQuote?.assistant != nil {
+            // A forced or chosen tensor parallel is the one family this quote prices (`ClusterForcedMode`).
             guard devices.count == 2, policy.modes == [.tensorParallel], policy.schedules == [.serial],
-                  policy.forcedMode == nil, !policy.handOffModes else {
+                  policy.forcedMode == nil || policy.forcedMode == .tensorParallel, !policy.handOffModes else {
                 throw ClusterPlacementError("Tensor assistant quotation requires its exact two-rank tensor placement")
             }
         }

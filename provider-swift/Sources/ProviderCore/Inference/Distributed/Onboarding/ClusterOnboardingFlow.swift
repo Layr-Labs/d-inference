@@ -695,8 +695,14 @@ public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
     /// " (pipeline)" after the outcome's title; empty when the split is unknown or not shown plainly.
     private var splitMarker: String { ClusterOnboardingDeployment.shownMarker(split).map { " (\($0))" } ?? "" }
 
-    /// How the line of a pair registered with the coordinator as a cluster member starts (`ClusterLocalServing`).
+    /// How the line of a pair registered with the coordinator as a cluster member starts (`ClusterLocalServing`). It is
+    /// a log line and a prefix matcher, never shown: the screen says `offeredLine(model:)`.
     public static let registeredNotice = "Registered with the coordinator as a cluster member"
+
+    /// What the screen says once the pair is registered (owner, 2026-11-04: the approval line read as "accepted").
+    public static func offeredLine(model: String) -> String {
+        "Offered to Darkbloom as a pair for \(model); waiting for Darkbloom to accept this pair\u{2026}"
+    }
 
     /// Where a pair offered for pairing takes requests, in the outcome block.
     public static let offeredAPILine = "No local API: requests reach the pair through Darkbloom"
@@ -837,6 +843,8 @@ public struct ClusterOnboardingOperations: Sendable {
     /// The mode the person chose for choice `index` (a `ClusterGenerationMode` raw value); the next adopt of that
     /// choice places it.
     public var useMode: @Sendable (_ index: Int, _ mode: String) -> Void
+    /// How the Mac that joined follows the start (`ClusterOnboardingDriver.followStart`).
+    public var followTiming = ClusterOnboardingFollowTiming()
 
     public init(resume: @escaping @Sendable () -> ClusterOnboardingResume,
                 checkLink: @escaping @Sendable (@escaping @Sendable (String) -> Void) -> ClusterOnboardingLinkResult,
@@ -1282,13 +1290,6 @@ public enum ClusterOnboardingDriver {
             : "Allow macOS's password and Local Network prompts."
     }
 
-    /// The Mac that joined ends its onboarding once paired; the last thing it says (the one thing to do next), with
-    /// whether its window may close.
-    public static let joinedLine = "Done here: the other Mac chooses the model, and its screen shows whether the cluster serves."
-
-    /// The same, for a Mac that joined when it was asked for `darkbloom cluster local`.
-    public static let joinedLocalContinueLine = "Done here: run `darkbloom cluster local` on the other Mac."
-
     /// Said on the Mac that joined when it was asked for `darkbloom cluster local` (a model too, perhaps): nothing of it
     /// runs here, because the Mac that leads chooses how the cluster serves and its model.
     public static let joinedLocalLine = "Run `darkbloom cluster local` on the other Mac: it leads."
@@ -1476,13 +1477,10 @@ public enum ClusterOnboardingDriver {
             }
             guard allowLocalNetwork(.service, operations, console) else { return 1 }
             // Nothing else is asked on the Mac that joined, `darkbloom cluster local` included: the Mac that leads is on
-            // its own model list by now (2026-10-25: both Macs showed the list). Its last line is the one thing to do
-            // on the other Mac, `local` included, and whether this window may close.
+            // its own model list by now (2026-10-25: both Macs showed the list). This window follows its start.
             console.say("")
-            if let restart = operations.afterRestart() { console.say(restart) }
-            console.say((request.scope?.isLocalOnly == true ? joinedLocalContinueLine : joinedLine) + " "
-                + (operations.serviceOutlivesWindow() ? closeWindowLine : keepWindowLine))
-            return 0
+            if request.scope?.isLocalOnly == true { console.say(joinedLocalLine) }
+            return followStart(leader: peerName, operations, console)
         case .leader:
             return leader(.init(role: .leader, peerName: peerName), operations, console, justPaired: true, request: request)
         }
@@ -2033,7 +2031,7 @@ public enum ClusterOnboardingDriver {
             }
             if mayRegister, !scope.isLocalOnly {
                 mayRegister = false
-                if register(operations, console) { return startOutcome(title: title, scope: scope, mayRegister: &mayRegister, operations, console) }
+                if register(title: title, operations, console) { return startOutcome(title: title, scope: scope, mayRegister: &mayRegister, operations, console) }
             }
         }
         let outcome = ready.outcome(model: title, scope: scope, test: tested)
@@ -2075,9 +2073,6 @@ public enum ClusterOnboardingDriver {
             .map { $0.first.flatMap { $0.isEmpty ? nil : $0 } }
     }
 
-    /// The leader's last line: `darkbloom cluster` again manages the cluster (its menu tests, changes the model, stops).
-    public static let againLine = "Run `darkbloom cluster` again to manage it."
-
     /// How the pair serves, at the end of the serving line: earning through Darkbloom, or local only (asked for, or a
     /// coordinator without cluster support, which leaves its local-serving notice).
     public static func servesWords(scope: ClusterServingScope, ready: ClusterOnboardingReady) -> String {
@@ -2087,17 +2082,18 @@ public enum ClusterOnboardingDriver {
 
     /// After the Test stage: registers the pair with the coordinator when it serves a cluster approval for this pair.
     /// True when both parts start again (as cluster members, or as before after a refusal), which the caller awaits as
-    /// after the start; false, with nothing said or stopped, when the coordinator serves none.
-    static func register(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Bool {
+    /// after the start; false, with nothing said or stopped, when the coordinator serves none. A registration is said in
+    /// plain words for `title`, never as its log line with the approval's id and end.
+    static func register(title: String, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Bool {
         let lines: [String]
         switch operations.register() {
         case .success(let said): lines = said
         case .failure(let failure): lines = failure.lines
         }
-        guard !lines.isEmpty else { return false }
-        for line in lines { console.say("  " + line) }
-        console.say(lines.first?.hasPrefix(ClusterOnboardingReady.registeredNotice) == true
-            ? "Starting both Macs' parts again as cluster members…" : "Starting both Macs' parts again…")
+        guard let first = lines.first else { return false }
+        let registered = first.hasPrefix(ClusterOnboardingReady.registeredNotice)
+        for line in (registered ? [ClusterOnboardingReady.offeredLine(model: title)] : [first]) + lines.dropFirst() { console.say("  " + line) }
+        console.say(registered ? "Starting both Macs' parts again as cluster members…" : "Starting both Macs' parts again…")
         return true
     }
 
@@ -2112,6 +2108,14 @@ public enum ClusterOnboardingDriver {
     static func waitWithRows<Value: Sendable>(_ title: String, _ console: ClusterOnboardingConsole,
                                               _ work: @escaping @Sendable (_ progress: @escaping @Sendable (String) -> Void) -> Value)
         -> Value {
+        // Never nil: no key leaves this wait.
+        waitWithRows(title, console, leaving: { _ in false }, work)!
+    }
+
+    /// The same, left (nil) at a key `leaving` takes; the work then goes on by itself.
+    static func waitWithRows<Value: Sendable>(_ title: String, _ console: ClusterOnboardingConsole, leaving: (Character) -> Bool,
+                                              _ work: @escaping @Sendable (_ progress: @escaping @Sendable (String) -> Void) -> Value)
+        -> Value? {
         let progress = ClusterOnboardingMailbox<String>()
         let finished = ClusterOnboardingMailbox<Value>()
         Thread.detachNewThread { finished.post(work { progress.post($0) }) }
@@ -2121,7 +2125,7 @@ public enum ClusterOnboardingDriver {
             if let line = progress.take().last { latest = line }
             if let value = finished.take().first { console.settle(); return value }
             console.workingRows(clock.rows(title, report: latest, now: Date()))
-            _ = console.key(milliseconds: 120)
+            if let key = console.key(milliseconds: 120), leaving(key) { console.settle(); return nil }
         }
     }
 

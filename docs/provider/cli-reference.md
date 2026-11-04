@@ -592,8 +592,8 @@ saved in the leader's setup record (`ClusterOnboardingLeadership.localOnly`,
 through Darkbloom again.
 The leader part then starts with `--no-coordinator`. Needs a terminal; exit 1
 otherwise. On the Mac that joins a waiting leader it pairs, says to continue on
-the leader with `darkbloom cluster local` and ends (exit 0) like `darkbloom cluster`
-(`ClusterOnboardingDriver.joinedLocalContinueLine`). Steps: [Serving locally only](./two-mac-cluster.md#serving-locally-only)
+the leader with `darkbloom cluster local` (`ClusterOnboardingDriver.joinedLocalLine`) and, like
+`darkbloom cluster`, follows the start there to its ✓ (exit 0) or ✗ (exit 1); q leaves (exit 0). Steps: [Serving locally only](./two-mac-cluster.md#serving-locally-only)
 (`provider-swift/Sources/darkbloom/ClusterLocalCommand.swift`).
 
 `darkbloom cluster status` prints `MTP: on (decode verifies drafts of the

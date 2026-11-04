@@ -41,8 +41,7 @@ public final class ClusterObservability: Sendable {
             userNames: userNames, hostNames: hostNames)
         localIdentifiers = identifiers
         let redaction = ClusterDiagnosticRedaction(identifiers: identifiers)
-        incidents = ClusterIncidentLog(file: ClusterIncidentLog.defaultFile(homeDirectory: homeDirectory),
-                                       redact: { redaction.redact($0) })
+        incidents = ClusterIncidentLog.forThisInstall(homeDirectory: homeDirectory, redact: { redaction.redact($0) })
         telemetryFile = ClusterPairTelemetryLog.defaultFile(homeDirectory: homeDirectory)
         followerStatusFile = ClusterLinkStatusBoardFile.defaultFile(homeDirectory: homeDirectory)
     }

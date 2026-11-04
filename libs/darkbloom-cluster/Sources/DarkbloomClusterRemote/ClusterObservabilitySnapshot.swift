@@ -51,10 +51,13 @@ public struct ClusterObservabilitySnapshot: Codable, Sendable, Equatable {
         self.incidents = incidents; self.telemetry = telemetry; self.followers = followers; self.speedRecords = speedRecords
     }
 
-    /// Reads the three files under `homeDirectory/.darkbloom/cluster/`.
+    /// Reads the three files under `homeDirectory/.darkbloom/cluster/`; the incidents are `install`'s, from its own file
+    /// (`ClusterIncidentLog.defaultFile(homeDirectory:install:)`).
     public static func read(homeDirectory: URL, now: Double = Date().timeIntervalSince1970,
-                            staleAfterSeconds: Double = ClusterLinkStatusBoard.defaultStaleAfterSeconds) -> ClusterObservabilitySnapshot {
-        let feed = ClusterIncidentLog(file: ClusterIncidentLog.defaultFile(homeDirectory: homeDirectory)).feed()
+                            staleAfterSeconds: Double = ClusterLinkStatusBoard.defaultStaleAfterSeconds,
+                            install: String? = nil) -> ClusterObservabilitySnapshot {
+        let file = ClusterIncidentLog.defaultFile(homeDirectory: homeDirectory, install: install)
+        let feed = ClusterIncidentLog(file: file, install: install).feed()
         let incidents: Incidents?
         if feed.epoch.isEmpty && feed.loadError == nil {
             incidents = nil

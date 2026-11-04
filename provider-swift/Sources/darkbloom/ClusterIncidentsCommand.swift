@@ -3,7 +3,8 @@ import ArgumentParser
 import ProviderCore
 
 extension Cluster {
-    /// The durable incident log (PROD-PLAN S24): `~/.darkbloom/cluster/incidents.json`.
+    /// The durable incident log (PROD-PLAN S24): this install's, `~/.darkbloom/cluster/incidents.json` for production
+    /// (`ClusterIncidentLog.forThisInstall`).
     struct Incidents: ParsableCommand {
         static let configuration = CommandConfiguration(commandName: "incidents",
             abstract: "Show this Mac's cluster incidents with their guidance, or dismiss one.", shouldDisplay: false)

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-03
+> Last updated: 2026-11-04
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -70,6 +70,65 @@ the public calls keep their synchronous queue order. Source:
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine.swift`
 (`onQueueWithoutWaiting`) and
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine+Admission.swift`.
+
+A pair request's admission deadline (the first-content budget left when it
+arrived, `DistributedRequestDeadlineContext`) is that request's alone. It bounds
+how long the pair's reservation waits for the ranks' answers, never how long a
+reservation may take to reach a rank: each rank's owner fences a worker whose
+reservation is unanswered past its delivery deadline
+(`ClusterWorkerOwnerService`), so every reservation is delivered within the
+pair's admission wait, at least `ClusterWorkerRequest.laneAdmissionWaitNanoseconds`
+(30 s) with lanes, or by the request's generation deadline if that comes
+first. A busy rank answers at its next step boundary. When the request's own
+deadline passes first, the pair throws
+`ClusterWorkerOwnerError.deadline` for that request only: no further rank is
+asked, an answer still on its way is read, every admission is given back
+(`retired(cancelled)`) within `ClusterWorkerRequest.laneRetirementWaitNanoseconds`
+(30 s), and the other lanes run on. A rank never asked is never fenced for a
+request, whatever ended it: a failing pair's owner shuts it down. A relayed
+reservation that reaches the follower past its delivery deadline is that
+request's refusal (`commandRefused`, `deadline`), not a fence of the follower's
+session. A closed link, a lost rank, a rank that does not answer within the
+pair's admission wait, or one that does not give a reservation back in time
+still ends the pair. So does a rank that still holds a request when the
+request's generation deadline passes: each rank's owner holds every request to
+that deadline (`ClusterOwnerLeaseState`). The generation deadline is the setup's
+request deadline counted from the request's arrival
+(`DistributedCBv2Engine.deadlineContext`); the coordinator's
+`first_content_budget_ms` sets only the admission deadline, and nothing the
+coordinator sends sets the generation deadline. Before, the admission deadline
+ended the whole pair: every lane in flight failed and the follower logged
+`leader fenced: the request was cancelled before it started`. Sources:
+`libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerPair.swift`
+(`reserve`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerRequest.swift`
+(`admit`, `cleanup`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterLinkWorkerEndpoint.swift`
+(`ClusterLinkWorkerWire.requestRefusal`) and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerLeaseState.swift`
+(`clock`).
+
+A pair request whose consumer goes away (a client that closes its connection,
+or a coordinator cancel) ends with the clean client-stop handshake at its next
+committed token, which keeps both ranks retired and the pair serving
+(`DistributedCBv2Engine.stop`, `.cancelled`). On a pair whose lanes retire
+alone, a request that has produced no token yet takes no clean stop
+(`ClusterWorkerRequest.requestCleanStop` returns false) and is cancelled
+instead: a clean stop would first finish its whole prompt, and a
+tensor-parallel pair prefills one prompt at a time, oldest first
+(`QwenTensorParallelBatchDriver`), so every newer request would wait behind it
+and fail at its own first-token deadline. The cancel ends only that lane, at
+both ranks' next step boundary, and the next request is served at once. The
+pair's own shutdown (`ClusterWorkerPair.shutdown`) likewise cancels such a lane
+without waiting for a clean stop. A pair without such lanes keeps the clean
+stop, since a cancel there ends the pair. Before, a client that closed its
+connection 15 s into a 60K-token prompt on a Qwen 3.8 27B tensor-parallel pair
+kept both Macs prefilling it for about 4 minutes, and every other request
+failed meanwhile. Sources:
+`libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerRequest.swift`
+(`requestCleanStop`) and
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine+Events.swift`
+(`stop`).
 
 The cluster setup liveness probe uses the same request validation as ordinary
 chat completions. `ClusterSetupProbeRequest` sends no family-specific thinking
@@ -255,9 +314,31 @@ the test response succeeds, the control leader registers the pair with the
 coordinator when the coordinator serves a cluster approval for this pair
 (`ClusterOnboardingDriver.register`, control operation `register`). Both parts
 then run as coordinator-paired members
-(`ClusterService.Settings.memberArguments`), which have no local API, and the
-ready screen shows the registered line (`ClusterOnboardingReady.offered`,
-`OnboardingLive.offeredReadiness`). How the approval is fetched, matched,
+(`ClusterService.Settings.memberArguments`), which have no local API. Both
+members registered (`ClusterOnboardingReady.offered`,
+`OnboardingLive.offeredReadiness`) is not serving: the driver then waits
+(`ClusterOnboardingDriver.awaitPairServing`, operation `pairServing`) until the
+plan's rank 0 part reports its pair slot published, which needs both ranks
+loaded and the warm-up request answered. That part writes its pair's progress
+to its log (`ClusterOnboardingPairReport`, written by
+`ProviderLoop.reportPair`); its cluster service publishes the latest line with
+the member's App Attest authorization and this Mac's Darkbloom login
+(`ClusterServiceStatus.Child.pair`, `Child.appAttest`, `loggedIn`). A start that
+does not serve, the restart after the registration included, ends on its reason
+(`ClusterOnboardingNotServing`, `OnboardingLive.pairLook`) and the driver's
+choices (`ClusterOnboardingDriver.finishStart`); it never says Done. A Mac
+without a login is named before the Start step
+(`ClusterOnboardingDriver.checkLogins`). The Start step opens with
+`ClusterOnboardingDriver.startNotice`; the waits draw one live row per Mac
+(`ClusterOnboardingLoadRows`, `ClusterOnboardingConsole.workingRows`), and the
+setup ends with the outcome block (`ClusterOnboardingConsole.result`,
+`ClusterOnboardingReady.outcome`). The other Mac's `darkbloom cluster` shows the
+same block from the status line (`ClusterOnboardingNotServing.statusLine`,
+`ClusterOnboardingDriver.showOutcome`). A member's missing App Attest names its
+local key-generation safeguard's end
+(`ClusterServiceStatus.Child.appAttestRetryAt`, read from the daemon state's
+`AppAttestKeyState.generationBlockedUntil`).
+How the approval is fetched, matched,
 checked on each Mac and saved:
 [coordinator-paired member](../reference/configuration.md#coordinator-paired-member).
 The control leader checks the approval again under the command lock
@@ -282,9 +363,32 @@ answer to a command the other Mac forwarded for that Mac's screen
 service names members the same way in its control lines and refusals
 (`ClusterOnboardingMacName.names`). The deployment line, recorded for both Macs
 with hardware names, is no longer on the screens, which say one serving line
-(`ClusterOnboardingReady.summary`, `ClusterOnboardingDriver.servesWords`). The Mac that joins ends its
-onboarding once paired, also for `darkbloom cluster local`
-(`ClusterOnboardingDriver.joinedLocalContinueLine`). The model list keeps one line per
+(`ClusterOnboardingReady.summary`, `ClusterOnboardingDriver.servesWords`). The Mac that joins asks
+nothing more once paired, also for `darkbloom cluster local`
+(`ClusterOnboardingDriver.joinedLocalLine`): it follows the leader's start from the cluster status
+over the cable and ends with the same ✓/✗ block, bounded like the leader's start
+(`ClusterOnboardingDriver.followStart`, `ClusterOnboardingFollowTiming`). Serving through Darkbloom, the
+leader's start asks the coordinator after its test whether to offer the pair; until it has, the setup record
+says so (`ClusterSetupRecord.registrationPendingPID` and `registrationPendingStarted`, set only by the screen's
+start, `OnboardingLive.markRegistrationPending`, never by `serve` alone as `darkbloom start` and `restart` run
+it; cleared by `localRegister`, a failed test or a stop; honoured only while that start's process runs, the same
+process by its start time) and the leader's status says a start line, "checking with Darkbloom before it offers
+the pair" (`ClusterOnboardingReady.offerPendingLine`), which the Mac that joins follows as a start not yet over
+and no screen shows as ✓. Every screen start, local only too, marks itself
+the same way until its test is answered (locally the status says `ClusterOnboardingReady.testingLine`, never
+"checking with Darkbloom") and publishes that test's outcome, compare-and-set on the mark's pid and start time
+(`OnboardingLive.settleTest`): a pass as `ClusterSetupRecord.startTestPassed`, the time under the serving line
+(`ClusterOnboardingReady.startTestPassedLine`); a failure as `startTestFailure`, under the not-serving line
+(`testFailedNote`, or `localTestFailedNote` locally). The Mac that joins ends with that outcome and sends no test
+of its own (`ClusterOnboardingDriver.followServed`, `followTestFailed`). Tests that aren't a start's (the serving
+model's test, its Retry, the scope switch's, a re-test) publish too, through the record's normal update and never
+while a start's mark is live: a pass as `startTestPassed`, a failure as `ClusterSetupRecord.lastTestFailure` under
+`ClusterOnboardingReady.lastTestFailedNote`, so the status shows the leading Mac's latest test
+(`OnboardingLive.outcomeLines`). The next start or serve, a scope switch (`OnboardingLive.savingScope`) and a stop
+clear all three, and a pass clears a failure. Each stage of the start has the whole bound
+(`ClusterOnboardingDriver.followStage`). So with both Macs on this build a late offer never gives it an early ✓:
+offered, it waits on the pair as the leader does (`pairServing`). With a leader on an older build, the joining Mac
+may show ✓ before Darkbloom accepts the pair, and it tests the pair itself. The model list keeps one line per
 artifact and name (`OnboardingLive.presentedChoices`): a choice that cannot be
 served is left out when another offers the same digests under the same name,
 and an artifact this build serves is never called unsupported for a copy the
@@ -303,7 +407,7 @@ against `ClusterPublicModels.declared`); an older leader's choices carry no
 such field and are listed as they come. A member's `darkbloom cluster` shows
 the status and where to manage the cluster, with a list only to set up a cable
 port that is not set up yet (`ClusterOnboardingDriver.member`, `fixPortItem`);
-the leader's is a list of the control operations (`ClusterOnboardingDriver.menu`).
+the leader's is the pair's model list, as `darkbloom start`'s picker, with a line to switch how it serves and one to start over (`ClusterOnboardingDriver.pairScreen`).
 A model's list line is its name, its size and the split's marker ("tensor
 parallel" or "pipeline", `ClusterOnboardingDeployment.splitMarker`), then
 "copy" or "download" when it must reach a Mac first
@@ -358,6 +462,37 @@ A DevNet build is installed as `Darkbloom Dev.app`, and its CLI is
 check and `cancel-all` know an owner by the CLI name of each build environment
 (`ClusterOrphanReaper.ownerExecutableNames`). The cluster service stop knows
 the service by this build's CLI name (`ClusterService.isClusterService`).
+Every command a build prints for a pair names its CLI: the name starts as this
+build's (`ClusterOnboardingCommand.name`, from `BuildEnvironment.current.cliName`;
+checks that compile the screens without the package set theirs with `use`), the
+pair commands and the live operations read it (`ClusterPairSummary.cli`,
+`OnboardingLive.cli`), and ProviderCore's texts are named with it
+(`ClusterOnboardingCommand.named`). Every line that names the app as macOS
+lists it under Local Network or in its firewall reads `ClusterService.appName`
+(`BuildEnvironment.current.appDisplayName`): the screens (through
+`ClusterOnboardingCommand.app`, including the pairing hint's firewall line and
+the line that asks to pair again after a reinstall) and the link follower's
+refusal. Both apps serve a pair's API on port 8000,
+so one of them serves a pair on a Mac at a time. Each keeps its own cluster
+incident log, owned by `DarkbloomClusterRemote`
+(`ClusterIncidentLog.defaultFile(homeDirectory:install:)`): production's is
+`~/.darkbloom/cluster/incidents.json`, another install's its own file, such as
+`incidents.dev.json`, which a build from before installs had their own files
+never reads or rewrites; a corrupt one is kept beside it under its own name
+(`incidents.corrupt.json`, `incidents.dev.corrupt.json`). `ClusterIncidentLog.files`
+names a log's files: the log, its lock sidecar and that corrupt copy.
+`darkbloom uninstall` removes an install's own with it while the shared folder
+stays for the other install; production's shared `incidents.json` stays. Every
+reader and writer opens this build's with
+`ClusterIncidentLog.forThisInstall`. Each record also names the install that
+wrote it (`ClusterIncident.install`), and a build reads only its own, counting
+records without one as production's (`ClusterIncidentLog.install`). The
+leader's service log notes a following window's `status` requests once a minute
+(`ClusterService.logsControl`). Each Mac's cluster service tells the other
+whether it starts at login (`ClusterServiceStatus.startsAtLogin`: it runs under
+its login agent's supervisor and that agent is installed,
+`ClusterServiceAgent.startsAtLogin`). This Mac's own lines read it from its
+running service when they are said, else from this run's service setup.
 
 ## Context
 
@@ -3088,6 +3223,21 @@ live line (`ClusterOnboardingDriver.move`, `ClusterOnboardingProgress.live`),
 laid out by `TransferProgressLine` through `ClusterTransferReports`; a
 transcript without a live line keeps only the reports
 `TransferProgressLine.takeLogLine` marks and the lines for the record.
+Each Mac that receives a model is judged by its disk as `ClusterDiskSpace`
+counts it (`ClusterModelStore.diskSpace` in `Onboarding/ClusterModelProvisioning.swift`):
+the volume's available capacity, or `statfs`'s free blocks when that is not
+read, with `ClusterModelProvisioning.reserveBytes` kept free. macOS's
+important-usage capacity adds space it could purge (local snapshots, files
+iCloud keeps elsewhere) and may never free: on an M3 Ultra it read 256.6 GB
+with 54.1 GB free, and the list offered a 172.9 GB download (2026-11-03). That
+space is never counted. The refusal names it only when it alone would make room
+(`ClusterModelProvisioning.diskShortWords`). The plan (`ClusterModelProvisioning.plan`),
+the receiving Mac's cluster service (`ClusterModelReceiver.begin`) and the
+setup report each Mac sends (`ClusterSetupReport.modelStoreFreeBytes`,
+`modelStorePurgeableBytes`) use these figures. A choice a Mac has no room for
+carries `ClusterOnboardingProvisionOffer.fitsOnDisk` false and is listed last,
+ending "not enough free disk". A clone from the product's store takes no new
+blocks and is not checked.
 Its restart line reads FileVault with `fdesetup isactive`
 (`OnboardingLive.fileVaultOn`): five seconds, then SIGTERM and two more, and no
 answer reads as unknown. The exit comes from `ProcessExitObserver`, which does not run the calling thread's run loop.
@@ -3123,7 +3273,35 @@ recorded with each decision, not applied. Pressure above normal, or more than
 512 MiB compressed or 64 MiB swapped out since a load's or request's first
 sample, withdraws all of it, and such a refusal stands on the gate's own
 sample: the room-making pass (`QwenDenseStageLoadReclaim`) runs only at normal
-pressure, for file cache the gate does not count.
+pressure, for file cache the gate does not count, and with every file-backed
+page counted there is none, so it does not run.
+
+The kernel gives most of that cache back one page at a time: up to two
+anonymous pages (compressed) for each file page, and only anonymous pages once
+the cache is below its minimum. A load into a cache that holds mostly its own
+model therefore compresses past the guard and is refused, and a restart that
+read the model back into the cache was refused again (MiMo on two 128 GB Macs,
+680 refused starts, 2026-11-01). So the model's own pages leave the cache
+before a load reads them:
+
+- Before this Mac's part starts, the cluster service drops the cached pages of
+  the model folder's regular files and of those one folder down (MiMo's
+  `audio_tokenizer/`), never through a link (`ClusterModelStore.dropCachedPages`,
+  called from `ClusterService.supervise`).
+- When a selected loader turns its payload reads uncached, it drops each weight
+  file's cached pages through the pinned descriptor
+  (`VerifiedCheckpoint.bypassTensorPayloadCache`). The MiMo, Qwen, Gemma and
+  GPT-OSS pipeline and tensor-parallel loads take this path. GLM's prepared
+  tensor-parallel load still reads through the cache on purpose.
+
+Both use `msync(MS_INVALIDATE)` over a read-only shared mapping: no privileges,
+and the files' bytes and identity are unchanged. After each load, or at the
+failure that ended it, the worker writes one `darkbloom-load-memory-v1` line per
+load gate (`QwenDenseStageLoadAdmissionSummary.logLine`): its decisions and
+refusals, the rule that settled it, the numbers of the decision it rests on
+(required, admissible, free, file-backed and counted bytes, the kernel's
+file-cache minimum) and what was compressed and swapped out since its first
+sample.
 
 Explicit placement requests may exceed a layout's default prompt or output
 reference while remaining inside the registered family profile. Both the native
@@ -3718,6 +3896,171 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/C
 (`ensureControlResponder`, `ensureControl`) and
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupLinkExchange.swift`
 (`ClusterSetupLinkExchange.Responder`).
+
+## Mode choice on a set-up pair
+
+`darkbloom cluster` offers every mode family the planner could place for these
+Macs, not only its choice (owner, 2026-11-04: tensor parallel and pipeline both
+offered, the fastest measured on this pair by default, the other one keypress
+away; mixed pairs are first-class).
+
+- **Which modes:** `ClusterSetupPlanning.modes` reads the plan's own sharded
+  candidates (`ClusterPlacementResult.shards`). A family is offered when one of
+  its candidates runs here (verdict `chosen`, `slower`,
+  `predictedFasterOnPriorOnly` or `reductionNotMeasured`); not when it doesn't
+  fit, no runtime executes it, a qualification check keeps it out, or it would
+  drop a feature (`dropsFeatures`). One per family (`ClusterForcedMode`): tensor
+  parallel, and the pipeline family's best (plain, compact or speculative).
+- **Measured speed:** `ClusterServedModes.figures` over this build's served
+  records of this model on these Macs (`ClusterServedSpeedRecords.servedBy`), as
+  the planner reads them: a figure from 3 served requests on. Never a
+  prediction; without one the screen says "not measured on these Macs yet".
+- **The current model:** on a set-up pair the list preselects the model serving
+  now (or the last one used); it keeps the mode the saved setup served in when
+  the plan still lists it (`keepMode`, from `ClusterOnboardingResume.servingMode`),
+  so Enter keeps it or starts it again.
+- **What a model's contract allows:** a family the model's features don't admit
+  is never offered, and a chosen or developer-forced one is refused in the
+  contract's words before any quote applies (`ClusterPlacementFlow.decide`):
+  Qwen3.8 27B keeps images, video and committed-token logprobs only in tensor
+  parallel (`ClusterModelFeaturePolicy`), so its list offers tensor parallel
+  alone. A chosen tensor parallel is the family a tensor quote prices, so the
+  singleton and assistant quotes accept it (`applySingleton`, the planner's
+  assistant guard).
+- **Default:** the fastest measured family, else the planner's
+  (`ClusterOnboardingMode.defaultIndex`).
+- **Local Network truth:** the follower the service runs is the process that
+  dials the other Mac, so its last dial decides (`ClusterService.followerRefusal`:
+  the refusal macOS gave it, or a link it opened since, or a dial that failed
+  another way since). The follower writes each of those phrases from the
+  constant the scan reads (`localNetworkRefusal`, `followerLinkOpenedLines`,
+  `followerLinkRefusedLine`). A running follower publishes that refusal as its
+  `lastError` (`runningPartRefusal`: only a link follower's log is read, and only
+  once it grew), and an ended part's reason reads the same last dial
+  (`ClusterService.lastError`), so a stop after a link opened is a clean stop.
+  Only a running follower's refusal blocks: the service's Local Network state
+  (`ClusterLocalNetworkAccess.state`), whatever the probe's broadcast found, and
+  the leading Mac's wait (`OnboardingLive.otherMacRefused`), which ends on it once
+  its own part, which hosts the listener the follower dials, has run
+  `refusalSettleSeconds` (the follower redials at most about 1.25 s apart and
+  logs only a change, so a setting just turned on clears first;
+  `refusalIsCurrent`). The ✗ is worded for the screen that shows it
+  (`OnboardingLive.localNetworkLine`): a wait the joining Mac forwarded names
+  that Mac. Its line for the refused part says only that the part can't reach
+  the local network (`errorLines`' `refusalSaid`), and every ✗ line too long for
+  its bound is cut at a word, never inside a parenthesis, and marked
+  (`ClusterConsoleText.boundedAtWord`). `status` and `cluster status` read the
+  same refusal by the same rule (`ClusterLocalNetworkAccess.Refused`): on the
+  refused Mac its own service's state, on the leading Mac the other Mac's
+  status, asked (`otherMacStatus`) only while the pair has been starting past
+  the settle time (`otherMacRefused`). A status read keeps it across the leading
+  Mac's part restarts once a part ran past that time (`refusalIsCurrent`'s
+  `acrossRestarts`, from the service's `lastRunSeconds`); a start's own wait
+  doesn't, so a Retry just after the setting was turned on never ends at once on
+  it. They say `not_serving` in the screens'
+  words, ending with the command that starts the pair again instead of the
+  screen's Retry (`statusWords`, through the `then` of
+  `localNetworkRefusalLines` and `localNetworkBlockedLines`). A stopped pair
+  reads stopped whatever the other Mac's presence
+  (`ClusterPairSummary.state(ofStatus:started:leaderMode:)`).
+- **The split shown:** each mode's share names the Mac that runs it
+  (`OnboardingLive.modeSplit`, "1 layer" for one). While a model serves it reads
+  "decided when it loads": the list's plan counts that model's memory as taken,
+  and the adopt stops it and plans again with its memory free.
+- **The person's family:** `useMode` keeps the chosen family for every model
+  (`OnboardingLive.keptFamily`), never inferred from the listing's order, which
+  says nothing of the plan; `localAdopt` plans again in it only when the listed
+  plan's mode isn't in it (`OnboardingLive.replansInFamily`).
+- **The scope a plan is for:** `chooseAndServe` names the scope before it plans
+  the list (`ClusterOnboardingOperations.planScope`, `OnboardingLive.usePlanningScope`,
+  carried in `ClusterControlRequest.scope`); a start whose scope changes before
+  it adopts (the login check's "Serve locally only") is planned again for that
+  scope, and the same model is adopted from the new plan.
+- **Forwarded choices:** a choice the other Mac forwards to the control leader
+  (`ClusterControlRequest`: op, index, model and scope) carries no mode, so it
+  is placed in the planner's family; the mode is chosen on the leading Mac.
+- **The person's choice:** `useMode` keeps the family for the next adopt of that
+  model; `OnboardingLive.localAdopt` plans that model again with
+  `ClusterPlacementFlow.decide(chosenMode:)`, which places only that family the
+  way the developer setting does (`policy.forcedMode`), while memory fit,
+  qualification records and feature parity still decide, and adopts that plan.
+  A re-plan after an update keeps the served mode unless the planner and the
+  pair's served requests both find another faster (`ClusterServedModes.hold`).
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupWizardPlanning.swift`
+(`ClusterSetupPlanning.modes`),
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementFlow.swift`
+(`ClusterPlacementFlow.decide`), and
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingLive.swift`
+(`useMode`, `localAdopt`, `screenMode`).
+
+## A saved pairing the onboarding cannot use
+
+`darkbloom cluster` resumes a paired Mac only when the pairing it would use can
+serve. One fact ends that (`ClusterOnboardingPairingProblem`):
+
+| Case | How it is found | What the screen offers |
+|---|---|---|
+| `keyChanged` | `OnboardingLive.resume` compares the pairing's local pin with this Mac's current key, read without creating, deleting or repairing one (`ClusterPairingProvider.existingPin`); no key read claims nothing. A roster names the key that paired, so the member start refuses another (`ProviderLoop.nativePairRosterNamesAnotherKey`) | **Pair again**, **Quit** (instead of the leader's list or the member's status) |
+
+A silent other Mac is not one. Each resumed run asks the other Mac once over the
+cable (`OnboardingLive.otherMacAnswers`, `answerSeconds` = `8`), which only a
+Mac holding this pairing's edge secret answers; it is not asked right after
+pairing, nor when the cable is on a port that is not set up. Silence cannot
+tell a Mac that is only away (asleep, at its login window after a restart, its
+cluster service stopped) from one that no longer holds the pairing. So the
+screen names that Mac, its likely reasons and the command to run there
+(`ClusterOnboardingDriver.otherMacSilentLine`), and keeps **Start over** with its question: both Macs offer **Try again**, **Start over** and **Quit** (the leader's list needs the other Mac). It never offers **Pair
+again**, which does not ask.
+
+**Start over** is in every resumed Mac's list, after one
+confirmation whose default is No (`ClusterOnboardingDriver.startOver`). Reading
+both Macs for the model list says each new reason the other Mac has not answered
+(`reachMembers`'s `waiting`, from `OnboardingLive.localReachMembers`); on a Mac
+paired before the run it ends with **Try again**, **Start over** and
+**Quit**, also when it follows **Change model** in a ✗ outcome
+(`ClusterOnboardingDriver.finishStart` keeps the run's `startOverRequest`).
+
+**Pair again**, and **Start over** once confirmed, run `ClusterUnpairing.run`,
+the steps of `darkbloom cluster pair --forget` (a leader tells its member, the
+pairing store forgets the peer pin, the service leaves login with no pairing
+left, the pair prefix records are reclaimed), then the ordinary pairing
+ceremony, which stores a new record set for the current key
+(`ClusterPairingStore.commit`). Nothing on the other Mac is changed beyond what
+`--forget` already does: while it holds the old pairing, this Mac no longer
+answers it, so it offers **Start over** (or **Pair again** when its
+own key changed too).
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift`
+(`ClusterOnboardingDriver.pairAgain`, `startOver`, `otherMacSilentLine`, `member`, `pairScreen`),
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingLive.swift`
+(`OnboardingLive.resume`, `otherMacAnswers`, `unpair`) and
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Pairing/ClusterUnpairing.swift`
+(`ClusterUnpairing`).
+
+## A paired cable port's own address
+
+`darkbloom cluster link`, `darkbloom cluster doctor` and the guided setup judge
+whether the cable port is isolated
+([findings](../reference/configuration.md#link-setup-v2-isolating-the-cluster-port)).
+`clusterSubnetInUse` blocks the isolation when another interface or route
+already uses the cluster subnet `10.219/16`. Once the port's own address has
+carried traffic, which pairing does, macOS reaches that address through the
+loopback with a cloned host route (`10.219.13.112  <MAC>  UHLWIi  lo0`). That
+route is how the Mac reaches the port's address, not a second use of the
+subnet: the route reader counts a loopback host route to an address that an
+interface carries on that interface
+(`ClusterLinkNetworkFacts.clusterSubnetRouteInterfaces`), reading the
+`ifconfig -a` text the readiness probe already took
+(`ClusterLinkIsolationInspection.machine(run:interfaceListing:)`). Only interface
+names leave the reader. Another interface's address in the subnet, a route into
+it through any other interface, and a loopback route to an address the port
+does not carry still block.
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkNetworkFacts.swift`
+(`ClusterLinkNetworkFacts.clusterSubnetRouteInterfaces`) and
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkIsolationInspection.swift`
+(`ClusterLinkIsolationInspection.status`).
 
 ## GLM tool-stream completion
 
@@ -4897,7 +5240,7 @@ See [focused MiMo V2.6 tensor-parallel checks](../developer/test.md#focused-mimo
 
 ## Exact-quote placement
 
-`ClusterPlacementPlanner.rankQuoted` is the model-independent decision seam for adapters that provide exact simultaneous native/host peaks and current bounds. It filters infeasible shapes and unsupported modes, then uses the same hardware-only ordering as `plan`: candidates whose every range fits its Mac's hardware (`ClusterDeviceProfile.hardwareFits`: buffer and allocator limits, need within the GPU working set and the at-rest admissible memory `atRestAdmissibleBytes`), then predicted request time, ties and the tensor-parallel margin. Live free memory and file cache never order candidates; each rank's live fit is reported and the load gate still decides each load. A supported TP adapter must supply TP layout facts and keyed reduction measurements. Neither resource balance nor chip-name rules replace request-time scoring; balance only breaks ties. Candidates whose predicted times differ only by rounding (relative 1e-9, as every serial pipeline cut does on identical Macs) are ordered by `capacityBalance`, the smallest share of a rank's hardware capacity (`min(residentCapacityBytes, atRestAdmissibleBytes)`) left beyond its need, before the lower cut, so identical Macs split evenly and live free memory cannot pick the cut. Every structural boundary, including one layer on a slower member, remains available when its adapter quotes fit.
+`ClusterPlacementPlanner.rankQuoted` is the model-independent decision seam for adapters that provide exact simultaneous native/host peaks and current bounds. It filters infeasible shapes and unsupported modes, then uses the same hardware-only ordering as `plan`: candidates whose every range fits its Mac's hardware (`ClusterDeviceProfile.hardwareFits`: buffer and allocator limits, the GPU-resident part (`ClusterPlacementRank.gpuResidentBytes`, the `withinGPUWorkingSet` figure) within the GPU limit, and the whole need within the at-rest admissible memory `atRestAdmissibleBytes`, physical memory less what macOS wires, because the load gate counts every file-backed page), then predicted request time, ties and the tensor-parallel margin. Live free memory and file cache never order candidates; each rank's live fit is reported and the load gate still decides each load. A supported TP adapter must supply TP layout facts and keyed reduction measurements. Neither resource balance nor chip-name rules replace request-time scoring; balance only breaks ties. Candidates whose predicted times differ only by rounding (relative 1e-9, as every serial pipeline cut does on identical Macs) are ordered by `capacityBalance`, the smallest share of a rank's hardware capacity (`min(residentCapacityBytes, atRestAdmissibleBytes)`) left beyond its need, before the lower cut, so identical Macs split evenly and live free memory cannot pick the cut. Every structural boundary, including one layer on a slower member, remains available when its adapter quotes fit. A candidate is `possible` when every rank fits the hardware, or the live gate admits it now and its GPU part is within the limit: a split the GPU cannot keep resident is never offered because memory happens to be free. `ClusterPlacementMemoryVerdict.assess` runs the caller's planning step on the Macs as they are and, when nothing fits, with each GPU limit raised to `ClusterGPUMemoryLimit.ceilingBytes` (physical memory less 16 GiB, or a sixteenth from 512 GB): `fits`, `needsGPULimitRaise` (each Mac's GPU need, limit now and ceiling, with `ClusterGPULimitRaise.question`) or `doesNotFit`. It is data only: no setup screen calls it yet, and nothing in Darkbloom raises the limit. `ClusterDeviceMemory.fit` reports `gateCountsLess` only on a sample whose gate counts file cache; above normal pressure, where the gate counts none, the answer is `afterApplicationsRelease`. A rank's live fit is the gate's decision on one sample, so it cannot foresee the gate withdrawing the file cache during the load once compression or swap-out since the load's first sample passes its limits (`QwenDenseStageLoadPolicy.maximumCompressedSinceFirstSampleBytes`, described above); the at-rest ceiling assumes the share loads into free pages, not into a file cache full of the model's own files.
 
 GLM's placement family (`GLM5NextPlacementFamily`, `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Metadata/GLM5NextServingMetadata.swift`) offers the two-rank plan `glm5_next_heads_and_expert_channels_v1` whenever the registered row lists `tensor_parallel_v1` and the geometry halves. Each text-layer tensor is divided or replicated exactly as the SDK's `GLM5NextTensorShard.splitAxis` loads it; the embedding, final norm and head are replicated, and the NextN layer and vision tower belong to no text range. Every rank decodes in speculative rounds with the NextN layer, which it holds whole beside its share, so the plan states it (`ClusterTensorParallelFamilyPlan.speculativeHead`, `GLM5NextPlacementFamily.tensorParallelSpeculativeHead`): the planner charges each tensor-parallel rank the layout's `speculativeHead` part (4,183,320,576 stored bytes, each tensor in whole pages, as `mtp_bytes` on the worker's load line) and the request memory the rounds add at the memory plan's context (the larger of the contiguous and the paged NextN charge of `GLM5NextTensorParallelRequestCharge`), and divides a token's predicted decode step by the speed-up the pair measured at the runtime's depth over one token per step (76.0 against 62.6 tok/s at depth 2, `GLM5NextPlacementFamily.measuredTensorParallelDecode`). Served tensor-parallel requests are taken back to one-token steps by the same speed-up before they correct the shares (`ClusterServedCalibration`), so the next plan predicts what was served. Without it the plan priced no NextN bytes and one token per step: it could admit a pair the load gate then refused, and it predicted decode too slow. Three terms of the load gate are not in the plan yet: the vision tower rank 0 holds for media (1.13 GB), the freed-buffer cache (`GLM5NextTensorParallelResidentRuntime.freedBufferCacheBytes`) and the bulk prefill's further workspaces and sealed sums' buffers (`bulkPrefillChunkTokens`). On two M5 Ultra 256 GB, adding them to the planner's estimate as it stands would put each rank's need above the at-rest ceiling (`ClusterDeviceProfile.atRestAdmissibleBytes`), so the pair would no longer plan tensor parallel; they wait for the gate's own charge to replace the estimate rather than be added to it. The plan sums two partials of the 4096-wide residual per layer and one per step (91 per decode step); the partials are the row-parallel projections' bfloat16 outputs, sent as they are and added in float32 with one rounding (`GLM5NextTensorParallelResidentRuntime.partialsTransport`, bound into the load agreement). That is bit-identical to widening them to float32 before the link, as `ClusterTensorParallelTerms.current` (`partialsDType` float32) describes, with half the bytes: GLM's projections never kept float32 partials (flagged for platform review) and holds request state whole on each rank, since the DSA latent cache is replicated. The pipeline's private image profile stays pipeline-only, in both the layout and the capability; tensor parallel serves media under the text profile (below). The hardware prior (`ClusterHardwarePrior.decodeBytesPerToken`) counts a mixture of experts' routed experts at the fraction a token is routed to (`ClusterRoutedExperts`; 8 of GLM's 288), not every expert byte. Of the bytes a step reads, a tensor-parallel share divides only the plan's divided bytes (`dividedDecodeFraction`), because every rank reads its replicated bytes whole. On two identical M5 Ultra 256 GB with GLM measured alone the product's rule (tensor parallel first wherever it fits) places tensor parallel on equal shares with the NextN layer priced, both on a new pair before any load measured the link and after the first load's keyed probe; the planner's own speed comparison (the plan tool without `--tensor-parallel-first`) chooses tensor parallel once the keyed link is measured and a pipeline before (`GLMTensorParallelChecks`; through `ClusterPlacementFlow.decide` in `PlacementSetupCheck.glmTensorParallelPair`). The pair serves it with eight lanes (`DistributedInstalledPlan.tensorParallelBatchLanes`).
 

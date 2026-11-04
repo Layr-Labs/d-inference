@@ -1,6 +1,6 @@
 # Provider process
 
-> Last updated: 2026-10-26
+> Last updated: 2026-11-04
 
 The provider is the Apple Silicon Mac that decrypts prompts and runs inference.
 It ships as one Swift package (`provider-swift/`) producing the `darkbloom` CLI,
@@ -156,7 +156,10 @@ endpoint private key in the child. `cancelAppAttestShadow` invalidates the old
 exchange generation and chains worker retirement before the next transport can
 start verification. `stopAppAttestWorkerAndWait` is a terminal shutdown barrier.
 The separate `stopAppAttestWorkerForUpdateAndWait` guards installation and every
-update restart, including an already-installed candidate. A failed reap withholds
+update restart, including an already-installed candidate. Both also wait, at most
+`AppAttestShadowClient.outstandingAttestationWaitSeconds`, for an in-process
+attestation already handed to Apple, so its answer is persisted before the process
+ends (`AppAttestShadowClient.waitForOutstandingAttestation`). A failed reap withholds
 drain completion or postpones update; a fresh `prepare` may retry retained-owner
 cleanup only after a failed update returns to idle, never after terminal shutdown.
 No worker-stall recovery restarts inference or falls back to in-process Apple

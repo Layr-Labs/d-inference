@@ -60,4 +60,31 @@ struct ClusterInstalledReferenceTests {
         try ConfigManager.save(config, to: file)
         #expect(try ClusterConfigurationStore.installedReference(providerConfiguration: file) == expected)
     }
+
+    @Test("P2-5: a provider configuration others can read saves no setup until one is saved; with one, it says the fix")
+    func installerModeProviderConfiguration() throws {
+        let directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+            .appendingPathComponent("installed-reference-mode-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("provider.toml")
+        // As the installer writes it for a coordinator other than production's: the default mode, no setup yet.
+        try Data("[coordinator]\nurl = \"wss://api.dev.darkbloom.dev/ws/provider\"\n".utf8).write(to: file)
+        #expect(chmod(file.path, 0o644) == 0)
+        #expect(try ClusterConfigurationStore.optionalInstalledReference(providerConfiguration: file) == nil)
+        let expected = try ClusterConfigurationReference(configuration: "/Users/fixture/setup.cluster.json",
+            sha256: String(repeating: "a", count: 64))
+        try Data("[cluster]\nconfiguration = '\(expected.configuration)'\nsha256 = '\(expected.sha256)'\n".utf8).write(to: file)
+        #expect(chmod(file.path, 0o644) == 0)
+        do {
+            _ = try ClusterConfigurationStore.optionalInstalledReference(providerConfiguration: file)
+            Issue.record("a saved setup that other users can open is not used")
+        } catch {
+            let text = String(describing: error)
+            #expect(text.contains("mode 644") && text.contains("run `chmod 600 \(file.path)`"), "\(text)")
+        }
+        #expect(chmod(file.path, 0o600) == 0)
+        #expect(try ClusterConfigurationStore.optionalInstalledReference(providerConfiguration: file) == expected)
+    }
 }

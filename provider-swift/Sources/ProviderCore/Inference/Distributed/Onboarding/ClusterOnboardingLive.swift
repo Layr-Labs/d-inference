@@ -1711,7 +1711,7 @@ final class OnboardingLive: @unchecked Sendable {
         let end = "(\(own?.lastEnd ?? "ended"): closed)"
         // This Mac's own worker ended (its incident log): this Mac is named, and the other Mac keeps its own report.
         if ownWorker == .ended {
-            return ["\(here): its worker ended (worker_crashed in its incident log), and its part ended with it \(end).", line(there, other)]
+            return ["\(here): its worker ended unexpectedly, and its part ended with it \(end).", line(there, other)]
         }
         let ownLine = ownWorker == .unknown
             ? "\(here): its part ended when its link closed \(end); it can't tell whether its own worker or the other Mac's side closed it."

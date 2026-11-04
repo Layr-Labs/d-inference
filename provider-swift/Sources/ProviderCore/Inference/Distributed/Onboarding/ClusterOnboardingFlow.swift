@@ -724,6 +724,35 @@ public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
 
     private var servesHere: Bool { servedBy == ClusterOnboardingMacName.this }
 
+    /// The reason the leading Mac's status gives for a pair set to serve through Darkbloom that serves on its local API:
+    /// no cluster approval is attached, so the coordinator can't form the pair and it earns nothing. No window calls
+    /// it serving or earning through Darkbloom (owner: never without proof; DevNet, 2026-11-04: a pair switched to
+    /// Darkbloom kept a plan the coordinator can't register, and both windows said ✓ and "earning through Darkbloom").
+    public static let notOfferedWords = "not offered to Darkbloom"
+
+    /// That reason with why (`why`: the leading Mac's latest approval note, or nil when none is recorded).
+    public static func notOfferedReason(_ why: String?) -> String {
+        let prefix = "Not offered for pairing: "
+        let said = why.map { $0.hasPrefix(prefix) ? String($0.dropFirst(prefix.count)) : $0 }
+            .map { $0.hasSuffix(".") ? String($0.dropLast()) : $0 }
+        return notOfferedWords + " (" + (said.flatMap { $0.isEmpty ? nil : $0 } ?? "no cluster approval is attached to its setup") + ")"
+    }
+
+    /// Whether a status line's reason (`ClusterOnboardingNotServing.reason(inStatusLine:)`) is `notOfferedReason`'s.
+    public static func isNotOffered(_ reason: String?) -> Bool { reason?.hasPrefix(notOfferedWords) == true }
+
+    /// A status that says the pair isn't offered: its reason, then the lines under it; nil for any other status.
+    public static func notOfferedLines(inStatus status: [String]) -> [String]? {
+        guard let reason = status.first.flatMap(ClusterOnboardingNotServing.reason(inStatusLine:)), isNotOffered(reason) else { return nil }
+        return [reason] + status.dropFirst()
+    }
+
+    /// Under that status line: where the pair answers meanwhile, the serving Mac's local API only.
+    public var meanwhileLine: String {
+        "Meanwhile it answers only on the local API at http://localhost:\(port)" + (servesHere ? "" : " on the other Mac")
+            + " (no Darkbloom traffic)."
+    }
+
     /// The local-serving line as this screen shows it. The part that serves words it for its own Mac ("this Mac's
     /// API"); on the screen of the other Mac (a member's status, or a leader whose API moved) it is that Mac's API,
     /// which `apiLine` names just above.
@@ -956,6 +985,11 @@ public struct ClusterOnboardingOperations: Sendable {
     /// start names, and a start whose scope changes before it adopts is planned again (`OnboardingLive.usePlanningScope`).
     /// Not in `init`: only the live operations set it.
     public var planScope: @Sendable (ClusterServingScope) -> Void = { _ in }
+    /// The leading Mac's status when it says the pair is set to serve through Darkbloom but isn't offered: its reason,
+    /// then the lines under it (`ClusterOnboardingReady.notOfferedLines(inStatus:)`); nil for any other status. A start
+    /// through Darkbloom then ends with that ✗, as the other Mac's window does from the same status. Not in `init`: only
+    /// the live operations set it.
+    public var notOfferedStatus: @Sendable () -> [String]? = { nil }
     /// Whether the other Mac's cluster service starts by itself at login, as its status says
     /// (`ClusterServiceStatus.startsAtLogin`); nil when it doesn't say (an older build, or no answer). The card says "on
     /// both Macs" only with this and `serviceOutlivesWindow` (P2-11). Not in `init`: only the live operations set it.
@@ -1755,6 +1789,7 @@ public enum ClusterOnboardingDriver {
         if let ended = untilOtherMacAnswers(!otherMacSilent, other: resume.peerName, operations, console, request: request) { return ended }
         return chooseAndServe(operations, console, scope: resume.scope, privateImage: request.privateImageQualification,
                               startOverRequest: request, pair: resume, servingNow: servesNow(status),
+                              notOffered: ClusterOnboardingReady.notOfferedLines(inStatus: status) != nil,
                               peer: resume.peerName, heading: modelHeading)
     }
 
@@ -1777,6 +1812,17 @@ public enum ClusterOnboardingDriver {
 
     /// The list's heading on a set-up pair.
     static let modelHeading = "Model"
+
+    /// What the switch to Darkbloom of a serving pair does, said before it plans (never its result before the outcome).
+    public static let switchingToDarkbloomLine =
+        "Switching to serving through Darkbloom: both Macs load the model again from a plan made for Darkbloom."
+
+    /// Choosing the serving model again while the pair is set to serve through Darkbloom but isn't offered: it starts
+    /// again from a plan made for Darkbloom (the one it runs may be what the coordinator can't register).
+    public static func replanQuestion(model: String) -> String {
+        "Start \(model) again from a plan made for Darkbloom? It stops serving on both Macs while it loads again "
+            + "(a few minutes for a large model)."
+    }
 
     /// The list's line that switches how the pair serves; its current (or last) model then serves that way.
     static func scopeLine(_ scope: ClusterServingScope) -> String {
@@ -1912,15 +1958,25 @@ public enum ClusterOnboardingDriver {
         return console.suspended { operations.runAsAdministrator(script) }
     }
 
-    /// Saves the other way to serve on the control leader. A serving cluster starts its leading part again that way
-    /// (the setup and the model stay), so the screen waits for it as it does after a start. `startOverRequest`: the
-    /// menu's (its Mac was paired before this run), for the outcome's Change model.
+    /// Saves the other way to serve on the control leader. A cluster serving locally only that switches to Darkbloom
+    /// starts its model again from a plan made for Darkbloom, as a start does; one that switches to local only starts
+    /// its leading part again that way (the setup and the model stay). Either way the screen waits for it as it does
+    /// after a start. `startOverRequest`: the menu's (its Mac was paired before this run), for the outcome's Change model.
     static func changeScope(to wanted: ClusterServingScope, _ resume: ClusterOnboardingResume, startOverRequest: ClusterOnboardingRequest?,
                             _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
         // Both logins are checked before the working local API stops (UX audit P8a: it stopped, then said "not logged in").
         if !wanted.isLocalOnly, checkLogins(scope: wanted, operations, console) != wanted {
             console.say(resume.serving ? "Nothing changed: the pair keeps serving locally only." : "Nothing changed.")
             return 0
+        }
+        // A local plan may carry what the coordinator can't register (Qwen's speculative assistant, unequal tensor-parallel
+        // shares), and only a start asks it for the pair's approval (DevNet, 2026-11-04: the switch kept the local plan's
+        // [2, 3] shares, the pair was never offered, and both windows said ✓). So the model is planned for Darkbloom and
+        // adopted before anything stops, the scope saved after the adopt, and the start's outcome is the switch's.
+        if !wanted.isLocalOnly, resume.serving, let model = resume.modelName {
+            console.say("  " + switchingToDarkbloomLine)
+            return chooseAndServe(operations, console, scope: wanted, saveScope: true, model: model, startOverRequest: startOverRequest,
+                                  peer: resume.peerName, keepMode: resume.servingMode, heading: startHeading)
         }
         switch busy(console, wanted.isLocalOnly ? "Switching to local only" : "Switching to serving through Darkbloom", { operations.setScope(wanted) }) {
         case .success: break
@@ -1944,7 +2000,6 @@ public enum ClusterOnboardingDriver {
             + ": the leading Mac's part starts again that way.")
         // The same truth as the start (2026-11-04: from the menu, a pair only registered with the coordinator was
         // called serving): ✓ once the pair serves and a request answered, else ✗ with the reason and the choices.
-        // Registering with the coordinator stays the start's: the cluster service asks again by itself.
         return finishStart(title: resume.modelTitle ?? resume.modelName ?? "the model", scope: wanted, registers: false,
                            startOverRequest: startOverRequest, peer: resume.peerName, operations, console)
     }
@@ -1960,14 +2015,16 @@ public enum ClusterOnboardingDriver {
     /// candidate, which never takes public traffic. `startOverRequest`: on a Mac paired before this run, the request
     /// Start over runs with when the other Mac does not answer; nil right after pairing. `pair`: a set-up pair's state
     /// (its current or last model marked and preselected, the scope and Start over lines under the models, a serving
-    /// model confirmed before it stops). `peer`: the other Mac, for the ending. `keepMode`: the mode the current model
-    /// served in, kept when listed. `heading`: nil in the first setup (its numbered steps); else the list's heading and
-    /// then "Start", or "Start" alone for a model started again (UX audit P6).
+    /// model confirmed before it stops). `notOffered`: the status says the pair is set to serve through Darkbloom but
+    /// isn't offered, so its model chosen again starts again from a new plan instead of being tested. `peer`: the other
+    /// Mac, for the ending. `keepMode`: the mode the current model served in, kept when listed. `heading`: nil in the
+    /// first setup (its numbered steps); else the list's heading and then "Start", or "Start" alone for a model started
+    /// again (UX audit P6).
     static func chooseAndServe(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole,
                                scope: ClusterServingScope = .publicServing, saveScope: Bool = false, model: String? = nil,
                                privateImage: Bool = false, startOverRequest: ClusterOnboardingRequest? = nil,
-                               pair: ClusterOnboardingResume? = nil, servingNow: Bool? = nil, peer: String? = nil, keepMode: String? = nil,
-                               heading: String? = nil) -> Int32 {
+                               pair: ClusterOnboardingResume? = nil, servingNow: Bool? = nil, notOffered: Bool = false,
+                               peer: String? = nil, keepMode: String? = nil, heading: String? = nil) -> Int32 {
         let serving = pair?.serving == true ? pair : nil
         console.heading(heading ?? "3/4 Model")
         var reached: [ClusterOnboardingMachine]?
@@ -2092,11 +2149,13 @@ public enum ClusterOnboardingDriver {
         // A pair that serves another model stops it for this one: said and confirmed first (No by default).
         if let serving, let currentTitle = serving.modelTitle ?? serving.modelName {
             let sameModel = chosen == current && scope == serving.scope
-            if sameModel, mode == serving.servingMode {
+            // Tested, unless it isn't offered: a test on the local API would say ✓ for a pair Darkbloom never has (DevNet, 2026-11-04).
+            let again = sameModel && mode == serving.servingMode
+            if again, !notOffered {
                 return testServing(choice.title, mode: mode, pair: serving, peer: peer, startOverRequest: startOverRequest, operations, console)
             }
-            let modeChange = sameModel ? modeSwitchQuestion(model: choice.title, from: serving.servingMode, to: mode) : nil
-            console.say("  " + (modeChange ?? switchQuestion(to: choice.title, from: currentTitle)))
+            let modeChange = sameModel && !again ? modeSwitchQuestion(model: choice.title, from: serving.servingMode, to: mode) : nil
+            console.say("  " + (again ? replanQuestion(model: choice.title) : modeChange ?? switchQuestion(to: choice.title, from: currentTitle)))
             guard console.choose(switchAnswers, selected: 1) == 0 else {
                 console.say("Nothing changed: \(currentTitle) keeps serving.")
                 return 0
@@ -2262,6 +2321,8 @@ public enum ClusterOnboardingDriver {
                             return 1
                         }
                     }
+                    // A start asks Darkbloom again for a pair that isn't offered (it may serve an approval now).
+                    mayRegister = registers
                     continue
                 case .changeModel: return chooseAndServe(operations, console, scope: scope, startOverRequest: startOverRequest, peer: peer,
                                                          heading: "Change model")
@@ -2320,6 +2381,10 @@ public enum ClusterOnboardingDriver {
                 mayRegister = false
                 if register(title: title, operations, console) { return startOutcome(title: title, scope: scope, mayRegister: &mayRegister, operations, console) }
             }
+            // Set to serve through Darkbloom, but not offered (the coordinator serves no approval for it, or the check
+            // refused it): the leading Mac's status says so and why, and this screen ends with that ✗, as the other
+            // Mac's window does from the same status, never with ✓ (DevNet, 2026-11-04).
+            if !scope.isLocalOnly, let lines = operations.notOfferedStatus() { return .notServing(lines) }
         }
         let outcome = ready.outcome(model: title, scope: scope, test: tested)
         return .served(title: outcome.title, lines: outcome.lines, ready: ready)
@@ -2363,11 +2428,12 @@ public enum ClusterOnboardingDriver {
             .map { $0.first.flatMap { $0.isEmpty ? nil : $0 } }
     }
 
-    /// How the pair serves, at the end of the serving line: earning through Darkbloom, or local only (asked for, or a
-    /// coordinator without cluster support, which leaves its local-serving notice).
-    public static func servesWords(scope: ClusterServingScope, ready: ClusterOnboardingReady) -> String {
-        guard ready.offered == nil else { return "" }
-        return ready.servesLocallyOnly(scope: scope) ? " (local only)" : " (earning through Darkbloom)"
+    /// How the pair serves, at the end of the serving line: nothing for a pair offered for pairing (its own line says
+    /// through Darkbloom once the coordinator has it), else local only. A pair on the serving Mac's API is never offered,
+    /// whatever its scope, so it never earns through Darkbloom (DevNet, 2026-11-04: "earning through Darkbloom" followed
+    /// the scope alone while the coordinator never had the pair).
+    public static func servesWords(ready: ClusterOnboardingReady) -> String {
+        ready.offered == nil ? " (local only)" : ""
     }
 
     /// After the Test stage: registers the pair with the coordinator when it serves a cluster approval for this pair.

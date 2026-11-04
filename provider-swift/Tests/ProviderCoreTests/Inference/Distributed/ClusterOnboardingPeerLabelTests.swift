@@ -112,6 +112,33 @@ struct ClusterOnboardingPeerLabelTests {
                                             serving: serving) == [serving, "Test response in 0.58 s (the leading Mac's test)"])
     }
 
+    /// The DevNet traffic run (2026-11-04): a pair set to serve through Darkbloom whose start is over and that serves on
+    /// the leading Mac's API has no cluster approval attached, so the coordinator never has it. Its status said "Serving …
+    /// (earning through Darkbloom)."; it says it isn't serving through Darkbloom and why, where it answers meanwhile, then
+    /// the test.
+    @Test func aPairThatIsNotOfferedSaysSoAndWhy() {
+        let ready = ClusterOnboardingReady(servedBy: ClusterOnboardingMacName.this, port: 8001, split: "tensor parallel")
+        let test = "Test response in 0.23 s (the leading Mac's test)"
+        let outcome = [ready.summary(model: "Qwen 3.8 27B") + ClusterOnboardingDriver.servesWords(ready: ready) + ".", test]
+        let note = "Not offered for pairing: this Mac's check refused it: " + ClusterApprovalAttachment.unequalTensorSharesServeLocally
+        let lines = OnboardingLive.notOfferedLines(model: "Qwen 3.8 27B", ready: ready, note: note, outcome: outcome)
+        #expect(lines == [
+            "Qwen 3.8 27B is not serving yet: not offered to Darkbloom (this Mac's check refused it: "
+                + ClusterApprovalAttachment.unequalTensorSharesServeLocally + ").",
+            "Meanwhile it answers only on the local API at http://localhost:8001 (no Darkbloom traffic).",
+            test])
+        #expect(!lines.joined().contains("earning") && !lines.joined().contains("Serving "))
+        // The other Mac reads it as not serving, with that reason (`ClusterOnboardingNotServing.reason(inStatusLine:)`).
+        #expect(ClusterOnboardingReady.isNotOffered(ClusterOnboardingNotServing.reason(inStatusLine: lines[0])))
+        // No note: none attached. A coordinator that can't take a cluster member: said so, whatever the note.
+        #expect(OnboardingLive.notOfferedLines(model: "m", ready: ready, note: nil, outcome: ["x"]).first
+            == "m is not serving yet: not offered to Darkbloom (no cluster approval is attached to its setup).")
+        var unsupported = ready
+        unsupported.notice = ClusterLocalServing.notice
+        #expect(OnboardingLive.notOfferedLines(model: "m", ready: unsupported, note: note, outcome: ["x"]).first
+            == "m is not serving yet: not offered to Darkbloom (the coordinator could not be reached or has no cluster support).")
+    }
+
     /// A running start publishes its own outcome: while its mark is live, another test writes nothing.
     @Test func aRunningStartsOutcomeIsNeverOverwrittenByAnotherTest() throws {
         let fixture = try Fixture()

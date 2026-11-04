@@ -156,6 +156,12 @@ import Darwin
         switchToDarkbloomChecksLoginsFirst()
         // The refactor pass's finding: the menu's switch to Darkbloom claimed ✓ for a registered pair.
         menuSwitchToDarkbloomWaitsForThePair()
+        // The DevNet traffic run (2026-11-04): the switch to Darkbloom kept the local plan, the pair was never offered,
+        // and both windows said ✓. Failing first on 447b230367.
+        switchToDarkbloomPlansTheModelAgain()
+        aPairThatIsNotOfferedEndsWithWhyNot()
+        theServingModelChosenAgainWhenNotOfferedIsPlannedAgain()
+        theJoinedMacEndsWithTheLeadersNotOffered()
         // UX audit P3 (2026-11-04): silence is not a broken pairing. Failing first on a91d5d51d7.
         silenceIsNotABrokenPairing()
         // The seam the stack's merge left: Change model after ✗ keeps a Mac paired before this run's choices. Failing
@@ -943,7 +949,8 @@ import Darwin
     }
 
     /// The serving API listens on loopback on the Mac that runs rank 0: the line says when that is the other Mac, and
-    /// at its end how the pair serves (local only, asked for or a coordinator without cluster support; else earning).
+    /// at its end how the pair serves. A pair on that API is never offered, so it is local only whatever its scope (the
+    /// DevNet traffic run, 2026-11-04: "earning through Darkbloom" followed the scope while the coordinator never had it).
     static func servingLineNamesTheMac() {
         expect(ClusterOnboardingReady(servedBy: "this Mac", port: 8000).summary(model: "Qwen3.5-9B")
             == "Serving Qwen3.5-9B at http://localhost:8000", "serving here")
@@ -951,16 +958,16 @@ import Darwin
             == "Serving Qwen3.5-9B at http://localhost:8100 on the other Mac", "serving there: that Mac said")
         let D = ClusterOnboardingDriver.self
         let notice = "Serving locally on this Mac's API; public serving needs a coordinator with cluster support"
-        expect(D.servesWords(scope: .publicServing, ready: .init(servedBy: "this Mac", port: 8000, notice: notice)) == " (local only)",
+        expect(D.servesWords(ready: .init(servedBy: "this Mac", port: 8000, notice: notice)) == " (local only)",
                "serves: a coordinator without cluster support serves locally")
-        expect(D.servesWords(scope: .publicServing, ready: .init(servedBy: "this Mac", port: 8000)) == " (earning through Darkbloom)",
-               "serves: through Darkbloom")
-        expect(D.servesWords(scope: .publicServing, ready: .init(servedBy: "this Mac", port: 8000,
-            notice: ClusterOnboardingReady.registeredNotice + " for m")) == " (earning through Darkbloom)", "serves: registered as a cluster member")
-        expect(D.servesWords(scope: .localOnly(bind: "0.0.0.0"), ready: .init(servedBy: "this Mac", port: 8000)) == " (local only)",
-               "serves: local only, asked for")
-        expect(D.servesWords(scope: .publicServing, ready: .init(servedBy: "this Mac", port: 8000, offered: "offered")) == "",
+        expect(D.servesWords(ready: .init(servedBy: "this Mac", port: 8000)) == " (local only)",
+               "serves: the leader's API, never earning through Darkbloom")
+        expect(D.servesWords(ready: .init(servedBy: "this Mac", port: 8000,
+            notice: ClusterOnboardingReady.registeredNotice + " for m")) == " (local only)", "serves: a control-only member is not offered")
+        expect(D.servesWords(ready: .init(servedBy: "this Mac", port: 8000, offered: "offered")) == "",
                "serves: offered for pairing says it itself")
+        expect(!ClusterOnboardingDriver.servesWords(ready: .init(servedBy: "this Mac", port: 8000)).contains("earning"),
+               "serves: no line earns without the coordinator having the pair")
     }
 
     /// The leader's cluster service keeps each member on the leader's serving state (serve or stop, and the model),
@@ -1697,10 +1704,13 @@ import Darwin
         expect(again.waitFor("  3) Switch to serving through Darkbloom (both Macs logged in)\n"), "menu: through Darkbloom is offered when local only")
         again.type("3")
         expect(again.finish() == 0, "menu public: exit 0")
-        expect(back.all == ["ensureService", "status", "reachMembers", "planModels", "setScope public", "waitReady", "testRequest"], "menu public: \(back.all)")
+        // Planned again for Darkbloom and adopted, the scope saved after the adopt, then the start and its registration.
+        expect(back.all == ["ensureService", "status", "reachMembers", "planModels", "reachMembers", "planModels", "recheckFit 0", "adopt 0",
+                            "setScope public", "serve", "waitReady", "testRequest", "register"], "menu public: \(back.all)")
         expect(again.text.contains("\u{2713} Serving Qwen3.8-27B-4bit-mtp through Darkbloom on both Macs (pipeline)\n"), "menu public: the outcome")
         expect(!again.text.contains(ClusterServingScope.publicServing.line + ".\n")
-            && again.text.contains("  Switching to serving through Darkbloom: the leading Mac's part starts again that way.\n"),
+            && again.text.contains("  " + ClusterOnboardingDriver.switchingToDarkbloomLine + "\n")
+            && !again.text.contains("the leading Mac's part starts again that way"),
                "menu public: what it does, never the result before the outcome: \(again.text)")
 
         let stopped = Recorder()
@@ -3117,6 +3127,107 @@ import Darwin
             [ClusterOnboardingReady.offeredAPILine, "Test response in 0.84 s"])), "menu, served: the outcome block: \(served.text)")
     }
 
+    // MARK: - The DevNet traffic run (2026-11-04): the switch to Darkbloom kept the local plan, and both windows said ✓
+
+    /// Qwen 3.8 27B on the leader's API in tensor parallel, as a pair that isn't offered serves.
+    static let qwenOnTheLeadersAPI = ClusterOnboardingReady(servedBy: "this Mac", port: 8001, split: "tensor parallel")
+    /// Both Macs' members registered with the coordinator for Qwen 3.8 27B in tensor parallel.
+    static let qwenOffered = ClusterOnboardingReady(servedBy: "this Mac", port: 0, offered: registeredLine, split: "tensor parallel")
+    /// The leading Mac's status of a pair set to serve through Darkbloom that isn't offered (`OnboardingLive.notOfferedLines`).
+    static let notOfferedReason = "not offered to Darkbloom (this Mac's check refused it: Unequal tensor-parallel shares serve local clusters only)"
+    static let notOfferedStatus = ["Qwen 3.8 27B is not serving yet: " + notOfferedReason + ".",
+                                   "Meanwhile it answers only on the local API at http://localhost:8001 (no Darkbloom traffic).",
+                                   "Test response in 0.23 s (the leading Mac's test)"]
+
+    /// The switch plans the serving model for Darkbloom (equal shares, no speculative assistant), adopts that plan before
+    /// anything stops, saves the scope after the adopt, starts both Macs and asks the coordinator, as a start does. It
+    /// says ✓ only once the coordinator has the pair. Before: the leading part started again with the local plan, nothing
+    /// asked the coordinator, and the screen said ✓ with a local API.
+    static func switchToDarkbloomPlansTheModelAgain() {
+        var local = qwenServing
+        local.scope = .localOnly(bind: "0.0.0.0")
+        let recorder = Recorder()
+        var made = operations(recorder, resume: local, pairEvents: [], pairResult: .failed([]), choices: switchChoices,
+            registerResult: .success([registeredLine]), readyResults: [.success(qwenOnTheLeadersAPI), .success(qwenOffered)],
+            pairServingResults: [.success(["in 0.60 s"])])
+        made.planScope = { recorder.note($0.isLocalOnly ? "planScope local" : "planScope public") }
+        let run = TerminalRun(made)
+        expect(run.waitFor("  3) Switch to serving through Darkbloom (both Macs logged in)\n"), "switch plans: the scope line"); run.type("3")
+        expect(run.finish() == 0, "switch plans: served")
+        let calls = recorder.all
+        let order = ["planScope public", "adopt 0", "setScope public", "serve", "testRequest", "register", "pairServing"].map { calls.firstIndex(of: $0) }
+        expect(!order.contains(nil) && order == order.sorted { ($0 ?? 0) < ($1 ?? 0) },
+               "switch plans: planned for Darkbloom, adopted, saved, started, registered, then awaited: \(calls)")
+        expect(calls.filter { $0.hasPrefix("useMode") } == ["useMode 0 tensor_parallel_v1"], "switch plans: the mode it served in: \(calls)")
+        let text = run.text
+        expect(text.contains("  Switching to serving through Darkbloom: both Macs load the model again from a plan made for Darkbloom.\n")
+            && !text.contains("the leading Mac's part starts again that way"), "switch plans: what it does: \(text)")
+        expect(text.contains("  " + ClusterOnboardingReady.offeredLine(model: "Qwen 3.8 27B") + "\n"), "switch plans: offered: \(text)")
+        expect(text.contains(block("\u{2713}", "Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel)",
+            [ClusterOnboardingReady.offeredAPILine, "Test response in 0.60 s"])), "switch plans: ✓ once the coordinator has the pair: \(text)")
+        transcript("switch-to-darkbloom-plans-again", text, keys: run.keys)
+    }
+
+    /// A start set to serve through Darkbloom whose pair isn't offered (the coordinator serves no approval, or the check
+    /// refused it) serves on the leader's API only: it ends with the leading Mac's status, ✗ and why, never ✓.
+    static func aPairThatIsNotOfferedEndsWithWhyNot() {
+        var local = qwenServing
+        local.scope = .localOnly(bind: "0.0.0.0")
+        let recorder = Recorder()
+        var made = operations(recorder, resume: local, pairEvents: [], pairResult: .failed([]), choices: switchChoices,
+            registerResult: .success(["Not offered for pairing: this Mac's check refused it: Unequal tensor-parallel shares serve local clusters only."]),
+            readyResult: .success(qwenOnTheLeadersAPI))
+        made.notOfferedStatus = { ClusterOnboardingReady.notOfferedLines(inStatus: notOfferedStatus) }
+        let run = TerminalRun(made)
+        expect(run.waitFor("  3) Switch to serving through Darkbloom (both Macs logged in)\n"), "not offered: the scope line"); run.type("3")
+        expect(run.waitFor(notServingChoices), "not offered: the choices: \(run.text)"); run.type("q")
+        expect(run.finish() == 1, "not offered: not success")
+        let text = run.text
+        let switched = text.range(of: prompt(4)).map { String(text[$0.upperBound...]) } ?? text
+        expect(!switched.contains("\u{2713}") && !switched.contains("through Darkbloom on both Macs") && !switched.contains("earning"),
+               "not offered: never ✓ or Serving through Darkbloom: \(text)")
+        expect(text.contains(block("\u{2717}", "Not serving: " + notOfferedReason + ".", Array(notOfferedStatus.dropFirst())) + notServingChoices),
+               "not offered: why, where it answers meanwhile, and the choices: \(text)")
+        expect(ClusterOnboardingReady.notOfferedLines(inStatus: ["Serving Qwen 3.8 27B through Darkbloom on both Macs."]) == nil
+            && ClusterOnboardingReady.notOfferedLines(inStatus: [ClusterOnboardingNotServing.statusLine(model: "m", reason: notVerified)]) == nil,
+               "not offered: only its own reason reads as not offered")
+        expect(ClusterOnboardingReady.notOfferedReason(nil) == "not offered to Darkbloom (no cluster approval is attached to its setup)"
+            && ClusterOnboardingReady.notOfferedReason("Not offered for pairing: the approval expired.") == "not offered to Darkbloom (the approval expired)",
+               "not offered: the reason, with the approval note's why")
+        transcript("switch-to-darkbloom-not-offered", text, keys: run.keys)
+    }
+
+    /// The same run: the serving model chosen again on a pair whose status says it isn't offered said "✓ Already
+    /// serving" from a test on the local API and planned nothing. It asks once, then starts again from a plan for Darkbloom.
+    static func theServingModelChosenAgainWhenNotOfferedIsPlannedAgain() {
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder, resume: qwenServing, pairEvents: [], pairResult: .failed([]), choices: switchChoices,
+                                         statusLines: notOfferedStatus))
+        expect(run.waitFor(prompt(4)), "chosen again: the list: \(run.text)"); run.type("\r")
+        expect(run.waitFor("  Start Qwen 3.8 27B again from a plan made for Darkbloom? It stops serving on both Macs while it loads again "
+            + "(a few minutes for a large model).\n  1) Yes, switch\n  2) No\n"), "chosen again: asked once: \(run.text)")
+        run.type("1")
+        expect(run.finish() == 0, "chosen again: started")
+        let calls = recorder.all
+        expect(!calls.prefix { $0 != "adopt 0" }.contains("testRequest") && calls.contains("adopt 0") && calls.contains("register"),
+               "chosen again: planned, adopted and registered, not tested first: \(calls)")
+        expect(!run.text.contains("Already serving"), "chosen again: never ✓ Already serving: \(run.text)")
+    }
+
+    /// The Mac that joined ends with the leader's ✗ when its start ends not offered: never "Offered to Darkbloom" and a
+    /// wait for a coordinator that doesn't have the pair.
+    static func theJoinedMacEndsWithTheLeadersNotOffered() {
+        let recorder = Recorder()
+        let run = joining(recorder, statusSequence: [["Stopped."], ["Loading Qwen 3.8 27B: 1 of 2 parts ready."], notOfferedStatus])
+        expect(run.waitFor(codeQuestion), "joined, not offered: the code"); run.type("y")
+        expect(run.finish() == 1, "joined, not offered: not success")
+        let text = run.text
+        expect(!text.contains(ClusterOnboardingReady.offeredLine(model: "Qwen 3.8 27B")) && !recorder.all.contains("pairServing"),
+               "joined, not offered: never offered, nothing awaited: \(text)")
+        expect(text.hasSuffix(block("\u{2717}", "Not serving: " + notOfferedReason + ".", Array(notOfferedStatus.dropFirst()))
+            + ClusterOnboardingDriver.retryOnLeaderLine(leaderName) + "\n"), "joined, not offered: the leader's ✗, then where to act: \(text)")
+    }
+
     /// (h) The other Mac's window: where to see the outcome once it joined, and the outcome itself when it can know it.
     static func memberSeesTheOutcomeOrWhereToLook() {
         // The status lines as the leader's status writes them (`OnboardingLive.localStatus`).
@@ -3984,7 +4095,8 @@ import Darwin
 
     /// Only the screen's start through Darkbloom, which asks the coordinator after its test (`register`), marks itself
     /// pending, after its serve and before its wait. `serve` alone (as `darkbloom start` and `restart` run it) never
-    /// does, nor does the switch of scope, which never registers. Failing first on a148285f70 (the serve itself marked).
+    /// does. The switch to Darkbloom is such a start since the DevNet traffic run (2026-11-04): it marks itself once
+    /// and registers. Failing first on a148285f70 (the serve itself marked).
     static func onlyTheStartThatRegistersMarksItself() {
         let recorder = Recorder()
         var start = operations(recorder, pairEvents: leaderEvents, pairResult: .paired(role: .leader, peerName: "Apple M3 Ultra, 256 GB"))
@@ -4007,8 +4119,10 @@ import Darwin
         let toDarkbloom = TerminalRun(scope)
         expect(toDarkbloom.waitFor("  3) Switch to serving through Darkbloom (both Macs logged in)\n"), "mark, scope: the list"); toDarkbloom.type("3")
         expect(toDarkbloom.finish(seconds: 20) == 0, "mark, scope: switched")
-        expect(!switched.all.contains("markRegistrationPending") && switched.all.contains("testRequest"),
-               "mark, scope: the switch tests and never marks a registration: \(switched.all)")
+        let step = { (name: String) in switched.all.firstIndex(of: name) ?? -1 }
+        expect(switched.all.filter { $0 == "markRegistrationPending" }.count == 1 && step("serve") < step("markRegistrationPending")
+               && step("markRegistrationPending") < step("waitReady") && step("testRequest") < step("register"),
+               "mark, scope: the switch to Darkbloom is a start: marked once after its serve, then tested and registered: \(switched.all)")
     }
 
     /// While the leader's start checks with Darkbloom, `darkbloom cluster` on either Mac shows that as a start, never ✓

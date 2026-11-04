@@ -66,6 +66,7 @@ extension ClusterOnboardingOperations {
             useMode: { index, mode in live.useMode(index, mode) })
         made.markRegistrationPending = { live.markRegistrationPending() }
         made.planScope = { live.usePlanningScope($0) }
+        made.notOfferedStatus = { ClusterOnboardingReady.notOfferedLines(inStatus: live.status()) }
         made.otherMacStartsAtLogin = { live.otherMacStartsAtLogin() }
         return made
     }
@@ -1297,8 +1298,9 @@ final class OnboardingLive: @unchecked Sendable {
         }
         guard result.succeeded else { return .failure(.init(lines + result.lines)) }
         lock.withLock { chosenTitle = choice.title }
-        // The deployment line the screen and status show, from the plan just adopted.
-        try? store.updateRecord { $0.leadership?.deployment = choice.deployment }
+        // The deployment line the screen and status show, from the plan just adopted. An approval note was about the
+        // setup this one replaced: the next check of the coordinator's approvals says why this one isn't offered.
+        try? store.updateRecord { $0.leadership?.deployment = choice.deployment; $0.approvalNote = nil }
         // Which members the planner said hold this model alone: what failover may serve alone (synced by the lease),
         // bound to the plan just saved so a verdict never outlives its plan.
         let plan = context.savedConfiguration().configuration?.selectedPlanSHA256
@@ -1479,6 +1481,17 @@ final class OnboardingLive: @unchecked Sendable {
             return [ClusterOnboardingNotServing.statusLine(model: model, reason: failure), ClusterOnboardingReady.lastTestFailedNote]
         }
         return [serving] + (record?.startTestPassed.map { [ClusterOnboardingReady.startTestPassedLine($0)] } ?? [])
+    }
+
+    /// The status of a pair set to serve through Darkbloom whose start is over and that serves on the leading Mac's API:
+    /// no cluster approval is attached, so the coordinator can't form it and it earns nothing. It says it isn't serving
+    /// through Darkbloom and why (the latest approval note, or a coordinator that can't take a cluster member), where it
+    /// answers meanwhile, then the rest of `outcome` (the test's line). Both Macs' windows and `cluster status` read it
+    /// (DevNet, 2026-11-04: "✓ Serving … (earning through Darkbloom)" while the coordinator never had the pair).
+    static func notOfferedLines(model: String, ready: ClusterOnboardingReady, note: String?, outcome: [String]) -> [String] {
+        let why = ready.notice == ClusterLocalServing.notice ? "the coordinator could not be reached or has no cluster support" : note
+        return [ClusterOnboardingNotServing.statusLine(model: model, reason: ClusterOnboardingReady.notOfferedReason(why)), ready.meanwhileLine]
+            + outcome.dropFirst()
     }
 
     /// The record with the pair's new way of serving (`localSetScope`): no earlier test's result holds for it.
@@ -2152,15 +2165,13 @@ final class OnboardingLive: @unchecked Sendable {
         } else if let session = now.session, session.observed {
             if session.ready {
                 let ready = ready(now, port: session.port ?? 0)
-                let serving = ready.summary(model: model)
-                    + ClusterOnboardingDriver.servesWords(scope: leadership?.scope ?? .publicServing, ready: ready) + "."
-                let outcome = Self.outcomeLines(record: try? store.readRecord(), pending: registrationPending,
-                                                local: leadership?.scope.isLocalOnly == true, model: model, serving: serving)
-                lines += outcome
-                // A start not over, or a failed test: that alone.
-                if outcome.first != serving { return lines }
-                // Why the pair serves locally although its coordinator offers a cluster approval (one line).
-                if leadership?.scope.isLocalOnly != true, let note = (try? store.readRecord())?.approvalNote { lines.append(note + ".") }
+                let record = try? store.readRecord()
+                let local = leadership?.scope.isLocalOnly == true
+                let serving = ready.summary(model: model) + ClusterOnboardingDriver.servesWords(ready: ready) + "."
+                let outcome = Self.outcomeLines(record: record, pending: registrationPending, local: local, model: model, serving: serving)
+                // A start not over, a failed test, or a pair that serves locally only as asked: that alone.
+                lines += outcome.first != serving || local ? outcome
+                    : Self.notOfferedLines(model: model, ready: ready, note: record?.approvalNote, outcome: outcome)
             } else {
                 lines.append("Loading \(model): \(session.readyRanks) of \(session.ranks) parts ready" + (session.detail.map { " (\($0))" } ?? "") + ".")
             }

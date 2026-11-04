@@ -2357,7 +2357,11 @@ replacing the running binary (`provider-swift/Sources/ProviderCore/Update/SelfUp
 On a Mac whose `darkbloom cluster` service runs, the command then asks that
 service's supervisor to restart into the installed release together with the
 other Mac, after the pair drained, and prints its progress until the restart
-(at most `--timeout` seconds); a deferral exits 1
+(at most `--timeout` seconds); a deferral exits 1. It also ends as soon as this
+Mac's cluster service runs the installed release (`This Mac's cluster service now
+runs v<version>; the cluster sets itself up again once both Macs run it.`): the
+restarted service may report that no update runs before the command reads the
+restart
 (`provider-swift/Sources/darkbloom/UpdateCommand.swift`, `ClusterServiceUpdateRequest`;
 [updating Darkbloom on the pair](two-mac-cluster.md#updating-darkbloom-on-the-pair)).
 
@@ -3030,11 +3034,20 @@ Code: `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/Startup/Work
 
 On a paired leader, `darkbloom cluster stop --service` waits for its owned part to retire
 before asking the member to stop and removing the local login service. A local
-retirement timeout or missing peer acknowledgement exits with status 1 and prints
-the pair's reason (a runtime failure, not a usage error, so no usage text follows),
-and retains the login service and saved stopped intent. Run the command again after the
-reported condition clears; retries repeat the drain/acknowledgement path. An
-already stopped local part does not require another model load.
+retirement timeout exits with status 1 and prints the pair's reason (a runtime
+failure, not a usage error, so no usage text follows), and retains the login service
+and saved stopped intent. Run the command again after the reported condition clears;
+retries repeat the drain/acknowledgement path. An already stopped local part does not
+require another model load.
+
+When this Mac has stopped serving but the other Mac does not answer (its cluster
+service is already off, or the cable is down), this Mac's service still stops and
+leaves login, and the command exits 0. It says what happened on each Mac:
+`This Mac stopped serving.`, `The other Mac (…) did not answer (…), so it was not
+asked to stop (its cluster service may already be off).`, the service line, and
+a last line to run `darkbloom cluster stop --service` on the other Mac if its
+service is still on. A stop forwarded from the Mac that follows to the leading
+Mac that cannot finish still exits 1 and keeps this Mac's service.
 
 When the other Mac is gone for good (wiped, sold, or no longer cabled),
 `darkbloom cluster stop --local-only` stops only this Mac. It skips the drain and

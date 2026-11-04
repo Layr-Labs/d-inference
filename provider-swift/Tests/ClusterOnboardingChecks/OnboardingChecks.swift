@@ -63,6 +63,7 @@ import Darwin
         restartLineAtTheEnd()
         restartWords()
         updateNoticed()
+        memberWaitsForLeaderSetupAfterUpdate()
         // F9 + F16 (round 6b, 2026-10-14): failing first on 33da00709.
         modelTitlesAreCatalogNames()
         deploymentTravelsWithTheStart()
@@ -1566,6 +1567,22 @@ import Darwin
         for line in [R.line(mac: "x", autoLogin: false, fileVault: true), R.line(mac: "x", autoLogin: false, fileVault: false)] {
             expect(!line.contains("by itself"), "restart: no 'by itself' promise without auto-login: \(line)")
         }
+    }
+
+    /// R5-4 (M5 Ultra pair, 0.10.7 → 0.10.8): after the update the member started its part from the old setup six
+    /// times ("Installed input identity or SHA-256 differs") until the leader synced the new one. A member whose
+    /// worker is no longer the build its saved setup pins waits for the leader's setup instead, and says so; the
+    /// leader, waiting for both Macs to run one build, asks again within seconds rather than a minute.
+    static func memberWaitsForLeaderSetupAfterUpdate() {
+        typealias U = ClusterOnboardingUpdate
+        expect(U.memberWaitsForLeaderSetup(pinned: "aaaa", installed: "a2a2"), "member: the update changed this Mac's worker: wait")
+        expect(!U.memberWaitsForLeaderSetup(pinned: "aaaa", installed: "aaaa"), "member: the setup pins this worker: start")
+        expect(!U.memberWaitsForLeaderSetup(pinned: "aaaa", installed: nil),
+               "member: an unreadable worker is no update; the part's own strict check says why it cannot start")
+        expect(U.memberWaitLine(version: "0.10.9")
+            == "this Mac runs Darkbloom v0.10.9, but its saved setup is for an earlier build: waiting for the other Mac's setup for v0.10.9 (the old setup is not started)",
+            "member: the wait in plain words")
+        expect(U.recheckWhileWaitingSeconds <= 5, "leader: both Macs on one build is checked again within seconds")
     }
 
     /// The control leader notices a Darkbloom update (A4): a changed worker digest on either Mac; an unknown one is no reason.

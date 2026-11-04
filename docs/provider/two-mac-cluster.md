@@ -1072,7 +1072,12 @@ cluster service asks the coordinator for its latest release:
 4. The leader plans the same model again for the new release once both Macs
    answer with it, and the pair registers again under that release's cluster
    approval. The log says `Darkbloom changed on both Macs: setting the cluster
-   up again for <model>`.
+   up again for <model>`. Until both Macs answer with the release, the leader
+   checks again every 5 seconds. The other Mac does not start its part from
+   the setup saved for the previous release, which names that release's files:
+   it waits for the leader's setup, and its log says `this Mac runs Darkbloom
+   v<version>, but its saved setup is for an earlier build: waiting for the
+   other Mac's setup for v<version> (the old setup is not started)`.
 
 A pair still running a request after 120 seconds takes requests again and tries
 at the next slot. A release that one Mac cannot download or verify is installed
@@ -1100,7 +1105,8 @@ together with the other Mac, after the pair drained, and prints its progress
 (`drained for v<version>; waiting for the other Mac`). Both Macs restart once both
 have the release. The Mac where it ran first waits up to 15 minutes, while it
 serves, for the other Mac: for its `darkbloom update`, or for its next slot when
-its automatic updates are on.
+its automatic updates are on. The command ends once this Mac's cluster service
+runs the release (`This Mac's cluster service now runs v<version>; …`).
 No log-out is needed. A cluster service started by an earlier release cannot do
 this: log out and back in on both Macs once both have the release.
 If single-Mac serving is also set up on a Mac whose pair is started (for example
@@ -1323,8 +1329,11 @@ cable, which removes the pair's prompt-cache records (its own single-Mac cache
 stays) and stops its part; each Mac also removes its own pair records when it
 unpairs.
 `darkbloom cluster stop --service` stops a Mac's cluster service and keeps it
-from starting at login. It stops the pair first, from either Mac. When the other
-Mac is gone for good, `darkbloom cluster stop --local-only` stops only this one.
+from starting at login. It stops the pair first, from either Mac. On the leader,
+when the other Mac's service is already off or does not answer, this Mac's
+service still stops, and the command says that the other Mac was not asked to
+stop. When the other Mac is gone for good, `darkbloom cluster stop --local-only`
+stops only this one, without asking it.
 To take Darkbloom off a Mac altogether, see [Uninstall](#uninstall).
 
 ## Uninstall

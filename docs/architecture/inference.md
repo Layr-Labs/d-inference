@@ -7271,8 +7271,12 @@ also waits while the leader still owns a running part.
 This ordering lets the leader send native shutdown commands over the live pair
 before the follower ends its owner stream. Local retirement failure and missing
 peer acknowledgement remain failures with stopped intent retained. The CLI
-keeps its login service on those failures so bounded recovery/reconciliation can
-continue; model-change and update callers already refuse to continue on failure.
+keeps its login service on a local retirement failure so bounded
+recovery/reconciliation can continue. After a completed local retirement, a peer
+that does not answer (`ClusterOnboardingFailure.otherMacUnanswered`, set only by
+`localStop`) no longer keeps `cluster stop --service` from removing this Mac's
+service: the command says the other Mac was not asked to stop. Model-change and
+update callers still refuse to continue on either failure.
 A forwarded stop allows 330 seconds for the local retirement and peer command.
 
 Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingLive.swift`

@@ -2374,7 +2374,8 @@ final class OnboardingLive: @unchecked Sendable {
             try stopPeer()
         } catch {
             let reason = (error as? ClusterSetupFailure)?.text ?? "\(error)"
-            return .failure(.init("\(mac) stopped serving; \(there) did not answer (\(reason)). \(mac)'s cluster service tells it to stop as soon as it answers again."))
+            return .failure(.init(["\(mac) stopped serving; \(there) did not answer (\(reason)). \(mac)'s cluster service tells it to stop as soon as it answers again."],
+                                  otherMacUnanswered: "\(Self.sentence(there)) did not answer (\(reason))"))
         }
         return .success(["Stopping both Macs. Run `\(Self.cli) cluster` to serve again."])
     }

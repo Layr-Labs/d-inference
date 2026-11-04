@@ -111,6 +111,8 @@ public final class ClusterService: @unchecked Sendable {
     private var updatingLine: String?
     /// Said once while the Macs run different builds after an update.
     private var updateWaitLine: String?
+    /// The member's line while its saved setup pins an earlier build than it runs (said once per wait).
+    private var memberSetupWaitLine: String?
     // The cluster approval is asked for once per run of this service on the control leader, and again every minute
     // while the pair is offered or serves locally with its approval set aside (`checkApproval`).
     private var approvalChecked = false
@@ -1083,6 +1085,9 @@ public final class ClusterService: @unchecked Sendable {
                     self.lock.withLock { self.updateWaitLine = line }
                     say(line)
                 }
+                self.lock.withLock {
+                    self.nextUpdateCheck = Date().addingTimeInterval(ClusterOnboardingUpdate.recheckWhileWaitingSeconds)
+                }
                 return
             }
             self.lock.withLock { self.updateWaitLine = nil }
@@ -1671,6 +1676,25 @@ public final class ClusterService: @unchecked Sendable {
             port = Self.soloPort
         } else {
             guard let configuration = saved.configuration else { return }
+            // After an update a member's saved setup still pins the earlier build's worker: its part would refuse the
+            // installed inputs and end at once, again and again, until the leader syncs the setup for the new build.
+            // Nothing of the old setup starts or is rewritten meanwhile; the part's own checks stay as strict.
+            if configuration.role != .leader, configuration.peers.indices.contains(configuration.localRank) {
+                let local = configuration.peers[configuration.localRank]
+                if ClusterOnboardingUpdate.memberWaitsForLeaderSetup(pinned: local.runtimeBinarySHA256,
+                                                                     installed: try? context.workerSHA256(local.workerExecutable)) {
+                    let line = ClusterOnboardingUpdate.memberWaitLine(version: ProviderCore.version)
+                    if lock.withLock({ memberSetupWaitLine != line }) {
+                        lock.withLock { memberSetupWaitLine = line }
+                        say(line)
+                    }
+                    return
+                }
+                if lock.withLock({ memberSetupWaitLine != nil }) {
+                    lock.withLock { memberSetupWaitLine = nil }
+                    say("this Mac's saved setup is for the build it runs: starting its part")
+                }
+            }
             let offered = configuration.nativeMember.map {
                 ClusterApprovalLifetime.offers($0, scope: scope, now: Date().timeIntervalSince1970)
             } ?? false

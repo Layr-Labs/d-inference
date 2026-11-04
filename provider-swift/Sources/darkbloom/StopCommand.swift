@@ -34,11 +34,16 @@ struct Stop: AsyncParsableCommand {
     }
 
     mutating func run() async throws {
+        let pair = ClusterPairSummary.local()
+        let stop = Self.pairedStop(pair, solo: solo, uninstall: uninstall)
+        if case .refuse(let lines) = stop {
+            for line in lines { print(line) }
+            throw ExitCode.failure
+        }
+        // Decided first: only a stop that goes ahead opens with the mark.
         let look = DarkbloomCommandLook.forCommand()
         look.open("Darkbloom stop")
-        let pair = ClusterPairSummary.local()
-        switch Self.pairedStop(pair, solo: solo, uninstall: uninstall) {
-        case .stopPair:
+        if stop == .stopPair {
             let actions = ClusterPairActions.live(config: nil)
             let say = look.saying(ClusterPairCommands.printLine)
             let code = await look.working("Stopping both Macs") {
@@ -46,11 +51,6 @@ struct Stop: AsyncParsableCommand {
             }
             if code != 0 { throw ExitCode(code) }
             return
-        case .refuse(let lines):
-            for line in lines { print(line) }
-            throw ExitCode.failure
-        case .stopSingleMac:
-            break
         }
         let wasLoaded = LaunchAgent.isLoaded()
         if pair.paired, !wasLoaded, !uninstall {

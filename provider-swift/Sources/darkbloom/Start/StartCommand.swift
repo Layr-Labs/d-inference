@@ -174,16 +174,22 @@ struct Start: AsyncParsableCommand {
     /// The title beside the mark as `darkbloom start` opens in a terminal (`DarkbloomCommandLook`).
     static let lookTitle = "Darkbloom start"
 
+    /// Flag combinations `run` refuses before any work: `--local` with `--local-endpoint`, and `--schedule` with
+    /// `--local` or `--foreground`.
+    var flagsRefuseStart: Bool { (local && localEndpoint) || (schedule && (local || foreground)) }
+
     mutating func run() async throws {
         Darkbloom.ensureLogging()
         let look = DarkbloomCommandLook.forCommand()
+        // Decided first: only a start that goes ahead opens with the mark, never one its flags refuse.
+        let opensLook = !flagsRefuseStart
         if startsSingleMacServing, !ClusterPairSummary.startedByClusterService() {
             let pair = ClusterPairSummary.local()
             let pairStart = Self.pairStart(pair, solo: solo, terminal: ClusterPairCommands.isTerminal(),
                                            singleMacOptions: singleMacOptions)
             // Only single-Mac serving opens with the mark here: a refusal starts nothing, and the cluster's screen
             // draws the mark itself.
-            if case .single = pairStart { look.open(Self.lookTitle) }
+            if case .single = pairStart, opensLook { look.open(Self.lookTitle) }
             switch pairStart {
             case .single(let note):
                 if let note { print(note) }
@@ -205,7 +211,7 @@ struct Start: AsyncParsableCommand {
             }
         }
         if !foreground {
-            look.open(Self.lookTitle)
+            if opensLook { look.open(Self.lookTitle) }
             printTermsNotice()
         }
 

@@ -48,13 +48,21 @@ struct Restart: AsyncParsableCommand {
     }
 
     mutating func run() async throws {
-        let look = DarkbloomCommandLook.forCommand()
-        look.open("Darkbloom restart")
         let pair = ClusterPairSummary.local()
         let wasLoaded = LaunchAgent.isLoaded()
         let installed = LaunchAgent.isInstalled() || wasLoaded
-        switch Self.pairRestart(pair, singleMacInstalled: installed, solo: solo) {
-        case .restartPair:
+        let restart = Self.pairRestart(pair, singleMacInstalled: installed, solo: solo)
+        if case .refuse(let lines) = restart {
+            for line in lines { print(line) }
+            throw ExitCode.failure
+        }
+        guard restart == .restartPair || installed else {
+            throw ValidationError("No launchd configuration is installed. Use \(BuildEnvironment.current.cliName) start to select the replacement configuration; the foreground provider was left running.")
+        }
+        // Decided first: only a restart that goes ahead opens with the mark.
+        let look = DarkbloomCommandLook.forCommand()
+        look.open("Darkbloom restart")
+        if restart == .restartPair {
             let config = configOptions.config
             let code = await look.working("Restarting both Macs") {
                 await ClusterPairCommands.restart(pair, actions: ClusterPairActions.live(config: config), config: config,
@@ -62,14 +70,6 @@ struct Restart: AsyncParsableCommand {
             }
             if code != 0 { throw ExitCode(code) }
             return
-        case .refuse(let lines):
-            for line in lines { print(line) }
-            throw ExitCode.failure
-        case .restartSingleMac:
-            break
-        }
-        guard installed else {
-            throw ValidationError("No launchd configuration is installed. Use \(BuildEnvironment.current.cliName) start to select the replacement configuration; the foreground provider was left running.")
         }
         let soloState = ServiceDrain.soloProviderState()
         let previous = soloState?.processIdentity ?? LaunchAgent.launchSnapshot()?.process

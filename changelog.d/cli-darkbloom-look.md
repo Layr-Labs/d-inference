@@ -8,3 +8,5 @@
   output. `DARKBLOOM_NO_ANIMATION` or `CI` keeps the mark and the live line still.
 - On a paired Mac, `darkbloom start` in a terminal opens the cluster's screen, which already draws the mark, so it
   isn't drawn twice.
+- A command that refuses before doing any work, such as an unreadable pairing record, nothing to restart or flags that
+  can't go together, prints only its reason, with no mark.

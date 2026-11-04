@@ -63,8 +63,11 @@ struct Update: AsyncParsableCommand {
     }
 
     mutating func run() async throws {
+        // Run as root, the locks `--rollback` creates in this home would be root's, and the user's provider and cluster
+        // service could no longer take them: it is refused before any work, so it draws no mark.
+        let refusesRollbackAsRoot = rollback && Self.runsAsRoot
         let look = DarkbloomCommandLook.forCommand()
-        look.open("Darkbloom update")
+        if !refusesRollbackAsRoot { look.open("Darkbloom update") }
         let config = try loadUpdateConfig(configPath: configOptions.config)
 
         print("\(BuildEnvironment.current.cliName) update")
@@ -75,9 +78,7 @@ struct Update: AsyncParsableCommand {
         let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
 
         if rollback {
-            // Run as root, the locks it creates in this home would be root's, and the user's provider and cluster
-            // service could no longer take them.
-            guard !Self.runsAsRoot else {
+            guard !refusesRollbackAsRoot else {
                 throw ValidationError("Run `\(BuildEnvironment.current.cliName) update --rollback` as the user the provider runs as, not as root.")
             }
             try await UpdateRollback(

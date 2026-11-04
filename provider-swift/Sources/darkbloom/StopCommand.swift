@@ -26,11 +26,15 @@ struct Stop: AsyncParsableCommand {
         case refuse([String])
         /// Single-Mac serving only (`--solo`, `--uninstall`, or not in a cluster): as on any Mac, its process only.
         case stopSingleMac
+        /// The pair doesn't run here: what runs on this Mac stops, single-Mac serving and a leftover part of the pair
+        /// (whose saved start is cleared, so it doesn't come back at login).
+        case stopHere
     }
 
     static func pairedStop(_ pair: ClusterPairSummary, solo: Bool, uninstall: Bool) -> PairedStop {
         guard pair.paired, !solo, !uninstall else { return .stopSingleMac }
-        return pair.pairingUnreadable ? .refuse(pair.unsureRefusal("stop", "stopped")) : .stopPair
+        if pair.pairingUnreadable { return .refuse(pair.unsureRefusal("stop", "stopped")) }
+        return pair.pairIdle ? .stopHere : .stopPair
     }
 
     /// The command's look, opened with the mark: for a stop that goes ahead.
@@ -61,9 +65,17 @@ struct Stop: AsyncParsableCommand {
             if code != 0 { throw ExitCode(code) }
             return
         }
+        if stop == .stopHere, pair.started, pair.serviceRunning {
+            print(pair.leftoverStopLine)
+            guard await Start.releaseLeftoverPart() else {
+                for line in pair.releaseFailedLines { print(line) }
+                throw ExitCode.failure
+            }
+        }
         let wasLoaded = LaunchAgent.isLoaded()
         if pair.paired, !wasLoaded, !uninstall {
-            for line in pair.soloStopNothing { print(line) }
+            if stop != .stopHere { for line in pair.soloStopNothing { print(line) } }
+            else if !pair.started { print("Nothing serves on this Mac: nothing was stopped.") }
             return
         }
         let look = Self.openLook()
@@ -94,6 +106,6 @@ struct Stop: AsyncParsableCommand {
                 print("Provider service is not running. (Auto-start at login/reboot is now disabled.)")
             }
         }
-        if pair.paired { for line in pair.stopAddendum { print(line) } }
+        if pair.paired, stop != .stopHere { for line in pair.stopAddendum { print(line) } }
     }
 }

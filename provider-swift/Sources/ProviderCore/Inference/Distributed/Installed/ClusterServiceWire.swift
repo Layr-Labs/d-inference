@@ -100,6 +100,12 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
     /// never ends by itself, so this Mac's part doesn't start beside it and the other Mac's start names it. Nil when
     /// none, and from an older build.
     public var soloServing: SoloServing? = nil
+    /// Whether the pair actually runs on this Mac (`ClusterPairWatch`): `serving` is only the saved intent, which stays
+    /// on for a Mac whose other Mac stopped taking part. Nil from an older build (read the intent then).
+    public var pairRunning: Bool? = nil
+    /// While the intent is on but the pair doesn't run: why, in plain words, with the one command to serve this Mac
+    /// alone (`ClusterPairWatch.line`). Nil otherwise, and from an older build.
+    public var pairNotRunning: String? = nil
     public struct SoloServing: Codable, Sendable, Equatable {
         /// Its process, nil when its lock record names none.
         public var pid: Int32?

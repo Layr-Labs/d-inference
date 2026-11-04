@@ -184,6 +184,9 @@ public struct ClusterControlNode: Sendable, Equatable {
     private var heard: [String: Double] = [:]
     /// Members that confirmed the current claim since this process started.
     private var confirmed: Set<String> = []
+    /// When another Mac last answered over the link (a lease from it, or its answer to this Mac's), in this process's
+    /// lifetime: unlike `heard`, which starts every member at this start, nil until one really answers.
+    public private(set) var otherAnsweredAt: Double?
     /// Leaders whose lease expired while this Mac waited for a successor.
     private var expired: Set<String> = []
     /// On a member: the leader it waits for (the claim's leader, or the successor derivation picked after it expired).
@@ -292,6 +295,7 @@ public struct ClusterControlNode: Sendable, Equatable {
         expired = []
         awaited = claim.leaderID
         heard[sender] = now
+        otherAnsweredAt = now
         leaderRunsCluster = !handOver && running
         if handOver {
             // The previous leader handed it over: it has seen this claim, so it confirmed it.
@@ -307,6 +311,7 @@ public struct ClusterControlNode: Sendable, Equatable {
         case .accepted(let facts):
             members[facts.memberID] = facts
             heard[member] = now
+            otherAnsweredAt = now
             if sent.leaderID == member, let pending = pendingHandOver, pending.sameLeadership(sent), leads {
                 // The hand-over was accepted: the new leader leads from now on, and inherits a running cluster
                 // (this Mac keeps its part running instead of stopping it until the new leader's first renewal).
@@ -320,6 +325,7 @@ public struct ClusterControlNode: Sendable, Equatable {
             return []
         case .refused(let newer, let facts):
             members[facts.memberID] = facts
+            otherAnsweredAt = now
             guard newer.supersedes(claim) else { return [] }
             leaderRunsCluster = false
             return adopt(newer, heardFrom: member, now: now)
@@ -584,6 +590,90 @@ public enum ClusterControlPartChoice: Sendable, Equatable {
         switch mode {
         case .cluster, .waiting: return true
         default: return false
+        }
+    }
+}
+
+/// Whether the pair actually runs on this Mac, from what runs rather than the saved intent (`leadership.serving`, which
+/// stays `true` on a Mac whose other Mac stopped taking part). The cluster service ticks it; `darkbloom start`, `stop`,
+/// `restart`, `update`, the app and the watchdog decide by its verdict, published in the service's status.
+///
+/// - The pair runs while the intent is on and the other Mac answered within `giveUpSeconds`, or while a start is still
+///   inside that window (from the start of this service, or the intent turning on) and has not given up.
+/// - A part whose other Mac hasn't answered for `giveUpSeconds` is given up: the service stops it, which frees this
+///   Mac's serving lock, and it starts again by itself once the other Mac answers. A pair whose other Mac reboots for
+///   a few minutes stays running.
+/// - A pair whose other Mac answers but whose part never served in `giveUpSeconds` is not running for those decisions
+///   (single-Mac serving may take this Mac back), but its part is left to the person: it is not stopped by itself.
+public struct ClusterPairWatch: Sendable, Equatable {
+    /// 15 minutes.
+    public static let giveUpSeconds: Double = 900
+
+    public enum Verdict: Sendable, Equatable {
+        /// The saved intent is off: the pair is stopped.
+        case stopped
+        case running
+        /// The other Mac hasn't answered for this long: this Mac's part is stopped.
+        case otherMacSilent(seconds: Double)
+        /// The other Mac answers, but the pair hasn't served for this long since its start.
+        case notServing(seconds: Double)
+
+        public var running: Bool { self == .running }
+        /// The part is to be stopped (`otherMacSilent`).
+        public var givesUpPart: Bool { if case .otherMacSilent = self { return true } else { return false } }
+    }
+
+    /// When the intent was last seen turning on (or this watch began with it on).
+    private var startedAt: Double?
+    /// When the pair last served on this Mac.
+    private var servedAt: Double?
+    public let giveUpSeconds: Double
+
+    public init(giveUpSeconds: Double = ClusterPairWatch.giveUpSeconds) { self.giveUpSeconds = giveUpSeconds }
+
+    /// One supervision tick. `otherAnsweredAt`: `ClusterControlNode.otherAnsweredAt` (nil: not in this process's
+    /// lifetime). `serving`: this Mac's part runs and its pair serves now.
+    public mutating func tick(now: Double, intent: Bool, otherAnsweredAt: Double?, serving: Bool) -> Verdict {
+        guard intent else { startedAt = nil; servedAt = nil; return .stopped }
+        let start = startedAt ?? now
+        startedAt = start
+        if serving { servedAt = now }
+        // An answer from before this start counts from the start: a start always gets the whole window.
+        let silent = now - max(otherAnsweredAt ?? start, start)
+        if silent >= giveUpSeconds { return .otherMacSilent(seconds: silent) }
+        let unserved = now - max(servedAt ?? start, start)
+        // Served once since the start: an interruption (a reboot, the coordinator away) never reads as "not serving".
+        if servedAt == nil, unserved >= giveUpSeconds { return .notServing(seconds: unserved) }
+        return .running
+    }
+
+    /// Why the pair doesn't run, in plain words with the one command to serve this Mac alone; nil while it runs or is
+    /// stopped. `otherMac`: the other Mac's name, when known.
+    public static func line(_ verdict: Verdict, otherMac: String?, cli: String) -> String? {
+        let other = otherMac.map { "The other Mac (\($0))" } ?? "The other Mac"
+        let next = "Run `\(cli) start` to serve this Mac alone, or `\(cli) cluster` to start the pair again."
+        switch verdict {
+        case .stopped, .running: return nil
+        case .otherMacSilent(let seconds):
+            return "\(other) hasn't answered for \(minutes(seconds)) min; this Mac's part stopped. " + next
+        case .notServing(let seconds):
+            return "The pair hasn't served for \(minutes(seconds)) min since it started (\(other.prefix(1).lowercased() + other.dropFirst()) "
+                + "answers). " + next
+        }
+    }
+
+    private static func minutes(_ seconds: Double) -> Int { max(1, Int(seconds / 60)) }
+
+    /// What this Mac's service runs once `verdict` is known: a given-up pair runs no part, which frees this Mac's
+    /// serving lock. The degraded solo server (local API only) of a pair that serves through Darkbloom gives way too
+    /// when single-Mac serving is set up here (`singleMacJob`), which the watchdog then brings back; a local-only
+    /// pair's solo server is what its people use, and stays.
+    public static func part(_ want: ClusterControlPartChoice, verdict: Verdict, localOnly: Bool,
+                            singleMacJob: Bool) -> ClusterControlPartChoice {
+        guard verdict.givesUpPart else { return want }
+        switch want {
+        case .solo where localOnly || !singleMacJob: return want
+        default: return .none
         }
     }
 }

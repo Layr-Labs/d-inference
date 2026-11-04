@@ -12,10 +12,12 @@ struct Start: AsyncParsableCommand {
         Scans local MLX models, lets you pick which to serve, then launches
         a launchd background service. Use --model to skip the interactive picker.
 
-        On a Mac in a two-Mac cluster it starts the pair instead: in a terminal the
-        `darkbloom cluster` screen; without one the pair's saved model, waiting until
-        it serves (exit 0 serving, 3 not serving yet, 5 the other Mac isn't answering).
-        Single-Mac options there need --solo, which works only while the pair is stopped.
+        On a Mac in a two-Mac cluster whose pair runs, it starts the pair instead: in a
+        terminal the `darkbloom cluster` screen; without one the pair's saved model,
+        waiting until it serves (exit 0 serving, 3 not serving yet, 5 the other Mac isn't
+        answering). Single-Mac options there need --solo, refused while the pair runs.
+        While the pair doesn't run on this Mac (stopped, or the other Mac gone), it serves
+        this Mac alone; in a terminal it asks first.
         """
     )
 
@@ -76,7 +78,7 @@ struct Start: AsyncParsableCommand {
     @Flag(help: .hidden)
     var supervise = false
 
-    @Flag(help: "On a Mac in a two-Mac cluster: start single-Mac serving on this Mac instead of the pair (only while the pair is stopped: both take this Mac's one serving lock).")
+    @Flag(help: "On a Mac in a two-Mac cluster: start single-Mac serving on this Mac instead of the pair (refused while the pair runs here: both take this Mac's one serving lock).")
     var solo = false
 
     /// Both cluster modes are control-only: they take the saved cluster's
@@ -136,6 +138,12 @@ struct Start: AsyncParsableCommand {
     enum PairStart: Equatable {
         /// Single-Mac serving as on any Mac, after the one line (nil: not in a cluster).
         case single(note: String?)
+        /// The pair doesn't run here: this Mac's leftover part is stopped and its saved start cleared
+        /// (`ClusterService.releaseForSingleMac`), then single-Mac serving starts, after the one line.
+        case serveAlone(note: String)
+        /// A terminal, and the pair doesn't run here: "Serve on this Mac alone" or "Start the pair"; alone is the
+        /// default when the other Mac isn't answering.
+        case choose(aloneByDefault: Bool)
         /// This Mac's pairing record can't be read: refused without `--solo`, and why.
         case refuse([String])
         /// A terminal: the screen `darkbloom cluster` shows on this Mac.
@@ -168,13 +176,56 @@ struct Start: AsyncParsableCommand {
     static func pairStart(_ pair: ClusterPairSummary, solo: Bool, terminal: Bool,
                           singleMacOptions: [String] = []) -> PairStart {
         guard pair.paired else { return .single(note: nil) }
-        if solo { return pair.partServes ? .refuse(pair.soloBesideServingRefusal) : .single(note: pair.startNote) }
-        if pair.pairingUnreadable { return .refuse(pair.startRefusal) }
+        if pair.pairingUnreadable { return solo ? .single(note: pair.startNote) : .refuse(pair.startRefusal) }
+        // The pair doesn't run here (stopped, or left from a pair whose other Mac stopped taking part): the way back to
+        // single-Mac serving is never refused. A person at a terminal chooses; everything else serves this Mac alone.
+        if pair.pairIdle {
+            if solo || !singleMacOptions.isEmpty || !terminal { return .serveAlone(note: pair.servingAloneLine) }
+            return .choose(aloneByDefault: !pair.otherMacReachable)
+        }
+        if solo { return .refuse(pair.soloBesideServingRefusal) }
         if !singleMacOptions.isEmpty { return .refuseOptions(pair.singleMacOptionsRefusal(singleMacOptions)) }
         return terminal ? .openScreen : .startPair
     }
 
     var startsSingleMacServing: Bool { !foreground && !clusterMember && !distributed }
+
+    /// Tests stand in for stopping this Mac's leftover part (`ClusterService.releaseForSingleMac`).
+    @TaskLocal static var releaseForTesting: (@Sendable () -> Bool)?
+
+    /// How long the leftover part gets to release its model and the serving lock.
+    static let releaseSeconds: Double = 300
+
+    static func releaseLeftoverPart() async -> Bool {
+        if let release = releaseForTesting { return release() }
+        guard ClusterPairSummary.readsThisMacsCluster else { return true }
+        return await Task.detached { ClusterService.releaseForSingleMac(seconds: releaseSeconds) }.value
+    }
+
+    /// Tests answer the terminal's question (nil: the default).
+    @TaskLocal static var answerForTesting: String??
+
+    /// `darkbloom start` in a terminal on a Mac whose pair doesn't run: serve alone, or open the pair's screen.
+    static func chooseInTerminal(_ pair: ClusterPairSummary, aloneByDefault: Bool) -> PairStart {
+        let alone = "Serve on this Mac alone", both = "Start the pair (`\(ClusterPairSummary.cli) cluster`)"
+        print(pair.pairNotRunning ?? pair.pairSentence)
+        print("  1. \(alone)\(aloneByDefault ? " (default)" : "")")
+        print("  2. \(both)\(aloneByDefault ? "" : " (default)")")
+        print("Choose 1 or 2 [\(aloneByDefault ? 1 : 2)]: ", terminator: "")
+        fflush(stdout)
+        let answer = (answerForTesting ?? readLine())?.trimmingCharacters(in: .whitespaces) ?? ""
+        return choice(answer, pair: pair, aloneByDefault: aloneByDefault)
+    }
+
+    static func choice(_ answer: String, pair: ClusterPairSummary, aloneByDefault: Bool) -> PairStart {
+        let alone: Bool
+        switch answer.lowercased() {
+        case "1": alone = true
+        case "2": alone = false
+        default: alone = aloneByDefault
+        }
+        return alone ? .serveAlone(note: pair.servingAloneLine) : .openScreen
+    }
 
     /// The title beside the mark as `darkbloom start` opens in a terminal (`DarkbloomCommandLook`).
     static let lookTitle = "Darkbloom start"
@@ -197,10 +248,26 @@ struct Start: AsyncParsableCommand {
                                            singleMacOptions: singleMacOptions)
             // Only single-Mac serving opens with the mark here: a refusal starts nothing, and the cluster's screen
             // draws the mark itself.
-            if case .single = pairStart, opensLook { look.open(Self.lookTitle) }
-            switch pairStart {
+            var choice = pairStart
+            if case .choose(let aloneByDefault) = pairStart {
+                choice = Self.chooseInTerminal(pair, aloneByDefault: aloneByDefault)
+            }
+            switch choice {
+            case .single, .serveAlone: if opensLook { look.open(Self.lookTitle) }
+            default: break
+            }
+            switch choice {
             case .single(let note):
                 if let note { print(note) }
+            case .serveAlone(let note):
+                print(note)
+                let released = !pair.started || !pair.serviceRunning ? true : await Self.releaseLeftoverPart()
+                guard released else {
+                    for line in pair.releaseFailedLines { print(line) }
+                    throw ExitCode.failure
+                }
+            case .choose:
+                return
             case .refuse(let lines):
                 for line in lines { print(line) }
                 throw ExitCode.failure

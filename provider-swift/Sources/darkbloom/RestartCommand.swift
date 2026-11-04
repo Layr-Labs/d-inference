@@ -43,8 +43,11 @@ struct Restart: AsyncParsableCommand {
 
     static func pairRestart(_ pair: ClusterPairSummary, singleMacInstalled: Bool, solo: Bool) -> PairRestart {
         guard pair.paired else { return .restartSingleMac }
-        guard solo else { return pair.pairingUnreadable ? .refuse(pair.unsureRefusal("restart", "restarted")) : .restartPair }
-        return singleMacInstalled ? .restartSingleMac : .refuse(pair.restartRefusal)
+        if solo { return singleMacInstalled ? .restartSingleMac : .refuse(pair.restartRefusal) }
+        if pair.pairingUnreadable { return .refuse(pair.unsureRefusal("restart", "restarted")) }
+        // The pair doesn't run here: what this Mac serves alone restarts; the pair is never started by a restart.
+        guard pair.pairIdle else { return .restartPair }
+        return singleMacInstalled ? .restartSingleMac : .refuse(pair.idleRestartRefusal)
     }
 
     mutating func run() async throws {
@@ -70,6 +73,14 @@ struct Restart: AsyncParsableCommand {
             }
             if code != 0 { throw ExitCode(code) }
             return
+        }
+        // A pair that doesn't run here may still have a leftover part holding this Mac's serving lock.
+        if !solo, pair.pairIdle, pair.started, pair.serviceRunning {
+            print(pair.servingAloneLine)
+            guard await Start.releaseLeftoverPart() else {
+                for line in pair.releaseFailedLines { print(line) }
+                throw ExitCode.failure
+            }
         }
         let soloState = ServiceDrain.soloProviderState()
         let previous = soloState?.processIdentity ?? LaunchAgent.launchSnapshot()?.process

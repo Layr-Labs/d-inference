@@ -130,6 +130,9 @@ public final class ClusterService: @unchecked Sendable {
     /// A single-Mac provider serving on this Mac, seen before this Mac's part would start (`supervise`): nothing starts
     /// beside it, and the status names it, until it stops.
     private var soloServing: ProviderInstanceHolder.Holder?
+    /// Whether the pair actually runs here (`watchPair`), and its last verdict.
+    private var pairWatch = ClusterPairWatch()
+    private var pairVerdict: ClusterPairWatch.Verdict = .running
     private let providerInstanceLock: URL
     // Where the running part began writing its log (`lastError(in:from:)`).
     private var childLogOffset: UInt64 = 0
@@ -1045,6 +1048,9 @@ public final class ClusterService: @unchecked Sendable {
                 value.child.appAttestRetryAt = Self.memberAppAttestRetryAt(pid: child?.processIdentifier, state: state)
             }
             value.soloServing = soloServing.map { .init(pid: $0.pid) }
+            value.pairRunning = value.serving && pairVerdict.running
+            value.pairNotRunning = value.serving ? ClusterPairWatch.line(pairVerdict, otherMac: otherMacNameLocked(),
+                                                                         cli: BuildEnvironment.current.cliName) : nil
             value.memberQuickEnds = memberQuickEnds
             value.approvalID = configuration?.nativeMember?.clusterApproval?.id ?? ""
             value.pairUpdate = ClusterPairUpdate.readProgress(from: ClusterServiceAgent.updateProgressPath(serviceDirectory: store.paths.directory))
@@ -1477,7 +1483,37 @@ public final class ClusterService: @unchecked Sendable {
     /// A single-Mac provider job left loaded on this Mac (an earlier `darkbloom start`, which meant single-Mac serving
     /// before 0.10.8) is then neither restarted by an update nor revived by the watchdog: it would take the lock the
     /// pair's part needs whenever the part lets it go (an update's restart), and the pair could never start again.
-    public static func pairServesHere() -> Bool { publishedLive()?.serving == true }
+    /// The pair actually runs here (`ClusterPairWatch`), not only its saved intent: a Mac whose other Mac stopped taking
+    /// part serves alone again. A service from before 0.10.9 publishes no verdict: its intent decides, as before.
+    public static func pairServesHere() -> Bool { pairRuns(publishedLive()) }
+
+    /// Going back to single-Mac serving on a Mac whose pair isn't running: this Mac's saved start is cleared, so its
+    /// cluster service runs no part (and never takes the serving lock back by itself), and the part still running stops
+    /// within `seconds`, freeing the lock. The pairing stays: `darkbloom cluster` starts the pair again. False when the
+    /// start couldn't be cleared or the part didn't stop in time.
+    public static func releaseForSingleMac(seconds: Double) -> Bool {
+        guard let paths = try? ClusterUserPaths() else { return false }
+        let setup = ClusterSetupPaths(paths: paths)
+        let store = ClusterSetupStore(paths: setup)
+        do {
+            if (try? store.readRecord())?.leadership?.serving == true {
+                try store.updateRecord { $0.leadership?.serving = false }
+            }
+        } catch { return false }
+        return stopLocalPart(in: setup.directory, seconds: seconds)
+    }
+
+    public static func pairRuns(_ status: ClusterServiceStatus?) -> Bool {
+        guard let status, status.serving else { return false }
+        if let running = status.pairRunning { return running }
+        // A service from before 0.10.9 (a 0.10.8 one still running after the update): its control mode says whether
+        // the other Mac takes part; without one, its intent.
+        guard let mode = status.control?.mode else { return true }
+        return !otherMacAbsentModes.contains(mode)
+    }
+
+    /// Control modes in which the other Mac isn't taking part (`ClusterServiceStatus.Control.mode`).
+    public static let otherMacAbsentModes: Set<String> = ["waiting", "alone", "cannotServe", "idle"]
 
     /// The published status only while the service that wrote it runs now (holds the lock and its pid file names it);
     /// nil otherwise, e.g. the file a stopped service left behind.
@@ -1537,6 +1573,44 @@ public final class ClusterService: @unchecked Sendable {
         ProviderInstanceHolder.clause(holder) + ", so this Mac's part can't start: `\(BuildEnvironment.current.cliName) stop --solo` stops it"
     }
 
+    /// Ticks `pairWatch` and gives up this Mac's part once the other Mac hasn't answered for
+    /// `ClusterPairWatch.giveUpSeconds`: the part stops and frees this Mac's serving lock (the watchdog brings back
+    /// single-Mac serving set up here), and it starts again by itself when the other Mac answers. The degraded solo
+    /// server of a pair serving through Darkbloom (local API only) gives way too while single-Mac serving is set up here.
+    private func watchPair(_ want: PartWant, intent: Bool, scope: ClusterServingScope,
+                           say: @escaping @Sendable (String) -> Void) -> PartWant {
+        let now = Self.monotonicSeconds()
+        let (answered, partUp, member, offset) = lock.withLock {
+            (control?.otherAnsweredAt, child?.isRunning == true && childSetup?.hasPrefix("cluster:") == true, childIsMember, childLogOffset)
+        }
+        var servingNow = partUp && answered.map { now - $0 < Self.leaseTTLSeconds } == true
+        if servingNow, member {
+            if case .serving = Self.pairReport(in: serviceFiles.rankLog, from: offset) {} else { servingNow = false }
+        }
+        let (verdict, previous) = lock.withLock { () -> (ClusterPairWatch.Verdict, ClusterPairWatch.Verdict) in
+            let verdict = pairWatch.tick(now: now, intent: intent, otherAnsweredAt: answered, serving: servingNow)
+            defer { pairVerdict = verdict }
+            return (verdict, pairVerdict)
+        }
+        guard verdict.givesUpPart else {
+            if previous.givesUpPart, verdict.running { say("the other Mac answers again: this Mac's part may start again") }
+            return want
+        }
+        let singleMacJob = LaunchAgent.isInstalled() && !LaunchAgent.installedJobIsClusterMember()
+        let part = ClusterPairWatch.part(want, verdict: verdict, localOnly: scope.isLocalOnly, singleMacJob: singleMacJob)
+        if part != want, !previous.givesUpPart, let line = ClusterPairWatch.line(verdict, otherMac: lock.withLock { otherMacNameLocked() },
+                                                                                 cli: BuildEnvironment.current.cliName) {
+            say(line)
+        }
+        return part
+    }
+
+    /// The other Mac's name as control knows it; nil before control.
+    private func otherMacNameLocked() -> String? {
+        guard let node = control else { return nil }
+        return node.members.first { $0.key != node.localID }?.value.name
+    }
+
     private func supervise(say: @escaping @Sendable (String) -> Void) {
         // A cleanup timeout is not permission to load a second model beside the old one.
         guard leftover() == nil else { return }
@@ -1565,8 +1639,9 @@ public final class ClusterService: @unchecked Sendable {
         let scope = record.leadership?.scope ?? .publicServing
         let leadsSession = saved.configuration?.role == .leader
         let runningSolo = lock.withLock { child != nil && childSetup?.hasPrefix("solo:") == true }
-        let want = partWanted(serving: serving, hasSetup: reference != nil && saved.configuration != nil,
-                              model: saved.configuration?.publicModelID ?? record.leadership?.modelName, runningSolo: runningSolo)
+        let want = watchPair(partWanted(serving: serving, hasSetup: reference != nil && saved.configuration != nil,
+                                        model: saved.configuration?.publicModelID ?? record.leadership?.modelName, runningSolo: runningSolo),
+                             intent: serving, scope: scope, say: say)
         // What runs is keyed: "cluster:<setup digest>" (this Mac's part of the saved setup; rank 0's also names a
         // local-only scope) or "solo:<model>" (degraded serving on this Mac alone). A part of another key is stopped
         // before the wanted one starts, so a change of scope starts rank 0 again that way.

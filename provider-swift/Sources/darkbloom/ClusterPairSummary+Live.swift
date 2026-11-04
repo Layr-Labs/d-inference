@@ -104,6 +104,9 @@ extension ClusterPairSummary {
         summary.deployment = leadership.deployment
         let own = ClusterService.publishedLive()
         (summary.state, summary.reason) = ownState(started: summary.started, own: own, localOnly: summary.localOnly)
+        summary.pairRunning = summary.started && ClusterService.pairRuns(own)
+        summary.pairNotRunning = own?.pairNotRunning
+        summary.otherMacReachable = own?.control.map { !ClusterService.otherMacAbsentModes.contains($0.mode) } ?? false
         return summary
     }
 

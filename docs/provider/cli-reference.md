@@ -262,6 +262,13 @@ service's solo part) and launchd's `--foreground` child are never redirected,
 and a replacement drains only the provider service's process, never the
 cluster's part (`ServiceDrain.soloProviderState`).
 
+On a paired Mac, `darkbloom start` says first when it replaces a cluster service
+running from a terminal session with the login agent. When macOS's Local Network
+setting keeps this Mac's link follower off the cable, it ends its wait at once
+with where to turn it on (System Settings → Privacy & Security → Local Network →
+"Darkbloom", or "Darkbloom Dev"; through Screen Sharing on a Mac with no
+display), and exits 1.
+
 Options on a paired Mac (`Start.singleMacOptions`, `ClusterPairSummary.singleMacOptionsRefusal`):
 
 | Options | Without `--solo` on a paired Mac |

@@ -1005,6 +1005,23 @@ other Mac can't dial because macOS keeps it off the local network, the ✗ gives
 that reason instead of "make sure it is on". A planned switch's stops (a part
 that stopped, or ended with exit 0 and no reason) aren't shown as ends.
 
+macOS's Local Network privacy can keep a Mac's link follower, the process that
+dials the other Mac, off the cable even when the cluster service's own check
+passed. The follower's own refusal decides:
+- the joining Mac's window says "This Mac can't reach the other Mac over the
+  cable: macOS keeps Darkbloom off the local network" and what to do there:
+  System Settings → Privacy & Security → Local Network → turn on "Darkbloom"
+  (or "Darkbloom Dev"); on a Mac with no display, through Screen Sharing;
+- the leading Mac's ✗ says the same of the other Mac at once, since it can't
+  clear until someone turns the setting on;
+- `darkbloom start` ends its wait with the same instruction, and says first
+  when it replaces a cluster service running from a terminal session with the
+  login agent.
+
+Retry in the ✗ starts a stopped pair again, and q, Esc or Ctrl-C leave a
+start's wait at once. While it waits, the joining Mac's window shows each state
+of the leading Mac's start, and where to choose Retry when a part keeps ending.
+
 - **No macOS prompt can be shown** (for example with no one logged in to the desktop):
   the check writes the exact commands the prompt would run to an owner-only
   script, and the setup runs it with `sudo` in the same terminal (type this

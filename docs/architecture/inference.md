@@ -3876,6 +3876,12 @@ away; mixed pairs are first-class).
   assistant guard).
 - **Default:** the fastest measured family, else the planner's
   (`ClusterOnboardingMode.defaultIndex`).
+- **Local Network truth:** the follower the service runs is the process that
+  dials the other Mac, so its last dial decides (`ClusterService.followerRefusal`:
+  the refusal macOS gave it, or a link it opened since). A running part publishes
+  that refusal as its `lastError`, the service's Local Network state reads it as
+  blocked whatever the probe's broadcast found (`ClusterLocalNetworkAccess.state`),
+  and the leading Mac's wait ends at once on it (`OnboardingLive.otherMacRefused`).
 - **The person's family:** `useMode` keeps the chosen family for every model
   (`OnboardingLive.keptFamily`), never inferred from the listing's order, which
   says nothing of the plan; `localAdopt` plans again in it only when the listed

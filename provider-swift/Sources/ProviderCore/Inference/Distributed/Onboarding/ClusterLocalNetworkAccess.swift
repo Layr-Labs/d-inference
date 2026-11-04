@@ -145,8 +145,20 @@ public enum ClusterLocalNetworkAccess {
         chmod(file.path, 0o600)
     }
 
+    /// The service's Local Network access from its probe's `report` and its published status (`published`).
+    /// The follower the service runs is the process that dials the other Mac: its refusal, which the service publishes,
+    /// is blocked whatever the probe's broadcast found (pair-2's M5 Max and the M5 Ultra pair's headless Mac B: the probe
+    /// logged "allowed" while macOS refused every dial).
+    static func state(report: ClusterOnboardingLocalNetwork, published: ClusterServiceStatus.Child?) -> ClusterOnboardingLocalNetwork {
+        published?.lastError?.hasPrefix(ClusterService.localNetworkReasonPrefix) == true ? .blocked : report
+    }
+
     /// The running service's last outcome: unknown when it wrote none yet (a service of an older build never does).
     public static func serviceState() -> ClusterOnboardingLocalNetwork {
+        state(report: reportedState(), published: ClusterService.published()?.child)
+    }
+
+    static func reportedState() -> ClusterOnboardingLocalNetwork {
         guard let paths = try? ClusterService.paths(), let file = reportFile(),
               let pidText = try? String(contentsOf: paths.pid, encoding: .utf8),
               let pid = Int32(pidText.trimmingCharacters(in: .whitespacesAndNewlines)),

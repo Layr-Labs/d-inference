@@ -65,6 +65,7 @@ extension ClusterOnboardingOperations {
             login: { live.login() },
             useMode: { index, mode in live.useMode(index, mode) })
         ClusterOnboardingCommand.use(BuildEnvironment.current.cliName)
+        ClusterOnboardingCommand.useApp(ClusterService.appName)
         made.markRegistrationPending = { live.markRegistrationPending() }
         made.planScope = { live.usePlanningScope($0) }
         return made
@@ -1541,6 +1542,10 @@ final class OnboardingLive: @unchecked Sendable {
                 once = readinessOnce()
             }
             if let ready = once.ready { return .success(ready) }
+            if once.line == Self.otherMacLocalNetworkLine {
+                return .failure(.init(Self.localNetworkRefusalLines(otherMac: Self.sentence(there), app: ClusterService.appName)
+                    + lastErrors(fallback: nil)))
+            }
             // Each line once (a part that keeps restarting alternated two lines every 2 s); a part that ends the
             // same way again and again is said and the wait ends: both Macs keep trying by themselves. An end is
             // counted when the line turns to it (a poll that sees the same end again is the same end).
@@ -1779,12 +1784,30 @@ final class OnboardingLive: @unchecked Sendable {
             line += "; \(hereShort)'s part ended (\(end)\(own.lastError.map { ": " + $0 } ?? "")) and starts again by itself"
         }
         // Members are asked for their own part only when rank 0 is here.
-        if now.local, let member = try? JSONDecoder().decode(ClusterServiceStatus.self, from: try command(.init(op: .status), seconds: 10)),
-           !member.child.running, let end = member.child.lastEnd, Self.endShown(member.child, own: false) {
+        let member = now.local ? try? JSONDecoder().decode(ClusterServiceStatus.self, from: try command(.init(op: .status), seconds: 10)) : nil
+        // macOS keeps the other Mac's follower off the local network: nothing changes until someone allows it (P2-1).
+        if Self.otherMacRefused(member?.child) { return (nil, Self.otherMacLocalNetworkLine) }
+        if let member, !member.child.running, let end = member.child.lastEnd, Self.endShown(member.child, own: false) {
             line += "; \(thereShort)'s part ended (\(end)\(member.child.lastError.map { ": " + $0 } ?? "")) and starts again by itself"
         }
         return (nil, line)
     }
+
+    /// Whether the other Mac's part reports that macOS keeps it off the local network (its follower's refusal).
+    static func otherMacRefused(_ child: ClusterServiceStatus.Child?) -> Bool {
+        child?.lastError?.hasPrefix(ClusterService.localNetworkReasonPrefix) == true
+    }
+
+    /// The ✗ when the other Mac can't reach this one over the cable for that reason: why, and what to do there. It can't
+    /// clear until someone turns the setting on, so the wait ends at once.
+    static func localNetworkRefusalLines(otherMac: String, app: String) -> [String] {
+        ["The other Mac can't reach this Mac over the cable: macOS keeps \(app) there off the local network",
+         "\(otherMac): System Settings → Privacy & Security → Local Network → turn on “\(app)” (on a Mac with no display, "
+            + "through Screen Sharing). Then choose Retry here."]
+    }
+
+    /// The live row's line once the other Mac's part reports that refusal (`readinessOnce`).
+    static let otherMacLocalNetworkLine = "the other Mac can't reach this Mac over the cable (Local Network privacy)"
 
     /// Whether a part's end is said in the live row as an end that starts again by itself: not a clean stop ("stopped", or
     /// exit 0 with no reason), which a planned switch makes on both Macs (the DevNet run, A-10, B18); an exit 0 that says

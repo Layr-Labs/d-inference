@@ -168,6 +168,12 @@ enum ClusterPairCommands {
     private enum Started: Sendable { case asked, serviceFailed([String]), notEverywhere([String]) }
 
     private static func serve(_ actions: ClusterPairActions, config: String?, say: Say) async -> Int32 {
+        // Says what the service step does before it does it (the pair-2 run, P2-3: a start with no terminal stopped the
+        // session service and installed its login agent without a word).
+        if ClusterService.running(), !ClusterServiceAgent.installedLabels().contains(where: { ClusterServiceAgent.isLoaded(label: $0) }) {
+            say("  This Mac's cluster service runs from a terminal session: replacing it with its login agent, which starts at "
+                + "login (this Mac's part restarts).")
+        }
         let started = await Task.detached { () -> Started in
             if case .failure(let failure) = actions.ensureService() { return .serviceFailed(failure.lines) }
             if case .failure(let failure) = actions.serve() { return .notEverywhere(failure.lines) }
@@ -183,6 +189,15 @@ enum ClusterPairCommands {
         case .asked: break
         }
         let summary = await waitUntilServing(config: config, say: say)
+        // macOS keeps this Mac's follower off the local network: final until someone turns it on (P2-1, P2-3), so the
+        // instruction instead of the pair's loading lines.
+        if ClusterLocalNetworkAccess.serviceState() == .blocked {
+            for line in ClusterOnboardingDriver.localNetworkBlockedLines(app: ClusterService.appName,
+                                                                         then: "then run `\(BuildEnvironment.current.cliName) start` again") {
+                say("  " + line)
+            }
+            return 1
+        }
         for line in summary.resultLines { say(line) }
         return summary.exitCode
     }
@@ -197,6 +212,7 @@ enum ClusterPairCommands {
         var stoppedLooks = 0
         while true {
             let summary = await ClusterPairSummary.live(config: config)
+            if ClusterLocalNetworkAccess.serviceState() == .blocked { return summary }
             switch summary.state {
             case .serving, .notPaired, .pairingUnreadable: return summary
             case .notServing:

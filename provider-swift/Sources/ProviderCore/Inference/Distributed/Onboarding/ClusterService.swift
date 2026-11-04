@@ -989,7 +989,9 @@ public final class ClusterService: @unchecked Sendable {
                 setup: reference.map { String($0.sha256.prefix(12)) },
                 child: .init(running: child?.isRunning == true || oldPart != nil, starts: starts, lastEnd: lastEnd,
                     restartInSeconds: child == nil && oldPart == nil && wait > 0 ? Int(wait.rounded(.up)) : nil,
-                    lastError: child?.isRunning == true ? nil : Self.lastError(in: serviceFiles.rankLog, from: childLogOffset),
+                    // A running part says only a refusal its follower got (it keeps retrying, P2-1); an ended one its error.
+                    lastError: child?.isRunning == true ? Self.followerRefusal(in: serviceFiles.rankLog, from: childLogOffset)
+                        : Self.lastError(in: serviceFiles.rankLog, from: childLogOffset),
                     pid: child?.isRunning == true ? child?.processIdentifier : oldPart?.pid,
                     startedAt: child?.isRunning == true ? childStartedAt : oldPart?.startedAt,
                     solo: child?.isRunning == true ? childSetup?.hasPrefix("solo:") == true : oldPart?.solo,
@@ -1248,9 +1250,7 @@ public final class ClusterService: @unchecked Sendable {
         // A link follower macOS kept off the local network says so and ends cleanly: that is its reason (A-3).
         if error == nil, let refused = ClusterLogScan.lastLine(in: log, from: offset, where: { $0.contains(localNetworkRefusal) }),
            let at = refused.range(of: localNetworkRefusal) {
-            var reason = "its part can't reach the local network" + String(refused[at.upperBound...])
-            if reason.hasSuffix(".") { reason.removeLast() }
-            return ClusterConsoleText.plain(ClusterConsoleText.bounded(reason, maximum: 300))
+            return refusalReason(String(refused[at.upperBound...]))
         }
         return error
     }
@@ -1261,6 +1261,32 @@ public final class ClusterService: @unchecked Sendable {
     /// How a part's link follower says macOS kept it off the local network (`ClusterLinkFollowerCommand`): it then ends
     /// cleanly, with no "Error:" line, and the Mac that leads only saw the other Mac not answering (the DevNet run, A-3).
     static let localNetworkRefusal = "may not reach the local network"
+
+    /// How a part's refusal reads in its Mac's status (`lastError`), which the other Mac's screens read.
+    public static let localNetworkReasonPrefix = "its part can't reach the local network"
+
+    /// The app macOS names in Privacy & Security → Local Network ("Darkbloom", "Darkbloom Dev").
+    public static let appName: String = {
+        let bundle = BuildEnvironment.current.appBundleName
+        return bundle.hasSuffix(".app") ? String(bundle.dropLast(4)) : bundle
+    }()
+
+    /// The reason the follower this service runs can't dial the other Mac now, from its log since it started: its last
+    /// dial's outcome, the refusal macOS gave it ("this process may not reach the local network", P2-1, A-2) or a link
+    /// it opened since ("connected", "session opened"). The follower is the process that dials, so this is the truth the
+    /// service's broadcast probe can't give; it keeps running and retrying, so it never ends with an error.
+    static func followerRefusal(in log: URL, from offset: UInt64 = 0) -> String? {
+        guard let last = ClusterLogScan.lastLine(in: log, from: offset, where: {
+                  $0.contains(localNetworkRefusal) || $0.contains("link-follower: connected") || $0.contains("link-follower: session opened")
+              }), let at = last.range(of: localNetworkRefusal) else { return nil }
+        return refusalReason(String(last[at.upperBound...]))
+    }
+
+    static func refusalReason(_ rest: String) -> String {
+        var reason = localNetworkReasonPrefix + rest
+        if reason.hasSuffix(".") { reason.removeLast() }
+        return ClusterConsoleText.plain(ClusterConsoleText.bounded(reason, maximum: 300))
+    }
 
     /// How a part says why it stops serving (`StartCommand+Distributed`, the member's stop reason).
     static let stopReasonPrefix = "Distributed serving stops: "

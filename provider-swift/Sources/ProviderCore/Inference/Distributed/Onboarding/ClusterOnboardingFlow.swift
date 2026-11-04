@@ -302,6 +302,10 @@ public enum ClusterOnboardingCommand {
     nonisolated(unsafe) private static var current = "darkbloom"
     public static var name: String { lock.withLock { current } }
     public static func use(_ name: String) { lock.withLock { current = name } }
+    /// The app macOS names in Privacy & Security → Local Network ("Darkbloom", "Darkbloom Dev"), set the same way.
+    nonisolated(unsafe) private static var currentApp = "Darkbloom"
+    public static var app: String { lock.withLock { currentApp } }
+    public static func useApp(_ app: String) { lock.withLock { currentApp = app } }
     /// `text` with each command in backticks ("`darkbloom …`") named for the running identity.
     public static func named(_ text: String) -> String { rename(text, to: name) }
     static func rename(_ text: String, to name: String) -> String {
@@ -1394,6 +1398,14 @@ public enum ClusterOnboardingDriver {
         "If macOS asks about Local Network for \(app)\(onScreen(remote)), click Allow."
     }
 
+    /// What to do on this Mac when macOS keeps its cluster service's follower off the local network (P2-1): plainly,
+    /// with the app to turn on and the way in on a Mac with no display. `then`: what follows once it's on.
+    public static func localNetworkBlockedLines(app: String, then: String = "the start goes on by itself once it's on") -> [String] {
+        ["This Mac can't reach the other Mac over the cable: macOS keeps \(app) off the local network.",
+         "On this Mac: System Settings → Privacy & Security → Local Network → turn on “\(app)” (on a Mac with no display, through "
+            + "Screen Sharing); \(then)."]
+    }
+
     private static func onScreen(_ remote: Bool) -> String {
         remote ? " on this Mac's screen (Screen Sharing if headless)" : ""
     }
@@ -1453,7 +1465,7 @@ public enum ClusterOnboardingDriver {
     /// nothing gets the prompt's line as an "if". False (with where to turn it on) when the person stopped waiting.
     static func allowLocalNetwork(_ subject: ClusterOnboardingLocalNetworkSubject, _ operations: ClusterOnboardingOperations,
                                   _ console: ClusterOnboardingConsole) -> Bool {
-        let app = subject == .service ? "Darkbloom" : operations.commandApp()
+        let app = subject == .service ? ClusterOnboardingCommand.app : operations.commandApp()
         let remote = operations.remote()
         var state = operations.localNetwork(subject)
         if state == .unknown, subject == .service {
@@ -1481,7 +1493,8 @@ public enum ClusterOnboardingDriver {
             if !hinted, Date().timeIntervalSince(started) >= settingsHintSeconds {
                 hinted = true
                 console.settle()
-                console.say("  No prompt? Turn on \(app) in System Settings → Privacy & Security → Local Network.")
+                console.say("  No prompt? On this Mac: System Settings → Privacy & Security → Local Network → turn on “\(app)” "
+                    + "(on a Mac with no display, through Screen Sharing).")
             }
             console.working("Waiting for Allow (q cancels)")
             if let key = console.key(milliseconds: 1_000), key == "q" || key == "Q" || key == "\u{1B}" { break }
@@ -1493,8 +1506,8 @@ public enum ClusterOnboardingDriver {
             }
         }
         console.settle()
-        console.say("Local Network is off for \(app). Turn it on in System Settings → Privacy & Security → Local Network, "
-            + "then run `darkbloom cluster` again.")
+        console.say("Local Network is off for \(app). On this Mac: System Settings → Privacy & Security → Local Network → turn on "
+            + "“\(app)” (on a Mac with no display, through Screen Sharing), then run `darkbloom cluster` again.")
         return false
     }
 
@@ -2172,7 +2185,7 @@ public enum ClusterOnboardingDriver {
     }
 
     /// How a start ended up: serving (the outcome block's title and lines), its test failed, or not serving (why, first).
-    enum StartOutcome { case served(title: String, lines: [String], ready: ClusterOnboardingReady), testFailed, notServing([String]) }
+    enum StartOutcome { case served(title: String, lines: [String], ready: ClusterOnboardingReady), testFailed, notServing([String]), left }
 
     /// After the start. Serving and Done are said only once the model is loaded on both Macs and a request answered
     /// (2026-11-03: a pair offered for pairing said both while nothing was loaded). A pair that does not serve says why
@@ -2195,13 +2208,27 @@ public enum ClusterOnboardingDriver {
                 console.result(true, served, lines)
                 startedCard(model: title, ready: ready, scope: scope, peer: peer, operations, console)
                 return 0
+            case .left:
+                console.settle()
+                console.say(leftStartLine)
+                return 1
             case .testFailed:
                 console.say("")
                 console.say("Setup saved, but the test failed. To test again, run `darkbloom cluster` and choose \(title): it sends one test request.")
                 return 1
             case .notServing(let lines):
                 switch notServing(lines, operations, console) {
-                case .retry: continue
+                case .retry:
+                    // A pair stopped meanwhile (`cluster stop --service` on a Mac): Retry starts it again and says so, instead
+                    // of waiting for parts nothing would start (the pair-2 run, P2-4).
+                    if operations.status().first?.hasPrefix("Stopped") == true {
+                        console.say("  The pair is stopped: starting both Macs again.")
+                        if case .failure(let failure) = busy(console, "Starting both Macs", operations.serve) {
+                            for line in failure.lines { console.say("  " + line) }
+                            return 1
+                        }
+                    }
+                    continue
                 case .changeModel: return chooseAndServe(operations, console, scope: scope, startOverRequest: startOverRequest, peer: peer,
                                                          heading: "Change model")
                 case .localOnly:
@@ -2237,8 +2264,9 @@ public enum ClusterOnboardingDriver {
                              _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> StartOutcome {
         let ready: ClusterOnboardingReady
         switch waitForParts(title: title, operations, console) {
-        case .success(let value): ready = value
-        case .failure(let failure): return .notServing(failure.lines)
+        case .success(let value)?: ready = value
+        case .failure(let failure)?: return .notServing(failure.lines)
+        case nil: return .left
         }
         let tested: String?
         if ready.offered != nil {
@@ -2326,10 +2354,14 @@ public enum ClusterOnboardingDriver {
     }
 
     /// Waits for the started cluster's parts with their progress as the live rows.
+    /// Nil when the person left it (q, Esc or Ctrl-C): the parts go on starting by themselves (P2-4: q was ignored).
     static func waitForParts(title: String, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole)
-        -> Result<ClusterOnboardingReady, ClusterOnboardingFailure> {
-        waitWithRows("Loading \(title) on both Macs", console, operations.waitReady)
+        -> Result<ClusterOnboardingReady, ClusterOnboardingFailure>? {
+        waitWithRows("Loading \(title) on both Macs", console, leaving: leaves, operations.waitReady)
     }
+
+    /// Said when the person leaves the start's wait.
+    public static let leftStartLine = "Left the start: the pair keeps starting by itself; run `darkbloom cluster` again to see how it is going."
 
     /// Runs `work` off the console's thread with its progress ("1 of 2 parts ready", then a row per Mac) as live rows
     /// under `title` (`ClusterOnboardingLoadRows`), until it ends. The rows are live only: the screen keeps the result.

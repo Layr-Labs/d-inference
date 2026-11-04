@@ -90,6 +90,7 @@ extension ClusterOnboardingDriver {
         var asking = false, asked = Date.distantPast
         let begun = Date()
         var started: Date?, latest: String?, stage = 0
+        var saidLatest: String?, saidRetry = false, saidBlocked = false
         while true {
             if !asking, Date().timeIntervalSince(asked) >= timing.pollSeconds {
                 asking = true
@@ -104,6 +105,21 @@ extension ClusterOnboardingDriver {
                 let next = followStage(status, after: stage)
                 if started != nil, next > stage { stage = next; started = Date() }
                 if started != nil, let first = status.first { latest = first.hasSuffix(".") ? String(first.dropLast()) : first }
+                // macOS keeps this Mac's follower off the local network (the probe passed, the dial didn't): said once,
+                // plainly; the start goes on by itself once it's on (P2-1).
+                if !saidBlocked, operations.localNetwork(.service) == .blocked {
+                    saidBlocked = true
+                    console.settle()
+                    for line in localNetworkBlockedLines(app: ClusterOnboardingCommand.app) { console.say("  " + line) }
+                }
+                // Each new state of the leader's start, as lines a plain window shows too, and where to choose Retry when a
+                // part keeps ending there (P2-7: this window showed nothing while the leader sat at ✗).
+                if let latest, latest != saidLatest, seen == .starting {
+                    saidLatest = latest
+                    console.settle()
+                    console.say("  The other Mac: " + latest + ".")
+                    if !saidRetry, latest.contains("part ended") { saidRetry = true; console.say(retryOnLeaderLine(leader)) }
+                }
                 switch seen {
                 case .serving:
                     console.settle()
@@ -141,7 +157,7 @@ extension ClusterOnboardingDriver {
     }
 
     /// q or escape.
-    static func leaves(_ key: Character) -> Bool { key == "q" || key == "Q" || key == "\u{1B}" }
+    static func leaves(_ key: Character) -> Bool { key == "q" || key == "Q" || key == "\u{1B}" || key == "\u{03}" }
 
     static func leftFollow(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
         console.settle()

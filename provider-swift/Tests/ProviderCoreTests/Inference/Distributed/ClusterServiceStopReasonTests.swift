@@ -134,4 +134,30 @@ struct ClusterServiceStopReasonTests {
             #expect(OnboardingLive.endShown(refused, own: own) && OnboardingLive.endShown(crashed, own: own), "ends with a reason are said")
         }
     }
+
+    /// The pair-2 DevNet run (P2-1) and the M5 Ultra pair's headless Mac B (A-2): macOS kept the member's link follower
+    /// off the local network ("link refused: connectFailed (unreachable)", "this process may not reach the local
+    /// network"), while the service's own probe (one broadcast datagram) logged "allowed". The follower kept running and
+    /// retrying, so its Mac's status said "running, no error". The truth is the follower's own last dial.
+    @Test func theFollowersOwnRefusalIsTheTruth() throws {
+        let refused = "2026-11-04T07:32:14Z link-follower: link refused: connectFailed (unreachable)\n"
+            + "2026-11-04T07:32:14Z link-follower: this process may not reach the local network: macOS refused the dial before the cable "
+            + "was tried. Allow darkbloom under System Settings > Privacy & Security > Local Network (once), or start the follower from a "
+            + "session that has that access.\n"
+        let url = try log(banner + refused)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let reason = ClusterService.followerRefusal(in: url)
+        #expect(reason?.hasPrefix("its part can't reach the local network: macOS refused the dial") == true, "\(String(describing: reason))")
+        let later = try log(banner + refused + "2026-11-04T07:40:02Z link-follower: connected\n2026-11-04T07:40:02Z link-follower: session opened\n")
+        defer { try? FileManager.default.removeItem(at: later) }
+        #expect(ClusterService.followerRefusal(in: later) == nil, "allowed later: the last dial connected")
+        let running = ClusterServiceStatus.Child(running: true, starts: 1, lastEnd: nil, restartInSeconds: nil, lastError: reason)
+        #expect(ClusterLocalNetworkAccess.state(report: .allowed, published: running) == .blocked, "the probe's allowed doesn't hide the refusal")
+        #expect(ClusterLocalNetworkAccess.state(report: .allowed, published: nil) == .allowed)
+        #expect(OnboardingLive.otherMacRefused(running), "the leader reads the member's refusal")
+        let lines = OnboardingLive.localNetworkRefusalLines(otherMac: "The other Mac (Apple M5 Max, 128 GB)", app: "Darkbloom Dev")
+        #expect(lines.first?.contains("macOS keeps Darkbloom Dev there off the local network") == true
+                && lines.contains { $0.contains("System Settings → Privacy & Security → Local Network → turn on “Darkbloom Dev”") }
+                && lines.contains { $0.contains("Screen Sharing") }, "what to do there: \(lines)")
+    }
 }

@@ -215,8 +215,8 @@ extension ClusterLocalNetworkAccess {
     }
 
     /// Whether the other Mac's part reports the refusal, by the rule of the setup screen's ✗: that part runs and says so
-    /// (`OnboardingLive.otherMacRefused`), and this Mac's part has run long enough for one more dial to reach it
-    /// (`OnboardingLive.refusalIsCurrent`).
+    /// (`OnboardingLive.otherMacRefused`), and this Mac's part has run long enough for one more dial to reach it, or
+    /// for a status read (`acrossRestarts`) its last part did (`OnboardingLive.refusalIsCurrent`).
     static func otherMacRefused(member: ClusterServiceStatus.Child?, own: ClusterServiceStatus.Child?, now: Double,
                                 acrossRestarts: Bool = false) -> Bool {
         OnboardingLive.otherMacRefused(member) && OnboardingLive.refusalIsCurrent(own: own, now: now, acrossRestarts: acrossRestarts)

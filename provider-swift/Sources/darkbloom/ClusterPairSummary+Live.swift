@@ -34,7 +34,8 @@ extension ClusterPairSummary {
     /// `darkbloom cluster status`: the local facts and the status `darkbloom cluster` shows, which on the Mac that
     /// follows comes from the leading Mac over the cable. `bounded`: a person's `cluster status` or `status`, which on
     /// the Mac that follows waits for that answer at most `leaderAnswerSeconds` and tells `bounded` when it is slow
-    /// (`statusLines`); nil waits as long as the answer takes.
+    /// (`statusLines`), and on the leading Mac keeps the other Mac's refusal across this Mac's part restarts
+    /// (`localNetworkRefusal`); nil waits as long as the answer takes and keeps the strict rule (a start's looks).
     static func live(config: String?, bounded slow: ClusterPairCommands.Say? = nil) async -> ClusterPairSummary {
         liveReadForTesting?(slow != nil)
         if let reader = testReader { return reader(true) }

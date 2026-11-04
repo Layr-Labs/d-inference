@@ -121,4 +121,15 @@ func checkMemoryFit(golden: URL, _ checks: PlacementChecks) throws {
             && lopsided.chosen?.ranks.allSatisfy { $0.hardwareFits == true && $0.withinGPUWorkingSet } == true)
     checks.require("memory fit (d): the M5 Max holds more than the 75.6 GiB the old at-rest ceiling allowed, once memory is freed there",
         (maxRank?.weightsBytes ?? 0) > Int(75.6 * Double(gib)) && maxRank?.fit.possible == true && maxRank?.fit != .now)
+
+    // A bench cap (`cappedForBench`) plans a large Mac as one that can give a model only the cap. The at-rest ceiling
+    // is the host side of `hardwareFits`, so the cap bounds it too: memory the Mac may not give never counts as
+    // fitting, even when the share's GPU part is within the capped GPU limit.
+    let uncapped = try SyntheticMac.idle(256).profile(), benchCap = 96 * gib
+    let capped = try uncapped.cappedForBench(admissibleBytes: benchCap)
+    func holds(_ profile: ClusterDeviceProfile) -> Bool {
+        profile.hardwareFits(needBytes: benchCap + gib, weightsBytes: gib, largestTensorBytes: 0, gpuResidentBytes: benchCap / 2)
+    }
+    checks.require("memory fit (bench cap): a capped Mac's at-rest ceiling is within the cap, so a need beyond it is not hardware-fit, whatever its GPU part",
+        capped.atRestAdmissibleBytes <= benchCap && !holds(capped) && uncapped.atRestAdmissibleBytes == 240 * gib && holds(uncapped))
 }

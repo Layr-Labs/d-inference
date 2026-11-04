@@ -120,7 +120,11 @@ public struct ClusterDeviceProfile: Codable, Equatable, Sendable {
     /// what macOS itself wires (`systemWiredBytes`); the gate's own floor and
     /// loading headroom, inside every need, are the desktop's margin. Only
     /// physical memory enters it: what is wired, cached or running now does
-    /// not move it. It is the ceiling a split is planned under, not a
+    /// not move it. It never exceeds the allocator's limit either: MLX's
+    /// default (at most 95 % of memory) is above it on every Mac, so that
+    /// binds only where the limit is lowered, as a bench cap lowers it
+    /// (`cappedForBench`), and memory the profile may not give never counts
+    /// as fitting. It is the ceiling a split is planned under, not a
     /// promise: the load gate still decides each load on the Mac's own
     /// sample. It assumes the share loads into free pages: a file cache full
     /// of the model's own files is given back page by page while applications
@@ -131,7 +135,7 @@ public struct ClusterDeviceProfile: Codable, Equatable, Sendable {
     /// 75.6 GiB of a 128 GiB Mac, below what any split of MiMo V2.6 Flash asks
     /// a Mac for and below the GLM ranks a 256 GiB pair serves.)
     public var atRestAdmissibleBytes: Int {
-        max(0, physicalMemoryBytes - Self.systemWiredBytes(physical: physicalMemoryBytes))
+        max(0, min(physicalMemoryBytes - Self.systemWiredBytes(physical: physicalMemoryBytes), allocatorLimitBytes))
     }
 
     /// What macOS wires on a Mac at rest, by its memory alone: a sixteenth of

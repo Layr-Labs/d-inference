@@ -41,6 +41,9 @@ public struct ClusterSetupReport: Codable, Sendable, Equatable {
     public var linkPairings: ClusterSetupLinkPairings?
     /// Free bytes on the disk of this Mac's model store (a copy of a model checks it before it starts); nil when unknown.
     public var modelStoreFreeBytes: Int64?
+    /// What macOS could free on that disk beyond `modelStoreFreeBytes` (`ClusterDiskSpace.purgeableBytes`); nil from an
+    /// older build.
+    public var modelStorePurgeableBytes: Int64?
     /// The newest speed records of requests this Mac served as rank 0 (at most `servedShared`; nil from an older
     /// build). Only the Mac where requests enter keeps them, and the plan is made on the control leader, which is
     /// often the other Mac: without them a model measured on the pair was planned from the device index's estimate.
@@ -54,6 +57,11 @@ public struct ClusterSetupReport: Codable, Sendable, Equatable {
         self.observedAt = observedAt; self.version = version; self.mac = mac; self.link = link; self.saved = saved
         self.inbox = inbox; self.inboxError = inboxError; self.journal = journal; self.memoryGuard = memoryGuard; self.models = models
         self.modelsError = modelsError; self.pairingCode = pairingCode; self.checks = checks; self.linkPairings = linkPairings
+    }
+
+    /// The model store's disk as the copy decision counts it; nil when its free bytes are unknown.
+    public var modelStoreDisk: ClusterDiskSpace? {
+        modelStoreFreeBytes.map { ClusterDiskSpace(freeBytes: $0, purgeableBytes: modelStorePurgeableBytes ?? 0) }
     }
 
     public func encoded() throws -> Data {
@@ -88,7 +96,8 @@ public struct ClusterSetupMac: Codable, Sendable, Equatable {
     /// macOS's version as numbers, for the minimum RDMA needs.
     public var osMajor: Int
     public var osMinor: Int
-    /// Free space for important use on the volume that holds the models; nil when not read.
+    /// Free space now on the volume that holds the models (`ClusterDiskSpace.freeBytes`; what macOS could purge is not
+    /// counted); nil when not read.
     public var diskFreeBytes: Int?
     public var diskTotalBytes: Int?
 

@@ -47,6 +47,8 @@ import Darwin
         downloadProgressStaysOnOneLine()
         copyDeclined()
         copyBlockedByDisk()
+        // Pair 2, 2026-11-03: MiMo's 172.9 GB download was offered on an M3 Ultra with 54.1 GB free.
+        modelWithoutRoomOnDiskIsMarked()
         copyInterrupted()
         // Finish 2026-10-13 night: failing first on c35897c36.
         shortCopyIsAListLikeAnyOther()
@@ -1217,6 +1219,34 @@ import Darwin
         expect(run.text.contains("Can't start Qwen3.8-27B-4bit-mtp: the other Mac (Apple M3 Ultra, 256 GB) has 3.0 GB free; the model needs 16.3 GB and 2.1 GB to spare. Free space, then run `darkbloom cluster` again."),
             "disk: the free-disk refusal in words")
         expect(!recorder.all.contains { $0.hasPrefix("provision") }, "disk: nothing started")
+    }
+
+    /// A model a Mac has no room for on disk now (only the space free now counts, not what macOS could purge) is
+    /// listed after the ones that fit, its line saying so; chosen anyway, it says why and nothing is downloaded.
+    static func modelWithoutRoomOnDiskIsMarked() {
+        let recorder = Recorder()
+        let short = "this Mac has 54.1 GB free; the model needs 172.9 GB and 2.1 GB to spare. macOS could free up to 202.5 GB more "
+            + "(purgeable files such as local snapshots), but Darkbloom doesn't count on it"
+        let choices = [
+            ClusterOnboardingModelChoice(title: "Xiaomi: MiMo-V2.6-Flash", lines: ["172.9 GB · not on these Macs: downloaded from Darkbloom's catalog first"],
+                blocker: nil, provision: .init(lines: ["This Mac: download from Darkbloom's catalog (172.9 GB) — cannot start: " + short],
+                    downloadAlternative: false, leaderDownloads: true, blocker: short, fitsOnDisk: false), validated: true),
+            ClusterOnboardingModelChoice(title: "Qwen 3.8 27B", lines: ["16.3 GB · tensor parallel"], blocker: nil, validated: true, split: "tensor parallel"),
+            ClusterOnboardingModelChoice(title: "Gemma 4 26B", lines: ["15.6 GB · pipeline"], blocker: nil,
+                fitRemedy: "Quit apps on the other Mac (Apple M5 Max, 128 GB) first.", validated: true, split: "pipeline")]
+        let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M5 Max, 128 GB"), pairEvents: [], pairResult: .failed([]),
+            choices: choices))
+        expect(run.waitFor(prompt(3)), "disk: the list")
+        expect(run.text.contains("  1) Qwen 3.8 27B · 16.3 GB · tensor parallel\n  2) Gemma 4 26B · 15.6 GB · pipeline · does not fit now\n"
+            + "  3) Xiaomi: MiMo-V2.6-Flash · 172.9 GB · download · not enough free disk\n"),
+               "disk: the model without room comes last, its line says so: \(run.text)")
+        run.type("3")
+        expect(run.finish() == 1, "disk: exit 1")
+        expect(run.text.contains("Can't start Xiaomi: MiMo-V2.6-Flash: " + short + ". Free space, then run `darkbloom cluster` again.\n"),
+               "disk: why, with what macOS could purge: \(run.text)")
+        expect(!run.text.contains("1) Download") && !recorder.all.contains { $0.hasPrefix("provision") || $0.hasPrefix("adopt") },
+               "disk: no download offered or started: \(recorder.all)")
+        transcript("leader-model-without-room-on-disk", run.text, keys: run.keys)
     }
 
     static func copyInterrupted() {

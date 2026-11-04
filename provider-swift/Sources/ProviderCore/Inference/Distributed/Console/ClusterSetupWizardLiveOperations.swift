@@ -737,7 +737,7 @@ final class LiveContext: @unchecked Sendable {
             let part = localRank == 0 ? "this Mac runs rank 0 and the serving API" : "this Mac runs rank \(localRank)"
             // The onboarding shows the deployment in one plain line once it serves; the six-step wizard keeps its detail.
             var lines = settings.derivedPlacement ? ["Saved \(here)'s setup for \(decision.option.model.modelID)."]
-                : ["Saved this Mac's setup \(saved.configurationSHA256.prefix(12)): \(decision.option.model.modelID), cut after \(plan.cut) layers, \(plan.mode); \(part)."]
+                : ["Saved this Mac's setup \(saved.configurationSHA256.prefix(12)): \(decision.option.model.modelID), cut after \(ClusterOnboardingDeployment.layers(plan.cut)), \(plan.mode); \(part)."]
             if let pairing = linkPairing() {
                 // Over the paired link: the other Mac's open wizard puts it in its inbox.
                 let delivery = try JSONEncoder().encode(ClusterSetupStore.Delivery(configuration: peerData, capability: capability.data,

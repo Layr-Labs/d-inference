@@ -51,16 +51,16 @@ extension ProviderUninstall {
         func action(_ text: String) { number += 1; lines.append("  \(number). \(text)") }
         action("\(stopServingStep): drain accepted requests, as `\(plan.cli) stop`")
         if let shared = plan.items.first(where: { $0.sharedWith != nil }), let other = shared.sharedWith {
-            let agent = shared.ownClusterAgentPlist ?? "this install has none"
-            switch plan.runningClusterService?.owner {
-            case .thisInstall?:
-                action("\(ownClusterStep): stop it first (pid \(plan.runningClusterService!.pid), running from this install); "
+            switch plan.runningClusterService {
+            case let running? where running.owner == .thisInstall:
+                action("\(ownClusterStep): stop it first (pid \(running.pid), running from this install); "
                     + (shared.ownClusterAgentPlist.map { "then remove \($0)" } ?? "it has no login agent")
                     + "; the pairing and the cable port setup stay for \(other)")
-            case .unknown?:
-                action("\(ownClusterStep): refused, deleting nothing: \(ProviderUninstall.stillRunningReason(plan.runningClusterService!, cli: plan.cli))")
+            case let running? where running.owner == .unknown:
+                action("\(ownClusterStep): refused, deleting nothing: \(stillRunningReason(running, cli: plan.cli))")
             default:
-                action("\(ownClusterStep): \(agent); the pair and \(other)'s cluster service are left as they are")
+                action("\(ownClusterStep): \(shared.ownClusterAgentPlist ?? "this install has none"); the pair and \(other)'s "
+                    + "cluster service are left as they are")
             }
         } else {
             action("\(clusterStep), as `\(plan.cli) cluster stop --service`: "
@@ -127,7 +127,7 @@ extension ProviderUninstall {
 
     /// Whether models stay whichever option: chosen, shared with another install, or behind a link.
     static func keepsModels(_ plan: Plan) -> Bool {
-        plan.kept.contains { $0.kind == .model || $0.label == chosenModelsLabel || $0.label == chosenStoreLabel || $0.label == "Models" }
+        plan.kept.contains { $0.kind == .model || $0.label == chosenModelsLabel || $0.label == chosenStoreLabel || $0.label == linkedModelsLabel }
     }
 
     /// Why the run left something of Darkbloom's: its app folder is (in) the models folder the person chose, or a folder

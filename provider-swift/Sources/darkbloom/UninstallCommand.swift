@@ -100,7 +100,6 @@ struct Uninstall: AsyncParsableCommand {
         }
         let paths = ProviderUninstallPaths.live(config: config, configPath: configPath)
         return .init(clusterService: ClusterServiceAgent.installedLabels().map { ClusterServiceAgent.plistPath(label: $0).path },
-                     clusterServiceRunning: ClusterService.running(),
                      runningClusterService: ProviderUninstall.liveRunningClusterService(paths: paths),
                      services: agents.map { .init(name: $0.0, path: FileManager.default.fileExists(atPath: $0.1.path) ? $0.1.path : nil) },
                      items: ProviderUninstall.inventory(paths),

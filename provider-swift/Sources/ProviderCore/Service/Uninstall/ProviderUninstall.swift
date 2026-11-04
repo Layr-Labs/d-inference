@@ -169,7 +169,7 @@ public enum ProviderUninstall {
         }
         let clusterHandled: Bool
         if let other = sharedWith, let own = items.lazy.compactMap(\.ownClusterAgent).first {
-            clusterHandled = await step(ownClusterStep) { try handleOwnClusterService(own, keptFor: other, operations: operations) }
+            clusterHandled = await step(ownClusterStep) { try removeOwnClusterService(own, keptFor: other, operations: operations) }
         } else {
             clusterHandled = await step(clusterStep, operations.stopClusterPart)
         }
@@ -258,35 +258,25 @@ public enum ProviderUninstall {
 
     static func notRemoved(_ reason: String) -> String { "not removed: \(reason)" }
 
-    /// Step 2 beside another install that shares the pair: boots out and deletes only this install's own agent. The
-    /// pair is not stopped and the other install's agent is not touched.
     /// Step 2 beside another install. This install's own agent goes first (booted out, launchd's service ends and is
     /// not started again); a service of this install that still runs, a session's, is then stopped, ending this Mac's
     /// part as `cluster stop --local-only` does. The other install's service and agent, the pairing and the cable port
     /// setup stay. A service from neither install is left running, and the run deletes nothing.
-    static func handleOwnClusterService(_ label: String, keptFor other: String, operations: Operations) throws -> Outcome {
+    static func removeOwnClusterService(_ label: String, keptFor other: String, operations: Operations) throws -> Outcome {
         let running = operations.runningClusterService()
         if let running, running.owner == .unknown { throw StepFailure(stillRunningReason(running)) }
         let installed = FileManager.default.fileExists(atPath: ClusterServiceAgent.plistPath(label: label).path)
             || ClusterServiceAgent.isLoaded(label: label)
         if installed { try ClusterServiceAgent.remove(label: label) }
-        let ownWasRunning = running?.owner == .thisInstall
         if let still = operations.runningClusterService(), still.owner == .thisInstall { try operations.stopClusterService(still.pid) }
-        let said = [running.flatMap { $0.owner == .thisInstall ? nil : $0.described },
-                    ownWasRunning ? "stopped it (pid \(running!.pid)), so this Mac's part ended cleanly" : nil,
-                    installed ? "removed \(label)" : nil].compactMap { $0 }
-        let stays = ownWasRunning ? "the pairing and the cable port setup stay for \(other)"
-            : "the pair and \(other)'s cluster service are left as they are"
-        guard ownWasRunning || installed else { return .skipped((said + ["this install has none", stays]).joined(separator: "; ")) }
-        return .done((said + [stays]).joined(separator: "; "))
-    }
-
-    static func removeOwnClusterAgent(_ label: String, keptFor other: String) throws -> Outcome {
-        let leftAlone = "the pair and \(other)'s cluster service are left as they are"
-        guard FileManager.default.fileExists(atPath: ClusterServiceAgent.plistPath(label: label).path)
-                || ClusterServiceAgent.isLoaded(label: label) else { return .skipped("this install has none; \(leftAlone)") }
-        try ClusterServiceAgent.remove(label: label)
-        return .done("removed \(label); \(leftAlone)")
+        let ownPid = running?.owner == .thisInstall ? running?.pid : nil
+        let detail = [ownPid.map { "stopped it (pid \($0)), so this Mac's part ended cleanly" } ?? running?.described,
+                      installed ? "removed \(label)" : nil,
+                      ownPid == nil && !installed ? "this install has none" : nil,
+                      ownPid == nil ? "the pair and \(other)'s cluster service are left as they are"
+                          : "the pairing and the cable port setup stay for \(other)"]
+            .compactMap { $0 }.joined(separator: "; ")
+        return ownPid != nil || installed ? .done(detail) : .skipped(detail)
     }
 
     static func isLink(_ path: String) -> Bool {

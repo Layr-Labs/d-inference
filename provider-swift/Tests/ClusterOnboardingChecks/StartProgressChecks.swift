@@ -104,8 +104,10 @@ extension OnboardingChecks {
             readyReportPause: 200_000))
         expect(plain.waitFor(prompt(2)), "plain: the list"); plain.type("\r")
         _ = plain.finish()
+        // Each wait says each row once: the parts' first load, and their restart as cluster members after the registration.
+        let waits = plain.text.components(separatedBy: "Starting both Macs' parts again")
         for row in ["  The other Mac: loading its share (layers 47–93)\n", "  This Mac: ready (layers 0–46)\n", "  The other Mac: ready (layers 47–93)\n"] {
-            expect(plain.text.components(separatedBy: row).count == 2, "plain: said once: \(row) in \(plain.text)")
+            expect(waits.allSatisfy { $0.components(separatedBy: row).count == 2 }, "plain: said once per wait: \(row) in \(plain.text)")
         }
     }
 
@@ -164,4 +166,3 @@ extension OnboardingChecks {
         transcript("joined-start-plain", plain.text, keys: 1)
     }
 }
-

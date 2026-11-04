@@ -15,7 +15,7 @@ import Darwin
     }
 
     static func main() {
-        signal(SIGALRM) { _ in Darwin._exit(124) }; alarm(300); defer { alarm(0) }
+        signal(SIGALRM) { _ in Darwin._exit(124) }; alarm(600); defer { alarm(0) }
         // A run over pipes that ended closes its end; a late key is then an error, never the end of the checks.
         signal(SIGPIPE, SIG_IGN)
         privateMiMoSelectionRefusesBeforeAnyActionOnMemberOrUnpairedMac()

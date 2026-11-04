@@ -127,20 +127,31 @@ struct QwenTensorParallelPrefixPlacementTests {
                 })
             for size in [24.0, 32, 36, 48, 64, 96, 128, 192, 256] {
                 let devices = try [idle("a", size), idle("b", size)]
-                func evaluate(_ quote: ClusterPlacementTensorBatchQuote) throws -> (fits: Bool, need: Int) {
+                func evaluate(_ quote: ClusterPlacementTensorBatchQuote) throws -> (fits: Bool, need: Int, gpu: Int) {
                     var policy = ClusterPlacementPolicy(); policy.leader = "a"
                     policy.promptTokens = request.promptTokens; policy.outputTokens = request.outputTokens
                     if lanes == 1 { try quote.applySingleton(to: &policy, layout: layout) }
                     else { try ClusterPlacementBatchScope(request: request, lanes: lanes, tensorParallelQuote: quote).apply(to: &policy, layout: layout) }
                     let candidate = try ClusterPlacementPlanner.evaluate(devices: devices, cuts: [], mode: .tensorParallel,
                         prefillSchedule: .serial, layout: layout, policy: policy, link: link)
-                    return (candidate.ranks.allSatisfy { $0.hardwareFits == true }, candidate.ranks.map(\.needBytes).max() ?? 0)
+                    return (candidate.ranks.allSatisfy { $0.hardwareFits == true }, candidate.ranks.map(\.needBytes).max() ?? 0,
+                            candidate.ranks.compactMap(\.gpuResidentBytes).max() ?? 0)
                 }
-                let then = try evaluate(before), today = try evaluate(after)
+                let then = try evaluate(before), today = try evaluate(after), mac = devices[0].profile
                 print("qwen27-tp-prefix-placement lanes=\(lanes) mac_gib=\(Int(size)) before_fits=\(then.fits)"
-                    + " before_need=\(then.need) after_fits=\(today.fits) after_need=\(today.need) delta=\(today.need - then.need)")
+                    + " before_need=\(then.need) after_fits=\(today.fits) after_need=\(today.need) delta=\(today.need - then.need)"
+                    + " before_gpu=\(then.gpu) after_gpu=\(today.gpu) at_rest=\(mac.atRestAdmissibleBytes) gpu_limit=\(mac.residentCapacityBytes)")
                 if size >= 256 { #expect(today.fits, "2 x \(Int(size)) GiB, \(lanes) lanes") }
-                if lanes == 1 && then.fits { #expect(today.fits, "2 x \(Int(size)) GiB placed tensor parallel before") }
+                // One lane keeps tensor parallel wherever the earlier terms placed it and the Mac has room for today's
+                // terms. Two 24 GiB Macs have none: a rank's whole need (20.12 GiB) passes what a 24 GiB Mac admits at
+                // rest (`ClusterDeviceProfile.atRestAdmissibleBytes`, physical memory less the 4 GiB macOS keeps: 20 GiB),
+                // though its GPU part is within the GPU limit. The earlier terms fitted only by leaving out 1.05 GiB of
+                // the lane's prefix capture.
+                if lanes == 1 && then.fits && size > 24 { #expect(today.fits, "2 x \(Int(size)) GiB placed tensor parallel before") }
+                if lanes == 1 && size == 24 {
+                    #expect(then.fits && !today.fits && today.need > mac.atRestAdmissibleBytes && today.gpu <= mac.residentCapacityBytes,
+                            "2 x 24 GiB, one lane: refused by the at-rest ceiling, not the GPU limit")
+                }
             }
         }
     }

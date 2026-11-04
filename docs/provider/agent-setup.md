@@ -353,10 +353,11 @@ Tell the human how the split works. Never choose a mode for them:
 1. Login check. Before anything starts, the leader names each Mac without a
    Darkbloom login, for example ``This Mac and the other Mac (…) aren't logged
    in to Darkbloom, so the coordinator won't pair them.``. It offers **Log in
-   on this Mac** (when only the other Mac lacks a login: **Check again**, after
-   `darkbloom login` there), **Serve locally only** and **Cancel**. Log the Mac
-   in as in step 2, then check again. Choose **Serve locally only** only if the
-   human wants no Darkbloom traffic.
+   on this Mac**, **Serve locally only** and **Cancel**. **Log in on this Mac**
+   runs `darkbloom login` in this terminal, as in step 2. When only the other
+   Mac lacks a login, the first choice is **Check again** instead: run
+   `darkbloom login` on the other Mac, then choose it. Choose **Serve locally
+   only** only if the human wants no Darkbloom traffic.
 2. `Loading takes a few minutes for a large model; both Macs show progress
    here.` On a color terminal, one row per Mac (registering, registered,
    loading its share) shows the time since loading began. The leader waits at
@@ -422,7 +423,7 @@ Check all three:
    It only reads. On the Mac that follows, it asks the leader over the cable.
    The pair serves when the exit status is `0` and `state` is `serving`: both
    Macs loaded the model and the pair answered its first request. On each
-   Mac, `service` should also show `running` and `starts_at_login` as `true`.
+   Mac, `service.running` and `service.starts_at_login` should also be `true`.
    Otherwise act on `state`, `reason` and `next`:
 
    | Exit status | `state` | Do |
@@ -490,7 +491,7 @@ otherwise ([stopping and starting again](two-mac-cluster.md#stopping-and-startin
 | Update | Every Mac | `darkbloom update` on each Mac, and the pair restarts together. Automatic updates are on by default |
 | Run single-Mac serving on one Mac, beside the pair | That Mac | `darkbloom start --solo --model <id>`. `stop --solo`, `restart --solo` and `status --solo` act on it alone |
 | Stop one Mac whose partner is gone for good | That Mac | `darkbloom cluster stop --local-only` |
-| Keep this Mac's cluster service from starting at login | That Mac | `darkbloom cluster stop --service`. `darkbloom cluster` turns it on again |
+| Keep this Mac's cluster service from starting at login | That Mac | `darkbloom cluster stop --service`. It stops the pair first. `darkbloom cluster` turns it on again |
 | List the cluster commands | Any Mac | `darkbloom cluster --help` |
 
 `darkbloom start` without a terminal needs a model chosen earlier. Otherwise

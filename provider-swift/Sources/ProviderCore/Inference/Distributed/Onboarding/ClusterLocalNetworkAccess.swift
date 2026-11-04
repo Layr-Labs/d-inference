@@ -191,3 +191,29 @@ public enum ClusterLocalNetworkAccess {
         return process.terminationStatus == 0
     }
 }
+
+// MARK: - The status commands' view of a refusal
+
+extension ClusterLocalNetworkAccess {
+    /// Which Mac's link follower macOS keeps off the local network.
+    public enum Refused: Sendable, Equatable {
+        case thisMac
+        case otherMac
+    }
+
+    /// Whether the other Mac's part reports the refusal, by the rule of the setup screen's ✗.
+    public static func otherMacRefused(member: ClusterServiceStatus.Child?, own: ClusterServiceStatus.Child?, now: Double) -> Bool {
+        false
+    }
+
+    /// Whether this Mac's part has run long enough for the other Mac's refusal to count.
+    public static func refusalCanBeCurrent(own: ClusterServiceStatus.Child?, now: Double) -> Bool { false }
+
+    /// The other Mac's cluster service status over the cable.
+    public static func otherMacStatus() -> ClusterServiceStatus? { nil }
+
+    /// `cluster status`'s reason and next step for `refused`.
+    public static func statusWords(_ refused: Refused, otherMac: String, app: String, cli: String) -> (reason: String, next: String) {
+        ("", "")
+    }
+}

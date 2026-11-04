@@ -48,6 +48,8 @@ struct ClusterPairSummary: Sendable, Equatable {
     var started: Bool = false
     var serviceRunning: Bool = false
     var startsAtLogin: Bool = false
+    /// Which Mac's link follower macOS keeps off the local network, when that keeps the pair from serving.
+    var localNetworkRefused: ClusterLocalNetworkAccess.Refused?
     var state: State = .unknown
     /// Why it does not serve, in the screens' words.
     var reason: String?
@@ -396,6 +398,9 @@ extension ClusterPairSummary {
             otherMacAnswers = true
         }
     }
+
+    /// Reads a Local Network refusal over the status lines.
+    mutating func read(localNetworkRefused refused: ClusterLocalNetworkAccess.Refused?) {}
 
     /// `darkbloom cluster status`: who leads, the model and its split, how it serves, whether it serves now (the
     /// screens' words) and what to do.

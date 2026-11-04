@@ -1788,14 +1788,17 @@ build's declaration, so its evidence digest and `qualified_at` follow
 canonical form.
 `scripts/test-provider-release-notes.py` builds a local origin repository with
 GitHub's shapes: merge-commit and squash pull requests, `refs/pull/<N>/head`
-refs and release tags. Its four releases are two squash promotions, a hotfix
-without a promotion and a merge-commit promotion. They include a `dev` pull
+refs and release tags. Its five releases are two squash promotions, a hotfix
+without a promotion, a merge-commit promotion and a release whose only
+promotion is its Prepare pull request, cut from `dev`. They include a `dev` pull
 request merged after the promoted snapshot, a sync of `master` into `dev` and
 Prepare pull requests. The tests check each release's pull requests through
 `dev` and directly on `master`, and that release pull requests are named once.
 They publish v1.1.0 through `publish_github_release` with a fake `gh`, and
 check the `CHANGELOG.md` section, the 125,000-character fallback and a failed
 generation. Titles and authors are fixture data, and no test uses the network.
+The test needs git 2.31 or newer, as the release notes do, and stops with that
+message on an older git.
 `scripts/test-provider-cluster-runtime-models.py` runs the release's
 model-metadata fetch against a local HTTP registry: the environment's catalog and
 CDN, candidate selection, the manifest and `config.json` checks, each candidate's

@@ -47,6 +47,13 @@ RELEASES = {
 }
 
 
+def setUpModule():
+    # provider_release_notes.py reads merges with git log --diff-merges (git 2.31).
+    version = subprocess.run(['git', '--version'], capture_output=True, text=True, check=True).stdout.strip()
+    if tuple(int(part) for part in re.findall(r'[0-9]+', version)[:2]) < (2, 31):
+        raise RuntimeError(f'The release notes and these tests need git 2.31 or newer; this runner has {version}')
+
+
 def git_environment():
     # Real local objects, but no machine-wide identity, hooks or signing tools.
     env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1')
@@ -103,12 +110,10 @@ class History:
     def squash(self, number, head, into):
         """A pull request squash-merged: one commit on `into` with the merged tree, and no head ancestry."""
         self.git('update-ref', f'refs/pull/{number}/head', head)
-        tree = self.git('merge-tree', '--write-tree', into, head).splitlines()[0]
-        commit = self.git('commit-tree', tree, '-p', into, '-m', f'{PULLS[number][0]} (#{number})')
-        self.git('switch', '-q', '--detach')
-        self.git('update-ref', f'refs/heads/{into}', commit)
         self.git('switch', '-q', into)
-        return commit
+        self.git('merge', '-q', '--squash', head)
+        self.git('commit', '-q', '-m', f'{PULLS[number][0]} (#{number})')
+        return self.git('rev-parse', 'HEAD')
 
     def feature(self, number, into='dev', squash=False):
         name = f'feature/{number}'

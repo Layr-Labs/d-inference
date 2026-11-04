@@ -10,7 +10,7 @@ extension EngineV2Bridge {
         id: String, emissionTokens: Int, profileNow: SuspendingClock.Instant? = nil
     ) {
         let now = ContinuousClock.Instant.now
-        wedgeMonitor.recordFirstToken(now: now)
+        wedgeMonitor.recordFirstToken(now: now, id: id)
         guard var state = active[id] else { return }
         if state.firstTokenAt == nil {
             state.firstTokenAt = now

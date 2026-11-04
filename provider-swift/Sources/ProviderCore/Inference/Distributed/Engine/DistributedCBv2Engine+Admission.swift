@@ -19,6 +19,7 @@ extension DistributedCBv2Engine {
         projected: CBv2FirstTokenProjectedWork? = nil,
         cancellation: DistributedAdmissionCancellation? = nil
     ) throws -> Admission {
+        defer { publishCapacity() }
         try validate(submitted)
         let request = resolvingSeed(submitted)
         try deadlineContext.checkAdmission(at: clock.now())
@@ -26,6 +27,10 @@ extension DistributedCBv2Engine {
         guard let capacity = readyCapacity(), capacity > 0 else {
             throw DistributedEngineError.unavailable
         }
+        // A caller that went away while this submission waited for the queue
+        // (behind another reservation) costs no reservation: the ranks would
+        // answer at their next step boundary, up to the lane admission wait.
+        if cancellation?.isCancelled == true { throw CancellationError() }
         let admissionStartedAt = clock.now()
         let lease: any DistributedResidentRequestLease
         if let boundedOwner = owner as? any DistributedDeadlineExecutionOwner {

@@ -65,11 +65,36 @@ request stream's `onTermination` and the admission cancellation hop onto the
 queue without waiting, or run in place when already on it. The retirement task
 never blocks a cooperative thread. Waiting there deadlocked a pair slot's
 retirement: `EngineV2Bridge.shutdown` cancelled a pump while the queue
-published that request's peer loss. Lease events, the owner's invalidation and
-the public calls keep their synchronous queue order. Source:
+published that request's peer loss. Lease events, the owner's invalidation,
+submissions and shutdown keep their synchronous queue order.
+
+A reservation runs on that queue and waits there until both ranks answer at
+their next step boundary, up to the lane admission wait (30 s) per
+reservation, one reservation after another. So nothing that only reads the
+engine or stops a request waits for the queue. `cancel` hops onto it without
+waiting: the stop runs in queue order, so a request whose reservation is in
+flight is stopped as soon as it is admitted. A submission whose caller went
+away while it waited for the queue (`DistributedAdmissionCancellation`) is
+refused before it asks the ranks. The first-token and request deadline timers
+hop the same way. `capacity()` called off the queue answers at once from the
+snapshot the queue publishes after every change, with the owner's readiness
+read live, and queues one refresh that runs the readiness and accounting
+checks once the queue is free. A pair measures no prefill rate, so the bridge
+submits its requests without a projected admission. It awaits that admission
+(`submitAwaitingQueue`) instead of waiting for the queue on its actor, so the
+actor stays free for cancels and capacity reads. Before, the bridge actor
+waited for the whole reservation, and with it the heartbeat's capacity,
+cancellation and every other request's submission; on DevNet's pair-2 a cancel
+during a 15K-token prompt landed 20–29 s late. The reservation itself still
+holds the queue, and with it token delivery to the other lanes, until it
+returns. Sources:
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine.swift`
-(`onQueueWithoutWaiting`) and
-`provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine+Admission.swift`.
+(`onQueueWithoutWaiting`, `cancel`),
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine+Capacity.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine+Admission.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine+Submission.swift`
+(`submitAwaitingQueue`) and
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`.
 
 A pair request's admission deadline (the first-content budget left when it
 arrived, `DistributedRequestDeadlineContext`) is that request's alone. It bounds
@@ -2161,7 +2186,22 @@ and `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/DeadlineAdmiss
 
 `WedgeMonitor.suspectStallSeconds =
 10` flags a stalled slot
-(`provider-swift/Sources/ProviderCore/Inference/Engine/WedgeMonitor.swift`).
+(`provider-swift/Sources/ProviderCore/Inference/Engine/WedgeMonitor.swift`):
+three requests without a first token for 10 s while the engine's step counter
+stands still. A two-Mac pair's engine has no step counter, and its ranks
+prefill one prompt at a time and send nothing until a prompt's first token, so
+that rule would report every burst of long prompts as a wedge. The bridge
+(`EngineV2Bridge+Capacity.swift`, `WedgeMonitor.marksCrashed`) therefore marks a
+pair's slot `crashed` only when a waiting request is still without a first
+token `pastAllowanceGraceSeconds` (40 s) after its own first-token allowance.
+That allowance is the one the pair's engine arms (its first-token deadline, or
+its request deadline when the coordinator sent no budget), tracked by request
+id: it leaves with its own request's first token or end, and an entry whose
+request left the bridge never counts. The `step_wedge` telemetry still reports
+the plain rule. A hung pair is ended
+first by the engine's first-token and request deadlines, which fail the request
+and cancel its lease, and by the cluster's fencing of a rank that does not
+retire a cancelled lane within 30 s, which withdraws the pair's capacity.
 
 ### Multi-token prediction
 
@@ -3549,7 +3589,7 @@ evidence, not a change to the normal final-row contract or the near-tie rule
 | Load refused: `pagedUnavailable` (503) | Explicit `engine_v2_kv_backend = paged` and the paged pool/kernels failed | `EngineV2Factory+BackendPreparation.swift` — see [`prefix-cache.md`](prefix-cache.md) |
 | Cold load refused with the ordinary slot (503) or insufficient-memory error although an idle model is resident | That slot holds an unexpired Autopilot placement hold: held slots are excluded from eviction (`ProviderLoop.evictableModelSlots`, `autopilotHoldsModel`) and their weights get no `free_for_load_gb` reclaim credit (`autopilotHeldWeightBytes`); the refusal's `Not evictable:` list names it with the hold's UTC expiry; see [Autopilot placements](model-autopilot.md#placements-after-an-operation) | `provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+AutopilotPlacement.swift`, `provider-swift/Sources/ProviderCore/ProviderLoop+EvictionExclusions.swift` |
 | Load refused (503), or a running load ends before it installs a slot | An [add-on hold](addon-hold.md) is active: no load takes the load gate, and one already running stops at its next check (after hashing, after the weight load or before install; the managed Super and native MiMo loads before their weights and at publication) | `provider-swift/Sources/ProviderCore/Addon/ProviderLoop+AddonHold.swift` (`addonHoldLoadRefusal`), `provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift` (`ensureModelLoaded`), `provider-swift/Sources/ProviderCore/MiMo/ProviderLoop+NativeMiMo.swift` (`requireNativeMiMoPublication`) |
-| Slot flagged wedged | No engine progress for `suspectStallSeconds = 10` | `WedgeMonitor.swift` |
+| Slot flagged wedged | No engine progress for `suspectStallSeconds = 10`; a two-Mac pair only once a request is 40 s past its own first-token allowance | `WedgeMonitor.swift` |
 | Provider exits with `Trace/BPT trap: 5`; its log shows `[metal::Device] Unable to build metal library from source` | MLX compiled a Metal kernel at runtime and the compile failed. mlx-swift builds MLX's JIT kernel path, and the release metallib holds no NAX attention kernels, so on M5 GPUs fused attention compiles on the Mac when a shape is first used; MLX throws on a failed compile and the Swift error handler stops the process. 0.10.2 failed this way for full attention with head dim 256 or 512 and at least 1,024 query tokens (`attention_nax_dsplit`), fixed in 0.10.3. Check an MLX pin change that touches `jit_kernels.cpp` or the NAX kernels on an M5 with a long Gemma 4 or Qwen prompt | `libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/jit_kernels.cpp`, `device.cpp` (`build_library_`) |
 
 ## Code map

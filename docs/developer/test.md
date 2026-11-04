@@ -2995,8 +2995,7 @@ or the check fails rather than passing on a host that caches nothing.
   file and a 32 MiB file one folder down, both read into the cache. When the
   part starts (`beforePartStart`), each must be under 10 % resident, and their
   bytes unchanged afterwards. Run it from `provider-swift` with
-  `swift test --skip-build --disable-sandbox --filter ClusterServicePartStartCacheTests`
-  under the sandbox profile that denies `~/.darkbloom`.
+  `swift test --filter ClusterServicePartStartCacheTests`.
 - `provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning`
   checks which files `ClusterModelStore.dropCachedPages` drops: regular files in
   the folder and one folder down, no symbolic link, nothing deeper.

@@ -280,7 +280,7 @@ public struct QwenDenseStageLoadAdmissionSummary: Encodable, Sendable {
     /// The record as one `key=value` line for the worker's log: the counts, the rule that settled this load or
     /// request, the figures of the decision it rests on (the last refusal, else the admission with the least room,
     /// else the latest) and the growth since the first sample. No word of it is one the incident classifier reads
-    /// as a failure (`ClusterIncidentGuidance`), so a log tail that carries it is classified by its other lines.
+    /// as a failure (`ClusterFailureClassifier`), so a log tail that carries it is classified by its other lines.
     public var logLine: String {
         let decision = lastRefusal ?? tightest ?? latest
         var fields = ["darkbloom-load-memory-v1", "scope=" + purpose.replacingOccurrences(of: " ", with: "_"),

@@ -209,17 +209,17 @@ public enum ClusterModelStore {
             let path = folder.appendingPathComponent(name).path
             // A folder of the model's (not a link to one): its files are opened through this descriptor.
             let inner = open(path, O_RDONLY | O_NOFOLLOW | O_DIRECTORY | O_CLOEXEC | O_NONBLOCK)
-            guard inner >= 0 else { dropped += dropCachedPages(in: AT_FDCWD, name: path); continue }
+            guard inner >= 0 else { dropped += dropCachedPages(ofFile: path, in: AT_FDCWD); continue }
             defer { close(inner) }
             for innerName in (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? [] where !innerName.hasPrefix(".") {
-                dropped += dropCachedPages(in: inner, name: innerName)
+                dropped += dropCachedPages(ofFile: innerName, in: inner)
             }
         }
         return dropped
     }
 
     /// One regular file's cached pages, `name` opened relative to `directory` without following a link.
-    private static func dropCachedPages(in directory: Int32, name: String) -> Int64 {
+    private static func dropCachedPages(ofFile name: String, in directory: Int32) -> Int64 {
         // Non-blocking (a FIFO swapped in must not hang the caller), then judged by what was opened.
         let fd = openat(directory, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         guard fd >= 0 else { return 0 }

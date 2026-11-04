@@ -39,14 +39,12 @@ final class VerifiedCheckpoint {
         /// Drops this file's pages from the file cache through the pinned
         /// descriptor (no path is resolved again): a read-only shared mapping
         /// invalidated with `msync(MS_INVALIDATE)`, which leaves the bytes and
-        /// the identity `checkUnchanged` compares as they are. Best effort;
-        /// returns the bytes asked to drop.
-        @discardableResult
-        func dropCachedPages() -> Int {
+        /// the identity `checkUnchanged` compares as they are. Best effort.
+        func dropCachedPages() {
             guard size > 0, let mapping = mmap(nil, size, PROT_READ, MAP_SHARED, descriptor, 0),
-                  mapping != MAP_FAILED else { return 0 }
-            defer { munmap(mapping, size) }
-            return msync(mapping, size, MS_INVALIDATE) == 0 ? size : 0
+                  mapping != MAP_FAILED else { return }
+            _ = msync(mapping, size, MS_INVALIDATE)
+            munmap(mapping, size)
         }
 
         func checkUnchanged() throws {
@@ -301,16 +299,12 @@ final class VerifiedCheckpoint {
     /// earlier read) are dropped too: uncached reads are still served from them,
     /// and a load into a cache full of its own model makes macOS compress other
     /// memory to free it, past the load gate's guard (MiMo, 2026-11-01).
-    /// Returns the bytes asked to drop.
-    @discardableResult
-    func bypassTensorPayloadCache() throws -> Int {
-        var dropped = 0
+    func bypassTensorPayloadCache() throws {
         for file in files.values.sorted(by: { $0.path < $1.path })
         where file.path.hasSuffix(".safetensors") {
             try file.bypassPayloadCache()
-            dropped += file.dropCachedPages()
+            file.dropCachedPages()
         }
-        return dropped
     }
 }
 

@@ -21,6 +21,7 @@ struct Status: AsyncParsableCommand {
         let sandboxLine = Task.detached {
             SandboxStatusView.statusLine(SandboxAddon.live().queryStatus(timeout: Sandbox.statusLineTimeout))
         }
+        DarkbloomCommandLook.forCommand().open("Darkbloom status")
 
         // Best-effort: tell the user if a newer release is published before
         // we dump current status. Bounded by a 2s timeout in UpdateBanner.

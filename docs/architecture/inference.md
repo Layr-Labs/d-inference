@@ -3830,6 +3830,30 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/C
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Pairing/ClusterUnpairing.swift`
 (`ClusterUnpairing`).
 
+## A paired cable port's own address
+
+`darkbloom cluster link`, `darkbloom cluster doctor` and the guided setup judge
+whether the cable port is isolated
+([findings](../reference/configuration.md#link-setup-v2-isolating-the-cluster-port)).
+`clusterSubnetInUse` blocks the isolation when another interface or route
+already uses the cluster subnet `10.219/16`. Once the port's own address has
+carried traffic, which pairing does, macOS reaches that address through the
+loopback with a cloned host route (`10.219.13.112  <MAC>  UHLWIi  lo0`). That
+route is how the Mac reaches the port's address, not a second use of the
+subnet: the route reader counts a loopback host route to an address that an
+interface carries on that interface
+(`ClusterLinkNetworkFacts.clusterSubnetRouteInterfaces`), reading the
+`ifconfig -a` text the readiness probe already took
+(`ClusterLinkIsolationInspection.machine(run:interfaceListing:)`). Only interface
+names leave the reader. Another interface's address in the subnet, a route into
+it through any other interface, and a loopback route to an address the port
+does not carry still block.
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkNetworkFacts.swift`
+(`ClusterLinkNetworkFacts.clusterSubnetRouteInterfaces`) and
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkIsolationInspection.swift`
+(`ClusterLinkIsolationInspection.status`).
+
 ## GLM tool-stream completion
 
 GLM tool output uses the SDK GLM parser to validate the complete tool suffix at

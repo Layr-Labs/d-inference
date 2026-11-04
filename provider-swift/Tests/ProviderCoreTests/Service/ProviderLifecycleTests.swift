@@ -48,6 +48,7 @@ private extension ProviderLoop {
         appAttestShadowClient = AppAttestShadowClient(scope: loopConfig.coordinatorURL, service: IdleAppAttestService(),
                                                       storage: EmptyShadowKeys())
     }
+    func setAppAttestStopWait(_ seconds: Double) { appAttestStopWaitSeconds = seconds }
     /// Starts `attest` as `handleAppAttestShadow` does, so a stop cancels it
     /// through `cancelAppAttestShadow`.
     func beginAppAttestation(_ client: AppAttestShadowClient, key: String) {
@@ -135,6 +136,29 @@ struct ProviderLifecycleTests {
         #expect(stored.pendingProof == Data("attestation-\(key)".utf8).base64EncodedString())
         #expect(stored.attestationStartedAt == nil)
         #expect(await loop.drainAndShutdown(timeoutSeconds: 1))
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func shutdownStopsWaitingForAppleAtTheBound() async throws {
+        let (loop, root) = try await lifecycleLoop()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let apple = SlowAttestingApple(answerAfter: 2)
+        let keys = LifecycleShadowKeys()
+        let client = AppAttestShadowClient(scope: "test", service: AvailableAttestingApple(apple), storage: keys)
+        let ready = await client.respond(to: lifecycleShadowRequest("prepare"), publicKey: lifecycleEndpoint)
+        let key = try #require(ready.keyID)
+        await loop.setAppAttestStopWait(0.2)
+        await loop.beginAppAttestation(client, key: key)
+        #expect(await waitFor { apple.attestationsStarted == 1 })
+        let identity = try #require(ProcessIdentity.current())
+        let started = ContinuousClock.now
+        let stop = await loop.drainForLifecycle(request: .init(target: identity, timeoutSeconds: 3))
+        #expect(stop.outcome == .drained)
+        #expect(ContinuousClock.now - started < .seconds(1.5), "past the bound the stop proceeds")
+        #expect(apple.attestationsAnswered == 0)
+        // This process outlives the stop here, so Apple's answer is still kept.
+        #expect(await waitFor { keys.load(scope: lifecycleKeyScope)?.pendingProof != nil })
+        #expect(keys.load(scope: lifecycleKeyScope)?.keyID == key)
     }
 
     @Test func failedWorkerRetirementCannotAcknowledgeForcedShutdown() async throws {

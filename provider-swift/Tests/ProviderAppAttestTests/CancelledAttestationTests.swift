@@ -199,6 +199,28 @@ final class CancelledAttestationTests: XCTestCase {
         }
     }
 
+    /// The wait a planned stop uses: true at once with nothing at Apple, false
+    /// at its bound while Apple has not answered, true once the answer is kept.
+    func testOutstandingAttestationWaitIsBounded() async throws {
+        let storage = AttestationKeys(), apple = AttestingApple(answeringAttestationsAfter: nil)
+        let client = client(apple, storage)
+        let idle = await client.waitForOutstandingAttestation(atMostSeconds: 0)
+        XCTAssertTrue(idle)
+        let ready = await client.respond(to: request("prepare"), publicKey: endpoint)
+        let key = try XCTUnwrap(ready.keyID)
+        let (_, exchange) = try await startAttestation(client, apple, key: key)
+        exchange.cancel()
+        let started = Date()
+        let unanswered = await client.waitForOutstandingAttestation(atMostSeconds: 0.2)
+        XCTAssertFalse(unanswered)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1.5)
+        apple.answerWaitingAttestations(.success(Data("attestation-\(key)".utf8)))
+        let answered = await client.waitForOutstandingAttestation(atMostSeconds: 5)
+        XCTAssertTrue(answered)
+        XCTAssertEqual(storage.load(scope: scope)?.pendingProof, Data("attestation-\(key)".utf8).base64EncodedString())
+        _ = await exchange.value
+    }
+
     func testNextConnectionWaitsForTheOutstandingAttestationInsteadOfAskingAppleAgain() async throws {
         let storage = AttestationKeys(), apple = AttestingApple(answeringAttestationsAfter: 1)
         let client = client(apple, storage)

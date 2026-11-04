@@ -140,6 +140,59 @@ struct DistributedCBv2StalledReservationTests {
         await finish(owner, engine, [first, try #require(second.value)])
     }
 
+    /// A pair measures no prefill rate, so the provider's bridge submits its
+    /// requests without a projected admission. That submission must not wait
+    /// for the engine queue on the bridge's actor: a cancel and every capacity
+    /// read need the actor while another request's reservation holds the queue.
+    @Test func theBridgeAnswersCancelsAndCapacityReadsWhileAReservationWaits() async throws {
+        let owner = DistributedTestOwner()
+        owner.lanes = 8
+        let bridge = try DistributedEngineFactory.makeBridge(
+            owner: owner, expectedIdentity: owner.identity, profile: distributedTestProfile(),
+            tokenizer: TokenizerHandle(DistributedTestTokenizer()), eosTokenIDs: [99])
+        let model = owner.identity.modelID
+        let submit: @Sendable (String) async -> AsyncStream<GenerationEvent> = { id in
+            await bridge.submitTokenized(
+                promptTokens: [1, 2, 3],
+                request: ChatCompletionRequest(model: model, messages: [], temperature: 0, max_tokens: 1),
+                requestId: id, cacheEnabled: false)
+        }
+        let first = await submit("first")
+        let step = RankStep()
+        owner.onReserve = { step.wait() }
+        let second = Task { await submit("second") }
+        await until { step.waitingCount == 1 }
+        #expect(step.waitingCount == 1, "the second reservation is waiting for the ranks")
+
+        let answered = DistributedTestFlag()
+        let reads = Task {
+            _ = await bridge.backendSlotCapacity()
+            await bridge.cancel(requestId: "first")
+            answered.set()
+        }
+        await until { answered.value }
+        #expect(answered.value, "the bridge waited for the ranks' step")
+
+        // A request whose caller goes away while it waits behind that
+        // reservation never asks the ranks.
+        let third = Task { await submit("third") }
+        try await Task.sleep(for: .milliseconds(300))
+        third.cancel()
+        step.finish()
+        await reads.value
+        let secondStream = await second.value
+        _ = await third.value
+        // The cancel lands once the reservation returns, on its own request.
+        await until { owner.lease(0).cancelCount == 1 }
+        #expect(owner.lease(0).cancelCount == 1)
+        #expect(owner.reserveCount == 2, "the request cancelled while it waited still asked the ranks")
+        #expect(owner.lease(1).cancelCount == 0)
+        for index in 0..<owner.reserveCount { owner.lease(index).acknowledge() }
+        for await _ in first {}
+        for await _ in secondStream {}
+        await bridge.shutdown()
+    }
+
     private func finish(_ owner: DistributedTestOwner, _ engine: DistributedCBv2Engine,
                         _ streams: [AsyncStream<CBv2Event>]) async {
         for index in 0..<owner.reserveCount { owner.lease(index).acknowledge() }

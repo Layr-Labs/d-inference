@@ -1391,6 +1391,7 @@ both the plan and each rank's LOAD read.
 | The limits are met, the boot job is missing or differs from the one it writes | Installs the boot job, behind the same confirmation and prompt | `GLM5NextWiredLimitBootJob` |
 | The limits are met and the boot job is the one it writes | Reports nothing to change; asks nothing | `GLM5NextGPULimitFlow.plan` |
 | Not an M5 Mac with 128 or 256 GB | Exits 2; asks nothing | `GLM5NextGPULimitEligibility` |
+| macOS reports the change as made | Reads the Mac back: after a raise, every limit at least its value and the boot job the one it writes; after `--undo`, `iogpu.wired_limit_mb` 0 and no job. Prints ✓ only when it matches; otherwise ✗, each setting that is off, the command to run again and the administrator's commands, and exits 1 | `GLM5NextGPULimitFlow.raisedMismatches`, `undoneMismatches` |
 
 The plan's GPU memory limit advice uses the same rule
 (`GLM5NextGPULimitEligibility`, `ClusterPlacementFlow.gpuLimitLines`). On

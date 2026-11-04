@@ -76,7 +76,8 @@ struct GLM5NextWiredLimitApprovalTests {
         #expect(request.shellCommand == request.commands.joined(separator: " && "))
         // In the `&&` line a `|| true` excuses every failure before it: only the first command may carry one.
         #expect(request.commands.dropFirst().allSatisfy { !$0.contains("||") })
-        #expect(request.prompt.contains("up to 112 GiB of its 128 GiB resident, leaving macOS 16 GiB"))
+        #expect(request.prompt.contains("up to 112 GB of its 128 GB resident, leaving macOS 16 GB"))
+        #expect(!request.prompt.contains("GiB"))
         // One AppleScript literal: nothing in it needs escaping.
         #expect(!request.shellCommand.contains("\"") && !request.shellCommand.contains("\\")
             && !request.prompt.contains("\"") && !request.prompt.contains("\\"))

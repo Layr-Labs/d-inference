@@ -87,7 +87,8 @@ public enum GLM5NextGPULimitFlow {
     /// Runs the command for this Mac's `recommendation`. `confirm` asks one
     /// question and is nil without a terminal; `say` prints one line. The exit
     /// status: 0 done, declined at the question or nothing to change; 1 the
-    /// approval or a step failed; 2 no terminal to confirm in.
+    /// approval or a step failed, or the Mac did not read back as asked; 2 no
+    /// terminal to confirm in.
     public static func run(undo: Bool, recommendation: GLM5NextWiredLimit.Recommendation, runner: GLM5NextGPULimitRunner,
                            confirm: ((String) -> Bool)?, say: (String) -> Void) -> Int32 {
         let gib = { (bytes: UInt64) in String(format: "%.2f GiB", Double(bytes) / Double(1 << 30)) }
@@ -122,13 +123,26 @@ public enum GLM5NextGPULimitFlow {
         }
         switch runner.approve(request) {
         case .applied:
-            if !undo, GLM5NextWiredLimitBootJob.reading(runner.bootJobDefinition(), for: recommendation) != .matches {
-                say("macOS ran the change, but the boot job is not the one this command writes; run `darkbloom cluster gpu-limit` "
-                    + "again to see what is in place.")
+            // macOS's word is not proof: read the Mac back and say ✓ only when it is as asked.
+            let after = runner.limits()
+            let off = undo ? undoneMismatches(after, bootJobDefinition: runner.bootJobDefinition())
+                : raisedMismatches(after, recommendation: recommendation,
+                    bootJob: .reading(runner.bootJobDefinition(), for: recommendation), gib: gib)
+            guard off.isEmpty else {
+                say("✗ macOS reported the change as made, but this Mac does not read back as asked:")
+                off.forEach { say("  - " + $0) }
+                say("Run `darkbloom cluster gpu-limit" + (undo ? " --undo" : "")
+                    + "` again. If it still does not read back, an administrator can run these instead:")
+                request.manualCommands.forEach { say("  " + $0) }
                 return 1
             }
-            say("Done. This Mac's GPU now keeps \(gib(runner.limits().gpuLimitBytes)) resident. Run `darkbloom cluster` again so "
-                + "both Macs plan and load with it.")
+            if undo {
+                say("✓ The GPU limit is back to the macOS default (iogpu.wired_limit_mb=0) and the boot job is gone. "
+                    + "The wire limits return to their defaults at the next restart.")
+            } else {
+                say("✓ This Mac's GPU now keeps \(gib(after.gpuLimitBytes)) resident (iogpu.wired_limit_mb=\(after.gpuWiredLimitMB ?? 0)), "
+                    + "and the boot job keeps it after restarts. Run `darkbloom cluster` again so both Macs plan and load with it.")
+            }
             return 0
         case .declined:
             say("Nothing was changed: the approval was cancelled.")
@@ -139,5 +153,45 @@ public enum GLM5NextGPULimitFlow {
             say("macOS ran the change and a step failed; run `darkbloom cluster gpu-limit` again to see what is in place.")
         }
         return 1
+    }
+
+    /// What a raise left short of `recommendation`, read back from the Mac; empty when every limit is met and the
+    /// boot job is the one the command writes. A limit that cannot be read is not met.
+    static func raisedMismatches(_ limits: GLM5NextWiredLimit.Limits, recommendation: GLM5NextWiredLimit.Recommendation,
+                                 bootJob: GLM5NextWiredLimitBootJob, gib: (UInt64) -> String) -> [String] {
+        var off: [String] = []
+        if limits.gpuLimitBytes < recommendation.gpuWiredLimitBytes {
+            let now = limits.gpuWiredLimitMB.map { $0 > 0 ? "iogpu.wired_limit_mb=\($0)" : "the macOS default" } ?? "iogpu.wired_limit_mb unreadable"
+            off.append("the GPU keeps \(gib(limits.gpuLimitBytes)) resident (\(now)); it should keep "
+                + "\(gib(recommendation.gpuWiredLimitBytes)) (iogpu.wired_limit_mb=\(recommendation.gpuWiredLimitMB))")
+        }
+        for (name, value) in [("vm.global_user_wire_limit", limits.globalUserWireLimitBytes), ("vm.user_wire_limit", limits.userWireLimitBytes)] {
+            guard let value else {
+                off.append("\(name) could not be read; it should be at least \(recommendation.userWireLimitBytes)")
+                continue
+            }
+            if value < recommendation.userWireLimitBytes {
+                off.append("\(name) is \(value); it should be at least \(recommendation.userWireLimitBytes)")
+            }
+        }
+        switch bootJob {
+        case .matches: break
+        case .missing: off.append("no boot job is at \(GLM5NextWiredLimit.launchDaemonPath), so the limit would not last a restart")
+        case .differs: off.append("the boot job at \(GLM5NextWiredLimit.launchDaemonPath) is not the one this command writes")
+        }
+        return off
+    }
+
+    /// What an undo left in place, read back from the Mac; empty when the boot job is gone and
+    /// `iogpu.wired_limit_mb` reads 0. The wire limits return only at the next restart, so they are not checked.
+    static func undoneMismatches(_ limits: GLM5NextWiredLimit.Limits, bootJobDefinition: Data?) -> [String] {
+        var off: [String] = []
+        switch limits.gpuWiredLimitMB {
+        case .some(0): break
+        case .some(let value): off.append("iogpu.wired_limit_mb is \(value); it should be 0 (the macOS default)")
+        case .none: off.append("iogpu.wired_limit_mb could not be read; it should be 0 (the macOS default)")
+        }
+        if bootJobDefinition != nil { off.append("the boot job is still at \(GLM5NextWiredLimit.launchDaemonPath)") }
+        return off
     }
 }

@@ -1282,7 +1282,7 @@ public final class ClusterService: @unchecked Sendable {
     /// (`followerRefusal`), so turning Local Network on clears it.
     public static let followerLinkOpenedLines = [followerConnected, followerSessionOpened].map { followerLinePrefix + $0 }
 
-    /// The app macOS names in Privacy & Security → Local Network ("Darkbloom", "Darkbloom Dev"): its `CFBundleName`. Every
+    /// The app macOS names in Privacy & Security → Local Network: the build identity's `CFBundleName`. Every
     /// line that names the app reads it here: the screens (`ClusterOnboardingCommand.app`) and the follower's refusal.
     public static let appName = BuildEnvironment.current.appDisplayName
 

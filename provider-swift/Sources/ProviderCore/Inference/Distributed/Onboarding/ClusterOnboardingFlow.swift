@@ -303,7 +303,7 @@ public enum ClusterOnboardingCommand {
     private static let lock = NSLock()
     #if SWIFT_PACKAGE
     nonisolated(unsafe) private static var current = BuildEnvironment.current.cliName
-    /// The app macOS names in Privacy & Security → Local Network ("Darkbloom", "Darkbloom Dev"): `ClusterService.appName`.
+    /// The app macOS names in Privacy & Security → Local Network, from the build identity: `ClusterService.appName`.
     nonisolated(unsafe) private static var currentApp = ClusterService.appName
     #else
     nonisolated(unsafe) private static var current = "darkbloom"

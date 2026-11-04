@@ -107,7 +107,7 @@ final class OnboardingLive: @unchecked Sendable {
     /// Choices that only the other Mac has (by choice index): it sends them here first.
     private var peerChoices: [Int: ClusterSetupLocalModel] = [:]
     private var chosenTitle: String?
-    /// The command this build answers to (`ClusterOnboardingCommand.name`; "darkbloom-dev" in the DevNet app), in every
+    /// The command this build answers to (`ClusterOnboardingCommand.name`, from the build identity), in every
     /// command these operations and the cluster service write, including the lines `darkbloom cluster stop --service` prints.
     static var cli: String { ClusterOnboardingCommand.name }
     /// The way of serving the screen's coming plan and adopt are for (`ClusterOnboardingOperations.planScope`).

@@ -1241,11 +1241,10 @@ Macs (metadata checks, 3 runtime shards, 2 GPU shards and focused checks).
 
 CI runs the runtime test target (`DarkbloomClusterRuntimeTests`) on the
 provider's macOS CI runners (see [CI runner routing](build.md#ci-runner-routing)),
-in selections that
-`scripts/cluster-test-plan.py` defines. Each selection runs in a process of its
-own through `scripts/run-nested-suite.sh`, which fails when the selection runs
-no test or skips a test. Every process starts with `MLX_QMV_BATCH_INVARIANT=1`,
-as every cluster process does.
+in selections that `scripts/cluster-test-plan.py` defines. Each selection runs
+in a process of its own through `scripts/run-nested-suite.sh`, which fails when
+the selection runs no test or skips a test. Every process starts with
+`MLX_QMV_BATCH_INVARIANT=1`, as every cluster process does.
 
 | Selection | Job | Tests |
 |---|---|---|

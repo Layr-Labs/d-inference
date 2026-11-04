@@ -145,7 +145,7 @@ public enum ClusterFailureClassifier {
     static let rules: [Rule] = [
         Rule("orphan-wired", #"darkbloom-orphan-wired-v1 role=\S+ decision=refused|memory is wired on this mac and no other darkbloom process|memory an earlier run left wired"#, .orphanedWiredMemory),
         Rule("journal", #"unresolved native ownership journal|lease journal is no longer empty|native ownership journal appeared|its device journal is retained|device (?:exclusion|lease|scope) (?:is )?(?:held|busy|taken)"#, .deviceBusy),
-        Rule("provider-instance", #"provider instance lock|ordinary provider (?:is )?running|another darkbloom provider"#, .localProviderRunning),
+        Rule("provider-instance", #"provider instance lock|ordinary provider (?:is )?running|another darkbloom provider|single-mac darkbloom provider \([^)]*\) is serving"#, .localProviderRunning),
         Rule("memory-gate", #"exceeds the allocator limit|load gate|memory gate|admissible memory|refuses swap in use|under memory pressure|local model slice would exceed the host memory|load-peak guard|not enough (?:free )?memory|wired limit"#, .memoryGateRefused),
         Rule("follower-link", #"follower member did not connect|follower (?:did not|never) connect|is `?darkbloom cluster link-follower`? running|no peer for its edge"#, .followerNotConnected),
         Rule("local-network", #"local network (?:access|permission|privacy)|ehostunreach.*(?:detached|local network)"#, .localNetworkDenied),
@@ -258,9 +258,10 @@ extension ClusterGuidance {
             steps: ["Run `darkbloom cluster recover` on that Mac; it clears the journal once nothing it names is running.",
                     "If a worker is still running, stop it with SIGTERM and wait for it to exit."],
             command: "darkbloom cluster recover"),
-        .localProviderRunning: .init(code: "local_provider_running", title: "An ordinary provider is running on this Mac",
-            explanation: "A single-Mac provider uses the same GPU and memory, so a cluster rank refuses to start beside it.",
-            steps: ["Stop the other provider (`darkbloom stop`), then start the cluster again."], command: "darkbloom stop"),
+        .localProviderRunning: .init(code: "local_provider_running", title: "A single-Mac provider is serving on this Mac",
+            explanation: "A single-Mac provider uses the same GPU and memory, so the pair's part refuses to start beside it. It does not end by itself.",
+            steps: ["Stop single-Mac serving on the Mac named with `darkbloom stop --solo` (it never stops the pair), "
+                    + "then start the pair again (`darkbloom start`)."], command: "darkbloom stop --solo"),
         .memoryGateRefused: .init(code: "memory_gate_refused", title: "A Mac did not have room for its share of the model",
             explanation: "The load gate measured the memory free now and refused the stage before loading it, so nothing was half-loaded.",
             steps: ["Quit large applications on the Mac named in the incident and retry.",

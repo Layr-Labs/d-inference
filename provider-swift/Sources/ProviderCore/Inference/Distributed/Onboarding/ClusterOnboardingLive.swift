@@ -67,6 +67,8 @@ extension ClusterOnboardingOperations {
         made.markRegistrationPending = { live.markRegistrationPending() }
         made.planScope = { live.usePlanningScope($0) }
         made.otherMacStartsAtLogin = { live.otherMacStartsAtLogin() }
+        made.soloServing = { live.soloServing() }
+        made.stopSoloServing = { live.stopSoloServing() }
         return made
     }
 }
@@ -1574,7 +1576,12 @@ final class OnboardingLive: @unchecked Sendable {
         let deadline = began.addingTimeInterval(Self.readyWaitSeconds)
         var said: String?
         var seen = [String: Int](), previous: String?
+        var polls = 0
         while Date() < deadline {
+            // Single-Mac serving on either Mac never ends by itself: the wait ends at once with it named, never a loop of
+            // part ends (read every few polls: it asks the other Mac over the cable).
+            if polls % Self.soloServingEveryPolls == 0, let solo = soloServingFailure() { return .failure(solo) }
+            polls += 1
             var once: (ready: ClusterOnboardingReady?, line: String)
             if forwards {
                 switch forward(.init(op: .readiness), seconds: 30) {
@@ -1604,6 +1611,8 @@ final class OnboardingLive: @unchecked Sendable {
         return .failure(.init(["The cluster did not report ready within 15 minutes."] + lastErrors(fallback: said)))
     }
 
+    /// Every this many readiness polls (about 2 s), the wait reads single-Mac serving on both Macs (`soloServing`).
+    static let soloServingEveryPolls = 4
     /// How long a start waits for the cluster to report ready ("within 15 minutes").
     static let readyWaitSeconds: TimeInterval = 900
     /// The same part end seen this many times stops the wait on screen (the service keeps restarting it).
@@ -2134,6 +2143,10 @@ final class OnboardingLive: @unchecked Sendable {
         if leadership?.serving != true {
             lines.append("Stopped\(leadership?.modelName.map { "; last model " + modelTitle($0) } ?? "").")
             if let scope = leadership?.scope, scope.isLocalOnly { lines.append("When it starts: " + scope.line + ".") }
+        } else if let solo = soloServingFailure() {
+            // Single-Mac serving blocks the pair and never ends by itself: both windows say it, naming the Mac and process.
+            lines.append(ClusterOnboardingNotServing.statusLine(model: model, reason: ClusterOnboardingSoloServing.title(solo.soloServing)))
+            lines += ClusterOnboardingSoloServing.remedies(solo.soloServing).map(ClusterOnboardingCommand.named)
         } else if let offered = offeredLine() {
             let ready = offeredReadiness(offered, own: ClusterService.published()?.child)
             if let registered = ready.ready {

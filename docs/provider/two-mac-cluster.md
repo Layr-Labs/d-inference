@@ -991,6 +991,11 @@ serves, for the other Mac: for its `darkbloom update`, or for its next slot when
 its automatic updates are on.
 No log-out is needed. A cluster service started by an earlier release cannot do
 this: log out and back in on both Macs once both have the release.
+If single-Mac serving is also set up on a Mac whose pair is started (for example
+from a plain `darkbloom start` before 0.10.8, which meant single-Mac serving),
+`darkbloom update` restarts the pair and leaves single-Mac serving as it is. It
+says so, with `darkbloom stop --solo` to remove it. The watchdog doesn't start it
+again while the pair is started.
 
 While a Mac serves, the re-plan uses the speed it measured while idle and never
 runs a GPU benchmark beside the model
@@ -1127,7 +1132,21 @@ they control single-Mac serving on one Mac
 | `darkbloom status` | The pair first (who leads, the model, whether it serves now and what to do), then this Mac's fields; `darkbloom cluster status` gives the pair alone, with `--json` and exit codes |
 
 Each says first that it acts on the pair. `--solo` on any of them acts on
-single-Mac serving on this Mac only and never touches the pair. If the leading
+single-Mac serving on this Mac only and never touches the pair.
+
+Single-Mac serving and the pair can't run on one Mac at once: both use the
+Mac's one serving lock. If single-Mac serving runs on either Mac,
+`darkbloom cluster` (or `darkbloom start` in a terminal) says so before it
+starts anything, on one ✗ that names the Mac and the process: ``The pair can't
+start: a single-Mac Darkbloom provider (process 9523) is serving on this Mac,
+and the pair can't share a Mac with it.``, then ``On this Mac: run `darkbloom
+stop --solo` to stop single-Mac serving there.``. It offers **Stop single-Mac
+serving on both Macs and start the pair** (or on the one Mac named) and
+**Leave**. It stops nothing unless you choose to, and it never retries by itself.
+Each Mac's cluster service doesn't start its part while single-Mac serving
+runs there. Its status names that provider, so the other Mac's screen says the
+same thing instead of "no error reported". Plain `darkbloom stop` on a paired
+Mac stops the pair, not single-Mac serving. If the leading
 Mac doesn't answer, `darkbloom stop` says so and that
 `darkbloom cluster stop --local-only` stops this Mac alone.
 

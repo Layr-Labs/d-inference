@@ -66,9 +66,12 @@ struct Watchdog: AsyncParsableCommand {
         let bootTime = now - ProcessInfo.processInfo.systemUptime
         let downSince = WatchdogPolicy.effectiveDownSince(state.downSince, bootTime: bootTime)
 
+        // A single-Mac provider job left loaded on a Mac whose pair is started is not revived: it would take the serving
+        // lock the pair's part needs the moment that part lets it go (`ClusterService.pairServesHere`).
+        let pairOwnsServing = !providerActive && !LaunchAgent.installedJobIsClusterMember() && ClusterService.pairServesHere()
         let decision = WatchdogPolicy.decide(
             autoRestartEnabled: settings.autoRestart,
-            providerLoaded: liveness.loaded,
+            providerLoaded: liveness.loaded && !pairOwnsServing,
             providerRunning: providerActive,
             downSince: downSince,
             now: now

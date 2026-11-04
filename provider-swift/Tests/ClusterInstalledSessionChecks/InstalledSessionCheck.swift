@@ -756,7 +756,7 @@ final class EndpointBox: @unchecked Sendable {
         try require(flock(descriptor,LOCK_EX|LOCK_NB)==0,"lock fixture")
         var message=""
         do { try check() } catch { message=String(describing:error) }
-        try require(message.contains("process 4242") && message.contains("darkbloom stop"),"ordinary provider was not refused clearly: \(message)")
+        try require(message.contains("process 4242") && message.contains("stop --solo` on this Mac")&&message.contains("single-Mac Darkbloom provider"),"ordinary provider was not refused clearly: \(message)")
         try check(parent:4242) // The leader that launched this owner holds the lock for its own session.
         try check(arguments:["darkbloom","start","--cluster-member"]) // A control-only member serves nothing itself.
         try rejected{try check(arguments:nil)} // A holder that cannot be identified is not assumed to be a member.

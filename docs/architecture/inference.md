@@ -3939,7 +3939,14 @@ away; mixed pairs are first-class).
   logs only a change, so a setting just turned on clears first;
   `refusalIsCurrent`). The ✗ is worded for the screen that shows it
   (`OnboardingLive.localNetworkLine`): a wait the joining Mac forwarded names
-  that Mac.
+  that Mac. `status` and `cluster status` read the same refusal by the same
+  rule (`ClusterLocalNetworkAccess.Refused`): on the refused Mac its own
+  service's state, on the leading Mac the other Mac's status, asked
+  (`otherMacStatus`) only while the pair has been starting past the settle time
+  (`refusalCanBeCurrent`, `otherMacRefused`). They say `not_serving` in the
+  screens' words, ending with the command that starts the pair again
+  (`statusWords`). A stopped pair reads stopped whatever the other Mac's
+  presence (`ClusterPairSummary.state(ofStatus:started:leaderMode:)`).
 - **The person's family:** `useMode` keeps the chosen family for every model
   (`OnboardingLive.keptFamily`), never inferred from the listing's order, which
   says nothing of the plan; `localAdopt` plans again in it only when the listed

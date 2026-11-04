@@ -137,11 +137,24 @@ extension ClusterPairSummary {
         guard summary.paired, summary.role != nil,
               let operations = try? ClusterOnboardingOperations.live(.clusterService(config: config, worker: nil)) else { return summary }
         // A bounded wait that ran out: this Mac's own view stands (the other Mac's answer unknown).
-        guard let status = statusLines(leads: summary.leads, slow: slow, noticeAfter: noticeAfter, operations.status) else {
-            return summary
+        if let status = statusLines(leads: summary.leads, slow: slow, noticeAfter: noticeAfter, operations.status) {
+            summary.read(status: status, leaderMode: summary.leads ? ClusterService.publishedLive()?.control?.mode : nil)
         }
-        summary.read(status: status, leaderMode: summary.leads ? ClusterService.publishedLive()?.control?.mode : nil)
+        summary.read(localNetworkRefused: localNetworkRefusal(of: summary))
         return summary
+    }
+
+    /// Which Mac's follower macOS keeps off the local network, by the setup screens' rule: on the Mac that follows, its
+    /// own service's state, as `start` reads it; on the leading Mac, the other Mac's status, asked only while the pair has
+    /// been starting longer than one more dial takes (the ✗'s rule).
+    private static func localNetworkRefusal(of summary: ClusterPairSummary) -> ClusterLocalNetworkAccess.Refused? {
+        guard summary.started else { return nil }
+        guard summary.leads else { return ClusterLocalNetworkAccess.serviceState() == .blocked ? .thisMac : nil }
+        let own = ClusterService.published()?.child, now = Date().timeIntervalSince1970
+        guard summary.state == .unknown || (summary.state == .loading && summary.lines.first?.hasPrefix("Starting ") == true),
+              ClusterLocalNetworkAccess.refusalCanBeCurrent(own: own, now: now) else { return nil }
+        let member = ClusterLocalNetworkAccess.otherMacStatus()?.child
+        return ClusterLocalNetworkAccess.otherMacRefused(member: member, own: own, now: now) ? .otherMac : nil
     }
 
     /// This Mac's own view of the cluster, from its cluster service's last status (no other Mac is asked): stopped, the

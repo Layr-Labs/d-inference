@@ -260,7 +260,7 @@ enum ClusterPairCommands {
             case .notServing:
                 // A reason the Macs mend by themselves (an Apple verification retry, memory freeing, the coordinator
                 // retrying) is waited through, as the setup screen does; a final one ends the wait.
-                if ClusterPairSummary.isFinalReason(summary.reason) { return summary }
+                if summary.localNetworkRefused != nil || ClusterPairSummary.isFinalReason(summary.reason) { return summary }
                 status = summary.lines.first
             case .stopped:
                 stoppedLooks += 1

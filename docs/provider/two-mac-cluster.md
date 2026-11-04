@@ -1033,6 +1033,9 @@ passed. The follower's own refusal decides:
 - once the follower has connected, or a later dial failed another way, an
   earlier refusal no longer counts, and a part that has stopped counts as not
   blocked until its new follower dials;
+- `darkbloom status` and `darkbloom cluster status` say the same on both Macs,
+  by the same rule: `not_serving`, with the steps on the Mac that is kept off,
+  instead of a load that never ends (the CLI reference quotes their words);
 - `darkbloom start` ends its wait with the same instruction, and says first
   when it replaces a cluster service running from a terminal session with the
   login agent.

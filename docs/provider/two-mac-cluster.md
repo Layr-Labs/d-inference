@@ -159,8 +159,11 @@ by itself. A cable port set up from either screen continues to that screen
 ([below](#when-something-is-in-the-way)). **Start over (pair again)** asks once
 ("Unpair this Mac and pair the two Macs again?", **No** by default), then
 unpairs this Mac and pairs again ([pairing again](#pairing-again)). Either Mac
-first asks the other over the cable; when it does not answer, or when the saved
-pairing was made with another Secure Enclave key, the screen says so and offers
+first asks the other over the cable. When it does not answer, the screen names
+that Mac, its likely reasons (its cluster service is off, or it is asleep, off,
+or waiting for someone to log in) and the command to run on it, and keeps
+**Start over (pair again)** with its question; the Mac that follows also offers
+**Try again**. Only a saved pairing made with another Secure Enclave key offers
 **Pair again** without the question.
 
 The planner picks tensor parallel or pipeline for your Macs by itself. Phase
@@ -848,12 +851,14 @@ drained for an update yet: its update waits while it serves (the log says
   for Allow. If you denied the Local Network prompt there,
   allow Darkbloom in System Settings → Privacy & Security → Local Network, then
   run `darkbloom cluster` again. When `darkbloom cluster` is run again and the
-  other Mac does not answer, it offers **Pair again** ([pairing again](#pairing-again)).
+  other Mac does not answer, it says why that may be and what to run on that Mac,
+  and offers **Start over (pair again)**, which asks first: a Mac that is away is
+  not a broken pairing ([pairing again](#pairing-again)).
 - **One Mac waits at "2/4 Pair" while the other shows its status and ends, or
-  says "The other Mac doesn't answer over the cable"**: the second Mac still
+  says "The other Mac (…) isn't answering over the cable"**: the second Mac still
   holds an earlier pairing, so it never joins. Run
-  `darkbloom cluster` on it and choose **Pair again**
-  ([pairing again](#pairing-again)).
+  `darkbloom cluster` on it, choose **Start over (pair again)** and answer
+  **Yes, start over** ([pairing again](#pairing-again)).
 - **A model is not offered**: the list leaves out every model that is not
   approved for clusters or that these Macs cannot serve, with no reason beside
   it. A model named on the command line says why ("… is not approved for
@@ -880,24 +885,28 @@ Secure Enclave key, and the pair's roster names the keys the Macs paired with,
 so a pairing made with another key cannot register: every start of its part ends
 with "This Mac's Secure Enclave key is not the one it paired with; pair again."
 
-1. Run `darkbloom cluster` on either Mac. It says why its pairing cannot be used
-   and offers **Pair again**:
-   - "This Mac's Secure Enclave key changed after it paired (…), so the Macs
-     must pair again to serve through Darkbloom." (this Mac's key is not the one
-     its pairing names; offered with **Quit**);
-   - "The other Mac doesn't answer over the cable: run `darkbloom cluster` on it
-     first; Pair again if it was reinstalled, unpaired or replaced." (offered
-     with **Try again** and **Quit**; on the leader, in its list before **Quit**).
-     The same three choices end a model choice whose other Mac stops answering;
-     while it waits, the screen says why ("Waiting for the other Mac's cluster
-     service: …").
-   - On a pairing that works, **Start over (pair again)** does the same after one
-     question.
-2. Choose **Pair again**. This Mac unpairs as `darkbloom cluster pair --forget`
-   does ([undo](#undo)), says "✓ Unpaired this Mac.", then runs the ordinary
-   setup and waits at "2/4 Pair".
-3. Run `darkbloom cluster` on the other Mac. If it offers **Pair again** too,
-   choose it; a Mac with no pairing goes straight to Pair.
+1. Run `darkbloom cluster` on either Mac.
+   - When this Mac's key is not the one its pairing names, it says "This Mac's
+     Secure Enclave key changed after it paired (…), so the Macs must pair
+     again to serve through Darkbloom." and offers **Pair again** and **Quit**.
+   - When the other Mac does not answer, it says "The other Mac (…) isn't
+     answering over the cable. Its cluster service is probably off (…), or that
+     Mac is asleep, off, or waiting for someone to log in. On that Mac, run
+     `darkbloom cluster`." Do that first: a Mac that was only asleep, logged out
+     or stopped needs no new pairing. If it was reinstalled, unpaired or replaced, use **Start over
+     (pair again)** here; the Mac that follows lists it after **Try again**. A
+     model choice whose other Mac stops answering ends with **Try again**,
+     **Start over (pair again)** and **Quit**; while it waits, the screen says
+     why ("Waiting for the other Mac's cluster service: …").
+   - On a pairing that works, **Start over (pair again)** is in the list too.
+2. Choose **Pair again**, or **Start over (pair again)** and answer **Yes, start
+   over** (No is the default). This Mac unpairs as `darkbloom cluster pair
+   --forget` does ([undo](#undo)), says "✓ Unpaired this Mac.", then runs the
+   ordinary setup and waits at "2/4 Pair".
+3. Run `darkbloom cluster` on the other Mac. It no longer reaches this Mac over
+   the old pairing, so it offers **Start over (pair again)** (or **Pair again**
+   when its own key changed too): choose it. A Mac with no pairing goes straight
+   to Pair.
 4. Answer **Yes** on each Mac when both show the same code. The Mac that waited
    leads and chooses the model again.
 
@@ -910,8 +919,8 @@ in [a saved pairing the onboarding cannot use](../architecture/inference.md#a-sa
 
 `darkbloom cluster link --remove` on each Mac restores the cable port's earlier
 network settings (one approval). `darkbloom cluster pair --forget <pin>` removes
-a pairing; **Pair again** in `darkbloom cluster` takes the same steps
-(`ClusterUnpairing`). Run on the leader, it first tells the other Mac over the
+a pairing; **Pair again** and **Start over (pair again)** in `darkbloom cluster`
+take the same steps (`ClusterUnpairing`). Run on the leader, it first tells the other Mac over the
 cable, which removes the pair's prompt-cache records (its own single-Mac cache
 stays) and stops its part; each Mac also removes its own pair records when it
 unpairs.

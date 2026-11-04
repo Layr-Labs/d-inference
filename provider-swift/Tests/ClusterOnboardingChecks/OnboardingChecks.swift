@@ -107,11 +107,11 @@ import Darwin
         keyChangedMemberPairsAgain()
         keyChangedQuitChangesNothing()
         memberWhoseLeaderIsSilentPairsAgain()
-        leaderWhoseMemberIsSilentOffersPairAgain()
+        leaderWhoseMemberIsSilentOffersStartOver()
         answeringOtherMacKeepsTheScreens()
         failedUnpairStopsBeforePairing()
         // The owner's second pair and an end user's live session (2026-11-03): failing first on 9f9ddf1ed.
-        reachWaitSaysWhyAndOffersPairAgain()
+        reachWaitSaysWhyAndOffersStartOver()
         cableStepContinuesToTheNextStep()
         memberNamesItsLeaderAndTheNextStep()
         startOverIsAlwaysOfferedWithOneConfirmation()
@@ -128,6 +128,8 @@ import Darwin
         memberSeesTheOutcomeOrWhereToLook()
         // The refactor pass's finding: the menu's switch to Darkbloom claimed ✓ for a registered pair.
         menuSwitchToDarkbloomWaitsForThePair()
+        // UX audit P3 (2026-11-04): silence is not a broken pairing. Failing first on a91d5d51d7.
+        silenceIsNotABrokenPairing()
         print("onboarding checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -2345,17 +2347,21 @@ import Darwin
     }
 
     /// S2 on the Mac that follows: the leader does not answer over the cable with this pairing (2026-11-03: one Mac
-    /// of a pair showed its opening and "Nothing to do here" while the other waited at Pair). The member says why and
-    /// offers Try again, Pair again or Quit; Pair again unpairs it and joins the waiting Mac; Try again asks again.
+    /// of a pair showed its opening and "Nothing to do here" while the other waited at Pair). The member names the
+    /// other Mac, its likely reasons and what to run there, and offers Try again, Start over or Quit (UX audit P3:
+    /// silence is no broken pairing, so Start over asks first); Start over unpairs it and joins the waiting Mac; Try
+    /// again asks again.
     static func memberWhoseLeaderIsSilentPairsAgain() {
         let recorder = Recorder()
         let run = TerminalRun(operations(recorder, resume: memberResume(), pairEvents: memberEvents,
             pairResult: .paired(role: .member, peerName: "Apple M5 Ultra, 256 GB"), otherMacAnswers: [false]))
         expect(run.waitFor(prompt(3)), "silent leader: a list")
         let asked = run.text
-        expect(asked.contains("This Mac follows the other Mac\n  " + ClusterOnboardingPairingProblem.otherMacSilent.line + "\n\n  1) Try again\n  2) "
-            + ClusterOnboardingDriver.pairAgainItem + "\n  3) Quit\n"), "silent leader: why, then the three choices: \(asked)")
+        expect(asked.contains("This Mac follows the other Mac\n  " + silentLine("Apple M3 Ultra, 256 GB") + "\n\n  1) Try again\n  2) "
+            + ClusterOnboardingDriver.startOverItem + "\n  3) Quit\n"), "silent leader: why, then the three choices: \(asked)")
         run.type("2")
+        expect(run.waitFor(ClusterOnboardingDriver.startOverQuestion), "silent leader: Start over asks first")
+        run.type("y")
         expect(run.waitFor(codeQuestion), "silent leader: the ordinary pairing follows")
         run.type("y")
         expect(run.finish() == 0, "silent leader: joined")
@@ -2377,10 +2383,11 @@ import Darwin
         expect(again.all == ["ensureService", "status"] && again.probes == 2, "silent leader, try again: asked twice, nothing unpaired: \(again.all)")
     }
 
-    /// S2 on the Mac that leads: its other Mac does not answer over the cable. Its menu says why and adds Pair again
-    /// (before Quit), also for a leader that never chose a model (which otherwise goes straight to the list and waits
-    /// two minutes for the other Mac).
-    static func leaderWhoseMemberIsSilentOffersPairAgain() {
+    /// S2 on the Mac that leads: its other Mac does not answer over the cable. Its menu names that Mac, its likely
+    /// reasons and what to run there, and keeps Start over (which asks first) before Quit (UX audit P3), also for a
+    /// leader that never chose a model (which otherwise goes straight to the list and waits two minutes for the other
+    /// Mac).
+    static func leaderWhoseMemberIsSilentOffersStartOver() {
         let recorder = Recorder()
         var stopped = ClusterOnboardingResume(role: .leader, peerName: "Apple M5 Ultra, 256 GB", serving: false, modelName: "EigenLabs/Qwen3.8-27B-4bit-mtp")
         stopped.scope = .localOnly(bind: "127.0.0.1")
@@ -2388,10 +2395,12 @@ import Darwin
             otherMacAnswers: [false], statusLines: stoppedLocalStatus))
         expect(run.waitFor(prompt(5)), "silent member: the menu")
         let menu = run.text
-        expect(menu.contains("  " + stoppedLocalStatus[1] + "\n  " + ClusterOnboardingPairingProblem.otherMacSilent.line + "\n\n  1) Choose a model\n"
-            + "  2) Serve through Darkbloom\n  3) Check memory is freed\n  4) " + ClusterOnboardingDriver.pairAgainItem + "\n  5) Quit\n"),
-               "silent member: the status, why, and Pair again before Quit: \(menu)")
+        expect(menu.contains("  " + stoppedLocalStatus[1] + "\n  " + silentLine("Apple M5 Ultra, 256 GB") + "\n\n  1) Choose a model\n"
+            + "  2) Serve through Darkbloom\n  3) Check memory is freed\n  4) " + ClusterOnboardingDriver.startOverItem + "\n  5) Quit\n"),
+               "silent member: the status, why, and Start over before Quit: \(menu)")
         run.type("4")
+        expect(run.waitFor(ClusterOnboardingDriver.startOverQuestion), "silent member: Start over asks first")
+        run.type("y")
         expect(run.waitFor(codeQuestion), "silent member: the ordinary pairing follows")
         run.type("y")
         expect(run.waitFor(prompt(2), count: 2), "silent member: then the model list")
@@ -2406,7 +2415,7 @@ import Darwin
         let fresh = TerminalRun(operations(unchosen, resume: .init(role: .leader, peerName: "Apple M5 Ultra, 256 GB"), pairEvents: [],
             pairResult: .failed([]), otherMacAnswers: [false]))
         expect(fresh.waitFor(prompt(5)), "silent member, no model yet: the menu")
-        expect(fresh.text.contains("  4) " + ClusterOnboardingDriver.pairAgainItem + "\n  5) Quit\n"), "silent member, no model yet: Pair again: \(fresh.text)")
+        expect(fresh.text.contains("  4) " + ClusterOnboardingDriver.startOverItem + "\n  5) Quit\n"), "silent member, no model yet: Start over: \(fresh.text)")
         fresh.type("5")
         expect(fresh.finish() == 0, "silent member, no model yet: quit")
         expect(!unchosen.all.contains("reachMembers") && !unchosen.all.contains("unpair"), "silent member, no model yet: nothing read or unpaired: \(unchosen.all)")
@@ -2443,8 +2452,8 @@ import Darwin
 
     /// S4 (pair 2, G2: "3/4 Model hangs forever with an unreachable partner", 0% CPU, no child, no log, no message): a
     /// Mac paired earlier whose other Mac stops answering after the menu says each reason it keeps waiting, then the
-    /// plain failure, then Try again, Pair again or Quit.
-    static func reachWaitSaysWhyAndOffersPairAgain() {
+    /// plain failure, then Try again, Start over (which asks first: UX audit P3) or Quit.
+    static func reachWaitSaysWhyAndOffersStartOver() {
         let waiting = "Waiting for the other Mac's cluster service: the other Mac's cluster service did not answer on the cable"
         let failed = ["The other Mac (Apple M3 Ultra, 256 GB) did not answer over the cable within 2 minutes: the other Mac's cluster service did not answer on the cable"]
         let recorder = Recorder()
@@ -2455,10 +2464,13 @@ import Darwin
         run.type("1")
         expect(run.waitFor(prompt(3)), "reach: a list once the wait ends")
         let asked = run.text
-        expect(asked.contains("\n3/4 Model\n  " + waiting + "\n" + failed[0] + "\n  1) Try again\n  2) " + ClusterOnboardingDriver.pairAgainItem
+        expect(asked.contains("\n3/4 Model\n  " + waiting + "\n" + failed[0] + "\n  1) Try again\n  2) " + ClusterOnboardingDriver.startOverItem
             + "\n  3) Quit\n"), "reach: the reason it waits (once), the plain failure, then the three choices: \(asked)")
+        expect(!asked.contains(") " + ClusterOnboardingDriver.pairAgainItem + "\n"), "reach: never Pair again")
         run.type("2")
-        expect(run.waitFor(codeQuestion), "reach: Pair again pairs")
+        expect(run.waitFor(ClusterOnboardingDriver.startOverQuestion), "reach: Start over asks first")
+        run.type("y")
+        expect(run.waitFor(codeQuestion), "reach: Start over pairs")
         run.type("y")
         expect(run.waitFor(prompt(2), count: 2), "reach: then the model list")
         run.type("\r")
@@ -2896,5 +2908,62 @@ import Darwin
         _ = notServing.finish()
         expect(notServing.text.contains(block("\u{2717}", "Not serving: " + notVerifiedTimed + ".",
             [ClusterOnboardingNotServing.remedy(forReason: notVerifiedTimed) ?? "-"])), "member: the not-serving block: \(notServing.text)")
+    }
+
+    // MARK: - UX audit P3 (2026-11-04): silence is not a broken pairing
+
+    /// What a Mac says when the other Mac does not answer over the cable, word for word (the audit's P2 words): that
+    /// Mac by its name, its likely reasons, and what to run there.
+    static func silentLine(_ mac: String) -> String {
+        "The other Mac (\(mac)) isn't answering over the cable. Its cluster service is probably off (it was stopped with "
+            + "`darkbloom cluster stop`), or that Mac is asleep, off, or waiting for someone to log in. On that Mac, run `darkbloom cluster`."
+    }
+
+    /// About 8 s of silence (a FileVault login window after a restart, sleep, a closed lid, `darkbloom cluster stop`)
+    /// swapped Start over, which asks first, for Pair again, which does not, on both Macs. Silence now names the other
+    /// Mac, its likely reasons and what to run there, and keeps Start over with its question. Only a pairing that
+    /// cannot be used (this Mac's key changed) offers Pair again, as before.
+    static func silenceIsNotABrokenPairing() {
+        // The member whose leader is silent (B3): Try again, Start over or Quit; No at the question changes nothing.
+        let member = Recorder()
+        let followed = TerminalRun(operations(member, resume: memberResume(), pairEvents: [], pairResult: .failed([]), otherMacAnswers: [false]))
+        expect(followed.waitFor(prompt(3)), "silence (member): a list")
+        let asked = followed.text
+        expect(asked.contains("This Mac follows the other Mac\n  " + silentLine("Apple M3 Ultra, 256 GB") + "\n\n  1) Try again\n  2) "
+            + ClusterOnboardingDriver.startOverItem + "\n  3) Quit\n"), "silence (member): the Mac, why and what to run there, then the list: \(asked)")
+        expect(!asked.contains(") " + ClusterOnboardingDriver.pairAgainItem + "\n"), "silence (member): never Pair again")
+        followed.type("2")
+        expect(followed.waitFor(ClusterOnboardingDriver.startOverQuestion), "silence (member): Start over asks first"); followed.type("\r")
+        expect(followed.finish() == 0 && followed.text.hasSuffix("Nothing changed.\n") && !member.all.contains("unpair"),
+               "silence (member): No changes nothing: \(member.all)")
+        transcript("member-silent-start-over", followed.text, keys: followed.keys)
+
+        // The serving leader whose member is asleep or at its login window (D1, E1): its usual menu with Start over.
+        let leader = Recorder()
+        let led = TerminalRun(operations(leader, resume: .init(role: .leader, peerName: "Apple M5 Max, 128 GB", serving: true,
+            modelName: "Qwen3.8-27B-4bit-mtp"), pairEvents: [], pairResult: .failed([]), otherMacAnswers: [false]))
+        expect(led.waitFor(prompt(7)), "silence (leader): the menu")
+        let menu = led.text
+        expect(menu.contains("  " + silentLine("Apple M5 Max, 128 GB") + "\n\n  1) Test\n  2) Change model\n  3) Serve locally\n  4) Stop\n"
+            + "  5) Check memory is freed\n  6) " + ClusterOnboardingDriver.startOverItem + "\n  7) Quit\n"),
+               "silence (leader): the Mac, why and what to run there, then the usual menu: \(menu)")
+        expect(!menu.contains(") " + ClusterOnboardingDriver.pairAgainItem + "\n"), "silence (leader): never Pair again")
+        led.type("6")
+        expect(led.waitFor(ClusterOnboardingDriver.startOverQuestion), "silence (leader): Start over asks first"); led.type("\r")
+        expect(led.finish() == 0 && !leader.all.contains("unpair"), "silence (leader): No changes nothing: \(leader.all)")
+        transcript("leader-silent-start-over", led.text, keys: led.keys)
+
+        // A pairing that cannot be used still offers Pair again at once, without the question, on either Mac.
+        for role in [ClusterOnboardingRole.leader, .member] {
+            var broken = role == .member ? memberResume()
+                : ClusterOnboardingResume(role: .leader, peerName: "Apple M5 Max, 128 GB", serving: true, modelName: "Qwen3.8-27B-4bit-mtp")
+            broken.pairingProblem = .keyChanged
+            let run = TerminalRun(operations(Recorder(), resume: broken, pairEvents: [], pairResult: .failed([]), otherMacAnswers: [false]))
+            expect(run.waitFor(prompt(2)), "broken pairing (\(role)): its list")
+            expect(run.text.contains("  " + ClusterOnboardingPairingProblem.keyChanged.line + "\n\n  1) " + ClusterOnboardingDriver.pairAgainItem
+                + "\n  2) Quit\n"), "broken pairing (\(role)): Pair again, without a question: \(run.text)")
+            run.type("2")
+            _ = run.finish()
+        }
     }
 }

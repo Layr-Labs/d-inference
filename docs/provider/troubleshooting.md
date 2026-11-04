@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-11-02
+> Last updated: 2026-11-04
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -241,6 +241,19 @@ Paging rollback alone does not disable eligible Qwen SSD reuse on contiguous.
 SSD caching remains enabled by default with no resident retention; use
 `DARKBLOOM_PREFIX_CACHE=0` to disable local reuse independently
 ([prefix-cache defaults](../architecture/prefix-cache.md#invariants)).
+
+## A two-Mac cluster says "Not serving yet"
+
+`darkbloom cluster` says Serving only once both Macs loaded the model and a
+request answered. Otherwise its line names why
+([two-Mac cluster](two-mac-cluster.md#the-steps-once)):
+
+| Line | What to do |
+|---|---|
+| `… isn't logged in to Darkbloom, so the coordinator won't pair it` | `darkbloom login` on the Mac named, then **Retry**; or **Serve locally only**. |
+| `Darkbloom hasn't verified <Mac> for private serving yet (App Attest)` | Keep both Macs logged in and Darkbloom running; the coordinator pairs only members with a current App Attest authorization. **Retry** after a few minutes, or **Serve locally only**. |
+| `<Mac> lacks free memory for its share` | Quit apps on that Mac, then **Retry**; or **Change model**. |
+| `A part keeps ending the same way: …` | **Diagnostics** saves a redacted file in the home folder to send with a report. |
 
 ## Missing base reward
 

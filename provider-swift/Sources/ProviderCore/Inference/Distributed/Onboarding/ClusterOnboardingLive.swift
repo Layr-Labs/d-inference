@@ -1657,7 +1657,9 @@ final class OnboardingLive: @unchecked Sendable {
         let process = Process()
         process.executableURL = settings.service.wizard.darkbloomExecutable
         process.arguments = ["login"]
-        do { try process.run(); process.waitUntilExit() } catch { return false }
+        let childExit = ProcessExitObserver()
+        do { try childExit.run(process) } catch { return false }
+        childExit.wait()
         return AuthTokenStore.load() != nil
     }
 

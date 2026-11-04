@@ -251,8 +251,15 @@ struct ClusterLinkIsolationRequest: Equatable, Sendable {
         return "do shell script \"\(escaped)\" with prompt \"\(prompt)\" with administrator privileges"
     }
 
-    /// For an administrator to run by hand where no prompt can be shown.
-    var manualCommands: [String] { commands.map { "sudo " + $0 } }
+    /// For an administrator to paste where no prompt can be shown and no script could be written: the same commands,
+    /// one per line, in one root shell under `set -e` (a line each behind `sudo` would break on `if …; fi` and give
+    /// root to `printf` alone in `printf … | scutil`). No generated line can be the delimiter: each starts with a path
+    /// or a shell keyword.
+    var manualCommands: [String] {
+        ["sudo /bin/sh -e <<'\(Self.manualDelimiter)'"] + commands + [Self.manualDelimiter]
+    }
+
+    static let manualDelimiter = "DARKBLOOM_CLUSTER_LINK"
 
     /// "en6", "en6 and en1", "en6, en1 and en2".
     static func list(_ names: [String]) -> String {
@@ -296,8 +303,9 @@ struct ClusterLinkLastService: Equatable, Sendable {
 
     /// The commands: the name and the device checked as an administrator, then one SCPreferences session (`scutil
     /// --prefs`) that removes the service and its link in the set, sets the order without `leavingOrder`, commits and
-    /// applies; then a read-back that the service is gone, which stops the script when it is not. Proven on pair-2's MacBook (macOS 27.0, 2026-11-04): the
-    /// port's last service went, and macOS put the port back in its saved bridge by itself.
+    /// applies; then a read-back that the service is gone, which stops the script when it is not. Proven on pair-2's
+    /// MacBook (macOS 27.0, 2026-11-04): the port's last service went, and macOS put the port back in its saved
+    /// bridge by itself.
     func removal(service: String, interface: String, leavingOrder: [String]) -> [String] {
         let preferences = ClusterLinkIsolationPlan.networkPreferences
         let entry = ":NetworkServices:\(serviceID)"

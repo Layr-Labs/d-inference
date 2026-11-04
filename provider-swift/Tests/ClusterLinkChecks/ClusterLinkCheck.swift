@@ -62,6 +62,7 @@ import Darwin
             ("isolation remove outcomes", isolationRemoveOutcomes),
             ("isolation remove every port", isolationRemoveEveryPort),
             ("isolation last service stops on a failed commit", isolationLastServiceStopsOnFailedCommit),
+            ("isolation manual commands run as the script", isolationManualCommandsRunAsTheScript),
             ("isolation record file", isolationRecordFile),
             ("isolation setup flow", isolationSetupFlow),
             ("isolation vocabulary", isolationVocabulary),

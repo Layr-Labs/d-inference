@@ -95,6 +95,8 @@ public final class ClusterService: @unchecked Sendable {
     private var childStartedAt: Double?
     private var starts = 0
     private var lastEnd: String?
+    /// How long the last part ran (`ClusterServiceStatus.Child.lastRunSeconds`).
+    private var lastRunSeconds: Double?
     private var nextStart = Date.distantPast
     /// The part whose end (or failed start) set `nextStart`: its restart backoff does not hold back another part.
     private var endedKey: String?
@@ -1000,7 +1002,7 @@ public final class ClusterService: @unchecked Sendable {
                                                   remembered: &followerRefusalRead)
                         : Self.lastError(in: serviceFiles.rankLog, from: childLogOffset),
                     pid: child?.isRunning == true ? child?.processIdentifier : oldPart?.pid,
-                    startedAt: child?.isRunning == true ? childStartedAt : oldPart?.startedAt,
+                    startedAt: child?.isRunning == true ? childStartedAt : oldPart?.startedAt, lastRunSeconds: lastRunSeconds,
                     solo: child?.isRunning == true ? childSetup?.hasPrefix("solo:") == true : oldPart?.solo,
                     notice: oldPart != nil ? "the previous run's part is still releasing; waiting before starting another"
                         : child?.isRunning == true && childSetup?.hasPrefix("solo:") != true ? Self.servingNotice(in: serviceFiles.rankLog, from: childLogOffset) : nil,
@@ -1501,7 +1503,7 @@ public final class ClusterService: @unchecked Sendable {
             let ran = Date().timeIntervalSince(lock.withLock { childStarted })
             let end = running.terminationReason == .uncaughtSignal ? "signal \(running.terminationStatus)" : "exit \(running.terminationStatus)"
             lock.withLock {
-                child = nil; childSetup = nil; lastEnd = end; endedKey = setup
+                child = nil; childSetup = nil; lastEnd = end; lastRunSeconds = ran; endedKey = setup
                 backoff = ran >= 120 ? 3 : min(backoff * 2, 30)
                 nextStart = Date().addingTimeInterval(ran >= 120 ? 3 : backoff)
             }

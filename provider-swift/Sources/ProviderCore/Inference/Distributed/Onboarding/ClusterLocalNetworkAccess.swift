@@ -206,18 +206,20 @@ extension ClusterLocalNetworkAccess {
 
     /// On the leading Mac, whether the other Mac's part reports the refusal now (`otherMacRefused(member:own:now:)`). That
     /// Mac is asked (`otherMacStatus`) only once this Mac's part has run long enough for its answer to count; before
-    /// that, asking would not tell.
-    public static func otherMacRefused() -> Bool {
+    /// that, asking would not tell. `acrossRestarts`: a status read, which keeps a refusal this Mac's last part already
+    /// outlasted while its next part starts (`OnboardingLive.refusalIsCurrent`); a start's own wait doesn't.
+    public static func otherMacRefused(acrossRestarts: Bool = false) -> Bool {
         let own = ClusterService.published()?.child, now = Date().timeIntervalSince1970
-        guard OnboardingLive.refusalIsCurrent(own: own, now: now) else { return false }
-        return otherMacRefused(member: otherMacStatus()?.child, own: own, now: now)
+        guard OnboardingLive.refusalIsCurrent(own: own, now: now, acrossRestarts: acrossRestarts) else { return false }
+        return otherMacRefused(member: otherMacStatus()?.child, own: own, now: now, acrossRestarts: acrossRestarts)
     }
 
     /// Whether the other Mac's part reports the refusal, by the rule of the setup screen's ✗: that part runs and says so
-    /// (`OnboardingLive.otherMacRefused`), and this Mac's part has run long enough for one more dial to reach it
-    /// (`OnboardingLive.refusalIsCurrent`).
-    static func otherMacRefused(member: ClusterServiceStatus.Child?, own: ClusterServiceStatus.Child?, now: Double) -> Bool {
-        OnboardingLive.otherMacRefused(member) && OnboardingLive.refusalIsCurrent(own: own, now: now)
+    /// (`OnboardingLive.otherMacRefused`), and this Mac's part has run long enough for one more dial to reach it, or
+    /// for a status read (`acrossRestarts`) its last part did (`OnboardingLive.refusalIsCurrent`).
+    static func otherMacRefused(member: ClusterServiceStatus.Child?, own: ClusterServiceStatus.Child?, now: Double,
+                                acrossRestarts: Bool = false) -> Bool {
+        OnboardingLive.otherMacRefused(member) && OnboardingLive.refusalIsCurrent(own: own, now: now, acrossRestarts: acrossRestarts)
     }
 
     /// The other Mac's cluster service status: one `status` command over the cable, as the ✗'s readiness asks it, within

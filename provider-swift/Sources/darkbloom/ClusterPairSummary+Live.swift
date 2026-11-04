@@ -34,7 +34,8 @@ extension ClusterPairSummary {
     /// `darkbloom cluster status`: the local facts and the status `darkbloom cluster` shows, which on the Mac that
     /// follows comes from the leading Mac over the cable. `bounded`: a person's `cluster status` or `status`, which on
     /// the Mac that follows waits for that answer at most `leaderAnswerSeconds` and tells `bounded` when it is slow
-    /// (`statusLines`); nil waits as long as the answer takes.
+    /// (`statusLines`), and on the leading Mac keeps the other Mac's refusal across this Mac's part restarts
+    /// (`localNetworkRefusal`); nil waits as long as the answer takes and keeps the strict rule (a start's looks).
     static func live(config: String?, bounded slow: ClusterPairCommands.Say? = nil) async -> ClusterPairSummary {
         liveReadForTesting?(slow != nil)
         if let reader = testReader { return reader(true) }
@@ -140,19 +141,21 @@ extension ClusterPairSummary {
         if let status = statusLines(leads: summary.leads, slow: slow, noticeAfter: noticeAfter, operations.status) {
             summary.read(status: status, leaderMode: summary.leads ? ClusterService.publishedLive()?.control?.mode : nil)
         }
-        summary.read(localNetworkRefused: localNetworkRefusal(of: summary))
+        // A person's status read (`slow`) keeps a refusal across this Mac's part restarts; a start's own looks don't.
+        summary.read(localNetworkRefused: localNetworkRefusal(of: summary, acrossRestarts: slow != nil))
         return summary
     }
 
     /// Which Mac's follower macOS keeps off the local network, by the setup screens' rule: on the Mac that follows, its
     /// own service's state, as `start` reads it; on the leading Mac, the other Mac's status, asked only while the pair has
-    /// been starting longer than one more dial takes (the ✗'s rule).
-    private static func localNetworkRefusal(of summary: ClusterPairSummary) -> ClusterLocalNetworkAccess.Refused? {
+    /// been starting longer than one more dial takes (the ✗'s rule), or, for a status read (`acrossRestarts`), while this
+    /// Mac's last part ran that long and its next one starts.
+    private static func localNetworkRefusal(of summary: ClusterPairSummary, acrossRestarts: Bool) -> ClusterLocalNetworkAccess.Refused? {
         guard summary.started else { return nil }
         guard summary.leads else { return ClusterLocalNetworkAccess.serviceState() == .blocked ? .thisMac : nil }
         guard summary.state == .unknown || (summary.state == .loading && summary.lines.first?.hasPrefix("Starting ") == true)
         else { return nil }
-        return ClusterLocalNetworkAccess.otherMacRefused() ? .otherMac : nil
+        return ClusterLocalNetworkAccess.otherMacRefused(acrossRestarts: acrossRestarts) ? .otherMac : nil
     }
 
     /// This Mac's own view of the cluster, from its cluster service's last status (no other Mac is asked): stopped, the

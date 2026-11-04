@@ -189,7 +189,7 @@ public enum ClusterOnboardingNotServing {
 
     /// What to do next, said under the reason (the choices follow it).
     public static func remedy(forReason line: String) -> String? {
-        if isMissingLogin(line) { return "Run `darkbloom login` on each Mac named, then Retry; or serve locally only." }
+        if isMissingLogin(line) { return "Run `\(ClusterOnboardingCommand.name) login` on each Mac named, then Retry; or serve locally only." }
         if line.contains("isn't verified by Apple yet") { return "Then choose Retry, or serve locally only now." }
         if line.contains("lacks free memory") { return "Quit apps on that Mac, then Retry; or change the model." }
         return nil

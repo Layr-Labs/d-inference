@@ -1857,9 +1857,17 @@ final class OnboardingLive: @unchecked Sendable {
     /// the listener the follower dials) has run long enough for one more dial to reach it. The follower redials at most
     /// about 1.25 s apart (`ClusterLinkControlClient.connectLoop`: 20 ms doubling to 1 s, plus up to a quarter's jitter)
     /// and logs only a change, so before that, Local Network turned on meanwhile would not show yet.
-    static func refusalIsCurrent(own: ClusterServiceStatus.Child?, now: Double) -> Bool {
-        guard let own, own.running, let started = own.startedAt else { return false }
-        return now - started >= refusalSettleSeconds
+    ///
+    /// `acrossRestarts` (a status read): also between this Mac's parts and early in the next one, when its last part ran
+    /// that long. A refused member makes this Mac's part end after its wait for the link (32 s on pair-2) and start again,
+    /// so a status read would otherwise say the refusal only in each part's last seconds. The follower didn't get through
+    /// to that part, so the refusal stands until the next part's listener has had the same chance; a setting turned on
+    /// between parts shows once the follower reaches it (its refusal then clears). A start's own wait keeps the strict
+    /// rule: a Retry just after the setting was turned on must not end at once on a refusal not yet tested.
+    static func refusalIsCurrent(own: ClusterServiceStatus.Child?, now: Double, acrossRestarts: Bool = false) -> Bool {
+        guard let own else { return false }
+        if own.running, let started = own.startedAt, now - started >= refusalSettleSeconds { return true }
+        return acrossRestarts && (own.lastRunSeconds ?? 0) >= refusalSettleSeconds
     }
 
     /// How long this Mac's part runs before a refusal counts (`refusalIsCurrent`): its start up to its listener, plus a

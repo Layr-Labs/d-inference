@@ -721,11 +721,13 @@ ends. The DevNet app names "Darkbloom Dev" and `darkbloom-dev`.
   the cable: macOS keeps Darkbloom off the local network" and `next` is "On this Mac: System Settings → Privacy &
   Security → Local Network → turn on “Darkbloom” (on a Mac with no display, through Screen Sharing); then run
   `darkbloom start` here, or choose Retry in `darkbloom cluster` on the other Mac."
-- On the leading Mac, once its part has run about 20 seconds (the ✗'s rule; it then asks the other Mac's status),
+- On the leading Mac, from about 20 seconds into its part (the ✗'s rule; it then asks the other Mac's status), and
+  then steadily while the other Mac stays refused, also while its part ends on the missing link and starts again,
   `reason` is "The other Mac can't reach this Mac over the cable: macOS keeps Darkbloom there off the local network"
   and `next` names that Mac: "The other Mac (Apple M5 Max, 128 GB): System Settings → Privacy & Security → Local
   Network → turn on “Darkbloom” (on a Mac with no display, through Screen Sharing). Then run `darkbloom start` here,
-  or choose Retry in `darkbloom cluster`."
+  or choose Retry in `darkbloom cluster`." Once the setting is on, it clears when that Mac's follower gets through.
+- On both Macs, `lines` then holds that state's line, "Not serving: <reason>.", as the plain output's ✗ line does.
 
 A stopped pair reads `stopped` (exit 4) even while the other Mac isn't answering, as after a stop the other Mac asked
 for before it left (its uninstall does): `lines` are "Stopped; last model …" and "The other Mac (…) isn't answering

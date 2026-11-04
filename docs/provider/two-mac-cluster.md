@@ -1037,7 +1037,10 @@ passed. The follower's own refusal decides:
   blocked until its new follower dials;
 - `darkbloom status` and `darkbloom cluster status` say the same on both Macs,
   by the same rule: `not_serving`, with the steps on the Mac that is kept off,
-  instead of a load that never ends (the CLI reference quotes their words);
+  instead of a load that never ends (the CLI reference quotes their words). On
+  the leading Mac it starts about 20 seconds into its part and then holds while
+  the other Mac stays refused, also while the leading Mac's part ends on the
+  missing link and starts again;
 - `darkbloom start` ends its wait with the same instruction, and says first
   when it replaces a cluster service running from a terminal session with the
   login agent.

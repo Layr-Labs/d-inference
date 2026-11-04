@@ -79,7 +79,8 @@ public enum ClusterServingScope: Sendable, Equatable {
         return !(bind == "localhost" || bind == "::1" || bind.hasPrefix("127."))
     }
 
-    /// One plain line for the screens: how the cluster serves when it runs.
+    /// One plain line for the screens: how the cluster serves when it runs. It reaches `cluster status` as it is, never
+    /// through the console's rename, so it names this build's command itself (`ClusterOnboardingCommand.name`).
     public var line: String {
         switch self {
         case .publicServing:
@@ -87,7 +88,7 @@ public enum ClusterServingScope: Sendable, Equatable {
         case .localOnly(let bind):
             let reach = bind == Self.localOnlyDefaultBind ? "on this Mac's networks"
                 : reachableFromNetwork ? "at \(bind)" : "on this Mac only (\(bind))"
-            return "Local only, \(reach); API key: `darkbloom local`"
+            return "Local only, \(reach); API key: `\(ClusterOnboardingCommand.name) local`"
         }
     }
 }
@@ -711,7 +712,7 @@ public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
         guard network == true else { return base }
         // Local only, the API on the other Mac: this Mac's own port passes to it (`ClusterLocalRelay`).
         return base + ", and at port \(port) of \(servesHere ? "its" : "that Mac's") LAN or tailnet address"
-            + (servesHere ? "" : "; this Mac answers too (`darkbloom local` shows its address)")
+            + (servesHere ? "" : "; this Mac answers too (`\(ClusterOnboardingCommand.name) local` shows its address)")
     }
 
     private var servesHere: Bool { servedBy == ClusterOnboardingMacName.this }

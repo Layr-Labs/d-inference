@@ -57,6 +57,7 @@ class Contents:
     promotions: list = field(default_factory=list)     # (commit, dev commit it carried)
     preparations: list = field(default_factory=list)
     syncs: list = field(default_factory=list)
+    promoted_by: list = field(default_factory=list)    # every commit whose head carried dev, a preparation included
     carried: str = ''
     previous_carried: str = ''
 
@@ -210,7 +211,10 @@ def release_contents(repository, target, previous, version):
         dev = repository.commits('--first-parent', '--reverse', chain[carried], *(['--not', stop] if stop else []))
         preparations |= repository.preparations(version, chain[carried], *(['--not', stop] if stop else []))
     for commit in commits:
-        # A preparation whose head held dev commits still counts toward what the release carries.
+        # A preparation whose head held dev commits is named as the preparation, but it still
+        # counts toward what the release carries, and its dev pull requests reached master with it.
+        if commit.sha in promotions:
+            contents.promoted_by.append(commit)
         if commit.sha in preparations:
             contents.preparations.append(commit)
         elif commit.sha in promotions:
@@ -315,10 +319,11 @@ def render(header, contents, pulls, section, *, tag, previous, version, reposito
     master = [c for c in contents.master if c.number in pulls]
     unreferenced = contents.unreferenced + [c for c in contents.dev + contents.master if c.number not in pulls]
     pulls_part = ['## Pull requests in this release', '']
-    if contents.promotions:
-        promoted = numbers(c for c, _ in contents.promotions)
-        pulls_part += [f'{count(len(dev), "pull request")} merged into `dev` reached `master` with {promoted}, '
-                       f'which promoted `dev` up to {short(contents.carried)}:', '']
+    if dev:
+        promoted = numbers(contents.promoted_by)
+        route = f' with {promoted}, which promoted `dev`' if promoted else ''
+        pulls_part += [f'{count(len(dev), "pull request")} merged into `dev` reached `master`{route} '
+                       f'up to {short(contents.carried)}:', '']
         pulls_part += [pull_line(c, pulls, repository) for c in dev] + ['']
     if master:
         pulls_part += [f'{count(len(master), "pull request")} merged directly into `master`:', '']

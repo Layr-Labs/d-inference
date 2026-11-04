@@ -1563,7 +1563,7 @@ final class OnboardingLive: @unchecked Sendable {
             }
             if let ready = once.ready { return .success(ready) }
             if let refused = Self.localNetworkRefusalLines(line: once.line, otherMac: Self.sentence(there), app: ClusterService.appName) {
-                return .failure(.init(refused + lastErrors(fallback: nil, own: ownPart(since: began))))
+                return .failure(.init(refused + lastErrors(fallback: nil, own: ownPart(since: began), refusalSaid: true)))
             }
             // Each line once (a part that keeps restarting alternated two lines every 2 s); a part that ends the
             // same way again and again is said and the wait ends: both Macs keep trying by themselves. An end is
@@ -1634,7 +1634,9 @@ final class OnboardingLive: @unchecked Sendable {
 
     /// The last error each Mac's part reported, one line per Mac, also for parts still running (shown on screen after a
     /// start that did not finish, instead of a log path). `own`: this Mac's part as the caller already read it.
-    func lastErrors(fallback: String?, own snapshot: (child: ClusterServiceStatus.Child?, worker: OwnWorker)? = nil) -> [String] {
+    /// `refusalSaid`: the ✗ already says a Local Network refusal and what to do (`errorLines`).
+    func lastErrors(fallback: String?, own snapshot: (child: ClusterServiceStatus.Child?, worker: OwnWorker)? = nil,
+                    refusalSaid: Bool = false) -> [String] {
         let other: (child: ClusterServiceStatus.Child?, unreachable: String?)
         do {
             let status = try JSONDecoder().decode(ClusterServiceStatus.self, from: try command(.init(op: .status), seconds: 10))
@@ -1645,9 +1647,10 @@ final class OnboardingLive: @unchecked Sendable {
         // This start's: since its wait began (the ✗'s diagnostics file too), else no longer ago than a wait lasts.
         let own = snapshot ?? ownPart(since: lock.withLock { waitBegan } ?? Date().addingTimeInterval(-Self.readyWaitSeconds))
         var lines = Self.errorLines(here: Self.sentence(here), there: Self.sentence(there), own: own.child,
-                                    other: other.child, otherUnreachable: other.unreachable, ownWorker: own.worker)
+                                    other: other.child, otherUnreachable: other.unreachable, ownWorker: own.worker,
+                                    refusalSaid: refusalSaid)
         if let fallback { lines.append("Last progress: \(fallback).") }
-        return lines.map { ClusterConsoleText.bounded(context.clean($0), maximum: 300) }
+        return lines.map { ClusterConsoleText.boundedAtWord(context.clean($0), maximum: 300) }
     }
 
     /// A part's last error when its link to the other Mac closed (`ClusterLinkControlChannel.closed`): its end follows
@@ -1692,12 +1695,17 @@ final class OnboardingLive: @unchecked Sendable {
         return String(line[cut.upperBound...])
     }
 
-    /// One line per Mac: the last error each Mac's part reported (`lastErrors`).
+    /// One line per Mac: the last error each Mac's part reported (`lastErrors`). `refusalSaid`: the Local Network ✗ already
+    /// says the refusal and what to do, so a part refused by it is said plainly instead of in its follower's own words
+    /// (the pair-2 re-test, R-4); any other ✗ keeps the part's reason (A-3).
     static func errorLines(here: String, there: String, own: ClusterServiceStatus.Child?, other: ClusterServiceStatus.Child?,
-                           otherUnreachable: String?, ownWorker: OwnWorker = .notSeen) -> [String] {
+                           otherUnreachable: String?, ownWorker: OwnWorker = .notSeen, refusalSaid: Bool = false) -> [String] {
         func line(_ mac: String, _ child: ClusterServiceStatus.Child?, unreachable: String? = nil) -> String {
             if let unreachable { return "\(mac): did not answer over the cable (\(unreachable))." }
             guard let child else { return "\(mac): no report." }
+            if refusalSaid, child.lastError?.hasPrefix(ClusterService.localNetworkReasonPrefix) == true {
+                return "\(mac): its part " + (child.running ? "is running and " : "") + "can't reach the local network."
+            }
             if let error = child.lastError { return "\(mac): \(error)" + (child.running ? " (its part is still running)." : ".") }
             if let end = child.lastEnd, !child.running { return "\(mac): its part ended (\(end))." }
             return "\(mac): " + (child.running ? "its part is running, no error reported." : "its part is not running.")

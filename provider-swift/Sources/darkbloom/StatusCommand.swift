@@ -16,6 +16,7 @@ struct Status: AsyncParsableCommand {
     var solo = false
 
     mutating func run() async throws {
+        DarkbloomCommandLook.forCommand().open("Darkbloom status")
         // Asked first, so the add-on answers while the banner and the config
         // load run; bounded, so the add-on can never hold up or fail status.
         let sandboxLine = Task.detached {

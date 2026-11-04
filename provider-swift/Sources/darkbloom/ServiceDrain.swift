@@ -74,17 +74,17 @@ enum ServiceDrain {
         try? FileManager.default.removeItem(at: WatchdogStateStore.path())
 
         if let request, let mailbox {
-            print("Draining accepted requests (deadline: \(options.timeout)s). New work is refused by the running provider.")
+            sayLine("Draining accepted requests (deadline: \(options.timeout)s). New work is refused by the running provider.")
             do {
                 let result = try await wait(request: request, mailbox: mailbox)
                 let confirmation = result.coordinatorAcknowledged ? "received" : (result.outcome == .drained ? "not needed (no coordinator connection)" : "unconfirmed")
-                print("Drain \(result.outcome.rawValue): \(result.remaining) unfinished request(s); coordinator acknowledgement: \(confirmation).")
+                sayLine("Drain \(result.outcome.rawValue): \(result.remaining) unfinished request(s); coordinator acknowledgement: \(confirmation).")
             } catch {
                 guard options.force else { throw error }
-                print("Forced stop: drain acknowledgement unavailable; unfinished work will be interrupted.")
+                sayLine("Forced stop: drain acknowledgement unavailable; unfinished work will be interrupted.")
             }
         } else if options.force {
-            print("Forced lifecycle requested: unfinished work may be interrupted; completion is unconfirmed.")
+            sayLine("Forced lifecycle requested: unfinished work may be interrupted; completion is unconfirmed.")
 
         }
         if options.force, let identity, identity.isCurrent() {
@@ -150,9 +150,9 @@ enum ServiceDrain {
             if let status = mailbox.readStatus(), status.requestID == request.id {
                 if lastRemaining != status.remaining {
                     if status.outcome == .draining && status.remaining == 0 && !status.coordinatorAcknowledged {
-                        print("  Requests finished; waiting for coordinator usage acknowledgement")
+                        sayLine("  Requests finished; waiting for coordinator usage acknowledgement")
                     } else {
-                        print("  \(status.remaining) accepted request(s) remaining")
+                        sayLine("  \(status.remaining) accepted request(s) remaining")
                     }
                     lastRemaining = status.remaining
                 }
@@ -177,7 +177,7 @@ enum ServiceDrain {
             try Task.checkCancellation()
             if let state = DaemonStateFile.read(),
                restartReady(state: state, previous: previous, now: Date().timeIntervalSince1970) {
-                print("Provider restarted and freshly authorized (\(state.trust?.authorization?.path ?? "unknown")).")
+                sayLine("Provider restarted and freshly authorized (\(state.trust?.authorization?.path ?? "unknown")).")
                 return
             }
             try await Task.sleep(nanoseconds: 500_000_000)

@@ -34,11 +34,16 @@ struct Stop: AsyncParsableCommand {
     }
 
     mutating func run() async throws {
+        let look = DarkbloomCommandLook.forCommand()
+        look.open("Darkbloom stop")
         let pair = ClusterPairSummary.local()
         switch Self.pairedStop(pair, solo: solo, uninstall: uninstall) {
         case .stopPair:
             let actions = ClusterPairActions.live(config: nil)
-            let code = await Task.detached { ClusterPairCommands.stop(pair, actions: actions) }.value
+            let say = look.saying(ClusterPairCommands.printLine)
+            let code = await look.working("Stopping both Macs") {
+                await Task.detached { ClusterPairCommands.stop(pair, actions: actions, say: say) }.value
+            }
             if code != 0 { throw ExitCode(code) }
             return
         case .refuse(let lines):
@@ -52,10 +57,14 @@ struct Stop: AsyncParsableCommand {
             for line in pair.soloStopNothing { print(line) }
             return
         }
-        let session = try await ServiceDrain.prepare(options: drain, state: ServiceDrain.soloProviderState())
+        let session = try await look.working("Draining accepted requests") {
+            try await ServiceDrain.prepare(options: drain, state: ServiceDrain.soloProviderState())
+        }
         defer { session.release() }
 
-        try await ServiceDrain.stopDrainedProvider(daemonState: ServiceDrain.soloProviderState())
+        try await look.working("Stopping the provider") {
+            try await ServiceDrain.stopDrainedProvider(daemonState: ServiceDrain.soloProviderState())
+        }
         if uninstall {
             try? WatchdogAgent.uninstall()
             // The desktop API agent is KeepAlive; leaving it would keep it running

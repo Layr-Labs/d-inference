@@ -148,11 +148,18 @@ struct Start: AsyncParsableCommand {
 
     var startsSingleMacServing: Bool { !foreground && !clusterMember && !distributed }
 
+    /// The title beside the mark as `darkbloom start` opens in a terminal (`DarkbloomCommandLook`).
+    static let lookTitle = "Darkbloom start"
+
     mutating func run() async throws {
         Darkbloom.ensureLogging()
+        let look = DarkbloomCommandLook.forCommand()
         if startsSingleMacServing, !ClusterPairSummary.startedByClusterService() {
             let pair = ClusterPairSummary.local()
-            switch Self.pairStart(pair, solo: solo, terminal: ClusterPairCommands.isTerminal()) {
+            let pairStart = Self.pairStart(pair, solo: solo, terminal: ClusterPairCommands.isTerminal())
+            // The cluster's screen opens with the mark itself.
+            if pairStart != .openScreen { look.open(Self.lookTitle) }
+            switch pairStart {
             case .single(let note):
                 if let note { print(note) }
             case .refuse(let lines):
@@ -170,6 +177,7 @@ struct Start: AsyncParsableCommand {
             }
         }
         if !foreground {
+            look.open(Self.lookTitle)
             printTermsNotice()
         }
 

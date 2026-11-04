@@ -1556,9 +1556,8 @@ final class OnboardingLive: @unchecked Sendable {
                 once = readinessOnce()
             }
             if let ready = once.ready { return .success(ready) }
-            if once.line == Self.otherMacLocalNetworkLine {
-                return .failure(.init(Self.localNetworkRefusalLines(otherMac: Self.sentence(there), app: ClusterService.appName)
-                    + lastErrors(fallback: nil, own: ownPart(since: began))))
+            if let refused = Self.localNetworkRefusalLines(line: once.line, otherMac: Self.sentence(there), app: ClusterService.appName) {
+                return .failure(.init(refused + lastErrors(fallback: nil, own: ownPart(since: began))))
             }
             // Each line once (a part that keeps restarting alternated two lines every 2 s); a part that ends the
             // same way again and again is said and the wait ends: both Macs keep trying by themselves. An end is
@@ -1830,7 +1829,7 @@ final class OnboardingLive: @unchecked Sendable {
         // Members are asked for their own part only when rank 0 is here.
         let member = now.local ? try? JSONDecoder().decode(ClusterServiceStatus.self, from: try command(.init(op: .status), seconds: 10)) : nil
         // macOS keeps the other Mac's follower off the local network: nothing changes until someone allows it (P2-1).
-        if Self.otherMacRefused(member?.child) { return (nil, Self.otherMacLocalNetworkLine) }
+        if Self.otherMacRefused(member?.child) { return (nil, Self.localNetworkLine(forwarded: answering)) }
         if let member, !member.child.running, let end = member.child.lastEnd, Self.endShown(member.child) {
             line += "; \(thereShort)'s part ended (\(end)\(member.child.lastError.map { ": " + $0 } ?? "")) and starts again by itself"
         }
@@ -1852,6 +1851,23 @@ final class OnboardingLive: @unchecked Sendable {
 
     /// The live row's line once the other Mac's part reports that refusal (`readinessOnce`).
     static let otherMacLocalNetworkLine = "the other Mac can't reach this Mac over the cable (Local Network privacy)"
+    /// The same line on the screen of the Mac that forwarded the readiness (`execute`): the refused part is that Mac's.
+    static let thisMacLocalNetworkLine = "this Mac can't reach the other Mac over the cable (Local Network privacy)"
+
+    /// `readinessOnce`'s line for a refused member part, worded for the screen that shows it: this Mac's, or the Mac
+    /// whose forwarded readiness this Mac answers (`answering`).
+    static func localNetworkLine(forwarded: Bool) -> String {
+        forwarded ? thisMacLocalNetworkLine : otherMacLocalNetworkLine
+    }
+
+    /// `waitReady`'s ✗ for a refusal `line` (`localNetworkLine`): what to do on the Mac it names. Nil for any other line.
+    static func localNetworkRefusalLines(line: String, otherMac: String, app: String) -> [String]? {
+        switch line {
+        case otherMacLocalNetworkLine: return localNetworkRefusalLines(otherMac: otherMac, app: app)
+        case thisMacLocalNetworkLine: return ClusterOnboardingDriver.localNetworkBlockedLines(app: app, then: "then choose Retry here")
+        default: return nil
+        }
+    }
 
     /// Whether a part's end is said in the live rows (`readinessOnce`, `offeredReadiness`) as an end that starts again by
     /// itself, on either Mac: not a clean stop ("stopped", or exit 0 with no reason), which a planned switch makes on both

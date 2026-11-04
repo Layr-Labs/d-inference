@@ -1018,7 +1018,10 @@ passed. The follower's own refusal decides:
   System Settings → Privacy & Security → Local Network → turn on "Darkbloom"
   (or "Darkbloom Dev"); on a Mac with no display, through Screen Sharing;
 - the leading Mac's ✗ says the same of the other Mac at once, since it can't
-  clear until someone turns the setting on;
+  clear until someone turns the setting on; a start run from the joining Mac's
+  own window says it of that Mac;
+- once the follower has connected, an earlier refusal no longer counts, also
+  after its part stops;
 - `darkbloom start` ends its wait with the same instruction, and says first
   when it replaces a cluster service running from a terminal session with the
   login agent.

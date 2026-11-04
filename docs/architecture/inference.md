@@ -3879,9 +3879,13 @@ away; mixed pairs are first-class).
 - **Local Network truth:** the follower the service runs is the process that
   dials the other Mac, so its last dial decides (`ClusterService.followerRefusal`:
   the refusal macOS gave it, or a link it opened since). A running part publishes
-  that refusal as its `lastError`, the service's Local Network state reads it as
-  blocked whatever the probe's broadcast found (`ClusterLocalNetworkAccess.state`),
-  and the leading Mac's wait ends at once on it (`OnboardingLive.otherMacRefused`).
+  that refusal as its `lastError`, and an ended part's reason reads the same last
+  dial (`ClusterService.lastError`), so a stop after a link opened is a clean
+  stop. The service's Local Network state reads it as blocked whatever the
+  probe's broadcast found (`ClusterLocalNetworkAccess.state`), and the leading
+  Mac's wait ends at once on it (`OnboardingLive.otherMacRefused`), worded for the
+  screen that shows it (`OnboardingLive.localNetworkLine`): a wait the joining Mac
+  forwarded names that Mac.
 - **The person's family:** `useMode` keeps the chosen family for every model
   (`OnboardingLive.keptFamily`), never inferred from the listing's order, which
   says nothing of the plan; `localAdopt` plans again in it only when the listed

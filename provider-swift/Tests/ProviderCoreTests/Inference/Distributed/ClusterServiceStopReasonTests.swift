@@ -268,4 +268,40 @@ struct ClusterServiceStopReasonTests {
                 && lines.contains { $0.contains("System Settings → Privacy & Security → Local Network → turn on “Darkbloom Dev”") }
                 && lines.contains { $0.contains("Screen Sharing") }, "what to do there: \(lines)")
     }
+
+    /// A refusal the follower got past (Local Network turned on, then "connected") is not its part's reason once that
+    /// part ends either: a planned stop after it is a clean stop, not a refusal that would end the leader's wait at once
+    /// and keep the Mac "blocked". Without a later link, the refusal is still the ended part's reason (A-3).
+    @Test func aRefusalTheFollowerGotPastIsNotItsEnd() throws {
+        let refused = "2026-11-04T07:32:14Z link-follower: link refused: connectFailed (unreachable)\n"
+            + "2026-11-04T07:32:14Z link-follower: this process may not reach the local network: macOS refused the dial before the cable "
+            + "was tried. Allow darkbloom under System Settings > Privacy & Security > Local Network (once), or start the follower from a "
+            + "session that has that access.\n"
+        let stoppedLater = try log(banner + refused + "2026-11-04T07:40:02Z link-follower: connected\n"
+            + "2026-11-04T07:40:02Z link-follower: session opened\n2026-11-04T08:07:27Z link-follower: session fenced: leader fenced\n"
+            + "2026-11-04T08:07:29Z link-follower: stopped idle\n")
+        defer { try? FileManager.default.removeItem(at: stoppedLater) }
+        let reason = ClusterService.lastError(in: stoppedLater)
+        #expect(reason == nil, "connected since: \(String(describing: reason))")
+        let stopped = ClusterServiceStatus.Child(running: false, starts: 2, lastEnd: "exit 0", restartInSeconds: nil, lastError: reason)
+        #expect(!OnboardingLive.otherMacRefused(stopped) && !OnboardingLive.endShown(stopped), "a planned stop, not a refusal")
+        let endedRefused = try log(banner + refused + "2026-11-04T07:42:00Z link-follower: stopped idle\n")
+        defer { try? FileManager.default.removeItem(at: endedRefused) }
+        #expect(ClusterService.lastError(in: endedRefused)?.hasPrefix(ClusterService.localNetworkReasonPrefix) == true,
+                "never connected: the refusal is still its reason")
+    }
+
+    /// The refusal is said of the Mac it happened on, on either screen. The leader's own wait names the other Mac; a wait
+    /// the member forwarded to the leader (which answers it, `answering`) names the member, "this Mac" on its screen.
+    @Test func aRefusalIsSaidOfTheMacItHappenedOn() {
+        let app = "Darkbloom Dev", leader = "The other Mac (Apple M5 Ultra, 256 GB)"
+        let own = OnboardingLive.localNetworkRefusalLines(line: OnboardingLive.localNetworkLine(forwarded: false), otherMac: leader, app: app)
+        #expect(own?.first == "The other Mac can't reach this Mac over the cable: macOS keeps Darkbloom Dev there off the local network")
+        let forwarded = OnboardingLive.localNetworkRefusalLines(line: OnboardingLive.localNetworkLine(forwarded: true), otherMac: leader,
+                                                                app: app)
+        #expect(forwarded?.first == "This Mac can't reach the other Mac over the cable: macOS keeps Darkbloom Dev off the local network."
+                && forwarded?.last?.hasPrefix("On this Mac: System Settings → Privacy & Security → Local Network") == true
+                && forwarded?.last?.contains("choose Retry here") == true, "the member's own screen: \(String(describing: forwarded))")
+        #expect(OnboardingLive.localNetworkRefusalLines(line: "starting", otherMac: leader, app: app) == nil)
+    }
 }

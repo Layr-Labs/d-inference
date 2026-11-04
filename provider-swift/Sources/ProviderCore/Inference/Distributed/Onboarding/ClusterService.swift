@@ -1247,11 +1247,9 @@ public final class ClusterService: @unchecked Sendable {
             if reason.hasSuffix(".") { reason.removeLast() }
             if !reason.isEmpty { return ClusterConsoleText.plain(ClusterConsoleText.bounded(reason, maximum: 240)) }
         }
-        // A link follower macOS kept off the local network says so and ends cleanly: that is its reason (A-3).
-        if error == nil, let refused = ClusterLogScan.lastLine(in: log, from: offset, where: { $0.contains(localNetworkRefusal) }),
-           let at = refused.range(of: localNetworkRefusal) {
-            return refusalReason(String(refused[at.upperBound...]))
-        }
+        // A link follower macOS kept off the local network says so and ends cleanly: that is its reason (A-3), unless a
+        // link it opened since says the dial worked (`followerRefusal`), so a planned stop after it is a clean stop.
+        if error == nil, let refusal = followerRefusal(in: log, from: offset) { return refusal }
         return error
     }
 
@@ -1268,11 +1266,8 @@ public final class ClusterService: @unchecked Sendable {
     /// longer holds (`followerRefusal`), so turning Local Network on clears it. Shared the way `localNetworkRefusal` is.
     public static let followerLinkOpenedLines = ["link-follower: connected", "link-follower: session opened"]
 
-    /// The app macOS names in Privacy & Security → Local Network ("Darkbloom", "Darkbloom Dev").
-    public static let appName: String = {
-        let bundle = BuildEnvironment.current.appBundleName
-        return bundle.hasSuffix(".app") ? String(bundle.dropLast(4)) : bundle
-    }()
+    /// The app macOS names in Privacy & Security → Local Network ("Darkbloom", "Darkbloom Dev"): its `CFBundleName`.
+    public static let appName = BuildEnvironment.current.appDisplayName
 
     /// The reason the follower this service runs can't dial the other Mac now, from its log since it started: its last
     /// dial's outcome, the refusal macOS gave it ("this process may not reach the local network", P2-1, A-2) or a link

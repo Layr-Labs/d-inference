@@ -268,8 +268,9 @@ On a paired Mac, `darkbloom start` says first when it replaces a cluster service
 running from a terminal session with the login agent. When macOS's Local Network
 setting keeps this Mac's link follower off the cable, it ends its wait at once
 with where to turn it on (System Settings → Privacy & Security → Local Network →
-"Darkbloom", or "Darkbloom Dev"; through Screen Sharing on a Mac with no
-display), and exits 1.
+"Darkbloom", the row macOS lists for the DevNet app too; with no such row, Allow
+on macOS's prompt on that Mac's screen at the next dial; through Screen Sharing
+on a Mac with no display), and exits 1.
 
 Options on a paired Mac (`Start.singleMacOptions`, `ClusterPairSummary.singleMacOptionsRefusal`):
 
@@ -716,16 +717,19 @@ Next: Leave both Macs running: Darkbloom retries by itself. Or serve locally onl
 
 While macOS's Local Network setting keeps a Mac's link follower off the cable, both Macs read `not_serving` (exit 3)
 by the setup screens' rule and in their words (`ClusterLocalNetworkAccess.statusWords`), instead of a load that never
-ends. The DevNet app names "Darkbloom Dev" and `darkbloom-dev`.
+ends. The DevNet app names "Darkbloom Dev" and `darkbloom-dev`, and says that macOS lists it as "Darkbloom"
+(`ClusterService.localNetworkRow`: both apps share one bundle ID).
 - On the Mac that is kept off (its own cluster service's refusal), `reason` is "This Mac can't reach the other Mac over
   the cable: macOS keeps Darkbloom off the local network" and `next` is "On this Mac: System Settings → Privacy &
-  Security → Local Network → turn on “Darkbloom” (on a Mac with no display, through Screen Sharing); then run
+  Security → Local Network → turn on “Darkbloom”; if it isn't listed, click Allow when macOS asks on this Mac's
+  screen, the next time Darkbloom dials over the cable (on a Mac with no display, through Screen Sharing); then run
   `darkbloom start` here, or choose Retry in `darkbloom cluster` on the other Mac."
 - On the leading Mac, from about 20 seconds into its part (the ✗'s rule; it then asks the other Mac's status), and
   then steadily while the other Mac stays refused, also while its part ends on the missing link and starts again,
   `reason` is "The other Mac can't reach this Mac over the cable: macOS keeps Darkbloom there off the local network"
   and `next` names that Mac: "The other Mac (Apple M5 Max, 128 GB): System Settings → Privacy & Security → Local
-  Network → turn on “Darkbloom” (on a Mac with no display, through Screen Sharing). Then run `darkbloom start` here,
+  Network → turn on “Darkbloom”; if it isn't listed, click Allow when macOS asks on that Mac's screen, the next time
+  Darkbloom dials over the cable (on a Mac with no display, through Screen Sharing). Then run `darkbloom start` here,
   or choose Retry in `darkbloom cluster`." Once the setting is on, it clears when that Mac's follower gets through.
 - On both Macs, `lines` then holds that state's line, "Not serving: <reason>.", as the plain output's ✗ line does.
 

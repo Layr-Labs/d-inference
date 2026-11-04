@@ -662,8 +662,12 @@ public struct ClusterControlRequest: Codable, Sendable, Equatable {
     public var model: String?
     public var localOnly: Bool?
     public var bind: String?
-    public init(op: Operation, index: Int? = nil, model: String? = nil, scope: ClusterServingScope? = nil) {
+    /// `adopt`: the mode family chosen on the forwarding Mac's screen (a `ClusterForcedMode` raw value); nil keeps the
+    /// listed plan's, and from an older build.
+    public var mode: String?
+    public init(op: Operation, index: Int? = nil, model: String? = nil, scope: ClusterServingScope? = nil, mode: String? = nil) {
         self.op = op; self.index = index; self.model = model; self.localOnly = scope.map(\.isLocalOnly); self.bind = scope?.bind
+        self.mode = mode
     }
 
     /// `scope`'s value; nil when it names none or an address the local API does not take.

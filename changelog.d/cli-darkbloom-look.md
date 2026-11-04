@@ -1,7 +1,7 @@
 ### The everyday commands show the Darkbloom mark in a terminal
 
 - In a terminal, `darkbloom start`, `stop`, `restart`, `status` and `update` open with the Darkbloom mark beside the
-  command's name, blooming once as the cluster setup's does, and show its turning one-row live line while they wait
+  command's name, blooming once as the cluster setup's does, and show its one-line live status while they wait
   for a drain, a restart or an update's download.
 - Look only: every line the commands print is unchanged and in the same order, and so are their exit statuses.
 - Scripts, logs, the background service's files, `NO_COLOR`, `TERM=dumb` and narrow windows keep exactly the plain

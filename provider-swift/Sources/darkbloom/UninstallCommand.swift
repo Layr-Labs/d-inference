@@ -178,20 +178,19 @@ struct Uninstall: AsyncParsableCommand {
                 ProviderUninstall.liveRunningClusterService(paths: ProviderUninstallPaths(home: FileManager.default.homeDirectoryForCurrentUser))
             },
             stopClusterService: { try ProviderUninstall.liveStopClusterService(pid: $0) },
-            stopPair: {
-                // As `darkbloom stop` on either Mac: the leader stops both Macs; a serving member asks the leader.
-                await Task.detached { () -> ProviderUninstall.PairStop in
-                    guard let control = try? ClusterOnboardingOperations.live(.clusterService(config: nil, worker: nil)) else {
-                        return .noAnswer("this Mac's cluster service could not be asked")
-                    }
-                    let resume = control.resume()
-                    guard Cluster.Stop.pairStop(role: resume.role, serving: resume.serving) != .stopHere else { return .notServing }
-                    switch control.stop() {
-                    case .success: return .stopped
-                    case .failure(let failure): return .noAnswer(failure.lines.joined(separator: " "))
-                    }
-                }.value
-            })
+            stopBothMacs: { await Task.detached { Self.stopBothMacs(ClusterPairActions.live(config: nil)) }.value })
+    }
+
+    /// The pair stop `darkbloom stop` runs on either Mac: the leader stops both Macs; a serving member asks the leader.
+    /// nil `actions`: this Mac's cluster could not be reached.
+    static func stopBothMacs(_ actions: ClusterPairActions?) -> ProviderUninstall.PairStopOutcome {
+        guard let actions else { return .noAnswer("this Mac's cluster service could not be asked") }
+        let resume = actions.resume()
+        guard Cluster.Stop.pairStop(role: resume.role, serving: resume.serving) != .stopHere else { return .notServing }
+        switch actions.stop() {
+        case .success: return .stopped
+        case .failure(let failure): return .noAnswer(failure.lines.joined(separator: " "))
+        }
     }
 
     /// The drain's lease, held until the services are removed, so an update cannot start the provider in between.

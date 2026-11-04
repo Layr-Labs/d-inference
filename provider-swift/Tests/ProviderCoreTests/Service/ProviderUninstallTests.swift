@@ -713,7 +713,7 @@ struct ProviderUninstallTests {
     @Test("P2-16: a serving member's uninstall beside the other install stops the pair first, then its service")
     func servingMemberStopsThePairFirst() async throws {
         let noAnswer = "the other Mac's cluster service did not answer on the cable"
-        for answer in [ProviderUninstall.PairStop.stopped, .noAnswer(noAnswer)] {
+        for answer in [ProviderUninstall.PairStopOutcome.stopped, .noAnswer(noAnswer)] {
             let fixture = try Fixture.make()
             defer { fixture.remove() }
             _ = try installBoth(fixture)
@@ -725,7 +725,7 @@ struct ProviderUninstallTests {
                                               items: ProviderUninstall.inventory(paths), pairing: fixture.pairing)
             let log = fixture.deletes
             var operations = fixture.operations(providerRunning: false, cluster: FakeClusterService(running, log: log))
-            operations.stopPair = { log.add("ask the pair to stop"); return answer }
+            operations.stopBothMacs = { log.add("ask the pair to stop"); return answer }
             let report = await fixture.run(.keepModels, items: plan.items, pairing: fixture.pairing, operations: operations)
             let order = log.all
             #expect(Array(order.prefix(2)) == ["ask the pair to stop", "stop cluster service 4242"] && order.count > 2,
@@ -760,7 +760,7 @@ struct ProviderUninstallTests {
                                                              owner: ProviderUninstall.owner(ofExecutable: binary.path, paths: paths))
         var operations = fixture.operations(providerRunning: false, cluster: FakeClusterService(theirs, log: fixture.deletes))
         let asked = Calls()
-        operations.stopPair = { asked.add("ask"); return .stopped }
+        operations.stopBothMacs = { asked.add("ask"); return .stopped }
         _ = await fixture.run(.keepModels, items: ProviderUninstall.inventory(paths), pairing: fixture.pairing, operations: operations)
         #expect(asked.all.isEmpty, "the other install's pair is left as it is")
 
@@ -768,7 +768,7 @@ struct ProviderUninstallTests {
         let single = try Fixture.make()
         defer { single.remove() }
         var alone = single.operations()
-        alone.stopPair = { asked.add("ask"); return .stopped }
+        alone.stopBothMacs = { asked.add("ask"); return .stopped }
         _ = await single.run(.everything, pairing: single.pairing, operations: alone)
         #expect(asked.all.isEmpty && single.calls.all.contains("cluster stop"))
     }

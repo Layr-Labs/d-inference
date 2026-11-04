@@ -52,7 +52,7 @@ public enum ProviderUninstall {
         public var stopClusterService: (_ pid: Int32) throws -> Void
         /// Stops the pair this install's cluster service serves, on both Macs, as `darkbloom stop` on either Mac does
         /// (a member asks the leader over the control channel). Its services stay up, idle.
-        public var stopPair: () async throws -> PairStop
+        public var stopBothMacs: () async throws -> PairStopOutcome
 
         public init(stopServing: @escaping () async throws -> Outcome, stopClusterPart: @escaping () async throws -> Outcome,
                     removeServices: [(name: String, remove: () throws -> Outcome)], servicesHandled: @escaping () -> Void = {},
@@ -62,17 +62,17 @@ public enum ProviderUninstall {
                     availableBytes: @escaping () -> Int64? = { nil },
                     runningClusterService: @escaping () -> RunningClusterService? = { nil },
                     stopClusterService: @escaping (Int32) throws -> Void = { _ in },
-                    stopPair: @escaping () async throws -> PairStop = { .notServing }) {
+                    stopBothMacs: @escaping () async throws -> PairStopOutcome = { .notServing }) {
             self.stopServing = stopServing; self.stopClusterPart = stopClusterPart; self.removeServices = removeServices
             self.servicesHandled = servicesHandled; self.revokeToken = revokeToken; self.forget = forget
             self.removeCableSetup = removeCableSetup; self.delete = delete; self.availableBytes = availableBytes
             self.runningClusterService = runningClusterService; self.stopClusterService = stopClusterService
-            self.stopPair = stopPair
+            self.stopBothMacs = stopBothMacs
         }
     }
 
-    /// How `Operations.stopPair` ended.
-    public enum PairStop: Equatable, Sendable {
+    /// How `Operations.stopBothMacs` ended.
+    public enum PairStopOutcome: Equatable, Sendable {
         /// Both Macs stopped serving.
         case stopped
         /// The pair was not serving: there was nothing to tell the other Mac.
@@ -300,8 +300,8 @@ public enum ProviderUninstall {
         // keep restarting its part for a member that is gone. Without an answer, only this Mac's part stops.
         var pair: String?
         if running?.owner == .thisInstall {
-            let outcome: PairStop
-            do { outcome = try await operations.stopPair() } catch { outcome = .noAnswer("\(error)") }
+            let outcome: PairStopOutcome
+            do { outcome = try await operations.stopBothMacs() } catch { outcome = .noAnswer("\(error)") }
             switch outcome {
             case .stopped: pair = "asked the pair to stop first, and both Macs stopped serving"
             case .notServing: pair = nil

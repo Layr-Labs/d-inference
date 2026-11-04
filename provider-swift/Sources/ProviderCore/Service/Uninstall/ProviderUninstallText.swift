@@ -120,7 +120,7 @@ extension ProviderUninstall {
         }
         if let pairing = plan.pairing, !plan.sharesCluster { lines.append(otherMacLine(pairing, cli: plan.cli)) }
         if report.steps.contains(where: { $0.name == ownClusterStep && $0.detail?.contains(pairNoAnswer) == true }) {
-            lines.append(otherMacStillServingLine(plan.pairing?.otherMacName, cli: plan.cli))
+            lines.append(otherMacNoAnswerLine(plan.pairing?.otherMacName, cli: plan.cli))
         }
         return lines
     }
@@ -179,7 +179,7 @@ extension ProviderUninstall {
     }
 
     /// The last line when the other Mac did not answer the pair's stop: it may keep restarting its part.
-    static func otherMacStillServingLine(_ name: String?, cli: String) -> String {
+    static func otherMacNoAnswerLine(_ name: String?, cli: String) -> String {
         "The other Mac\(name.map { " (\($0))" } ?? "") did not answer, so its part may keep restarting: run `\(cli) cluster stop` on it."
     }
 

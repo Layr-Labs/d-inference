@@ -2,10 +2,12 @@ import Foundation
 import Darwin
 
 extension ClusterConfigurationStore {
-    /// Diagnostics-only optional read. Missing file/reference means no saved
-    /// setup, and so does a file only other users can open that saves no
-    /// setup (as the installer writes it). Malformed or unsafe existing input
-    /// remains an error; one that saves a setup says the fix. No writes.
+    /// Optional read of the saved setup's reference (diagnostics, the setup
+    /// screens, approval checks and member supervision). A missing file or
+    /// reference means no saved setup, and so does a file whose only fault is
+    /// that other users can read it, when it saves no setup (as the installer
+    /// writes it). Malformed or unsafe existing input remains an error; such a
+    /// file that saves a setup fails with the fix. No writes.
     static func optionalInstalledReference(providerConfiguration: URL) throws -> ClusterConfigurationReference? {
         try ClusterConfigurationFiles.requireAbsolute(providerConfiguration.path)
         var value = stat()

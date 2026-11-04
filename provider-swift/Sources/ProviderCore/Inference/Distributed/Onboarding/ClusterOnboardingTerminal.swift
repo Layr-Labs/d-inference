@@ -76,9 +76,10 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
             signal(number) { received in
                 var mode = ClusterOnboardingTerminal.restoreMode
                 if ClusterOnboardingTerminal.restoreInput >= 0 { _ = tcsetattr(ClusterOnboardingTerminal.restoreInput, TCSANOW, &mode) }
+                // Nothing is allocated here: a literal in the binary, and the bytes made before the handlers were set.
                 if ClusterOnboardingTerminal.cursorHidden {
-                    let show = Array("\u{1B}[?25h".utf8)
-                    _ = show.withUnsafeBytes { Darwin.write(STDOUT_FILENO, $0.baseAddress, $0.count) }
+                    let show: StaticString = "\u{1B}[?25h"
+                    _ = Darwin.write(STDOUT_FILENO, show.utf8Start, show.utf8CodeUnitCount)
                 }
                 let text = ClusterOnboardingTerminal.stoppedBytes
                 _ = text.withUnsafeBytes { Darwin.write(STDOUT_FILENO, $0.baseAddress, $0.count) }

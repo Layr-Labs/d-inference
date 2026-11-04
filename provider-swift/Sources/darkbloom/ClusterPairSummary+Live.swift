@@ -46,7 +46,7 @@ extension ClusterPairSummary {
     static let leaderAnswerSeconds: Double = 10
 
     /// For `--json`: a line on standard error, so standard output stays one JSON object.
-    static let sayOnStandardError: ClusterPairCommands.Say = { line in FileHandle.standardError.write(Data((line + "\n").utf8)) }
+    static let sayOnStandardError: ClusterPairCommands.Say = { printError($0) }
 
     /// The provider pid of the cluster's running part on this Mac, which writes the same daemon state as single-Mac
     /// serving (`ServiceDrain.soloProviderState`). Nil while a test gives the pair.

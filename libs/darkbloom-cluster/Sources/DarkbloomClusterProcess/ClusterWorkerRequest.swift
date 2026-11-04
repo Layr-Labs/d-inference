@@ -24,6 +24,8 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
     private var released = false
     private var cancellation: ClusterWorkerCancellationReason?
     private var cleanStopRequested = false
+    /// True once rank 0 committed the request's first token.
+    private var producedToken = false
     private var byteReservation = 0
     private enum Submission { case none, submitted, admitted, refused }
     private var submissions: [Submission] = [.none, .none]
@@ -252,10 +254,14 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
     /// caller that cannot wait calls `cancel`, which ends the ranks.
     ///
     /// A request that has produced no token yet stops at its first one. False
-    /// when the request can no longer stop this way (cancelled, or retired).
+    /// when the request can no longer stop this way (cancelled, or retired),
+    /// and for a lane that has produced no token yet: its clean stop would
+    /// first finish its whole prompt, and the ranks prefill one prompt at a
+    /// time, so every newer request would wait behind it. Its `cancel` ends
+    /// only that lane, at the ranks' next step boundary.
     @discardableResult public func requestCleanStop() -> Bool {
         lock.withLock {
-            guard cancellation == nil, !retired.isComplete else { return false }
+            guard cancellation == nil, !retired.isComplete, !owner.lanesRetireAlone || producedToken else { return false }
             cleanStopRequested = true; return true
         }
     }
@@ -325,7 +331,7 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
                         throw ClusterWorkerOwnerError.invalid("Unexpected committed worker token")
                     }
                     count += 1; last = token
-                    let emit = lock.withLock { callback }
+                    let emit = lock.withLock { producedToken = true; return callback }
                     // The token is committed on both ranks and is delivered even
                     // when a clean stop was requested meanwhile; the stop is the
                     // answer to it.

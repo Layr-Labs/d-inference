@@ -108,6 +108,26 @@ ended the whole pair: every lane in flight failed and the follower logged
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerLeaseState.swift`
 (`clock`).
 
+A pair request whose consumer goes away (a client that closes its connection,
+or a coordinator cancel) ends with the clean client-stop handshake at its next
+committed token, which keeps both ranks retired and the pair serving
+(`DistributedCBv2Engine.stop`, `.cancelled`). On a pair whose lanes retire
+alone, a request that has produced no token yet takes no clean stop
+(`ClusterWorkerRequest.requestCleanStop` returns false) and is cancelled
+instead: a clean stop would first finish its whole prompt, and a
+tensor-parallel pair prefills one prompt at a time, oldest first
+(`QwenTensorParallelBatchDriver`), so every newer request would wait behind it
+and fail at its own first-token deadline. The cancel ends only that lane, at
+both ranks' next step boundary, and the next request is served at once. A
+pair without such lanes keeps the clean stop, since a cancel there ends the
+pair. Before, a client that closed its connection 15 s into a 60K-token prompt
+on a Qwen 3.8 27B tensor-parallel pair kept both Macs prefilling it for about
+4 minutes, and every other request failed meanwhile. Sources:
+`libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerRequest.swift`
+(`requestCleanStop`) and
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine+Events.swift`
+(`stop`).
+
 The cluster setup liveness probe uses the same request validation as ordinary
 chat completions. `ClusterSetupProbeRequest` sends no family-specific thinking
 override, so each model’s prompt policy remains authoritative.

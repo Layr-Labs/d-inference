@@ -2816,6 +2816,13 @@ in-process follower. `PartialAdmissionTests` and `ProviderDeadlinePipeCheck` in
 children, the latter through the provider's own deadline and owner sources.
 None of these is a hardware pass.
 
+The same class checks a consumer that goes away during its prompt: on a lane
+pair, a started request whose rank 0 has committed no token takes no clean
+stop and is cancelled, both ranks are told at once, its lane retires alone and
+the next request is served; a pair without lanes keeps the clean stop.
+`CleanStopTests` in `ProcessChecks` keeps the single-lane clean stop before
+the first token with actual children.
+
 ### Qwen27 tensor-parallel native batch checks
 
 Run `QwenTensorParallelBatchDriverTests`, `QwenTensorParallelBatchBudgetTests`

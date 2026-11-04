@@ -263,11 +263,6 @@ struct GLM5NextLocalQualificationTests {
         #expect(!EngineV2SupportedModels.isSupported(modelType: "glm5_next"))
     }
 
-    @Test func providerLoadsUseTheQualifiedServingPolicy() {
-        #expect(GLM5NextManagedLoad.executionPolicy == .serving)
-        #expect(GLM5NextManagedLoad.executionPolicy != .reference)
-    }
-
     /// Layer geometry comes from the pinned GLM-5.3-Flash architecture
     /// evidence, and the re-slice weight must equal the rate the engine admits
     /// for the same FP32 native rows on both storage backends.

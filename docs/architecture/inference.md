@@ -491,7 +491,8 @@ leader's service log notes a following window's `status` requests once a minute
 (`ClusterService.logsControl`). Each Mac's cluster service tells the other
 whether it starts at login (`ClusterServiceStatus.startsAtLogin`: it runs under
 its login agent's supervisor and that agent is installed,
-`ClusterServiceAgent.startsAtLogin`).
+`ClusterServiceAgent.startsAtLogin`). This Mac's own lines read it from its
+running service when they are said, else from this run's service setup.
 
 ## Context
 
@@ -3952,12 +3953,20 @@ away; mixed pairs are first-class).
   same refusal by the same rule (`ClusterLocalNetworkAccess.Refused`): on the
   refused Mac its own service's state, on the leading Mac the other Mac's
   status, asked (`otherMacStatus`) only while the pair has been starting past
-  the settle time (`otherMacRefused`). They say `not_serving` in the screens'
+  the settle time (`otherMacRefused`). A status read keeps it across the leading
+  Mac's part restarts once a part ran past that time (`refusalIsCurrent`'s
+  `acrossRestarts`, from the service's `lastRunSeconds`); a start's own wait
+  doesn't, so a Retry just after the setting was turned on never ends at once on
+  it. They say `not_serving` in the screens'
   words, ending with the command that starts the pair again instead of the
   screen's Retry (`statusWords`, through the `then` of
   `localNetworkRefusalLines` and `localNetworkBlockedLines`). A stopped pair
   reads stopped whatever the other Mac's presence
   (`ClusterPairSummary.state(ofStatus:started:leaderMode:)`).
+- **The split shown:** each mode's share names the Mac that runs it
+  (`OnboardingLive.modeSplit`, "1 layer" for one). While a model serves it reads
+  "decided when it loads": the list's plan counts that model's memory as taken,
+  and the adopt stops it and plans again with its memory free.
 - **The person's family:** `useMode` keeps the chosen family for every model
   (`OnboardingLive.keptFamily`), never inferred from the listing's order, which
   says nothing of the plan; `localAdopt` plans again in it only when the listed

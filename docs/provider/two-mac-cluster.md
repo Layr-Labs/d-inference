@@ -240,6 +240,11 @@ first (else the planner's), the other one keypress away:
 - **Speculative pipeline** (MiMo): a pipeline that drafts several tokens and
   checks them together.
 
+While a model serves, each mode's split reads "decided when it loads": the list
+plans with that model's memory still taken, and the start stops it and plans
+again with its memory free, so a split offered then could differ from the one
+that loads. The card after the start shows the split that loaded.
+
 A mode is offered only if it keeps every feature of the model: Qwen 3.8 27B
 offers tensor parallel only, because pipeline would drop its image, video and
 logprob support. Change the mode on the leading Mac: a model chosen on the
@@ -1037,7 +1042,10 @@ passed. The follower's own refusal decides:
   blocked until its new follower dials;
 - `darkbloom status` and `darkbloom cluster status` say the same on both Macs,
   by the same rule: `not_serving`, with the steps on the Mac that is kept off,
-  instead of a load that never ends (the CLI reference quotes their words);
+  instead of a load that never ends (the CLI reference quotes their words). On
+  the leading Mac it starts about 20 seconds into its part and then holds while
+  the other Mac stays refused, also while the leading Mac's part ends on the
+  missing link and starts again;
 - `darkbloom start` ends its wait with the same instruction, and says first
   when it replaces a cluster service running from a terminal session with the
   login agent.

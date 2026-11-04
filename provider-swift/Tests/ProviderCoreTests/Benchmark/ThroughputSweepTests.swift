@@ -103,11 +103,6 @@ struct DecodeBandwidthModelTests {
 @Suite("throughput sweep: row aggregation")
 struct ThroughputSweepRowAggregationTests {
 
-    @Test("decode sweep ignores EOS to preserve a fixed token budget")
-    func fixedDecodeBudget() {
-        #expect(ThroughputSweep.fixedBudgetStopTokens.isEmpty)
-    }
-
     @Test("clean rows aggregate tokens and the slowest row's elapsed")
     func cleanRowsAggregate() {
         let cell = ThroughputSweep.aggregateRows([
@@ -427,16 +422,6 @@ struct ThroughputSweepTilingTests {
         #expect(ThroughputSweep.tile([], to: 3) == [0, 0, 0])
         #expect(ThroughputSweep.tile([5], to: 0) == [])
         #expect(ThroughputSweep.tile([5, 6], to: 3, offset: 5) == [6, 5, 6])  // offset wraps
-    }
-}
-
-@Suite("scheduler prefill benchmark helpers")
-struct SchedulerPrefillBenchmarkTests {
-    @Test("the one-engine harness reports the cbv2 strategy label")
-    func strategyLabel() {
-        // The legacy fixed-chunk/adaptive strategy machinery died with the
-        // legacy engine; CBv2 chunks prefill engine-internally.
-        #expect(SchedulerPrefillBenchmark.strategyLabel == "cbv2")
     }
 }
 

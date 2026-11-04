@@ -93,6 +93,8 @@ final class OnboardingLive: @unchecked Sendable {
     /// (`ClusterOnboardingUpdate.reportPricesPlan`).
     private var peerReportAt: Date?
     private var partsStoppedAt: Date?
+    /// When the last start's wait for ready began (`waitReady`): `lastErrors` reads this Mac's incidents since then.
+    private var waitBegan: Date?
     private let readPairing: @Sendable () throws -> ClusterSetupLinkExchange.Pairing?
     /// This Mac's pin as a pairing made now would store it (nil: no key could be read).
     private let currentPin: @Sendable () -> String?
@@ -200,6 +202,11 @@ final class OnboardingLive: @unchecked Sendable {
             let model = listedChoices[index].modelID ?? listedChoices[index].title
             chosenFamilies[model] = Self.keptFamily(mode)
         }
+    }
+
+    /// The family `useMode` kept for the next adopt of `model` (a choice's model id, else its title).
+    func keptFamily(forModel model: String) -> ClusterForcedMode? {
+        lock.withLock { chosenFamilies[model] }
     }
 
     /// The family kept for the next adopt of a model the person chose `mode` for: always the person's, never inferred
@@ -696,8 +703,13 @@ final class OnboardingLive: @unchecked Sendable {
     func planModels() -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure> {
         let request = ClusterControlRequest(op: .planModels, scope: runScope)
         let result = routed(request, seconds: 240, acting: false, local: { localPlanModels() }) { $0.choices ?? [] }
-        if case .success(let listed) = result { lock.withLock { listedChoices = listed } }
+        if case .success(let listed) = result { useListing(listed) }
         return result
+    }
+
+    /// The list a choice's index refers to (`useMode`, the adopt), as `planModels` last returned it.
+    func useListing(_ listed: [ClusterOnboardingModelChoice]) {
+        lock.withLock { listedChoices = listed }
     }
 
     /// How the cluster will serve the setup being planned: the way a forwarded command names, else this run's
@@ -1201,7 +1213,7 @@ final class OnboardingLive: @unchecked Sendable {
         }
         var lines = [String]()
         // The person chose another mode family than the listed plan's (`useMode`): planned again in it before adopting.
-        let family = lock.withLock { chosenFamilies[choice.title] }
+        let family = keptFamily(forModel: choice.title)
         let modeDiffers = Self.replansInFamily(family, listedPlanMode: choice.plan?.mode)
         let serving = leadership?.serving == true || (try? store.readRecord().stopDrain) != nil
         if serving || modeDiffers {
@@ -1528,7 +1540,8 @@ final class OnboardingLive: @unchecked Sendable {
 
     func waitReady(_ progress: @escaping @Sendable (String) -> Void) -> Result<ClusterOnboardingReady, ClusterOnboardingFailure> {
         let began = Date()
-        let deadline = Date().addingTimeInterval(900)
+        lock.withLock { waitBegan = began }
+        let deadline = began.addingTimeInterval(Self.readyWaitSeconds)
         var said: String?
         var seen = [String: Int](), previous: String?
         while Date() < deadline {
@@ -1558,6 +1571,8 @@ final class OnboardingLive: @unchecked Sendable {
         return .failure(.init(["The cluster did not report ready within 15 minutes."] + lastErrors(fallback: said)))
     }
 
+    /// How long a start waits for the cluster to report ready ("within 15 minutes").
+    static let readyWaitSeconds: TimeInterval = 900
     /// The same part end seen this many times stops the wait on screen (the service keeps restarting it).
     static let sameEndsBeforeSaying = 3
     /// Between readiness polls: a ready pair is reported within this (plus one poll, ~0.7 s over the cable), not up
@@ -1571,26 +1586,40 @@ final class OnboardingLive: @unchecked Sendable {
         return (child, ownWorker(child, since: since))
     }
 
-    /// Whether this Mac's own worker ended since `since`, when its part ended "closed" (`OwnWorker`), from this Mac's
+    /// Which Mac's worker ended since `since`, when this Mac's part ended "closed" (`OwnWorker`), from this Mac's
     /// incident log; unknown when this Mac doesn't lead.
     func ownWorker(_ own: ClusterServiceStatus.Child?, since: Date) -> OwnWorker {
         guard own?.lastError == Self.linkClosedError else { return .notSeen }
-        guard context.savedConfiguration().configuration?.role == .leader else { return .unknown }
+        guard let configuration = context.savedConfiguration().configuration, configuration.role == .leader else { return .unknown }
+        let rank = configuration.localRank
         return Self.ownWorker(inIncidentLog: ClusterIncidentLog.defaultFile(homeDirectory: FileManager.default.homeDirectoryForCurrentUser),
-                              since: since)
+                              since: since, rank: rank, otherRanks: configuration.peers.indices.filter { $0 != rank })
     }
 
-    /// `worker_crashed` recorded since `since` by the part this Mac leads (`source` "leader") in the incident log `file`.
-    /// Unknown when the log is missing or can't be read (unreadable, too large, malformed, another schema: its
-    /// `loadError`), so neither Mac is blamed; a field this build doesn't know is ignored.
-    static func ownWorker(inIncidentLog file: URL, since: Date) -> OwnWorker {
+    /// Whose worker the `worker_crashed` records this Mac's part made since `since` name (`source` "leader", in the
+    /// incident log `file`). The leader records the other Mac's worker ending with that same source and reason, so only
+    /// the message tells (the DevNet run, A-4: the member's kills read "…closed | rank 1 follower said: …", the leader's
+    /// own "…closed | <user>-worker-exit-v1 rank=0 termination=signalled(9)"):
+    /// - `.ended`: this Mac's rank's own worker exit (`ClusterWorkerOwnerService.workerExitMarker`, whatever its prefix);
+    /// - `.notSeen`: what the other Mac's follower said (`DistributedInstalledSession.followerSaid`): B17's words;
+    /// - `.unknown`, so neither Mac is blamed: no record says, both do, or the log is missing or can't be read (its
+    ///   `loadError`: unreadable, too large, malformed, another schema). A field this build doesn't know is ignored.
+    static func ownWorker(inIncidentLog file: URL, since: Date, rank: Int, otherRanks: [Int]) -> OwnWorker {
         let feed = ClusterIncidentLog(file: file).feed()
         guard feed.loadError == nil, !feed.epoch.isEmpty else { return .unknown }
-        let crashed = feed.incidents.contains {
+        let crashes = feed.incidents.filter {
             $0.ts >= since.timeIntervalSince1970 && $0.source == "leader"
                 && ($0.reasonCode == "worker_crashed" || $0.guidanceCode == "worker_crashed")
+        }.map(\.message)
+        let ownExit = ClusterWorkerOwnerService.workerExitMarker + "\(rank) termination="
+        let otherSaid = otherRanks.map(DistributedInstalledSession.followerSaid(rank:))
+        let here = crashes.contains { $0.contains(ownExit) }
+        let there = crashes.contains { message in otherSaid.contains { message.contains($0) } }
+        switch (here, there) {
+        case (true, false): return .ended
+        case (false, true): return .notSeen
+        default: return .unknown
         }
-        return crashed ? .ended : .notSeen
     }
 
     /// The last error each Mac's part reported, one line per Mac, also for parts still running (shown on screen after a
@@ -1603,7 +1632,8 @@ final class OnboardingLive: @unchecked Sendable {
         } catch {
             other = (nil, (error as? ClusterSetupFailure)?.text ?? "\(error)")
         }
-        let own = snapshot ?? ownPart(since: Date().addingTimeInterval(-900))
+        // This start's: since its wait began (the ✗'s diagnostics file too), else no longer ago than a wait lasts.
+        let own = snapshot ?? ownPart(since: lock.withLock { waitBegan } ?? Date().addingTimeInterval(-Self.readyWaitSeconds))
         var lines = Self.errorLines(here: Self.sentence(here), there: Self.sentence(there), own: own.child,
                                     other: other.child, otherUnreachable: other.unreachable, ownWorker: own.worker)
         if let fallback { lines.append("Last progress: \(fallback).") }
@@ -1615,8 +1645,10 @@ final class OnboardingLive: @unchecked Sendable {
     /// dropping, or this Mac's own worker ending (its pipe closes the same way; `OwnWorker`).
     static let linkClosedError = "closed"
 
-    /// Whether this Mac's own worker ended while the start waited (`worker_crashed` recorded in this Mac's incident log):
-    /// a part whose worker dies ends "closed" too (the worker's pipe), so "closed" alone doesn't say which side ended.
+    /// Which Mac's worker ended while the start waited, when this Mac's part ended "closed" (`ownWorker`): a part whose
+    /// own worker dies ends "closed" too (the worker's pipe), so "closed" alone doesn't say which side ended. `ended`:
+    /// this Mac's; `notSeen`: not this Mac's, the other Mac's (B17's words; also when the link didn't close); `unknown`:
+    /// neither Mac is named.
     enum OwnWorker: Sendable, Equatable { case ended, notSeen, unknown }
 
     /// The ✗ title once a part keeps ending the same way (`waitReady`): the ends the live row says, without its progress
@@ -1779,7 +1811,7 @@ final class OnboardingLive: @unchecked Sendable {
                 return (ready(now, port: port), "ready")
             }
             line = "\(session.readyRanks) of \(session.ranks) parts ready" + (session.detail.map { " (\($0))" } ?? "")
-        } else if let child = now.child, let end = child.lastEnd, !child.running {
+        } else if let child = now.child, let end = child.lastEnd, !child.running, Self.endShown(child) {
             line = "rank 0 on \(there) ended (\(end)\(child.lastError.map { ": " + $0 } ?? "")); it starts again by itself"
         } else if let error = now.error {
             line = "waiting for \(there): \(error)"
@@ -1798,9 +1830,9 @@ final class OnboardingLive: @unchecked Sendable {
         return (nil, line)
     }
 
-    /// Whether a part's end is said in the live row as an end that starts again by itself, on either Mac: not a clean
-    /// stop ("stopped", or exit 0 with no reason), which a planned switch makes on both Macs (the DevNet run, A-10, B18);
-    /// an exit 0 that says why (a refused dial, A-3) is still said.
+    /// Whether a part's end is said in the live rows (`readinessOnce`, `offeredReadiness`) as an end that starts again by
+    /// itself, on either Mac: not a clean stop ("stopped", or exit 0 with no reason), which a planned switch makes on both
+    /// Macs (the DevNet run, A-10, B18); an exit 0 that says why (a refused dial, A-3) is still said.
     static func endShown(_ child: ClusterServiceStatus.Child) -> Bool {
         guard let end = child.lastEnd else { return false }
         return !(end == "stopped" || (end == "exit 0" && child.lastError == nil))
@@ -1827,7 +1859,9 @@ final class OnboardingLive: @unchecked Sendable {
         }
         var line = "registering both Macs with the coordinator for pairing"
         for (mac, child) in [(hereShort, own), (thereShort, peer)] where child?.running == false {
-            if let end = child?.lastEnd { line += "; \(mac)'s part ended (\(end)\(child?.lastError.map { ": " + $0 } ?? "")) and starts again by itself" }
+            if let child, let end = child.lastEnd, Self.endShown(child) {
+                line += "; \(mac)'s part ended (\(end)\(child.lastError.map { ": " + $0 } ?? "")) and starts again by itself"
+            }
         }
         return (nil, line)
     }

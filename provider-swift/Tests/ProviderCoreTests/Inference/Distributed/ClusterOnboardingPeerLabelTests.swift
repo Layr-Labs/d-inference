@@ -117,6 +117,27 @@ struct ClusterOnboardingPeerLabelTests {
                 "the listed plan's own mode: adopted as listed")
     }
 
+    /// The same through `useMode` itself, on GLM's listing (Pipeline first, the plan tensor parallel): the family it
+    /// keeps for the adopt is the one chosen, either way.
+    @Test func useModeKeepsTheChosenFamilyWhateverTheListingsOrder() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let live = fixture.live(peerPin: Fixture.peerPin)
+        let modes = ["pipeline_v1", "tensor_parallel_v1"].map { ClusterOnboardingMode(mode: $0, split: nil, measuredTokensPerSecond: nil) }
+        let glm = "zai-org/GLM-5.3-Flash"
+        live.useListing([.init(title: "Z.ai: GLM-5.3-Flash", lines: [], blocker: nil, modelID: glm, split: "tensor parallel", modes: modes)])
+        live.useMode(0, "pipeline_v1")
+        let pipeline = live.keptFamily(forModel: glm)
+        #expect(pipeline == .pipeline && OnboardingLive.replansInFamily(pipeline, listedPlanMode: "tensor_parallel_v1"),
+                "Pipeline kept, and the tensor-parallel plan planned again in it")
+        live.useMode(0, "tensor_parallel_v1")
+        let tensor = live.keptFamily(forModel: glm)
+        #expect(tensor == .tensorParallel && !OnboardingLive.replansInFamily(tensor, listedPlanMode: "tensor_parallel_v1"),
+                "the plan's own family: adopted as listed")
+        live.useMode(1, "pipeline_v1")
+        #expect(live.keptFamily(forModel: glm) == .tensorParallel, "a choice the list doesn't have changes nothing")
+    }
+
     @Test func unpairWithoutAPairingChangesNothing() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

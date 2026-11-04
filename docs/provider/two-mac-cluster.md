@@ -997,14 +997,18 @@ can't be read from here instead of "running, no error". In the DevNet app, the
 screens and `status` name its own command (`darkbloom-dev …`).
 
 The mode chosen at "How should both Macs split <model>?" is the one that loads,
-for every model that runs both ways (GLM-5.3-Flash included). When this Mac's
-own worker is the one that keeps ending (its incident log says
-`worker_crashed`), the ✗ names this Mac instead; when that log is missing or
-can't be read, or on the Mac that doesn't lead, it says it can't tell which side
-closed the link and blames neither. When the
+for every model that runs both ways (GLM-5.3-Flash included). Which Mac's
+worker keeps ending is read from the leading Mac's incident log: a
+`worker_crashed` carrying this Mac's own worker-exit record
+(`worker-exit-v1 rank=<this Mac's rank>`) names this Mac, and one carrying what
+the other Mac's link follower said (`rank <its rank> follower said: …`) names
+the other Mac's side, as above. When neither (or both) is recorded, when that
+log is missing or can't be read, or on the Mac that doesn't lead, the ✗ says it
+can't tell which side closed the link and blames neither. When the
 other Mac can't dial because macOS keeps it off the local network, the ✗ gives
 that reason instead of "make sure it is on". A planned switch's stops (a part
-that stopped, or ended with exit 0 and no reason) aren't shown as ends.
+that stopped, or ended with exit 0 and no reason) aren't shown as ends, also
+while both Macs register with Darkbloom.
 
 - **No macOS prompt can be shown** (for example with no one logged in to the desktop):
   the check writes the exact commands the prompt would run to an owner-only

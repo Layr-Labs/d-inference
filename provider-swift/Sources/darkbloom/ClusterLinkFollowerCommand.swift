@@ -54,7 +54,7 @@ extension Cluster {
                 // macOS answers a dial with "host unreachable" before trying the
                 // cable when this process may not use the local network.
                 if reason.hasSuffix("(unreachable)") {
-                    line("this process may not reach the local network: macOS refused the dial before the cable was tried. "
+                    line("this process \(ClusterService.localNetworkRefusal): macOS refused the dial before the cable was tried. "
                         + "Allow darkbloom under System Settings > Privacy & Security > Local Network (once), "
                         + "or start the follower from a session that has that access.")
                 }

@@ -134,31 +134,112 @@ struct ClusterServiceStopReasonTests {
         #expect(OnboardingLive.endShown(refused) && OnboardingLive.endShown(crashed), "ends with a reason are said")
     }
 
-    /// A-4's signal is this Mac's incident log: a `worker_crashed` its part recorded (source leader) since the wait began
-    /// names this Mac. A log that is missing or can't be read blames neither Mac, and a record carrying a field this build
-    /// doesn't know (the shared log, written by another install) is still read.
-    @Test func thisMacsIncidentLogNamesItsOwnWorker() throws {
+    /// The leader's incident log in the DevNet run (Mac A, 2026-11-04), as recorded: the member's worker killed four times
+    /// (07:39:50–07:41:50Z), then the leader's own worker (07:43:54–07:46:41Z). Every kill reads `source` leader and
+    /// `worker_crashed` on the leader; only the message says whose worker ended. "<user>" is the log's own redaction of
+    /// the `darkbloom` prefix. Fields: time (UTC), source, reason code, message.
+    static let devnetIncidents = """
+        07:39:50\tfollower\tworker_crashed\tsession fenced: follower worker ended before it was ready: its owner exited \
+        with status 0: darkbloom-worker-tail-v1 darkbloom-qmv-batch-invariant-v1 enabled=1 source=worker
+        07:39:50\tfollower\tworker_crashed\t[rank 1] the leader's session was fenced: follower worker ended before it was \
+        ready: its owner exited with status 0: <user>-worker-tail-v1 <user>-qmv-batch-invariant-v1 enabled=1 source=worker
+        07:39:50\tleader\tworker_crashed\tClusterWorkerOwnerError: closed | rank 1 follower said: worker ended before it \
+        was ready: its owner exited with status 0: <user>-worker-tail-v1 <user>-qmv-batch-invariant-v1 enabled=1 source=worker
+        07:40:22\tfollower\tworker_crashed\tsession fenced: follower worker ended before it was ready: its owner exited \
+        with status 0: darkbloom-worker-tail-v1 darkbloom-qmv-batch-invariant-v1 enabled=1 source=worker
+        07:40:22\tfollower\tworker_crashed\t[rank 1] the leader's session was fenced: follower worker ended before it was \
+        ready: its owner exited with status 0: <user>-worker-tail-v1 <user>-qmv-batch-invariant-v1 enabled=1 source=worker
+        07:40:22\tfollower\tunclassified\t[rank 1] the leader's session was fenced: leader fenced
+        07:40:22\tleader\tworker_crashed\tClusterWorkerOwnerError: closed | rank 1 follower said: worker ended before it \
+        was ready: its owner exited with status 0: <user>-worker-tail-v1 <user>-qmv-batch-invariant-v1 enabled=1 source=worker
+        07:40:59\tfollower\tworker_crashed\tsession fenced: follower worker ended before it was ready: its owner exited \
+        with status 0: darkbloom-worker-tail-v1 darkbloom-qmv-batch-invariant-v1 enabled=1 source=worker
+        07:40:59\tfollower\tworker_crashed\t[rank 1] the leader's session was fenced: follower worker ended before it was \
+        ready: its owner exited with status 0: <user>-worker-tail-v1 <user>-qmv-batch-invariant-v1 enabled=1 source=worker
+        07:40:59\tleader\tworker_crashed\tClusterWorkerOwnerError: closed | rank 1 follower said: worker ended before it \
+        was ready: its owner exited with status 0: <user>-worker-tail-v1 <user>-qmv-batch-invariant-v1 enabled=1 source=worker
+        07:41:50\tfollower\tworker_crashed\tsession fenced: follower worker ended before it was ready: its owner exited \
+        with status 0: darkbloom-worker-tail-v1 darkbloom-qmv-batch-invariant-v1 enabled=1 source=worker
+        07:41:50\tfollower\tworker_crashed\t[rank 1] the leader's session was fenced: follower worker ended before it was \
+        ready: its owner exited with status 0: <user>-worker-tail-v1 <user>-qmv-batch-invariant-v1 enabled=1 source=worker
+        07:41:50\tfollower\tunclassified\t[rank 1] the leader's session was fenced: leader fenced
+        07:41:50\tleader\tworker_crashed\tClusterWorkerOwnerError: closed | rank 1 follower said: worker ended before it \
+        was ready: its owner exited with status 0: <user>-worker-tail-v1 <user>-qmv-batch-invariant-v1 enabled=1 source=worker
+        07:43:54\tfollower\tunclassified\tsession fenced: leader fenced
+        07:43:54\tfollower\tunclassified\t[rank 1] the leader's session was fenced: leader fenced
+        07:43:54\tleader\tworker_crashed\tClusterWorkerOwnerError: closed | <user>-worker-exit-v1 rank=0 termination=signalled(9)
+        07:44:14\tfollower\tworker_crashed\t[rank 1] the leader's session was fenced: follower worker ended before it was \
+        ready: its owner exited with status 0: <user>-worker-tail-v1 JACCL bootstrap through the authenticated owner \
+        (rank 1); no coordi...
+        07:44:49\tfollower\tunclassified\tsession fenced: leader fenced
+        07:44:49\tfollower\tunclassified\t[rank 1] the leader's session was fenced: leader fenced
+        07:44:49\tleader\tworker_crashed\tClusterWorkerOwnerError: closed | <user>-worker-exit-v1 rank=0 termination=signalled(9)
+        07:45:09\tfollower\tworker_crashed\t[rank 1] the leader's session was fenced: follower worker ended before it was \
+        ready: its owner exited with status 0: <user>-worker-tail-v1 JACCL bootstrap through the authenticated owner \
+        (rank 1); no coordi...
+        07:45:44\tfollower\tunclassified\tsession fenced: leader fenced
+        07:45:44\tfollower\tunclassified\t[rank 1] the leader's session was fenced: leader fenced
+        07:45:44\tleader\tworker_crashed\tClusterWorkerOwnerError: closed | <user>-worker-exit-v1 rank=0 termination=signalled(9)
+        07:46:04\tfollower\tworker_crashed\t[rank 1] the leader's session was fenced: follower worker ended before it was \
+        ready: its owner exited with status 0: <user>-worker-tail-v1 JACCL bootstrap through the authenticated owner \
+        (rank 1); no coordi...
+        07:46:41\tfollower\tunclassified\tsession fenced: leader fenced
+        07:46:41\tfollower\tunclassified\t[rank 1] the leader's session was fenced: leader fenced
+        07:46:41\tleader\tworker_crashed\tClusterWorkerOwnerError: closed | <user>-worker-exit-v1 rank=0 termination=signalled(9)
+        07:47:01\tfollower\tworker_crashed\t[rank 1] the leader's session was fenced: follower worker ended before it was \
+        ready: its owner exited with status 0: <user>-worker-tail-v1 JACCL bootstrap through the authenticated owner \
+        (rank 1); no coordi...
+        """
+
+    /// A-4 on the leader's real records: a crash names this Mac only when it is this Mac's rank's own worker exit
+    /// (`ClusterWorkerOwnerService.workerExitMarker`), the other Mac when it is what that Mac's follower said
+    /// (`DistributedInstalledSession.followerSaid`, B17's words), and neither Mac otherwise. The leader records both
+    /// with `source` leader, so a `worker_crashed` alone named the leader for the member's kills. A log that is missing or
+    /// can't be read blames neither Mac, and a field this build doesn't know (the log is shared between installs) is
+    /// ignored.
+    @Test func onlyThisMacsOwnWorkerExitNamesThisMac() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("incidents-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }
-        let file = directory.appendingPathComponent("incidents.json")
-        let at = Date(timeIntervalSince1970: 1_000)
-        #expect(OnboardingLive.ownWorker(inIncidentLog: file, since: at) == .unknown, "no log: neither Mac")
+        func at(_ time: Substring) throws -> Date { try #require(ISO8601DateFormatter().date(from: "2026-11-04T\(time)Z")) }
+        func log(_ name: String, _ records: [Substring]) throws -> URL {
+            let file = directory.appendingPathComponent("\(name).json")
+            for record in records {
+                let field = record.split(separator: "\t", maxSplits: 3).map(String.init)
+                let ts = try at(Substring(field[0])).timeIntervalSince1970
+                try ClusterIncidentLog(file: file, clock: { ts }).record(.init(severity: .error, source: field[1],
+                    stateCode: "activation_launch_failed", reasonCode: field[2], guidanceCode: nil, message: field[3]))
+            }
+            return file
+        }
+        func worker(_ file: URL, since time: Substring) throws -> OnboardingLive.OwnWorker {
+            OnboardingLive.ownWorker(inIncidentLog: file, since: try at(time), rank: 0, otherRanks: [1])
+        }
+        let records = Self.devnetIncidents.split(separator: "\n")
+        #expect(records.filter { $0.contains("\tleader\t") }.allSatisfy {
+            $0.contains(DistributedInstalledSession.followerSaid(rank: 1))
+                || $0.contains(ClusterWorkerOwnerService.workerExitMarker + "0 termination=")
+        }, "each of the leader's records is in a format its writer shares with the reader")
+        #expect(try worker(directory.appendingPathComponent("none.json"), since: "07:39:37") == .unknown, "no log: neither Mac")
 
-        let log = ClusterIncidentLog(file: file, clock: { 1_000 })
-        try log.record(.init(severity: .error, source: "follower", stateCode: .peerLost, reason: .workerCrashed, message: "rank 1"))
-        #expect(OnboardingLive.ownWorker(inIncidentLog: file, since: at) == .notSeen, "the other Mac's record isn't this Mac's")
-        try log.record(.init(severity: .error, source: "leader", stateCode: .activationLaunchFailed, reason: .workerCrashed,
-                             message: "rank 0"))
-        #expect(OnboardingLive.ownWorker(inIncidentLog: file, since: at) == .ended, "this Mac's worker ended")
-        #expect(OnboardingLive.ownWorker(inIncidentLog: file, since: at.addingTimeInterval(1)) == .notSeen, "before the wait")
+        // Each kill alone, with what the leader's log recorded at that second.
+        let kills: [(Substring, OnboardingLive.OwnWorker)] = [("07:39:50", .notSeen), ("07:40:22", .notSeen), ("07:40:59", .notSeen),
+            ("07:41:50", .notSeen), ("07:43:54", .ended), ("07:44:49", .ended), ("07:45:44", .ended), ("07:46:41", .ended)]
+        for (time, whose) in kills {
+            let file = try log(time.replacingOccurrences(of: ":", with: ""), records.filter { $0.hasPrefix(time) })
+            #expect(try worker(file, since: time) == whose,
+                    "\(time): \(whose == .ended ? "this Mac's own worker" : "the other Mac's worker (B17)")")
+        }
+        let all = try log("all", records)
+        #expect(try worker(all, since: "07:39:37") == .unknown, "both Macs' kills in one wait: neither Mac is named")
+        #expect(try worker(all, since: "07:43:44") == .ended, "the leader's own kills, once the member's are before the wait")
 
-        var stored = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        var stored = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: all)) as? [String: Any])
         let incidents = try #require(stored["incidents"] as? [[String: Any]])
-        stored["incidents"] = incidents.map { $0.merging(["build": "0.10.6-dev"]) { $1 } }
-        try JSONSerialization.data(withJSONObject: stored).write(to: file)
-        #expect(OnboardingLive.ownWorker(inIncidentLog: file, since: at) == .ended, "a field this build doesn't know is ignored")
+        stored["incidents"] = incidents.map { $0.merging(["build": "0.10.6-dev.branch.76"]) { $1 } }
+        try JSONSerialization.data(withJSONObject: stored).write(to: all)
+        #expect(try worker(all, since: "07:43:44") == .ended, "a field this build doesn't know is ignored")
 
-        try Data("{\"schema_version\": 1, \"incidents\": [{\"seq\": 1}]}".utf8).write(to: file)
-        #expect(OnboardingLive.ownWorker(inIncidentLog: file, since: at) == .unknown, "a malformed log: neither Mac")
+        try Data("{\"schema_version\": 1, \"incidents\": [{\"seq\": 1}]}".utf8).write(to: all)
+        #expect(try worker(all, since: "07:39:37") == .unknown, "a malformed log: neither Mac")
     }
 }

@@ -1255,9 +1255,10 @@ public final class ClusterService: @unchecked Sendable {
         return error
     }
 
-    /// How a part's link follower says macOS kept it off the local network (`ClusterLinkFollowerCommand`): it then ends
-    /// cleanly, with no "Error:" line, and the Mac that leads only saw the other Mac not answering (the DevNet run, A-3).
-    static let localNetworkRefusal = "may not reach the local network"
+    /// How a part's link follower says macOS kept it off the local network: `ClusterLinkFollowerCommand` writes this
+    /// phrase, and `lastError` finds it. The part then ends cleanly, with no "Error:" line, and the Mac that leads only
+    /// saw the other Mac not answering (the DevNet run, A-3).
+    public static let localNetworkRefusal = "may not reach the local network"
 
     /// How a part says why it stops serving (`StartCommand+Distributed`, the member's stop reason).
     static let stopReasonPrefix = "Distributed serving stops: "

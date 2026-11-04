@@ -194,6 +194,13 @@ import Darwin
         followWaitChecks()
         // A 0.10.8 user's leader screen: its loading line repeated end to end in a narrow window.
         liveLineChecks()
+        // 0.10.8, 2026-11-04: single-Mac serving held the provider instance lock on both Macs of a pair; the start looped
+        // "this Mac's part ended (… another update operation owns the lock (pid 9523, provider-instance)) and starts again
+        // by itself", the other Mac read "no error reported", and the guidance was `darkbloom stop`, which stops the pair.
+        soloServingOnBothMacsIsSaidBeforeAnythingStarts()
+        soloServingIsLeftWithNothingStarted()
+        soloServingFoundWhileWaitingIsNeverRetried()
+        soloServingNamesTheDevNetCommand()
         print("onboarding checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -2882,6 +2889,100 @@ import Darwin
     static let notVerified = ClusterOnboardingNotServing.notVerified("the other Mac (Apple M3 Ultra, 256 GB)")
 
     static let notServingChoices = "  1) Retry\n  2) Change model\n  3) Serve locally only\n  4) Diagnostics\n"
+
+    // MARK: - Single-Mac serving blocks the pair
+
+    static let soloBoth = [ClusterOnboardingSoloServing(mac: "this Mac", pid: 9523),
+                           ClusterOnboardingSoloServing(mac: "the other Mac (Apple M4 Max, 128 GB)", pid: 2282)]
+    static let soloBothTitle = "\u{2717} The pair can't start: a single-Mac Darkbloom provider (process 9523) is serving on this Mac and "
+        + "a single-Mac Darkbloom provider (process 2282) is serving on the other Mac (Apple M4 Max, 128 GB), and the pair can't "
+        + "share a Mac with it."
+
+    /// The scripted held lock: single-Mac serving on `serving` until `stopSoloServing` runs, then none.
+    static func soloOperations(_ recorder: Recorder, serving: [ClusterOnboardingSoloServing], stopWorks: Bool = true,
+                               readyResults: [Result<ClusterOnboardingReady, ClusterOnboardingFailure>]? = nil) -> ClusterOnboardingOperations {
+        var made = operations(recorder, resume: .init(role: .leader, peerName: "Apple M4 Max, 128 GB"), pairEvents: [], pairResult: .failed([]),
+                              readyResults: readyResults)
+        made.soloServing = {
+            recorder.note("soloServing")
+            return stopWorks && recorder.all.contains("stopSoloServing") ? [] : serving
+        }
+        made.stopSoloServing = {
+            recorder.note("stopSoloServing")
+            return stopWorks ? .success(["\u{2713} Stopped single-Mac serving on this Mac.", "\u{2713} Stopped single-Mac serving on the other Mac."])
+                : .failure(.init("The other Mac did not answer over the cable."))
+        }
+        return made
+    }
+
+    static func soloServingOnBothMacsIsSaidBeforeAnythingStarts() {
+        let recorder = Recorder()
+        let run = TerminalRun(soloOperations(recorder, serving: soloBoth))
+        expect(run.waitFor(prompt(2)), "solo both: choice"); run.type("\r")
+        expect(run.waitFor("  1) Stop single-Mac serving on both Macs and start the pair\n  2) Leave\n"), "solo both: the offer: \(run.text)")
+        expect(!recorder.all.contains("serve"), "solo both: nothing started before the person chose: \(recorder.all)")
+        run.type("1")
+        expect(run.finish() == 0, "solo both: served once stopped: \(run.text)")
+        expect(run.text.contains(soloBothTitle + "\n"), "solo both: one ✗ naming both Macs and processes: \(run.text)")
+        expect(run.text.contains("On this Mac: run `darkbloom stop --solo` to stop single-Mac serving there."), "solo both: this Mac's command")
+        expect(run.text.contains("On the other Mac (Apple M4 Max, 128 GB): run `darkbloom stop --solo` to stop single-Mac serving there."),
+               "solo both: the other Mac's command")
+        expect(!run.text.contains("update operation") && !run.text.contains("no error reported"), "solo both: never the wrong owner or 'no error'")
+        expect(!run.text.contains("Retry") && !run.text.contains("starts again by itself"), "solo both: never a retry loop")
+        let calls = recorder.all
+        expect(calls.firstIndex(of: "stopSoloServing").map { stop in calls.firstIndex(of: "serve").map { $0 > stop } ?? false } ?? false,
+               "solo both: stopped first, then started: \(calls)")
+    }
+
+    static func soloServingIsLeftWithNothingStarted() {
+        let recorder = Recorder()
+        let run = TerminalRun(soloOperations(recorder, serving: [soloBoth[1]]))
+        expect(run.waitFor(prompt(2)), "solo leave: choice"); run.type("\r")
+        expect(run.waitFor("  1) Stop single-Mac serving on the other Mac (Apple M4 Max, 128 GB) and start the pair\n  2) Leave\n"),
+               "solo leave: the offer names the one Mac: \(run.text)")
+        run.type("2")
+        expect(run.finish() == 1, "solo leave: exit 1")
+        expect(run.text.contains("The pair was not started. Run `darkbloom stop --solo` on each Mac named, then `darkbloom start`."),
+               "solo leave: the last line: \(run.text)")
+        expect(!recorder.all.contains("serve") && !recorder.all.contains("stopSoloServing") && !recorder.all.contains("waitReady"),
+               "solo leave: nothing started or stopped without consent: \(recorder.all)")
+        // A stop that fails starts nothing either.
+        let failing = Recorder()
+        let again = TerminalRun(soloOperations(failing, serving: [soloBoth[1]], stopWorks: false))
+        expect(again.waitFor(prompt(2)), "solo stop fails: choice"); again.type("\r")
+        expect(again.waitFor("  2) Leave\n"), "solo stop fails: the offer"); again.type("1")
+        expect(again.finish() == 1, "solo stop fails: exit 1")
+        expect(again.text.contains("The other Mac did not answer over the cable.") && !failing.all.contains("serve"),
+               "solo stop fails: why, and nothing started: \(failing.all)")
+    }
+
+    static func soloServingFoundWhileWaitingIsNeverRetried() {
+        let recorder = Recorder()
+        let ready = ClusterOnboardingReady(servedBy: "this Mac", port: 8000,
+            deployment: "Serving Gemma 4 26B across both Macs: tensor parallel", split: "tensor parallel")
+        let run = TerminalRun(soloOperations(recorder, serving: [],
+            readyResults: [.failure(.soloServing([soloBoth[1]])), .success(ready)]))
+        expect(run.waitFor(prompt(2)), "solo wait: choice"); run.type("\r")
+        expect(run.waitFor("  2) Leave\n"), "solo wait: the offer, not Retry: \(run.text)")
+        run.type("1")
+        expect(run.finish() == 0, "solo wait: served once stopped: \(run.text)")
+        expect(run.text.contains("\u{2717} The pair can't start: a single-Mac Darkbloom provider (process 2282) is serving on the other Mac "
+               + "(Apple M4 Max, 128 GB), and the pair can't share a Mac with it.\n"), "solo wait: the other Mac's reason, named: \(run.text)")
+        expect(!run.text.contains(notServingChoices) && !run.text.contains("no error reported"), "solo wait: no Retry, no 'no error'")
+        expect(recorder.all.filter { $0 == "serve" }.count == 2 && recorder.all.contains("stopSoloServing"),
+               "solo wait: stopped, then started again once: \(recorder.all)")
+    }
+
+    static func soloServingNamesTheDevNetCommand() {
+        ClusterOnboardingCommand.use("darkbloom-dev")
+        defer { ClusterOnboardingCommand.use("darkbloom") }
+        let run = TerminalRun(soloOperations(Recorder(), serving: [soloBoth[0]]))
+        expect(run.waitFor(prompt(2)), "solo dev: choice"); run.type("\r")
+        expect(run.waitFor("  2) Leave\n"), "solo dev: the offer"); run.type("2")
+        expect(run.finish() == 1, "solo dev: exit 1")
+        expect(run.text.contains("On this Mac: run `darkbloom-dev stop --solo`") && run.text.contains("then `darkbloom-dev start`.")
+               && !run.text.contains("`darkbloom stop"), "solo dev: the DevNet app's command: \(run.text)")
+    }
 
     /// (a) 2026-11-03, the owner's M3 Ultra + M5 Max and an end user's 2x M4 Max: a pair offered for pairing said
     /// "Serving" and "Done" while the coordinator refused it and nothing was loaded. Now the screen says why, in one

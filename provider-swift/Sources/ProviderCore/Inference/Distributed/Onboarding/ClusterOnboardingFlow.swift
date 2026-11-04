@@ -1036,6 +1036,9 @@ public enum ClusterOnboardingSync {
 /// A step that failed, in words for the screen.
 public struct ClusterOnboardingFailure: Error, Sendable, Equatable {
     public var lines: [String]
+    /// Single-Mac serving that blocks the pair (`ClusterOnboardingSoloServing`): a cause that never clears by itself, so
+    /// the start offers to stop it instead of a Retry. Empty for any other failure.
+    public var soloServing: [ClusterOnboardingSoloServing] = []
     public init(_ lines: [String]) { self.lines = lines }
     public init(_ line: String) { self.lines = [line] }
 }
@@ -1161,6 +1164,14 @@ public struct ClusterOnboardingOperations: Sendable {
     /// (`ClusterServiceStatus.startsAtLogin`); nil when it doesn't say (an older build, or no answer). The card says "on
     /// both Macs" only with this and `serviceOutlivesWindow` (P2-11). Not in `init`: only the live operations set it.
     public var otherMacStartsAtLogin: @Sendable () -> Bool? = { true }
+    /// Single-Mac serving on either Mac (this Mac's provider instance lock; the other Mac's status), read right before
+    /// the pair's parts start: empty when none runs or it can't be told. Not in `init`: only the live operations set it.
+    public var soloServing: @Sendable () -> [ClusterOnboardingSoloServing] = { [] }
+    /// Stops single-Mac serving on each Mac that runs it (`darkbloom stop --solo` there), asked only after the person
+    /// chose it; its lines say what was stopped. Not in `init`: only the live operations set it.
+    public var stopSoloServing: @Sendable () -> Result<[String], ClusterOnboardingFailure> = {
+        .failure(.init("This build cannot stop single-Mac serving from here: run `darkbloom stop --solo` on each Mac named."))
+    }
 
     public init(resume: @escaping @Sendable () -> ClusterOnboardingResume,
                 checkLink: @escaping @Sendable (@escaping @Sendable (String) -> Void) -> ClusterOnboardingLinkResult,
@@ -2510,6 +2521,8 @@ public enum ClusterOnboardingDriver {
                 return 1
             }
         }
+        // Single-Mac serving on either Mac never ends by itself: said once, before anything starts, never waited for.
+        guard clearSoloServing(operations.soloServing(), operations, console) else { return 1 }
         switch busy(console, "Starting both Macs", operations.serve) {
         case .success: break
         case .failure(let failure):
@@ -2542,7 +2555,11 @@ public enum ClusterOnboardingDriver {
     }
 
     /// How a start ended up: serving (the outcome block's title and lines), its test failed, or not serving (why, first).
-    enum StartOutcome { case served(title: String, lines: [String], ready: ClusterOnboardingReady), testFailed, notServing([String]), left }
+    enum StartOutcome {
+        case served(title: String, lines: [String], ready: ClusterOnboardingReady), testFailed, notServing([String]), left
+        /// Single-Mac serving blocks the pair (`ClusterOnboardingSoloServing`): no Retry, it never clears by itself.
+        case soloServing([ClusterOnboardingSoloServing])
+    }
 
     /// After the start. Serving and Done are said only once the model is loaded on both Macs and a request answered
     /// (2026-11-03: a pair offered for pairing said both while nothing was loaded). A pair that does not serve says why
@@ -2573,12 +2590,20 @@ public enum ClusterOnboardingDriver {
                 console.say("")
                 console.say("Setup saved, but the test failed. To test again, run `darkbloom cluster` and choose \(title): it sends one test request.")
                 return 1
+            case .soloServing(let serving):
+                guard clearSoloServing(serving, operations, console) else { return 1 }
+                if case .failure(let failure) = busy(console, "Starting both Macs", operations.serve) {
+                    for line in failure.lines { console.say("  " + line) }
+                    return 1
+                }
+                continue
             case .notServing(let lines):
                 switch notServing(lines, operations, console) {
                 case .retry:
                     // A pair stopped meanwhile (`cluster stop --service` on a Mac): Retry starts it again and says so, instead
                     // of waiting for parts nothing would start (the pair-2 run, P2-4).
                     if operations.status().first?.hasPrefix("Stopped") == true {
+                        guard clearSoloServing(operations.soloServing(), operations, console) else { return 1 }
                         console.say("  The pair is stopped: starting both Macs again.")
                         if case .failure(let failure) = busy(console, "Starting both Macs", operations.serve) {
                             for line in failure.lines { console.say("  " + line) }
@@ -2624,6 +2649,7 @@ public enum ClusterOnboardingDriver {
         let ready: ClusterOnboardingReady
         switch waitForParts(title: title, operations, console) {
         case .success(let value)?: ready = value
+        case .failure(let failure)? where !failure.soloServing.isEmpty: return .soloServing(failure.soloServing)
         case .failure(let failure)?: return .notServing(failure.lines)
         case nil: return .left
         }
@@ -2657,6 +2683,38 @@ public enum ClusterOnboardingDriver {
         let outcome = ready.outcome(model: title, scope: scope, test: tested)
         return .served(title: outcome.title, lines: outcome.lines, ready: ready)
     }
+
+    /// Single-Mac serving on either Mac (`serving`) blocks the pair and never ends by itself: one ✗ naming each Mac and
+    /// process and what to run there, then the choice to stop it on each Mac named and start the pair, or to leave.
+    /// True when nothing blocks the pair (none ran, or the person chose to stop it and it stopped); false when nothing
+    /// starts, said on the last line.
+    static func clearSoloServing(_ serving: [ClusterOnboardingSoloServing], _ operations: ClusterOnboardingOperations,
+                                 _ console: ClusterOnboardingConsole) -> Bool {
+        guard !serving.isEmpty else { return true }
+        console.result(false, ClusterOnboardingSoloServing.title(serving) + ".", ClusterOnboardingSoloServing.remedies(serving))
+        guard console.choose([ClusterOnboardingSoloServing.stopAndStartItem(serving), "Leave"], selected: 0) == 0 else {
+            console.say(soloServingLeftLine)
+            return false
+        }
+        switch busy(console, "Stopping single-Mac serving", operations.stopSoloServing) {
+        case .success(let said):
+            for line in said { console.say("  " + line) }
+        case .failure(let failure):
+            for line in failure.lines { console.say("  " + line) }
+            console.say(soloServingLeftLine)
+            return false
+        }
+        let still = operations.soloServing()
+        guard still.isEmpty else {
+            console.say("  " + ClusterOnboardingSoloServing.title(still) + ".")
+            console.say(soloServingLeftLine)
+            return false
+        }
+        return true
+    }
+
+    /// The last line when single-Mac serving still blocks the pair: nothing started, and the pair doesn't start by itself.
+    public static let soloServingLeftLine = "The pair was not started. Run `darkbloom stop --solo` on each Mac named, then `darkbloom start`."
 
     enum NotServingChoice { case retry, changeModel, localOnly, leave }
 

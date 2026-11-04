@@ -1006,6 +1006,28 @@ private func runAsCLI<Command: AsyncParsableCommand>(_ type: Command.Type, _ arg
     do { try await runCLICommand(type, arguments) } catch let code as ExitCode { throw code } catch { throw type.exitCode(for: error) }
 }
 
+/// #1774's pair outcomes said while the live line shows, run plain or with a terminal's look: 0 `stop` with a part still
+/// running, 1 `stop` whose memory check didn't answer, 2 `restart` with a part still running, 3 `restart` through the
+/// coordinator's registering wait.
+private func runPairOutcome(_ outcome: Int, decorated: Bool) async throws -> Never {
+    let teardown: [Result<[String], ClusterOnboardingFailure>] = switch outcome {
+    case 0, 2: [.success(stillRunning)]
+    case 1: [.failure(.init("The other Mac (Apple M5 Max, 128 GB) did not answer over the cable: timed out"))]
+    default: [.success(freed)]
+    }
+    let looks = Looks([observed("Qwen 3.8 27B: registering both Macs with the coordinator for pairing."),
+                       observed("Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel).")])
+    try await DarkbloomCommandLook.$forTesting.withValue(decorated ? terminalLook() : DarkbloomCommandLook(mode: .plain)) {
+        try await exitWithPair(servingPair(), actions: pairActions(teardown: teardown)) { _ in
+            try await ClusterPairSummary.$readerForTesting.withValue({ live in live && outcome == 3 ? looks.next() : servingPair() }) {
+                try await ClusterPairCommands.$waitForTesting.withValue(.init(seconds: outcome == 3 ? 60 : 0, interval: 0)) {
+                    if outcome < 2 { try await runCLICommand(Stop.self, ["stop"]) } else { try await runCLICommand(Restart.self, ["restart"]) }
+                }
+            }
+        }
+    }
+}
+
 /// The decorated stream less the mark block and the live line: what a transcript would have had.
 private func withoutLook(_ stream: String, title: String) -> String {
     let mark = "\n" + DarkbloomCommandLook.mark(title, revealed: Int.max, colour: "38;5;27") + "\n"
@@ -1216,6 +1238,49 @@ struct DarkbloomCommandLookRunTests {
             }
         }
         #expect(text(leftover?.standardOutputContent) == "")
+    }
+
+    @Test("#1774's stop and restart outcomes said during the live line keep their bytes: a part still running, an unanswered memory check, a pairing wait")
+    func pairOutcomeLinesKeepTheirBytes() async {
+        let stopRunningPlain = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            try await runPairOutcome(0, decorated: false)
+        }
+        let stopRunning = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            try await runPairOutcome(0, decorated: true)
+        }
+        let stopUncheckedPlain = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            try await runPairOutcome(1, decorated: false)
+        }
+        let stopUnchecked = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            try await runPairOutcome(1, decorated: true)
+        }
+        let restartRunningPlain = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            try await runPairOutcome(2, decorated: false)
+        }
+        let restartRunning = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            try await runPairOutcome(2, decorated: true)
+        }
+        let restartWaitPlain = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await runPairOutcome(3, decorated: false)
+        }
+        let restartWait = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await runPairOutcome(3, decorated: true)
+        }
+        let cases: [(plain: String, decorated: String, title: String, live: String, line: String)] = [
+            (text(stopRunningPlain?.standardOutputContent), text(stopRunning?.standardOutputContent), "Darkbloom stop",
+             "Stopping both Macs", askedLine),
+            (text(stopUncheckedPlain?.standardOutputContent), text(stopUnchecked?.standardOutputContent), "Darkbloom stop",
+             "Stopping both Macs", "Memory: not checked (The other Mac (Apple M5 Max, 128 GB) did not answer over the cable: timed out)"),
+            (text(restartRunningPlain?.standardOutputContent), text(restartRunning?.standardOutputContent), "Darkbloom restart",
+             "Restarting both Macs", ClusterPairSummary.restartNotStartedLine),
+            (text(restartWaitPlain?.standardOutputContent), text(restartWait?.standardOutputContent), "Darkbloom restart",
+             "Restarting both Macs", "  Qwen 3.8 27B: registering both Macs with the coordinator for pairing."),
+        ]
+        for each in cases {
+            #expect(each.plain.contains(each.line + "\n"), "\(each.plain)")
+            #expect(each.decorated.contains("\u{1B}[2m\(each.live)\u{2026}\u{1B}[0m"))
+            #expect(withoutLook(each.decorated, title: each.title) == each.plain, "\(each.decorated.debugDescription)")
+        }
     }
 
     @Test("`darkbloom update --rollback` as root (exit 64) draws no mark; its first lines stay")

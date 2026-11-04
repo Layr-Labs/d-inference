@@ -8,8 +8,8 @@ import Darwin
 /// unset and TERM not dumb, block glyphs (a UTF-8 locale) and at least 40 columns; the mark blooms and the petal turns
 /// unless DARKBLOOM_NO_ANIMATION or CI is set. Anywhere else it writes nothing, so a script or a log keeps every byte.
 /// Look only: the command's own lines are said through `plain`, exactly as without it; the next said line replaces the
-/// live line, which moves below it. The live line never hides the cursor or changes the terminal's mode, so every way
-/// out, a signal included, leaves the terminal as it was.
+/// live line, which moves below it. The live line never hides the cursor or changes the terminal's mode, so no way out,
+/// a signal included, has anything to put back; a return or a throw also clears the live line.
 public final class DarkbloomCommandLook: @unchecked Sendable {
     /// What the terminal allows.
     public struct Mode: Equatable, Sendable {
@@ -50,7 +50,6 @@ public final class DarkbloomCommandLook: @unchecked Sendable {
     private let colour: String
     private let output: @Sendable (String) -> Void
     private let pause: @Sendable (UInt32) -> Void
-    private let clock: @Sendable () -> UInt64
     private let lock = NSLock()
     private var opened = false
     private var live: String?
@@ -64,11 +63,10 @@ public final class DarkbloomCommandLook: @unchecked Sendable {
     /// `output` writes decorations (raw, after the command's buffered lines); `pause` spaces the bloom's frames.
     public init(mode: Mode, environment: [String: String] = ProcessInfo.processInfo.environment,
                 output: @escaping @Sendable (String) -> Void = DarkbloomCommandLook.writeToStandardOutput,
-                pause: @escaping @Sendable (UInt32) -> Void = { usleep($0) },
-                clock: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }) {
+                pause: @escaping @Sendable (UInt32) -> Void = { usleep($0) }) {
         self.mode = mode
         colour = ClusterOnboardingBrand.colour(environment)
-        self.output = output; self.pause = pause; self.clock = clock
+        self.output = output; self.pause = pause
     }
 
     deinit { ticker?.cancel() }
@@ -144,9 +142,8 @@ public final class DarkbloomCommandLook: @unchecked Sendable {
 
     private func begin(_ text: String) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        guard mode.decorates, live == nil, Self.showingLock.withLock({ Self.showing == nil }) else { return false }
+        guard mode.decorates, live == nil, claimShowing() else { return false }
         live = text
-        Self.showingLock.withLock { Self.showing = self }
         draw(force: true)
         guard mode.animates else { return true }
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "darkbloom.command-look"))
@@ -168,17 +165,28 @@ public final class DarkbloomCommandLook: @unchecked Sendable {
         output("\r\u{1B}[J")
     }
 
+    /// Makes this look the one whose live line shows, unless one already does: checked and set in one step, so two
+    /// looks never show a live line at once.
+    private func claimShowing() -> Bool {
+        Self.showingLock.withLock {
+            guard Self.showing == nil else { return false }
+            Self.showing = self
+            return true
+        }
+    }
+
     /// The live row again when `force`, or when the petal turned. The lock is held.
     private func draw(force: Bool) {
         guard let text = live else { return }
-        let frame = mode.animates ? Int((clock() / 125_000_000) % UInt64(ClusterOnboardingBrand.spinner.count)) : 0
+        let now = DispatchTime.now().uptimeNanoseconds
+        let frame = mode.animates ? Int((now / 125_000_000) % UInt64(ClusterOnboardingBrand.spinner.count)) : 0
         guard force || frame != drawnFrame else { return }
         drawnFrame = frame
         output("\r\u{1B}[J" + Self.liveRow(text, petal: ClusterOnboardingBrand.spinner[frame], colour: colour, columns: mode.columns))
     }
 
-    /// One row only, as the setup's live line: the climb back counts rows, so a wrapped line would leave its start
-    /// behind. Room: the indent, petal and space, the ellipsis and the last column.
+    /// One row only, as the setup's live line: the return and erase that replace it reach just the cursor's row, so a
+    /// wrapped line would leave its start behind. Room: the indent, petal and space, the ellipsis and the last column.
     static func liveRow(_ text: String, petal: String, colour: String, columns: Int) -> String {
         let room = max(1, columns - 6)
         let fitted = text.count > room ? String(text.prefix(room)) : text

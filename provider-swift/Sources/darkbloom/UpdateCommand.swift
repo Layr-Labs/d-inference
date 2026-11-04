@@ -222,7 +222,7 @@ struct Update: AsyncParsableCommand {
         let request = ClusterPairUpdate.Request(createdAt: Date().timeIntervalSince1970)
         let outcome = try await look.working("Waiting for the cluster service") {
             try await ClusterServiceUpdateRequest.restart(into: version, request: request, serviceDirectory: directory,
-                timeoutSeconds: drain.timeout, say: { line in look.say(line) { print($0) } })
+                timeoutSeconds: drain.timeout, say: look.saying { print($0) })
         }
         guard outcome != .failed else { throw ExitCode.failure }
     }

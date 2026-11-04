@@ -68,12 +68,12 @@ struct DarkbloomCommandLookTests {
     }
 
     @Test("in a terminal: the mark beside the title once, then the live line, which each said line replaces and which is cleared at the end")
-    func decorated() async {
+    func decorated() {
         let recorder = Recorder()
         let look = makeLook(.init(decorates: true, animates: false, columns: 100), recorder)
         look.open("Darkbloom stop")
         look.open("Darkbloom stop")
-        await look.working("Stopping both Macs") {
+        look.working("Stopping both Macs") {
             look.say("first") { recorder.append($0 + "\n") }
             DarkbloomCommandLook.say("second") { recorder.append($0 + "\n") }
         }

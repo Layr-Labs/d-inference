@@ -16,12 +16,12 @@ struct Status: AsyncParsableCommand {
     var solo = false
 
     mutating func run() async throws {
-        DarkbloomCommandLook.forCommand().open("Darkbloom status")
         // Asked first, so the add-on answers while the banner and the config
         // load run; bounded, so the add-on can never hold up or fail status.
         let sandboxLine = Task.detached {
             SandboxStatusView.statusLine(SandboxAddon.live().queryStatus(timeout: Sandbox.statusLineTimeout))
         }
+        DarkbloomCommandLook.forCommand().open("Darkbloom status")
 
         // Best-effort: tell the user if a newer release is published before
         // we dump current status. Bounded by a 2s timeout in UpdateBanner.

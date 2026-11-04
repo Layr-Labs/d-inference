@@ -7,7 +7,8 @@ func sayLine(_ line: String) {
 }
 
 extension DarkbloomCommandLook {
-    /// The pair commands' `say`, round the live line.
+    /// The `say` a command hands its helpers when it holds the look: exactly `plain` (its own print), round this look's
+    /// live line while one shows.
     func saying(_ plain: @escaping ClusterPairCommands.Say) -> ClusterPairCommands.Say {
         { [self] line in say(line, plain: plain) }
     }

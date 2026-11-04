@@ -65,7 +65,7 @@ struct Start: AsyncParsableCommand {
     var distributed = false
 
     @Flag(name: .customLong("no-coordinator"),
-          help: "With --distributed: serve the saved cluster on the local API only and never contact the coordinator (`darkbloom cluster local` starts it this way).")
+          help: "With --distributed: serve the saved cluster on the local API only and never contact the coordinator (`\(ClusterPairSummary.cli) cluster local` starts it this way).")
     var noCoordinator = false
 
     @Flag(help: "With --cluster-member: install the member as an always-on background service (starts at login, waits for the cluster link, restarts with backoff, coordinated updates).")

@@ -123,7 +123,7 @@ public enum ClusterPairingRosterCheck {
 
         public var description: String {
             switch self {
-            case .notPaired: return "Run `darkbloom cluster` on both Macs to pair them. (This Mac has not paired with the other members.)"
+            case .notPaired: return ClusterOnboardingCommand.named("Run `darkbloom cluster` on both Macs to pair them. (This Mac has not paired with the other members.)")
             case .identityChanged: return "This Mac's Secure Enclave key is not the one it paired with; pair again."
             case .unpinnedMember(let pin): return "The roster names a member this Mac never paired with (pin \(pin.prefix(16))…); pair with it first."
             case .keyDiffers(let pin): return "The roster's key for member \(pin.prefix(16))… is not the key this Mac pinned."

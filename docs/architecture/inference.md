@@ -108,6 +108,28 @@ ended the whole pair: every lane in flight failed and the follower logged
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerLeaseState.swift`
 (`clock`).
 
+A pair request whose consumer goes away (a client that closes its connection,
+or a coordinator cancel) ends with the clean client-stop handshake at its next
+committed token, which keeps both ranks retired and the pair serving
+(`DistributedCBv2Engine.stop`, `.cancelled`). On a pair whose lanes retire
+alone, a request that has produced no token yet takes no clean stop
+(`ClusterWorkerRequest.requestCleanStop` returns false) and is cancelled
+instead: a clean stop would first finish its whole prompt, and a
+tensor-parallel pair prefills one prompt at a time, oldest first
+(`QwenTensorParallelBatchDriver`), so every newer request would wait behind it
+and fail at its own first-token deadline. The cancel ends only that lane, at
+both ranks' next step boundary, and the next request is served at once. The
+pair's own shutdown (`ClusterWorkerPair.shutdown`) likewise cancels such a lane
+without waiting for a clean stop. A pair without such lanes keeps the clean
+stop, since a cancel there ends the pair. Before, a client that closed its
+connection 15 s into a 60K-token prompt on a Qwen 3.8 27B tensor-parallel pair
+kept both Macs prefilling it for about 4 minutes, and every other request
+failed meanwhile. Sources:
+`libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerRequest.swift`
+(`requestCleanStop`) and
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine+Events.swift`
+(`stop`).
+
 The cluster setup liveness probe uses the same request validation as ordinary
 chat completions. `ClusterSetupProbeRequest` sends no family-specific thinking
 override, so each model’s prompt policy remains authoritative.
@@ -440,6 +462,30 @@ A DevNet build is installed as `Darkbloom Dev.app`, and its CLI is
 check and `cancel-all` know an owner by the CLI name of each build environment
 (`ClusterOrphanReaper.ownerExecutableNames`). The cluster service stop knows
 the service by this build's CLI name (`ClusterService.isClusterService`).
+Every command a build prints for a pair names its CLI: the name starts as this
+build's (`ClusterOnboardingCommand.name`, from `BuildEnvironment.current.cliName`;
+checks that compile the screens without the package set theirs with `use`), the
+pair commands and the live operations read it (`ClusterPairSummary.cli`,
+`OnboardingLive.cli`), and ProviderCore's texts are named with it
+(`ClusterOnboardingCommand.named`). Every line that names the app as macOS
+lists it under Local Network reads `ClusterService.appName`
+(`BuildEnvironment.current.appDisplayName`): the screens and the link
+follower's refusal. Both apps serve a pair's API on port 8000,
+so one of them serves a pair on a Mac at a time. Each keeps its own cluster
+incident log, owned by `DarkbloomClusterRemote`
+(`ClusterIncidentLog.defaultFile(homeDirectory:install:)`): production's is
+`~/.darkbloom/cluster/incidents.json`, another install's its own file, such as
+`incidents.dev.json`, which a build from before installs had their own files
+never reads or rewrites; a corrupt one is kept beside it under its own name
+(`incidents.corrupt.json`, `incidents.dev.corrupt.json`). Every reader and writer opens this build's with
+`ClusterIncidentLog.forThisInstall`. Each record also names the install that
+wrote it (`ClusterIncident.install`), and a build reads only its own, counting
+records without one as production's (`ClusterIncidentLog.install`). The
+leader's service log notes a following window's `status` requests once a minute
+(`ClusterService.logsControl`). Each Mac's cluster service tells the other
+whether it starts at login (`ClusterServiceStatus.startsAtLogin`: it runs under
+its login agent's supervisor and that agent is installed,
+`ClusterServiceAgent.startsAtLogin`).
 
 ## Context
 
@@ -3876,6 +3922,28 @@ away; mixed pairs are first-class).
   assistant guard).
 - **Default:** the fastest measured family, else the planner's
   (`ClusterOnboardingMode.defaultIndex`).
+- **Local Network truth:** the follower the service runs is the process that
+  dials the other Mac, so its last dial decides (`ClusterService.followerRefusal`:
+  the refusal macOS gave it, or a link it opened since, or a dial that failed
+  another way since). The follower writes each of those phrases from the
+  constant the scan reads (`localNetworkRefusal`, `followerLinkOpenedLines`,
+  `followerLinkRefusedLine`). A running follower publishes that refusal as its
+  `lastError` (`runningPartRefusal`: only a link follower's log is read, and only
+  once it grew), and an ended part's reason reads the same last dial
+  (`ClusterService.lastError`), so a stop after a link opened is a clean stop.
+  Only a running follower's refusal blocks: the service's Local Network state
+  (`ClusterLocalNetworkAccess.state`), whatever the probe's broadcast found, and
+  the leading Mac's wait (`OnboardingLive.otherMacRefused`), which ends on it once
+  its own part, which hosts the listener the follower dials, has run
+  `refusalSettleSeconds` (the follower redials at most about 1.25 s apart and
+  logs only a change, so a setting just turned on clears first;
+  `refusalIsCurrent`). The ✗ is worded for the screen that shows it
+  (`OnboardingLive.localNetworkLine`): a wait the joining Mac forwarded names
+  that Mac.
+- **The person's family:** `useMode` keeps the chosen family for every model
+  (`OnboardingLive.keptFamily`), never inferred from the listing's order, which
+  says nothing of the plan; `localAdopt` plans again in it only when the listed
+  plan's mode isn't in it (`OnboardingLive.replansInFamily`).
 - **The scope a plan is for:** `chooseAndServe` names the scope before it plans
   the list (`ClusterOnboardingOperations.planScope`, `OnboardingLive.usePlanningScope`,
   carried in `ClusterControlRequest.scope`); a start whose scope changes before

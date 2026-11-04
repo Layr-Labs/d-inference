@@ -189,13 +189,17 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         // memory gate refused the load), and why it was declared lost, not
         // only that its endpoint closed.
         if let link = endpoint as? ClusterLinkWorkerEndpoint {
-            let said = link.followerReason.map { "rank \(endpoint.rank) follower said: \(String($0.prefix(512)))" }
+            let said = link.followerReason.map { followerSaid(rank: endpoint.rank) + String($0.prefix(512)) }
             let lost = link.lossReason.map { "rank \(endpoint.rank) follower lost: \(String($0.prefix(512)))" }
             let both = [said, lost].compactMap { $0 }
             if !both.isEmpty { return both.joined(separator: "; ") }
         }
         return nil
     }
+
+    /// How a rank's diagnostic opens with what its link follower said (`diagnostic`): the other Mac's own words on how
+    /// its owner or worker ended, which this Mac's incidents carry (read back by `OnboardingLive.ownWorker`).
+    static func followerSaid(rank: Int) -> String { "rank \(rank) follower said: " }
 
     /// Longest a stop can legitimately take. A request that is still running
     /// is first given the selected model's clean-stop wait to end at a token.

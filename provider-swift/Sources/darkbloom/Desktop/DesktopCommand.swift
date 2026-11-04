@@ -86,8 +86,8 @@ struct Desktop: AsyncParsableCommand {
     static func pairRefusal(_ pair: ClusterPairSummary) -> [String]? {
       guard pair.paired else { return nil }
       return ["This Mac is in a two-Mac cluster with \(pair.otherMac): the app's local mode serves this Mac alone, so nothing was started.",
-              "To serve the pair locally: `darkbloom cluster local` on the leading Mac. To serve this Mac alone: stop the pair "
-                + "(`darkbloom stop`), then `darkbloom start --solo --local --model <id>`."]
+              "To serve the pair locally: `\(ClusterPairSummary.cli) cluster local` on the leading Mac. To serve this Mac alone: stop the pair "
+                + "(`\(ClusterPairSummary.cli) stop`), then `\(ClusterPairSummary.cli) start --solo --local --model <id>`."]
     }
     mutating func run() async throws {
       guard !model.isEmpty else { throw ValidationError("Select a model") }

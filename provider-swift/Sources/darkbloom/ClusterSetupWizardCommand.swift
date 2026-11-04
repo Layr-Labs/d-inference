@@ -20,7 +20,7 @@ extension Cluster.Setup {
     }
 
     /// The one line `darkbloom cluster` prints when it is not run in a terminal.
-    static let needsTerminalLine = "Run `darkbloom cluster` in a Terminal window on this Mac."
+    static let needsTerminalLine = "Run `\(ClusterPairSummary.cli) cluster` in a Terminal window on this Mac."
 
     /// The pair the wizard was given, all four options or none.
     func wizardPair() throws -> ClusterSetupRecord.Pair? {

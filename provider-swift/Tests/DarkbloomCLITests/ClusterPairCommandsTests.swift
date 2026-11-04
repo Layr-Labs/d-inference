@@ -547,7 +547,7 @@ private final class Looks<Value>: @unchecked Sendable {
 private func pairActions(role: ClusterOnboardingRole = .leader, serving: Bool = true,
                          stop: Result<[String], ClusterOnboardingFailure> = .success(["Stopping both Macs. Run `darkbloom cluster` to serve again."]),
                          serve: Result<[String], ClusterOnboardingFailure> = .success(["Started the other Mac's part over the cable."]),
-                         teardown: [Result<[String], ClusterOnboardingFailure>] = [.success(freed)])
+                         teardown: [Result<[String], ClusterOnboardingFailure>] = [.success(freed)], stopDelay: Double = 0)
     -> ClusterPairActions {
     @Sendable func said(_ action: String) { FileHandle.standardError.write(Data("pair action: \(action)\n".utf8)) }
     let teardownLooks = Looks(teardown)
@@ -555,7 +555,7 @@ private func pairActions(role: ClusterOnboardingRole = .leader, serving: Bool = 
         resume: { ClusterOnboardingResume(role: role, peerName: "Apple M5 Max, 128 GB", serving: serving, modelName: "EigenLabs/Qwen3.8-27B-4bit-mtp") },
         ensureService: { said("ensureService"); return .success(()) },
         serve: { said("serve"); return serve },
-        stop: { said("stop"); return stop },
+        stop: { said("stop"); Thread.sleep(forTimeInterval: stopDelay); return stop },
         verifyTeardown: { said("verifyTeardown"); return teardownLooks.next() })
 }
 
@@ -869,7 +869,7 @@ struct ClusterPairValidatorFindingsTests {
             }
         }
         #expect(lines(result?.standardOutputContent) == ["This Mac is in a two-Mac cluster with \(otherMac): stopping both Macs.",
-            ClusterPairSummary.stoppedLine, "Memory freed on both Macs ✓", ""])
+            "  Waiting for both Macs' parts to end (up to 30 s).", ClusterPairSummary.stoppedLine, "Memory freed on both Macs ✓", ""])
         #expect(pairActionCalls(text(result?.standardErrorContent)) == ["stop", "verifyTeardown", "verifyTeardown"])
     }
 
@@ -1410,5 +1410,216 @@ struct DarkbloomCommandLookRunTests {
         #expect(!bytes.contains(0x1B))
         let object = try #require(try JSONSerialization.jsonObject(with: Data(bytes)) as? [String: Any])
         #expect(object["state"] as? String == "stopped")
+    }
+}
+
+@Suite("DevNet findings, CLI side: names, waits that say so, incidents per install, a quieter control log")
+struct ClusterDevNetFindingsTests {
+    @Test("A-1: the DevNet app's start card names `darkbloom-dev`, never `darkbloom`")
+    func startCardNamesTheIdentity() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            ClusterOnboardingCommand.use("darkbloom-dev")
+            try await exitWithPair(servingPair(), actions: pairActions()) { _ in try await runCLICommand(Start.self, ["start"]) }
+        }
+        let out = text(result?.standardOutputContent)
+        #expect(out.contains("  darkbloom-dev stop     Stop both Macs\n") && out.contains("  darkbloom-dev status   Check status\n"), "\(out)")
+        #expect(!out.contains("darkbloom "), "\(out)")
+    }
+
+    @Test("A-1: cluster stop --service, its refusal and cluster local name the DevNet identity")
+    func clusterTextsNameTheIdentity() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            ClusterOnboardingCommand.use("darkbloom-dev")
+            var lines = try Cluster.Stop.finishStop(nil, localOnly: true) { ["agent"] }
+            lines += Cluster.Stop.refusal(unreadable()) + [Cluster.Local.needsTerminalLine]
+            for line in lines { print(line) }
+        }
+        let out = text(result?.standardOutputContent)
+        #expect(out.contains("`darkbloom-dev cluster stop --service` there too") && out.contains("`darkbloom-dev cluster local`"), "\(out)")
+        #expect(!out.contains("`darkbloom "), "\(out)")
+    }
+
+    @Test("The follower writes the words the cluster service reads in its log, and its refusal names the app macOS lists")
+    func followerWritesTheWordsTheServiceReads() async throws {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            Cluster.LinkFollower.emit(.linkRefused("connectFailed (unreachable)"))
+            Cluster.LinkFollower.emit(.connected)
+            Cluster.LinkFollower.emit(.opened)
+        }
+        let out = text(result?.standardOutputContent)
+        let lines = out.split(separator: "\n").map { String($0.drop { $0 != " " }.dropFirst()) }
+        // Production's names the app as the ✗ does ("Darkbloom"), not the command; the DevNet app's "Darkbloom Dev".
+        #expect(lines == ["link-follower: link refused: connectFailed (unreachable)",
+                          "link-follower: this process may not reach the local network: macOS refused the dial before the cable was tried. "
+                              + "Allow \(BuildEnvironment.current.appDisplayName) under System Settings > Privacy & Security > Local Network "
+                              + "(once), or start the follower from a session that has that access.",
+                          "link-follower: connected", "link-follower: session opened"], "\(out)")
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("follower-words-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let refused = directory.appendingPathComponent("refused.log"), opened = directory.appendingPathComponent("opened.log")
+        try (out.split(separator: "\n").prefix(2).joined(separator: "\n") + "\n").write(to: refused, atomically: true, encoding: .utf8)
+        try out.write(to: opened, atomically: true, encoding: .utf8)
+        let reason = ClusterService.followerRefusal(in: refused)
+        #expect(reason?.hasPrefix(ClusterService.localNetworkReasonPrefix + ": macOS refused the dial") == true, "\(String(describing: reason))")
+        #expect(ClusterService.followerRefusal(in: opened) == nil, "a link opened after the refusal clears it")
+    }
+
+    @Test("A-11: restart says what it waits for, and for how long at most, instead of hanging silently")
+    func restartSaysWhatItWaitsFor() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await exitWithPair(servingPair(), actions: pairActions(teardown: [.success(stillRunning), .success(freed)], stopDelay: 0.5)) { _ in
+                try await ClusterPairCommands.$progressAfterForTesting.withValue(0.05) {
+                    try await ClusterPairCommands.$waitForTesting.withValue(.init(seconds: 30, interval: 0)) {
+                        try await runCLICommand(Restart.self, ["restart"])
+                    }
+                }
+            }
+        }
+        let out = lines(result?.standardOutputContent)
+        #expect(out.contains("  Waiting for both Macs to stop; accepted requests finish first (up to about 6 min)."), "\(out)")
+        #expect(out.contains("  Waiting for both Macs' parts to end (up to 30 s)."), "\(out)")
+    }
+
+    @Test("A-11: a script start that keeps reading the same status says it is still waiting, and its bound")
+    func startSaysItIsStillWaiting() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            let loading = observed("Loading Qwen 3.8 27B: 1 of 2 parts ready.")
+            let looks = Looks([loading, loading, loading, observed("Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel).")])
+            try await exitWithPair(pair(), actions: pairActions()) { _ in
+                try await ClusterPairSummary.$readerForTesting.withValue({ live in live ? looks.next() : pair() }) {
+                    try await ClusterPairCommands.$waitForTesting.withValue(.init(seconds: 30, interval: 0, heartbeat: 0)) {
+                        try await runCLICommand(Start.self, ["start"])
+                    }
+                }
+            }
+        }
+        let out = lines(result?.standardOutputContent)
+        #expect(out.contains("  Waiting until the pair serves (up to 30 s)."), "\(out)")
+        #expect(out.contains("  Still waiting (up to 30 s in all): Loading Qwen 3.8 27B: 1 of 2 parts ready."), "\(out)")
+    }
+
+    @Test("A-12: the leader logs a following window's status requests once a minute, every other command each time")
+    func controlStatusLogIsRateLimited() {
+        let now = Date()
+        #expect(ClusterService.logsControl(.status, lastStatusLog: nil, now: now))
+        #expect(!ClusterService.logsControl(.status, lastStatusLog: now.addingTimeInterval(-1), now: now))
+        #expect(ClusterService.logsControl(.status, lastStatusLog: now.addingTimeInterval(-61), now: now))
+        #expect(ClusterService.logsControl(.stop, lastStatusLog: now.addingTimeInterval(-1), now: now))
+    }
+}
+
+private final class SaidLines: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+    func add(_ line: String) { lock.withLock { lines.append(line) } }
+    var all: [String] { lock.withLock { lines } }
+}
+
+@Suite("Pair-2 findings, CLI side: the remaining names, a truthful other Mac, a bounded answer from the leading Mac")
+struct ClusterPairTwoFindingsTests {
+    @Test("P2-2: no-terminal `cluster`, the cluster service status lines and the Ctrl-C line name the DevNet CLI")
+    func remainingTextsNameTheIdentity() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            ClusterOnboardingCommand.use("darkbloom-dev")
+            var lines = [Cluster.Setup.needsTerminalLine, ClusterOnboardingTerminal.stoppedLine]
+            let cases: [([(label: String, loaded: Bool)], Bool)] = [([], true), ([], false), ([("agent", false), ("old", true)], true)]
+            for (agents, running) in cases {
+                lines += Status.clusterServiceLines(agents: agents, serviceRunning: running, paired: true,
+                                                    supervisor: nil, now: 0, bootTime: 0)
+            }
+            for line in lines { print(line) }
+        }
+        let out = text(result?.standardOutputContent)
+        #expect(out.contains("Run `darkbloom-dev cluster` in a Terminal window on this Mac."), "\(out)")
+        #expect(out.contains("Stopped. Run `darkbloom-dev cluster` again to continue where it was."), "\(out)")
+        #expect(out.contains("(run `darkbloom-dev cluster` to set that up)") && out.contains("login (run `darkbloom-dev cluster`)"), "\(out)")
+        #expect(out.contains("(`darkbloom-dev cluster` keeps one)"), "\(out)")
+        #expect(!out.contains("`darkbloom "), "\(out)")
+    }
+
+    @Test("P2-2: the onboarding's Local Network hint and the lines its live operations write name the DevNet CLI and app")
+    func onboardingTextsNameTheIdentity() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            ClusterOnboardingCommand.use("darkbloom-dev")
+            print(OnboardingLive.localNetworkHint("the other Mac"))
+            print("cli " + OnboardingLive.cli)
+        }
+        let out = text(result?.standardOutputContent)
+        #expect(out.contains("If you denied the Local Network prompt on the other Mac, allow \(BuildEnvironment.current.appDisplayName) in "
+            + "System Settings → Privacy & Security → Local Network there, then run `darkbloom-dev cluster` again.\n"), "\(out)")
+        #expect(out.hasSuffix("cli darkbloom-dev\n"), "every command the live operations name: \(out)")
+        #expect(!out.contains("`darkbloom "), "\(out)")
+    }
+
+    @Test("P2-13: the leading Mac says the other Mac answers while they run the cluster, false while it is away, else unknown")
+    func leaderSaysWhetherTheOtherMacAnswers() {
+        var serving = pair(role: .leader)
+        serving.read(status: ["Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel)."], leaderMode: "cluster")
+        #expect(serving.otherMacAnswers == true)
+        #expect(serving.json.otherMac?.answers == true)
+        var stopped = pair(role: .leader, started: false)
+        stopped.read(status: ["Stopped; last model Qwen 3.8 27B."], leaderMode: "idle")
+        #expect(stopped.otherMacAnswers == nil)
+        var away = pair(role: .leader)
+        away.read(status: ["The other Mac doesn't answer over the cable; this Mac serves alone."], leaderMode: "alone")
+        #expect(away.otherMacAnswers == false)
+    }
+
+    @Test("P2-8: the leading Mac's answer is waited for at most its bound, and a slow one is said")
+    func slowLeaderAnswerIsBoundedAndSaid() {
+        let said = SaidLines()
+        let late = ClusterPairSummary.boundedStatus(within: 1, noticeAfter: 0.05, slow: { said.add($0) }) {
+            Thread.sleep(forTimeInterval: 2); return ["late"]
+        }
+        #expect(late == nil)
+        #expect(said.all == ["  Waiting for the leading Mac's answer (up to 1 s).",
+                             "  The leading Mac didn't answer in 1 s; this is this Mac's own view."])
+        let quiet = SaidLines()
+        let prompt = ClusterPairSummary.boundedStatus(within: 1, noticeAfter: 0.5, slow: { quiet.add($0) }) { ["Serving"] }
+        #expect(prompt == ["Serving"])
+        #expect(quiet.all.isEmpty)
+    }
+}
+
+@Suite("Review closures: the bounded wait only for a person's status on the Mac that follows")
+struct ClusterBoundedWaitScopeTests {
+    @Test("the leading Mac's status and a script start's looks wait as long as the answer takes, and say nothing")
+    func onlyAFollowersStatusIsBounded() {
+        let leader = SaidLines()
+        let own = ClusterPairSummary.statusLines(leads: true, slow: { leader.add($0) }, within: 1, noticeAfter: 0.05) {
+            Thread.sleep(forTimeInterval: 1.3); return ["Serving"]
+        }
+        #expect(own == ["Serving"], "the leading Mac's own status is never cut short")
+        #expect(leader.all.isEmpty, "\(leader.all)")
+        let looks = ClusterPairSummary.statusLines(leads: false, slow: nil, within: 1, noticeAfter: 0.05) {
+            Thread.sleep(forTimeInterval: 1.3); return ["Loading"]
+        }
+        #expect(looks == ["Loading"], "a script start's look is never cut short")
+        let follower = SaidLines()
+        let late = ClusterPairSummary.statusLines(leads: false, slow: { follower.add($0) }, within: 1, noticeAfter: 0.05) {
+            Thread.sleep(forTimeInterval: 1.3); return ["late"]
+        }
+        #expect(late == nil)
+        #expect(follower.all == ["  Waiting for the leading Mac's answer (up to 1 s).",
+                                 "  The leading Mac didn't answer in 1 s; this is this Mac's own view."])
+    }
+
+    @Test("a script start's looks never ask for the bounded wait; cluster status does")
+    func scriptStartNeverAsksForTheBoundedWait() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await exitWithPair(servingPair(), actions: pairActions()) { _ in
+                try await ClusterPairSummary.$liveReadForTesting.withValue({ print("live read: " + ($0 ? "bounded" : "unbounded")) }) {
+                    try await runCLICommand(Start.self, ["start"])
+                    print("-- cluster status --")
+                    try await runCLICommand(Cluster.Status.self, ["cluster", "status"])
+                }
+            }
+        }
+        let out = text(result?.standardOutputContent).components(separatedBy: "-- cluster status --")
+        #expect(out.count == 2, "\(out)")
+        let start = out.first ?? "", status = out.last ?? ""
+        #expect(start.contains("live read: unbounded") && !start.contains("live read: bounded"), "\(start)")
+        #expect(status.contains("live read: bounded") && !status.contains("live read: unbounded"), "\(status)")
     }
 }

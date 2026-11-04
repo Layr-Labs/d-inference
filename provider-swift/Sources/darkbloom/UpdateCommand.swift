@@ -254,7 +254,7 @@ enum ClusterServiceUpdateRequest {
             throw ValidationError("Could not ask this Mac's cluster service to restart (\(serviceDirectory.path) is not writable).")
         }
         say("Asked this Mac's cluster service to restart into v\(version) together with the other Mac; the pair finishes its accepted requests first.")
-        say("Run `darkbloom update` on the other Mac too (or wait for the pair's next update slot): both restart once both have v\(version).")
+        say("Run `\(ClusterPairSummary.cli) update` on the other Mac too (or wait for the pair's next update slot): both restart once both have v\(version).")
         let deadline = Date().addingTimeInterval(Double(timeoutSeconds))
         var said: String?
         while Date() < deadline {
@@ -268,7 +268,7 @@ enum ClusterServiceUpdateRequest {
                     say("The cluster service restarts into v\(version); the cluster sets itself up again once both Macs run it.")
                     return .restarting
                 case .deferred, .failed:
-                    say("Not restarted now. The pair tries again at its next update slot, or run `darkbloom update` again.")
+                    say("Not restarted now. The pair tries again at its next update slot, or run `\(ClusterPairSummary.cli) update` again.")
                     return .failed
                 default:
                     break

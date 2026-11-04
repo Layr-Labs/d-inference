@@ -1097,7 +1097,8 @@ private func runAutopilotStart(_ subcommand: String, decorated: Bool) async thro
 private func withoutLook(_ stream: String, title: String) -> String {
     let mark = "\n" + DarkbloomCommandLook.mark(title, revealed: Int.max, colour: "38;5;27") + "\n"
     let rest = stream.hasPrefix(mark) ? String(stream.dropFirst(mark.count)) : stream
-    let live = try! NSRegularExpression(pattern: "\r\u{1B}\\[J(  \u{1B}\\[[0-9;]+m.\u{1B}\\[0m \u{1B}\\[2m[^\u{1B}]*\u{2026}\u{1B}\\[0m)?")
+    // The live row is written with line wrap off and on again around it (`ClusterOnboardingBrand.noWrap`).
+    let live = try! NSRegularExpression(pattern: "\r\u{1B}\\[J(\u{1B}\\[\\?7l  \u{1B}\\[[0-9;]+m.\u{1B}\\[0m \u{1B}\\[2m[^\u{1B}]*\u{2026}\u{1B}\\[0m\u{1B}\\[\\?7h)?")
     return live.stringByReplacingMatches(in: rest, range: NSRange(rest.startIndex..., in: rest), withTemplate: "")
 }
 

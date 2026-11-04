@@ -392,7 +392,24 @@ with hardware names, is no longer on the screens, which say one serving line
 nothing more once paired, also for `darkbloom cluster local`
 (`ClusterOnboardingDriver.joinedLocalLine`): it follows the leader's start from the cluster status
 over the cable and ends with the same ✓/✗ block, bounded like the leader's start
-(`ClusterOnboardingDriver.followStart`, `ClusterOnboardingFollowTiming`). Serving through Darkbloom, the
+(`ClusterOnboardingDriver.followStart`, `ClusterOnboardingFollowTiming`).
+
+- **What it waits on.** The leading Mac's screen records each step it waits on in its setup record
+  (`OnboardingLive.publishStep`, `ClusterSetupRecord.onboardingStep`, `ClusterOnboardingLeaderStepMark`). Its status
+  reply carries that step (`ClusterControlReply.step`, `ClusterOnboardingLeaderStep`). A step counts only while that
+  screen's process runs; a refusal counts for 30 minutes after it was set, because the screen ends with it. A reply
+  from an older build has no step, and the Mac that joins keeps the general words.
+- **The live line.** The Mac that joins says each step once and shows a live line fitted to the window's current
+  width (`ClusterOnboardingDriver.followWaitingLine`). The terminal reads that width at each redraw and climbs back
+  over the rows a reflowed window shows (`ClusterOnboardingTerminal.climb`), so a redraw never leaves a wrapped copy
+  behind.
+- **How the wait ends.** A refusal ends the wait at once with the leader's ✗ (`followRefused`; different builds:
+  `differentBuildsLines`). Running out of time ends it with a ✗ and next steps (`notStartedReason`,
+  `notStartedLines`).
+- **The leader's own Local Network wait** has a bound too (`ClusterOnboardingOperations.localNetworkWaitSeconds`,
+  `localNetworkOffLines`).
+
+Serving through Darkbloom, the
 leader's start asks the coordinator after its test whether to offer the pair; until it has, the setup record
 says so (`ClusterSetupRecord.registrationPendingPID` and `registrationPendingStarted`, set only by the screen's
 start, `OnboardingLive.markRegistrationPending`, never by `serve` alone as `darkbloom start` and `restart` run

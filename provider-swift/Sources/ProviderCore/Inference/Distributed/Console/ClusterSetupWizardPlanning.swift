@@ -305,7 +305,7 @@ enum ClusterSetupPlanning {
     /// supported, this copy of it is not taken (the catalog's encoding of a manifest the worker pins in another, say).
     static let copyNotTaken = "supported on a cluster, but this Mac's cluster worker does not take this copy of it"
     /// The plain blocker when the two Macs' installed cluster workers differ: nothing can be planned on both until they match.
-    static let differentBuilds = "the two Macs run different Darkbloom builds; install the same Darkbloom on both"
+    static let differentBuilds = ClusterOnboardingLeaderStep.differentBuildsReason
     /// The plain blocker when every placement these Macs can hold is a shape that diverged on these chips.
     static let everyShapeDiverged = "Every way these Macs can hold it diverged from its single-Mac reference on these chips."
 

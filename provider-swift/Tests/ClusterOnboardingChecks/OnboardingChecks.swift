@@ -190,6 +190,10 @@ import Darwin
         onlyTheStartThatRegistersMarksItself()
         thePendingCheckIsNoTickOnAnyScreen()
         eachStageOfTheStartHasItsOwnBound()
+        // A user's report (2026-11-04): "an infinite loop of waiting for the other Mac, Apple M5 Max 128 GB".
+        followWaitChecks()
+        // A 0.10.8 user's leader screen: its loading line repeated end to end in a narrow window.
+        liveLineChecks()
         print("onboarding checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -368,7 +372,7 @@ import Darwin
         let count = Darwin.read(primary, &bytes, bytes.count)
         let drawn = String(decoding: bytes.prefix(max(0, count)), as: UTF8.self)
         let rows = drawn.components(separatedBy: "\r")
-            .map { $0.replacingOccurrences(of: "\u{1B}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression) }
+            .map { $0.replacingOccurrences(of: "\u{1B}\\[[0-9;?]*[A-Za-z]", with: "", options: .regularExpression) }
             .filter { !$0.isEmpty }
         expect(!rows.isEmpty && rows.allSatisfy { $0.count <= 43 }, "44 columns: the live line stays on one row: \(rows)")
         expect(rows.contains { $0.contains("Loading Gemma 4 26B") && $0.hasSuffix("\u{2026}") },
@@ -796,6 +800,12 @@ import Darwin
         func finish(seconds: Double = 10) -> Int32? {
             _ = done.wait(timeout: .now() + seconds)
             return code
+        }
+
+        /// Closes both ends once the run ended, so a long list of checks never runs out of pseudo-terminals.
+        func release() {
+            guard code != nil else { return }
+            Darwin.close(master); Darwin.close(slave)
         }
     }
 
@@ -2974,7 +2984,8 @@ import Darwin
         expect(run.waitFor("darkbloom-dev"), "dev row: drawn")
         _ = run.finish()
         let dim = run.text.components(separatedBy: "\u{1B}[2m").dropFirst().compactMap { $0.components(separatedBy: "\u{1B}[0m").first }
-        let named = dim.filter { $0.contains("darkbloom-dev") }
+        // A row with its time keeps the time and shortens the text before it (`ClusterOnboardingBrand.liveText`).
+        let named = dim.filter { $0.contains("`darkbloom") }
         expect(!named.isEmpty && named.allSatisfy { $0.replacingOccurrences(of: "\u{2026}", with: "").count <= 45 - 6 },
                "dev row: named, then fitted to its room: \(named)")
     }
@@ -4188,7 +4199,9 @@ import Darwin
         let waited = joining(Recorder(), statusSequence: [["Stopped."]], followSeconds: 0.6)
         expect(waited.waitFor(codeQuestion), "follow bound: the code"); waited.type("y")
         expect(waited.finish() == 1, "follow bound: ends, not success")
-        expect(waited.text.hasSuffix(ClusterOnboardingDriver.notStartedLine(leaderName, seconds: 0.6) + "\n"), "follow bound, not started: said: \(waited.text)")
+        expect(waited.text.hasSuffix(block("\u{2717}", ClusterOnboardingNotServing.title(reason: ClusterOnboardingDriver.notStartedReason(leaderName, seconds: 0.6)),
+            ClusterOnboardingDriver.notStartedLines(leaderName, step: nil, status: "Stopped")) + ClusterOnboardingDriver.notStartedAfterLine + "\n"),
+               "follow bound, not started: ✗ with the last status and what to do: \(waited.text)")
         let stuck = joining(Recorder(), statusSequence: [["Stopped."], ["Loading Qwen 3.8 27B: 1 of 2 parts ready."]], followSeconds: 0.6)
         expect(stuck.waitFor(codeQuestion), "follow bound, started: the code"); stuck.type("y")
         expect(stuck.finish() == 1, "follow bound, started: not success")

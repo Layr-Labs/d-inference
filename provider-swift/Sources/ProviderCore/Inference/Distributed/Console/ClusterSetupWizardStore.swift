@@ -102,6 +102,9 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
     /// When the process `registrationPendingPID` names started (microseconds since 1970): the pid counts only while
     /// the process that has it started then, so a pid the system gave to another process never does.
     public var registrationPendingStarted: UInt64? = nil
+    /// What the leading Mac's setup screen waits on now (`ClusterOnboardingLeaderStepMark`), published in its status for
+    /// the Mac that joined; nil when nothing set it.
+    public var onboardingStep: ClusterOnboardingLeaderStepMark? = nil
     /// The start's outcome when its test request failed (the failure's first line, without its period): the leading
     /// Mac's status says it, so the Mac that joined ends with the same ✗. The next start or serve, a passing test and a
     /// stop clear it.

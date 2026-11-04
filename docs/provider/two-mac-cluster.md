@@ -113,7 +113,26 @@ follows the start from the cluster's status the two Macs exchange over the cable
 1. It says "Waiting for the other Mac (<its hardware name>) to choose the model
    and start…" while the leader's person chooses (started with
    `darkbloom cluster local`, it first says "Run `darkbloom cluster local` on the
-   other Mac: it leads.").
+   other Mac: it leads."). The leading Mac publishes what its screen waits on in
+   its status (`ClusterControlReply.step`), and this Mac says each new one once,
+   for example "The other Mac (Apple M5 Max, 128 GB): it's waiting for Allow on
+   its Local Network prompt." The steps are Allow on its Local Network prompt,
+   reading both Macs, Try again, the model list, a copy, a login and starting.
+   The live line says the same and how long it has waited out of the bound
+   ("… · 2 of 15 min (q leaves)"). The line is fitted to the window's width as
+   it is now, so a narrow window, or one made narrower, never wraps it. A plain
+   transcript (`NO_COLOR`, `TERM=dumb`, a pipe) has no live line, only the lines
+   said once per change. A leader on an older build publishes no step, and the
+   line keeps the general words.
+   - If the leading Mac refused every model, this Mac ends at once with the same ✗.
+     When the two Macs run different builds, that is "✗ Not serving: The two Macs
+     run different Darkbloom builds." with both versions when the leading Mac
+     said its version, and `darkbloom update` on the Mac that is behind.
+   - If nothing starts within 15 minutes, it ends with "✗ Not serving: The other
+     Mac (…) didn't start a model within 15 minutes.". Under it: what that Mac was
+     last doing, to answer what its screen asks or run `darkbloom cluster` there
+     again, and `darkbloom --version` on both Macs. The pair still starts by
+     itself if the leader starts later.
 2. Once the leader starts, its live line follows the start (loading, offered to
    Darkbloom, then one row per Mac while Darkbloom pairs them). Serving through
    Darkbloom, the leader's start asks Darkbloom whether to offer the pair after
@@ -412,7 +431,7 @@ format instruction only, as on one Mac
 |---|---|---|---|
 | 1 | the first Mac | Run `darkbloom cluster`. Its first line is "Allow macOS's password and Local Network prompts." It checks the Thunderbolt cable ("✓ Cable ready") and Local Network access. Nobody waits on the cable yet, so this Mac leads; its last line is **"Run `darkbloom cluster` on the other Mac."**, and it waits (q cancels). With two cables it asks "Which cable goes to the other Mac?" | the cable's port, once (your password; sudo in this terminal where macOS shows no window); Local Network access for the terminal app only where macOS blocks it |
 | 2 | the other Mac | Run `darkbloom cluster`. The same checks; then it finds the waiting Mac on the cable by itself (no address, no host name). Both screens show the same six-digit code ("Code 123 456. Same on the other Mac?"); a Mac that answered first says "Now confirm on the other Mac." | the same as the first Mac; **Yes** on each Mac when the codes match |
-| 3 | both Macs | Each says it is paired ("✓ Paired. This Mac leads." on the leader, "✓ Paired. The other Mac leads." on the other Mac). Both cluster services now run, and macOS asks on both Macs at the same moment to let Darkbloom find devices on your local network: click Allow on each; each screen waits for its own ("✓ Allowed"). Nothing else is ever asked on the other Mac; it says "Waiting for the other Mac (…) to choose the model and start…" and follows the start to the same ✓/✗ block. | Local Network access for Darkbloom, once on each Mac |
+| 3 | both Macs | Each says it is paired ("✓ Paired. This Mac leads." on the leader, "✓ Paired. The other Mac leads." on the other Mac). Both cluster services now run, and macOS asks on both Macs at the same moment to let Darkbloom find devices on your local network: click Allow on each; each screen waits for its own ("✓ Allowed"), up to 10 minutes with a timer, then ends with a ✗ that says where to turn Darkbloom on and what to do if it isn't listed. Nothing else is ever asked on the other Mac; it says "Waiting for the other Mac (…) to choose the model and start…", says what the leader's screen waits on, and follows the start to the same ✓/✗ block. | Local Network access for Darkbloom, once on each Mac |
 | 4 | the leader | It lists every model approved for clusters that the pair can serve (held by both Macs, by one of them, or in Darkbloom's catalog), one line each with its size and how the planner splits it, "tensor parallel" or "pipeline" ("Qwen3.8-27B-4bit-mtp · 16.3 GB · pipeline"), ending "copy" or "download" when the model must reach a Mac first (a model no Mac holds yet is split once it arrives, so its line has no split). A model a Mac holds twice (a catalog download beside the cluster's own copy) is listed once. The planner records why a model that has tensor parallel is split otherwise (for example "tensor parallel: slower here", "tensor parallel: not measured yet" or "tensor parallel: link unmeasured"); `darkbloom cluster plan` gives the full reason under "Tensor parallel or pipeline". Models that fit in the Macs' free memory now come first; one that does not ends with "does not fit now". A model a Mac has no room for on disk now comes last, ending "not enough free disk" ([Free disk](#free-disk)). Choose the model with ↑↓ and enter (enter takes the first). If the other Mac does not answer over the cable (its Darkbloom prompt may still wait for Allow), it offers **Try again** or **Cancel**. | the copy first in a list; a short one says its time ("Copy to the other Mac (about 7 s)") |
 | 5 | — | Choosing is starting: the leader saves the setup, sends it to the other Mac over the cable and starts both Macs; once both are loaded it answers one test request, and through Darkbloom the coordinator is asked for the pair ([below](#registered-with-the-coordinator-as-a-cluster-member)). It says where and how the pair serves: "✓ Serving Qwen3.8-27B-4bit-mtp through Darkbloom on both Macs (pipeline)" once the coordinator has the pair, or "✓ Serving Qwen3.8-27B-4bit-mtp on this Mac's local API only (pipeline)" when it serves locally only, with the test response ("Test response in 0.61 s"). | nothing |
 

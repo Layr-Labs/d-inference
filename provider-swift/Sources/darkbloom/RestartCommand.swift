@@ -46,7 +46,8 @@ struct Restart: AsyncParsableCommand {
         if solo { return singleMacInstalled ? .restartSingleMac : .refuse(pair.restartRefusal) }
         if pair.pairingUnreadable { return .refuse(pair.unsureRefusal("restart", "restarted")) }
         // The pair doesn't run here: what this Mac serves alone restarts; the pair is never started by a restart.
-        guard pair.pairIdle else { return .restartPair }
+        // One whose other Mac answers may still be loading: the pair restarts, as for a pair that runs.
+        guard pair.pairIdle, !pair.started || !pair.otherMacReachable else { return .restartPair }
         return singleMacInstalled ? .restartSingleMac : .refuse(pair.idleRestartRefusal)
     }
 

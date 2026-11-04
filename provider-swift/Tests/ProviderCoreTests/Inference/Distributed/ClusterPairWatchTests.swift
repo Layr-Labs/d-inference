@@ -137,6 +137,21 @@ struct ClusterPairWatchTests {
         #expect(!ClusterService.pairRuns(status(serving: true, pairRunning: false)))
     }
 
+    @Test("update and the watchdog leave the lock to a pair whose other Mac answers, even before it has served (a long first load)")
+    func pairKeepsLockWhileTheOtherMacAnswers() {
+        // Both Macs answer, the pair hasn't served in 15 minutes (a first load, the coordinator away): not "running" for
+        // the person's choice, but no automatic single-Mac serving takes the lock.
+        #expect(ClusterService.pairKeepsLock(status(serving: true, pairRunning: false, mode: "cluster")))
+        #expect(ClusterService.pairKeepsLock(status(serving: true, pairRunning: true)))
+        // The other Mac is gone (given up), or the pair is stopped: single-Mac serving comes back.
+        for mode in ["waiting", "alone", "idle", "cannotServe"] {
+            #expect(!ClusterService.pairKeepsLock(status(serving: true, pairRunning: false, mode: mode)))
+        }
+        #expect(!ClusterService.pairKeepsLock(status(serving: true, pairRunning: false)))
+        #expect(!ClusterService.pairKeepsLock(status(serving: false, pairRunning: nil, mode: "cluster")))
+        #expect(!ClusterService.pairKeepsLock(nil))
+    }
+
     @Test("a 0.10.8 service still running after the update to 0.10.9: its control mode decides")
     func olderServiceStatus() throws {
         // 0.10.8's status has no verdict: decoded from its own JSON, the field is absent.

@@ -72,6 +72,27 @@ struct UnpairedMacServesNormallyTests {
         #expect(Start.pairStart(pair(running: nil), solo: false, terminal: false) == .startPair)
     }
 
+    @Test("a pair whose other Mac answers but hasn't served yet (a long first load) is never stopped without asking")
+    func loadingPairIsNotStoppedUnasked() throws {
+        let loading = pair(running: false, reachable: true)
+        // The app's Go Online and Autopilot enroll clicked by mistake: refused, as for a pair that runs.
+        for arguments in [["--model", "acme/Alpha-4bit"], ["--autopilot"]] {
+            let options = try Start.parse(arguments).singleMacOptions
+            if case .refuseOptions = Start.pairStart(loading, solo: false, terminal: false, singleMacOptions: options) {} else {
+                Issue.record("\(arguments) not refused")
+            }
+        }
+        // A script starts (waits for) the pair, as before.
+        #expect(Start.pairStart(loading, solo: false, terminal: false) == .startPair)
+        // The person's explicit ways back stay: --solo, and the terminal's choice.
+        #expect(Start.pairStart(loading, solo: true, terminal: false) == .serveAlone(note: loading.servingAloneLine))
+        #expect(Start.pairStart(loading, solo: false, terminal: true) == .choose(aloneByDefault: false))
+        // The app's Restart restarts the pair; it doesn't stop it for single-Mac serving.
+        #expect(Restart.pairRestart(loading, singleMacInstalled: true, solo: false) == .restartPair)
+        // Stop stops the pair on both Macs: a follower's own cleared start would come back with the leader's next lease.
+        #expect(Stop.pairedStop(loading, solo: false, uninstall: false) == .stopPair)
+    }
+
     @Test("in a terminal: serve alone (the default when the other Mac isn't answering) or start the pair")
     func terminalChoice() {
         #expect(Start.pairStart(pair(running: false), solo: false, terminal: true) == .choose(aloneByDefault: true))

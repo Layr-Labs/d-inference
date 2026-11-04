@@ -278,6 +278,9 @@ other Mac (…), which isn't running here: serving this Mac alone, and its saved
 start is cleared (`darkbloom cluster` starts the pair again).`` A part that
 doesn't stop in time starts nothing (exit 1) and names `darkbloom cluster pair
 --status`, then `darkbloom cluster pair --forget <pin>`, then `darkbloom start`.
+While the other Mac answers but the pair hasn't served yet (it may still be
+loading), only `--solo` and the terminal's choice serve this Mac alone; the
+other forms act on the pair as while it runs.
 See [going back to serving on one Mac](two-mac-cluster.md#going-back-to-serving-on-one-mac). The
 cluster's own starts (`--cluster-member`, `--distributed`, the cluster
 service's solo part) and launchd's `--foreground` child are never redirected,
@@ -1587,7 +1590,9 @@ never touches the pair; a daemon state the cluster's part wrote is never drained
 
 While the pair doesn't run here (`Stop.PairedStop.stopHere`), plain `stop` stops
 what runs on this Mac: a leftover part of the pair (its saved start on this Mac
-is cleared) and single-Mac serving. It never asks the other Mac.
+is cleared) and single-Mac serving. It never asks the other Mac. While the
+other Mac answers but the pair hasn't served yet, plain `stop` stops the pair
+on both Macs, as while it runs.
 
 Code: `provider-swift/Sources/darkbloom/ServiceDrain.swift` (`DrainOptions`,
 `ServiceDrain.prepare`) and `provider-swift/Sources/darkbloom/StopCommand.swift`

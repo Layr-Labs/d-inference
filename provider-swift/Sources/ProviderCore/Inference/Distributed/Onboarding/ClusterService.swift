@@ -1485,7 +1485,16 @@ public final class ClusterService: @unchecked Sendable {
     /// pair's part needs whenever the part lets it go (an update's restart), and the pair could never start again.
     /// The pair actually runs here (`ClusterPairWatch`), not only its saved intent: a Mac whose other Mac stopped taking
     /// part serves alone again. A service from before 0.10.9 publishes no verdict: its intent decides, as before.
-    public static func pairServesHere() -> Bool { pairRuns(publishedLive()) }
+    public static func pairServesHere() -> Bool { pairKeepsLock(publishedLive()) }
+
+    /// Nothing automatic (an update's restart, the watchdog) gives this Mac's serving lock to single-Mac serving while
+    /// the pair runs here, or while its other Mac answers: a pair that hasn't served yet may still be loading (a first
+    /// load can outlast `ClusterPairWatch.giveUpSeconds`), and only the person (`start --solo`, the terminal's choice)
+    /// stops it then.
+    public static func pairKeepsLock(_ status: ClusterServiceStatus?) -> Bool {
+        guard let status, status.serving else { return false }
+        return pairRuns(status) || status.control.map { !otherMacAbsentModes.contains($0.mode) } == true
+    }
 
     /// Going back to single-Mac serving on a Mac whose pair isn't running: this Mac's saved start is cleared, so its
     /// cluster service runs no part (and never takes the serving lock back by itself), and the part still running stops

@@ -178,10 +178,12 @@ struct Start: AsyncParsableCommand {
         guard pair.paired else { return .single(note: nil) }
         if pair.pairingUnreadable { return solo ? .single(note: pair.startNote) : .refuse(pair.startRefusal) }
         // The pair doesn't run here (stopped, or left from a pair whose other Mac stopped taking part): the way back to
-        // single-Mac serving is never refused. A person at a terminal chooses; everything else serves this Mac alone.
+        // single-Mac serving is never refused. A person at a terminal chooses; everything else serves this Mac alone,
+        // unless the other Mac answers: a pair that hasn't served yet may still be loading, so only --solo stops it then.
         if pair.pairIdle {
-            if solo || !singleMacOptions.isEmpty || !terminal { return .serveAlone(note: pair.servingAloneLine) }
-            return .choose(aloneByDefault: !pair.otherMacReachable)
+            if solo { return .serveAlone(note: pair.servingAloneLine) }
+            if terminal, singleMacOptions.isEmpty { return .choose(aloneByDefault: !pair.otherMacReachable) }
+            if !pair.started || !pair.otherMacReachable { return .serveAlone(note: pair.servingAloneLine) }
         }
         if solo { return .refuse(pair.soloBesideServingRefusal) }
         if !singleMacOptions.isEmpty { return .refuseOptions(pair.singleMacOptionsRefusal(singleMacOptions)) }

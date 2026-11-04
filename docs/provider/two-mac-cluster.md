@@ -1333,7 +1333,8 @@ While the pair doesn't run here, `darkbloom stop` stops what runs on this Mac
 (single-Mac serving, and a leftover part of the pair) and never asks the other
 Mac, and `darkbloom restart` restarts single-Mac serving. `darkbloom update`
 restarts single-Mac serving if this Mac has it. The watchdog brings it back if it
-stopped. While the pair does run here, all of these act on the pair as above.
+stopped. While the pair does run here, all of these act on the pair as above,
+and so do `stop`, `restart` and `update` while the other Mac answers.
 
 **A part doesn't hold a Mac forever.** When the other Mac hasn't answered for
 15 minutes, this Mac's cluster service stops its part, which frees the serving
@@ -1343,8 +1344,11 @@ this Mac's part stopped. Run `darkbloom start` to serve this Mac alone, or
 this Mac, the watchdog starts it again. The part starts again by itself when the
 other Mac answers. A reboot of the other Mac that takes a few minutes doesn't
 stop the pair. When both Macs answer but the pair never served in its first 15
-minutes, `darkbloom status` says so and `darkbloom start` serves this Mac alone;
-the part is left running until you choose.
+minutes (it may still be loading a large model), `darkbloom status` says so, but
+nothing stops the part without you: only `darkbloom start --solo`, or **Serve on
+this Mac alone** in a terminal, serves this Mac alone then. The app's Go Online,
+`start --model`, Autopilot enroll, `restart`, a script's `start`, `update` and the
+watchdog act on the pair as while it runs.
 
 **On 0.10.8.** These commands act on the pair there, and `start --solo` is
 refused while the pair's start is saved. To serve one Mac alone on 0.10.8, leave

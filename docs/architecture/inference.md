@@ -3941,7 +3941,11 @@ time-to-live). Every start gets 15 minutes (`ClusterPairWatch.giveUpSeconds`).
 The status carries `pairRunning` and, when it is false, `pairNotRunning`: the
 reason with the command to serve this Mac alone. `ClusterService.pairServesHere`
 (update, watchdog) and `ClusterPairSummary.partServes` (start, stop, restart,
-status) read the verdict. A 0.10.8 service publishes none; its control mode then
+status) read the verdict. Nothing automatic stops a `notServing` part, whose pair
+may still be loading: `ClusterService.pairKeepsLock` keeps update and the watchdog
+off the serving lock while the other Mac answers, and `Start.pairStart` and
+`Restart.pairRestart` act on the pair then, except for `start --solo` and the
+terminal's choice. A 0.10.8 service publishes none; its control mode then
 decides (`waiting`, `alone`, `cannotServe` and `idle` mean the other Mac isn't
 taking part). A reboot of a few minutes stays `running`. `darkbloom start` on a
 Mac whose pair doesn't run clears the intent and waits for the part to end

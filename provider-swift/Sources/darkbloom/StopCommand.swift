@@ -34,7 +34,9 @@ struct Stop: AsyncParsableCommand {
     static func pairedStop(_ pair: ClusterPairSummary, solo: Bool, uninstall: Bool) -> PairedStop {
         guard pair.paired, !solo, !uninstall else { return .stopSingleMac }
         if pair.pairingUnreadable { return .refuse(pair.unsureRefusal("stop", "stopped")) }
-        return pair.pairIdle ? .stopHere : .stopPair
+        // A started pair whose other Mac answers (it may still be loading) stops on both Macs: a follower's own cleared
+        // start would come back with its leader's next lease.
+        return pair.pairIdle && (!pair.started || !pair.otherMacReachable) ? .stopHere : .stopPair
     }
 
     /// The command's look, opened with the mark: for a stop that goes ahead.

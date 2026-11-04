@@ -2251,7 +2251,7 @@ import Darwin
         transcript("leader-key-changed-pairs-again", text, keys: run.keys)
     }
 
-    /// S1 on the Mac that follows: the same sentence and Pair again instead of "Nothing to do here"; it then joins the
+    /// S1 on the Mac that follows: the same sentence and Pair again instead of its usual screen; it then joins the
     /// other Mac's pairing as a Mac with no pairing does.
     static func keyChangedMemberPairsAgain() {
         let recorder = Recorder()
@@ -2355,9 +2355,9 @@ import Darwin
         expect(!unchosen.all.contains("reachMembers") && !unchosen.all.contains("unpair"), "silent member, no model yet: nothing read or unpaired: \(unchosen.all)")
     }
 
-    /// A pair whose other Mac answers keeps its screens as they were: the member's status and "Nothing to do here", the
-    /// leader's menu without Pair again; each asks the other Mac once, and a cable on a port that is not set up is the
-    /// one thing said (the other Mac cannot answer there, which is no reason to pair again).
+    /// A pair whose other Mac answers keeps its usual screens: the member's status and the Mac it follows, the leader's
+    /// menu without Pair again; each asks the other Mac once, and a cable on a port that is not set up is the one
+    /// thing said (the other Mac cannot answer there, which is no reason to pair again).
     static func answeringOtherMacKeepsTheScreens() {
         let member = Recorder()
         let followed = TerminalRun(operations(member, resume: memberResume(), pairEvents: [], pairResult: .failed([])))

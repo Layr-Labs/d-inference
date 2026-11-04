@@ -700,13 +700,13 @@ final class OnboardingLive: @unchecked Sendable {
                 offered.append(model)
                 fromPeer[ordered.count] = model
                 let plan = ClusterModelProvisioning.plan(totalBytes: model.totalBytes,
-                    leader: .init(name: here, holding: .missing, freeBytes: ClusterModelStore.freeBytes(at: ClusterModelStoreLocation.defaultDirectory())),
+                    leader: .init(name: here, holding: .missing, disk: ClusterModelStore.diskSpace(at: ClusterModelStoreLocation.defaultDirectory())),
                     members: [.init(name: there, holding: .complete(folder: model.folder), freeBytes: nil)],
                     linkBytesPerSecond: measuredCopyRate, catalogHasIt: false)
                 ordered.append((.init(title: ClusterOnboardingDeployment.title(modelID: model.modelID, displayNames: names),
                     lines: ["\(ClusterModelProvisioning.gigabytes(model.totalBytes)) · only on \(thereShort): copied over the cable first"], blocker: nil,
                     provision: .init(lines: ClusterModelProvisioning.lines(plan), downloadAlternative: false, leaderDownloads: true, blocker: plan.blocker,
-                        quickSeconds: ClusterModelProvisioning.quickCopySeconds(plan), fromOtherMac: true), modelID: model.modelID,
+                        quickSeconds: ClusterModelProvisioning.quickCopySeconds(plan), fromOtherMac: true, fitsOnDisk: plan.fitsOnDisk), modelID: model.modelID,
                     validated: approved(model.artifactSHA256)),
                     (model.folder, "", model.modelID, [], nil, nil), ListedArtifact(model)))
             }
@@ -853,23 +853,23 @@ final class OnboardingLive: @unchecked Sendable {
     func copyOffer(model: ClusterSetupLocalModel, peer: ClusterSetupReport) -> ClusterOnboardingProvisionOffer {
         let plan = ClusterModelProvisioning.plan(totalBytes: model.totalBytes,
             leader: .init(name: here, holding: .complete(folder: model.folder), freeBytes: nil),
-            members: [.init(name: there, holding: holding(model, in: peer), freeBytes: peer.modelStoreFreeBytes)],
+            members: [.init(name: there, holding: holding(model, in: peer), disk: peer.modelStoreDisk)],
             linkBytesPerSecond: measuredCopyRate, catalogHasIt: true)
         return .init(lines: ClusterModelProvisioning.lines(plan), downloadAlternative: false, leaderDownloads: false, blocker: plan.blocker,
-            quickSeconds: ClusterModelProvisioning.quickCopySeconds(plan))
+            quickSeconds: ClusterModelProvisioning.quickCopySeconds(plan), fitsOnDisk: plan.fitsOnDisk)
     }
 
     func downloadChoice(_ model: CatalogModel, peer: ClusterSetupReport) -> ClusterOnboardingModelChoice {
         let bytes = model.totalSizeBytes ?? Int64(model.sizeGb * 1e9)
         let local = ClusterModelStoreLocation.defaultDirectory()
         let plan = ClusterModelProvisioning.plan(totalBytes: bytes,
-            leader: .init(name: here, holding: .missing, freeBytes: ClusterModelStore.freeBytes(at: local)),
-            members: [.init(name: there, holding: .missing, freeBytes: peer.modelStoreFreeBytes)],
+            leader: .init(name: here, holding: .missing, disk: ClusterModelStore.diskSpace(at: local)),
+            members: [.init(name: there, holding: .missing, disk: peer.modelStoreDisk)],
             linkBytesPerSecond: measuredCopyRate, catalogHasIt: true)
         return .init(title: ClusterOnboardingDeployment.title(modelID: model.id, displayNames: [model.id: model.displayName]),
             lines: ["\(ClusterModelProvisioning.gigabytes(bytes)) · not on these Macs: downloaded from Darkbloom's catalog first"],
             blocker: nil, provision: .init(lines: ClusterModelProvisioning.lines(plan), downloadAlternative: false, leaderDownloads: true, blocker: plan.blocker,
-            quickSeconds: ClusterModelProvisioning.quickCopySeconds(plan)), modelID: model.id)
+            quickSeconds: ClusterModelProvisioning.quickCopySeconds(plan), fitsOnDisk: plan.fitsOnDisk), modelID: model.id)
     }
 
     /// Darkbloom's catalog of text models, as single-Mac Darkbloom reads it. When it does not answer within a few

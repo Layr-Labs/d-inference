@@ -45,9 +45,70 @@ import CryptoKit
         stagingHoldsOnlyTheManifestFiles()
         // DevNet 2026-10-27: a dev install's downloads are under refs/darkbloom-dev.
         activeRevisionReadsThisInstallsRefThenProductions()
+        // Pair 2, 2026-11-03: macOS's "important usage" capacity counted purgeable space as free.
+        diskCountsOnlyTheSpaceFreeNow()
         print("provisioning checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
+    }
+
+    /// A copy or download counts only the space free now. On the owner's M3 Ultra macOS gave 256.6 GB for important use
+    /// with 54.1 GB free (the rest purgeable), and the setup offered MiMo's 172.9 GB download (2026-11-03).
+    static func diskCountsOnlyTheSpaceFreeNow() {
+        typealias P = ClusterModelProvisioning
+        typealias Mac = ClusterModelProvisioningMac
+        let mimo: Int64 = 172_900_000_000
+        let purgeable = "macOS could free up to 202.5 GB more (purgeable files such as local snapshots), but Darkbloom doesn't count on it"
+        // (a) 54.1 GB free and 256.6 GB for important use (the M3 Ultra), 161.0 and 551.4 GB (the M5 Max): neither
+        // Mac takes the 172.9 GB download, and what macOS could purge is said, not counted.
+        let ultra = ClusterDiskSpace(available: 54_100_000_000, importantUsage: 256_600_000_000, statfs: 54_000_000_000)
+        expect(ultra == ClusterDiskSpace(freeBytes: 54_100_000_000, purgeableBytes: 202_500_000_000), "free now, then what macOS could purge: \(String(describing: ultra))")
+        let macbook = ClusterDiskSpace(available: 161_000_000_000, importantUsage: 551_400_000_000, statfs: nil)
+        let download = P.plan(totalBytes: mimo, leader: Mac(name: "this Mac", holding: .missing, disk: ultra),
+            members: [Mac(name: "the other Mac (Apple M5 Max, 128 GB)", holding: .missing, disk: macbook)], linkBytesPerSecond: nil, catalogHasIt: true)
+        expect(download.blocker == "this Mac has 54.1 GB free; the model needs 172.9 GB and 2.1 GB to spare. " + purgeable,
+               "54.1 GB free: the download cannot start: \(String(describing: download.blocker))")
+        expect(P.lines(download).first == "This Mac: download from Darkbloom's catalog (172.9 GB) — cannot start: this Mac has 54.1 GB free; the model needs 172.9 GB and 2.1 GB to spare. " + purgeable,
+               "the plan's line says it: \(P.lines(download))")
+        expect(!download.fitsOnDisk && download.steps.map(\.diskShort) == [true, true], "neither Mac has room now: \(download.steps.map(\.diskShort))")
+        // (b) Free now that holds it (and the room kept free): it starts, and no purgeable space is said.
+        let roomy = P.plan(totalBytes: mimo,
+            leader: Mac(name: "this Mac", holding: .missing, disk: ClusterDiskSpace(available: 200_000_000_000, importantUsage: 256_600_000_000, statfs: nil)),
+            members: [Mac(name: "the other Mac", holding: .missing, disk: ClusterDiskSpace(available: 180_000_000_000, importantUsage: nil, statfs: nil))],
+            linkBytesPerSecond: nil, catalogHasIt: true)
+        expect(roomy.blocker == nil && roomy.fitsOnDisk, "free now holds it: it starts: \(String(describing: roomy.blocker))")
+        // Short even with what macOS could purge: the refusal says the space free now only.
+        let short = P.plan(totalBytes: mimo,
+            leader: Mac(name: "this Mac", holding: .missing, disk: ClusterDiskSpace(available: 54_100_000_000, importantUsage: 100_000_000_000, statfs: nil)),
+            members: [], linkBytesPerSecond: nil, catalogHasIt: true)
+        expect(short.blocker == "this Mac has 54.1 GB free; the model needs 172.9 GB and 2.1 GB to spare",
+               "purgeable space that would not make room is not said: \(String(describing: short.blocker))")
+        // (c) The Mac that receives a copy over the cable counts the same way.
+        let model = fixture()
+        let store = temporary("store")
+        refuses("this Mac has 1.0 GB free; the copy needs \(P.gigabytes(model.artifact.totalBytes)) and 2.1 GB to spare. "
+            + "macOS could free up to 9.0 GB more (purgeable files such as local snapshots), but Darkbloom doesn't count on it") {
+            _ = try ClusterModelReceiver(artifact: model.artifact, store: store, folder: model.artifact.folderName, expectedAggregate: nil,
+                diskSpace: { _ in ClusterDiskSpace(available: 1_000_000_000, importantUsage: 10_000_000_000, statfs: nil) }).begin()
+        }
+        expect(ClusterModelStore.holding(store: store, artifact: model.artifact) == .missing, "the refused copy staged nothing")
+        do {
+            let state = try ClusterModelReceiver(artifact: model.artifact, store: store, folder: model.artifact.folderName, expectedAggregate: nil,
+                diskSpace: { _ in ClusterDiskSpace(available: 10_000_000_000, importantUsage: 10_000_000_000, statfs: nil) }).begin()
+            expect(!state.complete && state.freeBytes == 10_000_000_000, "free now that holds the copy: it starts: \(state)")
+        } catch { expect(false, "a copy with room starts: \(error)") }
+        // (d) Without the available capacity, statfs's free blocks are the free figure, as before; nothing read is unknown.
+        expect(ClusterDiskSpace(available: nil, importantUsage: nil, statfs: 54_100_000_000) == ClusterDiskSpace(freeBytes: 54_100_000_000),
+               "statfs alone: its free blocks")
+        expect(ClusterDiskSpace(available: nil, importantUsage: 256_600_000_000, statfs: 54_100_000_000)
+               == ClusterDiskSpace(freeBytes: 54_100_000_000, purgeableBytes: 202_500_000_000), "statfs is the free figure beside the important-usage capacity")
+        expect(ClusterDiskSpace(available: nil, importantUsage: nil, statfs: nil) == nil, "nothing read: unknown, nothing refused on a guess")
+        // The real probe reads the volume's free blocks now, not the capacity macOS could make for important use.
+        var info = statfs()
+        if let probed = ClusterModelStore.diskSpace(at: store), statfs(store.path, &info) == 0 {
+            let blocks = Int64(info.f_bavail) * Int64(info.f_bsize)
+            expect(abs(probed.freeBytes - blocks) < 1 << 30, "the probe's free figure is the volume's free blocks: \(probed.freeBytes) against \(blocks)")
+        } else { expect(false, "the real probe answers") }
     }
 
     static func activeRevisionReadsThisInstallsRefThenProductions() {
@@ -319,10 +380,10 @@ import CryptoKit
         let store = temporary("store")
         refuses("free; the copy needs") {
             _ = try ClusterModelReceiver(artifact: model.artifact, store: store, folder: model.artifact.folderName, expectedAggregate: nil,
-                freeBytes: { _ in 1_000_000 }).begin()
+                diskSpace: { _ in ClusterDiskSpace(freeBytes: 1_000_000) }).begin()
         }
         expect(!FileManager.default.fileExists(atPath: store.appendingPathComponent(model.artifact.folderName).path), "nothing placed")
-        expect(ClusterModelStore.freeBytes(at: store).map { $0 > 0 } == true, "the real free-disk probe answers")
+        expect(ClusterModelStore.diskSpace(at: store).map { $0.freeBytes > 0 } == true, "the real free-disk probe answers")
     }
 
     static func resumeAfterInterruption() {
@@ -494,13 +555,13 @@ import CryptoKit
             // Free space counts the abandoned bytes as used: without them the copy fits, with them it does not.
             let need = model.artifact.totalBytes + ClusterModelProvisioning.reserveBytes
             let receiver = try ClusterModelReceiver(artifact: model.artifact, store: store, folder: model.artifact.folderName, expectedAggregate: nil,
-                freeBytes: { _ in FileManager.default.fileExists(atPath: abandoned.path) ? need - 1 : need })
+                diskSpace: { _ in ClusterDiskSpace(freeBytes: FileManager.default.fileExists(atPath: abandoned.path) ? need - 1 : need) })
             let state = try receiver.begin()
             expect(!state.complete, "the copy starts once the abandoned staging is reclaimed")
             expect(!FileManager.default.fileExists(atPath: abandoned.path), "the abandoned staging was reclaimed")
             // Its own staging is never reclaimed for itself (the resume is kept).
             let again = try ClusterModelReceiver(artifact: model.artifact, store: store, folder: model.artifact.folderName, expectedAggregate: nil,
-                freeBytes: { _ in 1 })
+                diskSpace: { _ in ClusterDiskSpace(freeBytes: 1) })
             refuses("free; the copy needs") { _ = try again.begin() }
             expect(FileManager.default.fileExists(atPath: store.appendingPathComponent(ClusterModelStore.stagingName(model.artifact)).path),
                 "a copy's own staging stays for its resume")
@@ -591,7 +652,7 @@ import CryptoKit
         let disk = Disk()
         do {
             let receiver = try ClusterModelReceiver(artifact: model.artifact, store: store, folder: model.artifact.folderName, expectedAggregate: nil,
-                diskCheckBytes: 1 << 20, freeBytes: { _ in disk.lock.withLock { disk.reads += 1; return disk.free } })
+                diskCheckBytes: 1 << 20, diskSpace: { _ in disk.lock.withLock { disk.reads += 1; return ClusterDiskSpace(freeBytes: disk.free) } })
             let state = try receiver.begin()
             let readsAtBegin = disk.lock.withLock { disk.reads }
             let sender = try ClusterModelSender(artifact: model.artifact, directory: from)
@@ -607,7 +668,7 @@ import CryptoKit
             expect(!FileManager.default.fileExists(atPath: store.appendingPathComponent(model.artifact.folderName).path), "nothing placed")
             disk.lock.withLock { disk.free = 100_000_000_000 }
             let again = try ClusterModelReceiver(artifact: model.artifact, store: store, folder: model.artifact.folderName, expectedAggregate: nil,
-                diskCheckBytes: 1 << 20, freeBytes: { _ in disk.lock.withLock { disk.free } })
+                diskCheckBytes: 1 << 20, diskSpace: { _ in disk.lock.withLock { ClusterDiskSpace(freeBytes: disk.free) } })
             let resumed = try again.begin()
             expect(resumed.offsets[0] == model.artifact.files[0].sizeBytes && resumed.offsets[2] > 0, "the copy resumes from the staged bytes: \(resumed.offsets)")
             _ = try send(sender, to: again, from: resumed.offsets)

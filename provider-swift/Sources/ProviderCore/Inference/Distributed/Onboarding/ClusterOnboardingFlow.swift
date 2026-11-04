@@ -386,11 +386,14 @@ public struct ClusterOnboardingProvisionOffer: Codable, Sendable, Equatable {
     /// This Mac lacks it and copies it from the other Mac over the cable (with `leaderDownloads`: planned from its
     /// files afterwards, but nothing is downloaded).
     public var fromOtherMac: Bool
+    /// Whether every Mac that receives it has room for it on disk now (`ClusterModelProvisioningPlan.fitsOnDisk`: the
+    /// bytes free now and the room kept free; space macOS could purge is not counted). Nil from an older build.
+    public var fitsOnDisk: Bool?
 
     public init(lines: [String], downloadAlternative: Bool, leaderDownloads: Bool, blocker: String? = nil, quickSeconds: Double? = nil,
-                fromOtherMac: Bool = false) {
+                fromOtherMac: Bool = false, fitsOnDisk: Bool? = nil) {
         self.lines = lines; self.downloadAlternative = downloadAlternative; self.leaderDownloads = leaderDownloads; self.blocker = blocker
-        self.quickSeconds = quickSeconds; self.fromOtherMac = fromOtherMac
+        self.quickSeconds = quickSeconds; self.fromOtherMac = fromOtherMac; self.fitsOnDisk = fitsOnDisk
     }
 }
 

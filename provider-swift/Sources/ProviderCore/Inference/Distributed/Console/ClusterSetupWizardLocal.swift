@@ -57,21 +57,12 @@ enum ClusterSetupLocalReader {
             journal: journal, memoryGuard: .init(ClusterOrphanWiredGuard.evaluate(role: "wizard")), models: models,
             modelsError: modelsError, pairingCode: pairingCode(installation), checks: doctor,
             linkPairings: linkPairings(ClusterPairingStore.default()))
-        report.modelStoreFreeBytes = store.flatMap(freeBytes)
+        let disk = store.flatMap(ClusterModelStore.diskSpace(at:))
+        report.modelStoreFreeBytes = disk?.freeBytes
+        report.modelStorePurgeableBytes = disk?.purgeableBytes
         report.served = Array(ClusterServedSpeedHistory.entries(homeDirectory: FileManager.default.homeDirectoryForCurrentUser)
             .sorted { $0.sample.finishedAt > $1.sample.finishedAt }.prefix(ClusterSetupReport.servedShared))
         return report
-    }
-
-    /// Free bytes on the volume of `url` (or its nearest existing parent).
-    static func freeBytes(_ url: URL) -> Int64? {
-        var probe = url
-        while !FileManager.default.fileExists(atPath: probe.path), probe.path != "/" { probe.deleteLastPathComponent() }
-        if let values = try? probe.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
-           let important = values.volumeAvailableCapacityForImportantUsage, important > 0 { return important }
-        var info = statfs()
-        guard statfs(probe.path, &info) == 0 else { return nil }
-        return Int64(info.f_bavail) * Int64(info.f_bsize)
     }
 
     /// The ceremony's store, as public values; nil when this Mac never paired.

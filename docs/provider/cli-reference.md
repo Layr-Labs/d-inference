@@ -1288,6 +1288,21 @@ darkbloom sandbox uninstall [--yes]
    images and one Linux job: 1 Linux job, no macOS job. When no job fits, the
    verdict gives the plan's message and the GiB to free for one Linux job and
    for one macOS job, and setup stops before installing.
+
+   When the add-on's plan gives macOS no job and its `macos_limit` names disk,
+   setup prints one more line under the verdict
+   (`SandboxSizingPlan.freeSpaceNote`): the plan's free space is what `df -h ~`
+   shows as Avail; Finder also counts purgeable space, which macOS frees only
+   when it needs to (restarting, or removing Time Machine local snapshots, which
+   `tmutil listlocalsnapshots /` lists, frees it now); then
+   `A macOS job needs about N GB more`. N is `diskShortfall` for a macOS job
+   beside the plan's slots: the floor, the disk the plan's slots take (each
+   platform's images with its first slot, one job's disk per slot) and a macOS
+   job with its images, less the free space, in GiB rounded up, which the CLI
+   writes as GB like its memory figures. With 210 GiB free and 3 Linux jobs
+   planned, a lone macOS job would fit above the floor, but beside the Linux
+   jobs it needs about 70 GB more. When no job fits, N equals the verdict's GiB
+   for one macOS job. The fallback estimate gets no such line.
 4. **Confirm.** Explains that inference pauses while a job runs, that each job
    pays its price minus a 10% fee into the Darkbloom balance, the VM images and
    the one browser approval, then asks `[y/N]`. `--yes` skips it; without a
@@ -1320,7 +1335,24 @@ Rerunning `setup` decides from the add-on's answer
 | No add-on, or `not_installed` | A first setup: check, plan, explain, confirm, install |
 | `waiting_for_approval`, `waitlisted`, `enrolling` | Runs the installer again to continue, without the check or the question |
 | `stopped`, `error`, no answer within 10 s, a failed status, an add-on older than `status --json` | Runs the installer again to repair or update the add-on |
-| `ready`, `running`, `paused`, `downloading_images`, `updating`, an unknown state | Reports the state and changes nothing; with `--linux-slots` or `--macos-slots` it runs the installer to apply them |
+| `ready`, `running`, `paused`, `downloading_images`, `updating`, an unknown state | Reports the state, then checks the plan again (below); with `--linux-slots` or `--macos-slots` it runs the installer to apply them, without the plan |
+
+On a Mac that is set up, after the report, setup downloads the installer and
+runs its plan as for a first setup, which changes nothing, and compares the
+plan's `linux_slots` and `macos_slots` with the installed `slots.linux.total`
+and `slots.macos.total` (`SandboxSlotChange`):
+
+| Case | `setup` |
+|---|---|
+| Same counts, no plan (an installer without `--plan`, a failed plan), a plan without a job, no `slots` in the status, or a failed download | Today's report exactly: the state, then `To change how many jobs run at a time: darkbloom sandbox setup --linux-slots <n> --macos-slots <n>`, without the free-space line; a failed download adds why it could not check |
+| `jobs_running` above `0` | No plan: the add-on's installer refuses a slot change while jobs run (exit `4`; the CLI never passes `--force`), and their disk would shrink the plan. Setup says to run it again once they finish |
+| Different counts, at a terminal | The plan's CPU, memory and disk lines and the free-space line when it applies, then `This Mac now fits <L> Linux + <M> macOS (installed: <l> Linux + <m> macOS). If a job is running, the installer refuses and changes nothing. Apply? [Y/n]`. Yes or an empty answer runs the installer with the plan's counts as `--linux-slots` and `--macos-slots`; no prints the command that applies it |
+| Different counts, `--yes` or no terminal | The same lines, then `This Mac now fits …` without the question. Applies the plan only when it adds slots and removes none; otherwise prints `Not applied` and the command that applies it, and exits `0` |
+
+A platform missing from `slots` counts as `0`: the add-on configures and
+reports only platforms with a slot. When the installer finds that a job
+started since the status, it refuses with exit `4` and changes nothing; setup
+prints the exit `4` advice below and exits `4`.
 
 ### Installer progress events
 
@@ -1381,7 +1413,7 @@ every tenth.
 | `0` | The summary: state, jobs at a time (automatic and the limit, or your choice), next commands |
 | `2` | This Mac cannot host Darkbloom Sandbox as it is (the failed stage says why) |
 | `3` | Not enrolled: the code was denied or expired, or the waitlist request ended; run `setup` to start again |
-| `4` | Jobs are running; run `setup` again once they finish, `pause` meanwhile |
+| `4` | A job is running, so the installer changed nothing (it refuses rather than waits); run `setup` again when it finishes, `pause` meanwhile. Setup never passes the installer's `--force`, which would stop running jobs, and stopped jobs aren't paid |
 | `130` | Stopped; an enrollment waiting for approval goes on, and a rerun follows it. While the Mac waits in the background (`background: true`, not yet enrolled): it keeps waiting, also across restarts, and enrolls by itself; `sandbox status` shows where it is |
 | other | Setup did not finish; it is safe to rerun |
 

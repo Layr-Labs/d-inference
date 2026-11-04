@@ -40,6 +40,11 @@ enum ClusterLinkApproval {
         run(arguments(for: request))
     }
 
+    /// The same for a pair rank's GPU wired-memory limits (`GLM5NextWiredLimitRequest`).
+    static func request(wiredLimit request: GLM5NextWiredLimitRequest) -> ClusterLinkApprovalResult {
+        run(["-e", request.appleScript])
+    }
+
     private static func run(_ arguments: [String]) -> ClusterLinkApprovalResult {
         result(of: ClusterLinkToolProcess.execute(executable: executable, arguments: arguments,
             deadline: DispatchTime.now().uptimeNanoseconds + promptTimeoutNanoseconds,

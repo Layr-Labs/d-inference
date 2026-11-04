@@ -816,6 +816,17 @@ whose split needs more GPU memory than these limits is not offered. MiMo V2.6
 Flash fits two 128 GB Macs at the default limit in all three modes (per Mac at
 most 95.9 GiB on the GPU, tensor parallel, against 107.52 GiB).
 
+GLM-5.3-Flash on two 128 GB Macs is planned differently: each Mac loads its
+half on what loading needs, and each request is checked against the memory free
+when it arrives (a longer request than fits then gets a retryable "busy" answer,
+never an out-of-memory crash). Its plan fits two M5 Max 128 GB at the default
+limit too. When a GPU limit is what stops a GLM plan, the plan says so and, on
+an M5 Mac with 128 or 256 GB, names the one command that changes it:
+`darkbloom cluster gpu-limit`. Run it on that Mac yourself: it asks once, then
+macOS asks an administrator, and it raises the limit to the Mac's memory less
+16 GiB (112 GiB of 128 GB), also after restarts. `darkbloom cluster gpu-limit
+--undo` takes it back ([GPU memory limit for a GLM pair](../reference/configuration.md#gpu-memory-limit-for-a-glm-pair)).
+
 When several splits predict the same time (two identical Macs, or Macs with
 equal measured speed), the one that leaves each Mac the largest share of its
 own memory is chosen: identical Macs split the layers evenly, and a Mac with
@@ -1108,6 +1119,14 @@ of the leading Mac's start, and where to choose Retry when a part keeps ending.
   "does not fit now". What frees the memory ("Quit apps on the other Mac (…)
   first.") is said, and nothing starts, if it still does not fit when checked
   again right before the start.
+- **GLM-5.3-Flash on two 128 GB Macs**: it runs as a pipeline, about half the
+  model on each Mac. If the plan names `darkbloom cluster gpu-limit` for a Mac
+  whose GPU keeps too little resident, run it on that Mac (it asks once, then
+  macOS asks an administrator), then `darkbloom cluster` again. The plan names
+  it only on the Macs it runs on, M5 Macs with 128 or 256 GB. Running it on
+  both Macs leaves room for long requests. `darkbloom cluster gpu-limit --undo`
+  takes it back. A request longer than what fits at that moment is refused, not
+  run out of memory ([figures](../architecture/hardware-support.md#glm-53-flash-pairs-on-128-gb-macs)).
 - **The start does not finish**: the screen shows each Mac's last error and
   offers **Save diagnostics for Darkbloom**, which writes a file to
   your home folder (no keys, addresses or names in it; nothing is written if any

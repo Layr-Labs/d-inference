@@ -397,7 +397,7 @@ class ReleaseContents(unittest.TestCase):
 
     def test_body_names_routes_rollups_and_the_compare_link(self):
         pulls = {number: {'title': title, 'author': author, 'url': ''} for number, (title, author) in PULLS.items()}
-        contents, body = NOTES.release_body('## Provider v1.1.0 (Swift CLI)\n', 'v1.1.0', REPOSITORY,
+        contents, body, _ = NOTES.release_body('## Provider v1.1.0 (Swift CLI)\n', 'v1.1.0', REPOSITORY,
                                             self.repository(), lookup=lambda wanted: pulls)
         self.assertIn('3 pull requests merged into `dev` reached `master` with #30, which promoted `dev` up to '
                       f'`{contents.carried[:10]}`:', body)
@@ -410,7 +410,8 @@ class ReleaseContents(unittest.TestCase):
         # v1.4.0's only promotion is its Prepare pull request, cut from dev: named once as the
         # preparation, it is still the commit its dev pull requests reached master with.
         pulls = {number: {'title': title, 'author': author, 'url': ''} for number, (title, author) in PULLS.items()}
-        contents, body = NOTES.release_body('', 'v1.4.0', REPOSITORY, self.repository(), lookup=lambda wanted: pulls)
+        contents, body, _ = NOTES.release_body('', 'v1.4.0', REPOSITORY, self.repository(),
+                                               lookup=lambda wanted: pulls)
         lines = body.splitlines()
         self.assertIn(pull_line(19), lines)
         self.assertIn('1 pull request merged into `dev` reached `master` with #60, which promoted `dev` up to '
@@ -443,7 +444,7 @@ class ReleaseContents(unittest.TestCase):
     def test_a_number_that_names_no_pull_request_is_a_commit_without_one(self):
         pulls = {number: {'title': title, 'author': author, 'url': ''} for number, (title, author) in PULLS.items()
                  if number != 20}
-        _, body = NOTES.release_body('', 'v1.1.0', REPOSITORY, self.repository(), lookup=lambda wanted: pulls)
+        _, body, _ = NOTES.release_body('', 'v1.1.0', REPOSITORY, self.repository(), lookup=lambda wanted: pulls)
         self.assertIn('1 commit without a pull request:', body)
         self.assertIn('* Fix master directly (#20) (https://github.com/Layr-Labs/d-inference/commit/', body)
         self.assertNotIn('merged directly into `master`', body)

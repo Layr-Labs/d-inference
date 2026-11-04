@@ -35,6 +35,8 @@ UPGRADE_NOTES = 'Upgrade and rollout notes'
 # outside one: HTML, links and images, emphasis and stray backticks. "#N" and "@login" stay references.
 MARKDOWN_TEXT = re.compile(r'(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)|([\\`*_\[\]<>])')
 GRAPHQL_BATCH = 100
+# A GitHub noreply commit address, which names the account: [<ID>+]<login>@users.noreply.github.com.
+NOREPLY = re.compile(r'(?:[0-9]+\+)?([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)@users\.noreply\.github\.com')
 # Earlier releases searched for what a release without a promotion carries.
 HOTFIX_RELEASES = 4
 
@@ -44,6 +46,8 @@ class Commit:
     sha: str
     parents: tuple
     subject: str
+    body: str = ''
+    email: str = ''
 
     @property
     def number(self):
@@ -93,9 +97,15 @@ class Repository:
         return result.stdout
 
     def commits(self, *args):
-        output = self.git('log', '--format=%H%x1f%P%x1f%s%x1e', *args)
-        return [Commit(sha, tuple(parents.split()), subject) for sha, parents, subject in
+        output = self.git('log', '--format=%H%x1f%P%x1f%s%x1f%b%x1f%ae%x1e', *args)
+        return [Commit(sha, tuple(parents.split()), subject, body, email) for sha, parents, subject, body, email in
                 (record.strip('\n').split('\x1f') for record in output.split('\x1e') if record.strip())]
+
+    def first_own_email(self, commit):
+        """The author address of a merged pull request's oldest commit that is not a merge."""
+        emails = self.git('log', '--no-merges', '--topo-order', '--format=%ae', *commit.parents[1:],
+                          '--not', commit.parents[0])
+        return (emails.split() or [''])[-1]
 
     def ancestors(self, commit):
         if commit not in self.ancestry:
@@ -271,12 +281,34 @@ def github_pull_requests(repository, numbers):
         # Any other error could hide a pull request, which would then be listed as a commit without one.
         errors = [error for error in answer.get('errors') or [] if error.get('type') != 'NOT_FOUND']
         if errors:
-            details = '; '.join(f"{error.get('type')}: {error.get('message')}" for error in errors)
+            details = '; '.join(sorted({f"{error.get('type')}: {error.get('message')}" for error in errors}))
             raise RuntimeError(f'GitHub pull request query failed: {details}')
         for value in data.values():
             if value and value.get('__typename') == 'PullRequest':
                 found[value['number']] = {'title': value['title'], 'url': value['url'],
                                           'author': (value.get('author') or {}).get('login')}
+    return found
+
+
+def git_pull_requests(history, commits, repository):
+    """Title and author of each pull request from git, for when GitHub's API does not answer.
+
+    GitHub writes a merge commit as "Merge pull request #N from <branch>", a blank line, then the
+    title; a squash commit's subject is the title and " (#N)". The author is a login only where the
+    pull request's oldest own commit (a squash: its commit) has a noreply address that names one.
+    The newest commit of a branch is often someone else's merge of dev, so it does not stand in.
+    """
+    found = {}
+    for commit in commits:
+        if MERGED_PULL.match(commit.subject):
+            title = next((line.strip() for line in commit.body.splitlines() if line.strip()), commit.subject)
+            email = history.first_own_email(commit)
+        else:
+            title = SQUASHED_PULL.sub('', commit.subject).rstrip()
+            email = commit.email
+        login = NOREPLY.fullmatch(email)
+        found[commit.number] = {'title': title, 'author': login[1] if login else None,
+                                'url': f'https://github.com/{repository}/pull/{commit.number}'}
     return found
 
 
@@ -372,19 +404,31 @@ def render(header, contents, pulls, section, *, tag, previous, version, reposito
     raise ValueError(f'The release notes exceed GitHub\'s {limit}-character limit even without the changelog')
 
 
-def release_body(header, tag, repository, history, *, target=None, previous=None, version=None, lookup=None):
+def release_body(header, tag, repository, history, *, target=None, previous=None, version=None, lookup=None,
+                 use_github=True):
+    """The release's contents, its body and where the titles came from: GitHub, or git when GitHub
+    does not answer (or use_github is false)."""
     target = target or tag
     version = version or tag.removeprefix('v')
     previous = previous or history.previous_release(stable_version('v' + version), target)
     if previous is None:
         raise ValueError(f'No release before v{version} in the history of {target}')
     contents = release_contents(history, target, previous, version)
-    wanted = [c.number for c in contents.dev + contents.master]
-    pulls = (lookup or (lambda found: github_pull_requests(repository, found)))(wanted)
+    listed = contents.dev + contents.master
+    source = 'titles from git (GitHub not asked)'
+    pulls = None
+    if use_github:
+        try:
+            pulls = (lookup or (lambda found: github_pull_requests(repository, found)))([c.number for c in listed])
+            source = 'GitHub'
+        except Exception as error:  # noqa: BLE001 - git still names every pull request
+            source = f'titles from git, GitHub did not answer: {error}'
+    if pulls is None:
+        pulls = git_pull_requests(history, listed, repository)
     text = history.git('show', f'{target}:CHANGELOG.md')
     section = changelog_section(text, version)
     return contents, render(header, contents, pulls, section, tag=tag, previous=previous, version=version,
-                            repository=repository)
+                            repository=repository), source
 
 
 def write_release_notes(root, env):
@@ -397,7 +441,10 @@ def write_release_notes(root, env):
     tag = env.get('RELEASE_TAG') or env['GITHUB_REF_NAME']
     header = (root / 'release-notes.md').read_text()
     try:
-        _, body = release_body(header, tag, env['GITHUB_REPOSITORY'], Repository())
+        _, body, source = release_body(header, tag, env['GITHUB_REPOSITORY'], Repository())
+        if source != 'GitHub':
+            print(f'::warning::Release notes for {tag}: pull request {source}. Authors are shown only where a '
+                  f"commit's GitHub noreply address names them.", file=sys.stderr)
     except Exception as error:  # noqa: BLE001 - the release itself must still be published
         print(f'::warning::Release notes for {tag} lack the changelog and pull requests: {error}', file=sys.stderr)
         body = (header.rstrip('\n') + '\n\n' + f'The changelog section and pull request list could not be '
@@ -429,6 +476,8 @@ def main():
                         help="a pull request's head, for a promotion that is not merged yet")
     parser.add_argument('--no-fetch', action='store_true',
                         help="read only local objects; a squash promotion is then found only through --pull-head")
+    parser.add_argument('--git-titles', action='store_true',
+                        help="take titles and authors from git, as when GitHub's API does not answer")
     parser.add_argument('--repository', default='Layr-Labs/d-inference')
     parser.add_argument('--header-file', type=Path, help='retained header (default: none)')
     parser.add_argument('--output', type=Path, help='write the body here (default: standard output)')
@@ -436,9 +485,11 @@ def main():
     heads = {int(number): sha for number, sha in (item.split('=', 1) for item in args.pull_head)}
     history = Repository(dev=args.dev, fetch=not args.no_fetch, pull_heads=heads)
     header = args.header_file.read_text() if args.header_file else ''
-    contents, body = release_body(header, args.tag, args.repository, history, target=args.target,
-                                  previous=args.previous, version=args.tag.removeprefix('v'))
+    contents, body, source = release_body(header, args.tag, args.repository, history, target=args.target,
+                                          previous=args.previous, version=args.tag.removeprefix('v'),
+                                          use_github=not args.git_titles)
     print(summary(contents), file=sys.stderr)
+    print(f'pull request titles: {source}', file=sys.stderr)
     if args.output:
         args.output.write_text(body)
     else:

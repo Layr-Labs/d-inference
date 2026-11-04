@@ -4,10 +4,16 @@ import ProviderCore
 
 struct Status: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Show local provider configuration and hardware status."
+        abstract: "Show local provider configuration and hardware status.",
+        discussion: "On a Mac in a two-Mac cluster it starts with the pair, in the words of `darkbloom cluster status` "
+            + "(who leads, the model, whether it serves now and what to do), then this Mac's configuration and hardware. "
+            + "With --solo it shows single-Mac serving on this Mac instead."
     )
 
     @OptionGroup var configOptions: ConfigOptions
+
+    @Flag(help: "On a Mac in a two-Mac cluster: show single-Mac serving on this Mac (the provider service) instead of the pair.")
+    var solo = false
 
     mutating func run() async throws {
         // Asked first, so the add-on answers while the banner and the config
@@ -23,6 +29,14 @@ struct Status: AsyncParsableCommand {
         let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
         let config = snapshot.config
         let models = advertisedModels(from: snapshot.models, config: config)
+
+        // On a Mac in a cluster the pair comes first, as `darkbloom cluster status` says it.
+        let pair = ClusterPairSummary.local()
+        let showsPair = pair.paired && !solo
+        if showsPair {
+            for line in await ClusterPairSummary.live(config: configOptions.config).clusterStatusLines { print(line) }
+            print("")
+        }
 
         print("\(BuildEnvironment.current.cliName) \(ProviderCore.version)")
         print("Provider: \(config.provider.name)")
@@ -74,7 +88,14 @@ struct Status: AsyncParsableCommand {
             print(supervisor.summary(now: Date().timeIntervalSince1970))
         }
         for line in Self.clusterServiceLines() { print(line) }
-        printDaemonStatus(config: config, models: snapshot.models, hardware: snapshot.hardware)
+        if showsPair {
+            // The daemon lines would be the cluster's own part's, read as single-Mac serving: only say whether
+            // single-Mac serving runs beside the pair.
+            if let line = soloBesidePairLine() { print(line) }
+        } else {
+            if pair.paired { print(pair.statusLine) }
+            printDaemonStatus(config: config, models: snapshot.models, hardware: snapshot.hardware, pair: pair)
+        }
 
         // Crash-loop KV-backend guard — printed whether or not the daemon is
         // up, because the guard's whole story happens while the daemon is
@@ -88,6 +109,14 @@ struct Status: AsyncParsableCommand {
             print(line)
         }
     }
+
+    /// On a Mac in a cluster: single-Mac serving that runs beside the pair (`start --solo`), in one line; nil when none.
+    private func soloBesidePairLine() -> String? {
+        guard let state = ServiceDrain.soloProviderState(), daemonProcessAlive(pid: state.pid) else { return nil }
+        return Self.soloBesidePairLine
+    }
+
+    static let soloBesidePairLine = "Single-Mac serving: running beside the pair (`darkbloom status --solo` shows it)"
 
     /// One-line summary of crash-recovery state: the config opt-out plus whether
     /// the launchd watchdog agent is actually armed.
@@ -112,21 +141,24 @@ struct Status: AsyncParsableCommand {
 
     /// Prints the running daemon's live state, including the coordinator's last
     /// trust reason — the answer to "am I earning, and if not, why?".
-    private func printDaemonStatus(config: ProviderConfig, models: [ModelInfo], hardware: HardwareInfo?) {
+    private func printDaemonStatus(config: ProviderConfig, models: [ModelInfo], hardware: HardwareInfo?,
+                                   pair: ClusterPairSummary) {
         let now = Date().timeIntervalSince1970
         guard let state = DaemonStateFile.read() else {
-            print("Daemon: not running (run `\(BuildEnvironment.current.cliName) start`)")
+            print(Self.daemonNotRunningLine(paired: pair.paired, unsure: pair.pairingUnreadable))
             return
         }
         let alive = daemonProcessAlive(pid: state.pid)
         if !alive {
-            print("Daemon: not running (stale state file)")
+            print(Self.daemonNotRunningLine(paired: pair.paired, unsure: pair.pairingUnreadable, staleStateFile: true))
             return
         }
         print(daemonHealthLine(
             state: state,
             now: now,
             heartbeatIntervalSecs: config.coordinator.heartbeatIntervalSecs))
+        // The cluster's part writes this state too: say so, so its lines are not read as single-Mac serving.
+        if pair.paired, ServiceDrain.soloProviderState(state) == nil { print(Self.clusterPartLine) }
         if let drain = Self.lifecycleDrainLine(state.lifecycle) { print(drain) }
         if let hold = Self.addonHoldLine(state.addonHold) { print(hold) }
         if state.autopilotPhase != nil {

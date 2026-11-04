@@ -78,13 +78,29 @@ struct Desktop: AsyncParsableCommand {
   struct StartLocal: AsyncParsableCommand {
     @OptionGroup var configOptions: ConfigOptions
     @Option var model: [String] = []
+
+    /// The drain's options, as `darkbloom stop` would take them with none given.
+    static func drainOptions() throws -> DrainOptions { try DrainOptions.parse([]) }
+
+    /// On a Mac in a two-Mac cluster: why local mode starts nothing; nil elsewhere.
+    static func pairRefusal(_ pair: ClusterPairSummary) -> [String]? {
+      guard pair.paired else { return nil }
+      return ["This Mac is in a two-Mac cluster with \(pair.otherMac): the app's local mode serves this Mac alone, so nothing was started.",
+              "To serve the pair locally: `darkbloom cluster local` on the leading Mac. To serve this Mac alone: stop the pair "
+                + "(`darkbloom stop`), then `darkbloom start --solo --local --model <id>`."]
+    }
     mutating func run() async throws {
       guard !model.isEmpty else { throw ValidationError("Select a model") }
       try model.forEach(DesktopAction.validateModel)
+      // Its launchd job runs `start --local --model …`, which a paired Mac refuses: say so now, never "started".
+      if let refusal = Self.pairRefusal(ClusterPairSummary.local()) {
+        for line in refusal { printError(line) }
+        throw ExitCode.failure
+      }
       if DesktopLocalLifecycle.isActive {
         try await DesktopLocalLifecycle.stop(configPath: configOptions.config)
       }
-      let session = try await ServiceDrain.prepare(options: DrainOptions())
+      let session = try await ServiceDrain.prepare(options: try Self.drainOptions())
       defer { session.release() }
       try await ServiceDrain.stopDrainedProvider()
       try LaunchAgent.installLocalAndStart(

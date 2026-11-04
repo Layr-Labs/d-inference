@@ -1,6 +1,6 @@
 # Keep a cluster member always on
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-04
 
 `darkbloom cluster` on each Mac does all of this. Nothing below is needed: it
 explains what the onboarding sets up and how to check it.
@@ -66,7 +66,7 @@ the cluster comes back by itself, with no command run on either Mac (see
   without that identity uses a session-only fallback. Keep its originating
   Terminal or SSH session open: detaching does not preserve that session's
   Local Network access. Use a signed app for background qualification.
-- `darkbloom cluster stop` (on the leader, the cluster stops serving first)
+- `darkbloom cluster stop --service` (from either Mac, the pair stops serving first)
   and unpairing (`darkbloom cluster pair --forget`, once no pairing is left)
   remove the agent; the service stops this Mac's part first (SIGTERM, up to
   300 s for a rank to release its model; launchd's exit allowance is 360 s).
@@ -90,7 +90,7 @@ the cluster comes back by itself, with no command run on either Mac (see
    test request answers.
 4. Note any macOS prompt or notice that appeared after the restart (expected:
    none; the "Background item added" notice appears only at install).
-5. To leave it off: `darkbloom cluster stop` on each Mac; after a further
+5. To leave it off: `darkbloom cluster stop --service` on each Mac; after a further
    restart, `darkbloom status` shows no cluster service line except
    `not running and not set to start at login` on a paired Mac.
 

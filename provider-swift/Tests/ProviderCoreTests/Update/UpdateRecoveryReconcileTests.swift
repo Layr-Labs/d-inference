@@ -75,6 +75,17 @@ private struct InstalledMac {
         return mac
     }
 
+    /// The validator's case: 0.10.8 installed by an earlier updater over 0.10.7, which `install.sh` had put in place
+    /// while the record said 0.10.6. The copy is the 0.10.7 app, recorded as 0.10.6; 0.10.8 is pending.
+    static func updatedOverAMislabelledCopy(copyNamesVersion: Bool = true) throws -> InstalledMac {
+        let mac = try InstalledMac(installed: "0.10.8")
+        let copy = try mac.keepRollbackCopy(signed: "0.10.7", recordedAs: "0.10.6", generation: 1, namesVersion: copyNamesVersion)
+        let pending = PendingReleaseCandidate(release: try record(of: mac.app, version: "0.10.8", generation: 2), failureCount: 0)
+        try mac.store.writeState(UpdateRecoveryState(installGeneration: 2,
+            current: try mac.record(ofReleaseNotOnDisk: "0.10.6", generation: 1), candidate: pending, predecessor: copy))
+        return mac
+    }
+
     func cleanUp() { try? FileManager.default.removeItem(at: root) }
 
     /// The updater of the build this Mac runs; the coordinator's latest release is `latest`.
@@ -112,9 +123,10 @@ private struct InstalledMac {
     }
 
     /// The rollback copy: the app of `signed` (what its `Info.plist` and binary say), recorded as `recordedAs`.
-    func keepRollbackCopy(signed: String, recordedAs: String, generation: UInt64) throws -> VerifiedPredecessor {
+    func keepRollbackCopy(signed: String, recordedAs: String, generation: UInt64,
+                          namesVersion: Bool = true) throws -> VerifiedPredecessor {
         let bundle = rollbackCopy.appendingPathComponent("Darkbloom.app", isDirectory: true)
-        try Self.writeApp(version: signed, at: bundle)
+        try Self.writeApp(version: signed, at: bundle, namesVersion: namesVersion)
         let copy = VerifiedPredecessor(
             release: try Self.record(of: bundle, version: recordedAs, generation: generation), layout: .app,
             bundlePath: "predecessor/Darkbloom.app", binaryPath: "predecessor/Darkbloom.app/Contents/MacOS/darkbloom",
@@ -143,12 +155,15 @@ private struct InstalledMac {
             installGeneration: generation, installedAt: 1_793_000_000)
     }
 
-    /// An app whose `Info.plist` names its version, as a signed release's does.
-    static func writeApp(version: String, at app: URL) throws {
+    /// An app whose `Info.plist` names its version, as a signed release's does (unless `namesVersion` is false).
+    static func writeApp(version: String, at app: URL, namesVersion: Bool = true) throws {
         let macOS = app.appendingPathComponent("Contents/MacOS", isDirectory: true)
         try FileManager.default.createDirectory(at: macOS, withIntermediateDirectories: true)
-        let info: [String: Any] = ["CFBundleIdentifier": "io.darkbloom.provider", "CFBundleExecutable": "darkbloom",
-                                   "CFBundleShortVersionString": version, "CFBundleVersion": version]
+        var info: [String: Any] = ["CFBundleIdentifier": "io.darkbloom.provider", "CFBundleExecutable": "darkbloom"]
+        if namesVersion {
+            info["CFBundleShortVersionString"] = version
+            info["CFBundleVersion"] = version
+        }
         try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
             .write(to: app.appendingPathComponent("Contents/Info.plist"))
         try Data("\(version)-darkbloom".utf8).write(to: macOS.appendingPathComponent("darkbloom"))
@@ -269,34 +284,97 @@ struct UpdateRecoveryReconcileTests {
 
     /// An installed, recorded candidate whose rollback copy is not the release it is recorded as (its app is signed as
     /// 0.10.2, recorded as 0.9.22): three failed starts keep the candidate, and the copy is never restored.
-    @Test func rollbackCopyThatIsNotTheReleaseItIsRecordedAsIsNeverRestored() throws {
-        let mac = try InstalledMac(installed: "0.10.6")
+    /// The validator's case: an earlier updater on a Mac reinstalled with `install.sh` kept a copy of 0.10.7 but recorded
+    /// it as 0.10.6 (its stale record's label), then installed 0.10.8. The copy is the release this Mac ran before 0.10.8,
+    /// so it is recorded as 0.10.7 and kept: three failed starts restore it, as on the other Mac, which keeps 0.10.7.
+    @Test func rollbackCopyRecordedAsAnotherReleaseIsRelabelledAndRestored() throws {
+        let mac = try InstalledMac.updatedOverAMislabelledCopy()
         defer { mac.cleanUp() }
-        let copy = try mac.keepRollbackCopy(signed: "0.10.2", recordedAs: "0.9.22", generation: 1)
-        let pending = PendingReleaseCandidate(release: try InstalledMac.record(of: mac.app, version: "0.10.6", generation: 2),
-                                              failureCount: 0)
-        try mac.store.writeState(UpdateRecoveryState(installGeneration: 2,
-            current: try mac.record(ofReleaseNotOnDisk: "0.9.22", generation: 1), candidate: pending, predecessor: copy))
-        let recovery = ClusterCandidateRecovery(updater: mac.updater(running: "0.10.6")), lines = LogLines()
+        let recorded = try #require(try mac.store.loadState().predecessor)
+        let recovery = ClusterCandidateRecovery(updater: mac.updater(running: "0.10.8")), lines = LogLines()
 
         var ends: [ClusterCandidateRecovery.Failure] = []
         for start in 0..<3 {
             let now = 1_793_000_000 + Double(start) * 60
-            #expect(recovery.noteLaunch(now: now, log: { lines.append($0) }) == .candidate(version: "0.10.6", failedStarts: start))
+            #expect(recovery.noteLaunch(now: now, log: { lines.append($0) }) == .candidate(version: "0.10.8", failedStarts: start))
+            if start == 0 {
+                let kept = try mac.store.loadState().predecessor
+                #expect(kept?.release.version == "0.10.7")
+                #expect(kept?.release.installedBundleHash == recorded.release.installedBundleHash
+                        && kept?.release.binaryHash == recorded.release.binaryHash, "its verified files are kept")
+                let manifest = try? JSONDecoder().decode(VerifiedPredecessor.self, from: Data(contentsOf:
+                    mac.rollbackCopy.appendingPathComponent("manifest.json")))
+                #expect(manifest?.release.version == "0.10.7", "the manifest inside the copy says so too")
+            }
             ends.append(recovery.recordFailedStart(now: now + 5, log: { lines.append($0) }))
         }
-        #expect(lines.all == ["the rollback copy recorded as v0.9.22 is a v0.10.2 app, so it is removed; nothing is rolled "
-            + "back until an update keeps a copy of the installed release"])
 
-        #expect(Array(ends.prefix(2)) == [.counted(version: "0.10.6", failures: 1), .counted(version: "0.10.6", failures: 2)])
-        guard case .rollbackRefused(let version, _) = ends.last else {
-            Issue.record("the copy was restored: \(ends)")
+        #expect(lines.all == ["the rollback copy recorded as v0.10.6 is a v0.10.7 app: it is now recorded as v0.10.7 and "
+            + "kept for rollback"])
+        #expect(ends == [.counted(version: "0.10.8", failures: 1), .counted(version: "0.10.8", failures: 2),
+                         .rolledBack(from: "0.10.8", to: "0.10.7")])
+        #expect(try mac.installedBinary() == "0.10.7-darkbloom")
+        let state = try mac.store.loadState()
+        #expect(state.current?.version == "0.10.7" && state.candidate == nil && state.quarantine?.version == "0.10.8")
+    }
+
+    /// A copy whose release cannot be verified is still removed (fail closed): its app names no version while the
+    /// installed app does, or its files are not the ones recorded for it. Three failed starts then keep the candidate.
+    @Test(arguments: ["names no version", "changed files"])
+    func rollbackCopyThatCannotBeVerifiedIsRemoved(fault: String) throws {
+        let mac = try InstalledMac.updatedOverAMislabelledCopy(copyNamesVersion: fault != "names no version")
+        defer { mac.cleanUp() }
+        if fault == "changed files" {
+            try Data("0.10.7-darkbloom, changed".utf8)
+                .write(to: mac.rollbackCopy.appendingPathComponent("Darkbloom.app/Contents/MacOS/darkbloom"))
+        }
+        let recovery = ClusterCandidateRecovery(updater: mac.updater(running: "0.10.8")), lines = LogLines()
+
+        var ends: [ClusterCandidateRecovery.Failure] = []
+        for start in 0..<3 {
+            let now = 1_793_000_000 + Double(start) * 60
+            #expect(recovery.noteLaunch(now: now, log: { lines.append($0) }) == .candidate(version: "0.10.8", failedStarts: start))
+            ends.append(recovery.recordFailedStart(now: now + 5, log: { lines.append($0) }))
+        }
+
+        #expect(lines.all == ["the rollback copy recorded as v0.10.6 could not be verified as the release its app is "
+            + "signed as, so it is removed; nothing is rolled back until an update keeps a copy of the installed release"])
+        #expect(Array(ends.prefix(2)) == [.counted(version: "0.10.8", failures: 1), .counted(version: "0.10.8", failures: 2)])
+        guard case .rollbackRefused("0.10.8", _) = ends.last else {
+            Issue.record("the unverified copy was restored: \(ends)")
             return
         }
-        #expect(version == "0.10.6")
-        #expect(try mac.installedBinary() == "0.10.6-darkbloom")
+        #expect(try mac.installedBinary() == "0.10.8-darkbloom")
         #expect(!FileManager.default.fileExists(atPath: mac.rollbackCopy.path))
         #expect(try mac.store.loadState().quarantine == nil)
+    }
+
+    /// A damaged install (its `mlx.metallib` is gone) is no evidence that another app was installed: the record stays,
+    /// the failed starts count, and the third restores the verified copy, as 0.10.7 did.
+    @Test func damagedInstalledAppStillRollsBackToTheVerifiedCopy() throws {
+        let mac = try InstalledMac(installed: "0.10.8")
+        defer { mac.cleanUp() }
+        let copy = try mac.keepRollbackCopy(signed: "0.10.7", recordedAs: "0.10.7", generation: 1)
+        let pending = PendingReleaseCandidate(release: try InstalledMac.record(of: mac.app, version: "0.10.8", generation: 2),
+                                              failureCount: 0)
+        try mac.store.writeState(UpdateRecoveryState(installGeneration: 2, current: copy.release, candidate: pending,
+                                                     predecessor: copy))
+        try FileManager.default.removeItem(at: mac.app.appendingPathComponent("Contents/MacOS/mlx.metallib"))
+        let recovery = ClusterCandidateRecovery(updater: mac.updater(running: "0.10.8")), lines = LogLines()
+
+        var ends: [ClusterCandidateRecovery.Failure] = []
+        for start in 0..<3 {
+            let now = 1_793_000_000 + Double(start) * 60
+            #expect(recovery.noteLaunch(now: now, log: { lines.append($0) }) == .candidate(version: "0.10.8", failedStarts: start))
+            ends.append(recovery.recordFailedStart(now: now + 5, log: { lines.append($0) }))
+        }
+
+        #expect(ends == [.counted(version: "0.10.8", failures: 1), .counted(version: "0.10.8", failures: 2),
+                         .rolledBack(from: "0.10.8", to: "0.10.7")])
+        #expect(try mac.installedBinary() == "0.10.7-darkbloom")
+        #expect(FileManager.default.fileExists(atPath: mac.app.appendingPathComponent("Contents/MacOS/mlx.metallib").path))
+        #expect(lines.all.isEmpty, "\(lines.all)")
+        #expect(try mac.store.loadState().quarantine?.version == "0.10.8")
     }
 
     /// How the M5 Max's copy came to be recorded as 0.9.22: the updater installed 0.10.6 over a 0.10.2 app that the

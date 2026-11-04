@@ -152,6 +152,39 @@ def run_command(step):
     return textwrap.dedent("\n".join(lines[:end])).strip()
 
 
+CHECKOUT = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2"
+CACHE_RESTORE = "actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0"
+CACHE_SAVE = "actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0"
+# Pushes to master and dev save caches; pull requests never do.
+SAVE_POLICY = ("  SAVE_CACHES: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/master' "
+               "|| github.ref == 'refs/heads/dev') }}\n")
+SAVE_CACHES = "env.SAVE_CACHES == 'true'"
+SAVE_INPUT = "inputs.save-caches == 'true'"
+VALIDATE_GIT = """if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+    git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
+  echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
+  rm -rf .git
+fi"""
+SPARSE_PATTERNS = ("/*", "!/docs/reports/evidence/**/*.gz", "!/landing/public/media/")
+GIT_CACHE_STEPS = ("Select today's .git cache", "Restore the newest saved .git",
+                   "Discard a damaged cached .git", None, "Save .git for later runs")
+
+
+def uses(step):
+    """The action a step uses, whether `uses:` opens the step or follows `name:`."""
+    return field(step, "uses") or field(step, "uses", indent=6)
+
+
+def checkout_options(step):
+    lines = step.split("        with:\n", 1)[1].splitlines()
+    return [line.split(" #", 1)[0].strip() for line in lines if line.startswith("          ")]
+
+
+def work_steps(job):
+    """The steps after the shared .git cache and checkout steps."""
+    return [step for step in step_blocks(job) if field(step, "name", indent=6) not in GIT_CACHE_STEPS]
+
+
 class ProviderCIWorkflowTests(unittest.TestCase):
     def setUp(self):
         self.workflow = WORKFLOW.read_text()
@@ -255,16 +288,19 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         for job_id, lane in LANES.items():
             with self.subTest(lane=lane):
                 steps = step_blocks(self.jobs[job_id])
-                self.assertIn("actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683", steps[0])
-                self.assertEqual(field(steps[0], "submodules", indent=10), "recursive")
+                checkout = next(step for step in steps if uses(step) == CHECKOUT)
+                self.assertEqual(uses(checkout), CHECKOUT)
+                self.assertEqual(field(checkout, "submodules", indent=10), "recursive")
                 builds = [step for step in steps if field(step, "uses") == BUILD_ACTION]
                 self.assertEqual(len(builds), 1)
+                self.assertGreater(steps.index(builds[0]), steps.index(checkout))
                 self.assertEqual(field(builds[0], "lane", indent=10), lane)
                 self.assertEqual(field(builds[0], "id"), "provider-ci-build")
                 self.assertIsNone(field(builds[0], "if"))
                 if lane == "sdk":
                     self.assertEqual(field(builds[0], "timeout-minutes"), "35")
-                restores = [step for step in steps if "actions/cache/restore@" in step]
+                restores = [step for step in steps
+                            if "actions/cache/restore@" in step and field(step, "id") != "git-cache"]
                 if lane == "provider":
                     self.assertEqual(len(restores), 1)
                     self.assertEqual(field(restores[0], "id"), "mimo-audio-cache")
@@ -300,8 +336,9 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("if-no-files-found: error", steps[shard_upload])
         for step in (steps[merge], steps[shard_upload]):
             self.assertNotIn("continue-on-error:", step)
-        # The summary merges every shard's profile against the shards' cached
-        # build and writes the report; the gate requires it.
+        # The summary merges every shard's profile against a build of the same
+        # commit (the shards' own on master pushes) and writes the report; the
+        # gate requires it.
         summary = self.jobs["test-provider-summary"]
         self.assertIn("    name: Provider Unit Tests Summary\n", summary)
         self.assertIn("    needs: [changes, test-provider]\n", summary)
@@ -340,7 +377,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                          "swift build --product darkbloom-fan-helper --enable-code-coverage")
 
     def test_provider_entrypoint_and_resource_installer_checks_are_retained(self):
-        steps = step_blocks(self.jobs["test-provider"])
+        steps = work_steps(self.jobs["test-provider"])
         expected = (
             "python3 scripts/test-qwen4-packaged-resources.py",
             "python3 scripts/test-stage-swiftpm-resource-bundles.py",
@@ -460,7 +497,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                     self.assertIn("These targets are only in the total: `darkbloom-fan-helper`.", result.stdout)
 
     def test_sdk_retains_every_original_gate_command(self):
-        steps = step_blocks(self.jobs["test-provider-sdk"])
+        steps = work_steps(self.jobs["test-provider-sdk"])
         gates = {field(step, "name", indent=6): step for step in steps if field(step, "run")}
         self.assertEqual(len(gates), sum(bool(field(step, "run")) for step in steps))
         self.assertEqual(set(gates), set(SDK_COMMANDS) | {"Run Nemotron production SDK gates"})
@@ -478,7 +515,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             SDK_RETENTION_GATE_NAME: SDK_RETENTION_READY,
         }
         preparation_steps = {SDK_MIMO_PREPARE_NAME, SDK_RETENTION_PREPARE_NAME}
-        for step in step_blocks(self.jobs["test-provider-sdk"]):
+        for step in work_steps(self.jobs["test-provider-sdk"]):
             if field(step, "run"):
                 with self.subTest(gate=field(step, "name", indent=6)):
                     name = field(step, "name", indent=6)
@@ -643,7 +680,12 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         steps = step_blocks(self.jobs["test-provider"])
         fixture = next(s for s in steps if field(s, "id") == "mimo-audio-fixtures")
         self.assertIn("prepare-mimo-audio-fixtures.py", run_command(fixture))
-        self.assertEqual(field(fixture, "if"), LAST_SHARD_READY)
+        # The 1.87 GB codec is fetched only when the gate's inputs changed;
+        # the gate needs the fixture, so it skips with it.
+        audio_ready = LAST_SHARD_READY.replace(" }}", " && needs.changes.outputs.mimo_audio == 'true' }}")
+        self.assertEqual(field(fixture, "if"), audio_ready)
+        restore = next(s for s in steps if field(s, "id") == "mimo-audio-cache")
+        self.assertEqual(field(restore, "if"), audio_ready)
         gate = next(s for s in steps if field(s, "name", indent=6) == "Run isolated native MiMo audio gate")
         self.assertIn("testNativeAudioRelease", run_command(gate))
         self.assertIn("run-nested-suite.sh", run_command(gate))
@@ -662,8 +704,9 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         for forbidden in ("continue-on-error:", "secrets.", "DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST:"):
             self.assertNotIn(forbidden, job)
         steps = step_blocks(job)
-        self.assertIn("actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683", steps[0])
-        self.assertEqual(field(steps[0], "submodules", indent=10), "recursive")
+        checkout = next(step for step in steps if uses(step) == CHECKOUT)
+        self.assertEqual(uses(checkout), CHECKOUT)
+        self.assertEqual(field(checkout, "submodules", indent=10), "recursive")
         toolchain = next(step for step in steps if field(step, "id") == "toolchain")
         self.assertEqual(run_command(toolchain), "./scripts/prepare-provider-release-toolchain.sh")
         runners = {
@@ -706,25 +749,31 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("python3 scripts/provider-release-cache.py restore-mtimes", steps[timestamps])
         self.assertIn("python3 scripts/provider-release-cache.py snapshot-mtimes", steps[record])
         key = named["Resolve cluster metadata build cache key"]
-        for component in ("swift --version", "xcodebuild -version", "git submodule status --recursive",
+        pins = "git submodule status --recursive | awk '{print $1, $2}'"
+        for component in ("swift --version", "xcodebuild -version", pins,
                           "$GITHUB_WORKSPACE $RUNNER_TEMP $MANIFESTS", "native-metadata.sh"):
             self.assertIn(component, key)
+        # `git describe` text depends on the refs a restored .git holds; the
+        # key keeps only each submodule's state, pin and path.
+        status = " 0123abc libs/mlx (heads/main)\n+4567def libs/mlx-swift (v0.30.0-2-g4567def)\n"
+        pinned = subprocess.run(["awk", "{print $1, $2}"], input=status, capture_output=True, text=True, check=True)
+        self.assertEqual(pinned.stdout, "0123abc libs/mlx\n+4567def libs/mlx-swift\n")
         for step in (steps[record], steps[upload]):
             self.assertIn("steps.capability-checks.outcome == 'success'", field(step, "if"))
-            # A pull request saves only when it restored nothing; pushes save.
-            self.assertIn("steps.cluster-build-cache.outputs.cache-hit != 'true' && (github.event_name != "
-                          "'pull_request' || steps.cluster-build-cache.outputs.cache-matched-key == '')",
-                          field(step, "if"))
+            # Only pushes to a saving branch save; a pull request never does.
+            self.assertIn(SAVE_CACHES + " && ", field(step, "if"))
+            self.assertIn("steps.cluster-build-cache.outputs.cache-hit != 'true'", field(step, "if"))
         support = (ROOT / "libs/darkbloom-cluster/Tests/Support/native-metadata.sh").read_text()
         self.assertIn('task_jobs="${DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS:-4}"', support)
         self.assertIn('--jobs "$task_jobs"', support)
 
     def test_parity_has_no_backend_caches_or_credentials(self):
-        # Prompt Parity now runs in the provider shards; the only cache that
-        # job saves directly is the verified MiMo audio codec.
+        # Prompt Parity now runs in the provider shards; besides .git, the only
+        # cache that job saves directly is the verified MiMo audio codec.
         steps = step_blocks(self.jobs["test-provider"])
         saves = [step for step in steps if "actions/cache/save@" in step]
-        self.assertEqual([field(step, "name", indent=6) for step in saves], ["Cache verified MiMo audio codec"])
+        self.assertEqual([field(step, "name", indent=6) for step in saves],
+                         ["Save .git for later runs", "Cache verified MiMo audio codec"])
         self.assertNotIn("test-provider-parity", WORKFLOW.read_text())
         for forbidden in ("coordinator/", "cargo ", "rust-key", "secrets.", "darkbloom-platform"):
             self.assertNotIn(forbidden, self.jobs["test-provider"])
@@ -740,6 +789,148 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("python3 scripts/test-provider-ci-workflow.py", self.jobs["release-integrity"])
         self.assertIn("python3 scripts/test-provider-test-shards.py", self.jobs["release-integrity"])
         self.assertIn("python3 scripts/test-native-gpu-ci.py", self.jobs["release-integrity"])
+
+    def test_only_pushes_to_master_and_dev_save_caches(self):
+        # A pull request's entry is scoped to its merge ref, where nothing else
+        # restores it, and evicts its base branch's entries from the quota.
+        self.assertIn("\nenv:\n  DARKBLOOM_RELEASE_ENVIRONMENT: prod\n", self.workflow)
+        self.assertIn(SAVE_POLICY, self.workflow.split("\njobs:\n", 1)[0])
+        saves = [(job_id, field(step, "name", indent=6), field(step, "if"))
+                 for job_id, job in self.jobs.items() for step in step_blocks(job) if "actions/cache/save@" in step]
+        self.assertTrue(saves)
+        for job_id, name, condition in saves:
+            with self.subTest(job=job_id, step=name):
+                self.assertIn(SAVE_CACHES + " && ", condition)
+        # The composite saves only when its caller passes the same switch.
+        action = ACTION.read_text()
+        self.assertIn("  save-caches:\n", action.split("\nruns:\n", 1)[0])
+        self.assertIn("\n    default: 'false'\nruns:\n", action)
+        composite = {field(step, "name", indent=4): field(step, "if", indent=6)
+                     for step in step_blocks(action, indent=4) if "actions/cache/save@" in step}
+        self.assertEqual(set(composite), {"Save lane-specific Swift test build", "Save SwiftPM repositories",
+                                          "Save validated source-matched Metal cache"})
+        for name, condition in composite.items():
+            with self.subTest(step=name):
+                self.assertIn(SAVE_INPUT + " && ", condition)
+        calls = [step for job in self.jobs.values() for step in step_blocks(job) if field(step, "uses") == BUILD_ACTION]
+        self.assertEqual(len(calls), 5)
+        for call in calls:
+            self.assertEqual(field(call, "save-caches", indent=10), "${{ env.SAVE_CACHES }}")
+
+    def test_every_checkout_reuses_master_git_and_falls_back_to_a_cold_checkout(self):
+        checkouts = {job_id: job for job_id, job in self.jobs.items() if "actions/checkout@" in job}
+        self.assertEqual(set(checkouts), {"release-integrity", "docs", *LANES, "test-provider-summary",
+                                          "test-cluster-checks", "test-cluster", "test-cluster-gpu",
+                                          "test-cluster-focused"})
+        for job_id, job in checkouts.items():
+            with self.subTest(job=job_id):
+                steps = step_blocks(job)
+                self.assertEqual([field(step, "name", indent=6) for step in steps[:5]], list(GIT_CACHE_STEPS))
+                day, restore, validate, checkout, save = steps[:5]
+                self.assertEqual(run_command(day).splitlines()[:3], ['day=$(date -u +%F)', 'echo "day=$day" >> "$GITHUB_OUTPUT"',
+                                                                 'echo "month=${day%-*}" >> "$GITHUB_OUTPUT"'])
+                self.assertIn("command -v zstd >/dev/null && echo zstd || echo gzip", day)
+                # Full history never seeds, or is restored by, a shallow job.
+                family = ("git-full-v1" if job_id == "docs" else "git-v1") + "-${{ runner.os }}-"
+                # One entry per day and branch; restore the newest earlier day.
+                monthly = family + "${{ steps.git-day.outputs.month }}-"
+                self.assertEqual(field(restore, "uses"), CACHE_RESTORE)
+                self.assertEqual(field(restore, "path", indent=10), ".git")
+                self.assertEqual(field(restore, "key", indent=10), family + "${{ steps.git-day.outputs.day }}")
+                self.assertIn(f"restore-keys: |\n            {monthly}\n            {family}\n", restore)
+                # The validation cannot fail and nothing may continue on error:
+                # one ordinary checkout follows, and its failure fails the job.
+                self.assertEqual(run_command(validate), VALIDATE_GIT)
+                for step in (validate, checkout):
+                    self.assertIsNone(field(step, "if"))
+                self.assertFalse(any("continue-on-error" in step for step in steps[:5]))
+                self.assertEqual(uses(checkout), CHECKOUT)
+                self.assertEqual(sum(uses(step) == CHECKOUT for step in steps), 1)
+                # Each job keeps its checkout options; a persisted token would
+                # be saved with .git/config.
+                sparse = ["sparse-checkout: ${{ env.CHECKOUT_SPARSE }}", "sparse-checkout-cone-mode: false"]
+                options = {"release-integrity": ["persist-credentials: false", *sparse],
+                           "docs": ["fetch-depth: 0", "filter: blob:none", "persist-credentials: false"]
+                           }.get(job_id, ["submodules: recursive", "persist-credentials: false", *sparse])
+                self.assertEqual(checkout_options(checkout), options)
+                self.assertEqual(field(save, "if"), SAVE_CACHES + " && steps.git-cache.outputs.cache-hit != 'true'")
+                self.assertEqual(field(save, "uses"), CACHE_SAVE)
+                self.assertEqual(field(save, "path", indent=10), ".git")
+                self.assertEqual(field(save, "key", indent=10), "${{ steps.git-cache.outputs.cache-primary-key }}")
+
+    def test_git_validation_keeps_healthy_and_partial_clones_and_discards_damage(self):
+        with tempfile.TemporaryDirectory() as work:
+            def git(cwd, *args):
+                return subprocess.run(["git", "-C", str(cwd), "-c", "user.name=t", "-c", "user.email=t@t",
+                                       "-c", "commit.gpgsign=false", "-c", "protocol.file.allow=always", *args],
+                                      check=True, capture_output=True, text=True).stdout.strip()
+            origin = Path(work, "origin")
+            origin.mkdir()
+            git(origin, "init", "-q")
+            for name in ("a", "b"):
+                (origin / name).write_text(name * 1000)
+                git(origin, "add", name)
+                git(origin, "commit", "-q", "-m", name)
+            git(origin, "config", "uploadpack.allowFilter", "true")
+            cases = {"healthy": True, "blobless": True, "damaged": False}
+            for case in cases:
+                options = ["--filter=blob:none", "--no-checkout"] if case == "blobless" else []
+                git(work, "clone", "-q", *options, f"file://{origin}", case)
+            loose = Path(work, "damaged", ".git", "objects")
+            tree = git(Path(work, "damaged"), "rev-parse", "HEAD^{tree}")
+            git(Path(work, "damaged"), "repack", "-q", "-a", "-d")
+            for pack in (loose / "pack").glob("*.pack"):
+                pack.unlink()
+            Path(work, "empty").mkdir()
+            for case, kept in {**cases, "empty": False}.items():
+                with self.subTest(case=case):
+                    result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", VALIDATE_GIT],
+                                            cwd=Path(work, case), capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(Path(work, case, ".git").is_dir(), kept, result.stdout)
+                    self.assertEqual("::warning" in result.stdout, case == "damaged")
+            self.assertTrue(tree)
+
+    def test_sparse_checkouts_skip_only_evidence_tarballs_and_landing_media(self):
+        env = self.workflow.split("\njobs:\n", 1)[0]
+        self.assertIn("  CHECKOUT_SPARSE: |\n" + "".join(f"    {pattern}\n" for pattern in SPARSE_PATTERNS), env)
+        self.assertEqual(self.workflow.count("sparse-checkout: ${{ env.CHECKOUT_SPARSE }}"), 8)
+        docs_impact = (ROOT / ".github/workflows/docs-impact.yml").read_text()
+        self.assertIn("          filter: blob:none\n          sparse-checkout: |\n"
+                      + "".join(f"            {pattern}\n" for pattern in SPARSE_PATTERNS)
+                      + "          sparse-checkout-cone-mode: false\n", docs_impact)
+        # Real git decides what the patterns keep: every file a job may read,
+        # including the report a provider test hashes and the evidence harness
+        # manifest the provider CI cache hashes, but no evidence tarball or media.
+        kept = ["Makefile", "docs/reports/report.md", "docs/reports/archive.tar.gz",
+                "docs/reports/evidence/run/cpu-harness/Package.swift", "docs/reports/evidence/notes.json",
+                "provider-swift/Tests/Fixtures/clip.mp4", "fixtures/data.gz", "landing/src/page.tsx",
+                "landing/README.md", "landing/public/favicon.svg",
+                "docs/reports/2026-10-31-public-cluster-models.md"]
+        skipped = ["docs/reports/evidence/run/packets.jsonl.gz", "docs/reports/evidence/payloads.tar.gz",
+                   "landing/public/media/demo.mp4", "landing/public/media/poster.png"]
+        with tempfile.TemporaryDirectory() as work:
+            def git(*args):
+                subprocess.run(["git", "-C", work, "-c", "user.name=t", "-c", "user.email=t@t",
+                                "-c", "commit.gpgsign=false", *args], check=True, capture_output=True)
+            git("init", "-q")
+            for path in kept + skipped:
+                (Path(work) / path).parent.mkdir(parents=True, exist_ok=True)
+                (Path(work) / path).write_text(path)
+            git("add", "-A")
+            git("commit", "-q", "-m", "tree")
+            git("sparse-checkout", "set", "--no-cone", *SPARSE_PATTERNS)
+            self.assertEqual([path for path in kept if not (Path(work) / path).is_file()], [])
+            self.assertEqual([path for path in skipped if (Path(work) / path).exists()], [])
+        self.assertTrue((ROOT / "docs/reports/2026-10-31-public-cluster-models.md").is_file())
+        # scripts/provider-ci-cache.py hashes every tracked Package.swift,
+        # Package.resolved and .gitmodules; the patterns must keep each one.
+        tracked = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"], check=True,
+                                 capture_output=True, text=True).stdout.split("\0")
+        manifests = [path for path in tracked if Path(path).name in {"Package.swift", "Package.resolved", ".gitmodules"}]
+        self.assertIn("docs/reports/evidence/ssd-read-coordination-runtime-2026-09-06/cpu-harness/Package.swift", manifests)
+        self.assertEqual([path for path in manifests
+                          if path.endswith(".gz") or path.startswith("landing/public/media/")], [])
 
     def test_composite_action_cannot_bypass_build_and_metallib_on_cache_hits(self):
         action = ACTION.read_text()
@@ -785,14 +976,35 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(rust_steps, [])
         self.assertNotIn("rust-key:", action)
         self.assertNotIn("rust-cache-hit:", action)
-        self.assertEqual(sum("actions/cache/save@" in step for step in steps), 2)
-        # Pushes save the Swift build. A pull request saves it only when it
-        # restored nothing, so its later pushes do not evict the base entry.
-        swift_save = next(step for step in steps if field(step, "name", indent=4) == "Save lane-specific Swift test build")
-        self.assertEqual(field(swift_save, "if", indent=6),
-                         "${{ !cancelled() && steps.timestamps.outcome == 'success' && "
-                         "steps.swift-cache.outputs.cache-hit != 'true' && (github.event_name != 'pull_request' "
-                         "|| steps.swift-cache.outputs.cache-matched-key == '') }}")
+        self.assertEqual(sum("actions/cache/save@" in step for step in steps), 3)
+
+    def test_composite_restores_swiftpm_repositories_per_lane_and_runner_layout(self):
+        steps = step_blocks(ACTION.read_text(), indent=4)
+        by_id = {field(step, "id", indent=6): step for step in steps if field(step, "id", indent=6)}
+        names = [field(step, "name", indent=4) for step in steps]
+        restore = by_id["spm-repos"]
+        save = next(step for step in steps if field(step, "name", indent=4) == "Save SwiftPM repositories")
+        # actions/cache archives this home path relative to the workspace, so
+        # the key binds the runner layout as well as the lane and the pins.
+        self.assertIn('echo "home-layout=$(printf \'%s\\n\' "$HOME" "$GITHUB_WORKSPACE" | shasum -a 256',
+                      by_id["keys"])
+        self.assertIn("command -v zstd >/dev/null && echo zstd || echo gzip", by_id["keys"])
+        prefix = "spm-repos-v1-${{ runner.os }}-${{ steps.keys.outputs.home-layout }}-${{ inputs.lane }}-"
+        for step in (restore, save):
+            self.assertEqual(field(step, "path", indent=8), "~/Library/Caches/org.swift.swiftpm/repositories")
+        self.assertEqual(field(restore, "uses", indent=6), CACHE_RESTORE)
+        self.assertEqual(field(restore, "key", indent=8),
+                         prefix + "${{ hashFiles('**/Package.resolved', '!**/.build/**') }}")
+        self.assertEqual(field(restore, "restore-keys", indent=8), prefix)
+        self.assertLess(steps.index(restore), steps.index(by_id["provider-build"]))
+        self.assertLess(steps.index(restore), steps.index(by_id["sdk-build"]))
+        self.assertLess(steps.index(restore), steps.index(by_id["cluster-build"]))
+        self.assertEqual(field(save, "uses", indent=6), CACHE_SAVE)
+        self.assertEqual(field(save, "key", indent=8), "${{ steps.spm-repos.outputs.cache-primary-key }}")
+        self.assertEqual(field(save, "if", indent=6),
+                         "${{ !cancelled() && " + SAVE_INPUT + " && steps.timestamps.outcome == 'success' "
+                         "&& steps.spm-repos.outputs.cache-hit != 'true' }}")
+        self.assertGreater(names.index("Save SwiftPM repositories"), names.index("Record timestamps for successfully built sources"))
 
 
 if __name__ == "__main__":

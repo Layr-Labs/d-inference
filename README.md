@@ -31,6 +31,7 @@ Start with [installation](docs/provider/installation.md), then
 for local inference, [hardware requirements](docs/provider/hardware-requirements.md)
 for model fit, and [cache storage](docs/provider/cache-storage.md) for encrypted
 SSD storage and daily write limits.
+To have an AI agent do the setup, point it at the [agent setup prompt](docs/provider/agent-setup.md).
 
 The provider is the plaintext inference endpoint. Network encryption does not
 hide prompts from that process or from the coordinator's transient request

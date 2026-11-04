@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-03
+> Last updated: 2026-11-04
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -155,7 +155,8 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `switch` | Gracefully replace hosted models in the running coordinator-connected provider, without restart or reconnect | | `SwitchCommand.swift` (`Switch`) |
 | `addon` | Debug add-on holds on the running provider: `status` (default), `hold`, `release` | | `AddonCommand.swift` (`Addon`) |
 | `sandbox` | Set up and manage [Darkbloom Sandbox](./sandboxes.md) CI jobs through its add-on: status (bare), `setup`, `pause`, `resume`, `logs`, `uninstall` | | `Sandbox/SandboxCommand.swift` (`Sandbox`) |
-| `stop` | Drain accepted requests, then stop the LaunchAgent; `--uninstall` removes the provider, watchdog and desktop API agents | | `StopCommand.swift` (`Stop`) |
+| `stop` | Drain accepted requests, then stop the LaunchAgent; `--uninstall` removes the provider, watchdog and desktop API agents and keeps every file | | `StopCommand.swift` (`Stop`) |
+| `uninstall` | Take Darkbloom off this Mac: keep models and settings, or remove everything ([below](#darkbloom-uninstall)) | | `UninstallCommand.swift` (`Uninstall`) |
 | `restart` | Drain, restart with recorded configuration, and confirm fresh authorization | ✓ | `RestartCommand.swift` (`Restart`) |
 | `status` | Config, hardware, schedule, live daemon state (including the coordinator's last `Trust: <level> / <status>` message), per-slot KV/MTP posture | ✓ | `StatusCommand.swift` (`Status`) |
 | `doctor` | Diagnostics (see [troubleshooting](./troubleshooting.md#doctor-checks)) | ✓ | `DoctorCommand.swift` (`Doctor`) |
@@ -1279,7 +1280,7 @@ darkbloom stop [--timeout <seconds>] [--force] [--uninstall]
 |---|---|---|---|
 | `--timeout <seconds>` | integer, 0–3600 | `600` | Wait for accepted coordinator requests, local response writes and the coordinator acknowledgement |
 | `--force` | flag | `false` | Explicitly permit bounded cancellation and termination of unfinished work |
-| `--uninstall` | flag | `false` | After draining or explicit force, remove the provider and watchdog plists and boot out and remove the desktop API agent (`io.darkbloom.desktop-api`, best effort) |
+| `--uninstall` | flag | `false` | After draining or explicit force, remove the provider and watchdog plists and boot out and remove the desktop API agent (`io.darkbloom.desktop-api`, best effort). Every file, the cluster service and the pairing stay; [`darkbloom uninstall`](#darkbloom-uninstall) takes Darkbloom off the Mac |
 
 The command disarms the watchdog and disables login/reboot startup before
 requesting the drain. If setup fails before the mailbox request is published,
@@ -1293,6 +1294,83 @@ Code: `provider-swift/Sources/darkbloom/ServiceDrain.swift` (`DrainOptions`,
 `ServiceDrain.prepare`) and `provider-swift/Sources/darkbloom/StopCommand.swift`
 (`Stop`). See [graceful lifecycle behavior](#graceful-stop-and-restart) for signal
 handling and launchd's termination allowance.
+
+## `darkbloom uninstall`
+
+Take Darkbloom off this Mac, in one of two ways. In a terminal with no flags it
+shows what each way removes, with sizes, and asks: **1** keep models and
+settings, **2** remove everything, **3** cancel. Removing everything also asks
+for the word `yes`.
+
+```bash
+darkbloom uninstall                           # the screen: 1, 2 or 3
+darkbloom uninstall --keep-data --yes         # you might come back
+darkbloom uninstall --everything --dry-run    # every action and path, with sizes; changes nothing
+darkbloom uninstall --everything --yes        # not coming back
+```
+
+| Flag | Type | Default | Effect |
+|---|---|---|---|
+| `--keep-data` | flag | `false` | Stop serving and remove every background service; keep every file |
+| `--everything` | flag | `false` | Also forget the pairing, undo the cable port setup and delete Darkbloom's folders |
+| `--yes`, `-y` | flag | `false` | Don't ask for confirmation |
+| `--dry-run` | flag | `false` | List every action and path with sizes, and change nothing. Without a mode it lists both |
+| `--json` | flag | `false` | With `--dry-run`: the plan as JSON (`darkbloom_uninstall_plan_v1`) |
+| `--timeout`, `--force` | | | The [stop](#darkbloom-stop) drain options |
+
+Without a terminal, a mode and `--yes` are required; otherwise the command
+prints one usage line and exits 64. `--keep-data` and `--everything` together,
+or `--json` without `--dry-run`, are refused before anything runs.
+
+**The steps, in order.** Each is idempotent; the summary lists each one as
+`done`, `skipped` or `failed`, with the reason, and the command exits 1 when one
+failed. A failed step does not stop the safe steps after it.
+
+| # | Step | Mode | Through | Skipped when |
+|---|---|---|---|---|
+| 1 | Stop serving on this Mac | both | the [stop](#darkbloom-stop) drain (`ServiceDrain`) | the provider service was not running |
+| 2 | Stop this Mac's cluster part and remove its service | both | `darkbloom cluster stop`; when the other Mac does not answer, `cluster stop --local-only` | no cluster service on this Mac |
+| 3–5 | Remove the provider, watchdog and desktop API launch agents | both | what `stop --uninstall` runs (`LaunchAgent.uninstall`, `WatchdogAgent.uninstall`, `DesktopService.uninstall`) | not installed, or serving did not stop in step 1 |
+| 6 | Forget the pairing with the other Mac | everything | `darkbloom cluster pair --forget <pin>`, once per pairing | this Mac is not paired |
+| 7 | Undo the cable port setup | everything | `darkbloom cluster link --remove` (macOS asks for an administrator's password) | nothing to undo |
+| 8 | Delete Darkbloom's folders, one step each (table below) | everything | | already gone, refused, or a service did not stop in steps 1–5 |
+
+**What `--everything` deletes**, from `ProviderUninstallPaths` and
+`ProviderUninstall.inventory` in
+`provider-swift/Sources/ProviderCore/Service/Uninstall/ProviderUninstallPlan.swift`:
+
+| Item | Path |
+|---|---|
+| Settings | `~/.config/darkbloom` (`provider.toml`, saved cluster setups) |
+| Encrypted prompt caches | `~/Library/Caches/darkbloom` |
+| Each model Darkbloom downloaded | `~/.cache/huggingface/hub/models--<org>--<name>`, only folders holding Darkbloom's receipt (`.darkbloom-manifest.json`) or its unfinished download (`.local-staging-*`), and `.artifact-writer-locks` |
+| Cluster model store | `~/.cache/huggingface/darkbloom-cluster-models` |
+| The command link | `/usr/local/bin/darkbloom`, only while it links to `~/.darkbloom/bin/darkbloom` |
+| Darkbloom folder | `~/.darkbloom`: the app, `bin/`, logs, pairing, cluster setup and service state. Last, since the command runs from the app in it |
+
+What it never deletes:
+
+- anything that resolves outside those folders. A target that is a link, or
+  whose resolved path is elsewhere, is refused and reported, and a link inside a
+  deleted folder is removed without following it;
+- models and caches in a folder you chose (`[backend] model_cache_directory`,
+  `darkbloom cache set --directory`), the default model cache when it is a link,
+  and other tools' models;
+- the models and the cluster model store while another Darkbloom install
+  (`~/.darkbloom-dev`, `~/.darkbloom-staging`) shares them;
+- Keychain items (Secure Enclave and App Attest keys); a new install replaces them;
+- the fan helper (`sudo darkbloom fan uninstall`), Darkbloom Sandbox
+  (`darkbloom sandbox uninstall`) and the shell `PATH` line the installer added.
+
+The summary reports the space freed as the change in the home volume's free
+space. On a paired Mac it ends with one line about the other Mac, by name when
+known: run `darkbloom uninstall` there too, or `darkbloom cluster` on it to pair
+it with another Mac. After `--keep-data`, install again and run `darkbloom start`
+or `darkbloom cluster` to come back.
+
+Code: `provider-swift/Sources/darkbloom/UninstallCommand.swift` (`Uninstall`) and
+`provider-swift/Sources/ProviderCore/Service/Uninstall/ProviderUninstall.swift`
+(`ProviderUninstall.run`).
 
 ## `darkbloom restart`
 

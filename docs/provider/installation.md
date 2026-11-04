@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-11-02
+> Last updated: 2026-11-04
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -289,35 +289,52 @@ each Mac: `darkbloom cluster`; no SSH, no network settings typed).
 
 ## Uninstall
 
+One command takes Darkbloom off this Mac. In a terminal, it shows what each
+choice removes, with sizes, and asks:
+
 ```bash
-sudo darkbloom fan uninstall    # only if fan control was enabled
-darkbloom cluster link --remove # only if `darkbloom cluster` set up a two-Mac link; asks for approval
-darkbloom stop --uninstall      # stops the daemon, removes both LaunchAgent plists
-darkbloom unenroll              # opens System Settings to remove the MDM profile; offers to delete config + tokens
-rm -rf ~/.darkbloom ~/.config/darkbloom
-sudo rm -f /usr/local/bin/darkbloom
+darkbloom uninstall
 ```
 
-`darkbloom cluster link --remove` (`provider-swift/Sources/darkbloom/ClusterLinkCommand.swift`)
-restores what `darkbloom cluster` changed for a two-Mac link: it removes the
-network service `Darkbloom Cluster Link (<port>)`, switches the services it
-turned off on that port on again and puts the port back into its bridge, or,
-for a link set up by an earlier version, removes the root launchd job
-`io.darkbloom.cluster-link.<port>` and the address it kept. Run it before
-deleting `~/.darkbloom`, which holds the record of what was changed; without
-the record it still removes Darkbloom's own service or job. It changes nothing
-on a Mac that never ran `darkbloom cluster`.
+1. **Keep models and settings (you might come back).** Stops serving (the drain
+   of `darkbloom stop`), stops this Mac's part of a two-Mac pair and removes
+   every Darkbloom background service: the provider, its watchdog, the desktop
+   API and the cluster service. Every file stays, with the pairing and the cable
+   port setup. To come back, install again, then run `darkbloom start` or
+   `darkbloom cluster`.
+2. **Remove everything (not coming back).** Also forgets this Mac's pairing,
+   undoes the cable port setup (macOS asks for an administrator's password) and
+   deletes `~/.darkbloom` (the app, logs, pairing and cluster setup),
+   `~/.config/darkbloom`, `~/Library/Caches/darkbloom`, the models Darkbloom
+   downloaded into `~/.cache/huggingface/hub`, the cluster model store and the
+   `/usr/local/bin/darkbloom` link. Removing everything asks for the word `yes`,
+   then lists each step as done, skipped or failed, and the space freed.
+3. **Cancel.**
 
-`darkbloom stop --uninstall` (`provider-swift/Sources/darkbloom/StopCommand.swift`)
-disarms the watchdog first, deletes `~/Library/LaunchAgents/io.darkbloom.watchdog.plist`
-and `io.darkbloom.provider.plist`, and disables both labels in launchd.
-`darkbloom unenroll` (`provider-swift/Sources/darkbloom/UnenrollCommand.swift`)
-opens System Settings → Device Management (macOS does not let a binary remove a
-profile) and, after confirmation or with `--force`, deletes
-`~/.config/darkbloom/`, `~/.darkbloom/auth_token` and the legacy key files.
-Remove the `# Darkbloom` `PATH` line from your rc file by hand. Model weights
-live in `~/.cache/huggingface/hub`; delete them with `darkbloom models remove <id>`
-before removing the CLI.
+For scripts and agents:
+
+```bash
+darkbloom uninstall --everything --dry-run   # every action and path, with sizes; changes nothing (--json too)
+darkbloom uninstall --keep-data --yes
+darkbloom uninstall --everything --yes
+```
+
+It never deletes models or caches in a folder you chose, anything that
+resolves outside Darkbloom's folders, or Keychain keys (a new install replaces
+them). Before removing everything, remove what it leaves, if you use it:
+
+```bash
+sudo darkbloom fan uninstall   # fan control: restores macOS automatic control
+darkbloom sandbox uninstall    # Darkbloom Sandbox
+darkbloom unenroll             # a legacy MDM profile
+```
+
+Then remove the `# Darkbloom` `PATH` line from your rc file by hand. On a
+paired Mac, run `darkbloom uninstall` on the other Mac too, or `darkbloom
+cluster` on it to pair it with another Mac. `darkbloom stop --uninstall` still
+removes only the provider, watchdog and desktop API agents and keeps every file.
+Every flag, step and path rule is in the
+[CLI reference](./cli-reference.md#darkbloom-uninstall).
 
 ## Related
 

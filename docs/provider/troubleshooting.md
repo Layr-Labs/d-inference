@@ -1,10 +1,10 @@
 # Provider troubleshooting
 
-> Last updated: 2026-11-02
+> Last updated: 2026-11-04
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
-check names, service lifecycle, coordinator connection, updates, models and the
-KV-backend guard. For operators; every fix is a command you run on the Mac.
+check names, service lifecycle, coordinator connection, updates, models, the
+KV-backend guard and uninstalling. For operators; every fix is a command you run on the Mac.
 
 ## Prerequisites
 
@@ -248,6 +248,21 @@ SSD caching remains enabled by default with no resident retention; use
 `model=base_reward` grant. If last-1000 earnings show no `base_reward` rows
 (or amounts that match a smaller RAM class) while `doctor` is green, follow
 [Check a missing base reward](base-rewards.md).
+
+## Uninstall and start over
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| After `darkbloom stop --uninstall`, the cluster setup, pairing and settings are still there | `stop --uninstall` removes only the provider, watchdog and desktop API agents and keeps every file | `darkbloom uninstall`: choose **Keep models and settings** or **Remove everything** ([installation](./installation.md#uninstall)) |
+| You want to start from scratch | Saved settings, the pairing and the cluster setup bring the old setup back | `darkbloom uninstall --everything`, then install again. Deleting `~/.darkbloom` by hand leaves the cluster service, the pairing on the other Mac and the cable port setup behind |
+| `Usage: darkbloom uninstall --keep-data\|--everything [--yes] [--dry-run [--json]] (no terminal to ask which)` | No terminal to ask in (an agent or a script), and no mode with `--yes` | Pass `--keep-data` or `--everything` with `--yes`; check first with `--dry-run` |
+| `failed   Stop serving on this Mac: …` | The provider did not finish its accepted requests in time, or cannot drain | Run it again with a longer `--timeout`, or `--force` to interrupt them. Its services are kept until it stops |
+| `skipped  Delete …: a Darkbloom service may still be running` | A step that stops a service failed (it is listed above) | Fix that step, then run `darkbloom uninstall --everything` again; every step is idempotent |
+| `failed   Undo the cable port setup: …` | The macOS prompt was declined, or could not show (no screen, over SSH) | Run `darkbloom uninstall --everything` again at the Mac's screen; without a screen, run the printed `sudo sh …` line as an administrator |
+| `skipped  Delete …: refused: …` | The path is a link, or resolves outside Darkbloom's folders | Nothing outside Darkbloom's folders is deleted; remove it yourself if you don't need it |
+| The other Mac still shows the pair | Each Mac keeps its own pairing | Run `darkbloom uninstall` on it too, or `darkbloom cluster` on it to pair it with another Mac |
+
+Steps, paths and safety rules: [`darkbloom uninstall`](./cli-reference.md#darkbloom-uninstall).
 
 ## Collect a report
 

@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-03
+> Last updated: 2026-11-04
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -818,7 +818,29 @@ removes the pair's prompt-cache records (its own single-Mac cache stays) and
 stops its part; each Mac also removes its own pair records when it unpairs.
 `darkbloom cluster stop` stops a Mac's cluster service and keeps it from starting
 at login. On the leader it stops the pair first. When the other Mac is gone for
-good, `darkbloom cluster stop --local-only` stops only this one.
+good, `darkbloom cluster stop --local-only` stops only this one. To take Darkbloom off a Mac
+altogether, see [Uninstall](#uninstall).
+
+## Uninstall
+
+`darkbloom uninstall` takes Darkbloom off one Mac of the pair and asks how:
+
+- **Keep models and settings (you might come back).** This Mac stops its part,
+  as `darkbloom cluster stop` does (the leader stops the pair first), and no
+  Darkbloom service starts at login any more. The pairing, the cable port setup
+  and the models stay: install again and run `darkbloom cluster`, and the pair
+  resumes.
+- **Remove everything (not coming back).** It also forgets the pairing, as
+  `darkbloom cluster pair --forget` (a leader tells the other Mac first, over
+  the cable), undoes the cable port setup, as `darkbloom cluster link --remove`
+  (one approval), and deletes Darkbloom's folders, the cluster model store
+  included.
+
+When the other Mac does not answer, this Mac stops only its own part, as
+`darkbloom cluster stop --local-only`. The other Mac keeps its own pairing, so
+either way the command ends with one line about it, by name: run
+`darkbloom uninstall` there too, or `darkbloom cluster` on it to pair it with
+another Mac. Every step and path: [CLI reference](./cli-reference.md#darkbloom-uninstall).
 
 ## Cache settings
 

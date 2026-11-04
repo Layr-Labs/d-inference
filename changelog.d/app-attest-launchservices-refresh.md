@@ -1,0 +1,6 @@
+### App Attest survives the self-update's app swap
+
+- After a self-update, 12–15% of updating macOS 27 Macs reported App Attest as unsupported (`is_supported_false`) for minutes to hours, in every process. Restarts did not help: 0.10.7's automatic restart for this state recovered 1 of 117 Macs. Macs without the Darkbloom MDM profile stopped receiving inference until it cleared. The cause: Apple's answer also depends on macOS LaunchServices' record of the running app, and the update swaps `Darkbloom.app` in place without refreshing that record.
+- The updater now registers the new `Darkbloom.app` with LaunchServices right after the swap.
+- The first unsupported answer in each provider process now re-registers the running app with LaunchServices and asks Apple again before replying, so a stale record no longer fails the exchange. This also covers the first update to this version, which the previous version's updater performs.
+- `darkbloom doctor` no longer tells a provider that already runs in the logged-in GUI session to log in through Screen Sharing and restart. For `is_supported_false` in the GUI session it explains the self-update cause and gives the `lsregister -f` command to re-register the app.

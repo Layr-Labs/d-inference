@@ -7,16 +7,22 @@ public actor AppleAppAttestService: AppAttestService {
     private let callbacks: any AppAttestCallbacks
     private let operationTimeout: Double
     private let operations: AppleOperationGate
+    private let support: AppAttestSupportProbe
+    /// Set once this process has re-registered its bundle for an unsupported answer.
+    private var registrationRefreshed = false
 
     public init() {
         callbacks = SystemAppAttestCallbacks()
         operationTimeout = 25
         operations = AppleOperationGate()
+        support = .system
     }
 
-    init(callbacks: any AppAttestCallbacks, operationTimeout: Double, now: @escaping @Sendable () -> Date = Date.init) {
+    init(callbacks: any AppAttestCallbacks, operationTimeout: Double, support: AppAttestSupportProbe = .system,
+         now: @escaping @Sendable () -> Date = Date.init) {
         self.callbacks = callbacks
         self.operationTimeout = operationTimeout
+        self.support = support
         operations = AppleOperationGate(now: now)
     }
 
@@ -39,7 +45,18 @@ public actor AppleAppAttestService: AppAttestService {
         // means the required opt-in is absent, not that the query failed.
         let entitlements = values[kSecCodeInfoEntitlementsDict as String] as? [String: Any] ?? [:]
         try AppAttestEntitlementPolicy.validateAvailability(entitlements, expectedEnvironment: environment)
-        try AppAttestAvailabilityChecks.requireSupported(DCAppAttestService.shared.isSupported)
+        try AppAttestAvailabilityChecks.requireSupported(isSupportedRefreshingRegistration(app: Bundle.main.bundleURL))
+    }
+
+    /// Apple's answer. The first unsupported answer in this process first
+    /// re-registers `app` with LaunchServices and asks again, so a record left
+    /// stale by a self-update does not fail the exchange (`AppAttestSupportProbe`).
+    func isSupportedRefreshingRegistration(app: URL) -> Bool {
+        if support.isSupported() { return true }
+        guard !registrationRefreshed else { return false }
+        registrationRefreshed = true
+        _ = support.refreshRegistration(app)
+        return support.isSupported()
     }
 
     public func generateKey() async throws -> String {

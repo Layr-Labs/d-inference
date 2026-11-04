@@ -58,6 +58,54 @@ struct ClusterOnboardingPeerLabelTests {
     }
 
     /// Pair again on a Mac that holds no pairing removes nothing and goes on to pair.
+    /// Round 9 (validator D's delta check at f7e9619637): the status shows the leading Mac's latest test. A failed test
+    /// that isn't a start (the serving model's test, its Retry, the scope switch's, a re-test) after a passing start: the
+    /// ✗ with an accurate note, never the start's time under a ✓.
+    @Test func aFailedTestAfterAPassingStartIsShownNotTheStartsTime() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.store.updateRecord { $0.startTestPassed = "in 0.61 s" }
+        let live = OnboardingLive(context: fixture.context, store: fixture.store, settings: fixture.settings, readPairing: { nil },
+                                  currentPin: { nil })
+        live.settleTest(.failure(.init(["The test request got an empty answer."])))
+        let serving = "Serving Qwen 3.8 27B (pipeline) at http://localhost:8000 (local only)."
+        let lines = OnboardingLive.outcomeLines(record: try fixture.store.readRecord(), pending: false, local: true,
+                                                model: "Qwen 3.8 27B", serving: serving)
+        #expect(lines == [ClusterOnboardingNotServing.statusLine(model: "Qwen 3.8 27B", reason: "The test request got an empty answer"),
+                          "The last test from the leading Mac failed."])
+        #expect(try fixture.store.readRecord().startTestPassed == nil)
+        #expect(ClusterOnboardingReady.lastTestFailedNote == "The last test from the leading Mac failed.")
+        // A pass afterwards is the latest test: its time again, no failure.
+        live.settleTest(.success(["in 0.58 s"]))
+        #expect(OnboardingLive.outcomeLines(record: try fixture.store.readRecord(), pending: false, local: true, model: "Qwen 3.8 27B",
+                                            serving: serving) == [serving, "Test response in 0.58 s (the leading Mac's test)"])
+    }
+
+    /// A running start publishes its own outcome: while its mark is live, another test writes nothing.
+    @Test func aRunningStartsOutcomeIsNeverOverwrittenByAnotherTest() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let other = getppid()
+        let started = try #require(OnboardingLive.processStarted(other))
+        try fixture.store.updateRecord { $0.registrationPending = .init(pid: other, started: started) }
+        let live = OnboardingLive(context: fixture.context, store: fixture.store, settings: fixture.settings, readPairing: { nil },
+                                  currentPin: { nil })
+        live.settleTest(.failure(.init(["The test request got an empty answer."])))
+        let record = try fixture.store.readRecord()
+        #expect(record.lastTestFailure == nil && record.startTestFailure == nil && record.registrationPending?.pid == other)
+    }
+
+    /// A scope switch clears both published results: the pair starts again another way, so neither holds any more.
+    @Test func aScopeSwitchClearsBothResults() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        var record = try fixture.store.readRecord()
+        record.startTestPassed = "in 0.61 s"
+        record.startTestFailure = "The test request got an empty answer"
+        OnboardingLive.savingScope(.localOnly(bind: "0.0.0.0"), &record)
+        #expect(record.startTestPassed == nil && record.startTestFailure == nil && record.leadership?.scope.isLocalOnly == true)
+    }
+
     @Test func unpairWithoutAPairingChangesNothing() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

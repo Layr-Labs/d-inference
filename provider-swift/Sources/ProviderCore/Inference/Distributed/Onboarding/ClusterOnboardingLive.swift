@@ -27,7 +27,7 @@ extension ClusterOnboardingOperations {
         if let given = wizard.modelsDirectory { _ = try? store.updateRecord { $0.modelsDirectory = given } }
         let context = LiveContext(paths: paths, store: store, settings: wizard, clean: ClusterConsoleFreeText(homeDirectory: paths.homeDirectory.path))
         let live = OnboardingLive(context: context, store: store, settings: settings)
-        return ClusterOnboardingOperations(
+        var made = ClusterOnboardingOperations(
             resume: { live.resume() },
             checkLink: { say in live.checkLink(say) },
             pair: { events in live.pair(events) },
@@ -62,7 +62,18 @@ extension ClusterOnboardingOperations {
             unpair: { live.unpair() },
             pairServing: { progress in live.pairServing(progress) },
             missingLogins: { live.missingLogins() },
-            login: { live.login() })
+            login: { live.login() },
+            useMode: { index, mode in live.useMode(index, mode) })
+        made.markRegistrationPending = { live.markRegistrationPending() }
+        return made
+    }
+}
+
+extension ClusterSetupRecord {
+    /// The start's pending mark as one value (`registrationPendingPID` with `registrationPendingStarted`).
+    var registrationPending: ClusterOnboardingPendingRegistration.Mark? {
+        get { registrationPendingPID.map { .init(pid: $0, started: registrationPendingStarted) } }
+        set { registrationPendingPID = newValue?.pid; registrationPendingStarted = newValue?.started }
     }
 }
 
@@ -94,6 +105,8 @@ final class OnboardingLive: @unchecked Sendable {
     private var chosenTitle: String?
     /// The list `planModels` last returned on this Mac (from the leader when forwarded), so a choice names its model.
     private var listedChoices: [ClusterOnboardingModelChoice] = []
+    /// The mode family the person chose per model id, when it is not the planner's (`useMode`).
+    private var chosenFamilies: [String: ClusterForcedMode] = [:]
     /// Set while this (leader) Mac answers a command forwarded from the other Mac: its lines are shown on that Mac, so
     /// they name the two Macs the other way round (`here`, `there`).
     private var answeringForward = false
@@ -152,6 +165,7 @@ final class OnboardingLive: @unchecked Sendable {
             var resume = ClusterOnboardingResume(role: role, peerName: peerName, serving: leadership.serving, modelName: leadership.modelName)
             resume.scope = leadership.scope
             resume.pairingProblem = problem
+            resume.modelTitle = leadership.modelName.map(modelTitle); resume.servingMode = savedMode
             return resume
         }
         let leads = claim.leaderID == pairing.localMemberID
@@ -164,7 +178,23 @@ final class OnboardingLive: @unchecked Sendable {
         resume.term = claim.term
         resume.localLine = ClusterService.published()?.control?.line
         resume.pairingProblem = problem
+        resume.modelTitle = leadership.modelName.map(modelTitle); resume.servingMode = savedMode
         return resume
+    }
+
+    /// The mode the saved setup serves its model in (a `ClusterGenerationMode` raw value).
+    var savedMode: String? { context.savedConfiguration().configuration?.selectedGenerationMode.rawValue }
+
+    /// The person's mode for the model of choice `index`, as the family the planner places: kept for the next adopt
+    /// of that model (`localAdopt`); the planner's own family needs nothing kept.
+    func useMode(_ index: Int, _ mode: String) {
+        lock.withLock {
+            guard listedChoices.indices.contains(index), let generation = ClusterGenerationMode(rawValue: mode),
+                  let family = ClusterForcedMode.allCases.first(where: { $0.admits(generation) }) else { return }
+            let model = listedChoices[index].modelID ?? listedChoices[index].title
+            let planned = listedChoices[index].modes?.first.flatMap { ClusterGenerationMode(rawValue: $0.mode) }
+            chosenFamilies[model] = planned.map(family.admits) == true ? nil : family
+        }
     }
 
     /// One status request over the cable, which only a Mac holding this pairing's link key can answer.
@@ -657,10 +687,22 @@ final class OnboardingLive: @unchecked Sendable {
         named ?? context.settings.servingScope ?? leadership?.scope ?? .publicServing
     }
 
+    /// A planned mode as the screen shows it: each Mac's share in the screen's words ("this Mac 6 layers / the other
+    /// Mac 24 layers", "this Mac 40% / the other Mac 60%") and the decode rate this pair served it at.
+    func screenMode(_ mode: ClusterSetupPlanSummary.Mode) -> ClusterOnboardingMode {
+        let words = mode.shares.map { share -> String in
+            let mac = share.local ? hereShort : thereShort
+            if let fraction = share.share { return "\(mac) \(Int((fraction * 100).rounded()))%" }
+            return "\(mac) \(share.endLayer - share.firstLayer) layers"
+        }
+        return .init(mode: mode.mode, split: words.isEmpty ? nil : words.joined(separator: " / "), measuredTokensPerSecond: mode.servedDecodeTokensPerSecond)
+    }
+
     /// `keeping`: the mode each model id keeps (`LiveContext.plan`); the service's re-plan after an update passes the
     /// mode the pair served the model in. `scope`: the way of serving a forwarded command names (`planningScope`).
-    func localPlanModels(keeping: [String: ClusterGenerationMode] = [:],
-                         scope: ClusterServingScope? = nil) -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure> {
+    /// `chosenModes`: the mode family the person chose per model id (`useMode`), placed only in that family.
+    func localPlanModels(keeping: [String: ClusterGenerationMode] = [:], scope: ClusterServingScope? = nil,
+                         chosenModes: [String: ClusterForcedMode] = [:]) -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure> {
         // The plan judges each Mac by the memory its report sampled. A report taken before this Mac stopped the
         // cluster's parts still counts the other Mac's old part (the re-plan after an update stops them first):
         // ask again, so both Macs are priced with that memory given back. 2026-10-22: the other Mac's report was
@@ -677,7 +719,7 @@ final class OnboardingLive: @unchecked Sendable {
         // Folders copied over the cable (no receipt on this Mac) are repaired before the plan describes them.
         ClusterProductModelStore.updateClusterStore(store, providerConfiguration: settings.service.wizard.providerConfiguration,
                                                     accepts: context.workerAcceptsManifest)
-        switch context.plan(peer: peer, keeping: keeping, coordinator: !planningScope(scope).isLocalOnly) {
+        switch context.plan(peer: peer, keeping: keeping, coordinator: !planningScope(scope).isLocalOnly, chosenModes: chosenModes) {
         case .failed(let reason): return .failure(.init("Planning failed: \(reason)"))
         case .ready(let options):
             let localName = ClusterPairingProvider.displayName(chipName: context.snapshot().local.mac.chip)
@@ -720,7 +762,8 @@ final class OnboardingLive: @unchecked Sendable {
                              publicTraffic: context.settings.privateImageQualification
                                 ? "Private unqualified image candidate; public traffic is prohibited." : plan.publicTraffic,
                              tensorParallelNote: plan.tensorParallelNote, validated: approved(option.model.artifactSHA256),
-                             split: ClusterOnboardingDeployment.splitMarker(plan.mode))
+                             split: ClusterOnboardingDeployment.splitMarker(plan.mode),
+                             modes: plan.modes.map { $0.map(screenMode) })
             }
             // Open choices first (the models this Mac has), then catalog models no Mac has yet, then the blocked ones.
             typealias Listed = (choice: ClusterOnboardingModelChoice, key: ChoiceKey, artifact: ListedArtifact?)
@@ -1129,13 +1172,20 @@ final class OnboardingLive: @unchecked Sendable {
             return .failure(.init("The list of models is out of date; run `darkbloom cluster` again to choose."))
         }
         var lines = [String]()
-        if leadership?.serving == true || (try? store.readRecord().stopDrain) != nil {
-            // A running part holds its Mac's setup and native device lease: a model change drains both Macs first
-            // (each part releases its memory), then changes the setup; `serve` starts the new one.
-            if case .failure(let failure) = localStop() { return .failure(failure) }
-            lines.append("Stopped both Macs' parts to change the model (each released its memory first).")
-            guard drained(seconds: 300) else {
-                return .failure(.init(lines + ["A part did not stop within 5 minutes, so the setup was not changed; run `darkbloom cluster` again."]))
+        // The person chose another mode family than the one listed (`useMode`): planned again in it before adopting.
+        let family = lock.withLock { chosenFamilies[choice.title] }
+        let listedMode = choice.plan.flatMap { ClusterGenerationMode(rawValue: $0.mode) }
+        let modeDiffers = family.map { family in listedMode.map(family.admits) != true } ?? false
+        let serving = leadership?.serving == true || (try? store.readRecord().stopDrain) != nil
+        if serving || modeDiffers {
+            if serving {
+                // A running part holds its Mac's setup and native device lease: a model change drains both Macs first
+                // (each part releases its memory), then changes the setup; `serve` starts the new one.
+                if case .failure(let failure) = localStop() { return .failure(failure) }
+                lines.append("Stopped both Macs' parts to change the model (each released its memory first).")
+                guard drained(seconds: 300) else {
+                    return .failure(.init(lines + ["A part did not stop within 5 minutes, so the setup was not changed; run `darkbloom cluster` again."]))
+                }
             }
             // The list was planned while the parts held their memory, where a tensor-parallel split may not fit "now"
             // and a pipeline is listed in its place (2026-10-29: GLM-5.3-Flash came back as a pipeline at half the
@@ -1143,8 +1193,12 @@ final class OnboardingLive: @unchecked Sendable {
             // as the re-plan after an update does, and adopt the model's new plan. When planning fails, the listed
             // plan stands (a failed plan replaces neither `choices` nor the decisions `context.adopt` reads): it was
             // priced with less memory than there is now.
-            awaitReleased()
-            if case .success(let replanned) = localPlanModels(scope: scope) {
+            if serving { awaitReleased() }
+            let replan = localPlanModels(scope: scope, chosenModes: family.map { [choice.title: $0] } ?? [:])
+            if modeDiffers, case .failure(let failure) = replan {
+                return .failure(.init(lines + ["\(choice.title) could not be planned in the mode chosen: \(failure.lines.joined(separator: " "))"]))
+            }
+            if case .success(let replanned) = replan {
                 // `localPlanModels` set `choices` in the order of the list it returned. Both are read under one lock,
                 // and the entry must still name the chosen model: a plan forwarded from the other Mac may replace
                 // `choices` meanwhile.
@@ -1159,7 +1213,7 @@ final class OnboardingLive: @unchecked Sendable {
                     return .failure(.init(lines + ["\(choice.title) is not offered on these Macs now (\(reason)); run `darkbloom cluster` again to choose."]))
                 }
                 if picked.again.key != choice.key, let line = replanned[picked.index].lines.first {
-                    lines.append("Planned again with both Macs' memory given back: \(line).")
+                    lines.append((serving ? "Planned again with both Macs' memory given back: " : "Planned in the mode chosen: ") + "\(line).")
                 }
                 choice = picked.again
                 peer = lock.withLock { peerReport } ?? peer
@@ -1194,6 +1248,7 @@ final class OnboardingLive: @unchecked Sendable {
     /// its device journal empty), each Mac checks the entry against its own files and saves it, the other Mac first,
     /// and both parts start again as cluster members.
     func localRegister() -> Result<[String], ClusterOnboardingFailure> {
+        defer { clearRegistrationPending() }
         guard leadership?.scope.isLocalOnly != true else { return .success([]) }
         let providerConfiguration = settings.service.wizard.providerConfiguration
         guard let saved = try? ClusterApprovalAttachment.savedSetup(paths: context.paths, providerConfiguration: providerConfiguration),
@@ -1253,6 +1308,85 @@ final class OnboardingLive: @unchecked Sendable {
         routed(.init(op: .serve), acting: true, local: { localServe() }) { $0.lines }
     }
 
+    /// The screen's start through Darkbloom, which asks the coordinator after its test whether to offer the pair
+    /// (`register`), marks the record with its process until it decides, on the Mac whose status both Macs read. `serve`
+    /// alone never marks: `darkbloom start` and `restart` serve without registering, so nothing would clear the mark.
+    func markRegistrationPending() {
+        let pid = getpid()
+        guard !forwards, let started = Self.processStarted(pid) else { return }
+        try? store.updateRecord { $0.registrationPending = .init(pid: pid, started: started); Self.clearTestResults(&$0) }
+    }
+
+    /// The start's question to the coordinator is answered (or will not be asked).
+    func clearRegistrationPending() {
+        if (try? store.readRecord())?.registrationPending != nil { try? store.updateRecord { $0.registrationPending = nil } }
+    }
+
+    /// The record's pending registration, while the start that set it runs (the same process: its start time matches).
+    var registrationPending: Bool {
+        let seen = ClusterOnboardingPendingRegistration.look((try? store.readRecord())?.registrationPending, started: Self.processStarted)
+        if let gone = seen.clear {
+            // That start ended before it asked the coordinator: compare-and-clear, so a new start's mark stays.
+            try? store.updateRecord { $0.registrationPending = ClusterOnboardingPendingRegistration.cleared($0.registrationPending, gone: gone) }
+        }
+        return seen.pending
+    }
+
+    /// When the process `pid` started (microseconds since 1970); nil when none runs or it can't be read.
+    static func processStarted(_ pid: Int32) -> UInt64? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard pid > 0, proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        return info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec
+    }
+
+    /// A failed test ends the start without asking the coordinator: the start that marked itself publishes that outcome
+    /// (the status says it until the next start, a passing test or a stop), so the Mac that joined ends with the same ✗
+    /// instead of passing a test of its own. A passing test clears an earlier start's failure.
+    func settleTest(_ tested: Result<[String], ClusterOnboardingFailure>) {
+        // Compare-and-set against the start's mark, its pid and start time: only that start's process publishes.
+        let pid = getpid()
+        let mine = Self.processStarted(pid).map { ClusterOnboardingPendingRegistration.Mark(pid: pid, started: $0) }
+        let record = try? store.readRecord()
+        let marked = mine != nil && record?.registrationPending == mine
+        guard marked else {
+            // Not a start's test (the serving model's test, its Retry, the scope switch's, a re-test): the status shows the
+            // latest test too, through the record's normal update, unless a running start's mark is live (it publishes its
+            // own outcome, which this never overwrites).
+            try? store.updateRecord { record in
+                guard !ClusterOnboardingPendingRegistration.look(record.registrationPending, started: Self.processStarted).pending else { return }
+                Self.clearTestResults(&record)
+                switch tested {
+                case .success(let lines): record.startTestPassed = lines.first ?? ""
+                case .failure(let failure):
+                    let first = failure.lines.first ?? "The test request failed"
+                    record.lastTestFailure = first.hasSuffix(".") ? String(first.dropLast()) : first
+                }
+            }
+            return
+        }
+        switch tested {
+        case .success(let lines):
+            // The marked start's test passed: its outcome, with the time its screen shows. A local start is over; through
+            // Darkbloom the mark stays until the coordinator decides.
+            let local = record?.leadership?.scope.isLocalOnly == true
+            try? store.updateRecord { record in
+                guard record.registrationPending == mine else { return }
+                Self.clearTestResults(&record)
+                record.startTestPassed = lines.first ?? ""
+                if local { record.registrationPending = nil }
+            }
+        case .failure(let failure):
+            let first = failure.lines.first ?? "The test request failed"
+            try? store.updateRecord { record in
+                guard record.registrationPending == mine else { return }
+                record.registrationPending = nil
+                Self.clearTestResults(&record)
+                record.startTestFailure = first.hasSuffix(".") ? String(first.dropLast()) : first
+            }
+        }
+    }
+
     func setScope(_ scope: ClusterServingScope) -> Result<[String], ClusterOnboardingFailure> {
         // Long enough for the rank 0 part to stop (it releases its memory first) and start again.
         routed(.init(op: .scope, scope: scope), seconds: Self.scopeRestartSeconds + 30, acting: true, local: { localSetScope(scope) }) { $0.lines }
@@ -1263,6 +1397,34 @@ final class OnboardingLive: @unchecked Sendable {
     /// Saves how the cluster serves on this (control leader) Mac and gives the member the same scope. While the
     /// cluster serves, the Mac that runs rank 0 starts its part again that way (its service keys the part by the
     /// scope); this waits until that part started again, so the readiness asked next is the new part's.
+    /// What a ready pair's status says of its start and its latest test: the start not over (through Darkbloom it still
+    /// asks the coordinator whether to offer the pair; locally its test is not answered yet), a failed test with its note,
+    /// or `serving` with the time of the test that passed (the Mac that joined ends with it).
+    static func outcomeLines(record: ClusterSetupRecord?, pending: Bool, local: Bool, model: String, serving: String) -> [String] {
+        if pending { return [local ? ClusterOnboardingReady.testingLine(model: model) : ClusterOnboardingReady.offerPendingLine(model: model)] }
+        if let failure = record?.startTestFailure {
+            return [ClusterOnboardingNotServing.statusLine(model: model, reason: failure),
+                    local ? ClusterOnboardingReady.localTestFailedNote : ClusterOnboardingReady.testFailedNote]
+        }
+        if let failure = record?.lastTestFailure {
+            return [ClusterOnboardingNotServing.statusLine(model: model, reason: failure), ClusterOnboardingReady.lastTestFailedNote]
+        }
+        return [serving] + (record?.startTestPassed.map { [ClusterOnboardingReady.startTestPassedLine($0)] } ?? [])
+    }
+
+    /// The record with the pair's new way of serving (`localSetScope`): no earlier test's result holds for it.
+    static func savingScope(_ scope: ClusterServingScope, _ record: inout ClusterSetupRecord) {
+        record.leadership?.scope = scope
+        clearTestResults(&record)
+    }
+
+    /// No published test result: the next start or serve, a scope switch and a stop.
+    static func clearTestResults(_ record: inout ClusterSetupRecord) {
+        record.startTestFailure = nil
+        record.startTestPassed = nil
+        record.lastTestFailure = nil
+    }
+
     func localSetScope(_ scope: ClusterServingScope) -> Result<[String], ClusterOnboardingFailure> {
         guard let current = leadership else { return .failure(.init("\(Self.sentence(hereShort)) is not paired with a cluster.")) }
         let saved = scope.isLocalOnly ? "Saved on \(here): the cluster serves locally only and never contacts a coordinator."
@@ -1270,7 +1432,7 @@ final class OnboardingLive: @unchecked Sendable {
         if current.scope == scope { return .success([saved]) }
         let startsBefore = rankZeroStarts()
         do {
-            try store.updateRecord { $0.leadership?.scope = scope }
+            try store.updateRecord { Self.savingScope(scope, &$0) }
         } catch {
             return .failure(.init("\(Self.sentence(hereShort))'s setup record could not be saved: \(ClusterConsoleText.bounded(String(describing: error), maximum: 200))"))
         }
@@ -1301,7 +1463,8 @@ final class OnboardingLive: @unchecked Sendable {
         }
         let title = lock.withLock { chosenTitle } ?? context.savedConfiguration().configuration?.publicModelID
         do {
-            try store.updateRecord { $0.leadership?.serving = true; if let title { $0.leadership?.modelName = title } }
+            // A new start: an earlier start's failed test is no longer the pair's outcome.
+            try store.updateRecord { $0.leadership?.serving = true; if let title { $0.leadership?.modelName = title }; Self.clearTestResults(&$0) }
             // The line of the setup that runs, so the member shows the same one when it leads.
             let deployment = savedDeployment() ?? leadership?.deployment
             try store.updateRecord { $0.leadership?.deployment = deployment }
@@ -1620,7 +1783,11 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     func testRequest() -> Result<[String], ClusterOnboardingFailure> {
-        routed(.init(op: .test), seconds: 240, acting: false, local: { localTestRequest() }) { $0.lines }
+        routed(.init(op: .test), seconds: 240, acting: false, local: {
+            let tested = localTestRequest()
+            settleTest(tested)
+            return tested
+        }) { $0.lines }
     }
 
     func localTestRequest() -> Result<[String], ClusterOnboardingFailure> {
@@ -1717,8 +1884,13 @@ final class OnboardingLive: @unchecked Sendable {
         } else if let session = now.session, session.observed {
             if session.ready {
                 let ready = ready(now, port: session.port ?? 0)
-                lines.append(ready.summary(model: model)
-                    + ClusterOnboardingDriver.servesWords(scope: leadership?.scope ?? .publicServing, ready: ready) + ".")
+                let serving = ready.summary(model: model)
+                    + ClusterOnboardingDriver.servesWords(scope: leadership?.scope ?? .publicServing, ready: ready) + "."
+                let outcome = Self.outcomeLines(record: try? store.readRecord(), pending: registrationPending,
+                                                local: leadership?.scope.isLocalOnly == true, model: model, serving: serving)
+                lines += outcome
+                // A start not over, or a failed test: that alone.
+                if outcome.first != serving { return lines }
                 // Why the pair serves locally although its coordinator offers a cluster approval (one line).
                 if leadership?.scope.isLocalOnly != true, let note = (try? store.readRecord())?.approvalNote { lines.append(note + ".") }
             } else {
@@ -1775,6 +1947,8 @@ final class OnboardingLive: @unchecked Sendable {
                 record.stopDrain = .init(id: stopID,
                     keepPeerRunning: record.leadership?.serving == true || record.stopDrain?.keepPeerRunning == true)
                 record.leadership?.serving = false
+                record.registrationPending = nil
+                Self.clearTestResults(&record)
             }
             lock.withLock { partsStoppedAt = Date() }
         } catch {

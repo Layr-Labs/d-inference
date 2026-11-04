@@ -87,6 +87,7 @@ build_module InstalledContract \
   "$task_sources/Protocol/ProviderExecutionRole.swift" \
   "$task_sources/Inference/Distributed/Onboarding/ClusterControlLeadership.swift" \
   "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift" \
+  "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingFollow.swift" \
   "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingPairServing.swift" \
   "${task_placement[@]}" \
   "$task_sources"/Inference/Distributed/LinkControl/*.swift \

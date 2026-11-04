@@ -68,6 +68,7 @@ public enum ClusterPlacementFlow {
                               link: ClusterLinkCosts = .unmeasured,
                               shareProbes: [String: [ClusterShareRate]] = [:],
                               incumbentMode: ClusterGenerationMode? = nil,
+                              chosenMode: ClusterForcedMode? = nil,
                               incumbentTensorShares: [Int]? = nil,
                               coordinator: Bool = false,
                               assumeUnmeasuredLink: Bool = true,
@@ -81,8 +82,11 @@ public enum ClusterPlacementFlow {
         let handOff = try ClusterHandOffModes.enabled(environment: environment)
         // Developer bench only (`ClusterBenchChip`): a debug build may be told to plan both Macs as another chip.
         let benchChip = try ClusterBenchChip.planningChipName(environment: environment, debugBuild: benchDebugBuild)
-        // Developer only (`ClusterForcedModeSetting`): a debug build may be told which mode family to place.
-        let forced = try ClusterForcedModeSetting.mode(environment: environment, debugBuild: benchDebugBuild)
+        // Developer only (`ClusterForcedModeSetting`): a debug build may be told which mode family to place. The person's
+        // choice in `darkbloom cluster` (`chosenMode`, owner 2026-11-04: both modes offered) places only that family the
+        // same way, keeping feature parity and saying nothing of a developer setting.
+        let developerForced = try ClusterForcedModeSetting.mode(environment: environment, debugBuild: benchDebugBuild)
+        let forced = developerForced ?? chosenMode
         let cappedLocal = try benchCap.map { try localProfile.cappedForBench(admissibleBytes: $0) } ?? localProfile
         let cappedPeer = try benchCap.map { try peerProfile.cappedForBench(admissibleBytes: $0) } ?? peerProfile
         let localProfile = try benchChip.map { try cappedLocal.renamedForBench(chip: $0) } ?? cappedLocal
@@ -136,6 +140,12 @@ public enum ClusterPlacementFlow {
         let admissibleModes = ClusterModelFeaturePolicy.admissibleModes(capability)
         guard !admissibleModes.isEmpty else {
             throw ClusterConfigurationError.invalid(ClusterModelFeaturePolicy.unavailable)
+        }
+        // A chosen (or developer-forced) family this model's features don't admit is refused in its contract's words
+        // (Qwen3.8 27B keeps images, video and committed-token logprobs only in tensor parallel), never a quote's error.
+        if let forced, !admissibleModes.contains(where: forced.admits) {
+            throw ClusterConfigurationError.invalid((forced == .pipeline ? "Pipeline modes" : "Tensor parallel")
+                + " can't serve this model: " + (ClusterModelFeaturePolicy.modesReason(capability) ?? "its features rule them out"))
         }
         policy.modes = admissibleModes
         // Each restriction below says why, so a plan without a pipeline never reads as one where none fits; the
@@ -218,7 +228,7 @@ public enum ClusterPlacementFlow {
         // What this pair served in each mode, for the reference request, and the mode the plan keeps because of it
         // (`ClusterServedModes.hold`): after a Darkbloom update (`incumbentMode`, the same model on the same pair)
         // the mode the pair served in, unless the planner and the pair's own requests both find another faster;
-        // otherwise, once the pair served two modes, the one it served faster. A developer's forced mode keeps nothing.
+        // otherwise, once the pair served two modes, the one it served faster. A forced or chosen mode keeps nothing.
         let reference = (prompt: policy.promptTokens ?? layout.maximumPromptTokens, output: policy.outputTokens ?? layout.maximumOutputTokens)
         let servedModes = ClusterServedModes.figures(ours, promptTokens: reference.prompt, outputTokens: reference.output)
         if !servedModes.isEmpty {
@@ -284,13 +294,13 @@ public enum ClusterPlacementFlow {
         // mode it would replace, as the worker's capability record declares them, and is left out before anything is
         // ranked. A developer's forced mode is placed anyway, and the plan says what it drops.
         let (parity, parityRefusal) = ClusterModeParity.apply(to: &policy, capability: capability, layout: layout,
-            forced: forced != nil) { try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: $0, link: link) }
+            forced: developerForced != nil) { try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: $0, link: link) }
         // A singleton tensor placement saves the widest width its owner's quotes admit on both Macs now. One call
         // initializes a constant `result`, so the sizing's plans stay off this frame, which a deep planner stack shares.
         var batchLanes = batchScope?.lanes
         let result = try ClusterPlacementTensorWidth.plan(devices: devices, layout: layout, policy: policy, link: link,
             quotes: tensorWidthQuotes, lanes: &batchLanes)
-        var lines = (forced.map(ClusterForcedModeSetting.lines) ?? [])
+        var lines = (developerForced.map(ClusterForcedModeSetting.lines) ?? [])
             + (benchCap.map(ClusterPlannerBenchCap.lines(capBytes:)) ?? []) + (benchChip.map(ClusterBenchChip.lines(chipName:)) ?? [])
             + servedLines
             + ClusterPlacementExplanation.describe(result, devices: devices, layout: layout)
@@ -309,7 +319,7 @@ public enum ClusterPlacementFlow {
                 if let note = ClusterModelFeaturePolicy.modeFeatureNote(capability) { lines.append("  " + note) }
             }
         }
-        if let parity, forced != nil, let chosen = result.chosen, parity.modes.contains(chosen.mode) {
+        if let parity, developerForced != nil, let chosen = result.chosen, parity.modes.contains(chosen.mode) {
             lines += ["Feature parity", "  " + parity.forcedLine]
         }
         if let parityRefusal { lines += ["Feature parity", "  " + parityRefusal] }

@@ -1,6 +1,6 @@
 # Host Darkbloom Sandbox CI jobs
 
-> Last updated: 2026-11-03
+> Last updated: 2026-11-04
 
 How to let this Mac run Darkbloom Sandbox jobs, approved GitHub Actions jobs in
 Linux and macOS virtual machines, beside the inference provider: set it up,
@@ -26,8 +26,8 @@ Read this before you run setup. Setup uses the same rules and shows the result
 for this Mac (step 1); nothing changes until you answer `y`. The rules as a
 table are in the [CLI reference](./cli-reference.md#setup).
 
-**Memory and cores.** Jobs get only what is left after what stays yours and
-what inference keeps:
+**Memory and cores.** Setup counts jobs from what is left after what stays
+yours and what inference keeps:
 
 - You keep a quarter of the cores (at least 2) and a quarter of the memory (at
   least 8 GB).
@@ -45,8 +45,8 @@ what inference keeps:
 
 Jobs are counted at the smaller VM size. Some repositories ask for a larger VM
 (Linux 8 cores and 32 GB, macOS 12 cores and 32 GB). Such a job starts only when
-this Mac reports that much free; a 12-core, 32 GB macOS job beside inference
-takes 16 cores and 64 GB.
+this Mac has enough free memory for it. A 12-core, 32 GB macOS job beside
+inference needs a Mac with 16 cores and 64 GB.
 
 **Disk.** On the disk that holds your home folder:
 
@@ -54,19 +54,26 @@ takes 16 cores and 64 GB.
   for you.
 - The first job of a platform also needs that platform's VM images: Linux
   4 GiB, macOS 46 GiB (nothing once they are installed).
+- From add-on 1.3.0, the first Linux job also keeps 10 GiB for one more Linux
+  image, which the add-on downloads (nothing once it is installed).
 - Each Linux job needs 30 GiB for its scratch disk, and each macOS job 40 GiB.
+- The build cache uses only the space that the jobs leave: 8 to 32 GiB, by the
+  size of the disk. It never takes the room of a job. With less than 8 GiB
+  left, it stays off.
 
-So a first install needs, above the free tenth: about 34 GiB for one Linux job,
-86 GiB for one macOS job, or 120 GiB for one of each. Free disk is what
-`df -h ~` shows under `Avail`.
+So a first install needs, above the free tenth: about 44 GiB for one Linux job,
+86 GiB for one macOS job, or 130 GiB for one of each. Before add-on 1.3.0, a
+Linux job needs 10 GiB less. Free disk is what `df -h ~` shows under `Avail`.
+For example, a 2 TB disk keeps 100 GiB free, so one Linux job needs 144 GiB
+free before setup.
 
 **Recommended Macs.**
 
 | Tier | Cores | Memory | Free disk before setup | Jobs |
 |---|---|---|---|---|
-| macOS and Linux | 24 or more | 128 GB or more | 400 GB or more | A macOS job and Linux jobs at the same time |
-| macOS | 16 or more | 64 GB or more | 250 GB or more | Usually one job at a time, macOS or Linux; with 128 GB, a Linux job beside a macOS one |
-| Linux only | 10 to 14 | 32 GB or more | 100 GB or more (150 GB on a disk larger than 512 GB) | Linux jobs only |
+| macOS and Linux | 24 or more | 128 GB or more | 400 GiB or more | A macOS job and Linux jobs at the same time |
+| macOS | 16 or more | 64 GB or more | 250 GiB or more | Usually one job at a time, macOS or Linux; with 128 GB, a Linux job beside a macOS one |
+| Linux only | 10 to 14 | 32 GB or more | 100 GiB or more (150 GiB on a disk larger than 512 GB) | Linux jobs only |
 
 Examples, with enough free disk and the inference provider running unless
 stated:

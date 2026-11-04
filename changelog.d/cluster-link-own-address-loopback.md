@@ -1,4 +1,3 @@
-### A paired Mac's cable port is no longer called not isolated
+### A paired Mac's cable port is no longer reported as not isolated
 
-- `darkbloom cluster doctor` no longer reports a paired Mac's cable port as not isolated because of its own address. Once the port has carried traffic, macOS reaches the port's own address through the loopback (`lo0`), and that route was taken for the cluster subnet `10.219/16` being used elsewhere on the Mac: `darkbloom cluster link` said "not isolated: the cluster subnet 10.219/16 is already used on this Mac", the doctor failed `localLinkIsolation.<device>`, and `darkbloom cluster link --fix` (also with `--dry-run`) refused with `isolationRefused`.
-- Another interface or VPN with an address in `10.219/16`, a route into it through any other interface, and a loopback route to an address the port does not carry still stop the isolation, as before.
+- `darkbloom cluster link` and `darkbloom cluster doctor` no longer report a paired Mac's cable port as not isolated ("the cluster subnet 10.219/16 is already used on this Mac") because macOS routes the port's own address through the loopback.

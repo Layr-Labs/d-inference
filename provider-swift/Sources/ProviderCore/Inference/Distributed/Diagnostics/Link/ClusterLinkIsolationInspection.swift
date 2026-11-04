@@ -20,9 +20,11 @@ enum ClusterLinkIsolationInspection {
     /// Nil when one reading timed out, overflowed, or printed text of the
     /// wrong shape. A tool that exits non-zero where that means "none" (no
     /// Internet Sharing file, no bridge key) is an empty answer, not a failure.
-    /// The cluster subnet's routes are read against `interfaceListing`, the
-    /// `ifconfig -a` text of the same inspection; without it, a loopback route
-    /// to an address of this Mac's own counts on the loopback.
+    /// `interfaceListing` is the `ifconfig -a` text `status` judges with: a
+    /// loopback route to one of this Mac's own addresses counts on the
+    /// interface that carries it. Without it that route stays on the loopback,
+    /// which `status` takes for `clusterSubnetInUse`; the repair, which reads
+    /// only services and bridges, leaves it out.
     static func machine(run: ClusterLinkToolRunner, interfaceListing: String = "") -> Machine? {
         /// A reading that must succeed.
         func required(_ command: ClusterLinkToolCommand) -> String? {

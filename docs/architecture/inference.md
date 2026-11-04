@@ -3735,8 +3735,8 @@ interface carries on that interface
 `ifconfig -a` text the readiness probe already took
 (`ClusterLinkIsolationInspection.machine(run:interfaceListing:)`). Only interface
 names leave the reader. Another interface's address in the subnet, a route into
-it through any other interface, and a loopback route to an address that no
-interface carries still block.
+it through any other interface, and a loopback route to an address the port
+does not carry still block.
 
 Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkNetworkFacts.swift`
 (`ClusterLinkNetworkFacts.clusterSubnetRouteInterfaces`) and

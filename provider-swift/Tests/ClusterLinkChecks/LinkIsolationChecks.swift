@@ -55,11 +55,11 @@ extension ClusterLinkCheck {
             ["en3", "en3", "en3", "en3", "en3"], "paired Mac A: its own address through lo0 counts on en3")
         expectEqual(Facts.clusterSubnetRouteInterfaces(pairedRoutes, interfaceListing: ""), ["en3", "en3", "lo0", "en3", "en3"],
             "without a listing it counts on the loopback")
-        let tunnelRoute = "10.219.77.1        2:0:5e:0:53:99     UHLWIi                lo0       "
-        expectEqual(Facts.clusterSubnetRouteInterfaces(IsolationFixtures.routeTable(paired.routes + [tunnelRoute]),
+        let loopbackRoute = "10.219.77.1        0:0:5e:0:53:99     UHLWIi                lo0       "
+        expectEqual(Facts.clusterSubnetRouteInterfaces(IsolationFixtures.routeTable(paired.routes + [loopbackRoute]),
             interfaceListing: paired.interfaceListing + IsolationFixtures.tunnel("utun4", address: "10.219.77.1"))?.last, "utun4",
             "another interface's own address counts on that interface")
-        expectEqual(Facts.clusterSubnetRouteInterfaces(IsolationFixtures.routeTable(paired.routes + [tunnelRoute]),
+        expectEqual(Facts.clusterSubnetRouteInterfaces(IsolationFixtures.routeTable(paired.routes + [loopbackRoute]),
             interfaceListing: paired.interfaceListing)?.last, "lo0", "an address no interface carries stays on the loopback")
         expectEqual(Facts.defaultRouteInterfaces("default 192.0.2.1 UGScg en1\n"), nil, "rows without the header are not a table")
 
@@ -265,15 +265,15 @@ extension ClusterLinkCheck {
             }
             let vpn = IsolationFixtures.tunnel("utun4", address: "10.219.77.1")
             expectEqual(findings(interfaces: vpn), [.clusterSubnetInUse], "\(mac.name): a VPN address in the cluster subnet")
-            expectEqual(findings(routes: ["10.219.77.1        2:0:5e:0:53:99     UHLWIi                lo0       "], interfaces: vpn),
+            expectEqual(findings(routes: ["10.219.77.1        0:0:5e:0:53:99     UHLWIi                lo0       "], interfaces: vpn),
                 [.clusterSubnetInUse], "\(mac.name): the VPN address and its loopback route")
             for route in ["10.219/16          link#40            UCS                 utun4       ",
                           "10.219.77/24       link#13            UCS               bridge0      !",
-                          "10.219.77.7        2:0:5e:0:53:99     UHLWIi                en9   1200",
+                          "10.219.77.7        0:0:5e:0:53:99     UHLWIi                en9   1200",
                           "\(mac.address)     \(mac.address)     UH                  utun4       "] {
                 expectEqual(findings(routes: [route]), [.clusterSubnetInUse], "\(mac.name): a route elsewhere: \(route)")
             }
-            expectEqual(findings(routes: ["10.219.77.77       2:0:5e:0:53:99     UHLWIi                lo0       "]),
+            expectEqual(findings(routes: ["10.219.77.77       0:0:5e:0:53:99     UHLWIi                lo0       "]),
                 [.clusterSubnetInUse], "\(mac.name): a loopback route for an address the port does not carry")
         }
     }

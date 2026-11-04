@@ -192,8 +192,8 @@ extension ClusterDiagnosticsCheck {
                 + "default            192.0.2.1          UGScg                 en1\n"
                 + "10.219/16          link#19            UCS                   en3      !\n"
                 + "10.219.13.112/32   link#19            UCS                   en3      !\n"
-                + "10.219.13.112      2:0:5e:0:53:3      UHLWIi                lo0\n"
-                + "10.219.165.133     2:0:5e:0:53:33     UHLWIi                en3   1150\n"
+                + "10.219.13.112      0:0:5e:0:53:3      UHLWIi                lo0\n"
+                + "10.219.165.133     0:0:5e:0:53:33     UHLWIi                en3   1150\n"
                 + "10.219.255.255     ff:ff:ff:ff:ff:ff  UHLWbI                en3      !\n")
         case .dnsConfiguration: return .output("DNS configuration\n")
         default: return .unavailable

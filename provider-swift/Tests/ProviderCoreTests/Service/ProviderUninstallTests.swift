@@ -688,8 +688,9 @@ struct ProviderUninstallTests {
             let otherName = other == .prod ? "the production Darkbloom" : other.appDisplayName
             let dryRun = ProviderUninstall.dryRun(plan, mode: .keepModels)
             transcript("dry-run-\(this.rawValue)-beside-\(other.rawValue)-session-service", dryRun, fixture)
-            #expect(dryRun.contains("  2. Remove this install's cluster service: stop it first (pid 4242, running from this install); "
-                + "it has no login agent; the pairing and the cable port setup stay for \(otherName)"), "\(this)")
+            #expect(dryRun.contains("  2. Remove this install's cluster service: if it serves the pair, ask the pair to stop on both "
+                + "Macs, as `\(this.cliName) stop` does; then stop it (pid 4242, running from this install); it has no login agent; "
+                + "the pairing and the cable port setup stay for \(otherName)"), "\(this)")
 
             let report = await fixture.run(.keepModels, items: plan.items, pairing: fixture.pairing,
                                            operations: fixture.operations(providerRunning: false, cluster: service))
@@ -707,6 +708,69 @@ struct ProviderUninstallTests {
             #expect(summary.contains("  done     Remove this install's cluster service: stopped it (pid 4242), so this Mac's part "
                 + "ended cleanly; the pairing and the cable port setup stay for \(otherName)"), "\(this)")
         }
+    }
+
+    @Test("P2-16: a serving member's uninstall beside the other install stops the pair first, then its service")
+    func servingMemberStopsThePairFirst() async throws {
+        let noAnswer = "the other Mac's cluster service did not answer on the cable"
+        for answer in [ProviderUninstall.PairStop.stopped, .noAnswer(noAnswer)] {
+            let fixture = try Fixture.make()
+            defer { fixture.remove() }
+            _ = try installBoth(fixture)
+            let paths = ProviderUninstallPaths(home: fixture.home, environment: .dev,
+                                               commandLinkDirectory: fixture.paths.commandLink.deletingLastPathComponent())
+            let binary = BuildEnvironment.dev.installDirectory(home: fixture.home).appendingPathComponent("Darkbloom Dev.app/Contents/MacOS/darkbloom-dev")
+            let running = ProviderUninstall.RunningClusterService(pid: 4242, executable: binary.path, owner: .thisInstall, isThisCLI: true)
+            let plan = ProviderUninstall.Plan(cli: "darkbloom-dev", runningClusterService: running, services: [],
+                                              items: ProviderUninstall.inventory(paths), pairing: fixture.pairing)
+            let log = fixture.deletes
+            var operations = fixture.operations(providerRunning: false, cluster: FakeClusterService(running, log: log))
+            operations.stopPair = { log.add("ask the pair to stop"); return answer }
+            let report = await fixture.run(.keepModels, items: plan.items, pairing: fixture.pairing, operations: operations)
+            let order = log.all
+            #expect(Array(order.prefix(2)) == ["ask the pair to stop", "stop cluster service 4242"] && order.count > 2,
+                    "the pair stops, then this Mac's service, then the files: \(order)")
+            #expect(!report.failed, "\(report.steps)")
+            let summary = ProviderUninstall.summary(report, plan: plan)
+            let stays = "stopped it (pid 4242), so this Mac's part ended cleanly; the pairing and the cable port setup stay for the production Darkbloom"
+            if answer == .stopped {
+                transcript("dev-summary-member-pair-stopped", summary, fixture)
+                #expect(summary.contains("  done     Remove this install's cluster service: asked the pair to stop first, and both Macs "
+                    + "stopped serving; " + stays))
+                #expect(!summary.contains { $0.hasPrefix("The other Mac") }, "the pair still works through the other install")
+            } else {
+                transcript("dev-summary-member-no-answer", summary, fixture)
+                #expect(summary.contains("  done     Remove this install's cluster service: the other Mac (M3 Ultra, 512 GB) did not answer "
+                    + "the stop (\(noAnswer)); " + stays))
+                #expect(summary.last == "The other Mac (M3 Ultra, 512 GB) did not answer, so its part may keep restarting: run "
+                    + "`darkbloom-dev cluster stop` on it.")
+            }
+        }
+    }
+
+    @Test("P2-16: the pair is not asked to stop for the other install's service, nor on the path that asks already")
+    func pairIsAskedOnlyForThisInstallsService() async throws {
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+        _ = try installBoth(fixture)
+        let paths = ProviderUninstallPaths(home: fixture.home, environment: .dev,
+                                           commandLinkDirectory: fixture.paths.commandLink.deletingLastPathComponent())
+        let binary = BuildEnvironment.prod.installDirectory(home: fixture.home).appendingPathComponent("Darkbloom.app/Contents/MacOS/darkbloom")
+        let theirs = ProviderUninstall.RunningClusterService(pid: 777, executable: binary.path,
+                                                             owner: ProviderUninstall.owner(ofExecutable: binary.path, paths: paths))
+        var operations = fixture.operations(providerRunning: false, cluster: FakeClusterService(theirs, log: fixture.deletes))
+        let asked = Calls()
+        operations.stopPair = { asked.add("ask"); return .stopped }
+        _ = await fixture.run(.keepModels, items: ProviderUninstall.inventory(paths), pairing: fixture.pairing, operations: operations)
+        #expect(asked.all.isEmpty, "the other install's pair is left as it is")
+
+        // One install: step 2 is `cluster stop --service`, which asks the leader itself.
+        let single = try Fixture.make()
+        defer { single.remove() }
+        var alone = single.operations()
+        alone.stopPair = { asked.add("ask"); return .stopped }
+        _ = await single.run(.everything, pairing: single.pairing, operations: alone)
+        #expect(asked.all.isEmpty && single.calls.all.contains("cluster stop"))
     }
 
     @Test("B16: the other install's running cluster service is left running, and said so")

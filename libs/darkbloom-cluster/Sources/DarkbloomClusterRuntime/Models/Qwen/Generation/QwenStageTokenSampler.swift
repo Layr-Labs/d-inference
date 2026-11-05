@@ -176,6 +176,17 @@ final class QwenStageTokenSampler {
         return round.propose(logits, step: step, sharpness: sharpness)
     }
 
+    /// Proposal `step` of the current speculative round chosen elsewhere (a
+    /// drafter's argmax, `[1]` int32 graph); step 0 begins a round at output
+    /// index `nextOutputIndex`. Only recorded: a request whose transforms
+    /// depend on its history replays window column j over the proposals
+    /// before it (`verifyRound`).
+    func proposeChosen(_ token: MLXArray, step: Int) {
+        if step == 0 { round = SpeculativeRound(self) }
+        guard let round else { preconditionFailure("A speculative round's proposals begin at step 0") }
+        round.record(token, step: step)
+    }
+
     /// Graph only: the target's draw at every column of the current round's
     /// verify window `[1, W, V]`, column j at index `nextOutputIndex + j`, as
     /// `[1, W]` (once per round, after its first `W - 1` proposals).
@@ -231,6 +242,11 @@ final class QwenStageTokenSampler {
             }
             proposals.append(token)
             return token
+        }
+
+        func record(_ token: MLXArray, step: Int) {
+            precondition(step == proposals.count && owner.selected.count == base && !verified)
+            proposals.append(token.reshaped(1).asType(.int32))
         }
 
         func verify(_ window: MLXArray) -> MLXArray {

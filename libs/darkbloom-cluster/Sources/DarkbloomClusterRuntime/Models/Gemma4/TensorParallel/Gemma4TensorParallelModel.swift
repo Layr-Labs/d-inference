@@ -45,6 +45,9 @@ public final class Gemma4TensorParallelModel {
     public let loadedParameterBytes: Int
     /// The residual's and every layer's key/value dtype (the embedding's scales).
     public let activationDType: DType
+    /// The whole model's text configuration (a shard's own model is built from
+    /// its local one): what the assistant drafter is checked against.
+    let fullTextConfiguration: Gemma4TextConfiguration
     let model: Gemma4Model
     let reduction: QwenTensorParallelReduction?
 
@@ -167,15 +170,17 @@ public final class Gemma4TensorParallelModel {
             configurationSHA256: sha256(configurationData),
             loadSeconds: Double(DispatchTime.now().uptimeNanoseconds - started) / 1e9,
             loadedParameterBytes: (parameters + extra).reduce(0) { $0 + $1.nbytes },
-            activationDType: activation, model: model, reduction: reduction)
+            activationDType: activation, fullTextConfiguration: full.textConfiguration, model: model, reduction: reduction)
     }
 
     private init(role: Role, plan: Gemma4TensorParallelPlan, vocabularyRange: Range<Int>,
                  configurationSHA256: String, loadSeconds: Double, loadedParameterBytes: Int,
-                 activationDType: DType, model: Gemma4Model, reduction: QwenTensorParallelReduction?) {
+                 activationDType: DType, fullTextConfiguration: Gemma4TextConfiguration, model: Gemma4Model,
+                 reduction: QwenTensorParallelReduction?) {
         self.role = role; self.plan = plan; self.vocabularyRange = vocabularyRange
         self.configurationSHA256 = configurationSHA256; self.loadSeconds = loadSeconds
         self.loadedParameterBytes = loadedParameterBytes; self.activationDType = activationDType
+        self.fullTextConfiguration = fullTextConfiguration
         self.model = model; self.reduction = reduction
     }
 

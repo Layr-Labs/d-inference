@@ -331,7 +331,10 @@ final class CBv2OwnedRequestState {
             }
             try geometry.host?.checkStepWrites()
             let recurrentRoots = try evaluation!.evaluate(); evaluationWasStaged = true
-            guard evaluation!.isCaptured else {
+            // A geometry without recurrent layers (Gemma 4) has nothing to
+            // capture: on a paged host, whose window attends one query at a
+            // time, it is rolled back in the attention rows alone.
+            guard evaluation!.isCaptured || (geometry.recurrent.layers.isEmpty && pagedHost) else {
                 throw ProbeError("CBv2 speculative window did not capture its recurrent positions")
             }
             let cacheRoots = caches.flatMap { ($0 as! any KVCache).innerState() }
@@ -544,7 +547,7 @@ final class CBv2OwnedRequestState {
                   let total = windowTokens, windowPhase == .evaluated, (1...total).contains(kept) else {
                 throw ProbeError("CBv2 speculative window is not open or keeps an impossible prefix")
             }
-            try evaluation.commit(keepPositions: kept)
+            if evaluation.isCaptured { try evaluation.commit(keepPositions: kept) } else { try evaluation.commit() }
             self.evaluation = nil; evaluationWasStaged = false; windowTokens = nil
             if kept < total {
                 for row in rows { row?.rollback(total - kept) }

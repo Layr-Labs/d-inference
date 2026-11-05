@@ -616,10 +616,12 @@ struct QwenTensorParallelMTPSessionTests {
                     if let logits = output.logits { #expect(logits.shape == [1, 128] && all(isFinite(logits)).item(Bool.self)) }
                 }
             }
-            if !hybrid {
-                // The production owned-state window deliberately requires
-                // captured recurrent positions. An attention-only CPU model
-                // proves prefill and fail-closed behavior, not hybrid rollback.
+            if !hybrid && !gpu {
+                // The production owned-state window requires captured
+                // recurrent positions, except for an attention-only geometry
+                // on a paged host (Gemma 4's rounds). An attention-only CPU
+                // model on contiguous storage proves prefill and fail-closed
+                // behavior, not hybrid rollback.
                 try parallel(owners) { owner in
                     #expect(throws: ProbeError.self) {
                         try owner.session.beginWindow(tokens: MLXArray([Int32(7)]).reshaped([1, 1]),

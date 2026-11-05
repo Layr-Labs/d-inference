@@ -159,6 +159,8 @@ import Darwin
         aDeadPendingStartIsClearedOnlyWhileStillRecorded()
         modeChoiceOffersBothWithTheFastestMeasuredFirst()
         modeQuestionRecommendsOneForTheseMacs()
+        // R6-2 (M5 Ultra pair, DevNet branch.81): each mode's line was cut at 120 columns, and a wider window never redrew it.
+        modeLinesFitTheWindowAsItIsNow()
         modelListMarksTheCurrentModelAndMeasuredSpeeds()
         firstRunSaysWhatWillBeAsked()
         stoppedPairPreselectsTheLastModel()
@@ -4030,6 +4032,98 @@ import Darwin
         run.type("q")
         _ = run.finish()
         transcript("mode-no-recommendation", run.text, keys: run.keys)
+    }
+
+    /// R6-2 (M5 Ultra pair, DevNet branch.81): "… the other Mac 44 layers) · ser…" at 120 columns, and a window widened
+    /// to 220 kept the cut lines. Each mode's line fits the window as it is at every draw, the list redraws when the
+    /// width changes, and a line too wide loses the split, then what each Mac does, then the long words: never the
+    /// mode's name or how many requests it serves at once, never cut. Plain, the whole line.
+    static func modeLinesFitTheWindowAsItIsNow() {
+        typealias D = ClusterOnboardingDriver
+        let tp = "tensor_parallel_v1", pp = "pipeline_v1"
+        let modes: [ClusterOnboardingMode] = [
+            .init(mode: tp, split: "this Mac 50% / the other Mac 50%", measuredTokensPerSecond: 105.6, concurrentRequests: 8),
+            .init(mode: pp, split: "this Mac 1 layer / the other Mac 44 layers", measuredTokensPerSecond: 40.8, concurrentRequests: 1)]
+        let glm = ClusterOnboardingModelChoice(title: "Z.ai: GLM-5.3-Flash", lines: ["181.8 GB · tensor parallel · this Mac 50% / the other Mac 50%"],
+            blocker: nil, modelID: "glm-5.3-flash", validated: true, split: "tensor parallel", modes: modes,
+            modeAdvice: ClusterOnboardingModeAdvice(mode: tp, reason: "faster here (about 106 against 41 tokens/s, measured) and serves up to 8 requests at once"))
+        var stopped = qwenServing
+        stopped.serving = false
+        let names = ["Tensor parallel", "Pipeline"]
+        let requests = [["serves up to 8 requests at once", "serves up to 8 at once"], ["serves one request at a time", "serves one at a time"]]
+        func open(_ columns: UInt16, _ environment: [String: String]) -> TerminalRun {
+            let run = TerminalRun(operations(Recorder(), resume: stopped, pairEvents: [], pairResult: .failed([]), choices: [switchChoices[0], glm],
+                statusLines: ["Stopped; last model Qwen 3.8 27B."]), environment: environment, columns: columns)
+            expect(run.waitFor("Qwen 3.8 27B"), "\(columns) columns: the model list")
+            run.type("2")
+            expect(run.waitFor(D.modeQuestion(model: glm.title)), "\(columns) columns: the mode question")
+            return run
+        }
+        /// The list's rows as last drawn (wrap off for each draw), escapes removed: the hint, then each option's rows.
+        func lastFrame(_ run: TerminalRun) -> [String] {
+            let question = run.text.components(separatedBy: D.modeQuestion(model: glm.title)).last ?? ""
+            let frame = (question.components(separatedBy: ClusterOnboardingBrand.noWrap).last ?? "").components(separatedBy: ClusterOnboardingBrand.wrap)[0]
+            return frame.replacingOccurrences(of: "\u{1B}\\[[0-9;?]*[A-Za-z]", with: "", options: .regularExpression)
+                .components(separatedBy: "\n").filter { !$0.isEmpty }
+        }
+        func frames(_ run: TerminalRun) -> Int {
+            (run.text.components(separatedBy: D.modeQuestion(model: glm.title)).last ?? "").components(separatedBy: ClusterOnboardingBrand.noWrap).count - 1
+        }
+        func waitForDraws(_ run: TerminalRun, _ count: Int) -> Bool {
+            let deadline = Date().addingTimeInterval(5)
+            while Date() < deadline, frames(run) < count { usleep(10_000) }
+            usleep(150_000)
+            return frames(run) >= count
+        }
+        func check(_ run: TerminalRun, _ columns: Int, _ label: String) {
+            let rows = lastFrame(run)
+            let room = columns - 6
+            let expected = modes.indices.flatMap { D.modeLine(modes[$0], recommended: $0 == 0, room: room).components(separatedBy: "\n") }
+            expect(rows.count == expected.count + 1 && Array(rows.dropFirst()).map { String($0.dropFirst(4)) } == expected,
+                   "\(label): each mode's rows as worded for \(room) columns: \(rows)")
+            let wide = rows.filter { ClusterOnboardingBrand.textColumns($0) > columns - 2 }
+            expect(wide.isEmpty, "\(label): every row fits the window: \(wide)")
+            expect(!rows.dropFirst().contains { $0.contains("\u{2026}") }, "\(label): no mode row is cut: \(rows)")
+            for index in modes.indices {
+                expect(rows.contains { $0.contains(names[index]) } && rows.contains { row in requests[index].contains { row.contains($0) } },
+                       "\(label): \(names[index]) and how many it serves at once, whole: \(rows)")
+            }
+            if D.modeLine(modes[1]).count <= room {
+                expect(rows.contains { $0.hasSuffix(D.modeLine(modes[1])) }, "\(label): the whole pipeline line where it fits: \(rows)")
+            }
+        }
+        for columns: UInt16 in [220, 120, 80, 40] {
+            let run = open(columns, colourTerminal)
+            defer { run.release() }
+            expect(waitForDraws(run, 1), "\(columns) columns: the list drawn")
+            check(run, Int(columns), "\(columns) columns")
+            run.type("q")
+            _ = run.finish()
+            transcript("mode-lines-\(columns)", run.text, keys: run.keys)
+        }
+        // The window resized while the question is open: the list redraws for the new width each time.
+        let run = open(120, colourTerminal)
+        defer { run.release() }
+        expect(waitForDraws(run, 1), "opened at 120 columns: the list drawn")
+        check(run, 120, "opened at 120 columns")
+        for columns: UInt16 in [220, 80, 40, 120] {
+            let before = frames(run)
+            var window = winsize(ws_row: 50, ws_col: columns, ws_xpixel: 0, ws_ypixel: 0)
+            _ = ioctl(run.master, TIOCSWINSZ, &window)
+            expect(waitForDraws(run, before + 1), "resized to \(columns): redrawn (\(before) draws before)")
+            check(run, Int(columns), "resized to \(columns) columns")
+        }
+        run.type("2")
+        expect(run.finish() == 0, "resized: 2 takes the pipeline")
+        expect(visible(run.text).contains { $0.contains("Pipeline") && $0.contains("serves one") },
+               "resized: the chosen line stays, whole words: \(visible(run.text).suffix(4))")
+        // Plain, the whole line, however narrow the window.
+        let plain = open(40, ["NO_COLOR": "1"])
+        defer { plain.release() }
+        expect(plain.waitFor("\n  1) " + D.modeLine(modes[0], recommended: true) + "\n  2) " + D.modeLine(modes[1]) + "\n"),
+               "plain, 40 columns: the whole lines: \(plain.text.suffix(600))")
+        plain.type("q")
+        _ = plain.finish()
     }
 
     /// The list (team note: "Model selection should hide model that we don't allow them to be run there"): the model

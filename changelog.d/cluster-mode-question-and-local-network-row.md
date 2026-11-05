@@ -7,6 +7,10 @@
 - Each way also says how many requests it serves at once: "serves one request at a time" for GLM-5.3-Flash's
   pipeline, "serves up to 8 requests at once" for its tensor parallel. On a GLM-5.3-Flash pair, choose tensor
   parallel: through Darkbloom its pipeline turns every other request away as "at capacity".
+- Each way's line fits the window as it is now, and the list draws again when the window is resized. Before, a line
+  was cut at the width the window had when the question opened, such as "… the other Mac 44 layers) · ser…" at 120
+  columns, and it stayed cut after widening. A line that's too wide drops the split first, then what each Mac does.
+  The way's name and how many requests it serves at once always stay.
 - The Local Network hints on the setup screens, in `status` and `cluster status`, and in the log of the process that
   dials the other Mac name the row System Settings shows, "Darkbloom". The DevNet app's row has that name too, since
   both apps share one bundle ID. Where macOS never recorded an answer for the app and lists no row, the hints say to

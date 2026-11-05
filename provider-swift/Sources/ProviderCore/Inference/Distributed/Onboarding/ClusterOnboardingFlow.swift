@@ -408,6 +408,14 @@ public struct ClusterOnboardingMode: Codable, Sendable, Equatable {
         }
     }
 
+    /// The same, short: "serves one at a time", "serves up to 8 at once".
+    var shortRequestsWords: String? {
+        concurrentRequests.map { $0 <= 1 ? "serves one at a time" : "serves up to \($0) at once" }
+    }
+
+    /// Its speed, short: "106 tok/s", "not measured".
+    var shortSpeedWords: String { measuredTokensPerSecond.map { "\(Int($0.rounded())) tok/s" } ?? "not measured" }
+
     /// Its speed on these Macs, measured or not.
     var speedWords: String {
         measuredTokensPerSecond.map { "\(Int($0.rounded())) tok/s measured" } ?? "not measured on these Macs yet"
@@ -1399,6 +1407,10 @@ public protocol ClusterOnboardingConsole: AnyObject {
     /// else a number, enter for `selected`, or an option's first letter. Nil when the person cancelled (q or escape),
     /// the input closed, or `abandon` turned true while it waited (asked between keys).
     func choose(_ options: [String], selected: Int, abandon: () -> Bool) -> Int?
+    /// `choose` with options that fit the window: each is asked for its text again at every redraw with the room a
+    /// row has then (nil: no limit, the whole line), so a resized window redraws them for its width. A text may hold
+    /// "\n" between the rows of one option.
+    func chooseFitting(_ options: [(_ room: Int?) -> String], selected: Int, abandon: () -> Bool) -> Int?
     /// Runs `body` with the terminal in its ordinary mode, nothing live on screen (sudo asks for a password there).
     func suspended<T>(_ body: () -> T) -> T
     /// The input is closed: nothing more can be asked.
@@ -1435,6 +1447,9 @@ public extension ClusterOnboardingConsole {
     func suspended<T>(_ body: () -> T) -> T { body() }
 
     func choose(_ options: [String], selected: Int = 0) -> Int? { choose(options, selected: selected, abandon: { false }) }
+    func chooseFitting(_ options: [(_ room: Int?) -> String], selected: Int, abandon: () -> Bool) -> Int? {
+        choose(options.map { $0(nil) }, selected: selected, abandon: abandon)
+    }
 }
 
 /// How a typed answer picks one of a list's options, the same on every console: enter takes the default, a number
@@ -1527,9 +1542,44 @@ public enum ClusterOnboardingDriver {
 
     /// The mode question for a model with more than one mode, and each mode's line.
     public static func modeQuestion(model: String) -> String { "How should both Macs split \(model)?" }
-    public static func modeLine(_ mode: ClusterOnboardingMode, recommended: Bool = false) -> String {
-        menuLine(mode.label, mode.what + (mode.split.map { " (\($0))" } ?? "") + (mode.requestsWords.map { " · " + $0 } ?? "")
-            + " · " + mode.speedWords + (recommended ? " · " + ClusterOnboardingModeAdvice.marker : ""))
+    /// A mode's line in `room` columns (nil: the whole line). Too wide, it loses the least important words first, as
+    /// the recommendation's line does (R6-2, M5 Ultra pair: "… the other Mac 44 layers) · ser…" at 120 columns): the
+    /// split, then what each Mac does, then the long words; the mode's name and how many requests it serves at once
+    /// stay, on more than one row when one row cannot hold them.
+    public static func modeLine(_ mode: ClusterOnboardingMode, recommended: Bool = false, room: Int? = nil) -> String {
+        let requests = mode.requestsWords.map { " · " + $0 } ?? ""
+        let marker = recommended ? " · " + ClusterOnboardingModeAdvice.marker : ""
+        let full = menuLine(mode.label, mode.what + (mode.split.map { " (\($0))" } ?? "") + requests + " · " + mode.speedWords + marker)
+        guard let room else { return full }
+        let short = [mode.label, mode.shortRequestsWords, mode.shortSpeedWords, recommended ? "recommended" : nil].compactMap { $0 }
+        let lines = [
+            full,
+            menuLine(mode.label, mode.what + requests + " · " + mode.speedWords + marker),
+            menuLine(mode.label, String((requests + " · " + mode.speedWords + marker).dropFirst(3))),
+            menuLine(mode.label, String((requests + " · " + mode.speedWords + (recommended ? " · recommended" : "")).dropFirst(3))),
+            short.joined(separator: " · "),
+            short.filter { $0 != mode.shortSpeedWords }.joined(separator: " · "),
+        ]
+        if let fits = lines.first(where: { ClusterOnboardingBrand.textColumns($0) <= room }) { return fits }
+        return rows(short.filter { $0 != mode.shortSpeedWords }, room: room)
+    }
+
+    /// `parts` joined with " · " on as few rows of `room` columns as hold them, each part whole on its row unless it
+    /// is wider than a row by itself (then it breaks between words).
+    static func rows(_ parts: [String], room: Int) -> String {
+        var rows = [String](), row = ""
+        for part in parts {
+            let joined = row.isEmpty ? part : row + " · " + part
+            if ClusterOnboardingBrand.textColumns(joined) <= room { row = joined; continue }
+            if !row.isEmpty { rows.append(row) }
+            row = ""
+            for word in part.split(separator: " ").map(String.init) {
+                let next = row.isEmpty ? word : row + " " + word
+                if row.isEmpty || ClusterOnboardingBrand.textColumns(next) <= room { row = next } else { rows.append(row); row = word }
+            }
+        }
+        if !row.isEmpty { rows.append(row) }
+        return rows.joined(separator: "\n")
     }
 
     /// The fresh setup's opening (brief: "one screen before 1/4"): what will be asked, where it is answered, and how long
@@ -2444,8 +2494,8 @@ public enum ClusterOnboardingDriver {
             }
             let recommended = advice?.mode.flatMap { mode in modes.firstIndex { $0.mode == mode } }
             let preferred = recommended ?? modes.firstIndex { $0.mode == keep } ?? ClusterOnboardingMode.defaultIndex(modes)
-            guard let picked = console.choose(modes.indices.map { modeLine(modes[$0], recommended: $0 == recommended) },
-                                              selected: preferred) else {
+            let lines = modes.indices.map { index in { (room: Int?) in modeLine(modes[index], recommended: index == recommended, room: room) } }
+            guard let picked = console.chooseFitting(lines, selected: preferred, abandon: { false }) else {
                 console.say("Nothing changed.")
                 if pair != nil { unchangedEnding(operations, console) }
                 return 0

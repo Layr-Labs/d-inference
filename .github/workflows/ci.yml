@@ -146,6 +146,13 @@ jobs:
           python3 provider-swift/Tests/test_protocol_fixture_resources.py
           python3 scripts/test-app-attest-entitlements.py
           ./scripts/test-setup-macos-homebrew.sh
+      # SDK 27.2 back-deploys Date's >= and <=; pre-release macOS 27.2 builds
+      # lack the symbols. The release build also checks the built binaries.
+      - name: Refuse back-deployed Date comparisons in provider source
+        run: |
+          python3 scripts/test-check-date-comparisons.py
+          python3 scripts/test-check-provider-weak-imports.py
+          python3 scripts/check-date-comparisons.py
       - name: Test advisory threat review with local HTTP fixtures
         run: |
           python3 .github/scripts/test-threat-model-review.py

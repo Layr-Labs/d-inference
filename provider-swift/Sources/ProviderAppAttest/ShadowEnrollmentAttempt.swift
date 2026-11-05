@@ -17,7 +17,7 @@ public struct ShadowEnrollmentAttempt: Codable, Sendable {
         // an attempt recorded under any other protocol is never resumed.
         guard self.keyID == keyID, clientHash.count == 32,
               self.session.utf8.count == 44, Data(base64Encoded: self.session)?.count == 32,
-              createdAt <= now, now.timeIntervalSince(createdAt) <= 86400,
+              createdAt.timeIntervalSince(now) <= 0, now.timeIntervalSince(createdAt) <= 86400,
               self.protocolVersion == 3, protocolVersion == 3 else { return false }
         return true
     }

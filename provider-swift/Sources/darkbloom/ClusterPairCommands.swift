@@ -116,7 +116,7 @@ enum ClusterPairCommands {
         while true {
             let result = actions.verifyTeardown()
             if case .success(let lines) = result, ClusterPairSummary.bothFreed(lines) { return result }
-            if Date() >= deadline { return result }
+            if Date().timeIntervalSince(deadline) >= 0 { return result }
             if !said { say("  Waiting for both Macs' parts to end (\(upTo(wait.seconds)))."); said = true }
             Thread.sleep(forTimeInterval: wait.interval)
         }
@@ -273,7 +273,7 @@ enum ClusterPairCommands {
             } else if let status, Date().timeIntervalSince(saidAt) >= wait.heartbeat {
                 say("  Still waiting (\(upTo(wait.seconds)) in all): " + status); saidAt = Date()
             }
-            if Date() >= deadline { return summary }
+            if Date().timeIntervalSince(deadline) >= 0 { return summary }
             if !waiting { say("  Waiting until the pair serves (\(upTo(wait.seconds)))."); waiting = true }
             try? await Task.sleep(nanoseconds: UInt64(wait.interval * 1_000_000_000))
         }

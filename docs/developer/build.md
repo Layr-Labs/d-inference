@@ -178,6 +178,19 @@ production macOS CI base is on Xcode 27.1. Remove it when that base is on
 Xcode 27.2. Darkbloom Sandbox's `images/macos/pins.env` mirrors the
 `qualification` values.
 
+SDK 27.2 declares Foundation's `Date.>=` and `Date.<=` as back-deployed before
+macOS 27.2. Swift 6.4.2 compiles each `Date >= Date` and `Date <= Date` into a
+call through a weak import, behind an OS version check. Pre-release macOS 27.2
+builds (for example 26B5091g) pass that check but do not export the symbols, so
+the call jumps to address 0. Do not compare Dates with `>=` or `<=`. Write
+`a.timeIntervalSince(b) >= 0` for `a >= b` and `a.timeIntervalSince(b) <= 0`
+for `a <= b`; `<`, `>` and `==` are safe. Two checks keep the pattern out:
+
+| Check | Where it runs | What it reads |
+|---|---|---|
+| `scripts/check-date-comparisons.py` | `ci.yml` Release Integrity | Shipped Swift source. It finds Dates by syntax and by declared names, so it can miss a comparison |
+| `scripts/check-provider-weak-imports.py` | The release lane of `.github/actions/provider-release-build`, after the products and cluster helpers are built | The built binaries (`nm -m`). It fails on any import of the two symbols and names the calling functions (`otool -tV`) |
+
 The `scripts/provider-release-swift.sh` wrapper keeps native SwiftPM
 compilation and linking on the selected SDK. Ordinary development retains the
 package's Swift 6.3 minimum; release evidence must use the selected release

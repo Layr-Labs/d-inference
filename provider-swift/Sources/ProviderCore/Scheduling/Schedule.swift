@@ -186,14 +186,14 @@ public struct Schedule: Sendable {
     /// Check whether a specific date falls within any scheduled window.
     /// Exposed for testing with deterministic times.
     public func isActive(at date: Date, calendar: Calendar = .current) -> Bool {
-        intervals(around: date, calendar: calendar).contains { $0.start <= date && date < $0.end }
+        intervals(around: date, calendar: calendar).contains { $0.start.timeIntervalSince(date) <= 0 && date < $0.end }
     }
 
     /// How long until the union of active windows ends.
     /// Returns nil when inactive or continuously available all week.
     public func durationUntilInactive(from date: Date = Date(), calendar: Calendar = .current) -> TimeInterval? {
         guard let active = intervals(around: date, calendar: calendar).first(where: {
-            $0.start <= date && date < $0.end
+            $0.start.timeIntervalSince(date) <= 0 && date < $0.end
         }), !coversEntireWeek else { return nil }
         return active.end.timeIntervalSince(date)
     }

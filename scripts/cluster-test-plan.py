@@ -16,11 +16,14 @@ reported but not failing the workflow) and `focused` (Cluster Focused Checks,
 the model-free runner scripts).
 
 Subcommands:
-  run LANE SHARD     run the selections of one shard, each in its own process
+  run LANE SHARD     run the selections of one shard, each in its own process:
+                     the shard's groups at the same time, then the others alone
   audit              check the plan against the sources and the workflow
 """
 
 import argparse
+import importlib.util
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import os
 from pathlib import Path
@@ -34,7 +37,7 @@ import time
 ROOT = Path(__file__).resolve().parent.parent
 PACKAGE = ROOT / "libs/darkbloom-cluster"
 RUNTIME_TESTS = PACKAGE / "Tests/DarkbloomClusterRuntimeTests"
-WORKFLOW = ROOT / ".github/workflows/ci.yml"
+WORKFLOW = ROOT / ".github/workflows/provider-tests.yml"
 NESTED_SUITE = ROOT / "scripts/run-nested-suite.sh"
 MODULE = "DarkbloomClusterRuntimeTests"
 LANES = ("blocking", "nonblocking", "focused")
@@ -55,6 +58,10 @@ class Selection:
     suites: tuple | None = None
     # Focused: a runner script under libs/darkbloom-cluster/Tests.
     runner: str | None = None
+    # The shard runs its groups at the same time, each group's selections one
+    # after another in plan order; the selections with no group then run one
+    # at a time, alone on the Mac.
+    group: int | None = None
 
     @property
     def base(self):
@@ -100,10 +107,16 @@ QWEN_TP_MTP_GPU_TESTS = (
 )
 
 SELECTIONS = (
-    # Its CPU path is the longest suite, so it has a shard of its own.
-    Selection("base-batch-session", "blocking", 1, suites=("QwenTensorParallelBatchSessionTests",)),
-    Selection("base", "blocking", 2),
-    Selection("qwen-tp-batch-gpu", "blocking", 3, {"QWEN_TP_BATCH_GPU": "1"}, tests=(
+    # Blocking shard 1 runs `base`, the longest selection, alone, then the
+    # share probe alone. The probe times its share against a 1.5 s budget, so
+    # it never runs on a Mac just after the concurrent GPU groups (run
+    # 41973436945 failed it there). Shard 2 runs group 1 (the CPU
+    # batch-session suite, then the GLM paged-KV, invariance and census, TF32
+    # and Gemma selections) beside group 2 (the Qwen GPU chain and
+    # glm53-prefix-ssd).
+    Selection("base-batch-session", "blocking", 2, suites=("QwenTensorParallelBatchSessionTests",), group=1),
+    Selection("base", "blocking", 1),
+    Selection("qwen-tp-batch-gpu", "blocking", 2, {"QWEN_TP_BATCH_GPU": "1"}, tests=(
         "bothTilesGiveTheSameBytes",
         "actualHybridShardsPreserveAttentionConvAndSSMRows",
         "nineBRatioDenseShardsBatchExactly",
@@ -115,16 +128,16 @@ SELECTIONS = (
         "mergedStepTemporariesStayWithinTheirCharge",
         "mergedFramesKeepEveryBit",
         "executorRunsThePlannedMergedStep",
-    )),
-    Selection("qwen-tp-batch-gpu-paged", "blocking", 3, {"QWEN_TP_BATCH_GPU": "1", "QWEN_TP_BATCH_KV": "paged"}, tests=(
+    ), group=2),
+    Selection("qwen-tp-batch-gpu-paged", "blocking", 2, {"QWEN_TP_BATCH_GPU": "1", "QWEN_TP_BATCH_KV": "paged"}, tests=(
         "cohortSurvivorKeepsOnlyItsOwnRows",
         "routedExpertCapacityOneAndTwoKeepExactPagedLogitsAndHistory",
         "capacityOneAndTwoKeepExactPagedLogitsAndHistory",
         "pagesGrowMidDecodeWithoutChangingAByte",
         "promptLayerSubmissionKeepsEveryBit",
-    )),
-    Selection("qwen-tp-mtp-gpu", "blocking", 3, {"QWEN_TP_MTP_GPU": "1"}, tests=QWEN_TP_MTP_GPU_TESTS),
-    Selection("qwen-tp-aqv-gpu", "blocking", 3, {"QWEN_TP_AQV_GPU": "1"}, tests=(
+    ), group=2),
+    Selection("qwen-tp-mtp-gpu", "blocking", 2, {"QWEN_TP_MTP_GPU": "1"}, tests=QWEN_TP_MTP_GPU_TESTS, group=2),
+    Selection("qwen-tp-aqv-gpu", "blocking", 2, {"QWEN_TP_AQV_GPU": "1"}, tests=(
         "declinesWhatItDoesNotCover",
         "agreesWithTheDequantizedProduct",
         "everyVectorEqualsItsOwnSingleVectorCall",
@@ -134,40 +147,40 @@ SELECTIONS = (
         "siluMultiplyEqualsTheUnfusedChain",
         "sigmoidGateEqualsTheUnfusedChain",
         "cachedGatedDeltaScalesEqualFreshOnes",
-    )),
-    Selection("qwen-tp-moe-gpu", "blocking", 3, {"QWEN_TP_MOE_GPU": "1", "QWEN_TP_MOE_GPU_DIAG": "1"}, tests=(
+    ), group=2),
+    Selection("qwen-tp-moe-gpu", "blocking", 2, {"QWEN_TP_MOE_GPU": "1", "QWEN_TP_MOE_GPU_DIAG": "1"}, tests=(
         "packedSharedExpertCollectiveIsBitIdenticalOnTwoGPURanks",
         "packedRunsRepeatAndShortPromptsOnTwoGPURanks",
-    )),
-    Selection("qwen-tp-share-probe-gpu", "blocking", 3, {"QWEN_TP_SHARE_PROBE_GPU": "1"}, tests=(
+    ), group=2),
+    Selection("qwen-tp-share-probe-gpu", "blocking", 1, {"QWEN_TP_SHARE_PROBE_GPU": "1"}, tests=(
         "eachRankTimesItsShareAloneAndReleasesItsRequest",
         "aRefusalOrAFailureGivesNoProbeAndKeepsNothing",
     )),
-    Selection("glm53-prefix-ssd", "blocking", 3, {"GLM53_PREFIX_SSD": "1"}, tests=(
+    Selection("glm53-prefix-ssd", "blocking", 2, {"GLM53_PREFIX_SSD": "1"}, tests=(
         "aServingStageRestoresFromTheSSDExactly",
         "aServingStageRestoresFromABalancedRecord",
-    )),
+    ), group=2),
     Selection("glm53-paged-kv", "blocking", 2, {"GLM53_PAGED_KV": "1"}, tests=(
         "pagedRequestsDecideAndHoldWhatContiguousOnesDo",
         "pagedMediaRequestsDecideAndHoldWhatContiguousOnesDo",
-    )),
+    ), group=1),
     Selection("glm53-row-invariance", "blocking", 2, {"GLM53_ROW_INVARIANCE": "1"}, tests=(
         "roundsAreEachRequestsOwnRound",
-    )),
+    ), group=1),
     Selection("glm53-depth-invariance", "blocking", 2, {"GLM53_DEPTH_INVARIANCE": "1"}, tests=(
         "prefillIsTheSameWithAndWithoutTheSwitch",
         "unpaddedLastRoundsStayOneRowWindows",
-    )),
+    ), group=1),
     Selection("glm53-window-census", "blocking", 2, {"GLM53_WINDOW_CENSUS": "1"}, tests=(
         "sublayerCensus",
         "projectionRowCensus",
-    )),
+    ), group=1),
     Selection("tf32-off", "blocking", 2, {"MLX_ENABLE_TF32": "0"}, tests=(
         "receiverCommitPrecedesProducerPublicationAndMatchesFullCachedForward",
-    )),
+    ), group=1),
     Selection("gemma-tp-diag", "blocking", 2, {"GEMMA_TP_DIAG": "1"}, tests=(
         "diagnosticShardOperationsEqualWholeOperations",
-    )),
+    ), group=1),
     Selection("qwen-tp-real-geometry-gpu", "nonblocking", 1, {"QWEN_TP_REAL_GEOMETRY_GPU": "1"}, tests=(
         "rowsEqualTheirSoloStepsAndWindowPositionsAtRealWidths",
     )),
@@ -234,7 +247,7 @@ REQUIRES_MODEL = (
     "verifyWindowRoundsByRowCount",
 )
 REQUIRES_MODEL_SUITES = ("GLM5NextServingMetadataTests", "GLM5NextTensorParallelMediaTowerTests")
-# Runners the Cluster Metadata Checks job runs with its retained native build.
+# Runners Cluster Focused Checks runs first, with its retained native build.
 METADATA_JOB_RUNNERS = ("GPTOSSStageChecks", "NemotronStageChecks", "PrefillScheduleChecks", "StageMetadataChecks")
 
 
@@ -264,7 +277,12 @@ def swift_arguments(selection):
 
 def command(selection, output):
     if selection.runner is None:
-        return PACKAGE, [str(NESTED_SUITE), *swift_arguments(selection)]
+        filter_regex, *extra = swift_arguments(selection)
+        # The groups of a shard share one build. With --skip-build no process
+        # writes it, so they skip SwiftPM's lock on .build, which would
+        # otherwise run them one after another.
+        lock = ["--ignore-lock"] if selection.group is not None else []
+        return PACKAGE, [str(NESTED_SUITE), filter_regex, *lock, *extra]
     directory = PACKAGE / "Tests" / selection.runner
     if (directory / "run.py").is_file():
         return ROOT, ["python3", str(directory / "run.py"), "--output", str(output / selection.runner)]
@@ -287,23 +305,95 @@ def shards(lane):
     return sorted({selection.shard for selection in SELECTIONS if selection.lane == lane})
 
 
+def lock_retry():
+    """scripts/swift_test_lock_retry.py, loaded by path (scripts/ is not a package)."""
+    spec = importlib.util.spec_from_file_location("swift_test_lock_retry", ROOT / "scripts/swift_test_lock_retry.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def execute(selection, output, log=None, temporary=None):
+    """Run one selection in its own process; return (exit status, seconds).
+
+    A grouped selection (log given) runs beside another group's process. Its
+    SwiftPM can find the build database locked by that process's startup; it
+    then runs the tests and exits 1. Such a selection runs once more, but only
+    when its log proves every test passed (scripts/swift_test_lock_retry.py).
+    The first attempt's log stays beside the log, as <log>.attempt-1, and
+    prints with it.
+    """
+    cwd, argv = command(selection, output)
+    env = environment(selection)
+    if temporary is not None:
+        env["TMPDIR"] = str(temporary)
+    started = time.monotonic()
+    for attempt in (1, 2):
+        status = subprocess.run(argv, cwd=cwd, env=env, stdout=log,
+                                stderr=subprocess.STDOUT if log is not None else None).returncode
+        if status == 0 or log is None or attempt == 2:
+            break
+        log.flush()
+        path = Path(log.name)
+        text = path.read_bytes()
+        if not lock_retry().only_locked(text.decode(errors="replace")):
+            break
+        path.with_name(path.name + ".attempt-1").write_bytes(text)
+        log.seek(0)
+        log.truncate()
+    return status, time.monotonic() - started
+
+
+def run_group(number, selections, output):
+    """Run one group's selections in plan order, each logging to its own file."""
+    temporary = output / f"group-{number}-tmp"
+    temporary.mkdir()
+    results = []
+    for selection in selections:
+        path = output / f"{selection.name}.log"
+        with path.open("wb") as log:
+            status, seconds = execute(selection, output, log, temporary)
+        results.append((selection, status, seconds, path))
+    return results
+
+
 def run(lane, shard):
     selected = [selection for selection in SELECTIONS if selection.lane == lane and selection.shard == shard]
     if not selected:
         raise ValueError(f"No selections in {lane} shard {shard}")
     output = Path(tempfile.mkdtemp(prefix="cluster-runner-output-"))
-    rows = []
+    groups = {}
     for selection in selected:
-        cwd, argv = command(selection, output)
-        print(f"::group::{selection.name}", flush=True)
-        started = time.monotonic()
-        status = subprocess.run(argv, cwd=cwd, env=environment(selection)).returncode
-        seconds = time.monotonic() - started
-        print("::endgroup::", flush=True)
-        rows.append((selection.name, status, seconds))
+        if selection.group is not None:
+            groups.setdefault(selection.group, []).append(selection)
+    results = {}
+    if groups:
+        # The groups run at the same time; their logs print afterwards, whole.
+        with ThreadPoolExecutor(max_workers=len(groups)) as pool:
+            futures = [pool.submit(run_group, number, members, output) for number, members in sorted(groups.items())]
+            finished = [result for future in futures for result in future.result()]
+        for selection, status, seconds, path in finished:
+            print(f"::group::{selection.name} (group {selection.group})", flush=True)
+            first = path.with_name(path.name + ".attempt-1")
+            if first.is_file():
+                print(f"Attempt 1: every test passed, but SwiftPM's build database was locked; "
+                      f"the selection ran once more. Attempt 1's log:", flush=True)
+                sys.stdout.buffer.write(first.read_bytes())
+                print("Attempt 2's log:", flush=True)
+            sys.stdout.buffer.write(path.read_bytes())
+            sys.stdout.flush()
+            print("::endgroup::", flush=True)
+            results[selection.name] = (status, seconds)
+    for selection in selected:
+        if selection.group is None:
+            print(f"::group::{selection.name}", flush=True)
+            results[selection.name] = execute(selection, output)
+            print("::endgroup::", flush=True)
+    rows = [(selection.name, *results[selection.name]) for selection in selected]
+    for name, status, _ in rows:
         if status:
             level = "warning" if lane == "nonblocking" else "error"
-            print(f"::{level}::{selection.name} failed with exit status {status}", flush=True)
+            print(f"::{level}::{name} failed with exit status {status}", flush=True)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a") as handle:

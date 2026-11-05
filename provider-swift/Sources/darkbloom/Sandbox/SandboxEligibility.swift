@@ -220,10 +220,10 @@ extension SandboxSizingPlan {
     var jobMemory: Int64 { max(0, memoryBytes - memoryKeptBytes - providerMemoryBytes) }
     var canRunJobs: Bool { linux.slots + macOS.slots > 0 }
 
-    /// Free disk one job of `platform` needs beyond what is free now, its
-    /// images included; 0 when it fits.
+    /// Free disk one more job of `platform` needs, beside the plan's slots,
+    /// beyond what is free now; 0 when it fits.
     func diskShortfall(_ platform: Platform) -> Int64 {
-        max(0, floorBytes + platform.firstSlotBytes - freeBytes)
+        max(0, floorBytes + linux.plannedBytes + macOS.plannedBytes + platform.nextSlotBytes - freeBytes)
     }
 
     /// The CPU, memory and disk lines, in the `doctor` style. When no job
@@ -265,6 +265,18 @@ extension SandboxSizingPlan {
         return lines
     }
 
+    /// Why Finder shows more free space than the add-on's plan, when it gives
+    /// macOS no job for want of free disk space (its own `limit`), and the
+    /// free space one macOS job needs beside the plan's Linux slots.
+    var freeSpaceNote: String? {
+        guard macOS.slots == 0, macOS.limit?.contains("disk") == true else { return nil }
+        let short = diskShortfall(macOS)
+        return "Free space here is what `df -h ~` shows as Avail; Finder also counts purgeable space, which macOS "
+            + "frees only when it needs to (restarting, or removing Time Machine local snapshots: "
+            + "`tmutil listlocalsnapshots /`, frees it now)."
+            + (short > 0 ? " A macOS job needs about \(gibUp(short)) GB more." : "")
+    }
+
     /// The plan's message, how much disk to free for one job of each
     /// platform, and whether the owner's counts are why.
     private var shortfall: [String] {
@@ -293,6 +305,8 @@ extension SandboxSizingPlan.Platform {
     /// The first slot brings the platform's images.
     var firstSlotBytes: Int64 { imagesBytes + slotBytes }
     var nextSlotBytes: Int64 { slots == 0 ? firstSlotBytes : slotBytes }
+    /// Disk its planned slots take: the images with the first, one job's disk each.
+    var plannedBytes: Int64 { slots == 0 ? 0 : imagesBytes + Int64(slots) * slotBytes }
 }
 
 private func gb(_ bytes: Int64) -> Int64 { bytes / SandboxEligibility.gib }

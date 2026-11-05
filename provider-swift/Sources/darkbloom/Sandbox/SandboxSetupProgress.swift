@@ -454,11 +454,12 @@ enum SandboxTerminal {
         fflush(stdout)
     }
 
-    /// Asks a yes/no question; anything but y or yes is no.
-    static func confirm(_ question: String, readInput: () -> String? = { readLine() },
+    /// Asks a yes/no question; anything but y or yes is no. With
+    /// `defaultYes`, an empty answer is yes too.
+    static func confirm(_ question: String, defaultYes: Bool = false, readInput: () -> String? = { readLine() },
                         emit: (String) -> Void = { write($0) }) -> Bool {
-        emit("\(question) [y/N]: ")
+        emit("\(question) \(defaultYes ? "[Y/n]" : "[y/N]"): ")
         let answer = readInput()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-        return ["y", "yes"].contains(answer)
+        return ["y", "yes"].contains(answer) || (defaultYes && answer.isEmpty)
     }
 }

@@ -15,7 +15,9 @@ extension Sandbox {
             it in your browser.
 
             Running it again reports the current state, continues an unfinished setup, repairs or updates \
-            the add-on, or applies new slot counts.
+            the add-on, or applies new slot counts. On a Mac that is set up, it asks the installer's plan \
+            again and offers the add-on's slot counts when they differ from the installed ones; with --yes \
+            or without a terminal it applies them only when they add slots and remove none.
             """)
 
         @Flag(name: .shortAndLong, help: "Don't ask for confirmation.")
@@ -77,7 +79,8 @@ extension Sandbox {
 
 /// What `setup` does, given the add-on's current answer.
 enum SandboxSetupPlan: Equatable, Sendable {
-    /// Set up already; report it and change nothing.
+    /// Set up already; report it, then offer the add-on's plan when its slot
+    /// counts differ.
     case alreadySetUp(SandboxAddonStatus)
     /// Run the installer over the existing install, for this reason.
     case rerun(String)
@@ -137,21 +140,92 @@ struct SandboxSetupFlow {
         let changingSlots = options.linuxSlots != nil || options.macOSSlots != nil
         switch SandboxSetupPlan.decide(existing, changingSlots: changingSlots) {
         case .alreadySetUp(let status):
-            print("Darkbloom Sandbox is already set up on this Mac.")
-            print("")
-            SandboxStatusView.lines(status, color: color).forEach { print($0) }
-            print("")
-            print("To change how many jobs run at a time: \(cli) sandbox setup --linux-slots <n> --macos-slots <n>")
+            try await reportAndRecheckSizing(status)
         case .rerun(let reason):
             print(reason)
-            try await withInstaller { try await install($0, script: $1) }
+            try await withInstaller { try await install($0, script: $1, options: options) }
         case .fresh:
             let eligibility = try await checkMac()
             try await withInstaller { installer, script in
                 guard try await sizeAndConfirm(eligibility, installer: installer, script: script) else { return }
-                try await install(installer, script: script)
+                try await install(installer, script: script, options: options)
             }
         }
+    }
+
+    // MARK: - Already set up
+
+    private static let changeCountsHint = "To change how many jobs run at a time: \(Sandbox.cli) sandbox setup "
+        + "--linux-slots <n> --macos-slots <n>"
+
+    /// Reports the install, then asks the installer's `--plan` how many jobs
+    /// this Mac fits now and offers what differs. Changes nothing unless the
+    /// owner agrees, or, without a prompt, the plan only adds slots. Skipped
+    /// while jobs run: the installer changes slots only while none does, and
+    /// their disk would shrink the plan.
+    private func reportAndRecheckSizing(_ status: SandboxAddonStatus) async throws {
+        print("Darkbloom Sandbox is already set up on this Mac.")
+        print("")
+        SandboxStatusView.lines(status, color: color).forEach { print($0) }
+        print("")
+        guard status.jobsRunning == 0 else {
+            print(Self.changeCountsHint)
+            print("Jobs are running, so setup did not check whether this Mac now fits other slot counts. Run "
+                + "`\(cli) sandbox setup` again once they finish; `\(cli) sandbox pause` keeps new ones from starting.")
+            return
+        }
+        try await withInstaller(ifUnavailable: { failure in
+            print(Self.changeCountsHint)
+            print("Could not check whether this Mac now fits other slot counts: \(failure)")
+        }) { installer, script in
+            let plan = try await withTransientNote("Checking how many jobs this Mac fits now…") {
+                try await requestAddonPlan(installer, script: script)
+            }
+            // The same counts (or no plan to compare) keep today's report exactly.
+            guard let plan, let change = SandboxSlotChange(installed: status, plan: plan) else {
+                print(Self.changeCountsHint)
+                return
+            }
+            guard offer(change, plan: plan) else { return }
+            print("")
+            try await install(installer, script: script, options: change.applying(to: options))
+        }
+    }
+
+    /// Shows the add-on's plan against the installed counts; true to apply it.
+    /// With a prompt the default is yes. Without one (`--yes`, or no
+    /// terminal) it applies only a change that adds slots and removes none.
+    private func offer(_ change: SandboxSlotChange, plan: SandboxSizingPlan) -> Bool {
+        print("The add-on's plan for this Mac now:")
+        printChecks(plan.checks)
+        if let note = plan.freeSpaceNote { print("  " + note) }
+        print("")
+        guard !confirmed, interactiveInput else {
+            print(change.headline)
+            guard change.onlyAdds else {
+                print("Not applied: it removes slots, and without a prompt setup applies only a plan that adds "
+                    + "slots. To apply it: \(change.command)")
+                return false
+            }
+            print("Applying it: it only adds slots.")
+            return true
+        }
+        // The installer stops the agent only between jobs: it refuses (exit 4), it does not wait.
+        guard SandboxTerminal.confirm(change.headline + " If a job is running, the installer refuses and changes "
+            + "nothing. Apply?", defaultYes: true) else {
+            print("Nothing changed. To apply it later: \(change.command)")
+            return false
+        }
+        return true
+    }
+
+    /// Runs `body` with `note` on the running line of a terminal, erased
+    /// afterwards; elsewhere prints nothing.
+    private func withTransientNote<T>(_ note: String, _ body: () async throws -> T) async rethrows -> T {
+        guard terminal else { return try await body() }
+        SandboxTerminal.write(note)
+        defer { SandboxTerminal.write("\r\u{1B}[2K") }
+        return try await body()
     }
 
     // MARK: - Check and confirm
@@ -176,8 +250,9 @@ struct SandboxSetupFlow {
     /// trade-off, then asks. False when the owner declines; throws when no job
     /// fits.
     private func sizeAndConfirm(_ eligibility: SandboxEligibility, installer: URL, script: Data) async throws -> Bool {
+        let reportedPlan = try await requestAddonPlan(installer, script: script)
         let plan: SandboxSizingPlan
-        if let reportedPlan = try await requestAddonPlan(installer, script: script) {
+        if let reportedPlan {
             plan = reportedPlan
         } else {
             printChecks([SandboxEligibility.Check(
@@ -190,6 +265,8 @@ struct SandboxSetupFlow {
         let verdict = plan.verdict
         print(DoctorTerminalStyle.verdict(verdict[0], level: plan.canRunJobs ? .pass : .fail, color: color))
         verdict.dropFirst().forEach { print($0) }
+        // The add-on's plan only: the fallback estimate's report stays as it was.
+        if let note = reportedPlan?.freeSpaceNote { print("  " + note) }
         guard plan.canRunJobs else { throw ExitCode.failure }
         print("")
         Self.tradeOff.forEach { print($0) }
@@ -251,8 +328,10 @@ struct SandboxSetupFlow {
     // MARK: - Install
 
     /// Downloads the installer into a new owner-only directory for `body`,
-    /// then removes it.
-    private func withInstaller(_ body: (_ installer: URL, _ script: Data) async throws -> Void) async throws {
+    /// then removes it. A failed download goes to `ifUnavailable` when given,
+    /// else fails setup.
+    private func withInstaller(ifUnavailable: ((SandboxInstaller.Failure) -> Void)? = nil,
+                               _ body: (_ installer: URL, _ script: Data) async throws -> Void) async throws {
         guard let url = SandboxInstaller.scriptURL(server: options.server) else {
             throw ValidationError("--server must be an https URL, such as \(Sandbox.defaultServer)")
         }
@@ -260,6 +339,7 @@ struct SandboxSetupFlow {
         do {
             script = try await SandboxInstaller.download(url)
         } catch let failure as SandboxInstaller.Failure {
+            if let ifUnavailable { return ifUnavailable(failure) }
             printError("\(failure) Check this Mac's connection, then run `\(cli) sandbox setup` again.")
             throw ExitCode.failure
         }
@@ -268,7 +348,7 @@ struct SandboxSetupFlow {
         try await body(installer, script)
     }
 
-    private func install(_ installer: URL, script: Data) async throws {
+    private func install(_ installer: URL, script: Data, options: SandboxSetupOptions) async throws {
         let jsonProgress = SandboxInstaller.supportsJSONProgress(script)
         let arguments = [installer.path] + SandboxInstaller.arguments(options, jsonProgress: jsonProgress)
         let directory = installer.deletingLastPathComponent()
@@ -310,8 +390,10 @@ struct SandboxSetupFlow {
         case 2: return "This Mac cannot host Darkbloom Sandbox as it is; see why above."
         case 3: return "This Mac was not enrolled: the code was denied or expired, or the waitlist request ended. "
             + "Run \(rerun) to start again."
-        case 4: return "Jobs are running on this Mac. Run \(rerun) again once they finish; "
-            + "`\(Sandbox.cli) sandbox pause` keeps new ones from starting."
+        // The installer refuses rather than waits; its --force would stop the jobs unpaid.
+        case 4: return "A job is running on this Mac, so the installer changed nothing. Run \(rerun) again when it "
+            + "finishes; `\(Sandbox.cli) sandbox pause` keeps new jobs from starting. Setup never passes the "
+            + "installer's --force: it would stop running jobs, and stopped jobs aren't paid."
         default: return "Setup did not finish. When the problem above is fixed, run \(rerun) again; it is safe to rerun."
         }
     }

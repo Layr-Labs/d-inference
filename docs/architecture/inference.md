@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-04
+> Last updated: 2026-11-05
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -68,26 +68,27 @@ retirement: `EngineV2Bridge.shutdown` cancelled a pump while the queue
 published that request's peer loss. Lease events, the owner's invalidation,
 submissions and shutdown keep their synchronous queue order.
 
-A reservation runs on that queue and waits there until both ranks answer at
-their next step boundary, up to the lane admission wait (30 s) per
-reservation, one reservation after another. So nothing that only reads the
-engine or stops a request waits for the queue. `cancel` hops onto it without
-waiting: the stop runs in queue order, so a request whose reservation is in
-flight is stopped as soon as it is admitted. A submission whose caller went
-away while it waited for the queue (`DistributedAdmissionCancellation`) is
-refused before it asks the ranks. The first-token and request deadline timers
-hop the same way. `capacity()` called off the queue answers at once from the
-snapshot the queue publishes after every change, with the owner's readiness
-read live, and queues one refresh that runs the readiness and accounting
-checks once the queue is free. A pair measures no prefill rate, so the bridge
-submits its requests without a projected admission. It awaits that admission
-(`submitAwaitingQueue`) instead of waiting for the queue on its actor, so the
-actor stays free for cancels and capacity reads. Before, the bridge actor
-waited for the whole reservation, and with it the heartbeat's capacity,
-cancellation and every other request's submission; on DevNet's pair-2 a cancel
-during a 15K-token prompt landed 20–29 s late. The reservation itself still
-holds the queue, and with it token delivery to the other lanes, until it
-returns. Sources:
+A reservation waits until both ranks answer at their next step boundary, up to
+the lane admission wait (30 s), one reservation after another on the engine's
+`admissionQueue`, never on the engine queue. Rank 0 waits a bounded time each
+step for the owner's answer to every running lane's token, and that answer is
+given on the engine queue; a reservation that held the queue stalled every
+lane, and the step at which the reservation itself is answered. A submission
+holds a lane from the moment it is accepted (`holdLane`, the engine's
+`admitting` count): the lane check counts it, and `capacity()` reports it as a
+waiting request, so the heartbeat's `num_waiting` covers requests the pair is
+reserving or about to reserve. `cancel` hops onto the queue without waiting; a
+request whose reservation is in flight, or still waiting, is stopped as soon as
+it is admitted. A submission whose caller went away while it waited
+(`DistributedAdmissionCancellation`) is refused before it asks the ranks, and a
+shutdown waits for the reservation in flight and stops its request. The
+first-token and request deadline timers hop the same way. `capacity()` called
+off the queue answers at once from the snapshot the queue publishes after every
+change, with the owner's readiness read live, and queues one refresh that runs
+the readiness and accounting checks once the queue is free. A pair measures no
+prefill rate, so the bridge submits its requests without a projected admission
+and awaits that admission (`submitAwaitingQueue`), so its actor stays free for
+cancels and capacity reads. Sources:
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine.swift`
 (`onQueueWithoutWaiting`, `cancel`),
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine+Capacity.swift`,

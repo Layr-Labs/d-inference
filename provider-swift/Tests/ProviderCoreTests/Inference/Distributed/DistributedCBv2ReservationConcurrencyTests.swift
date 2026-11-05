@@ -90,6 +90,27 @@ struct DistributedCBv2ReservationConcurrencyTests {
         await finish(owner, engine, [first, try #require(second.value)])
     }
 
+    /// A shutdown begun during a reservation stops that request once the ranks
+    /// answer, and releases the owner only after it retired.
+    @Test func aShutdownWaitsForTheRequestBeingReserved() async throws {
+        let (owner, engine, step, first, second) = try await runningLaneAndAReservation()
+        let shutdown = Task { await engine.shutdown() }
+        await until { owner.lease(0).cancelCount == 1 }
+        owner.lease(0).acknowledge()
+        _ = await distributedCollect(first)
+        step.finish()
+        await until { second.value != nil }
+        await until { owner.lease(1).cancelCount == 1 }
+        #expect(owner.lease(1).cancelCount == 1, "the request reserved during the shutdown was not stopped")
+        #expect(owner.lease(1).startCount == 0, "its prompt started")
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(owner.shutdownCount == 0, "the owner was released before the reserved request retired")
+        owner.lease(1).acknowledge()
+        #expect(distributedTerminal(await distributedCollect(try #require(second.value)))?.0 == .cancelled)
+        await shutdown.value
+        #expect(owner.shutdownCount == 1)
+    }
+
     @Test func theHeartbeatCountsARequestBeingAdmitted() async throws {
         let owner = DistributedTestOwner()
         owner.lanes = 8

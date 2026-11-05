@@ -77,14 +77,11 @@ jobs:
       - name: Select today's .git cache
         id: git-day
         run: |
-          fail=0
-          day=$(date -u +%F) || { echo "::error title=failed::day=$(date -u +%F)"; fail=1; }
-          echo "day=$day" >> "$GITHUB_OUTPUT" || { echo "::error title=failed::echo "day=$day" >> "$GITHUB_OUTPUT""; fail=1; }
-          echo "month=${day%-*}" >> "$GITHUB_OUTPUT" || { echo "::error title=failed::echo "month=${day%-*}" >> "$GITHUB_OUTPUT""; fail=1; }
-          echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)" || { echo "::error title=failed::echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)""; fail=1; }
-          exit "$fail"
+          day=$(date -u +%F)
+          echo "day=$day" >> "$GITHUB_OUTPUT"
+          echo "month=${day%-*}" >> "$GITHUB_OUTPUT"
+          echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
       - name: Restore the newest saved .git
-        if: ${{ !cancelled() }}
         id: git-cache
         uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
@@ -94,15 +91,12 @@ jobs:
             git-v1-${{ runner.os }}-${{ steps.git-day.outputs.month }}-
             git-v1-${{ runner.os }}-
       - name: Discard a damaged cached .git
-        if: ${{ !cancelled() }}
         run: |
-          fail=0
-          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null && || { echo "::error title=failed::if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&"; fail=1; }
-          git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then || { echo "::error title=failed::git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then"; fail=1; }
-          echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it." || { echo "::error title=failed::echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it.""; fail=1; }
-          rm -rf .git || { echo "::error title=failed::rm -rf .git"; fail=1; }
-          fi || { echo "::error title=failed::fi"; fail=1; }
-          exit "$fail"
+          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+              git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
+            echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
+            rm -rf .git
+          fi
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false # Keeps the job token out of the saved .git/config.

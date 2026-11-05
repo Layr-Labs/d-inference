@@ -67,7 +67,7 @@ struct Gemma4TensorParallelRequestLoop {
         if let buildsAhead { return buildsAhead }
         return choice.gathersRow || choice.sampler?.wire.capturedLogprobs == nil
     }
-    /// A test's own order (nil: `pipelines`'s).
+    /// Tests only: a test's own order (nil: `pipelines`'s). The product never sets it.
     @TaskLocal static var buildsAhead: Bool?
 
     func run(channel: ClusterCommittedTokenChannel, check: () throws -> Void) throws -> Outcome {

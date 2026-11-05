@@ -1213,7 +1213,7 @@ public enum ClusterPlacementPlanner {
                 let (rate, known) = rates(device, regime)
                 measured = measured && known
                 prefill.append(range.cost / total / rate.prefillTokensPerSecond)
-                decode.append(range.cost / total / rate.decodeTokensPerSecond)
+                decode.append(range.cost / total * wholeStepSeconds(device, regime))
             }
             let chunk = min(layout.maximumChunkTokens, prompt)
             let chunks = (prompt + chunk - 1) / chunk
@@ -1293,6 +1293,28 @@ public enum ClusterPlacementPlanner {
             return .init(regime: regime, regimeMeasuredOnEveryDevice: measured, firstTokenSeconds: first,
                 prefillTokensPerSecond: Double(prompt) / first, decodeTokensPerSecond: 1 / step,
                 requestSeconds: first + handoff + Double(max(0, outputs - 1)) * step)
+        }
+
+        /// A device's whole-model decode step in this regime. Where that rate is
+        /// only an estimate (`ClusterDeviceSpeed.wholeModelEstimated`) and a
+        /// share of this model was measured on the Mac, the whole step is at
+        /// least that share's measured step plus the rest of the weights at its
+        /// index's rate (`ClusterHardwarePrior.weightSeconds`, the part a share
+        /// divides): a larger share never steps faster. The index's estimate
+        /// is the weights' read time alone, with no per-token floor; on two
+        /// M5 Ultras it predicted Gemma 4 26B's whole step at 5.5 ms beside a
+        /// measured 7 ms half step, so a pipeline (one whole step across both
+        /// Macs) at about 170 tok/s against 107 in tensor parallel, where 60
+        /// and 105 were served.
+        func wholeStepSeconds(_ device: ClusterPlacementDevice, _ regime: ClusterPlacementPolicy.Regime) -> Double {
+            let rate = rates(device, regime).0, estimated = 1 / rate.decodeTokensPerSecond
+            guard device.speed.wholeModelEstimated == true else { return estimated }
+            var shares = (rate.tensorShareRates ?? []).map { (Double($0.sharePerMille) / 1000, 1 / $0.decodeTokensPerSecond) }
+            if let half = rate.tensorShardDecodeTokensPerSecond { shares.append((0.5, 1 / half)) }
+            let rest = (ClusterHardwarePrior.weightSeconds(profile: device.profile, layout: layout) ?? 0)
+                * ClusterHardwarePrior.dividedDecodeFraction(layout)
+            let fromShares = shares.filter { $0.0 > 0 && $0.0 <= 1 && $0.1.isFinite }.map { $0.1 + rest * (1 - $0.0) }.max() ?? 0
+            return max(estimated, fromShares)
         }
 
         /// One device's decode split in this regime: its shard probes, else its

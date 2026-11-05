@@ -4851,9 +4851,16 @@ stops, cancellations and retirements.
   the host reads step k, answers the owner and commits, so the GPU and the
   collectives run while the host works. On two M5 Ultras GLM's pipelined step
   took 12.0 ms against 13.4 ms read-then-build; Gemma's pair has not been
-  measured. The tokens are the read-then-build path's. A rank's own stop and a
-  refused page growth (which keeps the margin's rows) ride one step later, as
-  in GLM's loop. Sampled requests are built ahead too: rank 0's draw is
+  measured. The tokens are the read-then-build path's, with one exception, as
+  in GLM's loop: a rank's own stop (cancel, deadline, memory) and a refused page
+  growth ride one step later. So when rank 1 stops on its own or its pages run
+  out, rank 0 may stream one token that the final count drops (the request then
+  errors on both ranks: rank 0 refuses the peer's stop, and the worker session
+  refuses a length finish short of the output count). And a refused growth, which
+  still keeps the margin's rows, ends the request one token later than before.
+  Never a token past a stop token, a length end or the owner's stop. Sampled
+  requests, and greedy ones with logit bias or penalties (they draw through the
+  sampler), are built ahead too: rank 0's draw is
   `QwenStageTokenSampler.sample`, the product's `CBv2DefaultSampler`, which
   advances its penalty counts with each drawn token on the device and its keyed
   step index with each draw, so a draw built before the previous token is read

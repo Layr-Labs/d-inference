@@ -189,6 +189,18 @@ func checkOneTokenLoop() {
               && (label.hasSuffix("local stop") || a.published == b.published),
               "one-token \(label): \(a.tokens)/\(a.finish) differs from read-then-build \(b.tokens)/\(b.finish)")
     }
+    // Rank 0's stream against the agreed result. It streams exactly the result,
+    // except when built ahead and rank 1 stops on its own or its pages run out:
+    // rank 1's flag rides one step later, so rank 0 streams exactly one token the
+    // final count drops (the request errors on both ranks then). Never a token
+    // past a stop token, and never two extra.
+    for (label, run) in byCase {
+        let late = label.hasPrefix("pipelined ") && (label.hasSuffix("rank 1 local stop") || label.hasSuffix("rank 1 pages refused"))
+        check(run.published.count == run.tokens.count + (late ? 1 : 0) && Array(run.published.prefix(run.tokens.count)) == run.tokens,
+              "one-token \(label): rank 0 streamed \(run.published) against the result \(run.tokens)")
+        check(run.published.firstIndex(of: OneTokenRank.stopToken).map { $0 == run.published.count - 1 } ?? true,
+              "one-token \(label): rank 0 streamed past a stop token: \(run.published)")
+    }
     // The read-then-build order (dev's Gemma loop) never builds ahead.
     if let plain = byCase["read-then-build stop token"] { check(!buildsAhead(plain.events), "read-then-build order is detected") }
     let stopToken = byCase["pipelined stop token"]

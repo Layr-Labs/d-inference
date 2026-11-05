@@ -4,6 +4,10 @@
   that plan. Before, with nothing serving, GLM-5.3-Flash's pipeline was offered as "this Mac 1 layer / the other Mac
   44 layers" and loaded as 44 / 1. A way chosen on the Mac that joined now loads too; before, the leading Mac loaded
   its own first choice.
+- Two Macs of the same hardware (chip, GPU cores and macOS build) are planned at the same speed until the pair has
+  served the model. Before, each Mac's own one-second speed sample decided, and a sample 0.1% slower (taken just after
+  another app's pair stopped) offered GLM-5.3-Flash's pipeline as "1 layer / 44 layers" on two M5 Ultras, where 24 /
+  21 is the split once the pair has served.
 - Each way also says how many requests it serves at once: "serves one request at a time" for GLM-5.3-Flash's
   pipeline, "serves up to 8 requests at once" for its tensor parallel. On a GLM-5.3-Flash pair, choose tensor
   parallel: through Darkbloom its pipeline turns every other request away as "at capacity".

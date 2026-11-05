@@ -1059,7 +1059,8 @@ are not successful physical runs.
 
 ## SDK 27 Release Qualification
 
-Release SDK qualification uses SDK 27 / Swift 6.4 and runs independently of
+Release SDK qualification uses SDK 27.2 / Swift 6.4.2 (Xcode 27.2, the
+[`release` toolchain](build.md#sdk-27-release-builds-and-caches)) and runs independently of
 optimized compilation. The `qualify-sdk-shard` jobs run the provider suite in
 five shards on separate Macs, with the shard plan of CI
 (`scripts/provider-test-shards.py`). Shard 2 also runs Prompt Parity, and the
@@ -1068,6 +1069,20 @@ job runs after every shard passes. It audits the executed counts of each shard
 against the full suite list. Signing requires `qualify-sdk` and optimized
 compilation. GPU suites retain serial execution and exclusive-process isolation.
 A cache hit never skips a test.
+
+The SDK 27.2 Date checks run without a Mac. The `Provider Tests` gate and
+Release Integrity run, from the repository root:
+
+```bash
+python3 scripts/test-check-date-comparisons.py
+python3 scripts/test-check-provider-weak-imports.py
+python3 scripts/check-date-comparisons.py
+```
+
+The binary tests use `nm -m` and `otool -tV` lines from DevNet build
+`0.10.6-dev.branch.87`, which crashed on macOS 27.2 26B5091g. The release lane
+runs `scripts/check-provider-weak-imports.py` on the built binaries
+([build guide](build.md#sdk-27-release-builds-and-caches)).
 
 `Qwen4StandaloneAdmissionTests` uses scripted memory through the real standalone
 server to cover low-headroom refusal before loading, pending-load cleanup and

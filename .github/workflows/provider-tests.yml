@@ -774,6 +774,16 @@ jobs:
           python3 scripts/test-ci-tested-tree.py
           python3 scripts/test-darkbloom-route.py
           python3 scripts/test-provider-ci-workflow.py
+      # dev has no Release Integrity, so the gate runs the Date comparison
+      # check too. SDK 27.2 back-deploys Date's >= and <=; pre-release macOS
+      # 27.2 builds lack the symbols. The release build also checks the built
+      # binaries (.github/actions/provider-release-build).
+      - name: Refuse back-deployed Date comparisons in provider source
+        if: ${{ !cancelled() }}
+        run: |
+          python3 scripts/test-check-date-comparisons.py
+          python3 scripts/test-check-provider-weak-imports.py
+          python3 scripts/check-date-comparisons.py
       # The record a later run of the same change finds (scripts/ci-tested-tree.py):
       # the tree, the event's base and head, and the components that ran. It
       # counts only once the whole run succeeded. A run that tested nothing

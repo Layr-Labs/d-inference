@@ -266,6 +266,11 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                         "python3 scripts/test-provider-test-shards.py", "python3 scripts/test-ci-component-paths.py",
                         "python3 scripts/test-ci-tested-tree.py"):
             self.assertIn(command, commands)
+        # The source check for back-deployed Date >= / <= is dev's only
+        # pull-request guard against them; it also runs on every run.
+        dates = steps["Refuse back-deployed Date comparisons in provider source"]
+        self.assertEqual(field(dates, "if"), "${{ !cancelled() }}")
+        self.assertIn("python3 scripts/check-date-comparisons.py", run_command(dates).splitlines())
         # The record names its change through the lookup's own code, and only
         # a run that tested something records.
         record = steps["Name the record of the change these tests passed"]

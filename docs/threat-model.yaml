@@ -38,6 +38,14 @@ methodology: STRIDE
 # Existing proof verification, native-call admission, expiry and revocation remain
 # authoritative; this availability change does not revalidate older threat entries.
 # See docs/architecture/security/attestation.md#provider-connection-control.
+# SDK 27.2 Date comparison review 2026-11-04: the App Attest key-generation
+# budget, enrollment resume, stall restart and key history checks compare Dates
+# with timeIntervalSince(_:), not >= or <=. SDK 27.2 back-deploys those two
+# operators as weak imports that pre-release macOS 27.2 lacks; a call through
+# one crashed the provider in a loop (A-018 availability). Thresholds and results
+# are unchanged. Release builds refuse a binary that imports either symbol
+# (scripts/check-provider-weak-imports.py). This availability change does not
+# revalidate older threat entries.
 # Current backend behavior belongs to the platform's latest default branch.
 # Immutable links preserve reviewed evidence, not current source or deployment.
 # Provider add-on hold reviewed 2026-10-26: TB-012, A-018 and T-059 describe the

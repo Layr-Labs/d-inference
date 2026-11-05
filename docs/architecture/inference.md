@@ -403,6 +403,11 @@ over the cable and ends with the same ✓/✗ block, bounded like the leader's s
   width (`ClusterOnboardingDriver.followWaitingLine`). The terminal reads that width at each redraw and climbs back
   over the rows a reflowed window shows (`ClusterOnboardingTerminal.climb`), so a redraw never leaves a wrapped copy
   behind.
+- **The mode question's lines.** Each mode's line is asked for its text again at every draw, for the room a row has
+  then (`ClusterOnboardingDriver.modeLine(_:recommended:room:)`, `ClusterOnboardingTerminal.chooseFitting`), and the
+  list draws again within about 100 ms of a resize. Too wide, a line drops the split, then what each Mac does, then
+  the long words. The mode's name and how many requests it serves at once are never cut; at 40 columns they take two
+  rows. Plain output prints each whole line.
 - **How the wait ends.** A refusal ends the wait at once with the leader's ✗ (`followRefused`; different builds:
   `differentBuildsLines`). Running out of time ends it with a ✗ and next steps (`notStartedReason`,
   `notStartedLines`).

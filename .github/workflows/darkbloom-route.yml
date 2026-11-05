@@ -8,8 +8,8 @@ name: Darkbloom Route
 # are kept in the caller's order while they fit, and the others keep their
 # fallback without asking. A macOS lane can name a size. Sizes are sent only
 # when the DARKBLOOM_JOB_SHAPES variable is exactly `on`; otherwise the request
-# is the one without sizes, and a lane that needs its size keeps its fallback
-# without asking.
+# is the one without sizes, and a `required` lane keeps its fallback without
+# asking.
 on:
   workflow_call:
     inputs:
@@ -95,7 +95,7 @@ jobs:
             configured=$(jq -c --arg lane "$lane" --arg profile "$profile" --arg fallback "$fallback" \
               --argjson count "$count" --arg shape "$shape" --arg required "$required" \
               '. + [{$lane, $profile, $fallback, $count,
-                     shape: (if $shape == "" then null else $shape end), required: ($required != "")}]' \
+                     shape: (if $shape == "" then null else $shape end), required: ($required != ""), held: false}]' \
               <<<"$configured")
           done <<<"${LANES:-}"
           [ "$configured" != '[]' ] || configuration_error "no lanes are configured"

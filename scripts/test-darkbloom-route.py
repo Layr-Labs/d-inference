@@ -69,9 +69,15 @@ BUILT = ("${{{{ (needs.components.outputs.{0} == 'true' || (github.event_name ==
 VALID_SIZES = {"4x16", "4x24", "8x16", "12x32"}
 
 
+def evaluate_counts(text, outcome):
+    """Evaluate each `${{ condition && N || 0 }}` count as true (outcome "1") or false."""
+    return re.sub(r"\$\{\{ .+? && (\d+) \|\| 0 \}\}",
+                  lambda match: match.group(1) if outcome == "1" else "0", text)
+
+
 def lane_jobs(count):
     """The jobs a `${{ condition && N || 0 }}` count asks for when its condition holds."""
-    return int(re.search(r"&& (\d+) \|\| 0 \}\}$", count).group(1))
+    return int(evaluate_counts(count, "1"))
 
 
 def requested(component, jobs=1):
@@ -224,12 +230,6 @@ def route_lanes_text(lines):
         lane, profile, fallback, count, size, required = LANE_LINE.fullmatch(line).groups()
         lanes[lane] = (profile, fallback, count, size, required)
     return lanes
-
-
-def evaluate_counts(text, outcome):
-    """Evaluate each `${{ condition && N || 0 }}` count as true (outcome "1") or false."""
-    return re.sub(r"\$\{\{ .+? && (\d+) \|\| 0 \}\}",
-                  lambda match: match.group(1) if outcome == "1" else "0", text)
 
 
 def plan_count(condition, jobs):

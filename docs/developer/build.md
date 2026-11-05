@@ -328,8 +328,8 @@ Each lane builds its debug test products once, on a large 12 vCPU runner, and
 its test jobs run them with `swift test --skip-build`. No test job compiles the
 provider or the cluster packages. Every job below reads its runner from the
 route ([CI Runner Routing](#ci-runner-routing)). Its fallback is
-`blacksmith-12vcpu-macos-27`. A 12x32 job uses its fallback at once while job
-sizes are off ([Job sizes](#job-sizes)).
+`blacksmith-12vcpu-macos-27`. While job sizes are off, a 12x32 job keeps its
+fallback without asking ([Job sizes](#job-sizes)).
 
 | Job | Runner | Needs | Does |
 |---|---|---|---|
@@ -517,8 +517,8 @@ fallback. The plane names its reason, for example `shape_not_signed` (no signed
 image of that size), `unavailable` (the plane cannot read its image catalog),
 `unsupported_runner_class` (the size has no price), `image_not_available` (the
 image is not staged) or `lane_not_enabled` (the approval does not name the
-lane). For each lane, the route job's log and step
-summary show the size asked, the runner, and the decision with its reason.
+lane). For each lane, the route job's log and step summary show the size
+asked, the runner, and the decision with its reason.
 
 ## CI Caching
 

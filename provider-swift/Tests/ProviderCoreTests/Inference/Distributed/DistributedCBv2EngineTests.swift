@@ -154,9 +154,11 @@ struct DistributedCBv2EngineTests {
         let engine = try distributedTestEngine(owner)
         let stream = try engine.submit(distributedTestRequest())
         engine.cancel(.init(999))
+        engine.onQueue {} // a cancel is applied in queue order, after it returns
         #expect(owner.last.cancelCount == 0)
         engine.cancel(.init(1))
         engine.cancel(.init(1))
+        engine.onQueue {}
         #expect(owner.last.cancelCount == 1)
         #expect(!owner.last.send(.token(4)))
         #expect(owner.last.releaseCount == 0)

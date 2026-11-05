@@ -40,6 +40,33 @@ struct ClusterServiceLoginAgentTests {
         }
     }
 
+    /// R5-1 (pair 2, 0.10.8): the leader's `cluster stop --service` after the other Mac's service was already off
+    /// failed (exit 1) and left this Mac's service and login agent running. This Mac stopped serving and the other
+    /// Mac did not answer: this Mac's service still goes, and each Mac's state is said.
+    @Test func stopWhoseOtherMacDidNotAnswerStillRemovesThisMacsService() throws {
+        let other = "The other Mac (Apple M5 Max, 128 GB) did not answer (the other Mac's cluster service did not answer on the cable)"
+        let stopped: Result<[String], ClusterOnboardingFailure> = .failure(.init(
+            ["This Mac stopped serving; the other Mac (Apple M5 Max, 128 GB) did not answer (the other Mac's cluster service did not answer on the cable). This Mac's cluster service tells it to stop as soon as it answers again."],
+            otherMacUnanswered: other))
+        var removals = 0
+        let lines = try Cluster.Stop.finishStop(stopped) { removals += 1; return ["fixture"] }
+        #expect(removals == 1, "this Mac's service and login agent go although the other Mac did not answer")
+        #expect(lines == [
+            "This Mac stopped serving.",
+            other + ", so it was not asked to stop (its cluster service may already be off).",
+            "This Mac's cluster service is stopped and will not start at login. Run `\(ClusterPairSummary.cli) cluster` to start it again.",
+            "If the other Mac's cluster service is still on, run `\(ClusterPairSummary.cli) cluster stop --service` there too.",
+        ])
+        // This Mac's own drain not finishing is still a failure that keeps its service.
+        removals = 0
+        #expect(throws: Cluster.Stop.Failure.self) {
+            _ = try Cluster.Stop.finishStop(.failure(.init("This Mac's part has not finished releasing its memory"))) {
+                removals += 1; return ["fixture"]
+            }
+        }
+        #expect(removals == 0)
+    }
+
     @Test func successfulOrAlreadyIdleStopRemovesTheServiceOnce() throws {
         let outcomes: [Result<[String], ClusterOnboardingFailure>?] = [.success(["pair drained"]), nil]
         for stopped in outcomes {

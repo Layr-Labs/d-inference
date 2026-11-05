@@ -598,6 +598,96 @@ import Foundation
             declared.result.chosen?.mode == .tensorParallel && declared.result == plain.result && declared.lines == plain.lines)
     }
 
+    /// GLM-5.3 Flash on two M5 Max 128 GB through the guided step's own decision: the recorded M5 Max's hardware
+    /// (40 GPU cores, 107.52 GiB GPU working set by default) idle, with the GPU limit raised to its memory less
+    /// 16 GiB (`darkbloom cluster gpu-limit`). Its serving pipeline ranks reserve no request at LOAD, so the
+    /// pipeline places and both setups save it. With the limit too low for a rank, the plan is refused and names
+    /// the command that raises it on each Mac that needs it and that the command runs on
+    /// (`GLM5NextGPULimitEligibility`); on any other Mac it names macOS's limit and the figures instead.
+    static func glmMaxPair() throws {
+        let golden = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("libs/darkbloom-cluster/Tests/PlacementChecks/Golden", isDirectory: true)
+        let layout = try ClusterModelLayout.decode(Data(contentsOf: golden.appendingPathComponent("layouts/GLM-5.3-Flash-MLX-NVFP4-mtp.json")))
+        let recorded = try ClusterDeviceProfile.decode(Data(contentsOf: golden.appendingPathComponent("profile-mac-b.json")))
+        func max128(gpuBytes: Int, chip: String? = nil) throws -> ClusterDeviceProfile {
+            // An idle 128 GiB Mac: 3.84 GiB wired, 5.12 GiB held by applications, 1 GiB of file cache.
+            let physical = recorded.physicalMemoryBytes, wired = 4_123_000_832, cache = gib, free = 126_741_000_192
+            let memory = ClusterDeviceMemory(gatePolicy: "registered_dense_selected_stage_load_resources_v3",
+                sampledUTC: "2026-11-01T00:00:00Z", judged: true, unjudgedReason: nil, physicalMemoryBytes: physical,
+                actualFreeBytes: free, countedFileCacheBytes: cache, admissibleNowBytes: free + cache, fileBackedBytes: cache,
+                fileCacheReserveBytes: (physical - wired) * 10 / 27, fileCacheAboveReserveBytes: 0,
+                anonymousBytes: physical - wired - cache - free, wiredBytes: wired, compressorBytes: 0, pageableBytes: physical - wired,
+                pressureLevel: 1, swapUsedBytes: 0, minimumAdmissibleBytes: 6 * gib, minimumTrulyFreeBytes: 16 * 1_048_576,
+                loadingHeadroomBytes: 4 * gib, allocatorHeadroomBytes: 2 * gib, loadScratchBytes: recorded.memory.loadScratchBytes,
+                pageSizeBytes: 16_384)
+            return try ClusterDeviceProfile(chip: chip ?? recorded.chip, performanceCores: recorded.performanceCores,
+                efficiencyCores: recorded.efficiencyCores, gpuCores: recorded.gpuCores, osVersion: recorded.osVersion,
+                osBuild: recorded.osBuild, physicalMemoryBytes: physical, gpuRecommendedWorkingSetBytes: gpuBytes,
+                gpuMaximumBufferBytes: recorded.gpuMaximumBufferBytes, allocatorLimitBytes: recorded.allocatorLimitBytes,
+                memory: memory, power: recorded.power, wiredLimitBytes: gpuBytes)
+        }
+        let build = hash("c")
+        let partitions = layout.admittedCuts.enumerated().map { index, cut in
+            ClusterRuntimePartition(planSHA256: String(format: "%064lx", index + 1), stages: [
+                .init(rank: 0, sourceLayerStart: 0, sourceLayerEnd: cut, stagePlanSHA256: String(format: "%064lx", 100 + index),
+                      constructionConfigurationSHA256: hash("2")),
+                .init(rank: 1, sourceLayerStart: cut, sourceLayerEnd: layout.layerCount, stagePlanSHA256: String(format: "%064lx", 200 + index),
+                      constructionConfigurationSHA256: hash("4"))])
+        }
+        let adapter = ClusterRuntimeAdapter.glm5NextLayerStage
+        let capability = try ClusterRuntimeCapability(runtimeBinarySHA256: build, adapterID: adapter.rawValue, adapterVersion: adapter.version,
+            runtimeModelID: layout.runtimeModelID, artifactSHA256: layout.artifactSHA256, configurationSHA256: layout.configurationSHA256,
+            manifestSHA256: hash("d"), profile: .init(id: ClusterGLMImageCandidate.textProfileID, vocabularySize: 154_880,
+                maximumPromptTokens: 1_048_575, maximumOutputTokens: 65_536, maximumChunkTokens: 2048, maximumContextTokens: 1_048_576),
+            profileFingerprint: hash("e"), partitions: partitions, arithmeticPolicyID: adapter.arithmeticPolicyID,
+            arithmeticPolicySHA256: hash("5"), supportedPrefillSchedules: [.serial], supportedGenerationModes: [.pipeline, .tensorParallel])
+        let description = ClusterPairDescription(schema: ClusterPairDescription.schemaName, clusterID: "fixture",
+            publicModelID: "EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp",
+            capabilitySHA256: ClusterConfigurationCodec.sha256(try ClusterRuntimeCapabilityCodec.encode(capability)),
+            chunkTokens: 2048, requestTimeoutSeconds: 900, coordinatorPort: 5577, members: ["max-a", "max-b"].enumerated().map { index, id in
+                .init(id: id, host: "192.0.2.\(index + 1)", port: 22, user: "fixture", ownerExecutable: "/fixture/darkbloom",
+                    workerExecutable: "/fixture/darkbloom-cluster-worker", modelDirectory: "/fixture/model", runtimeBinarySHA256: build,
+                    jacclDevice: "rdma_en\(index + 1)", linkAddress: "192.0.2.\(index + 1)", trust: nil, linkSecretFile: "/fixture/\(id).secret")
+            }, tokenizerFiles: [.init(path: "tokenizer.json", sha256: hash("6"), purpose: .tokenizer)],
+            linkControl: .init(port: 5578, linkEpoch: "00000000-0000-4000-8000-000000000001", edgeID: "00000000-0000-4000-8000-000000000002"))
+        let raised = try max128(gpuBytes: ClusterGPUMemoryLimit.ceilingBytes(physicalMemoryBytes: recorded.physicalMemoryBytes))
+        let decided = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "max-a",
+            localProfile: raised, peerProfile: raised, layout: layout, environment: [:], benchDebugBuild: false)
+        let saved = try decided.setup.map { setup in try setup.configurations.values.map {
+            try ClusterConfigurationCodec.decode($0, capability: capability, capabilitySHA256: description.capabilitySHA256) } } ?? []
+        require("glm pair, 2x M5 Max 128 GB with the GPU limit raised: a pipeline places, both ranks admit 65,536 tokens now, both setups save it (chose \(decided.result.chosen.map { "\($0.mode.rawValue) cut \($0.cut)" } ?? "none"))",
+            decided.result.chosen?.mode == .pipeline && decided.result.chosen?.ranks.allSatisfy({ $0.fit == .now && $0.servingContextTokens == 65_536 }) == true
+                && saved.count == 2 && saved.allSatisfy { $0.selectedGenerationMode == .pipeline }
+                && !decided.lines.contains("GPU memory limit"))
+        let low = try max128(gpuBytes: 100 * gib)
+        let refused = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "max-a",
+            localProfile: low, peerProfile: low, layout: layout, environment: [:], benchDebugBuild: false)
+        let advice = refused.lines.drop { $0 != "GPU memory limit" }
+        require("glm pair, 2x M5 Max with a 100 GiB GPU limit: refused, and the plan names `darkbloom cluster gpu-limit` on the Mac that is short",
+            refused.setup == nil && advice.first == "GPU memory limit"
+                && advice.dropFirst().first.map { $0.contains("darkbloom cluster gpu-limit") && $0.contains("112.00 GiB") } == true)
+
+        // The command runs where `GLM5NextGPULimitEligibility` says (Apple silicon Macs with 128 GB or more): an M4 Max
+        // pair is told the command on each Mac, and so is a mixed pair, by the command's own eligibility.
+        func adviceLines(_ local: ClusterDeviceProfile, _ peer: ClusterDeviceProfile) throws -> [String] {
+            let value = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "max-a",
+                localProfile: local, peerProfile: peer, layout: layout, environment: [:], benchDebugBuild: false)
+            return Array(value.lines.drop { $0 != "GPU memory limit" }.dropFirst().prefix { $0.hasPrefix("  ") })
+        }
+        let m4 = try max128(gpuBytes: 100 * gib, chip: "Apple M4 Max")
+        let m4Advice = try adviceLines(m4, m4)
+        require("glm pair, 2x M4 Max 128 GB with a 100 GiB GPU limit: each Mac is told `darkbloom cluster gpu-limit` and the 112 GiB it sets",
+            m4Advice.count == 2 && m4Advice.allSatisfy { $0.contains("darkbloom cluster gpu-limit") && $0.contains("112.00 GiB") })
+        let mixed = try adviceLines(low, m4)
+        require("glm pair, M5 Max + M4 Max with a 100 GiB GPU limit: the command is named on both Macs, by the command's own eligibility",
+            mixed.count == 2 && mixed.allSatisfy { line in
+                let profile = line.hasPrefix("  max-a:") ? low : m4
+                return line.contains("darkbloom cluster gpu-limit")
+                    == GLM5NextGPULimitEligibility.applies(chipName: profile.chip, physicalMemoryBytes: UInt64(profile.physicalMemoryBytes))
+            } && mixed.allSatisfy { $0.contains("darkbloom cluster gpu-limit") })
+    }
+
     /// The universal rule of qualification records (`ClusterPairQualificationRecords`, chip-agnostic since
     /// 2026-10-14): on a chip combination with a failed cross-cable check a model is planned and started only at
     /// shapes a check passed in; other combinations are not restricted, except that a rank that ran a diverged
@@ -1503,6 +1593,7 @@ import Foundation
         modeBoundGrants()
         recordedSpeculativeCredit()
         try glmTensorParallelPair()
+        try glmMaxPair()
         // Leader-first onboarding: the Mac where `darkbloom cluster` started leads the cluster (model, sync, start),
         // but which Mac runs rank 0 and which decodes is the planner's, from detected hardware and the model's grant.
         // Synthetic hardware, each pair planned from both Macs: the placement must not follow who asks.

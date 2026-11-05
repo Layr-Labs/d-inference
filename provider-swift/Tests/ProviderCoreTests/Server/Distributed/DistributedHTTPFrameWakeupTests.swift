@@ -124,6 +124,7 @@ struct DistributedHTTPFrameWakeupTests {
         try response.bind(deadline: nil) { engine.cancel(owner.last.requestID) }
         response.applyPendingCancellation()
         discardBody(response: response, responses: responses)
+        engine.onQueue {} // a cancel is applied in queue order, after it returns
         #expect(!responses.hasActiveResponse && response.isComplete)
         #expect(owner.last.cancelCount == 1 && owner.last.releaseCount == 0 && response.terminal == nil)
         owner.last.acknowledge()
@@ -142,6 +143,7 @@ struct DistributedHTTPFrameWakeupTests {
         #expect(!responses.hasActiveResponse && response.isComplete && owner.reserveCount == 0)
         let events = try engine.submit(request)
         response.applyPendingCancellation()
+        engine.onQueue {}
         #expect(owner.last.cancelCount == 1 && owner.last.releaseCount == 0)
         #expect(response.terminal == nil)
         owner.last.acknowledge(); _ = await distributedCollect(events)

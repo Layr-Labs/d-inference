@@ -42,7 +42,7 @@ struct GLM5NextResidentRuntimeTests {
         static func resources(descriptor: GLM5NextResidentDescriptor, inventory: GLM5NextWeightInventory,
                               rank: Int, hostBound: @escaping (Int) throws -> Int = { $0 },
                               loadCapacity: Int = 8 << 30, requestCapacity: Int = 64 << 20,
-                              environmentCheck: @escaping () throws -> Void = {}) throws
+                              environmentCheck: @escaping () throws -> Void = {}, onArrival: Bool = false) throws
             -> GLM5NextResidentResourceEnvelope {
             let scope = GLM5NextRequestStateBudget.Scope(maximumContextTokens: 256,
                 maximumPromptTokens: 128, maximumOutputTokens: 8, maximumChunkTokens: 16)
@@ -63,7 +63,7 @@ struct GLM5NextResidentRuntimeTests {
                 }, requireExecutionEnvironment: { actual in
                     try environmentCheck()
                     guard actual == environment else { throw Failure.fence }
-                }, hostAllocationBound: hostBound)
+                }, hostAllocationBound: hostBound, calibrationOnly: false, admitsRequestsOnArrival: onArrival)
         }
 
         func resourcesForRank(_ rank: Int) throws -> GLM5NextResidentResourceEnvelope {
@@ -86,7 +86,7 @@ struct GLM5NextResidentRuntimeTests {
         }
     }
 
-    private final class Pair {
+    final class Pair {
         let fixture: Fixture
         let wire: ResidualStreamCollectiveFixture
         let first: GLM5NextResidentRuntime
@@ -94,13 +94,16 @@ struct GLM5NextResidentRuntimeTests {
         let leases = [QwenResidentProcessLease(), QwenResidentProcessLease()]
         let credentials: [ClusterDataPlaneCredential]
 
-        init(environmentCheck: @escaping () throws -> Void = {}) throws {
+        /// `onArrival`: serving envelopes, whose LOAD reserves no request.
+        init(environmentCheck: @escaping () throws -> Void = {}, onArrival: Bool = false) throws {
             fixture = try .init(); wire = try .init()
+            let inventory = fixture.artifact.metadata.inventory
             first = try .init(configuration: fixture.configuration(rank: 0), descriptor: fixture.descriptor,
-                resources: Fixture.resources(descriptor: fixture.descriptor, inventory: fixture.artifact.metadata.inventory,
-                    rank: 0, environmentCheck: environmentCheck), processLease: leases[0], hooks: .init())
+                resources: Fixture.resources(descriptor: fixture.descriptor, inventory: inventory,
+                    rank: 0, environmentCheck: environmentCheck, onArrival: onArrival), processLease: leases[0], hooks: .init())
             last = try .init(configuration: fixture.configuration(rank: 1), descriptor: fixture.descriptor,
-                resources: fixture.resourcesForRank(1), processLease: leases[1], hooks: .init())
+                resources: Fixture.resources(descriptor: fixture.descriptor, inventory: inventory, rank: 1, onArrival: onArrival),
+                processLease: leases[1], hooks: .init())
             let keys = [P256.Signing.PrivateKey(), P256.Signing.PrivateKey()]
             let epoch = fixture.identity.membershipEpoch
             credentials = try (0...1).map { rank in
@@ -192,10 +195,18 @@ struct GLM5NextResidentRuntimeTests {
             #expect(quote.peak.hostBytes == rank.hostPeakBytes)
             #expect(quote.peak.reservedBytes == rank.combinedPeakBytes)
             let shortLoad = try envelope(load: rank.combinedPeakBytes - 1, request: rank.request.reservedBytes)
-            #expect(throws: ProbeError.self) {
+            let refusal = #expect(throws: ProbeError.self) {
                 try shortLoad.quote(descriptor: fixture.descriptor, maximumBufferBytes: Int.max,
                     allocationBound: { $0 })
             }
+            // The refusal names the rank, the cut, the memory plan's request, the quote's terms and the capacity.
+            let gib = QwenDenseStageLoadPolicy.gibText
+            let scratch = rank.combinedPeakBytes - rank.load.sourceAllocationBoundBytes - rank.request.reservedBytes
+            #expect(refusal?.description == "GLM rank \(rank.rank) at cut \(fixture.descriptor.cut) needs "
+                + "\(gib(rank.combinedPeakBytes)) to load and serve its 256-token request (weights "
+                + "\(gib(rank.load.sourceAllocationBoundBytes)), load scratch \(gib(scratch)), request "
+                + "\(gib(rank.request.reservedBytes))), more than its load capacity of \(gib(rank.combinedPeakBytes - 1)) "
+                + "(on a serving rank, what its GPU keeps resident)")
             #expect(throws: ProbeError.self) {
                 try envelope(load: rank.combinedPeakBytes, request: rank.request.reservedBytes - 1)
             }
@@ -246,6 +257,41 @@ struct GLM5NextResidentRuntimeTests {
         try pair.shutdown()
         #expect(pair.first.readiness == nil && pair.last.readiness == nil)
         for lease in pair.leases { #expect(throws: ProbeError.self) { try lease.acquire() } }
+    }
+
+    /// A serving rank (`admitsRequestsOnArrival`) loads on what loading needs,
+    /// reports the longest context it admits now, charges each request at its
+    /// own context (below the memory plan's whole request) and re-derives its
+    /// serving context while idle; the tokens are the reserving pair's.
+    @Test func servingRanksAdmitEachRequestOnArrivalAtItsOwnContext() throws {
+        let reserving = try Pair()
+        try reserving.load()
+        let request = reserving.fixture.request()
+        let reference = try { () throws -> [Int] in
+            let id = UUID()
+            _ = try reserving.first.reserve(requestID: id, request: request)
+            _ = try reserving.last.reserve(requestID: id, request: request)
+            return try reserving.start(id) { _, _, _ in true }.0.get().selectedTokenIDs
+        }()
+        try reserving.shutdown()
+
+        let pair = try Pair(onArrival: true)
+        defer { try? pair.shutdown() }
+        try pair.load()
+        let memoryContext = pair.fixture.descriptor.memoryProfile.maximumContextTokens
+        // Everything fits this Mac: the whole memory plan, which is the profile's, so READY names no lower limit.
+        #expect(pair.first.servingContextTokens == memoryContext && pair.last.servingContextTokens == memoryContext)
+        #expect(pair.first.readiness?.servingContextTokens == nil && pair.first.readiness != nil)
+        let whole = try pair.fixture.resources.budget(descriptor: pair.fixture.descriptor)
+        let id = UUID()
+        let firstCharge = try pair.first.reserve(requestID: id, request: request)
+        let lastCharge = try pair.last.reserve(requestID: id, request: request)
+        let own = try pair.fixture.resources.budget(descriptor: pair.fixture.descriptor,
+            contextTokens: request.promptTokenIDs.count + request.outputCount)
+        #expect(firstCharge == own.reservedBytes && firstCharge < whole.reservedBytes && lastCharge > 0)
+        let results = try pair.start(id) { _, _, _ in true }
+        #expect(try results.0.get().selectedTokenIDs == reference && results.1.get().selectedTokenIDs == reference)
+        #expect(pair.first.refreshServingContext() == memoryContext)
     }
 
     @Test func failedPublicationRetainsBorrowUntilPeerFenceAndNeverReopensLease() throws {

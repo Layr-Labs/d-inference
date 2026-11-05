@@ -28,6 +28,14 @@ extension Status {
 
     /// No running provider (no state, or a stale one): on a Mac in a cluster single-Mac serving is off, which
     /// `darkbloom start` would not fix. `unsure`: its pairing record couldn't be read.
+    /// Why single-Mac serving isn't running on a paired Mac when it stepped aside for the pair by itself
+    /// (`ClusterSoloChoice`); nil otherwise.
+    static func steppedAsideLine(paired: Bool) -> String? {
+        guard paired, ClusterPairSummary.readsThisMacsCluster, let directory = ClusterService.soloChoiceDirectory(),
+              let note = ClusterSoloChoice.steppedAside(in: directory) else { return nil }
+        return ClusterSoloChoice.line(note, cli: BuildEnvironment.current.cliName)
+    }
+
     static func daemonNotRunningLine(paired: Bool, unsure: Bool = false, staleStateFile: Bool = false) -> String {
         if paired { return unsure ? ClusterPairSummary.singleMacServingOffUnsureLine : ClusterPairSummary.singleMacServingOffLine }
         return staleStateFile ? "Daemon: not running (stale state file)" : "Daemon: not running (run `\(BuildEnvironment.current.cliName) start`)"

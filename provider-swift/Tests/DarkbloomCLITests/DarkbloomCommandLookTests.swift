@@ -82,7 +82,8 @@ struct DarkbloomCommandLookTests {
         let mark = "  \u{1B}[\(colour)m\(rows[0])\u{1B}[0m\n"
             + "  \u{1B}[\(colour)m\(rows[1])\u{1B}[0m   \u{1B}[1mDarkbloom\u{1B}[0m \u{1B}[2mstop\u{1B}[0m\n"
             + "  \u{1B}[\(colour)m\(rows[2])\u{1B}[0m\n" + "  \u{1B}[\(colour)m\(rows[3])\u{1B}[0m\n"
-        let live = "\r\u{1B}[J  \u{1B}[\(colour)m\u{2596}\u{1B}[0m \u{1B}[2mStopping both Macs\u{2026}\u{1B}[0m"
+        let live = "\r\u{1B}[J" + ClusterOnboardingBrand.noWrap + "  \u{1B}[\(colour)m\u{2596}\u{1B}[0m \u{1B}[2mStopping both Macs\u{2026}\u{1B}[0m"
+            + ClusterOnboardingBrand.wrap
         #expect(recorder.text == "\n" + mark + "\n" + live + "\r\u{1B}[J" + "first\n" + live + "\r\u{1B}[J" + "second\n" + live
             + "\r\u{1B}[J" + "after\n")
         #expect(rows.count == 4 && rows.allSatisfy { $0.count == ClusterOnboardingBrand.width })
@@ -101,6 +102,35 @@ struct DarkbloomCommandLookTests {
         let narrow = Recorder()
         makeLook(.init(decorates: true, animates: true, columns: 33), narrow).open("Darkbloom restart")
         #expect(narrow.text.isEmpty)
+    }
+
+    @Test("at 40 columns a long reason is shortened, never wrapped: line wrap is off for each redraw, the width is read again each time")
+    func longReasonAtFortyColumns() {
+        let recorder = Recorder()
+        let width = Recorder()
+        width.append("40")
+        let look = DarkbloomCommandLook(mode: .init(decorates: true, animates: false, columns: 40), environment: terminal,
+                                        output: { recorder.append($0) }, pause: { _ in }, width: { Int(width.text) ?? 40 })
+        let reason = "Starting the provider service (Gemma 4 26B: part ended (exit 1: another update operation owns the lock\n(pid 952)) \u{00B7} 1 min 3 s"
+        look.working(reason) { look.say("  a line said meanwhile") { recorder.append($0 + "\n") } }
+        let draws = recorder.text.components(separatedBy: ClusterOnboardingBrand.noWrap).dropFirst()
+        #expect(draws.count == 2 && draws.allSatisfy { $0.contains(ClusterOnboardingBrand.wrap) })
+        let rows = draws.map { ($0.components(separatedBy: ClusterOnboardingBrand.wrap).first ?? "")
+            .replacingOccurrences(of: "\u{1B}\\[[0-9;?]*[A-Za-z]", with: "", options: .regularExpression) }
+        #expect(rows.allSatisfy { $0.count <= 39 && !$0.contains("\n") }, "\(rows)")
+        #expect(rows.allSatisfy { $0.hasSuffix("\u{2026} \u{00B7} 1 min 3 s\u{2026}") }, "the time is kept: \(rows)")
+        // The window made narrower: the next redraw fits the new width.
+        let narrow = Recorder()
+        let shrinking = DarkbloomCommandLook(mode: .init(decorates: true, animates: false, columns: 100), environment: terminal,
+                                             output: { narrow.append($0) }, pause: { _ in }, width: { 40 })
+        shrinking.working(reason) {}
+        let drawn = (narrow.text.components(separatedBy: ClusterOnboardingBrand.noWrap).dropFirst().first ?? "")
+            .components(separatedBy: ClusterOnboardingBrand.wrap).first ?? ""
+        #expect(drawn.replacingOccurrences(of: "\u{1B}\\[[0-9;?]*[A-Za-z]", with: "", options: .regularExpression).count <= 39)
+        // Plain: nothing at all, so nothing repeats.
+        let plain = Recorder()
+        DarkbloomCommandLook(mode: .plain, environment: terminal, output: { plain.append($0) }, pause: { _ in }).working(reason) {}
+        #expect(plain.text.isEmpty)
     }
 
     @Test("every way out of the live line clears it, a failure included; the cursor is never hidden and the mode never changed")

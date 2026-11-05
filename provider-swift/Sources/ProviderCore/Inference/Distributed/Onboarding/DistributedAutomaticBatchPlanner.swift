@@ -87,6 +87,19 @@ struct DistributedAutomaticBatchPlanner {
         }
     }
 
+    /// Whether a replacement in `proposed` serves the same endpoint contract as
+    /// the running generation in `running`: the local server swaps in only a
+    /// session with the same profile (`DistributedLocalSessionBinding.permitsPlacementChange`),
+    /// and the mode decides whether committed-token logprobs are captured
+    /// (`ClusterModelFeaturePolicy.capturesLogprobs`: Gemma 4 and MiMo V2.6 in
+    /// tensor parallel only). A replacement that would fail that check after the
+    /// drain is refused before it.
+    static func keepsEndpointFeatures(capability: ClusterRuntimeCapability, running: ClusterGenerationMode,
+                                      proposed: ClusterGenerationMode) -> Bool {
+        ClusterModelFeaturePolicy.capturesLogprobs(capability, mode: running)
+            == ClusterModelFeaturePolicy.capturesLogprobs(capability, mode: proposed)
+    }
+
     /// One refused width's evidence for `cluster.batch_replan refused`, one
     /// log line: the phase (preview, or the post-release recheck), the
     /// predicate that failed and each rank's need, load need, admissible-now,
@@ -241,6 +254,15 @@ struct DistributedAutomaticBatchPlanner {
                     lanes: lanes, previous: demand.currentCapacity, requireNow: requireNow, planned: decision.setup != nil,
                     phase: phase)
                 fields["credits_incumbent_weights"] = credited ? "1" : "0"
+                clusterObservabilityLog(.info, "cluster.batch_replan refused lanes=\(lanes)", fields)
+                continue
+            }
+            guard Self.keepsEndpointFeatures(capability: capability, running: configuration.selectedGenerationMode,
+                                             proposed: chosen.mode) else {
+                var fields = Self.refusalFields(chosen, lanes: lanes, previous: demand.currentCapacity,
+                    requireNow: requireNow, planned: true, phase: phase)
+                fields["reason"] = "endpoint_features"
+                fields["running_mode"] = configuration.selectedGenerationMode.rawValue
                 clusterObservabilityLog(.info, "cluster.batch_replan refused lanes=\(lanes)", fields)
                 continue
             }

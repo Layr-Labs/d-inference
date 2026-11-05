@@ -552,6 +552,11 @@ public actor ProviderLoop {
     /// returned yet (`ProviderLoop+WorkFIFO.swift`).
     internal var releasedAdmissions: [String: ReleasedAdmission] = [:]
     internal var coldLoadReleasesWorkFIFO = WorkFIFOPolicy.releasesColdLoadWaits()
+    /// Coordinator requests read off the connection whose admission has not
+    /// returned yet, and the coordinator cancels held for them
+    /// (`ProviderLoop+WorkFIFO.swift`).
+    internal var unreturnedCoordinatorAdmissions: [String: Int] = [:]
+    internal var cancelsAwaitingAdmission: Set<String> = []
     internal let localResponseTracker = LocalResponseTracker()
     internal var mtpStagingReservations = MTPStagingReservations()
     internal var mtpAdmissionDrains = MTPAdmissionDrains()

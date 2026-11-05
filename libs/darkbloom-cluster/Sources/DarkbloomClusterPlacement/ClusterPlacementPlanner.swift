@@ -168,6 +168,16 @@ public struct ClusterPlacementRank: Codable, Equatable, Sendable {
     /// `ClusterDeviceProfile.hardwareFits`: the hardware can hold this range.
     /// Nil in a result written before it was recorded (read as `fit.possible`).
     public var hardwareFits: Bool? = nil
+    /// A rank whose requests are admitted on arrival (`ClusterModelLayout.requestsOnArrival`):
+    /// the longest context (prompt plus output, at most the memory plan's) its
+    /// Mac admits now beside the loaded weights; 0 when none does. Nil (and
+    /// omitted) for every other rank.
+    public var servingContextTokens: Int? = nil
+    /// Such a rank whose GPU cannot keep its weights and what loading holds, or
+    /// its weights and the memory plan's whole request, resident: by how much.
+    /// Freeing memory cannot change it; raising the GPU's limit can. Nil
+    /// (and omitted) otherwise.
+    public var gpuWorkingSetShortBytes: Int? = nil
     /// What `withinGPUWorkingSet` compares with the Mac's GPU limit: weights,
     /// request state, workspace and the attention transient (or the complete
     /// native quote). Not encoded, so a written plan reads as before; nil in a
@@ -177,6 +187,7 @@ public struct ClusterPlacementRank: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case rank, device, firstLayer, endLayer, weightsBytes, loadNeedBytes, requestNeedBytes, needBytes
         case admissibleNowBytes, fit, withinGPUWorkingSet, transientBytes, hardwareFits
+        case servingContextTokens, gpuWorkingSetShortBytes
     }
 }
 
@@ -847,6 +858,10 @@ public enum ClusterPlacementPlanner {
                   earlier: [ClusterModelLayout.Range], mode: ClusterGenerationMode,
                   schedule: ClusterPrefillSchedule) -> ClusterPlacementRank {
             let memory = device.profile.memory, last = rank == count - 1
+            // Only a pair's pipeline rank: one Mac alone serves through its own engine, on the full quote.
+            if let terms = layout.requestsOnArrival, count > 1, !mode.isPhaseSplit {
+                return onArrivalRequirement(rank: rank, of: count, device: device, own: own, mode: mode, terms: terms)
+            }
             // Under a phase split the last rank also loads every earlier range,
             // after its own, so that it can decode alone.
             let loads = [own] + (mode.isPhaseSplit && last ? earlier : [])
@@ -897,6 +912,59 @@ public enum ClusterPlacementPlanner {
                 hardwareFits: device.profile.hardwareFits(needBytes: need, weightsBytes: held, largestTensorBytes: largest,
                     gpuResidentBytes: gpu),
                 gpuResidentBytes: gpu)
+        }
+
+        /// A rank whose LOAD reserves no request (`ClusterModelLayout.requestsOnArrival`):
+        /// it needs what loading holds (its weights at their allocator bounds,
+        /// their construction copies and the load allowance) with the gate's
+        /// headroom, now or at rest; its GPU must keep that resident, and also
+        /// the weights with the memory plan's whole request, which each request
+        /// is admitted against when it arrives. Whether one fits now is the
+        /// longest context it admits beside the weights (`servingContextTokens`).
+        func onArrivalRequirement(rank: Int, of count: Int, device: ClusterPlacementDevice, own: ClusterModelLayout.Range,
+                                  mode: ClusterGenerationMode, terms: ClusterRequestsOnArrival) -> ClusterPlacementRank {
+            let profile = device.profile, memory = profile.memory, last = rank == count - 1
+            let holding = last ? layout.speculativeHolding(mode: mode, pageSizeBytes: memory.pageSizeBytes) : (bytes: 0, largestTensorBytes: 0)
+            let weights = own.loadedBytes + holding.bytes
+            let largest = max(own.largestTensorBytes, holding.largestTensorBytes)
+            let loading = weights + own.requestWorkBytes + terms.loadAllowanceEveryRankBytes
+            let need = max(memory.minimumAdmissibleBytes, loading + memory.loadingHeadroomBytes)
+            let chunk = min(layout.maximumChunkTokens, memoryPrompt)
+            func request(_ context: Int) -> Int {
+                own.stateBytes(tokens: context) + own.transientBytes(chunk: min(chunk, context), context: context)
+                    + terms.requestAllowanceEveryRankBytes + (last ? terms.requestAllowanceLastRankBytes : 0)
+            }
+            let whole = request(memoryContext), resident = max(loading, weights + whole)
+            let short = max(0, resident - profile.residentCapacityBytes)
+            // Raising the GPU's limit helps only up to what macOS keeps for itself.
+            let raisable = resident <= profile.gpuMemoryLimitCeilingBytes
+            // A request is admitted beside the loaded weights: within the GPU's working set, and by the gate
+            // on what this Mac admits now less the weights, with its headroom and floor.
+            func fitsNow(_ context: Int) -> Bool {
+                let bytes = request(context)
+                return weights + bytes <= profile.residentCapacityBytes
+                    && weights + max(memory.minimumAdmissibleBytes, bytes + memory.loadingHeadroomBytes) <= memory.admissibleNowBytes
+            }
+            var serving = 0, low = min(memoryContext, chunk + 1), high = memoryContext
+            if short == 0, fitsNow(low) {
+                while low < high {
+                    let middle = low + (high - low + 1) / 2
+                    if fitsNow(middle) { low = middle } else { high = middle - 1 }
+                }
+                serving = low
+            }
+            var value = ClusterPlacementRank(rank: rank, device: device.label, firstLayer: own.layers.lowerBound,
+                endLayer: own.layers.upperBound, weightsBytes: weights, loadNeedBytes: need,
+                requestNeedBytes: max(memory.minimumAdmissibleBytes, whole + memory.loadingHeadroomBytes), needBytes: need,
+                admissibleNowBytes: memory.admissibleNowBytes,
+                fit: short > 0 ? .never(shortBytes: short) : profile.fit(needBytes: need, weightsBytes: weights, largestTensorBytes: largest),
+                withinGPUWorkingSet: short == 0, transientBytes: own.transientBytes(chunk: chunk, context: memoryContext),
+                hardwareFits: profile.hardwareFits(needBytes: need, weightsBytes: weights, largestTensorBytes: largest,
+                    gpuResidentBytes: resident),
+                gpuResidentBytes: resident)
+            value.servingContextTokens = serving
+            value.gpuWorkingSetShortBytes = short > 0 && raisable ? short : nil
+            return value
         }
 
         /// The load gate's largest ask while loading `parts` in turn (each

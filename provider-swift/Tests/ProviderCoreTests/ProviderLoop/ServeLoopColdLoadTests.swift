@@ -187,6 +187,39 @@ struct ServeLoopColdLoadTests {
         #expect(await fixture.stop(task))
     }
 
+    @Test("a cancel for a request queued behind another admission runs only after its own admission")
+    func cancelForQueuedRequestWaitsForItsAdmission() async throws {
+        let fixture = try await ServeLoopFixture.make(models: [ModelLoadingFixtures.model(Self.coldModel)])
+        await fixture.loop.setColdLoadReleasesWorkFIFOForTesting(false)
+        let task = fixture.start()
+        _ = try await fixture.awaitRegistration()
+        await fixture.loop.modelLoadingMarkLoading(Self.coldModel)
+
+        // The serial FIFO holds the warm request behind the load wait; its
+        // cancel is read meanwhile and must neither run first nor be lost.
+        try await fixture.pushChatRequest(requestId: "cold", body: Self.body(model: Self.coldModel))
+        try await Self.until { await fixture.loop.modelLoadingLoadingWaiterCount(Self.coldModel) == 1 }
+        try await fixture.pushChatRequest(requestId: "queued")
+        try await fixture.mock.pushCancel(requestId: "queued")
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(!fixture.mock.snapshot().inferenceAccepted.contains { $0.requestId == "queued" })
+        #expect(ServeLoopFixture.terminalCount(fixture.mock.snapshot(), requestId: "queued") == 0)
+
+        // The load fails: the cold request ends; the queued one is admitted,
+        // then cancelled, with one terminal each.
+        await fixture.loop.modelLoadingResumeLoadingWaiters(Self.coldModel, failure: "scripted")
+        let ended = try await fixture.mock.waitForSnapshot(timeout: .seconds(15)) {
+            ServeLoopFixture.terminalCount($0, requestId: "queued") > 0
+                && ServeLoopFixture.terminalCount($0, requestId: "cold") > 0
+        }
+        let snapshot = try #require(ended)
+        #expect(snapshot.inferenceAccepted.contains { $0.requestId == "queued" })
+        #expect(ServeLoopFixture.terminalCount(snapshot, requestId: "queued") == 1)
+        #expect(ServeLoopFixture.terminalCount(snapshot, requestId: "cold") == 1)
+        #expect(snapshot.inferenceErrors.first { $0.requestId == "queued" }?.failureCode == .cancelled)
+        #expect(await fixture.stop(task))
+    }
+
     @Test("connection, drain and model-management events wait for released admissions")
     func barrierEvents() {
         #expect(CoordinatorEvent.cancel(requestId: "r").overtakesReleasedAdmissions)

@@ -22,10 +22,16 @@ final class GLM5NextStageLoadGate {
     private var inFlightAllocationBytes = 0
     private var operationCheck: (() throws -> Void)?
 
+    /// `reservesRequest` false (a serving pipeline rank, whose requests are
+    /// admitted as they arrive): the reservations must be zero and LOAD holds
+    /// only what loading needs; true requires both positive, as before.
     init(resources: GLM5NextStageLoadResources, capacityLimitBytes: Int,
-         executionStateReserveBytes: Int, workspaceReserveBytes: Int) throws {
-        guard executionStateReserveBytes > 0, workspaceReserveBytes > 0, capacityLimitBytes > 0 else {
-            throw ProbeError("GLM resident loading requires explicit positive state/workspace reservations")
+         executionStateReserveBytes: Int, workspaceReserveBytes: Int, reservesRequest: Bool = true) throws {
+        let reservations = reservesRequest ? executionStateReserveBytes > 0 && workspaceReserveBytes > 0
+            : executionStateReserveBytes == 0 && workspaceReserveBytes == 0
+        guard reservations, capacityLimitBytes > 0 else {
+            throw ProbeError(reservesRequest ? "GLM resident loading requires explicit positive state/workspace reservations"
+                : "GLM resident loading that admits requests on arrival reserves no request state or workspace")
         }
         let reserved = try GLM5NextStageLoadResources.sum([
             resources.summary.initialLoadPeakBytes, executionStateReserveBytes, workspaceReserveBytes])

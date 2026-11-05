@@ -159,29 +159,12 @@ serving provider or changes its credentials.
 
 Release compilation and SDK qualification use separate
 `blacksmith-12vcpu-macos-27` runners. Signed validation's older-OS smoke uses
-`blacksmith-12vcpu-macos-26`: it runs the signed app and compiles nothing.
-`scripts/prepare-provider-release-toolchain.sh` selects the toolchain after
-checkout. It tries the image's Xcode first, then each installed
-`/Applications/Xcode*.app`, newest first. It takes the first Xcode with SDK
-27.2, else the first with another accepted SDK. An explicit `DEVELOPER_DIR` is
-the only candidate. When it selects another Xcode than the image's, it exports
-`DEVELOPER_DIR`, so Metal, `xcodebuild` and signing use the same Xcode.
-`DARKBLOOM_PROVIDER_TOOLCHAIN` sets what it accepts:
-
-| Mode | Used by | SDK | Apple Swift |
-|---|---|---|---|
-| `release` | `release-provider.yml`, `provider-signing-validation.yml`, master and dispatched SDK 27 release preparation | 27.2 (Xcode 27.2) | 6.4.2 |
-| `qualification` (default) | `ci.yml`, pull-request SDK 27 release preparation, the Darkbloom Sandbox macOS CI base check | 27.2, or 27.0 (Xcode 27.1) | 6.4 or 6.4.x |
-
-SDK 27.0 stays accepted in `qualification` only while the Darkbloom Sandbox
-production macOS CI base is on Xcode 27.1. Remove it when that base is on
-Xcode 27.2. Darkbloom Sandbox's `images/macos/pins.env` mirrors the
-`qualification` values.
-
-The `scripts/provider-release-swift.sh` wrapper keeps native SwiftPM
-compilation and linking on the selected SDK. Ordinary development retains the
-package's Swift 6.3 minimum; release evidence must use the selected release
-toolchain.
+`blacksmith-12vcpu-macos-26`. The macOS 27 image is a public beta;
+`scripts/prepare-provider-release-toolchain.sh` resolves its selected Xcode
+after checkout and requires SDK 27.0 and Apple Swift 6.4. Its
+`scripts/provider-release-swift.sh` wrapper keeps native SwiftPM compilation
+and linking on that SDK. Ordinary development retains the package's Swift 6.3
+minimum; release evidence must use the selected release toolchain.
 
 Pinned Python 3.12.10 and checksum-verified CMake 3.31.12 provide missing build
 tools. `scripts/prepare-metal-toolchain.py` requires a working compiler probe,

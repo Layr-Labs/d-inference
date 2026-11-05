@@ -1032,8 +1032,7 @@ are not successful physical runs.
 
 ## SDK 27 Release Qualification
 
-Release SDK qualification uses SDK 27.2 / Swift 6.4.2 (Xcode 27.2, the
-[`release` toolchain](build.md#sdk-27-release-builds-and-caches)) and runs independently of
+Release SDK qualification uses SDK 27 / Swift 6.4 and runs independently of
 optimized compilation. The `qualify-sdk-shard` jobs run the provider suite in
 five shards on separate Macs, with the shard plan of CI
 (`scripts/provider-test-shards.py`). Shard 2 also runs Prompt Parity, and the

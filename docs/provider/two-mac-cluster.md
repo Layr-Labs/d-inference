@@ -1303,7 +1303,22 @@ Mac reports single-Mac serving. `darkbloom cluster status` says the block on
 both Macs, with `Next:` ``Single-Mac serving doesn't stop by itself: run
 `darkbloom stop --solo` on each Mac named, then `darkbloom start` on either
 Mac. …``, and a scripted `darkbloom start` ends its wait at once with that
-reason (exit status 3). Plain `darkbloom stop` on a paired
+reason (exit status 3).
+
+When nobody chose single-Mac serving since the pair was started on that Mac
+(for example, the update from 0.10.8 restarted a job a plain `darkbloom start`
+left set up, or a login or the watchdog started it), the Mac's cluster service
+stops it by itself, as `darkbloom stop --solo` does. It writes that to its log,
+and `darkbloom status` on that Mac says ``Single-Mac serving stepped aside for
+the pair at <time> (process <N>): …``. It doesn't stop single-Mac serving you
+chose yourself (`darkbloom start --solo`, or **Serve on this Mac alone**)
+until you start the pair from that Mac, or the other Mac's screen offers the
+stop and you accept. It never stops it while the pair isn't running there.
+Parts that ended because single-Mac serving held the lock don't make the pair
+fall back to local-only serving. Once the blocker is gone, the pair is offered
+to Darkbloom again straight away. `darkbloom stop --solo` on the Mac without
+single-Mac serving finds it on the other Mac and offers to stop it there
+(`--yes` for scripts). Plain `darkbloom stop` on a paired
 Mac stops the pair, not single-Mac serving. If the leading
 Mac doesn't answer, `darkbloom stop` says so and that
 `darkbloom cluster stop --local-only` stops this Mac alone.

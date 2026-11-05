@@ -6806,6 +6806,39 @@ and the collective payload quote covers the longer frame
 the loopback ring with the control exchanged or folded and checks that both
 retire the same tokens.
 
+**Build-ahead (driver protocol; not yet on in the product).** With
+`QwenTensorParallelBatchSettings.buildsAhead` (load agreement field
+`qwen-tp-batch-build-ahead-v1`), the driver builds a plain decode step before
+it reads the step before it (`QwenTensorParallelBatchDriver.serveAhead`), so
+the GPU and the collectives run while the host reads, publishes and answers.
+The window-1 profile measured about 1.9 ms of GPU idle at each token boundary.
+- Every folded step's selection sum also carries two decision words, one per
+  rank, for the step two later. Continuations need no plan: both ranks build
+  that step on the unread step's selection rows (`QwenTensorParallelBatchExecutor.submitDecode`
+  and `readDecode`) only when neither rank asked for a barrier and the unread
+  step decoded the same lanes the decision covered.
+- A rank asks for a barrier whenever anything needs a plan: an owner's stop or
+  the answer to a request's last token, a request waiting to join, an idle lane,
+  a cancellation or deadline, an ended lane, a lane that would pass its output
+  count, or more than four tokens held unpublished. At a barrier both ranks read
+  every submitted step, and the next plan is made and exchanged with nothing in
+  flight, exactly as without build-ahead.
+- Owner answers that a decision reads and that need a plan are kept for that
+  plan, and their lane publishes nothing more meanwhile. Tokens selected before
+  their credit are held, one queue a row (`heldLogprobs`), and published in order,
+  one per "go on" answer. A client stop drops all held tokens. An EOS read after
+  the next step was built discards that one forward on both ranks (the
+  generation schedule accepts one declared discarded forward after an EOS). No
+  step is built past a request's output count.
+
+Every input to a decision and to the build is agreed state (read sums, read
+tokens, plans), so both ranks submit the same collectives in the same order.
+Ranks on different protocols refuse each other at load (the field). The driver
+is checked on two ranks with a fake executor (`QwenTensorParallelBatchDriverTests`:
+steady decode, EOS, owner stops, late credits, joins, prompts, cancellation, and
+ranks that disagree failing closed). The native executor does not submit decode
+steps yet (`buildsAhead` false), so the product runs read-then-build until it does.
+
 The batch path can restore mutually held original-grid prefix snapshots into
 fresh request-owned state. TP speculative rounds remain a separate integration. Installed owners propagate a priced
 saved width or explicit diagnostic width for every Qwen TP row; placement and automatic

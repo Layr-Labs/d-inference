@@ -362,8 +362,10 @@ bundles, the staged matched `mlx.metallib`, and the checkouts, repositories and
 `workspace-state.json`, so SwiftPM loads the package graph without a fetch. It
 is uploaded without more compression and kept for one day. A test job selects
 the SDK 27 toolchain, downloads the archive and unpacks it. It refuses
-products of another commit or toolchain (the Swift version, Xcode and the SDK
-version and build) and never unpacks over a build. Both sides print the archive
+products of another commit or of another Swift, Xcode or SDK version, and it
+never unpacks over a build. When only the builds of those versions differ (the
+Blacksmith and Darkbloom images can carry different builds of one Xcode
+version), it warns and runs the products. Both sides print the archive
 size and the upload or download time.
 
 Every macOS job runs `scripts/ci-resource-sampler.py` in the background from

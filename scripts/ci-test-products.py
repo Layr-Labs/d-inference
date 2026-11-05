@@ -15,7 +15,9 @@ directory (object files and dependency records), `ModuleCache`, `index` and
 the staged matched `mlx.metallib`, and the checkouts, repositories and
 `workspace-state.json` that load the package graph without a fetch. A
 manifest records the commit and the toolchain; a test job refuses products of
-another commit or toolchain.
+another commit or of another Swift, Xcode or SDK version, and warns when only
+the builds of that version differ (the runner images of Blacksmith and
+Darkbloom can carry different builds of one Xcode version).
 
 Subcommands:
   pack LANE ARCHIVE      archive the lane's products; note the upload start
@@ -29,6 +31,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -55,16 +58,19 @@ def command(*argv, cwd=None):
 
 
 def toolchain():
-    """The toolchain the products need: the Swift compiler, Xcode and the SDK.
+    """The versions and the builds of the Swift compiler, Xcode and the SDK.
 
     Only the compiler line of `swift --version` counts: its `Target:` line
     names the host's macOS version, which does not change the products.
     """
+    swift = command("swift", "--version").partition("\n")[0]
+    version = re.search(r"Swift version (\S+)", swift)
+    xcode = command("xcodebuild", "-version").splitlines() or [""]
     return {
-        "swift": command("swift", "--version").partition("\n")[0],
-        "xcode": command("xcodebuild", "-version"),
-        "sdk": command("xcrun", "--sdk", "macosx", "--show-sdk-version"),
-        "sdk_build": command("xcrun", "--sdk", "macosx", "--show-sdk-build-version"),
+        "versions": {"swift": version.group(1) if version else swift, "xcode": xcode[0],
+                     "sdk": command("xcrun", "--sdk", "macosx", "--show-sdk-version")},
+        "builds": {"swift": swift, "xcode": " ".join(xcode[1:]),
+                   "sdk": command("xcrun", "--sdk", "macosx", "--show-sdk-build-version")},
     }
 
 
@@ -166,12 +172,19 @@ def unpack(root, lane, archive):
         raise ProductsError(f"{build} already exists; the test job must not build")
     stream(["zstd", "-dc", "-q", str(archive)], directory, ["tar", "-xpf", "-"])
     manifest = json.loads((build / MANIFEST).read_text())
+    current = toolchain()
+    built = manifest.get("toolchain") or {}
     expected = {"lane": lane, "commit": command("git", "rev-parse", "HEAD", cwd=root),
-                "toolchain": toolchain()}
+                "toolchain versions": current["versions"]}
+    found = {"lane": manifest.get("lane"), "commit": manifest.get("commit"),
+             "toolchain versions": built.get("versions")}
     for key, value in expected.items():
-        if manifest.get(key) != value:
-            raise ProductsError(f"The {lane} products were built with {key} {manifest.get(key)!r}; "
+        if found[key] != value:
+            raise ProductsError(f"The {lane} products were built with {key} {found[key]!r}; "
                                 f"this job has {value!r}. Build and test runners must use one toolchain.")
+    if built.get("builds") != current["builds"]:
+        print(f"::warning title=Test products::The {lane} products were built with toolchain builds "
+              f"{built.get('builds')!r}; this job has {current['builds']!r}. The versions are equal.")
     print(f"{lane} test products: {manifest.get('entries')} entries extracted in {time.monotonic() - started:.1f} s")
 
 

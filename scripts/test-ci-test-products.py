@@ -8,6 +8,7 @@ fixed values. The fixed build path is a temporary directory here.
 import contextlib
 import importlib.util
 import io
+import json
 import os
 from pathlib import Path
 import shutil
@@ -22,7 +23,9 @@ SPEC = importlib.util.spec_from_file_location("ci_test_products", ROOT / "script
 products = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(products)
 
-TOOLCHAIN = {"swift": "Apple Swift version 6.4.2", "xcode": "Xcode 27.2", "sdk": "27.2", "sdk_build": "27C1"}
+TOOLCHAIN = {"versions": {"swift": "6.4.2", "xcode": "Xcode 27.2", "sdk": "27.2"},
+             "builds": {"swift": "Apple Swift version 6.4.2 (swiftlang-6.4.2.1.4)", "xcode": "Build version 27B5038j",
+                        "sdk": "26B5110a"}}
 DEBUG = ".build/arm64-apple-macosx/debug"
 KEPT = (f"{DEBUG}/ProviderPackageTests.xctest/Contents/MacOS/ProviderPackageTests", f"{DEBUG}/darkbloom",
         f"{DEBUG}/Provider_Resources.bundle/model.json", f"{DEBUG}/mlx.metallib",
@@ -58,7 +61,7 @@ class TestProductsTests(unittest.TestCase):
         self.archive = Path(temporary.name) / "out" / "provider.tar.zst"
         self.environment = Path(temporary.name) / "github-env"
         for patch in (mock.patch.object(products, "FIXED_ROOT", self.fixed),
-                      mock.patch.object(products, "toolchain", lambda: dict(TOOLCHAIN)),
+                      mock.patch.object(products, "toolchain", lambda: json.loads(json.dumps(TOOLCHAIN))),
                       mock.patch.dict(os.environ, {"GITHUB_ENV": str(self.environment)})):
             patch.start()
             self.addCleanup(patch.stop)
@@ -95,9 +98,18 @@ class TestProductsTests(unittest.TestCase):
         status, printed = self.run_main("uploaded", str(self.archive))
         self.assertEqual(status, 0, printed)
 
-    def test_products_of_another_toolchain_or_commit_are_refused(self):
+    def test_products_of_another_toolchain_version_or_commit_are_refused(self):
         self.pack_and_clear()
-        other = {**TOOLCHAIN, "xcode": "Xcode 27.1"}
+        # Another build of the same versions (the release Xcode 27.2 against a
+        # pre-release one, run 42037827790) warns and runs the products.
+        other = {"versions": TOOLCHAIN["versions"], "builds": {**TOOLCHAIN["builds"], "xcode": "Build version 27B52"}}
+        with mock.patch.object(products, "toolchain", lambda: other):
+            status, printed = self.run_main("unpack", "provider", str(self.archive))
+        self.assertEqual(status, 0, printed)
+        self.assertIn("::warning title=Test products::", printed)
+        self.assertIn("27B52", printed)
+        shutil.rmtree(self.package / ".build")
+        other = {"versions": {**TOOLCHAIN["versions"], "xcode": "Xcode 27.1"}, "builds": TOOLCHAIN["builds"]}
         with mock.patch.object(products, "toolchain", lambda: other):
             status, printed = self.run_main("unpack", "provider", str(self.archive))
         self.assertEqual(status, 1)

@@ -159,7 +159,7 @@ restore their build cache by the exact key first, then by the key prefix; the
 action then tries the loose prefix, which ignores the CI recipe, and builds
 once more from nothing if that build fails. The test jobs build nothing: they
 download their lane's products and refuse products of another commit or
-toolchain. Only a push to `dev` or `master` saves a build; a pull request
+toolchain version. Only a push to `dev` or `master` saves a build; a pull request
 restores its base branch's entry and saves nothing
 ([CI caching](build.md#ci-caching)). A push whose tree a pull request run
 already tested runs no test job; the build jobs of the components the push

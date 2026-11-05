@@ -1,6 +1,6 @@
 ### Provider CI: build once, test on small Macs
 
-- Each lane builds its debug test products once, on a 12 vCPU Blacksmith Mac: Build cluster test products and Build provider test products. The test jobs download the products and run them with `swift test --skip-build`; they compile no package. A test job refuses products of another commit or toolchain.
+- Each lane builds its debug test products once, on a 12 vCPU Blacksmith Mac: Build cluster test products and Build provider test products. The test jobs download the products and run them with `swift test --skip-build`; they compile no package. A test job refuses products of another commit or of another Swift, Xcode or SDK version, and warns when only their builds differ.
 - The jobs that build or run the products work at one fixed path, `/private/tmp/dinf`, because SwiftPM's products hold absolute paths and Blacksmith and Darkbloom check out to different paths.
 - The cluster tests start as soon as the cluster products are up. The worker capability and prefill schedule checks, which compile a release build, run in Cluster Release Build Checks on a 12 vCPU Blacksmith Mac. The `Provider Tests` gate requires it.
 - Refresh build caches is gone: a push whose tree a pull request run already tested runs the build jobs of the components it changed, without an upload.

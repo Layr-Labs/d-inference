@@ -1211,7 +1211,14 @@ hashes, enum casing and optional-field omission.
 download only the committed manifests' hash-pinned public prompt assets, never
 weights. The downloader identifies itself as `darkbloom-prompt-fixtures/1` to
 the CDN and retains same-origin HTTPS, byte-budget and integrity checks.
-Provisioning failures fail qualification; they must not silently skip vectors.
+It retries only a cut or failed transfer (a TLS, socket or connection error, a
+timeout, a body that ends before its declared size, or HTTP 5xx), at most 3
+attempts per artifact with 1 s and 3 s backoff inside the 120 s deadline. A
+full-size body with the wrong SHA-256, an oversize body, a Content-Length
+mismatch, a cross-origin response, another non-200 status or the deadline fails
+at once. `scripts/prepare-mimo-prompt-fixtures.py` applies the same rule per
+metadata file. Provisioning failures fail qualification; they must not silently
+skip vectors.
 
 Public validation means **this implementation matches those fixed expectations**.
 It does not run private Go/Rust implementations, establish current cross-implementation

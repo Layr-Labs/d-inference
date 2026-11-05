@@ -4080,6 +4080,36 @@ import Darwin
         let asFastAdvice = A.advise(asFast, throughDarkbloom: true, serving: false)
         expect(asFastAdvice == A(mode: tp, reason: "serves up to 8 requests at once and is as fast here"),
                "advice: more at once and as fast, no figures: \(String(describing: asFastAdvice))")
+        // A measurement on these Macs outranks a prediction (owner, 2026-11-05: "use measurements when present"). Two M5
+        // Ultras, build D (2026-11-05 07:24Z): Gemma tensor parallel served 111 tok/s while the pipeline had not served yet;
+        // the planner predicted that pipeline at 152 (it then served 64), so comparing predictions recommended it.
+        let gemmaM5U = [A.Option(mode: tp, planned: true, fitsNow: true, measuredTokensPerSecond: 111, predictedTokensPerSecond: 133,
+                                 concurrentRequests: 1, publicTraffic: true),
+                        A.Option(mode: pp, planned: true, fitsNow: true, predictedTokensPerSecond: 152, concurrentRequests: 1, publicTraffic: true)]
+        let gemmaM5UAdvice = A.advise(gemmaM5U, throughDarkbloom: true, serving: false)
+        expect(gemmaM5UAdvice == A(mode: tp, reason: "the only one measured on these Macs so far"),
+               "advice: a measured mode outranks a predicted one: \(String(describing: gemmaM5UAdvice))")
+        // MiMo on the same pair: tensor parallel measured 55, the speculative pipeline (one at a time too) not yet.
+        let mimoM5U = [A.Option(mode: "pipeline_mtp_v1", planned: true, fitsNow: true, predictedTokensPerSecond: 90, concurrentRequests: 1,
+                                publicTraffic: true),
+                       A.Option(mode: tp, planned: true, fitsNow: true, measuredTokensPerSecond: 55, predictedTokensPerSecond: 60,
+                                concurrentRequests: 1, publicTraffic: true)]
+        expect(A.advise(mimoM5U, throughDarkbloom: true, serving: false)?.mode == tp, "advice: MiMo's measured tensor parallel")
+        // Several measured, one not: the fastest measured, said so.
+        let three = [A.Option(mode: tp, planned: true, fitsNow: true, measuredTokensPerSecond: 40, concurrentRequests: 1, publicTraffic: true),
+                     A.Option(mode: pp, planned: true, fitsNow: true, measuredTokensPerSecond: 60, concurrentRequests: 1, publicTraffic: true),
+                     A.Option(mode: "pipeline_mtp_v1", planned: true, fitsNow: true, predictedTokensPerSecond: 200, concurrentRequests: 1,
+                              publicTraffic: true)]
+        expect(A.advise(three, throughDarkbloom: false, serving: false) == A(mode: pp, reason: "the fastest measured on these Macs so far"),
+               "advice: the fastest measured of several")
+        // Through Darkbloom a mode that serves more at once still wins without a speed (R4-15), measured or not.
+        let lanesFirst = [A.Option(mode: tp, planned: true, fitsNow: true, predictedTokensPerSecond: 90, concurrentRequests: 8, publicTraffic: true),
+                          A.Option(mode: pp, planned: true, fitsNow: true, measuredTokensPerSecond: 41, concurrentRequests: 1, publicTraffic: true)]
+        expect(A.advise(lanesFirst, throughDarkbloom: true, serving: false)
+               == A(mode: tp, reason: "serves up to 8 requests at once; the others take fewer, and Darkbloom turns the rest away"),
+               "advice: more at once still wins through Darkbloom")
+        expect(gemmaM5UAdvice?.plainLine(model: "Gemma 4 26B", width: 80) == "Recommended for Gemma 4 26B on these two Macs: Tensor parallel, measured here.",
+               "advice: the short reason: \(String(describing: gemmaM5UAdvice?.plainLine(model: "Gemma 4 26B", width: 80)))")
         for advice in [measured, A.advise(predicted, throughDarkbloom: true, serving: false), pair2, asFastAdvice] {
             let line = advice?.plainLine(model: "Gemma 4 26B") ?? ""
             expect(!line.isEmpty && !line.contains("tok") && !line.contains("against") && !line.contains("(measured)") && !line.contains("predicted)"),

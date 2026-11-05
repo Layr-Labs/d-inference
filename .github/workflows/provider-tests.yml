@@ -3,9 +3,9 @@ name: Provider Tests
 # The provider and cluster build and test jobs and the Provider Tests gate,
 # shared by CI (dev) (.github/workflows/ci-dev.yml) and CI (master)
 # (.github/workflows/ci-master.yml). Their plan (provider-plan.yml) chooses
-# the components and the runners of the test lanes; pull requests and pushes
-# run the same jobs. Each lane builds once, on a large Blacksmith runner, and
-# its test jobs run those products. Only pushes save caches.
+# the components and the runner of every macOS job; pull requests and pushes
+# run the same jobs. Each lane builds once, on a large runner, and its test
+# jobs run those products. Only pushes save caches.
 on:
   workflow_call:
     inputs:
@@ -52,11 +52,11 @@ jobs:
     # soon as their products are up. A push whose tree a pull request run
     # already tested runs no test job; the build job then builds only the
     # components the push changed, to refresh the branch's caches. The build
-    # jobs stay on Blacksmith: the Darkbloom approval gives every routed lane
-    # one small size.
+    # jobs need a large Mac: their lanes ask for 12x32 and only while job
+    # sizes are on; otherwise they run on Blacksmith (provider-plan.yml).
     name: Build cluster test products
     if: ${{ inputs.cluster == 'true' || (github.event_name == 'push' && inputs.skip == 'true' && inputs.changed_cluster == 'true') }}
-    runs-on: blacksmith-12vcpu-macos-27
+    runs-on: ${{ fromJSON(inputs.routes)['build-cluster'] }}
     timeout-minutes: 60
     steps:
       # SwiftPM's products hold absolute paths, and Blacksmith and Darkbloom
@@ -141,7 +141,7 @@ jobs:
   build-provider:
     name: Build provider test products
     if: ${{ inputs.provider == 'true' || (github.event_name == 'push' && inputs.skip == 'true' && inputs.changed_provider == 'true') }}
-    runs-on: blacksmith-12vcpu-macos-27
+    runs-on: ${{ fromJSON(inputs.routes)['build-provider'] }}
     timeout-minutes: 60
     steps:
       # The fixed build path, as in build-cluster (scripts/ci-test-products.py).
@@ -733,12 +733,13 @@ jobs:
     # The switched cluster runtime tests these runners cannot pass, the long
     # ones and the benchmarks (scripts/cluster-test-plan.py). They run and
     # report whenever the cluster jobs run; a failure does not fail the
-    # workflow. They peak at 18.5 to 24.7 GiB, more than the routed size, so
-    # they stay on Blacksmith.
+    # workflow. They peak at 18.5 to 32.8 GiB, so both shards share one lane,
+    # test-cluster-gpu, which asks for 12x32 only while job sizes are on;
+    # otherwise they run on Blacksmith (provider-plan.yml).
     name: Cluster GPU Tests (non-blocking, shard ${{ matrix.shard }})
     needs: build-cluster
     if: ${{ inputs.cluster == 'true' }}
-    runs-on: blacksmith-12vcpu-macos-27
+    runs-on: ${{ fromJSON(inputs.routes)['test-cluster-gpu'] }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -823,10 +824,11 @@ jobs:
     # runner, in a job of their own: no test job waits for them. The build is
     # reused across runs: SwiftPM rebuilds what changed, and source
     # timestamps are restored only for files whose contents match the cached
-    # build's (scripts/provider-release-cache.py).
+    # build's (scripts/provider-release-cache.py). Its lane asks for 12x32,
+    # as the build jobs' do (provider-plan.yml).
     name: Cluster Release Build Checks
     if: ${{ inputs.cluster == 'true' }}
-    runs-on: blacksmith-12vcpu-macos-27
+    runs-on: ${{ fromJSON(inputs.routes)['cluster-release-checks'] }}
     timeout-minutes: 60
     steps:
       - name: Select today's .git cache

@@ -355,7 +355,7 @@ class WorkflowRoutingTests(unittest.TestCase):
         self.assertIn("          SELECTED: provider=${{ needs.changes.outputs.provider }},"
                       "cluster=${{ needs.changes.outputs.cluster }},"
                       "mimo_audio=${{ needs.changes.outputs.mimo_audio }}\n", plan["tested"])
-        self.assertIn("    needs: components\n", plan["route"])
+        self.assertIn("    needs: [tested, components]\n", plan["route"])
         for name in routing.COMPONENTS:
             self.assertIn(f"      {name}: ${{{{ steps.choose.outputs.{name} }}}}\n", plan["components"])
         ci = workflow.job_blocks((ROOT / ".github/workflows/provider-tests.yml").read_text().split("\njobs:\n", 1)[1])

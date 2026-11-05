@@ -8,9 +8,329 @@ or console deployment, feature activation, model promotion or hardware
 qualification. Sections marked historical retain the original candidate's
 qualification, opt-in and deployment limits rather than claiming activation.
 
-## v0.10.7 — candidate (unpublished)
+## v0.10.8 — candidate (unpublished)
 
-Prepared on 2026-11-03; tagging and publication are separate steps.
+Prepared on 2026-11-04; tagging and publication are separate steps.
+
+### Upgrade and rollout notes
+
+- Both Macs of a pair must run 0.10.8. A pair whose Macs run different builds refuses to pair: it fails closed ("the two Macs run different Darkbloom builds; install the same Darkbloom on both") until both Macs run the same release. The pair's own update installs a release on both Macs or on neither.
+- A pair on 0.10.7 updates itself; nothing needs to be run. With `auto_update` on (the default) and `DARKBLOOM_NO_UPDATE_CHECK` unset on both Macs, at the pair's update slot (every 30 minutes) both Macs download and verify 0.10.8, the pair finishes the requests it accepted (at most 120 seconds, never cancelling one), and both Macs install it, restart their cluster services and set the pair up again. To update at once, run `darkbloom update` on each Mac; no log-out is needed. Two cases wait, as `docs/provider/two-mac-cluster.md` ("Updating Darkbloom on the pair") describes: a pair serving on the leader's local API (`darkbloom cluster local`) or a Mac serving alone does not update while it serves, and a pair whose cluster services were started by 0.10.6 (updated by hand but never logged out) must log out and back in on both Macs, or restart them, once.
+- A pair still on 0.10.6 stops serving through Darkbloom once 0.10.8 registers, if 0.10.8's cluster runtime facts list more than 8 models (0.10.7's listed 12). The production coordinator keeps at most 64 pair approvals, newest release first and each release whole: 0.10.6 and 0.10.7 hold 24 each, and 0.10.8 adds 2 per model, so 0.10.6's are left out. Such a pair updates by hand once, as 0.10.7's notes say: `darkbloom update` on both Macs, then log out and back in on both. Single Macs do not use pair approvals.
+- `darkbloom update --rollback` puts back the release a Mac ran before its last update (0.10.7, after this update) and quarantines the one it leaves. On a Mac that serves in a pair it refuses and changes nothing; stop that Mac's cluster service with `darkbloom cluster stop --service`, run `darkbloom update --rollback`, then start it again with `darkbloom cluster`, and the other Mac follows to the same release. From 0.10.8 on, plain `darkbloom cluster stop` stops serving on both Macs and leaves their cluster services on, so where the published v0.10.7 entries say `darkbloom cluster stop` for a rollback or a restart of the cluster service, use `darkbloom cluster stop --service`.
+- New commands. `darkbloom uninstall` takes Darkbloom off a Mac: **Remove everything**, or **Keep models** for a later reinstall (`--everything` or `--keep-models` with `--yes`, and `--dry-run`, for scripts). On a paired Mac, `darkbloom start`, `stop`, `restart` and `status` now act on the pair, from either Mac, and `--solo` acts on single-Mac serving on this Mac only. `darkbloom stop` stops serving on both Macs; they stay stopped after a restart until `darkbloom start` on either Mac. `darkbloom cluster status` answers in plain words, with `--json` and an exit status for scripts and agents (`--details` is the earlier report).
+- Macs stuck in App Attest's `is_supported_false` after a self-update serve again (#1765). When Apple first answers unsupported, 0.10.8 refreshes macOS's record of its own app (LaunchServices) and asks Apple again, once each time the provider starts or a scheduled availability window opens. So the update to 0.10.8 clears it too, although 0.10.7's updater installs it, and 0.10.8's updater refreshes the record after every later update. 0.10.7's automatic restart for this state had cleared 1 of 117 Macs.
+- Known limitation, unchanged from 0.10.7: a pair serving in tensor parallel prefills prompts one at a time, oldest first. A short request that arrives while a long prompt is being prefilled waits for it. If that wait passes the short request's first-token allowance (10 seconds plus a share per prompt token, or the coordinator's first-content budget), the request ends with a first-token timeout, which the local API reports as `server_error` "Response generation failed". It is a timeout behind another request, and the request is safe to retry. It shows under mixed load with long prompts: in a 20-minute test on one pair, with prompts of about 56,000 tokens among short ones and up to 32 requests at once, 102 of 178 requests timed out this way. The pair kept serving, and a client that disconnects during a long prompt now frees its place within seconds once the pair receives the cancel. Through Darkbloom, a cancel can take 20 to 30 seconds to reach a pair that is busy with other long prompts, and under sustained load with long prompts the coordinator can end a pair's serving and set it up again, failing the requests in flight; they are safe to retry. Both are unchanged from 0.10.7.
+- Known limitation, unchanged from 0.10.7: on a pair serving locally only, **Switch to serving through Darkbloom** doesn't offer the pair to Darkbloom until the pair starts again, although both screens show ✓ and `darkbloom status` says it is earning through Darkbloom. Stop the pair and start it again with **Serve through Darkbloom** (`darkbloom stop`, then `darkbloom cluster`).
+- Known limitation: a GLM-5.3-Flash pair in pipeline serves one request at a time, and a request cancelled while its prompt is being read keeps that one place until the prompt is read. Tensor parallel serves several requests at once and was about 2.6 times faster per request on two M5 Ultras, so use it for GLM pairs.
+- Known limitation: during a model or mode change on a pair, or while a pair updates itself, `darkbloom status` and `darkbloom cluster status` can read `stopped` (exit 4) or `unknown` on either Mac for a minute or two. Check again after a minute before acting on it, including before running `darkbloom start`.
+- The registration is the one 0.10.7 sent: the same fields and a `darkbloom_cluster_runtime_v2` block, carried while `PROD_CLUSTER_RUNTIME_ENABLED` is `true`. The scripts that build the registration and its cluster runtime facts, and `ClusterPublicModels`, are unchanged since v0.10.7, so the production coordinator needs nothing new. The release jobs, their permissions and their order are unchanged too; only the notes on the GitHub release page are written differently. After the tag the platform snapshots its provider contracts from the tagged commit and sets `LatestProviderVersion` to `0.10.8`.
+- MLX pins are unchanged from v0.10.7: `libs/mlx` and the nested `mlx` (`72dffa2d`), `libs/mlx-swift` (`c633d221`) and `libs/mlx-swift-lm` (`32f5c744`), so the tag build's `metallib_hash` should equal v0.10.7's `98bab9d7…614be`.
+- The 20 entries below are the pending fragments rendered verbatim, in filename order. The two CI entries (#1752, #1771) and the release page entry (#1786) change no provider artifact. #1780 and #1784 have no entry of their own: they update entries of earlier pull requests (#1780 the uninstall entry of #1772), as #1783 and #1786 also do. The 0.10.7 entries that #1774 corrected after publication (`darkbloom cluster stop` to `darkbloom cluster stop --service`) are not repeated; the rollback note above carries that change.
+
+### App Attest keeps an attestation cut off by a disconnect or a stop
+
+- When the coordinator connection ends, or the provider is stopped or restarted (`darkbloom stop`, the cluster service restarting this Mac's part, an update), while Apple is attesting a new App Attest key, the provider now waits up to 30 seconds for Apple's answer and keeps the proof. The next connection sends it instead of retiring the key, so the Mac no longer loses private serving for an hour, and a pair it leads can serve once both Macs are verified.
+- A crash or forced kill during that Apple call still retires the key under the same one-hour rule, and the hourly key budget is unchanged.
+
+### App Attest keeps working after a self-update
+
+- After a self-update, 12–15% of updating macOS 27 Macs reported App Attest as unsupported (`is_supported_false`) for minutes to hours. Restarting did not help: 0.10.7's automatic restart for this state fixed 1 of 117 Macs. Macs without the Darkbloom MDM profile received no inference until it cleared. The cause: Apple's answer depends on macOS's record of the installed app (LaunchServices), and the update replaced `Darkbloom.app` without refreshing that record.
+- The updater now refreshes that record right after it installs a release.
+- When Apple first reports App Attest as unsupported, the provider now refreshes the record for its own app and asks Apple again before it answers the coordinator, once each time the provider starts or a scheduled availability window opens. This also covers the update to this release, which the previous release's updater installs.
+- When the provider already runs in the logged-in GUI session, `darkbloom doctor` no longer advises logging in through Screen Sharing and restarting for `is_supported_false`. It explains that this usually follows a self-update and prints the `lsregister -f` command that refreshes the record by hand.
+
+### CI caches .git and SwiftPM repositories; only master and dev pushes save caches
+
+- Every `ci.yml` job that checks out restores the newest saved `.git` first, so the checkout fetches only new objects and reuses submodule clones. A restored `.git` that `git fsck` rejects is deleted first; no step continues on error. The `.git` key names the UTC day, so each branch saves `.git` at most once a day. The full-history `docs` job keeps its own entries.
+- The build lanes restore SwiftPM's repository clones, which a cold build otherwise downloads.
+- Checkouts download less. Every job but Docs Lint skips the evidence tarballs under `docs/reports/evidence` and `landing/public/media` (408 MB of tarballs and landing videos), which no other job reads. Docs Lint and Docs Impact fetch history without file contents, about 37 MiB instead of about 1 GB, and fetch old file versions only when the provenance check reads them.
+- Only pushes to `master` and `dev` save CI caches. A pull request restores its base branch's entries, then `master`'s, and saves none, so it no longer evicts them from the repository's 10 GB Actions cache.
+- Provider builds on Darkbloom Macs use the CMake 3.31.12 already in the image's tool cache instead of downloading 80 MB each time; other runners still download and verify it.
+- The MiMo audio gate, and the 1.87 GB codec its fixture needs, run only when the gate's inputs change (MiMo, audio and media provider code, the MiMo tests, the MLX pins, the fixture scripts or the gate's recipe) and on every `master` push. Pull requests never save the codec.
+- Checkouts no longer keep the job token in `.git/config`, which the `.git` cache would otherwise store.
+- Each job logs whether `actions/cache` compresses with zstd or gzip; entries saved with one are not restored by a runner using the other.
+- Limitation: on a pull request, the provider summary job restores its base branch's newest compatible build and rebuilds the commit's changes instead of reusing its shards' build.
+
+### CI's macOS jobs ask for Darkbloom Sandboxes again
+
+- The macOS jobs of `ci.yml` read the Darkbloom route again, as they did before they moved to Blacksmith only. Each provider shard (`test-provider-1` to `test-provider-3`), the shard summary (`test-provider-summary`), the SDK lane (`test-provider-sdk`), the cluster metadata checks (`test-cluster-checks`), each cluster runtime and GPU shard (`test-cluster-1` to `test-cluster-3`, `test-cluster-gpu-1`, `test-cluster-gpu-2`) and the cluster focused checks (`test-cluster-focused`) run on a Darkbloom Mac when the plane grants their lane, and on `blacksmith-12vcpu-macos-27` otherwise.
+- A lane is requested only when its job runs: the provider lanes when provider inputs change, the SDK lane on pushes and SDK-lane changes, and the cluster lanes when cluster inputs change.
+- The provider shard count, the cache-save rules and the `.git` and SwiftPM caches are unchanged.
+- Limitation: a lane the plane's approval does not name keeps Blacksmith, as do all lanes while `DARKBLOOM_ROUTING` is not `on` and for pull requests from forks.
+
+### The everyday commands show the Darkbloom mark in a terminal
+
+- In a terminal, `darkbloom start`, `stop`, `restart`, `status` and `update` open with the Darkbloom mark beside the
+  command's name, blooming once as the cluster setup's does, and show its turning one-row live line while they wait
+  for a drain, a restart or an update's download.
+- Look only: every line the commands print is unchanged and in the same order, and so are their exit statuses.
+- Scripts, logs, the background service's files, `NO_COLOR`, `TERM=dumb` and narrow windows keep exactly the plain
+  output. `DARKBLOOM_NO_ANIMATION` or `CI` keeps the mark and the live line still.
+- On a paired Mac, `darkbloom start` in a terminal opens the cluster's screen, which already draws the mark, so it
+  isn't drawn twice.
+- A command that refuses before doing any work (an unreadable pairing record, nothing to restart, flags that can't go
+  together), or finds nothing to do (`stop --solo` with no single-Mac serving), prints only its lines, with no mark.
+- The mark appears once, at the top of the command you ran: `unenroll` and `autopilot enable`, which run `stop --solo`
+  and `start` inside themselves, show none.
+
+### A pair no longer drops all its requests when one request runs out of time before it starts
+
+- Only that request now fails, with a deadline error, and the pair keeps serving.
+
+### A client that disconnects during a long prompt no longer stalls a two-Mac pair
+
+- On a pair that serves several requests at once, a request whose client disconnects before any output now stops within seconds instead of first running its whole prompt, and the pair serves the next request at once. Before, a 60,000-token prompt kept both Macs busy for about 4 minutes, and the requests that arrived meanwhile failed. A pair that serves one request at a time still runs the prompt to its end.
+
+### Two-Mac cluster: Serve locally only starts the faster local plan, and a closing link names the other Mac
+
+- Choosing **Serve locally only** at the first setup's login check now starts the local plan: the model is planned again
+  for serving locally before anything starts, so Qwen 3.8 27B in tensor parallel keeps the speculative assistant that
+  only local serving uses (measured on one pair: 15.7 tok/s without it, 36–39 tok/s with it).
+- When a part keeps ending because the link to the other Mac keeps closing, the ✗ says so and names the other Mac's side
+  ("the other Mac's worker ended or the cable dropped") instead of blaming this Mac and calling the other "running, no
+  error reported"; the ✗ title no longer begins with "starting; ".
+- The DevNet app's cluster screens and `status` name its own command (`darkbloom-dev …`), not the production
+  `darkbloom`.
+- The mode you choose for a model is now the one that loads, also for GLM-5.3-Flash. When a part keeps ending, the
+  message names the Mac whose worker actually stopped, this Mac's included (or says it can't tell), gives the other
+  Mac's own reason when it can't connect (for example, macOS blocking its local network access), and no longer shows a
+  planned model switch as a crash. The DevNet app names its own command in more messages.
+- When macOS's Local Network setting keeps a Mac's Darkbloom app from reaching the other Mac, every screen now says so
+  and what to do on that Mac (turn on Darkbloom under Privacy & Security → Local Network, through Screen Sharing on a Mac
+  with no display), instead of "the other Mac did not answer". Retry starts a stopped pair again, q leaves a start's wait
+  at once, and the joining Mac's window shows how the leading Mac's start is going.
+- The Local Network ✗ no longer ends with a line that repeated its instruction and was cut off mid-sentence, and a ✗
+  line too long for the screen is cut at a word and marked with "…". In the DevNet app, the pairing screen's firewall
+  hint and its line about a reinstall name Darkbloom Dev.
+- While a model serves, the question of how both Macs split a model says the split is decided when it loads, instead of
+  offering one that may not be the split that loads; one layer reads "1 layer". The joining Mac's last lines say whether
+  it serves again after a restart as its cluster service stands when they're shown.
+- The card after a start says "Starts by itself at login on both Macs." only when the cluster service on both Macs
+  does; otherwise it names the Mac where it doesn't, or says the other Mac doesn't say (an older Darkbloom there).
+
+### `darkbloom cluster` after setup works like `darkbloom start`
+
+- Run again on a set-up pair, `darkbloom cluster` (and `darkbloom start` on a paired Mac) opens with both Macs and the
+  cable ("This Mac (Studio A) leads · the other Mac (Apple M3 Ultra, 256 GB) follows · cable ready") and the pair's
+  status, then the pair's model list instead of a menu. The model serving now ("serving now", or "last used" when
+  stopped) is preselected: Enter keeps it, or starts it again in the mode it served in.
+- Each model shows its modes with the speed this pair served it at, or "not measured on these Macs yet". A model that
+  runs more than one way asks how both Macs split it (the fastest measured first, tensor parallel or pipeline one
+  keypress away, on mixed Macs too).
+- A line under the models switches between local only and serving through Darkbloom (both logins are checked first,
+  before the local API stops); another starts over after one question.
+- Choosing another model while one serves asks once, then says "✓ Stopped … on both Macs" and shows each Mac's load.
+  Choosing the serving model in its mode sends one test request and shows its result ("Already serving …; test
+  response in 0.61 s", or the ✗ block with its choices); a pair served only through Darkbloom says this Mac has no local
+  API to test from.
+- Every start ends like `darkbloom start`: the outcome block, then the model in its mode and split, the Macs, where it
+  serves, the log, whether it starts by itself at login on each Mac, and `darkbloom stop` / `restart` / `status`. A
+  pair that does not serve keeps its ✗ block with Retry, Change model, Serve locally only and Diagnostics.
+- The Mac that follows says that its part runs by itself, where to change the model, and that `darkbloom stop` there
+  stops both Macs; Enter closes it.
+- When the other Mac does not answer, the screen no longer says `darkbloom cluster stop` turned its service off, and
+  says to run `darkbloom start` or `darkbloom cluster` there.
+- A fresh setup opens with what it will ask and how long it takes.
+- During the first setup the Mac that joins keeps its window open: it waits for the leading Mac to choose the model,
+  follows the start, and ends with the leading Mac's own outcome instead of a test of its own: ✓ with the leading Mac's
+  response time, or the same ✗ and reason ("Choose Retry on the other Mac" after ✗). Both windows tell the same story,
+  serving locally only or through Darkbloom, also when the leading Mac's test request fails or when it checks with
+  Darkbloom before it offers the pair (until then, neither Mac's status shows ✓). q leaves and the pair keeps going.
+- Once the pair is registered, the screen says "Offered to Darkbloom as a pair for <model>; waiting for Darkbloom to
+  accept this pair…" instead of "Registered with the coordinator as a cluster member" and the approval's ID, which read
+  as if Darkbloom had already accepted the pair.
+- When the other Mac isn't found within about 25 s at "2/4 Pair", the screen says what to check (the other Mac on this
+  screen, macOS's firewall, or pairing directly with `darkbloom cluster pair --listen` and `--connect <address>`) and
+  keeps waiting.
+- A part that stops serving is reported with its own reason ("the coordinator reported this member's runtime as
+  outdated", from its log), not "CancellationError()", on screen and in the diagnostics file.
+- Switching how a pair serves no longer announces the result before it is known.
+- The serving model chosen in another mode asks as a mode change ("Switch Gemma 4 26B from tensor parallel to pipeline?
+  It stops serving on both Macs while it loads again …"), and the list names the mode it serves in when it shows another
+  ("serving now in pipeline"); a set-up pair with no model to list (or whose planning fails)
+  still offers Start over and Quit; a pair that doesn't serve is never marked "serving now"; a failed test says "Not
+  serving" once, and its Retry waits for the pair as the start's Retry does.
+- A mode is offered only where it keeps every feature of the model. Qwen 3.8 27B is therefore offered in tensor
+  parallel only: in pipeline it would lose image and video input and logprobs. Choose the mode on the leading Mac; a
+  model chosen on the Mac that follows starts in the mode Darkbloom's plan picks.
+- The status shows the leading Mac's latest test. When a later test fails (testing the serving model again, its Retry,
+  or the test after switching between local only and serving through Darkbloom), the status shows ✗ with "The last
+  test from the leading Mac failed." instead of the earlier ✓ and response time. Switching between local only and
+  serving through Darkbloom clears the test results, as a new start or a stop does.
+
+### `darkbloom cluster` counts only the disk space that is free now
+
+- Before a model is downloaded or copied between the two Macs, each Mac that receives it must have the model's size free on disk now, plus 2.1 GB to spare. Space macOS could free later is no longer counted, such as Time Machine local snapshots or files iCloud keeps elsewhere. On one Mac Studio, macOS reported 256.6 GB available with only 54.1 GB actually free, and the setup offered a 172.9 GB download that could not fit.
+- When that space would have made room, the refusal says so: "Can't start Xiaomi: MiMo-V2.6-Flash: this Mac has 54.1 GB free; the model needs 172.9 GB and 2.1 GB to spare. macOS could free up to 202.5 GB more (purgeable files such as local snapshots), but Darkbloom doesn't count on it. Free space, then run `darkbloom cluster` again."
+- The model list shows such a model last, ending "not enough free disk". The setup's Disk line and its low-disk warning use the same figure.
+
+### Large models no longer loop on "not enough memory" on 128 GB Macs
+
+- Large models such as MiMo V2.6 Flash no longer refuse to start on two 128 GB Macs. Each start used to read the whole model into macOS's file cache first. Loading a Mac's share then made macOS compress other memory, the memory check stopped counting the cache, and the start was refused, again and again. On 2026-11-01 a pair of 128 GB M4 Max Macs was refused 680 times in a row and never served.
+- Each Mac now clears its model's files from the file cache before its part starts, and each load clears the cached pages of the weight files it reads. The loads read from the SSD into free memory, so nothing has to be compressed. Only the model's own files are cleared. Their contents are never changed and no password is asked for.
+- The same cause sometimes refused Qwen3.8 27B for one start on a busy 128 GB MacBook Pro. That refusal is fixed too.
+- A load can take a few seconds longer, because its weights now come from the SSD instead of memory.
+- The worker log now records each load's memory check in one `darkbloom-load-memory-v1` line: what it needed, what was free, how much file cache there was, and how much was compressed during the load. A refusal now explains itself.
+
+### On a Mac in a two-Mac cluster, the everyday commands control the pair
+
+- `darkbloom stop`, `start`, `restart` and `status` now work on a paired Mac the way they work on one Mac, and each
+  says first that it acts on the pair. `--solo` on any of them acts on single-Mac serving on this Mac only and never
+  touches the pair.
+- `darkbloom stop` (or `darkbloom cluster stop`) stops serving on both Macs, from either Mac. They stay stopped when
+  a Mac restarts, and both Macs stay reachable, so `darkbloom start` on either Mac starts the pair again. It ends by
+  checking that the memory was freed on both Macs. If the leading Mac doesn't answer, it says so and how to stop this
+  Mac alone. The earlier `cluster stop`, which also turns this Mac's cluster service off, is
+  `darkbloom cluster stop --service`.
+- `darkbloom start` opens the same screen as `darkbloom cluster` in a terminal. In a script it starts the pair's saved
+  model, waits until it serves, and ends with a short summary, as single-Mac start does; the exit status says whether
+  it serves. Single-Mac options such as `--model` need `--solo` there; without it, `start` names them and
+  starts nothing.
+- `darkbloom restart` restarts the pair with its current model. `darkbloom status` starts with the pair: who leads,
+  the model, whether it serves now and what to do.
+- `darkbloom stop` no longer says "Provider service is not running" on a paired Mac, and never stops the cluster's own
+  part when stopping single-Mac serving.
+- `darkbloom cluster status` answers in plain words, with `--json` for scripts and agents and an exit status (0
+  serving, 3 not serving yet, 4 stopped, 5 the other Mac isn't answering, 6 not in a cluster, 7 this Mac's pairing
+  record can't be read). The earlier detailed report is `--details`.
+- A Mac whose pairing record can't be read is never reported as "not in a cluster": the commands say so and how to
+  check it (`darkbloom cluster`). `start`, `stop` and `restart` then change nothing without `--solo`.
+- `darkbloom cluster --help` lists the other cluster commands and what each is for.
+- `darkbloom cluster link --remove` on a paired Mac warns first that it undoes the working cable setup and stops the
+  cluster on both Macs, and asks once (`--yes` for scripts).
+- `darkbloom stop` says the pair stopped only once both Macs' parts have ended (it waits up to a minute); otherwise it
+  says it asked both Macs and what is still running. A failed stop on the Mac that follows says what is known.
+  `darkbloom restart` starts the pair again only once both parts have ended. A script `start` waits through the
+  coordinator's pairing and an Apple verification retry instead of reporting "not serving".
+- A cluster service left from an earlier pairing no longer makes a Mac count as paired; `darkbloom cluster status`
+  names it and how to remove it. `--solo` refuses while this Mac's part of the pair serves (they share one serving
+  lock). The app's local mode says plainly that it isn't available on a paired Mac.
+- `darkbloom update --rollback`'s advice turns the cluster service off with `darkbloom cluster stop --service`.
+- The DevNet app names `darkbloom-dev` in every command it suggests for a pair: the card after `start` and
+  `restart`, `cluster stop --service`, `cluster local`, `cluster pair --forget` and the hints. Its Local Network hint
+  names the app to allow, Darkbloom Dev.
+- `stop`, `restart`, `cluster stop --service` and a script `start` say what they are waiting for and for how long at
+  most, instead of going quiet for minutes.
+- With Darkbloom and Darkbloom Dev on one Mac, each lists only its own cluster incidents. Incidents recorded before
+  this count as Darkbloom's.
+- The leading Mac's service log notes the other Mac's status checks once a minute, not every second.
+- Darkbloom Dev keeps its cluster incidents in a file of its own, so Darkbloom never lists them, even before
+  Darkbloom itself updates.
+- Right after Darkbloom Dev is installed on a paired Mac, `darkbloom-dev doctor` no longer fails with "Configuration
+  input is unsafe, empty or oversized" before a cluster setup is chosen with it. A saved setup in a file that other
+  users can open fails with the fix (`chmod 600 …`).
+- In the DevNet app, `darkbloom-dev cluster` without a terminal, the "Cluster service" line of `status`, Ctrl-C in
+  the setup screen and the pair update hints name `darkbloom-dev`.
+- `darkbloom cluster status --json` on the leading Mac says whether the other Mac answers while they run the cluster.
+- On the Mac that follows, `cluster status` and `status` wait at most 10 seconds for the leading Mac's answer, and say
+  so when it is slow; past that they show this Mac's own view.
+- `darkbloom unenroll` (leaving fully) and the app's local mode no longer stop with an internal error when they stop or
+  drain the provider first.
+- `status` and `cluster status` no longer say "loading" while macOS keeps a Mac off the local network: both Macs say
+  the pair is not serving and what to turn on, on which Mac. A stopped pair reads stopped even when the other Mac has
+  gone.
+- On the leading Mac, that "not serving" now holds while the other Mac stays refused, also while the leading Mac's
+  part restarts; `cluster status --json` then lists the same "Not serving" line as the plain output. The DevNet app's
+  stopped pair names its own `local` command.
+- `cluster status --json` gives the serving mode and each Mac's share, and the "Model:" line of `status` and `cluster
+  status` names the mode, for every mode. Before, a pair serving GLM-5.3-Flash in pipeline left them out.
+
+### A paired Mac's cable port is no longer reported as not isolated
+
+- `darkbloom cluster link` and `darkbloom cluster doctor` no longer report a paired Mac's cable port as not isolated ("the cluster subnet 10.219/16 is already used on this Mac") because macOS routes the port's own address through the loopback.
+
+### Cluster model list: one rule for what fits
+
+- The cluster's plan now judges a Mac's memory with every app closed the way the load-time memory gate does, which counts cached files: a 128 GB Mac can give a model 120 GiB, not 75.6 GiB. MiMo V2.6 Flash on two 128 GB Macs, and large models on an M3 Ultra with an M5 Max, are offered (with "Quit apps first" when apps hold the memory) instead of being called too large even with every application closed.
+- A split whose GPU part is larger than a Mac's GPU memory limit is no longer offered just because memory happens to be free; it would fail with "Insufficient Memory".
+- A Mac under memory pressure is no longer described as fitting on cached files the gate will not count; the plan says to quit apps there first.
+
+### `darkbloom cluster` on Macs paired before: next steps, Pair again and Start over
+
+- A Mac whose saved pairing was made with another Secure Enclave key (after
+  moving between the Darkbloom and DevNet apps, or after the installer made a
+  new key) now says so when `darkbloom cluster` opens and offers **Pair again**,
+  instead of its usual menu while every start of its part failed with "pair
+  again".
+- When the other Mac does not answer over the cable, the screen names that Mac,
+  its likely reasons (its cluster service is off, or it is asleep, off, or
+  waiting for someone to log in) and the command to run there. It keeps **Start
+  over**, which asks first, since a Mac that is away is not a
+  broken pairing; the Mac that follows also offers **Try again**. This ends the
+  case where one Mac waited at "2/4 Pair" while the other, still holding an
+  earlier pairing, showed its status and ended.
+- Choosing a model no longer spins on "Reading both Macs over the cable" with no
+  reason: the screen says why it is still waiting and, on a Mac paired before,
+  ends with **Try again**, **Start over** and **Quit**.
+- The Mac that follows names the Mac it follows and the command to run there,
+  instead of "Nothing to do here".
+- Setting up a cable port from `darkbloom cluster` continues to the Mac's usual
+  screen instead of ending there.
+- Every paired Mac offers **Start over**, which asks once (No by
+  default). It and **Pair again** unpair this Mac exactly as `darkbloom cluster
+  pair --forget` does, then run the ordinary pairing with the code on both
+  screens.
+
+### `darkbloom cluster` says Serving and Done only once the model is loaded
+
+- The setup ends with its outcome between two rules: `✓ Serving <model> through Darkbloom on both Macs (<split>)` (or
+  `on this Mac's local API only`) with the API and the test response, then Done; or `✗ Not serving: <reason>.` with
+  the next step. Before, a pair registered with the coordinator said Serving and Done on both Macs while nothing was
+  loaded.
+- Such a pair is now awaited, at most 15 minutes, until both Macs loaded the model and it answered its first request.
+- The reasons it names: a Mac without a Darkbloom login, a Mac Apple hasn't verified yet (with when Darkbloom retries
+  by itself; don't restart either Mac until then), a Mac without free memory for its share, or a part that keeps
+  ending. **Retry**, **Change model**, **Serve locally only** and **Diagnostics** follow; q exits with status 1 and
+  never says Done.
+- Switching a serving pair between serving through Darkbloom and locally only, from the leading Mac, now ends the same
+  way as a start: tested (or, for a pair registered with the coordinator, awaited until it serves), then the outcome
+  block. Before, a registered pair was called serving at once.
+- A missing login is named before the Start step starts anything, with **Log in on this Mac** (or **Check again**),
+  **Serve locally only** and **Cancel**.
+- The Start step says loading takes a few minutes for a large model; a color terminal shows one live row per Mac with
+  its time so far.
+- `darkbloom cluster` status calls a registered pair serving only while it serves, else
+  `<model> is not serving yet: <reason>.`, and says a Mac serving alone is still loading until its solo server answers.
+  The other Mac shows the same outcome block, and its setup ends with the same ✓ or ✗ as the leading Mac.
+
+### A setup prompt for AI agents
+
+- New provider how-to, `docs/provider/agent-setup.md`, for a person to hand to their own AI agent. The agent installs and checks the signed release, logs in with the person's help, and either serves on one Mac or pairs two Macs over a Thunderbolt 5 cable. It then proves the result with `darkbloom status`, `darkbloom cluster status --json` (its exit status and `state`) and a test request, instead of trusting the setup screen alone.
+- It lists, up front, what only the person can do, such as the Terms of Service, the Darkbloom login, the RDMA switch, the macOS password and Local Network prompts, the pairing code, the model choice and Screen Sharing for headless Macs. It also sets the agent's safety rules, among them: no security settings changed, no Darkbloom files or Keychain items deleted by hand, no `darkbloom cluster link --remove` unless asked, and no large download without asking.
+- Once a pair is set up, the agent checks it with `darkbloom cluster status --json` and starts or stops both Macs with `darkbloom start` and `darkbloom stop`, all without a terminal. The page also covers changing the model, pairing again, `--solo`, troubleshooting by message, and `darkbloom uninstall`.
+- Checked by an agent that followed it on a real two-Mac pair: it now has a DevNet variant (`darkbloom-dev`, the DevNet installer, `Darkbloom Dev.app`; a pair's local API on port 8000 in both apps), tells the agent to have the person turn on Local Network access in System Settings on each Mac instead of waiting for a macOS prompt, quotes the screens and the `darkbloom cluster status` reason that say when macOS keeps a Mac off the local network (the agent then stops and asks instead of waiting), and covers the app switch that offers no **Pair again**.
+- Documentation only: no provider artifact changes.
+
+### Uninstall Darkbloom: remove everything, or keep the models
+
+- `darkbloom uninstall` takes Darkbloom off a Mac in one step. In a terminal it shows two choices with this Mac's sizes: **Remove everything** (the app, settings, pairing, logs and all models) or **Keep models** (everything else goes; a reinstall reuses the models). Esc cancels, and **Remove everything** asks once more, with the size of the models it deletes. Run it as yourself: with `sudo` it refuses and says so.
+- Both choices stop serving the way `darkbloom stop` does. On a Mac in a two-Mac pair, that means both Macs stop, from either Mac, and this Mac's cluster service is turned off; when the other Mac doesn't answer, only this Mac's part stops. Then they remove every Darkbloom background service, revoke this Mac's account token where the coordinator can confirm it, unpair, undo the cable port setup (macOS asks for your password) and delete Darkbloom's settings, logs, caches, the app and the `darkbloom` command link.
+- **Keep models** leaves the models Darkbloom downloaded and the cluster model store in place: after installing again, `darkbloom start` or `darkbloom cluster` finds them without downloading. The sizes count APFS clones once.
+- It never deletes a models folder you chose or the cluster model store beside it, even inside `~/.darkbloom`, nor anything outside Darkbloom's folders (links that point elsewhere, another disk mounted in them), and never touches Keychain keys; the summary lists what was kept and where. When a folder of Darkbloom's could not be removed, the summary says Darkbloom is not fully removed, says why, and the command exits 1. On a paired Mac it ends with what to run on the other Mac.
+- On a Mac with both the production Darkbloom and Darkbloom Dev, uninstalling one keeps this Mac's pairing, cluster setup and cable port setup, which the other still uses, removes only its own cluster service, and says so; uninstall the other one too to remove them. When your models folder is `~/.darkbloom` itself, the summary says Darkbloom is not fully removed and what to do. A dry run also names a cluster service running without a login agent.
+- A cluster service that runs without its login agent (development builds, or a Mac where launchd did not take it) is now stopped before anything is deleted: with one install, any `darkbloom cluster service` is; beside the other install, only this install's, and the other's keeps running. A cluster service it doesn't stop, or can't tell apart, makes the uninstall delete nothing and say why. The two choices' lines say only what each removes on this Mac.
+- Uninstalling one install of a serving pair beside the other install on this Mac now stops the pair first, on both Macs, as `darkbloom stop` does, so the other Mac no longer keeps restarting its part. It says so before it waits for accepted requests to finish (up to about 6 min); if the other Mac doesn't answer, the summary names it and the command to run there.
+- Uninstalling Darkbloom Dev beside the production Darkbloom also removes Darkbloom Dev's own cluster incident log (with its lock and corrupt copy), which it kept in the shared cluster folder, and names it in the summary.
+- For scripts and agents: `--everything` or `--keep-models` with `--yes`, and `--dry-run` (with `--json`) to list every action and path without changing anything. `darkbloom stop --uninstall` works as before.
+
+### Release pages list every pull request in the release
+
+- A provider release page on GitHub now lists every pull request in the release, with its title, its author where known, and a link. This includes the pull requests that reached `master` through `dev` in a squash merge, which GitHub's generated list left out: the v0.10.7 page showed 5 of its 50 pull requests. Pull requests merged directly into `master` are listed separately. The promotion of `dev`, the release preparation and syncs of `master` into `dev` are named once, not listed as changes.
+- When the release job cannot read pull requests through GitHub's API, the titles come from the merge commits, and an author is shown only where a commit's GitHub address names the account.
+- The page also shows the release's whole `CHANGELOG.md` section, with its upgrade and rollout notes. The update banner's short summary is unchanged.
+
+### A pair Mac reinstalled with `install.sh` no longer acts on releases it does not run
+
+- `install.sh` (or a copied app) replaces Darkbloom without updating the record the updater keeps of what is installed. A pair Mac reinstalled this way could keep an older release as "pending": at every update slot it then tried to reinstall the release it already ran, and three unexpected stops of its cluster service would have restored an old release that the other Mac cannot pair with.
+- Before each start of its cluster service, a pair Mac now checks that record against the installed app. When they differ, the record is corrected to the installed release, the stale pending release is dropped, and the copy kept for rollback is removed, because the other Mac does not have it. The Mac logs one line saying what changed. Rollback is possible again after the next update, which keeps a copy of the release that ran.
+- A kept copy recorded under the wrong version by an earlier update, on a Mac reinstalled with `install.sh`, is now recorded as the release its app really is and kept, so the Mac can still roll back to the release the other Mac returns to. A kept copy that cannot be verified is removed. An update over a reinstalled app now records that app as the release it is.
+- A damaged install (a file missing or unreadable) is not taken for a reinstall: its failed starts still count, and the third restores the kept copy, as before.
+- The release a Mac runs is never offered as an update: the update slot reports it up to date instead of downloading it, reinstalling it and restarting the cluster service.
+
+## v0.10.7
+
+Published 2026-11-03 ([release](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.7)).
 
 ### Upgrade and rollout notes
 

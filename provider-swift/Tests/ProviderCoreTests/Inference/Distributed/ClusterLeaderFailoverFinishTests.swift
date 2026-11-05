@@ -190,6 +190,30 @@ import Testing
         #expect(try JSONDecoder().decode(ClusterServiceStatus.self, from: JSONEncoder().encode(now)) == now)
     }
 
+    /// The fields that tell the other Mac whether a pair registered with the coordinator serves, and why not
+    /// (`Child.pair`, `Child.appAttest`, `Child.appAttestRetryAt`, `loggedIn`): kept across the link, nil from an older
+    /// build, and left out when nil, so an older build reads a newer status unchanged.
+    @Test func publishedStatusCarriesThePairFieldsAndOlderStatusesStillDecode() throws {
+        var now = Self.status(pid: 7, startedAt: 1.5)
+        now.child.pair = ClusterOnboardingPairReport.text(.serving(test: "in 0.84 s"))
+        now.child.appAttest = false
+        now.child.appAttestRetryAt = 1_793_752_440
+        now.loggedIn = true
+        let roundTrip = try JSONDecoder().decode(ClusterServiceStatus.self, from: JSONEncoder().encode(now))
+        #expect(roundTrip == now)
+        #expect(roundTrip.child.pair == "serving (first request in 0.84 s)" && roundTrip.child.appAttest == false
+            && roundTrip.child.appAttestRetryAt == 1_793_752_440 && roundTrip.loggedIn == true)
+
+        let old = #"{"serving":true,"sessionLeader":false,"child":{"running":true,"starts":1}}"#
+        let decoded = try JSONDecoder().decode(ClusterServiceStatus.self, from: Data(old.utf8))
+        #expect(decoded.child.pair == nil && decoded.child.appAttest == nil && decoded.child.appAttestRetryAt == nil && decoded.loggedIn == nil)
+
+        let written = try JSONSerialization.jsonObject(with: JSONEncoder().encode(Self.status(pid: 7, startedAt: 1.5))) as? [String: Any]
+        let child = written?["child"] as? [String: Any]
+        #expect(written?["loggedIn"] == nil, "a nil field is left out")
+        #expect(child?["pair"] == nil && child?["appAttest"] == nil && child?["appAttestRetryAt"] == nil, "nil child fields are left out")
+    }
+
     @Test func cleanupTimeoutKeepsPowerUntilTheRecordedProcessExits() throws {
         let sleeper = Process()
         sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep")

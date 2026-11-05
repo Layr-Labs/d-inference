@@ -36,6 +36,7 @@ private func exitWithResult(
     _ body: () async throws -> Void
 ) async throws -> Never {
     var status: Int32 = 0
+    keepCommandsOffThisMacsCluster()
     do {
         try await body()
     } catch let code as ExitCode {

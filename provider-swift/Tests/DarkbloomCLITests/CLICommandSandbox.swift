@@ -47,6 +47,7 @@ struct CLICommandSandbox {
         setenv("DARKBLOOM_NO_UPDATE_CHECK", "1", 1)
         setenv("NO_COLOR", "1", 1)
         unsetenv("SUDO_USER")
+        keepCommandsOffThisMacsCluster()
         CoordinatorStub.install([:])
         try sandbox.writeConfig(enabledModels: enabledModels, autoUpdate: autoUpdate, autoRestart: autoRestart)
         return sandbox
@@ -181,6 +182,13 @@ struct CLICommandSandbox {
 
 enum CLICommandSandboxError: Error {
     case unexpectedCommand(String)
+}
+
+/// Keeps a test's child process off the Mac that runs the tests: no pairing, cluster service, login agent or cluster
+/// part of this Mac is read, and every command reads "not in a cluster" unless the test binds a pair of its own
+/// (`ClusterPairSummary.readerForTesting`). Process-wide, so only inside an exit test's body.
+func keepCommandsOffThisMacsCluster() {
+    ClusterPairSummary.processReaderForTesting = { _ in .notPaired }
 }
 
 /// Parses `arguments` from the root command and checks the command type.

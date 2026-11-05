@@ -817,6 +817,58 @@ struct SelfUpdaterTests {
         ) == "old darkbloom")
     }
 
+    /// App Attest reads macOS LaunchServices' record of the running app, and
+    /// the rename swap leaves it describing the previous bundle (report 6024).
+    @Test("commit re-registers the installed app with LaunchServices")
+    func commitReRegistersInstalledApp() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("self-updater-lsregister-test-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (tarball, release, install) = try makeAppBundleFixture(root: root)
+        let registered = RegisteredApps()
+        let updater = SelfUpdater(coordinatorBaseURL: "https://api.example.test", installRoot: nil,
+                                  verifyCodeSignatures: false, currentVersion: ProviderCore.version,
+                                  installedAppRegistrar: { registered.append($0) })
+        guard case .success(let staged) = updater.stageBundleForTesting(
+            from: tarball, release: release, installDir: install)
+        else {
+            Issue.record("stageBundleForTesting failed")
+            return
+        }
+        #expect(registered.urls.isEmpty, "staging alone must not register anything")
+        guard case .success = updater.commitStagedBundleForTesting(staged) else {
+            Issue.record("commitStagedBundle failed")
+            return
+        }
+        #expect(registered.urls.map { $0.resolvingSymlinksInPath().path }
+            == [install.appendingPathComponent(BuildEnvironment.current.appBundleName).resolvingSymlinksInPath().path])
+    }
+
+    @Test("a refused commit registers nothing with LaunchServices")
+    func refusedCommitRegistersNothing() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("self-updater-lsregister-refused-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (tarball, release, install) = try makeAppBundleFixture(root: root)
+        let registered = RegisteredApps()
+        let updater = SelfUpdater(coordinatorBaseURL: "https://api.example.test", installRoot: nil,
+                                  verifyCodeSignatures: false, currentVersion: ProviderCore.version,
+                                  installedAppRegistrar: { registered.append($0) })
+        guard case .success(let staged) = updater.stageBundleForTesting(
+            from: tarball, release: release, installDir: install)
+        else {
+            Issue.record("stageBundleForTesting failed")
+            return
+        }
+        try Data("post-verification tamper".utf8).write(
+            to: staged.stagingRoot.appendingPathComponent("Darkbloom.app/Contents/Info.plist"))
+        guard case .failure = updater.commitStagedBundleForTesting(staged) else {
+            Issue.record("mutated staging tree was installed")
+            return
+        }
+        #expect(registered.urls.isEmpty)
+    }
+
     @Test("a later staging pass removes OLD orphaned staging dirs but spares young (possibly live) ones")
     func stagingCleansUpOrphanedDirs() throws {
         let fm = FileManager.default
@@ -851,6 +903,14 @@ struct SelfUpdaterTests {
         #expect(!fm.fileExists(atPath: orphan.path))
         #expect(fm.fileExists(atPath: live.path))
     }
+}
+
+/// Records the app URLs a `SelfUpdater` hands to LaunchServices.
+private final class RegisteredApps: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [URL] = []
+    func append(_ url: URL) { lock.withLock { recorded.append(url) } }
+    var urls: [URL] { lock.withLock { recorded } }
 }
 
 private func runTarCreate(sourceDir: URL, tarball: URL) throws {

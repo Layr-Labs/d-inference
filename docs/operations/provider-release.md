@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-11-03
+> Last updated: 2026-11-04
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -27,47 +27,61 @@ runs the resolve, build, qualification, signing, R2 staging and publication
 chain for one environment. To find the newest dev release, read
 `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
-`ProviderCore.version` is prepared as `0.10.7`, a patch release over `v0.10.6`.
-The two Macs of a pair set up with `darkbloom cluster` update together by
-themselves (#1702), and `darkbloom update --rollback` puts back a Mac's previous
-release (#1729), which the other Mac of a pair follows (#1739). Gemma 4 and
-MiMo-V2.6-Flash gain tensor parallel on a pair (#1706, #1707, #1716), chosen
-only on its own measured speed and only where it keeps every feature of the mode
-it would replace (#1715), and `ClusterPublicModels` declares both public in
-pipeline and tensor parallel (#1736). The operator's enabled-model filter wins
-over coordinator model changes (#1730). Both Macs of a pair must run 0.10.7: a
-pair of mixed builds refuses to pair, and a pair on 0.10.6 updates by hand once
+`ProviderCore.version` is prepared as `0.10.8`, a patch release over `v0.10.7`.
+On a paired Mac, `darkbloom start`, `stop`, `restart` and `status` act on the
+pair (#1774), and `darkbloom cluster` on a set-up pair works like
+`darkbloom start` (#1778). `darkbloom uninstall` removes Darkbloom, with or
+without its models (#1772, #1780). App Attest keeps working after a self-update
+(#1765) and keeps an attestation cut off by a disconnect or a stop (#1763). The
+cluster setup says Serving only once the pair is loaded (#1764), offers Pair
+again and Start over to Macs paired before (#1770), plans by the load gate's own
+memory rule (#1767) and clears a model's file cache before loading it (#1768).
+This is the first tag whose release job writes the GitHub release page with
+`scripts/provider_release_notes.py`, which lists every pull request of the
+release ([GitHub release notes](#github-release-notes), #1786). Both Macs of a
+pair must run 0.10.8: a pair of mixed builds refuses to pair, and a pair on
+0.10.7 updates itself
 ([updating Darkbloom on the pair](../provider/two-mac-cluster.md#updating-darkbloom-on-the-pair)).
-See the [`v0.10.7` changelog entry](../../CHANGELOG.md) for the full scope.
+See the [`v0.10.8` changelog entry](../../CHANGELOG.md) for the full scope.
 
-Before tagging `v0.10.7`:
+Before tagging `v0.10.8`:
 
 - Confirm that the tagged commit pins `libs/mlx` and the nested `mlx` to
-  `72dffa2d` and `libs/mlx-swift` to `c633d221`, as v0.10.6 did, and
-  `libs/mlx-swift-lm` to `32f5c744`, its fork's `main`. Only the SDK pin moves
-  (from `7933a0fa`): SDK #370, #371, #375 to #377 and #379 to #384 change Swift
-  files only, and the one Metal kernel they add compiles at run time
-  (`MLXFast.metalKernel`), not into `mlx.metallib`.
-- The tag build's `metallib_hash` should equal v0.10.6's
+  `72dffa2d`, `libs/mlx-swift` to `c633d221` and `libs/mlx-swift-lm` to
+  `32f5c744`, as v0.10.7 did. No MLX or SDK pin moves.
+- The tag build's `metallib_hash` should equal v0.10.7's
   `98bab9d77dc5078ad8dd8f1fd17e8f3581415193506e4791a3c4f1ebaab614be`, because
   the MLX core is unchanged. A different hash needs an explanation, such as a
   changed Metal toolchain.
-- `PROD_CLUSTER_RUNTIME_ENABLED` is `true` since v0.10.6, so this tag registers
-  a cluster runtime facts block. On the exact tag tree, re-run the release's
-  facts step read-only against production's catalog, as for 0.10.6:
+- `PROD_CLUSTER_RUNTIME_ENABLED` is `true`, so this tag registers a cluster
+  runtime facts block. On the exact tag tree, re-run the release's facts step
+  read-only against production's catalog, as for 0.10.7:
   `scripts/provider-cluster-runtime-facts.sh <app> darkbloom prod <new folder>`,
   with an unsigned app staged the way the build job stages it, must exit 0.
-  The facts step leaves out a model the catalog lacks, so check the rows of
-  `gemma-4-26b-qat-4bit` and `mimo-v2.6-flash-mopd` as well as
-  `glm-5.3-flash` and `EigenLabs/Qwen3.8-27B-4bit-mtp`.
-- Check the coordinator's catalog room
-  ([cluster runtime facts](#cluster-runtime-facts)): v0.10.6's block holds 24
-  approvals, and this release adds 2 per model of its block, within the bound
-  of 64. The next release with a block can leave v0.10.6's approvals out, which
-  ends public serving for pairs still on 0.10.6; a pair on 0.10.7 or later
-  updates itself first.
+  Check the catalog rows of `glm-5.3-flash`, `EigenLabs/Qwen3.8-27B-4bit-mtp`,
+  `gemma-4-26b-qat-4bit` and `mimo-v2.6-flash-mopd`.
+- The facts step reads only a catalog row's ID, aggregate, R2 prefix and input
+  modalities (`scripts/provider-cluster-runtime-models.py`), so a row's
+  `max_output_length` changes neither the facts nor the registration. A pair
+  still accepts at most 32,768 output tokens per request for Qwen3.8-27B and
+  MiMo-V2.6-Flash, and refuses more (`request_exceeds_context`); 0.10.8 does
+  not change that. Production's catalog rows for these two models list 65,536
+  and 131,072, and the coordinator gives a request without `max_tokens` its
+  row's value, so pairs refuse those requests too and the coordinator tries
+  single Macs instead.
+  Aligning the rows is a separate catalog decision; until then, expect these
+  refusals when you check that pairs serve (step 5).
+- Decide on the coordinator's catalog room
+  ([cluster runtime facts](#cluster-runtime-facts)) before the tag. Production
+  holds 24 approvals from v0.10.6 and 24 from v0.10.7, and this release adds 2
+  per model of its block (24 for 12 models). With more than 8 models, the three
+  releases pass the bound of 64. Releases are taken newest first, each whole,
+  so v0.10.6's approvals are left out: pairs
+  still on 0.10.6 stop serving through Darkbloom, and the coordinator logs
+  `release cluster approvals omitted` for v0.10.6. Pairs on 0.10.7 update
+  themselves first.
 - The tagged commit is on `master` and verified, holds `ProviderCore.version`
-  `0.10.7`, keeps the plain-build default `prod`
+  `0.10.8`, keeps the plain-build default `prod`
   (`scripts/provider-build-default.py --branch master`), and its `changelog.d/`
   holds only `README.md` (`make changelog-check` prints
   `changelog: 0 valid fragment(s)`; a fragment there reached `master` without
@@ -75,31 +89,35 @@ Before tagging `v0.10.7`:
 
 Roll out in this order; each step is a separate approval:
 
-1. Production platform: the coordinator deploys first
-   ([darkbloom-platform#679](https://github.com/Layr-Labs/darkbloom-platform/pull/679),
-   merged as `f9c1b2d6a3`).
-   0.10.7's registration needs nothing new from it: the payload has 0.10.6's
-   fields, and the block keeps the `darkbloom_cluster_runtime_v2` schema. Its
-   new parity qualifications use generation modes the coordinator already
-   knows, MiMo-V2.6-Flash's speculative pipeline (`pipeline_mtp_v1`) included.
-   Confirm that production's `/health` `build_commit` is `f9c1b2d6a3`.
+1. Production platform: 0.10.8's registration needs nothing new from the
+   coordinator. The payload has 0.10.7's fields, and the block keeps the
+   `darkbloom_cluster_runtime_v2` schema; the facts dry run shows its models
+   and modes. Confirm that production's `/health` `build_commit` is the
+   coordinator that registered v0.10.7 (`f9c1b2d6a3`) or a later reviewed
+   deploy, and that no coordinator swap overlaps this release's publication.
 2. Merge into `master`, each squash-merged after its approval: first the `dev`
-   to `master` release snapshot (#1754), then this preparation, which is
-   cherry-picked onto `master` after #1754's squash. Its tree must not bring
+   to `master` release snapshot (#1782), then this preparation, which is
+   cherry-picked onto `master` after #1782's squash. Its tree must not bring
    back a rendered fragment. Let SDK 27 release preparation pass on `master`.
-3. Re-run the facts dry run on the tag tree and check the catalog room, as
+3. Re-run the facts dry run on the tag tree, and decide on the catalog room, as
    above.
-4. Tag `v0.10.7` on this preparation's squash commit
+4. Tag `v0.10.8` on this preparation's squash commit
    ([step 4](#4-tag-and-push-production-source)). After registration, check
    that `GET /v1/cluster/approvals` lists the derived
-   `release/0.10.7/<model>/s<1|2>` approvals and that the coordinator log has no
-   `release cluster approvals omitted`.
-5. Each pair on 0.10.6 updates by hand once: `darkbloom update` on both Macs,
-   then log out and back in on both. Single Macs, and pairs from 0.10.7 on,
-   update by themselves.
+   `release/0.10.8/<model>/s<1|2>` approvals beside v0.10.7's, and that
+   `release cluster approvals omitted` in the coordinator log names no release
+   but v0.10.6. Check that the GitHub release page lists the pull requests
+   #1782 carried from `dev` and the two merged directly into `master` (#1752,
+   #1771), and that the job logged no `Release notes for v0.10.8` warning (one
+   names git as the title source, or says the generated part is missing).
+5. Pairs on 0.10.7 update themselves at their update slot, or at once with
+   `darkbloom update` on each Mac. A pair still on 0.10.6 updates by hand once:
+   `darkbloom update` on both Macs, then log out and back in on both. Single
+   Macs update by themselves. Check that each pair serves again, not only that
+   it registered.
 6. The platform snapshots its provider contracts from the tagged commit
    (`python3 scripts/provider-contracts.py snapshot <tag commit>`), sets
-   `LatestProviderVersion` to `0.10.7` in the coordinator's `server.go` in the
+   `LatestProviderVersion` to `0.10.8` in the coordinator's `server.go` in the
    same change and adds the revision row to its provider-contract reference.
    `LatestProviderVersion` is a fallback and does not gate publication.
 
@@ -119,25 +137,24 @@ approvals. This preparation tags, deploys and enables nothing; merging it into
 `master` publishes nothing, because the staging lane runs only while
 `STAGING_ENABLED` is `true`.
 
-Platform evidence, inspected on 2026-11-03 (recheck before tagging):
+Platform evidence, inspected on 2026-11-04 (recheck before tagging):
 
 | Claim | Source |
 |---|---|
-| The coordinator knows the generation mode `pipeline_mtp_v1` and puts it in the `pipeline_speculative` family, at #679's merge commit (`f9c1b2d6a3`), unchanged from platform `master` before it (`482ca9db`) | [`cluster_generation_mode.go` at `f9c1b2d6a3`](https://github.com/Layr-Labs/darkbloom-platform/blob/f9c1b2d6a3c590bcbf03f11b8ccbdbe383a54449/coordinator/protocol/cluster_generation_mode.go) (`ClusterPlanModeFamily`) |
-| At #679's merge commit (`f9c1b2d6a3`), the platform still pins the provider contracts at d-inference `8effff7f` (v0.10.4) and keeps `LatestProviderVersion` at `0.10.4`; step 6 moves both | [`contracts/provider/manifest.json` at `f9c1b2d6a3`](https://github.com/Layr-Labs/darkbloom-platform/blob/f9c1b2d6a3c590bcbf03f11b8ccbdbe383a54449/contracts/provider/manifest.json) (`source_revision`); [`server.go` at `f9c1b2d6a3`](https://github.com/Layr-Labs/darkbloom-platform/blob/f9c1b2d6a3c590bcbf03f11b8ccbdbe383a54449/coordinator/api/server.go) (`LatestProviderVersion`) |
+| Production's coordinator runs platform `f9c1b2d6a3`, which registered v0.10.7 and its `darkbloom_cluster_runtime_v2` block, and serves 24 `release/0.10.6/…` and 24 `release/0.10.7/…` approvals | `GET https://api.darkbloom.dev/health` (`build_commit`) and `GET https://api.darkbloom.dev/v1/cluster/approvals`, read on 2026-11-04 |
+| At `f9c1b2d6a3`, the platform still pins the provider contracts at d-inference `8effff7f` (v0.10.4) and keeps `LatestProviderVersion` at `0.10.4`; step 6 moves both | [`contracts/provider/manifest.json` at `f9c1b2d6a3`](https://github.com/Layr-Labs/darkbloom-platform/blob/f9c1b2d6a3c590bcbf03f11b8ccbdbe383a54449/contracts/provider/manifest.json) (`source_revision`); [`server.go` at `f9c1b2d6a3`](https://github.com/Layr-Labs/darkbloom-platform/blob/f9c1b2d6a3c590bcbf03f11b8ccbdbe383a54449/coordinator/api/server.go) (`LatestProviderVersion`) |
+| The catalog holds at most 64 approvals and takes releases newest first, each whole | [`NativeRuntimeCatalogWithReleases` at `f9c1b2d6a3`](https://github.com/Layr-Labs/darkbloom-platform/blob/f9c1b2d6a3c590bcbf03f11b8ccbdbe383a54449/coordinator/registry/cluster_release_approvals.go) |
+| A request without `max_tokens` gets its catalog row's `max_output_length` (Qwen3.8-27B 65,536, MiMo-V2.6-Flash 131,072), and a pair's public request envelope admits up to 1,048,576 output tokens, so routing does not keep such a request off a pair | [`consumer.go` at `f9c1b2d6a3`](https://github.com/Layr-Labs/darkbloom-platform/blob/f9c1b2d6a3c590bcbf03f11b8ccbdbe383a54449/coordinator/api/inference/consumer.go) (`EnsureMaxTokensBound`); `ClusterPublicModels.maximumTokens` in this repository; `GET https://api.darkbloom.dev/v1/models/catalog`, read on 2026-11-04 |
 | `LatestProviderVersion` must equal the snapshotted `ProviderCore.version` | [`provider_version_sync_test.go` at `5ba280d8`](https://github.com/Layr-Labs/darkbloom-platform/blob/5ba280d89aa5e9bd4fbf05e0dfa848059cd3b585/coordinator/tests/api/provider_version_sync_test.go) (`TestLatestProviderVersionMatchesProviderCore`) |
 
-The production coordinator was not inspected for this preparation; step 1
-checks its `/health`.
-
-`v0.10.6` was [published on 2026-10-31](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.6)
+`v0.10.7` was [published on 2026-11-03](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.7)
+from `7512eeeae0682b120f3d86abbc712861bdbf2bda`, `v0.10.6` was
+[published on 2026-10-31](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.6)
 from `84ddfdba6bb704bf1c68f97c7060289079380ceb`, `v0.10.5` was
 [published on 2026-10-30](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.5)
 from `d3bbcd064ea290fbeb500e5c51c7870e3695741c`, `v0.10.4` was
 [published on 2026-10-28](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.4)
-from `8effff7f7067fec70b2e3b58de0a4ba47ea3986c`, `v0.10.3` was
-[published on 2026-10-26](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.3)
-from `3ddd11ce8d7204cc5aadefd2050376c583da4ff8`. Publication does not establish
+from `8effff7f7067fec70b2e3b58de0a4ba47ea3986c`. Publication does not establish
 that every optional feature or environment has been activated.
 
 ## Prerequisites
@@ -236,7 +253,10 @@ it to a short summary: the release API refuses registration bodies above
 64 KiB, and that refusal comes only after signing and notarization.
 `release_changelog` in `scripts/provider-release-publication.py` removes only
 Git's identified signature suffix and trims outer whitespace. Internal line
-breaks and paragraph spacing remain unchanged.
+breaks and paragraph spacing remain unchanged. The GitHub release page, unlike
+the registered `changelog`, shows the whole `CHANGELOG.md` section of the tag
+and every pull request of the release
+([GitHub release notes](#github-release-notes)).
 
 ### 3. Merge And Verify Release Preparation
 
@@ -641,7 +661,7 @@ staging and performs these operations in order:
 | 2 | Recheck signed tag, source/run/version/origin and bundle digest, then submit the retained `POST /v1/releases` payload |
 | 3 | Wait boundedly for `/v1/releases/latest` to report that committed official build or a newer release, not an older cached response |
 | 4 | Only if still latest, update both `releases/latest/darkbloom-bundle-macos-arm64.tar.gz` and the legacy `eigeninference-bundle` alias |
-| 5 | For prod/tag, create or resume a GitHub draft, upload a missing asset, verify downloaded bytes and publish |
+| 5 | For prod/tag, create or resume a GitHub draft with the [release notes](#github-release-notes), upload a missing asset, verify downloaded bytes and publish |
 
 The payload contains `version`, `platform=macos-arm64`, `backend=mlx-swift`,
 `binary_hash`, `bundle_hash`, `metallib_hash`, `code_directory_hash`,
@@ -669,6 +689,107 @@ Runtime Apple verification and matching official hashes remain required.
 After commit, the platform refreshes binary/runtime policy and release caches.
 Active releases retain their hashes during adoption; deactivation removes them
 from the catalog. See the [runtime manifest](../architecture/security/attestation.md#runtime-manifest).
+
+### GitHub Release Notes
+
+Only a prod (tag) publication creates a GitHub release; dev, DevNet dev-branch
+and staging publications register with their coordinator and create none.
+`publish_github_release` creates the draft with the body that
+`scripts/provider_release_notes.py` writes, not with GitHub's generated notes,
+which list only the pull requests merged into `master` between two tags. A
+squash promotion of `dev` into `master` (0.10.7's #1754) appears there as one
+pull request, and the `dev` pull requests it carried are missing.
+
+The body has four parts:
+
+1. The header that `prepare` retained: source, runs, hashes and install.
+2. **What's new in vX.Y.Z**: the version's `CHANGELOG.md` section at the tag,
+   with upgrade and rollout notes and every entry. The `— candidate
+   (unpublished)` heading and its "Prepared on" line are left out.
+3. **Pull requests in this release**: one line per pull request, with its title,
+   author and link, in merge order. They come in two groups: the pull requests
+   merged into `dev` that reached `master` with a promotion, then the ones merged
+   directly into `master`. Commits without a pull request are listed after them.
+   Release pull requests are named once on their own line, not listed: the
+   promotions, the release preparation and merges of `master` into `dev`.
+4. The compare link from the previous release tag.
+
+The script reads the release's contents from Git, not from a date window:
+
+- **The carried `dev` commit.** For a release tag, this is the newest commit of
+  `dev`'s first-parent chain that the release contains. The tag contains it
+  after a merge-commit promotion. After a squash promotion, the promotion's head
+  contains it: GitHub keeps `refs/pull/<N>/head` after the merge, and the script
+  fetches it read-only. A release with no promotion of its own, such as a
+  hotfix, carries what the release before it carried. The script looks back
+  four releases for it. After more than four releases in a row without a
+  promotion, it uses what the tag itself contains, and the next release can
+  list again pull requests that an earlier release listed.
+- **Promotions are found by their history, not their titles.** A pull request
+  on `master`'s first-parent chain is a promotion when its head (the merge
+  commit's second parent, or the squash's `refs/pull/<N>/head`) holds a `dev`
+  first-parent commit that `master` did not have. If GitHub no longer had a
+  squash promotion's head, the notes would list it as a pull request merged
+  directly into `master` and leave out its `dev` pull requests, with no
+  warning. A preparation whose head holds `dev` commits is named as the
+  preparation, and the `dev` pull requests are listed as reaching `master`
+  with it.
+- **The `dev` pull requests** are the first-parent commits of `dev` after the
+  commit that the previous release carried, up to the one this release carries.
+  They are `Merge pull request #N` merges and squashed `(#N)` subjects. A `dev`
+  pull request merged after the promoted snapshot was cut waits for the next
+  release, even if it merged before the tag.
+- **The preparation** is the commit that adds the version's `CHANGELOG.md`
+  heading. **A sync** is a merge into `dev` that brings `master`'s first-parent
+  commits and no commits of its own. A sync with its own fixes is listed as a
+  `dev` pull request.
+- **Titles and authors** come first from GitHub's GraphQL API, in one query per
+  100 pull requests. A `(#N)` that GitHub names an issue is listed as a commit
+  without a pull request. Titles and commit subjects show as typed: HTML, links
+  and emphasis in them are escaped, and a code span stays code.
+- **Without GitHub's API, titles come from git.** The `publish-release` token
+  has only `contents: write` and `actions: read`, so GitHub can refuse the
+  lookup ("Resource not accessible by integration"); any GraphQL error other
+  than an unknown number also counts. Every pull request is then still listed:
+  - **Titles.** GitHub writes a merge commit as `Merge pull request #N from
+    <branch>`, a blank line, then the title, so the first line of its body is
+    the title. A squash commit's subject is the title and ` (#N)`. Both are the
+    title when the pull request merged: a title edited later, or a commit
+    message edited at the merge, shows as git has it.
+  - **Authors are commit authors**, and are shown only where a GitHub noreply
+    address (`[<ID>+]<login>@users.noreply.github.com`) names the login. The
+    address is the author's of the pull request's oldest own commit, or for a
+    squash, the squash commit's. Other addresses name no GitHub account, so the
+    line has no author. The newest commit of a branch is not used: it is often
+    someone else's merge of `dev`.
+  - **The warning.** The job logs a warning that the titles came from git, with
+    GitHub's error. `--git-titles` produces the same body on request.
+  - **Measured on v0.10.7.** Git lists the same 48 pull requests. 47 titles equal
+    GitHub's; #1691's squash subject keeps a parenthetical that its title later
+    lost. 34 authors are shown, all equal to GitHub's, and 14 are left out. The
+    newest branch commit would have named the wrong author for 18 of the 45
+    `dev` pull requests.
+
+GitHub refuses a body over 125,000 characters. When the body is longer, it
+keeps the upgrade and rollout notes and links the entries in `CHANGELOG.md` at
+the tag. The pull request list is always kept. By then the registration and the
+latest aliases are published. A generation failure therefore does not stop the
+GitHub release: the job logs a warning with git's or GitHub's error, and the
+body says that the generated part is missing.
+
+To check the notes for a published release, or to preview them before the tag,
+run the script read-only. It prints what it excluded and why on standard error:
+
+```bash
+python3 scripts/provider_release_notes.py --tag vX.Y.Z --output notes.md
+# Before the promotion merges: a local squash of the snapshot onto master stands in for the tag.
+python3 scripts/provider_release_notes.py --tag vX.Y.Z --target <local squash commit> \
+  --previous <previous tag> --pull-head <promotion PR>=<snapshot head> --output notes.md
+```
+
+Publishing corrected notes for an existing release (`gh release edit vX.Y.Z
+--notes-file notes.md`) is a production change; it needs the release owner's
+approval.
 
 ### Cluster Helpers
 

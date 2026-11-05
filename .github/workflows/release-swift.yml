@@ -61,6 +61,8 @@ on:
       - 'scripts/provider-release-publication.py'
       - 'scripts/provider_release_artifact.py'
       - 'scripts/provider_release_github.py'
+      - 'scripts/provider_release_notes.py'
+      - 'scripts/changelog.py'
       - 'scripts/provider_release_identity.py'
       - 'scripts/provider-signing-validation.py'
       - 'scripts/provider-build-default.py'

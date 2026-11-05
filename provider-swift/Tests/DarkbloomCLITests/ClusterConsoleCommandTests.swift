@@ -115,7 +115,7 @@ struct ClusterConsoleCommandTests {
     @Test("the cluster help reads as one command: developer subcommands and options are hidden")
     func helpIsPlain() {
         func flat(_ text: String) -> String { text.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
-        #expect(flat(Cluster.helpMessage()).contains("Set up two or more Macs to serve one model together. Run it on each Mac and follow the screen."))
+        #expect(flat(Cluster.helpMessage()).contains("Set up two Macs to serve one model together. Run it on each Mac and follow the screen."))
         let shown = Set(Cluster.configuration.subcommands.filter { $0.configuration.shouldDisplay }.compactMap { $0.configuration.commandName })
         for hidden in ["plan", "configure", "console", "worker-owner", "link-follower", "recover", "reap", "verify-teardown", "cancel-all",
                        "pair", "incidents", "report", "inbox", "link-channel", "member-identity", "service"] {

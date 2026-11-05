@@ -102,9 +102,8 @@ class ClusterTestPlanTests(unittest.TestCase):
                 job = self.jobs[job_id]
                 matrix = re.search(r"(?m)^        shard: \[([0-9, ]+)\]$", job).group(1)
                 self.assertEqual([int(shard) for shard in matrix.split(",")], plan.shards(lane))
-                # A dedicated Blacksmith Mac per shard; the route has no lane for it.
-                self.assertIn("    runs-on: blacksmith-12vcpu-macos-27\n", job)
-                self.assertNotIn(f"        {job_id}-", self.jobs["route"])
+                for shard in plan.shards(lane):
+                    self.assertIn(f"        {job_id}-{shard} macos_arm64 ", self.jobs["route"])
                 steps = workflow.step_blocks(job)
                 build = next(step for step in steps if workflow.field(step, "uses") == workflow.BUILD_ACTION)
                 self.assertEqual(workflow.field(build, "lane", indent=10), "cluster")
@@ -115,8 +114,7 @@ class ClusterTestPlanTests(unittest.TestCase):
         self.assertEqual(plan.shards("focused"), [1])
         focused = workflow.step_blocks(self.jobs["test-cluster-focused"])
         self.assertEqual(workflow.run_command(focused[-1]), "python3 scripts/cluster-test-plan.py run focused 1")
-        self.assertIn("    runs-on: blacksmith-12vcpu-macos-27\n", self.jobs["test-cluster-focused"])
-        self.assertNotIn("        test-cluster-focused ", self.jobs["route"])
+        self.assertIn("        test-cluster-focused macos_arm64 ", self.jobs["route"])
 
     def test_only_the_gpu_job_continues_after_a_failure_and_the_gate_requires_the_others(self):
         self.assertIn("continue-on-error: true", workflow.step_blocks(self.jobs["test-cluster-gpu"])[-1])

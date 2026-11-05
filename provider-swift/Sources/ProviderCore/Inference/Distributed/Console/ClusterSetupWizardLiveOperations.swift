@@ -524,7 +524,7 @@ final class LiveContext: @unchecked Sendable {
     /// serve through the coordinator (the onboarding's public scope): no speculative assistant under `auto`, and equal
     /// tensor-parallel shares only. The six-step wizard's local sessions leave it off.
     func plan(peer: ClusterSetupReport, keeping: [String: ClusterGenerationMode] = [:],
-              coordinator: Bool = false) -> ClusterSetupPlansResult {
+              coordinator: Bool = false, chosenModes: [String: ClusterForcedMode] = [:]) -> ClusterSetupPlansResult {
         let input = pairInput()
         guard let description = input.description, let memberID = input.pair?.memberID,
               let local = description.members.first(where: { $0.id == memberID }) else {
@@ -672,7 +672,7 @@ final class LiveContext: @unchecked Sendable {
                 ? ClusterLinkProbeHistory.costs(homeDirectory: home, members: description.members.map(\.id)) ?? .unmeasured : .unmeasured,
             shareProbes: ClusterShareProbeHistory.read(ClusterShareProbeHistory.defaultFile(homeDirectory: home)),
             peerMayReceive: settings.derivedPlacement && !settings.privateImageQualification, keeping: keeping,
-            coordinator: coordinator)
+            coordinator: coordinator, chosenModes: chosenModes)
         lock.withLock { decisions = Dictionary(decided.map { ($0.option.model.folder, $0) }, uniquingKeysWith: { a, _ in a }) }
         // Models that can be chosen first, each group by size.
         let options = decided.map(\.option)
@@ -737,7 +737,7 @@ final class LiveContext: @unchecked Sendable {
             let part = localRank == 0 ? "this Mac runs rank 0 and the serving API" : "this Mac runs rank \(localRank)"
             // The onboarding shows the deployment in one plain line once it serves; the six-step wizard keeps its detail.
             var lines = settings.derivedPlacement ? ["Saved \(here)'s setup for \(decision.option.model.modelID)."]
-                : ["Saved this Mac's setup \(saved.configurationSHA256.prefix(12)): \(decision.option.model.modelID), cut after \(plan.cut) layers, \(plan.mode); \(part)."]
+                : ["Saved this Mac's setup \(saved.configurationSHA256.prefix(12)): \(decision.option.model.modelID), cut after \(ClusterOnboardingDeployment.layers(plan.cut)), \(plan.mode); \(part)."]
             if let pairing = linkPairing() {
                 // Over the paired link: the other Mac's open wizard puts it in its inbox.
                 let delivery = try JSONEncoder().encode(ClusterSetupStore.Delivery(configuration: peerData, capability: capability.data,

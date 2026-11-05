@@ -28,6 +28,25 @@ struct ClusterOnboardingStartProgressWireTests {
         #expect(reply.start?.phase == .unknown && reply.start?.done == 3)
     }
 
+    /// f2 (0.10.9 DevNet, pair-2): the leading Mac's final ✗ travels in its status, each Mac named by its part, and the
+    /// joining Mac reads it from its own side; a record after the leader's screen ended keeps it for a while.
+    @Test func theLeadersFinalCrossTravelsNamedByPart() throws {
+        let failed = ClusterOnboardingStartProgress.failed(title: "Not serving: The other Mac (Apple M5 Max, 128 GB) isn't logged in to Darkbloom.",
+                                                           lines: ["Run `darkbloom login` on this Mac and the other Mac."], retry: true)
+        var reply = ClusterControlReply(lines: [], failed: false)
+        reply.start = failed
+        let read = try JSONDecoder().decode(ClusterControlReply.self, from: JSONEncoder().encode(reply))
+        let viewed = try #require(read.start).viewed(leader: "Apple M3 Ultra, 256 GB")
+        #expect(viewed.phase == .failed && viewed.retry == true)
+        #expect(viewed.title == "Not serving: This Mac isn't logged in to Darkbloom.")
+        #expect(viewed.lines == ["Run `darkbloom login` on the other Mac (Apple M3 Ultra, 256 GB) and this Mac."])
+        let older = try JSONDecoder().decode(OlderReply.self, from: JSONEncoder().encode(reply))
+        #expect(older.lines.isEmpty, "an older Mac reads the rest")
+        let mark = ClusterOnboardingStartProgressMark(progress: failed, pid: 42, started: 7, at: 100)
+        #expect(mark.current(now: 100 + 600, started: { _ in nil }) != nil, "the ✗ outlives the leader's screen")
+        #expect(mark.current(now: 100 + ClusterOnboardingStartProgressMark.outcomeSeconds, started: { _ in nil }) == nil, "for a while only")
+    }
+
     @Test func theSessionNamesTheReadyRanksAndAnOlderMacIgnoresThem() throws {
         var session = ClusterServiceStatus.Session(observed: true, ready: false, readyRanks: 1, ranks: 2, port: nil, detail: nil)
         session.readyRankList = [0]

@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-04
+> Last updated: 2026-11-05
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -156,16 +156,28 @@ follows the start from the cluster's status the two Macs exchange over the cable
    leading Mac failed." under the not-serving line. Switching between local
    only and serving through Darkbloom, the next start or serve, and a stop
    clear it.
-3. It ends with the same ✓ or ✗ block as the leader's screen. After ✓: "You can
-   close this window." After ✗: the reason, then "Choose Retry on the other Mac
-   (…): its screen shows the choices."; after a failed test, "To test again, run
-   `darkbloom cluster` on the other Mac (…) and choose the model it serves."
+3. Offered to Darkbloom and not serving yet, it waits for the leading Mac's
+   outcome and never judges the pair by a wait of its own. A reason that clears
+   by itself keeps it waiting, with a live row and the time of the bound, e.g.
+   "Waiting for Apple to verify this Mac (Darkbloom retries by itself) · 2 of
+   15 min" or "Waiting for Darkbloom to pair both Macs".
+4. It ends with the leading Mac's outcome. After ✓, the same ✓ block, then "You
+   can close this window." After the leading Mac's ✗ (`ClusterControlReply.start`
+   with phase `failed`, named from this Mac's side), the same ✗ and next step,
+   then "Choose Retry on the other Mac (…): its screen shows the choices." That
+   line appears only in that ✗, since the leading Mac's screen shows Retry then.
+   After a failed test: "To test again, run `darkbloom cluster` on the other Mac
+   (…) and choose the model it serves." It ends early only for a reason of its
+   own, such as a different Darkbloom build.
 
 q leaves at any time: "The pair keeps going; run `darkbloom cluster` here to see
 it." The follow is bounded like the leader's start: 15 minutes for the start to
 begin, then 15 minutes for each of its stages (loading; the test and the check
-with Darkbloom; the registration's restart), then the pair's own wait once it is
-offered. Its end always says why. A signed
+with Darkbloom; the registration's restart; the wait once it is offered). A
+leading Mac that says no outcome within a stage's bound (an earlier release
+publishes none) ends it with "✗ Not serving: The other Mac (…) didn't say how
+its start ended within 15 minutes.", the last state, and "Its screen shows how
+the start ended and what to do next." Its end always says why. A signed
 Darkbloom.app's login agent keeps serving; without one, as for a development
 build, the screen ends "Keep this window open." and the Mac serves only while
 the window stays open. The Start step opens with "Loading

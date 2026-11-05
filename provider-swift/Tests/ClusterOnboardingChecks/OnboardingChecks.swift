@@ -197,6 +197,8 @@ import Darwin
         eachStageOfTheStartHasItsOwnBound()
         // A user's report (2026-11-04): "an infinite loop of waiting for the other Mac, Apple M5 Max 128 GB".
         followWaitChecks()
+        // 0.10.9 DevNet, pair-2 (f2): the joining Mac's last word is the leading Mac's outcome.
+        followFinalOutcomeChecks()
         // A 0.10.8 user's leader screen: its loading line repeated end to end in a narrow window.
         liveLineChecks()
         // 0.10.8, 2026-11-04: single-Mac serving held the provider instance lock on both Macs of a pair; the start looped
@@ -4300,15 +4302,17 @@ import Darwin
         let late = [["Stopped."], ["Loading Qwen 3.8 27B: 1 of 2 parts ready."]] + Array(repeating: [offerPendingLine], count: 30)
             + [["Qwen 3.8 27B: registering both Macs with the coordinator for pairing."],
                [ClusterOnboardingNotServing.statusLine(model: "Qwen 3.8 27B", reason: notVerifiedTimed)]]
-        let run = joining(recorder, statusSequence: late, pairServingResults: [.failure(.init(notVerifiedTimed))])
+        // f2 (0.10.9 DevNet, pair-2): Apple's verification clears by itself, so the joining Mac never judges by it; an older
+        // leader that publishes no outcome ends at the bound with what is known, never Retry it can't see.
+        let run = joining(recorder, statusSequence: late, pairServingResults: [.failure(.init(notVerifiedTimed))], followSeconds: 10)
         expect(run.waitFor(codeQuestion), "late offer: the code"); run.type("y")
         expect(run.finish(seconds: 30) == 1, "late offer: not serving is not success")
         let text = run.text
         expect(!text.contains("\u{2713} Serving") && !recorder.all.contains("testRequest"), "late offer: never an early ✓, nothing tested: \(text)")
         expect(text.contains("  " + ClusterOnboardingReady.offeredLine(model: "Qwen 3.8 27B") + "\n")
-            && text.contains(block("\u{2717}", "Not serving: " + notVerifiedTimed + ".", [ClusterOnboardingNotServing.remedy(forReason: notVerifiedTimed) ?? "-"])),
-               "late offer: offered, then the leader's ✗: \(text)")
-        expect(text.hasSuffix(ClusterOnboardingDriver.retryOnLeaderLine(leaderName) + "\n"), "late offer: where to act: \(text)")
+            && text.contains("\u{2717} Not serving: " + ClusterOnboardingDriver.noOutcomeReason(leaderName, seconds: 10) + ".\n"),
+               "late offer: offered, then the honest ✗: \(text)")
+        expect(!text.contains("Choose Retry") && !recorder.all.contains("pairServing"), "late offer: no Retry, no verdict of its own: \(text)")
         transcript("member-late-offer", text, keys: run.keys)
     }
 
@@ -4350,10 +4354,10 @@ import Darwin
         expect(pair.waitFor(codeQuestion), "follow offered: the code"); pair.type("y")
         expect(pair.finish() == 0, "follow offered: exit 0")
         expect(pair.text.contains("  " + ClusterOnboardingReady.offeredLine(model: "Qwen 3.8 27B") + "\n"), "follow offered: said in plain words: \(pair.text)")
-        expect(pair.text.hasSuffix(block("\u{2713}", String(served.dropLast()), [ClusterOnboardingReady.offeredAPILine, "Test response in 0.84 s"])
-            + ClusterOnboardingDriver.closeWindowLine + "\n"), "follow offered: the leader's ✓ block: \(pair.text)")
-        expect(pair.text.components(separatedBy: "\u{2713} Serving").count == 2 && !offered.all.contains("testRequest") && offered.all.contains("pairServing"),
-               "follow offered: one ✓, after the pair's own wait: \(offered.all)")
+        expect(pair.text.hasSuffix(block("\u{2713}", String(served.dropLast()), []) + ClusterOnboardingDriver.closeWindowLine + "\n"),
+               "follow offered: the leader's ✓ block: \(pair.text)")
+        expect(pair.text.components(separatedBy: "\u{2713} Serving").count == 2 && !offered.all.contains("testRequest") && !offered.all.contains("pairServing"),
+               "follow offered: one ✓, the leader's, no wait of its own: \(offered.all)")
         transcript("member-follows-start-offered", pair.text, keys: pair.keys)
     }
 
@@ -4362,12 +4366,15 @@ import Darwin
         let recorder = Recorder()
         let run = joining(recorder, statusSequence: [["Stopped."],
             [ClusterOnboardingNotServing.statusLine(model: "Qwen 3.8 27B", reason: "waiting for the coordinator to pair both Macs")]],
-            pairServingResults: [.failure(.init(notVerifiedTimed))])
+            pairServingResults: [.failure(.init(notVerifiedTimed))], followSeconds: 1)
         expect(run.waitFor(codeQuestion), "follow ✗: the code"); run.type("y")
         expect(run.finish() == 1, "follow ✗: not serving is not success")
         let text = run.text
-        expect(text.hasSuffix(block("\u{2717}", "Not serving: " + notVerifiedTimed + ".", [ClusterOnboardingNotServing.remedy(forReason: notVerifiedTimed) ?? "-"])
-            + ClusterOnboardingDriver.retryOnLeaderLine(leaderName) + "\n"), "follow ✗: why, then where to act: \(text)")
+        // The leading Mac said no outcome (an older leader): the bound's ✗ with what is known, never a verdict of its own
+        // (f2) and never Retry its screen may not show; the leader's own ✗ is `followFinalOutcomeChecks`.
+        expect(text.hasSuffix(block("\u{2717}", ClusterOnboardingNotServing.title(reason: ClusterOnboardingDriver.noOutcomeReason(leaderName, seconds: 1)),
+            ["Last: Qwen 3.8 27B is not serving yet: waiting for the coordinator to pair both Macs.", ClusterOnboardingDriver.noOutcomeLine])),
+               "follow ✗: the honest ✗, then where to look: \(text)")
         expect(ClusterOnboardingDriver.retryOnLeaderLine(leaderName) == "Choose Retry on \(leaderNamed): its screen shows the choices.",
                "follow ✗: the leader by name")
         expect(!text.contains("\u{2713} Serving") && !text.contains(ClusterOnboardingDriver.closeWindowLine), "follow ✗: never ✓: \(text)")
@@ -4398,8 +4405,9 @@ import Darwin
         let stuck = joining(Recorder(), statusSequence: [["Stopped."], ["Loading Qwen 3.8 27B: 1 of 2 parts ready."]], followSeconds: 0.6)
         expect(stuck.waitFor(codeQuestion), "follow bound, started: the code"); stuck.type("y")
         expect(stuck.finish() == 1, "follow bound, started: not success")
-        expect(stuck.text.contains("\u{2717} Not serving: The pair didn't report serving within 0 minutes.\n  Last: Loading Qwen 3.8 27B: 1 of 2 parts ready.\n")
-            && stuck.text.hasSuffix(ClusterOnboardingDriver.retryOnLeaderLine(leaderName) + "\n"), "follow bound, started: ✗ with the last state: \(stuck.text)")
+        expect(stuck.text.contains("\u{2717} Not serving: " + ClusterOnboardingDriver.noOutcomeReason(leaderName, seconds: 0.6)
+                + ".\n  Last: Loading Qwen 3.8 27B: 1 of 2 parts ready.\n  " + ClusterOnboardingDriver.noOutcomeLine + "\n")
+            && !stuck.text.contains("Choose Retry"), "follow bound, started: ✗ with the last state: \(stuck.text)")
     }
 
     /// The leader's status once its start's test request failed (`startTestFailure`): that start's outcome.
@@ -4446,8 +4454,9 @@ import Darwin
                                                        [localServingLine, leadersTestLine]])
         expect(run.waitFor(codeQuestion), "P2-7: the code"); run.type("y")
         expect(run.finish(seconds: 20) == 0, "P2-7: ends with the leader's ✓")
+        // Retry is pointed to only in a final ✗ the leading Mac's screen shows (f2's rule): the part starts again by itself.
         expect(run.text.contains("  The other Mac: " + String(ending.dropLast()) + ".\n")
-               && run.text.contains(ClusterOnboardingDriver.retryOnLeaderLine(leaderName)), "P2-7: the leader's state, and where to Retry: \(run.text)")
+               && !run.text.contains("Choose Retry"), "P2-7: the leader's state, and no Retry mid-start: \(run.text)")
     }
 
     /// The pair-2 DevNet run (P2-4): after the pair was stopped (`cluster stop --service` on the member), Retry in the ✗
@@ -4596,7 +4605,7 @@ import Darwin
     /// Failing first on a148285f70 (one bound across all stages).
     static func eachStageOfTheStartHasItsOwnBound() {
         let served = "Serving Qwen 3.8 27B through Darkbloom on both Macs (pipeline)."
-        let stage = 10
+        let stage = 8
         let stages = [["Stopped."]] + Array(repeating: ["Loading Qwen 3.8 27B: 1 of 2 parts ready."], count: stage)
             + Array(repeating: [offerPendingLine], count: stage)
             + Array(repeating: ["Qwen 3.8 27B: registering both Macs with the coordinator for pairing."], count: stage)
@@ -4605,14 +4614,14 @@ import Darwin
         let run = joining(recorder, statusSequence: stages, pairServingResults: [.success(["in 0.84 s"])], followSeconds: 2.5)
         expect(run.waitFor(codeQuestion), "stages: the code"); run.type("y")
         expect(run.finish(seconds: 30) == 0, "stages: each within its bound, the whole start longer: serves: \(run.text)")
-        expect(recorder.all.filter { $0 == "status" }.count > 3 * stage && recorder.all.contains("pairServing"),
-               "stages: followed through every stage to the pair's own wait: \(recorder.all.count)")
+        expect(recorder.all.filter { $0 == "status" }.count > 3 * stage && !recorder.all.contains("pairServing"),
+               "stages: followed through every stage to the leader's ✓: \(recorder.all.count)")
 
         var flapping = [["Stopped."]]
         for _ in 0..<60 { flapping += [["Loading Qwen 3.8 27B: 1 of 2 parts ready."], ["Stopped."]] }
         let stuck = joining(Recorder(), statusSequence: flapping, followSeconds: 0.6)
         expect(stuck.waitFor(codeQuestion), "stages, back and forth: the code"); stuck.type("y")
-        expect(stuck.finish(seconds: 30) == 1 && stuck.text.contains("\u{2717} Not serving: The pair didn't report serving within 0 minutes."),
+        expect(stuck.finish(seconds: 30) == 1 && stuck.text.contains("\u{2717} Not serving: " + ClusterOnboardingDriver.noOutcomeReason(leaderName, seconds: 0.6)),
                "stages, back and forth: one stage, so its bound ends it: \(stuck.text)")
     }
 

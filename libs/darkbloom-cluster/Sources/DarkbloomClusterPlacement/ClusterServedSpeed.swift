@@ -480,10 +480,18 @@ public enum ClusterServedCalibration {
     /// pass only the entries the plan's worker builds served
     /// (`ClusterServedSpeedRecords.servedBy`); a setup is one build's, so
     /// samples of two builds are never one median.
+    ///
+    /// A record never fails the plan. A request the planner cannot evaluate on
+    /// its setup (longer than the model's planned request: a pair of M5 Ultras
+    /// served the 27B prompts of 71,545 to 94,423 tokens on 2026-11-05, over the
+    /// 65,536-token context its tensor-parallel allowance covers, and every plan
+    /// of the 27B on that pair failed) is skipped; the skipped are counted in
+    /// one line, and every other record counts as before.
     public static func measurements(entries: [ClusterServedSpeedRecords.Entry], devices: [ClusterPlacementDevice],
                                     layout: ClusterModelLayout, link: ClusterLinkCosts, measuredUTC: String) throws
         -> (measurements: [ClusterSpeedMeasurement], lines: [String]) {
         var measurements: [ClusterSpeedMeasurement] = [], lines: [String] = []
+        var skipped: [ClusterServedSample] = []
         var speculativeFactors: [(device: ClusterPlacementDevice, factor: Double)] = []
         var setups: [ClusterServedSpeedRecords.Setup] = []
         for entry in entries where !setups.contains(entry.setup) { setups.append(entry.setup) }
@@ -520,13 +528,29 @@ public enum ClusterServedCalibration {
                 lines.append("  \(setup.mode) cut \(setup.cut): skipped (shares this model's plan does not offer)")
                 continue
             }
-            let derived = try Self.measurements(samples,
-                placement: .init(devices: ordered, cuts: cuts, mode: mode, schedule: schedule, layout: layout, link: link,
-                    tensorShares: shares),
-                runtimeBinarySHA256: "served", measuredUTC: measuredUTC)
+            let placement = Placement(devices: ordered, cuts: cuts, mode: mode, schedule: schedule, layout: layout, link: link,
+                tensorShares: shares)
+            var usable = samples, derived: [ClusterSpeedMeasurement]
+            do {
+                derived = try Self.measurements(usable, placement: placement, runtimeBinarySHA256: "served", measuredUTC: measuredUTC)
+            } catch {
+                // A request the planner cannot evaluate on this placement (outside the model's limits) is skipped and
+                // counted, never the whole plan; the setup's other requests count as before.
+                usable = []
+                for sample in samples {
+                    if sample.route != .pair || !sample.valid || evaluable(sample, placement: placement) { usable.append(sample) }
+                    else { skipped.append(sample) }
+                }
+                guard let again = try? Self.measurements(usable, placement: placement, runtimeBinarySHA256: "served",
+                                                         measuredUTC: measuredUTC) else {
+                    skipped += usable.filter(\.valid)
+                    continue
+                }
+                derived = again
+            }
             measurements += derived
-            let pair = samples.filter { $0.route == .pair }.count
-            lines.append("  \(setup.mode) cut \(setup.cut) (\(ranks.joined(separator: ", "))): \(pair) pair and \(samples.count - pair) alone request(s)"
+            let pair = usable.filter { $0.route == .pair }.count
+            lines.append("  \(setup.mode) cut \(setup.cut) (\(ranks.joined(separator: ", "))): \(pair) pair and \(usable.count - pair) alone request(s)"
                 + " -> " + (derived.isEmpty ? "nothing usable" : derived.map { m in
                     let label = devices.first { $0.profile.chip == m.key.chip && $0.profile.osBuild == m.key.osBuild }?.label ?? m.key.chip
                     return String(format: "%@ prefill %.0f tok/s, decode %.1f tok/s", label, m.rested.prefillTokensPerSecond,
@@ -538,7 +562,7 @@ public enum ClusterServedCalibration {
             let same = { (m: ClusterSpeedMeasurement) in m.key.chip == device.profile.chip && m.key.osBuild == device.profile.osBuild }
             if let index = measurements.lastIndex(where: { same($0) && $0.key.probe == plainProbe }) {
                 let m = measurements[index]
-                measurements[index] = try .init(key: m.key, promptTokens: m.promptTokens, chunkTokens: m.chunkTokens,
+                guard let credited = try? ClusterSpeedMeasurement(key: m.key, promptTokens: m.promptTokens, chunkTokens: m.chunkTokens,
                     probedLayers: m.probedLayers, layerCount: m.layerCount,
                     rested: .init(prefillTokensPerSecond: m.rested.prefillTokensPerSecond,
                         decodeTokensPerSecond: m.rested.decodeTokensPerSecond,
@@ -547,8 +571,31 @@ public enum ClusterServedCalibration {
                     sustained: m.sustained, hashBytesPerSecond: m.hashBytesPerSecond,
                     materializeBytesPerSecond: m.materializeBytesPerSecond, measuredUTC: m.measuredUTC,
                     provenance: m.provenance + String(format: "; pipeline speculative rounds served %.2fx this placement's plain decode", factor))
+                else { continue }
+                measurements[index] = credited
             }
         }
+        if let line = skippedLine(skipped) { lines.append(line) }
         return (measurements, lines)
+    }
+
+    /// Whether the planner can evaluate `sample`'s request on `placement`, as
+    /// the calibration predicts it (`measurements`): not one outside the
+    /// model's limits, such as a prompt and answer longer than the context its
+    /// tensor-parallel allowance covers.
+    static func evaluable(_ sample: ClusterServedSample, placement: Placement) -> Bool {
+        var policy = ClusterPlacementPolicy()
+        policy.promptTokens = sample.promptTokens; policy.outputTokens = max(1, sample.outputTokens)
+        return (try? ClusterPlacementPlanner.evaluate(devices: placement.devices, cuts: placement.cuts, mode: placement.mode,
+            prefillSchedule: placement.schedule, layout: placement.layout, policy: policy, link: placement.link,
+            tensorShares: placement.tensorShares)) != nil
+    }
+
+    /// The plan's one line for the records it skipped (`measurements`); nil when there were none.
+    public static func skippedLine(_ skipped: [ClusterServedSample]) -> String? {
+        guard !skipped.isEmpty else { return nil }
+        let longest = skipped.map { $0.promptTokens + $0.outputTokens }.max() ?? 0
+        return "  \(skipped.count) record(s) skipped: requests outside this model's limits, or otherwise ones the plan cannot evaluate "
+            + "(the longest \(longest) prompt and answer tokens); the other records still count"
     }
 }

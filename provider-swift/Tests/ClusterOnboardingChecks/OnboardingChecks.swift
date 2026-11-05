@@ -4297,8 +4297,8 @@ import Darwin
     }
 
     /// The list (team note: "Model selection should hide model that we don't allow them to be run there"): the model
-    /// serving now marked, each mode with its speed measured on these Macs or "not measured on these Macs yet"; what
-    /// cannot run stays hidden.
+    /// serving now marked, each mode with its speed measured on these Macs or "not measured on these Macs yet"; an
+    /// approved model that cannot run is named with its reason, above the list.
     static func modelListMarksTheCurrentModelAndMeasuredSpeeds() {
         let current = switchChoices[0].listLine(sameTitleElsewhere: false)
         expect(current == "Qwen 3.8 27B · 16.3 GB · tensor parallel 41 tok/s", "list: a model's line: \(current)")
@@ -4308,10 +4308,17 @@ import Darwin
         unmeasured.modes = unmeasured.modes!.map { var mode = $0; mode.measuredTokensPerSecond = nil; return mode }
         expect(unmeasured.listLine(sameTitleElsewhere: false) == "Gemma 4 26B · 15.6 GB · tensor parallel or pipeline · not measured on these Macs yet",
                "list: none measured: \(unmeasured.listLine(sameTitleElsewhere: false))")
-        let hidden = ClusterOnboardingModelChoice(title: "GLM", lines: [], blocker: "too large for this pair", modelID: "glm-5.3-flash", validated: true)
-        let run = TerminalRun(operations(Recorder(), resume: qwenServing, pairEvents: [], pairResult: .failed([]), choices: switchChoices + [hidden]))
-        expect(run.waitFor(prompt(4)), "list screen: two models, GLM hidden")
-        expect(run.text.contains(qwenList) && !run.text.contains("GLM"), "list screen: \(run.text)")
+        // An approved model that cannot run here is never hidden silently (2026-11-05: Qwen 3.8 27B left a pair's list
+        // without a word when its plan failed): it is named with its reason in one line above the list, and cannot be
+        // picked; a model not approved for clusters stays unnamed.
+        let blocked = ClusterOnboardingModelChoice(title: "GLM", lines: [], blocker: "too large for this pair", modelID: "glm-5.3-flash", validated: true)
+        let unapproved = ClusterOnboardingModelChoice(title: "Gemma 4 E4B", lines: [], blocker: "too large for this pair", modelID: "gemma-4-e4b", validated: false)
+        let run = TerminalRun(operations(Recorder(), resume: qwenServing, pairEvents: [], pairResult: .failed([]),
+                                         choices: switchChoices + [blocked, unapproved]))
+        expect(run.waitFor(prompt(4)), "list screen: two models to choose, GLM not among them")
+        expect(run.text.contains("  GLM: not offered on these two Macs: too large for this pair\n" + qwenList),
+               "list screen: the blocked approved model and its reason above the list: \(run.text)")
+        expect(!run.text.contains("Gemma 4 E4B"), "list screen: an unapproved model is not named")
         run.type("q")
         _ = run.finish()
     }

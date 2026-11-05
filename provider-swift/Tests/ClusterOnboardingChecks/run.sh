@@ -14,8 +14,11 @@ xcrun swiftc -swift-version 6 -warnings-as-errors -parse-as-library -target "$(u
   "$task_sources/ClusterOnboardingFollow.swift" "$task_sources/ClusterOnboardingLeaderStep.swift" \
   "$task_sources/ClusterOnboardingSoloServing.swift" \
   "$task_provider/Tests/ClusterOnboardingChecks/VersionSplitChecks.swift" \
+  "$task_provider/Tests/ClusterOnboardingChecks/WaitHonestChecks.swift" \
   "$task_sources/ClusterOnboardingStartProgress.swift" \
   "$task_provider/Tests/ClusterOnboardingChecks/OnboardingChecks.swift" "$task_provider/Tests/ClusterOnboardingChecks/FollowWaitChecks.swift" \
   "$task_provider/Tests/ClusterOnboardingChecks/StartProgressChecks.swift" \
-  "$task_provider/Tests/ClusterOnboardingChecks/FollowFinalChecks.swift" -o "$task_build/onboarding-checks"
+  "$task_provider/Tests/ClusterOnboardingChecks/FollowFinalChecks.swift" \
+  "$task_provider/Tests/ClusterOnboardingChecks/RoleHeaderChecks.swift" \
+  "$task_provider/Tests/ClusterOnboardingChecks/StepFoldChecks.swift" -o "$task_build/onboarding-checks"
 "$task_build/onboarding-checks"

@@ -8,6 +8,9 @@ import MLXLMCommon
 public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
     let queue = DispatchQueue(label: "darkbloom.experimental.distributed-engine")
     let queueKey = DispatchSpecificKey<UInt8>()
+    /// Where the ranks' reservations wait, one after another, off `queue`
+    /// (`DistributedCBv2Engine+Admission.swift`).
+    let admissionQueue = DispatchQueue(label: "darkbloom.experimental.distributed-engine.admission")
     let owner: any DistributedResidentExecutionOwner
     let identity: DistributedResidentIdentity
     let profile: DistributedResidentExecutionProfile
@@ -19,6 +22,12 @@ public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
     /// owner's `concurrentRequests`.
     var actives: [UUID: DistributedRequestState] = [:]
     func isActive(_ state: DistributedRequestState) -> Bool { actives[state.generation] === state }
+    /// Lanes held by requests submitted but not yet in `actives` (waiting for
+    /// their reservation, or in it), by request ID; and those of them a cancel
+    /// named meanwhile.
+    var admitting: [CBv2RequestID: Int] = [:]
+    var cancelledWhileAdmitting: Set<CBv2RequestID> = []
+    var admittingCount: Int { admitting.values.reduce(0, +) }
     /// The request, for an owner that serves one at a time (and its tests).
     var active: DistributedRequestState? { actives.count == 1 ? actives.values.first : nil }
     var invalidated = false
@@ -86,14 +95,15 @@ public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
         if DispatchQueue.getSpecific(key: queueKey) != nil { body() } else { queue.async(execute: body) }
     }
 
-    /// Returns at once. A reservation can hold the queue until both ranks
-    /// answer at their next step boundary (up to the lane admission wait, 30 s),
-    /// so the stop is queued behind it and applied in queue order: a request
-    /// whose reservation is in flight is stopped as soon as it is admitted.
+    /// Returns at once. A request whose reservation is in flight, or still
+    /// waiting, is stopped as soon as it is admitted.
     public func cancel(_ id: CBv2RequestID) {
         onQueueWithoutWaiting { [self] in
-            guard let state = actives.values.first(where: { $0.request.id == id }) else { return }
-            stop(state, reason: .cancelled)
+            if let state = actives.values.first(where: { $0.request.id == id }) {
+                stop(state, reason: .cancelled)
+            } else if admitting[id] != nil {
+                cancelledWhileAdmitting.insert(id)
+            }
         }
     }
 
@@ -115,8 +125,14 @@ public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
         stopping = true
         let pending = Array(actives.values)
         for state in pending { stop(state, reason: .cancelled) }
-        let task = Task { [owner] in
+        let task = Task { [self, owner] in
             for state in pending { await state.retired.wait() }
+            // A reservation in flight returns into a stopping engine, which
+            // stops its request at once; wait for those too.
+            let late = await withCheckedContinuation { done in
+                admissionQueue.async { [self] in queue.async { [self] in done.resume(returning: Array(actives.values)) } }
+            }
+            for state in late { await state.retired.wait() }
             await owner.shutdown()
         }
         shutdownTask = task

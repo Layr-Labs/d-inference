@@ -40,6 +40,10 @@ import Darwin
         linkNotReady()
         memberAgain()
         resumedMacsOpenWithTheMark()
+        // The owner, 2026-11-05: each Mac's part by the mark.
+        roleHeaderChecks()
+        // The owner, 2026-11-05: "all captured in one, instead of keep dropping down a million lines in the CLI".
+        stepFoldChecks()
         leaderAgainServing()
         leaderPairedNotServing()
         noModelOffered()
@@ -205,6 +209,8 @@ import Darwin
         liveLineChecks()
         // 0.10.8, 2026-11-04: one Mac of a pair updated alone; its part ended every 38 s and no screen named the versions.
         versionSplitChecks()
+        // DevNet pair-2, 2026-11-05: the coordinator's wait blamed Apple, couldn't be left, and the joining Mac didn't follow.
+        waitHonestChecks()
         // 0.10.8, 2026-11-04: single-Mac serving held the provider instance lock on both Macs of a pair; the start looped
         // "this Mac's part ended (… another update operation owns the lock (pid 9523, provider-instance)) and starts again
         // by itself", the other Mac read "no error reported", and the guidance was `darkbloom stop`, which stops the pair.
@@ -296,7 +302,8 @@ import Darwin
                          "Loading Qwen3.8-27B-4bit-mtp on both Macs", "Sending a test request"] {
                 expect(!screen.contains { $0.contains(live + "\u{2026}") }, "colour: the live line \(live) is replaced, never left behind")
             }
-            expect(run.text.contains("\u{1B}[\(ClusterOnboardingBrand.height)A") == animated, "colour: the mark blooms only when animating")
+            // The bloom climbs the mark's height and draws it again (a folded step climbs too, then erases).
+            expect(run.text.contains("\u{1B}[\(ClusterOnboardingBrand.height)A  \u{1B}[") == animated, "colour: the mark blooms only when animating")
             expect(!run.text.contains("\u{1B}[2J") && !run.text.contains("\u{1B}[H"), "colour: no screen clearing")
             expect(recorder.all == ["checkLink", "pair", "answer y", "ensureService", "reachMembers", "planModels", "recheckFit 0", "adopt 0",
                 "serve", "waitReady", "testRequest", "register", "waitReady", "pairServing"], "colour: operations in order: \(recorder.all)")
@@ -771,9 +778,9 @@ import Darwin
         let done = DispatchSemaphore(value: 0)
 
         init(_ operations: ClusterOnboardingOperations, request: ClusterOnboardingRequest = .init(),
-             environment: [String: String] = ["NO_COLOR": "1"], columns: UInt16 = 132) {
+             environment: [String: String] = ["NO_COLOR": "1"], columns: UInt16 = 132, rows: UInt16 = 50, logFile: URL? = nil) {
             var primary: Int32 = -1, secondary: Int32 = -1
-            var window = winsize(ws_row: 50, ws_col: columns, ws_xpixel: 0, ws_ypixel: 0)
+            var window = winsize(ws_row: rows, ws_col: columns, ws_xpixel: 0, ws_ypixel: 0)
             precondition(openpty(&primary, &secondary, nil, nil, &window) == 0)
             master = primary; slave = secondary
             _ = fcntl(primary, F_SETFL, fcntl(primary, F_GETFL) | O_NONBLOCK)
@@ -790,7 +797,7 @@ import Darwin
             }
             let slaveFD = secondary
             Thread.detachNewThread { [self] in
-                let console = ClusterOnboardingTerminal(input: slaveFD, output: slaveFD, environment: environment)
+                let console = ClusterOnboardingTerminal(input: slaveFD, output: slaveFD, environment: environment, logFile: logFile)
                 let code = ClusterOnboardingDriver.run(operations, console: console, request: request)
                 console.restore()
                 usleep(100_000)
@@ -3622,7 +3629,7 @@ import Darwin
         let run = TerminalRun(operations(recorder, resume: qwenServing, pairEvents: [], pairResult: .failed([]), choices: switchChoices, thisMacName: "Studio A"))
         expect(run.waitFor(prompt(4)), "pair screen: the list")
         let shown = run.text
-        expect(shown.contains("Darkbloom cluster\nThis Mac (Studio A) leads \u{00B7} the other Mac (Apple M3 Ultra, 256 GB) follows \u{00B7} cable ready\n"),
+        expect(shown.contains("Darkbloom cluster \u{00B7} Leading Mac\nThis Mac (Studio A) leads \u{00B7} the other Mac (Apple M3 Ultra, 256 GB) follows \u{00B7} cable ready\n"),
                "pair screen: the opening: \(shown)")
         expect(shown.contains(servingBlock + "\nModel\n" + qwenList + "  " + prompt(4)), "pair screen: the status, then the models, the serving one preselected: \(shown)")
         expect(!shown.contains("Test a response") && !shown.contains("Stop serving") && !shown.contains("Check memory is freed") && !shown.contains("How it works"),

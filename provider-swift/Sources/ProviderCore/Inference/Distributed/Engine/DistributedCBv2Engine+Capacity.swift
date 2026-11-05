@@ -1,13 +1,12 @@
 import Foundation
 import MLXLMCommon
 
-// A reservation asks both ranks to admit a request and waits on the engine
-// queue until each answers at its next step boundary: up to the lane admission
-// wait (30 s) per reservation, one reservation after another. A capacity read
-// that waited for the queue parked its caller for that long, and the caller is
-// the bridge actor (heartbeat capacity, cancellation, submission), behind which
-// the provider's coordinator traffic queued. So the queue publishes the
-// capacity it computes, and a read off the queue answers from that.
+// A capacity read never waits for the engine queue: its caller is the bridge
+// actor (heartbeat capacity, cancellation, submission), behind which the
+// provider's coordinator traffic queues. So the queue publishes the capacity it
+// computes, and a read off the queue answers from that. The requests holding a
+// lane while they wait for their reservation, or are in it (`admitting`), are
+// its waiting requests: their lanes are not free.
 
 /// The capacity the engine queue last computed, with the state that decides
 /// whether the engine can admit at all. Read from any thread without waiting.
@@ -73,7 +72,7 @@ extension DistributedCBv2Engine {
         let inUse = states.reduce(0) { $0 + $1.lease.bytesInUse }
         if inUse < 0 || inUse > reserved { invalidate() }
         let snapshot = CBv2CapacitySnapshot(
-            activeRequests: states.count, waitingRequests: 0,
+            activeRequests: states.count, waitingRequests: admittingCount,
             kvBytesInUse: max(0, inUse), kvBytesCapacity: invalidated ? 0 : capacity,
             kvBytesBackendCapacity: invalidated ? 0 : capacity,
             kvBytesReserved: reserved,

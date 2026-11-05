@@ -181,6 +181,11 @@ follows the start from the cluster's status the two Macs exchange over the cable
    (…) and choose the model it serves." It ends early only for a reason of its
    own, such as a different Darkbloom build.
 
+Running `darkbloom cluster` on the Mac that joined while the leading Mac runs a
+start (a model or mode change, or a Retry) follows that start the same way: the
+steps, the bytes bar, one row per Mac and the final outcome. It no longer shows
+"This Mac runs its part by itself … Close" while the other Mac loads.
+
 q leaves at any time: "The pair keeps going; run `darkbloom cluster` here to see
 it." The follow is bounded like the leader's start: 15 minutes for the start to
 begin, then 15 minutes for each of its stages (loading; the test and the check
@@ -560,6 +565,21 @@ once; one planned with the one-chunk lookahead takes one at a time
    once the wait has run 90 s), with the choices [above](#the-steps-once). There
    is no local API in this mode.
 
+   The wait says only what the Macs report at that moment. "isn't verified by
+   Apple yet" appears only while a Mac reports its App Attest authorization
+   missing. A coordinator trust word on two authorized Macs reads "The
+   coordinator didn't accept the pair yet (<word>)". When the 15 minutes run out
+   with both Macs registered and nothing reported, the ✗ says "The coordinator
+   didn't pair both Macs within 15 minutes; both are registered with it, and it
+   gave no reason". When the coordinator's reason is known (for example a model
+   its catalog doesn't list), that reason is shown instead. q or Esc leaves this
+   wait: "Left the wait: both Macs stay registered and the pair keeps trying to
+   be paired by the coordinator by itself. Check with `darkbloom status`." A
+   `darkbloom cluster stop` from any window or either Mac ends the wait at once
+   with "Stopped (by `darkbloom cluster stop` on one of the Macs): the pair
+   isn't starting any more." The Mac that joined says the same once the leading
+   Mac's status has stayed stopped for 20 seconds.
+
 An approval ends at its `not_after`, which the operator sets; one derived from
 a release ends 90 days after that release registered
 ([`releaseApprovalExpiry`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/coordinator/registry/cluster_release_approvals.go)). The
@@ -610,8 +630,23 @@ Approval sources, checks and saved fields:
 Counting every key: enter for **Yes** on each Mac and enter for the first
 model on the leader (three keys), plus the macOS prompts [above](#the-steps-once).
 
+In a color terminal at least 40 columns wide, each step folds to one line once
+the next step begins: "✓ 2/4 Pair (1 min 12 s)". The lines that stay are the
+pairing code, each question with the answer given, and an outcome block. A step
+that showed a ✗ stays whole, as does a step taller than the window (rows that
+scrolled off can't be redrawn) and a step during which another command wrote to
+the terminal (`sudo`, `darkbloom login`). The last step and the outcome stay
+whole. The whole flow, line by line, goes to a log file for this run
+(`~/.darkbloom/cluster-setup/screens/screen-<UTC time>Z-<pid>.log`; the 20
+newest are kept, `ClusterOnboardingTerminal.screenLog`). Its path is the last
+line ("Full log: …"), and a ✗ block names it as well. Plain output (a pipe,
+`NO_COLOR`, `TERM=dumb`) has every line already: nothing folds and no log is
+written.
+
 Running `darkbloom cluster` again on either Mac opens with the same Darkbloom
-mark, beside "Darkbloom cluster" and the part each Mac plays and the cable
+mark, beside "Darkbloom cluster · Leading Mac" or "Darkbloom cluster · Joining
+Mac" (`ClusterOnboardingDriver.title(_:)`; a first setup, before the two Macs
+pair, says "Darkbloom cluster" alone), then the part each Mac plays and the cable
 ("This Mac leads · the other Mac (Apple M3 Ultra, 256 GB) follows · cable
 ready"; with the name System Settings gives this Mac, "This Mac (Studio A)
 leads · …", so two identical Macs each say which they are), then shows the
@@ -771,7 +806,7 @@ Models that run tensor parallel, and when:
 |---|---|---|
 | Qwen3.5 9B, Qwen3.8 27B, Qwen3.5/3.6 35B A3B | wherever it fits | Qwen3.8 27B keeps images, video and logprobs only in tensor parallel |
 | GLM-5.3-Flash | wherever it fits | Eight concurrent requests by default |
-| Gemma 4 26B (QAT 4-bit, 8-bit) | only where the plan predicts it faster from its own measured speed on both Macs (it keeps every feature of the pipeline, prompt-prefix and SSD reuse included) | Text only; logprobs in tensor parallel only; one request at a time unless you set `DARKBLOOM_CLUSTER_BATCH_LANES` |
+| Gemma 4 26B (QAT 4-bit, 8-bit) | only where the plan predicts it faster from its own measured speed on both Macs (it keeps every feature of the pipeline, prompt-prefix and SSD reuse included) | Text only; logprobs in tensor parallel only; one request at a time unless you set `DARKBLOOM_CLUSTER_BATCH_LANES` (its tensor-parallel batch width is not priced yet); a request cancelled during its prompt keeps the pair's one lane until that prompt is read (about a minute for a 16K-token prompt) |
 | MiMo V2.6 Flash | only where it keeps every feature of the mode it would replace (it keeps the speculative pipeline's rounds, not the plain pipeline's batch lanes) and the plan predicts it faster from its own measured speed on both Macs | Text only; speculative decoding; logprobs in tensor parallel only; one request at a time; see [MiMo V2.6 Flash on the pair](#mimo-v26-flash-on-the-pair) |
 
 For Gemma 4 and MiMo V2.6 Flash, tensor parallel must first keep every feature

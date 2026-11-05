@@ -68,26 +68,27 @@ retirement: `EngineV2Bridge.shutdown` cancelled a pump while the queue
 published that request's peer loss. Lease events, the owner's invalidation,
 submissions and shutdown keep their synchronous queue order.
 
-A reservation runs on that queue and waits there until both ranks answer at
-their next step boundary, up to the lane admission wait (30 s) per
-reservation, one reservation after another. So nothing that only reads the
-engine or stops a request waits for the queue. `cancel` hops onto it without
-waiting: the stop runs in queue order, so a request whose reservation is in
-flight is stopped as soon as it is admitted. A submission whose caller went
-away while it waited for the queue (`DistributedAdmissionCancellation`) is
-refused before it asks the ranks. The first-token and request deadline timers
-hop the same way. `capacity()` called off the queue answers at once from the
-snapshot the queue publishes after every change, with the owner's readiness
-read live, and queues one refresh that runs the readiness and accounting
-checks once the queue is free. A pair measures no prefill rate, so the bridge
-submits its requests without a projected admission. It awaits that admission
-(`submitAwaitingQueue`) instead of waiting for the queue on its actor, so the
-actor stays free for cancels and capacity reads. Before, the bridge actor
-waited for the whole reservation, and with it the heartbeat's capacity,
-cancellation and every other request's submission; on DevNet's pair-2 a cancel
-during a 15K-token prompt landed 20–29 s late. The reservation itself still
-holds the queue, and with it token delivery to the other lanes, until it
-returns. Sources:
+A reservation waits until both ranks answer at their next step boundary, up to
+the lane admission wait (30 s), one reservation after another on the engine's
+`admissionQueue`, never on the engine queue. Rank 0 waits a bounded time each
+step for the owner's answer to every running lane's token, and that answer is
+given on the engine queue; a reservation that held the queue stalled every
+lane, and the step at which the reservation itself is answered. A submission
+holds a lane from the moment it is accepted (`holdLane`, the engine's
+`admitting` count): the lane check counts it, and `capacity()` reports it as a
+waiting request, so the heartbeat's `num_waiting` covers requests the pair is
+reserving or about to reserve. `cancel` hops onto the queue without waiting; a
+request whose reservation is in flight, or still waiting, is stopped as soon as
+it is admitted. A submission whose caller went away while it waited
+(`DistributedAdmissionCancellation`) is refused before it asks the ranks, and a
+shutdown waits for the reservation in flight and stops its request. The
+first-token and request deadline timers hop the same way. `capacity()` called
+off the queue answers at once from the snapshot the queue publishes after every
+change, with the owner's readiness read live, and queues one refresh that runs
+the readiness and accounting checks once the queue is free. A pair measures no
+prefill rate, so the bridge submits its requests without a projected admission
+and awaits that admission (`submitAwaitingQueue`), so its actor stays free for
+cancels and capacity reads. Sources:
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine.swift`
 (`onQueueWithoutWaiting`, `cancel`),
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine+Capacity.swift`,
@@ -146,7 +147,13 @@ and fail at its own first-token deadline. The cancel ends only that lane, at
 both ranks' next step boundary, and the next request is served at once. The
 pair's own shutdown (`ClusterWorkerPair.shutdown`) likewise cancels such a lane
 without waiting for a clean stop. A pair without such lanes keeps the clean
-stop, since a cancel there ends the pair. Before, a client that closed its
+stop, since a cancel there ends the pair. So on a one-lane pair (a pipeline that
+serves one request at a time, and a tensor-parallel setup whose batch width is
+not priced: Gemma 4 today, which has no tensor-parallel batch quote, so its
+saved setup keeps `DistributedInstalledPlan.defaultBatchLanes`) a cancel during
+the prompt keeps the lane until the whole prompt is read: about 68 s for a
+15.8K-token prompt on an M3 Ultra + M5 Max Gemma pair (2026-11-05). This is a
+known limitation, the same as on a GLM-5.3-Flash pipeline. Before, a client that closed its
 connection 15 s into a 60K-token prompt on a Qwen 3.8 27B tensor-parallel pair
 kept both Macs prefilling it for about 4 minutes, and every other request
 failed meanwhile. Sources:
@@ -211,11 +218,25 @@ previewed without credit for 10 minutes for that setup
 (`DistributedAutomaticBatchCreditRefusals`), so steady demand cannot cycle
 release and restore.
 
+A replacement is proposed only when it serves the running generation's
+endpoint contract: the local server swaps in only a session with the same
+profile (`DistributedLocalSessionBinding.permitsPlacementChange`), and the mode
+decides whether committed-token logprobs are captured
+(`ClusterModelFeaturePolicy.capturesLogprobs`). Gemma 4 has no tensor-parallel
+batch quote, so its batch scope prices only the pipeline; a tensor-parallel
+Gemma pair is therefore never offered a pipeline replacement, which would fail
+after the drain (`DistributedAutomaticBatchPlanner.keepsEndpointFeatures`).
+A replacement that fails after release (the host restores the previous setup)
+is remembered for that setup and width: it is not proposed again until a hold
+passes, 2 minutes doubling on each repeat up to 30 minutes, while a different
+setup is tried at once (`DistributedAutomaticBatchFailures`).
+
 Every refused width logs one line, `cluster.batch_replan refused lanes=N`, in
 the preview and in the post-release recheck
 (`DistributedAutomaticBatchPlanner.refusalFields`). Its fields are `phase`
 (`preview` or `post_release`), `reason` (`not_now`, `not_possible`,
-`outside_gpu_working_set`, `not_accepted`, `no_setup` or `no_placement`),
+`outside_gpu_working_set`, `not_accepted`, `no_setup`, `no_placement` or
+`endpoint_features`, which also names `running_mode`),
 `requested_lanes`, `previous_lanes`, `require_now`, `credits_incumbent_weights`,
 `mode`, `tensor_shares` and, for each rank N, `rankN_need_bytes`,
 `rankN_load_need_bytes`, `rankN_request_need_bytes`,
@@ -6169,7 +6190,7 @@ Placement may change only for the same model artifact, tokenizer/model contract,
 
 A temporarily unavailable recommendation may be retried after 30 seconds even when queued demand remains unchanged. Increased demand may trigger an earlier attempt; no retry restarts a ticket deadline. This prevents a planner cooldown from permanently stranding a sustained burst at its earlier width.
 
-After successful native start and capacity validation, the host logs `cluster.batch_replan activated` (or `restored` after a fresh rollback) with requested/effective lane counts, generation, process incarnation and installed setup digest/mode. These content-free diagnostics do not establish native kernel width or numerical equivalence.
+After successful native start and capacity validation, the host logs `cluster.batch_replan activated` (or `restored` after a fresh rollback, which `cluster.batch_replan failed lanes=N` precedes when the factory remembers the failure) with requested/effective lane counts, generation, process incarnation and installed setup digest/mode. These content-free diagnostics do not establish native kernel width or numerical equivalence.
 
 ### GPT-OSS native batch width observations
 

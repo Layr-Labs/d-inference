@@ -945,9 +945,9 @@ extension EngineV2Bridge {
                     // Without a projected admission the engine still enforces
                     // the origin-anchored deadlines selected above. A bare
                     // submit would start a fresh budget with no first-token limit.
-                    // Awaited, never waited for on this actor: another request's
-                    // reservation can hold the pair's queue for up to 30 s, and
-                    // cancels and capacity reads need this actor meanwhile.
+                    // Awaited, never waited for on this actor: the pair's
+                    // reservations run one after another, each for up to 30 s,
+                    // and cancels and capacity reads need this actor meanwhile.
                     let submitted = try await distributed.submitAwaitingQueue(
                         engineRequest, deadlineContext: selectedContext)
                     events = submitted.events

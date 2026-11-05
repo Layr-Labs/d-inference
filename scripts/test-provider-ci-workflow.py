@@ -259,7 +259,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         # runs the plan self-tests on every run, skipped or not.
         steps = {field(step, "name", indent=6): step for step in step_blocks(self.jobs["provider-test-gate"])}
         check = steps["Check the CI plans"]
-        self.assertIsNone(field(check, "if"))
+        # They run even when the requirement above failed; only a cancel stops them.
+        self.assertEqual(field(check, "if"), "${{ !cancelled() }}")
         commands = run_command(check).splitlines()
         for command in ("python3 scripts/cluster-test-plan.py audit", "python3 scripts/test-cluster-test-plan.py",
                         "python3 scripts/test-provider-test-shards.py", "python3 scripts/test-ci-component-paths.py",

@@ -755,14 +755,17 @@ jobs:
       # The CI plans run on dev too, not only in master's Release Integrity:
       # the cluster plan's audit against the sources and this workflow, the
       # provider shard plan, the component classifier, the tested-change
-      # lookup, the route and the workflow pins. Python only; no build.
+      # lookup, the route and the workflow pins. Python only; no build. They
+      # run even when a test job failed.
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        if: ${{ !cancelled() }}
         with:
           persist-credentials: false
           filter: blob:none
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
           sparse-checkout-cone-mode: false
       - name: Check the CI plans
+        if: ${{ !cancelled() }}
         run: |
           python3 scripts/cluster-test-plan.py audit
           python3 scripts/test-cluster-test-plan.py

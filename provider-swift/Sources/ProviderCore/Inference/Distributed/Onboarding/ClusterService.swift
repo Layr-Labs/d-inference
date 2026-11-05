@@ -107,6 +107,11 @@ public final class ClusterService: @unchecked Sendable {
     /// On the leader: why the other Mac's part can't start now, as its status last said (`ClusterService.heldBack(of:)`);
     /// this Mac's part waits for it instead of starting and ending again. Nil when it says none or didn't answer.
     private var peerHeldBack: String?
+    /// A step aside of single-Mac serving runs (`stepAsideIfUnchosen`), and the process it was for.
+    private var steppingAside = false
+    private var steppedAsidePID: Int32?
+    /// How single-Mac serving is stopped (`stop --solo`); tests stand in.
+    var stopSingleMac: @Sendable (URL) -> Result<Void, ClusterSetupFailure> = { ClusterService.stopSoloServing(executable: $0) }
     private var peerHeldBackSaid: String?
     private var nextSync = Date.distantPast
     // Setting the cluster up again after a Darkbloom update (`checkForUpdate`).
@@ -772,6 +777,8 @@ public final class ClusterService: @unchecked Sendable {
             guard ProviderInstanceHolder.current(lockFile: providerInstanceLock)?.kind == .singleMac else { return try encoder.encode(status()) }
             if case .failure(let failure) = Self.stopSoloServing(executable: settings.wizard.darkbloomExecutable) { throw failure }
             say("stopped single-Mac serving on this Mac, as the other Mac's screen asked")
+            ClusterSoloChoice.clear(in: store.paths.directory)
+            blockerCleared(say: say)
             lock.withLock { nextStart = .distantPast; backoff = 3 }
             return try encoder.encode(status())
         case .prompt:
@@ -1550,15 +1557,61 @@ public final class ClusterService: @unchecked Sendable {
 
     /// Whether single-Mac serving on this Mac holds back this Mac's part now: said once when it is first seen, and once
     /// when it stopped.
-    private func holdsBackForSoloServing(say: @escaping @Sendable (String) -> Void) -> Bool {
+    private func holdsBackForSoloServing(key: String?, say: @escaping @Sendable (String) -> Void) -> Bool {
         let found = ProviderInstanceHolder.current(lockFile: providerInstanceLock).flatMap { $0.kind == .singleMac ? $0 : nil }
         let before = lock.withLock { () -> ProviderInstanceHolder.Holder? in defer { soloServing = found }; return soloServing }
         if let found {
             if before != found { say(Self.soloServingError(found) + "; this Mac's part waits for it to stop") }
+            stepAsideIfUnchosen(found, key: key, say: say)
             return true
         }
-        if before != nil { say("single-Mac serving stopped on this Mac: starting this Mac's part") }
+        if before != nil {
+            say("single-Mac serving stopped on this Mac: starting this Mac's part")
+            blockerCleared(say: say)
+        }
         return false
+    }
+
+    /// Single-Mac serving that nobody chose since the pair was last started here (`ClusterSoloChoice.stepsAside`; for
+    /// example 0.10.8's updater restarted it) is stopped as `darkbloom stop --solo` stops it, once per process, on a thread
+    /// of its own. A choice the person made keeps it, and the block stays on both screens.
+    private func stepAsideIfUnchosen(_ holder: ProviderInstanceHolder.Holder, key: String?, say: @escaping @Sendable (String) -> Void) {
+        let directory = store.paths.directory
+        guard ClusterSoloChoice.stepsAside(wantedKey: key, chosenAt: ClusterSoloChoice.chosenAt(in: directory)) else { return }
+        let begin = lock.withLock { () -> Bool in
+            guard !steppingAside, steppedAsidePID != holder.pid || holder.pid == nil else { return false }
+            steppingAside = true; steppedAsidePID = holder.pid; return true
+        }
+        guard begin else { return }
+        let executable = settings.wizard.darkbloomExecutable, stop = stopSingleMac
+        say(ProviderInstanceHolder.clause(holder) + ", and nobody chose it since the pair was started here: stopping it as "
+            + "`\(BuildEnvironment.current.cliName) stop --solo` does, so the pair can start")
+        Thread.detachNewThread { [weak self] in
+            let result = stop(executable)
+            self?.lock.withLock { self?.steppingAside = false }
+            switch result {
+            case .success:
+                ClusterSoloChoice.noteSteppedAside(.init(at: Date().timeIntervalSince1970, pid: holder.pid), in: directory)
+                say(ClusterSoloChoice.line(.init(at: Date().timeIntervalSince1970, pid: holder.pid), cli: BuildEnvironment.current.cliName))
+            case .failure(let failure):
+                say("single-Mac serving could not step aside: \(failure.text); `\(BuildEnvironment.current.cliName) stop --solo` on this Mac stops it")
+            }
+        }
+    }
+
+    /// The blocker cleared (single-Mac serving stopped here, or on the other Mac): its blocked ends are forgotten, and an
+    /// approval they set aside as failing is taken again now, so the pair goes back to Darkbloom at once, not after an hour.
+    private func blockerCleared(say: @escaping @Sendable (String) -> Void) {
+        lock.withLock { memberQuickEnds = 0; nextStart = .distantPast; backoff = 3 }
+        guard let record = try? store.readRecord(), let setAside = record.approvalSetAside,
+              ClusterApprovalCheck.clearsAfterBlocker(setAside.reason) else { return }
+        try? store.updateRecord { if $0.approvalSetAside.map { ClusterApprovalCheck.clearsAfterBlocker($0.reason) } == true { $0.approvalSetAside = nil } }
+        say("the blocker cleared: offering the pair to Darkbloom again with approval \(setAside.approval.id)")
+    }
+
+    /// This Mac's cluster setup directory, where the person's choice of single-Mac serving is kept (`ClusterSoloChoice`).
+    public static func soloChoiceDirectory() -> URL? {
+        (try? ClusterUserPaths()).map { ClusterSetupPaths(paths: $0).directory }
     }
 
     /// How long a consented stop of single-Mac serving lets its accepted requests finish (`stop --solo --timeout`).
@@ -1699,7 +1752,10 @@ public final class ClusterService: @unchecked Sendable {
             // accepted in time) is not counted.
             if lock.withLock({ childIsMember }) {
                 let lastError = Self.lastError(in: serviceFiles.rankLog, from: lock.withLock { childLogOffset }, preferStopReason: false)
-                lock.withLock { memberQuickEnds = ClusterApprovalCheck.memberQuickEnds(after: memberQuickEnds, ranSeconds: ran, lastError: lastError) }
+                // An end while either Mac's part is held back (single-Mac serving) is the blocker's, not the approval's.
+                let heldBack = lock.withLock { peerHeldBack != nil || soloServing != nil }
+                lock.withLock { memberQuickEnds = ClusterApprovalCheck.memberQuickEnds(after: memberQuickEnds, ranSeconds: ran, lastError: lastError,
+                                                                                        heldBack: heldBack) }
             }
             // F14: a solo server that keeps ending right after its start is not started again for this plan and model
             // (`ClusterControlSoloAdmission`): the status then says this Mac cannot serve it alone.
@@ -1767,7 +1823,7 @@ public final class ClusterService: @unchecked Sendable {
         // Single-Mac serving holds this Mac's one serving lock and never ends by itself: a part started beside it only
         // ended at once and started again every few seconds (0.10.8, 2026-11-04: "this Mac's part ended (exit 1: …)"
         // in a loop on both Macs). Nothing starts until it stops; the status names it meanwhile.
-        if running == nil, key != nil, holdsBackForSoloServing(say: say) { return }
+        if running == nil, key != nil, holdsBackForSoloServing(key: key, say: say) { return }
         if key == nil { lock.withLock { soloServing = nil } }
         // The other Mac said its part can't start for a reason that doesn't clear by itself: this Mac's part waits for that
         // to change instead of starting, waiting for its missing follower and ending every 38 s (0.10.9 DevNet f1).
@@ -1778,7 +1834,10 @@ public final class ClusterService: @unchecked Sendable {
                 if before != reason { say("the other Mac's part can't start (\(reason)): this Mac's part waits for that to change") }
                 return
             }
-            if before != nil { say("the other Mac's part can start again: starting this Mac's part") }
+            if before != nil {
+                say("the other Mac's part can start again: starting this Mac's part")
+                blockerCleared(say: say)
+            }
         }
         // The restart backoff holds back only the part that ended: serving alone after the grace starts at once.
         guard running == nil, let key, lock.withLock({ !stopping && ClusterControlPartChoice.mayStart(key: key, endedKey: endedKey,

@@ -7,11 +7,12 @@ extension OnboardingLive {
     /// Mac that doesn't answer, or an older build that doesn't say, adds none).
     func soloServing() -> [ClusterOnboardingSoloServing] {
         var found = [ClusterOnboardingSoloServing]()
+        let status = (try? command(.init(op: .status), seconds: 10)).flatMap { try? JSONDecoder().decode(ClusterServiceStatus.self, from: $0) }
+        // Macs on different versions can't pair whatever single-Mac serving does: that ✗ comes first, never this one.
+        guard ClusterOnboardingSoloServing.blockApplies(thisVersion: ProviderCore.version, otherVersion: status?.pairUpdate?.running)
+        else { return [] }
         if let holder = ProviderInstanceHolder.singleMacServing() { found.append(.init(mac: here, pid: holder.pid)) }
-        if let data = try? command(.init(op: .status), seconds: 10),
-           let status = try? JSONDecoder().decode(ClusterServiceStatus.self, from: data), let solo = status.soloServing {
-            found.append(.init(mac: there, pid: solo.pid))
-        }
+        if let solo = status?.soloServing { found.append(.init(mac: there, pid: solo.pid)) }
         return found
     }
 

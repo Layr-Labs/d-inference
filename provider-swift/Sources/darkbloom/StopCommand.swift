@@ -74,6 +74,8 @@ struct Stop: AsyncParsableCommand {
                 throw ExitCode.failure
             }
         }
+        // Stopping single-Mac serving here: a choice of it made before no longer stands.
+        if pair.paired { Start.clearSoloChoice() }
         let wasLoaded = LaunchAgent.isLoaded()
         if pair.paired, !wasLoaded, !uninstall {
             if stop != .stopHere { for line in pair.soloStopNothing { print(line) } }

@@ -1501,7 +1501,9 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     func serve() -> Result<[String], ClusterOnboardingFailure> {
-        routed(.init(op: .serve), acting: true, local: { localServe() }) { $0.lines }
+        // The person starts the pair from this Mac: a choice of single-Mac serving made here before no longer stands.
+        ClusterSoloChoice.clear(in: store.paths.directory)
+        return routed(.init(op: .serve), acting: true, local: { localServe() }) { $0.lines }
     }
 
     /// The screen's start through Darkbloom, which asks the coordinator after its test whether to offer the pair

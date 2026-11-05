@@ -36,6 +36,13 @@ public struct ClusterOnboardingSoloServing: Sendable, Equatable, Codable {
     /// Whether a not-serving reason (`ClusterOnboardingNotServing.reason(inStatusLine:)`) is this block.
     public static func isBlock(_ reason: String) -> Bool { reason.hasPrefix(titlePrefix) }
 
+    /// Whether the single-Mac block is the one to say: not when the two Macs run different versions (the version split
+    /// is said first, with `darkbloom update` on the Mac behind; PR #1795). Unknown versions don't decide.
+    public static func blockApplies(thisVersion: String?, otherVersion: String?) -> Bool {
+        guard let thisVersion, let otherVersion else { return true }
+        return thisVersion == otherVersion
+    }
+
     /// On the Mac that joined: the leading Mac's screen offers the stop too (`stopAndStartItem`).
     public static func leaderOffersLine(_ leader: String?) -> String {
         "Or choose \"Stop single-Mac serving … and start the pair\" on \(ClusterOnboardingMacName.other(named: leader)): it stops it "

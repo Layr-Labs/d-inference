@@ -147,11 +147,24 @@ enum ClusterApprovalCheck {
     /// handles instead. A quick end because the coordinator did not accept the member role in its negotiation window
     /// (during a deploy, right after a restart, or when it is slow) leaves the count as it is: the coordinator decided
     /// it, not this Mac's part. Every other end counts, a crash or a changed input included.
-    static func memberQuickEnds(after count: Int, ranSeconds: Double, lastError: String?) -> Int {
+    static func memberQuickEnds(after count: Int, ranSeconds: Double, lastError: String?, heldBack: Bool = false) -> Int {
         if lastError?.contains(unreachableMemberEnd) == true { return 0 }
+        // A part that ended because single-Mac serving holds a Mac's serving lock (this Mac's, or the other Mac's part held
+        // back) says nothing about the approval: it never counts toward serving locally.
+        if heldBack || blockedByLock(lastError) { return count }
         if lastError?.contains(notAcceptedMemberEnd) == true, ranSeconds < ClusterControlSoloAdmission.quickEndSeconds { return count }
         return ClusterControlSoloAdmission.quickEnds(after: count, ranSeconds: ranSeconds)
     }
+
+    /// An end caused by the provider instance lock: single-Mac serving held it (the lock's words since 0.10.9, and before).
+    static func blockedByLock(_ lastError: String?) -> Bool {
+        guard let lastError else { return false }
+        return lastError.contains("single-Mac Darkbloom provider") || lastError.contains("provider-instance")
+            || lastError.contains("provider instance lock")
+    }
+
+    /// An approval set aside because its parts kept failing is taken again once the blocker that made them end cleared.
+    static func clearsAfterBlocker(_ reason: ClusterApprovalFallback) -> Bool { reason == .failing }
 
     /// How a member's error line starts when its registration wait never reached the coordinator.
     static let unreachableMemberEnd = String(ClusterMemberControlError.coordinatorUnreachable.rawValue.prefix(40))

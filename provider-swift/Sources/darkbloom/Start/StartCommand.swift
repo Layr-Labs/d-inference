@@ -198,6 +198,18 @@ struct Start: AsyncParsableCommand {
     /// How long the leftover part gets to release its model and the serving lock.
     static let releaseSeconds: Double = 300
 
+    /// The person chose single-Mac serving on this paired Mac (`ClusterSoloChoice`): it doesn't step aside for the pair.
+    static func recordSoloChoice() {
+        guard ClusterPairSummary.readsThisMacsCluster, let directory = ClusterService.soloChoiceDirectory() else { return }
+        ClusterSoloChoice.record(in: directory)
+    }
+
+    /// The person starts the pair here: an earlier choice of single-Mac serving no longer stands.
+    static func clearSoloChoice() {
+        guard ClusterPairSummary.readsThisMacsCluster, let directory = ClusterService.soloChoiceDirectory() else { return }
+        ClusterSoloChoice.clear(in: directory)
+    }
+
     static func releaseLeftoverPart() async -> Bool {
         if let release = releaseForTesting { return release() }
         guard ClusterPairSummary.readsThisMacsCluster else { return true }
@@ -261,8 +273,10 @@ struct Start: AsyncParsableCommand {
             switch choice {
             case .single(let note):
                 if let note { print(note) }
+                if pair.paired { Self.recordSoloChoice() }
             case .serveAlone(let note):
                 print(note)
+                Self.recordSoloChoice()
                 let released = !pair.started || !pair.serviceRunning ? true : await Self.releaseLeftoverPart()
                 guard released else {
                     for line in pair.releaseFailedLines { print(line) }
@@ -277,10 +291,12 @@ struct Start: AsyncParsableCommand {
                 for line in lines { print(line) }
                 throw ExitCode.validationFailure
             case .openScreen:
+                Self.clearSoloChoice()
                 print(pair.actingLine("starting the pair"))
                 try await ClusterPairCommands.openScreen(config: configOptions.config)
                 return
             case .startPair:
+                Self.clearSoloChoice()
                 let code = await ClusterPairCommands.start(pair, actions: ClusterPairActions.live(config: configOptions.config),
                                                            config: configOptions.config)
                 if code != 0 { throw ExitCode(code) }

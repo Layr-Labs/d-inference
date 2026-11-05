@@ -848,8 +848,6 @@ extension CBv2OwnedRequestState {
         }
     }
 
-    /// One request's rows after a batched frame: each at the new frontier and
-    /// bound at its own lane of every cache.
     /// `runBatch`'s frame, submitted (`asyncEval`) instead of evaluated, for a
     /// caller that builds the next frame before it reads this one (Qwen tensor
     /// parallel's build-ahead decode, `QwenTensorParallelBatchDriver`): the
@@ -921,6 +919,8 @@ extension CBv2OwnedRequestState {
         }
     }
 
+    /// One request's rows after a batched frame: each at the new frontier and
+    /// bound at its own lane of every cache.
     private func validateBatchRow(lane: Int, after count: Int) throws {
         try validateBatchAttentionRow(lane: lane, after: count)
         for layer in geometry.recurrent.layers {

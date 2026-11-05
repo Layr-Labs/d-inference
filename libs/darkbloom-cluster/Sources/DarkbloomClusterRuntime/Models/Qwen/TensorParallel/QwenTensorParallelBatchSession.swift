@@ -434,6 +434,13 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
     private enum DecodeInput {
         case read([Int])
         case submitted(MLXArray)
+
+        var rows: Int {
+            switch self {
+            case .read(let tokens): tokens.count
+            case .submitted(let tokens): tokens.dim(0)
+            }
+        }
     }
 
     private static func decodeResult(_ sessions: [QwenTensorParallelBatchSession], tokens: [Int],
@@ -443,12 +450,7 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
 
     private static func decodeResult(_ sessions: [QwenTensorParallelBatchSession], input decodeInput: DecodeInput,
                                      capturingHidden: Bool, check: () throws -> Void) throws -> (logits: MLXArray, hidden: MLXArray?) {
-        let rows: Int
-        switch decodeInput {
-        case .read(let tokens): rows = tokens.count
-        case .submitted(let tokens): rows = tokens.dim(0)
-        }
-        guard let first = sessions.first, (1...8).contains(sessions.count), sessions.count == rows,
+        guard let first = sessions.first, (1...8).contains(sessions.count), sessions.count == decodeInput.rows,
               Set(sessions.map { ObjectIdentifier($0) }).count == sessions.count,
               sessions.allSatisfy({ $0.model === first.model && !$0.retired && !$0.failed && ($0.window?.isIdle ?? true) }) else {
             throw ProbeError("Qwen TP batch decode needs distinct sessions of one loaded shard")
@@ -460,11 +462,11 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
             // If any lane carries explicit media positions, all rows supply
             // their own three axes, including ordinary text rows in the cohort.
             let positioned = sessions.contains { $0.inputs != nil }
+            if case .read(let tokens) = decodeInput,
+               !tokens.allSatisfy({ (0..<first.model.plan.vocabularySize).contains($0) }) {
+                throw ProbeError("Qwen TP decode token or committed frontier differs")
+            }
             for session in sessions {
-                if case .read(let tokens) = decodeInput,
-                   !tokens.allSatisfy({ (0..<first.model.plan.vocabularySize).contains($0) }) {
-                    throw ProbeError("Qwen TP decode token or committed frontier differs")
-                }
                 guard session.state.committedTokens == session.schedule.committedTokens else {
                     throw ProbeError("Qwen TP decode token or committed frontier differs")
                 }
@@ -479,13 +481,11 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
                     positionRows.append(positions)
                 }
             }
-            let input: MLXArray
+            let input: MLXArray, submitted: Bool
             switch decodeInput {
-            case .read(let tokens): input = MLXArray(tokens.map(Int32.init)).reshaped([sessions.count, 1])
-            case .submitted(let tokens): input = tokens.reshaped([sessions.count, 1])
+            case .read(let tokens): input = MLXArray(tokens.map(Int32.init)).reshaped([sessions.count, 1]); submitted = false
+            case .submitted(let tokens): input = tokens.reshaped([sessions.count, 1]); submitted = true
             }
-            let submitted: Bool
-            if case .submitted = decodeInput { submitted = true } else { submitted = false }
             guard !(submitted && capturingHidden) else { throw ProbeError("A submitted Qwen TP decode captures no hidden rows") }
             let positions = positioned ? concatenated(positionRows, axis: 1) : nil
             var hidden: MLXArray?

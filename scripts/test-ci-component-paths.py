@@ -22,12 +22,10 @@ spec.loader.exec_module(workflow)
 
 class ComponentPathsTests(unittest.TestCase):
     def test_only_same_workflow_pr_revisions_share_cancellation_group(self):
-        # Pull request revisions cancel each other. In CI (dev), pushes share one
-        # group per branch without cancelling: one run in progress, the newest
-        # push waiting. In CI (master) every push has a group of its own.
-        groups = {"ci-dev.yml": "github.event.pull_request.number || github.ref",
-                  "ci-master.yml": "github.event.pull_request.number || github.run_id"}
-        for filename, key in groups.items():
+        # Pull request revisions cancel each other; every push has a group of
+        # its own (a push of a tested tree runs no test job, so none is skipped).
+        for filename in ("ci-dev.yml", "ci-master.yml"):
+            key = "github.event.pull_request.number || github.run_id"
             with self.subTest(workflow=filename):
                 source = (ROOT / ".github/workflows" / filename).read_text()
                 concurrency = source.split("\nconcurrency:\n", 1)[1].split("\njobs:\n", 1)[0]
@@ -297,7 +295,7 @@ class WorkflowRoutingTests(unittest.TestCase):
         self.assertIn("    needs: [components, tested]\n", plan["route"])
         for name in routing.COMPONENTS:
             self.assertIn(f"      {name}: ${{{{ steps.choose.outputs.{name} }}}}\n", plan["components"])
-        ci = workflow.job_blocks((ROOT / ".github/workflows/provider-tests.yml").read_text())
+        ci = workflow.job_blocks((ROOT / ".github/workflows/provider-tests.yml").read_text().split("\njobs:\n", 1)[1])
         lanes = {"test-provider": "provider", "test-cluster": "cluster", "test-cluster-focused": "cluster",
                  "test-cluster-gpu": "cluster"}
         for lane, component in lanes.items():

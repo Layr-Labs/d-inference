@@ -14,16 +14,35 @@ on:
 permissions:
   contents: read
 
-# Revisions of the same PR supersede each other. Pushes to dev share one group:
-# one run is in progress and the newest push waits (GitHub cancels an older
-# waiting run), so a burst of merges runs twice, not once per merge.
+# Only revisions of the same PR supersede each other; pushes stay independent.
+# A push whose tree a pull request run already tested runs no test job
+# (provider-plan.yml), so most push runs are a few GitHub-hosted steps.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  plan:
+    uses: ./.github/workflows/provider-plan.yml
+    permissions:
+      contents: read
+      actions: read
+
   tests:
     name: Tests
+    needs: plan
+    if: ${{ !cancelled() }}
     uses: ./.github/workflows/provider-tests.yml
     permissions:
       contents: read
+    with:
+      provider: ${{ needs.plan.outputs.provider }}
+      cluster: ${{ needs.plan.outputs.cluster }}
+      mimo_audio: ${{ needs.plan.outputs.mimo_audio }}
+      changed_provider: ${{ needs.plan.outputs.changed_provider }}
+      changed_cluster: ${{ needs.plan.outputs.changed_cluster }}
+      changes_result: ${{ needs.plan.outputs.changes_result }}
+      skip: ${{ needs.plan.outputs.skip }}
+      tested_run: ${{ needs.plan.outputs.tested_run }}
+      tree: ${{ needs.plan.outputs.tree }}
+      routes: ${{ needs.plan.outputs.routes }}

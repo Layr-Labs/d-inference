@@ -245,7 +245,7 @@ REQUIRES_MODEL = (
     "verifyWindowRoundsByRowCount",
 )
 REQUIRES_MODEL_SUITES = ("GLM5NextServingMetadataTests", "GLM5NextTensorParallelMediaTowerTests")
-# Runners the Cluster Metadata Checks job runs with its retained native build.
+# Runners Cluster Focused Checks runs first, with its retained native build.
 METADATA_JOB_RUNNERS = ("GPTOSSStageChecks", "NemotronStageChecks", "PrefillScheduleChecks", "StageMetadataChecks")
 
 

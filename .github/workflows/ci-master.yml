@@ -32,18 +32,43 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  plan:
+    uses: ./.github/workflows/provider-plan.yml
+    permissions:
+      contents: read
+      actions: read
+    with:
+      linux_lanes: |
+        release-integrity linux_arm64 blacksmith-4vcpu-ubuntu-2404
+        docs linux_arm64 blacksmith-4vcpu-ubuntu-2404
+
   tests:
     name: Tests
+    needs: plan
+    if: ${{ !cancelled() }}
     uses: ./.github/workflows/provider-tests.yml
     permissions:
       contents: read
+    with:
+      provider: ${{ needs.plan.outputs.provider }}
+      cluster: ${{ needs.plan.outputs.cluster }}
+      mimo_audio: ${{ needs.plan.outputs.mimo_audio }}
+      changed_provider: ${{ needs.plan.outputs.changed_provider }}
+      changed_cluster: ${{ needs.plan.outputs.changed_cluster }}
+      changes_result: ${{ needs.plan.outputs.changes_result }}
+      skip: ${{ needs.plan.outputs.skip }}
+      tested_run: ${{ needs.plan.outputs.tested_run }}
+      tree: ${{ needs.plan.outputs.tree }}
+      routes: ${{ needs.plan.outputs.routes }}
 
   release-integrity:
     name: Release Integrity
     # A top-level job, so its check is named exactly Release Integrity, the
-    # name master's ruleset requires. Not routed: the run's one route request
-    # belongs to the test jobs (provider-tests.yml).
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # name master's ruleset requires. It reads its lane of the run's one route
+    # request (provider-plan.yml).
+    needs: plan
+    if: ${{ !cancelled() }}
+    runs-on: ${{ fromJSON(needs.plan.outputs.routes)['release-integrity'] }}
     timeout-minutes: 30
     steps:
       # Every checkout in this workflow uses the same five steps: restore the
@@ -119,6 +144,7 @@ jobs:
           python3 scripts/test-cluster-test-plan.py
           python3 scripts/test-ci-component-paths.py
           python3 scripts/test-darkbloom-route.py
+          python3 scripts/test-ci-tested-tree.py
           python3 scripts/test-prepare-prompt-fixtures.py
           python3 provider-swift/Tests/test_protocol_fixture_resources.py
           python3 scripts/test-app-attest-entitlements.py
@@ -148,7 +174,9 @@ jobs:
 
   docs:
     name: Docs Lint
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    needs: plan
+    if: ${{ !cancelled() }}
+    runs-on: ${{ fromJSON(needs.plan.outputs.routes)['docs'] }}
     # Full-history checkouts of this repository have taken up to 21 minutes.
     timeout-minutes: 45
     steps:

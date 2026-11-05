@@ -74,6 +74,8 @@ class ComponentPathsTests(unittest.TestCase):
             ".github/actions/provider-ci-build/action.yml": {"provider", "cluster"},
             ".github/workflows/provider-tests.yml": {"provider", "cluster", "mimo_audio"},
             ".github/workflows/ci-dev.yml": {"provider", "cluster", "mimo_audio"},
+            ".github/workflows/provider-plan.yml": {"provider", "cluster", "mimo_audio"},
+            "scripts/ci-tested-tree.py": {"provider", "cluster", "mimo_audio"},
             ".github/workflows/ci-master.yml": {"provider", "cluster", "mimo_audio"},
             "scripts/run-paged-kernel-tests.sh": {"provider"},
             "scripts/run-provider-tests.sh": {"provider"},
@@ -234,14 +236,15 @@ class GitDiffTests(unittest.TestCase):
         head = self.commit()
         event = {"before": self.base, "after": head, "ref": "refs/heads/topic"}
         self.assertFalse(any(self.run_detector("push", event).values()))
-        # A provider-only change: a pull request skips the cluster jobs, a
-        # push that runs the provider lanes runs them too.
+        # A provider-only change skips the cluster jobs, on a pull request and
+        # on a push alike.
         self.write("provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2.swift")
         provider_only = self.commit()
         self.assertEqual(self.pr(head, provider_only),
                          {"provider": True, "cluster": False, "mimo_audio": False})
-        self.assertEqual(self.run_detector("push", {"before": head, "after": provider_only, "ref": "refs/heads/topic"}),
-                         {"provider": True, "cluster": True, "mimo_audio": False})
+        for ref in ("refs/heads/topic", "refs/heads/dev", "refs/heads/master"):
+            self.assertEqual(self.run_detector("push", {"before": head, "after": provider_only, "ref": ref}),
+                             {"provider": True, "cluster": False, "mimo_audio": False})
         self.write("libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/New.swift")
         cluster = self.commit()
         self.assertEqual(self.pr(provider_only, cluster),
@@ -250,10 +253,9 @@ class GitDiffTests(unittest.TestCase):
         self.write("provider-swift/Tests/ProviderCoreTests/MiMo/MiMoV26ManagedAudioProviderTests.swift")
         audio = self.commit()
         self.assertEqual(self.pr(cluster, audio), {"provider": True, "cluster": False, "mimo_audio": True})
-        # Pushes to master and dev run every component: a dev push run also
-        # stands in for the pushes whose waiting runs CI (dev) cancelled.
+        # A push to a default branch selects by its diff, as a pull request does.
         for ref in ("refs/heads/master", "refs/heads/main", "refs/heads/dev"):
-            self.assertTrue(all(self.run_detector("push", {**event, "ref": ref}).values()))
+            self.assertFalse(any(self.run_detector("push", {**event, "ref": ref}).values()))
         self.assertTrue(all(self.run_detector("push", {**event, "before": "0" * 40}).values()))
         self.assertTrue(all(self.run_detector("workflow_dispatch", {}).values()))
 
@@ -285,39 +287,44 @@ class WorkflowRoutingTests(unittest.TestCase):
             self.assertNotRegex(text, r"(?m)^\s+(environment:|id-token:|repository:)")
 
     def test_expensive_jobs_depend_on_successful_classifier(self):
-        expected = {
-            "provider-tests.yml": {"test-provider": "provider", "test-cluster-checks": "cluster", "test-cluster": "cluster",
-                       "test-cluster-focused": "cluster"},
-        }
-        for name, lanes in expected.items():
-            jobs = workflow.job_blocks((ROOT / ".github/workflows" / name).read_text())
-            self.assertIn("uses: ./.github/workflows/component-changes.yml", jobs["changes"])
-            self.assertIn("contents: read", jobs["changes"])
-            # Runner routing follows the classifier, so only selected lanes are requested.
-            self.assertIn("    needs: changes\n", jobs["route"])
-            for lane, component in lanes.items():
-                self.assertIn("    needs: [changes, route]\n", jobs[lane])
-                self.assertIn("    if: ${{ needs.changes.outputs." + component + " == 'true' }}\n", jobs[lane])
-                self.assertNotIn("continue-on-error:", jobs[lane])
+        # The plan (provider-plan.yml) runs the classifier and the tree lookup,
+        # then routes only the lanes of the components it chose; the test jobs
+        # read those components as inputs, on pull requests and pushes alike.
+        plan = workflow.job_blocks((ROOT / ".github/workflows/provider-plan.yml").read_text().split("\njobs:\n", 1)[1])
+        self.assertIn("uses: ./.github/workflows/component-changes.yml", plan["changes"])
+        self.assertIn("contents: read", plan["changes"])
+        self.assertIn("    needs: [changes, tested]\n", plan["components"])
+        self.assertIn("    needs: [components, tested]\n", plan["route"])
+        for name in routing.COMPONENTS:
+            self.assertIn(f"      {name}: ${{{{ steps.choose.outputs.{name} }}}}\n", plan["components"])
         ci = workflow.job_blocks((ROOT / ".github/workflows/provider-tests.yml").read_text())
-        # The GPU job's test step continues on error (scripts/test-cluster-test-plan.py).
-        self.assertIn("    needs: [changes, route]\n", ci["test-cluster-gpu"])
-        self.assertIn("    if: ${{ github.event_name == 'push' && needs.changes.outputs.cluster == 'true' }}\n",
-                      ci["test-cluster-gpu"])
+        lanes = {"test-provider": "provider", "test-cluster": "cluster", "test-cluster-focused": "cluster",
+                 "test-cluster-gpu": "cluster"}
+        for lane, component in lanes.items():
+            with self.subTest(job=lane):
+                self.assertNotRegex(ci[lane], r"(?m)^    needs:")
+                self.assertIn("    if: ${{ inputs." + component + " == 'true' }}\n", ci[lane])
+                if lane != "test-cluster-gpu":
+                    self.assertNotIn("continue-on-error:", ci[lane])
+        # Pull requests and pushes run the same jobs: only cache saving and the
+        # push-only refresh of a tested tree read the event.
+        for name, job in ci.items():
+            if name != "refresh-caches":
+                self.assertNotIn("github.event_name", job, name)
+        self.assertNotIn("github.event_name", "".join(plan[name] for name in ("changes", "tested", "components")))
         # The Provider SDK Tests lane is gone (David, 2026-11-04): its suites run
         # in the SDK's own Fork Tests.
         self.assertNotIn("test-provider-sdk", ci)
         self.assertNotIn("sdk", routing.COMPONENTS)
-        # The summary runs after failed shards too, but only when the shards were selected.
-        self.assertIn("    needs: [changes, route, test-provider]\n", ci["test-provider-summary"])
-        self.assertIn("    if: ${{ !cancelled() && needs.changes.outputs.provider == 'true' }}\n",
-                      ci["test-provider-summary"])
-        self.assertNotIn("continue-on-error:", ci["test-provider-summary"])
+        # No Mac job exists only to audit or to run the metadata runners.
+        self.assertNotIn("test-provider-summary", ci)
+        self.assertNotIn("test-cluster-checks", ci)
         self.assertNotIn("cache-swift", ci)
-        # Release Integrity and Docs Lint run unconditionally, and only for master.
+        # Release Integrity and Docs Lint run for master only, after the plan
+        # whose route they read; nothing but cancellation skips them.
         master = workflow.job_blocks((ROOT / ".github/workflows/ci-master.yml").read_text())
         for policy in ("release-integrity", "docs"):
-            self.assertNotRegex(master[policy], r"(?m)^    if:")
+            self.assertIn("    needs: plan\n    if: ${{ !cancelled() }}\n", master[policy])
         self.assertIn("python3 scripts/test-ci-component-paths.py", master["release-integrity"])
         dev = (ROOT / ".github/workflows/ci-dev.yml").read_text()
         self.assertEqual(set(workflow.job_blocks(dev.split("\njobs:\n", 1)[1])), {"tests"})
@@ -340,15 +347,15 @@ class WorkflowRoutingTests(unittest.TestCase):
     def test_provider_aggregate_exhaustive_truth_table(self):
         jobs = workflow.job_blocks((ROOT / ".github/workflows/provider-tests.yml").read_text())
         gate = jobs["provider-test-gate"]
-        self.assertIn("needs: [changes, test-provider, test-provider-summary, test-cluster, test-cluster-focused]", gate)
+        self.assertIn("needs: [test-provider, test-cluster, test-cluster-focused]", gate)
         self.assertNotIn("test-provider-sdk", gate)
         self.assertIn("if: ${{ always() }}", gate)
         self.assertNotIn("continue-on-error:", gate)
         step = workflow.step_blocks(gate)[0]
         for name, expression in {
-            "CHANGES_RESULT": "needs.changes.result", "PROVIDER_CHANGED": "needs.changes.outputs.provider",
-            "CLUSTER_CHANGED": "needs.changes.outputs.cluster",
-            "UNIT_RESULT": "needs.test-provider.result", "SUMMARY_RESULT": "needs.test-provider-summary.result",
+            "CHANGES_RESULT": "inputs.changes_result", "PROVIDER_CHANGED": "inputs.provider",
+            "CLUSTER_CHANGED": "inputs.cluster", "SKIP": "inputs.skip", "TESTED_RUN": "inputs.tested_run",
+            "UNIT_RESULT": "needs.test-provider.result",
             "CLUSTER_RESULT": "needs.test-cluster.result",
             "CLUSTER_FOCUSED_RESULT": "needs.test-cluster-focused.result",
         }.items():
@@ -357,7 +364,7 @@ class WorkflowRoutingTests(unittest.TestCase):
         results = ("success", "skipped", "failure", "cancelled")
         # Prompt Parity runs in a provider shard, so UNIT_RESULT carries it.
         self.assertNotIn("PARITY_RESULT", step)
-        names = ("UNIT_RESULT", "SUMMARY_RESULT", "CLUSTER_RESULT", "CLUSTER_FOCUSED_RESULT")
+        names = ("UNIT_RESULT", "CLUSTER_RESULT", "CLUSTER_FOCUSED_RESULT")
         selections = ("true", "false", "")
 
         def passes(selected, lanes):
@@ -371,7 +378,7 @@ class WorkflowRoutingTests(unittest.TestCase):
                                          "CLUSTER_CHANGED": cluster, **dict(zip(names, lanes))})
             # A skipped cluster job passes only when the classifier did not
             # select the cluster jobs; a failed or cancelled one never passes.
-            expected = detector == "success" and passes(changed, lanes[:2]) and passes(cluster, lanes[2:])
+            expected = detector == "success" and passes(changed, lanes[:1]) and passes(cluster, lanes[1:])
             self.assertEqual(result.returncode == 0, expected, (detector, changed, cluster, *lanes))
 
 

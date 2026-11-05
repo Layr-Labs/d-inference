@@ -131,12 +131,16 @@ Shard 1 (the shard of selection 2) also runs Prompt Parity (`scripts/verify-prom
 against its own build; a parity failure fails that shard and the
 `Provider Tests` gate. The last shard also runs the isolated processes and the
 native MiMo, desktop and installer gates, after its selections finish, one at
-a time. `Provider Unit Tests Summary` lists the suite with
-`swift test list`, fails unless each shard executed exactly its selection and
-the shards together executed the full list, checks that each Prompt Parity run
-executed every listed test of its suite, merges the shards' coverage
-profiles and uploads measured seconds per suite (`provider-test-shard-weights`).
-When the shards drift apart, replace the weights file with that artifact.
+a time. Each shard then lists the suite with `swift test list` from its own
+build and fails unless each of its selections executed exactly its plan
+(`provider-test-shards.py audit-job`); shard 1 also checks that each Prompt
+Parity run executed every listed test of its suite, and the last shard checks
+that the plans of all selections list every test once. With every shard
+required to pass, that is the full-suite audit; no Mac job exists only for it.
+Each shard reports the coverage of its own processes. When the shards drift
+apart, download the `provider-unit-shard-*` artifacts and run
+`python3 scripts/provider-test-shards.py weights <their shard-*.xml>` to
+refresh the weights file.
 The suites in `KEPT_APART` never share a selection: a process that ran
 `NemotronSuperManagedSlotTests` and then `Qwen4PagingPrefixIntegrationTests`
 crashed with SIGBUS, and each passes alone. The pair stays apart until the
@@ -144,21 +148,22 @@ Nemotron fixture cleanup is fixed. A
 suite moves from the parallel class to the serial class when it fails or flakes
 in parallel; when in doubt, a suite stays serial.
 
-The jobs that use the `provider-ci-build` action and Cluster Metadata Checks
+The jobs that use the `provider-ci-build` action and the cluster metadata runners
 restore their build cache by the exact key first, then by the key prefix; the
 action then tries the loose prefix, which ignores the CI recipe, and builds
 once more from nothing if that build fails. Only
 a push to `dev` or `master` saves a build; a pull request restores its base
-branch's entry and saves nothing ([CI caching](build.md#ci-caching)). CI has
-no separate push-only Swift cache job.
+branch's entry and saves nothing ([CI caching](build.md#ci-caching)). A push
+whose tree a pull request run already tested runs no test job; one build-only
+job (Refresh build caches) saves the components the push changed.
 
 The last provider shard runs the MiMo audio gate (`testNativeAudioRelease`),
 whose fixture needs the 1.87 GB pinned audio codec, only when the gate's
 inputs change (`MIMO_AUDIO` in `scripts/ci-component-paths.py`: the MiMo,
 audio and media provider code, the MiMo tests, the MLX pins, the audio and
-provider fixture scripts and the gate's recipe) and on every `master` and `dev` push, which runs every
-component. A pull request outside those inputs neither downloads the codec
-nor runs the gate.
+provider fixture scripts and the gate's recipe), on a pull request and on a
+push alike. A change outside those inputs neither downloads the codec nor runs
+the gate.
 
 The SDK has independent test products under `libs/mlx-swift-lm`: native memory
 ownership, cancellation, media decoding, paged KV and resource packaging. They
@@ -1227,16 +1232,15 @@ Cluster logic that needs no model or GPU is covered by check runners compiled
 with isolated fixture runners: each `provider-swift/Tests/Cluster*Checks/run.sh`,
 `libs/darkbloom-cluster/Tests/*Checks/run.sh` and
 `libs/darkbloom-cluster-worker/Tests/*Checks/run.sh` prints its pass count and
-exits non-zero on a failure. The CI job `test-cluster-checks` (Cluster Metadata
-Checks, `.github/workflows/provider-tests.yml`) runs these runners when the classifier
-selects `cluster` (see below): `libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh`,
+exits non-zero on a failure. The CI job `test-cluster-focused` (Cluster Focused
+Checks, `.github/workflows/provider-tests.yml`) runs these metadata runners first when
+the classifier selects `cluster` (see below): `libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh`,
 `libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh`,
 `libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py`,
 `libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh`,
 `libs/darkbloom-cluster/Tests/NemotronStageChecks/run.sh` and
-`provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning`. The
-job `test-cluster-focused` (Cluster Focused Checks) runs every other runner
-under `libs/darkbloom-cluster/Tests`. The provisioning runner runs the
+`provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning`, then
+every other runner under `libs/darkbloom-cluster/Tests`. The provisioning runner runs the
 provisioning checks only. Its download cache-policy check
 reads how many written pages stay in the file cache, which the host's kernel
 and disk decide: on the hosted CI VM 0.75 of the pages written with
@@ -1249,19 +1253,19 @@ what changed. The worker package's tests (built for macOS 26.2) need the GPU
 and exclusive device access. A loopback or fixture pass never counts as a
 two-Mac hardware pass.
 
-The cluster jobs (Cluster Metadata Checks, Cluster Runtime Tests, Cluster GPU
-Tests and Cluster Focused Checks) run when the classifier selects `cluster`
-(Cluster GPU Tests only on pushes)
-(`CLUSTER` in `scripts/ci-component-paths.py`): the cluster packages, the MLX
+The cluster jobs (Cluster Runtime Tests, Cluster GPU Tests and Cluster
+Focused Checks) run when the classifier selects `cluster`, on a pull request
+and on a push alike (`CLUSTER` in `scripts/ci-component-paths.py`): the cluster packages, the MLX
 pins, the provider's Cluster, Distributed and NativePair sources, the
 provider-side cluster runners (`provider-swift/Tests/Cluster*Checks`), the
 other provider files the cluster runners compile, the cluster plan and the
-shared build recipe. A push that runs the provider lanes also runs them. The
+shared build recipe. The
 `Provider Tests` gate accepts a skipped cluster job only when `cluster` was not
-selected. A provider-only pull request runs 3 Macs (2 provider shards and the
-summary). A cluster pull request adds 4
-Macs (metadata checks, 2 runtime shards and focused checks); a push adds the
-2 GPU shards as well.
+selected. A provider-only change runs 2 Macs (the 2 provider shards). A cluster
+change adds 5
+Macs (2 runtime shards, the focused checks with the metadata runners, and the
+2 GPU shards). A change whose tree a successful run of the same workflow
+already tested runs no test job at all (`scripts/ci-tested-tree.py`).
 
 CI runs the runtime test target (`DarkbloomClusterRuntimeTests`) on the
 provider's macOS CI runners (see [CI runner routing](build.md#ci-runner-routing)),
@@ -1763,6 +1767,7 @@ python3 scripts/test-provider-release-pipeline.py
 python3 scripts/test-provider-release-artifact.py
 python3 scripts/test-provider-release-cache.py
 python3 scripts/test-darkbloom-route.py
+python3 scripts/test-ci-tested-tree.py
 python3 scripts/test-provider-signing-validation.py
 python3 scripts/test-prepare-metal-toolchain.py
 python3 scripts/test-stage-swiftpm-resource-bundles.py
@@ -2185,7 +2190,7 @@ failed test responses, terminal restoration and plain output. Set
 `ONBOARDING_TRANSCRIPTS` to a private output directory to retain screen text.
 The harness compiles only the onboarding flow, terminal and scripted operations;
 it does not configure a network port, start a service or load a model. CI runs
-it in the `Cluster Metadata Checks` job (step `Run cluster onboarding checks`).
+it in the `Cluster Focused Checks` job (step `Run cluster onboarding checks`).
 Its rows include the end of the setup after the cluster registers with the
 coordinator: the screen waits for both parts to serve again before it says
 Done (`leaderWaitsForThePartsAfterTheRegistration`).

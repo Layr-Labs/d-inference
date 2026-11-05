@@ -14,6 +14,7 @@ COMPONENTS = ("provider", "cluster", "mimo_audio")
 COMMON = (
     "Makefile", "mise.toml", ".gitmodules", ".github/workflows/component-changes.yml",
     ".github/workflows/darkbloom-route.yml", ".github/workflows/ci-dev.yml", ".github/workflows/ci-master.yml",
+    ".github/workflows/provider-plan.yml", "scripts/ci-tested-tree.py", "scripts/test-ci-tested-tree.py",
     "scripts/ci-component-paths.py", "scripts/test-ci-component-paths.py",
 )
 PROVIDER = (
@@ -39,12 +40,12 @@ PROVIDER = (
 )
 
 
-# Inputs of the cluster jobs (Cluster Metadata Checks, Cluster Runtime Tests,
+# Inputs of the cluster jobs (Cluster Runtime Tests,
 # Cluster GPU Tests, Cluster Focused Checks): the cluster packages and the MLX
 # pins they build, the provider sources their runner scripts compile (every
 # Cluster, Distributed and NativePair source, and the files the runners name),
 # the cluster plan and the shared build recipe. Every cluster input is also a
-# provider input. A push that selects the provider lanes also selects these.
+# provider input.
 CLUSTER = (
     "libs/darkbloom-cluster/**", "libs/darkbloom-cluster-worker/**",
     "libs/mlx", "libs/mlx/**", "libs/mlx-swift", "libs/mlx-swift/**", "libs/mlx-swift-lm", "libs/mlx-swift-lm/**",
@@ -75,7 +76,7 @@ CLUSTER = (
 # 1.87 GB pinned audio codec: the MiMo, audio and media provider code, the MiMo
 # tests, the MLX pins, the fixture scripts (the audio one runs the provider
 # fixture generator with --audio-source) and the gate's recipe. Every one is
-# also a provider input. Pushes to master and dev run the gate regardless.
+# also a provider input.
 MIMO_AUDIO = (
     "provider-swift/Package.swift", "provider-swift/Package.resolved",
     "provider-swift/Sources/*MiMo*", "provider-swift/Sources/*Audio*", "provider-swift/Sources/*Media*",
@@ -143,15 +144,9 @@ def main():
     args = parser.parse_args()
     event = json.loads(Path(args.event_path).read_text())
     paths = changed_paths(args.event_name, event)
-    # Pushes to master and dev retain full coverage after validating the diff.
-    # CI (dev) cancels a waiting push run when a newer push comes, so a dev
-    # push run covers every push since the last run, not only its own diff.
-    full = paths is None or (args.event_name == "push" and event.get("ref") in
-                             ("refs/heads/master", "refs/heads/main", "refs/heads/dev"))
-    selected = dict.fromkeys(COMPONENTS, True) if full else classify(paths)
-    # Pushes keep the cluster jobs wherever they run the provider lanes.
-    if args.event_name == "push":
-        selected["cluster"] = selected["cluster"] or selected["provider"]
+    # Pull requests and pushes select alike: a push diffs against the
+    # branch's previous commit (`before`); without one, everything runs.
+    selected = dict.fromkeys(COMPONENTS, True) if paths is None else classify(paths)
     output = "".join(f"{name}={str(enabled).lower()}\n" for name, enabled in selected.items())
     if args.output:
         with open(args.output, "a") as destination:

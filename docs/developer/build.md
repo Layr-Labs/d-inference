@@ -249,10 +249,22 @@ see [resource and release tooling checks](test.md#focused-tooling-checks).
 
 ## CI Workflows
 
-Two workflows run CI. Both call the same reusable test workflow,
-`.github/workflows/provider-tests.yml`: the component classifier, the route
-job, the provider shards and their summary, the cluster jobs and
-the `Provider Tests` gate.
+Two workflows run CI. Both run the same plan, `.github/workflows/provider-plan.yml`
+(the component classifier, the tree lookup and the run's one route request),
+then the same tests, `.github/workflows/provider-tests.yml` (the provider
+shards, the cluster jobs and the `Provider Tests` gate). Pull requests and
+pushes run the same jobs; only pushes save caches.
+
+CI tests each tree once. The gate of a passing run uploads an artifact named
+`ci-tested-tree-<tree>`. Every run first looks for that artifact
+(`scripts/ci-tested-tree.py`): when a completed, successful run of the same
+workflow file from this repository recorded the same tree, the run starts no
+test job and the gate passes, citing that run. A pull request is tested on its
+test merge commit, so the push of its merge commit, when `dev` or `master` did
+not move meanwhile, has the same tree and is not tested again. Any doubt (no
+artifact, a failed or foreign run, an API error) runs the tests. Such a push
+runs one build-only job instead, Refresh build caches, for the components it
+changed, so the branch caches stay fresh.
 
 | Workflow | Runs for | Jobs |
 |---|---|---|
@@ -276,7 +288,8 @@ lane, `format('<job>-{0}', matrix.shard)`.
 
 | Workflow | Routed jobs | Fallback |
 |---|---|---|
-| `provider-tests.yml` | `test-provider` (lanes `test-provider-1` and `test-provider-2`, one per shard), `test-provider-summary`, `test-cluster-checks`, `test-cluster` (lanes `test-cluster-1` and `test-cluster-2`), `test-cluster-gpu` (lanes `test-cluster-gpu-1` and `test-cluster-gpu-2`, pushes only), `test-cluster-focused` | `blacksmith-12vcpu-macos-27` |
+| `provider-tests.yml` (lanes requested by `provider-plan.yml`) | `test-provider` (lanes `test-provider-1` and `test-provider-2`, one per shard), `test-cluster` (lanes `test-cluster-1` and `test-cluster-2`), `test-cluster-gpu` (lanes `test-cluster-gpu-1` and `test-cluster-gpu-2`), `test-cluster-focused`, `refresh-caches` (pushes of a tested tree) | `blacksmith-12vcpu-macos-27` |
+| `ci-master.yml` (lanes requested by `provider-plan.yml`) | `release-integrity`, `docs` | `blacksmith-4vcpu-ubuntu-2404` |
 | `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
 | `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
 | `provider-release-cache.yml` | `warm`, pull requests only | `blacksmith-12vcpu-macos-27` |
@@ -320,10 +333,12 @@ which pushed branches it admits. Other branches get `branch_not_admitted` and
 keep their fallback, so a push saves caches on Darkbloom only from an admitted
 branch and only in routed lanes ([CI Caching](#ci-caching)).
 Release, signing, publication, model registration, review automation and
-`master` or dispatched cache warming keep literal Blacksmith labels. So do
-Release Integrity and Docs Lint in CI (master): the plane routes a run attempt
-once, and that request belongs to the test jobs. The
-component classifier and the `Provider Tests` gate run on `ubuntu-24.04`.
+`master` or dispatched cache warming keep literal Blacksmith labels. In CI,
+every job that builds or tests reads its lane of the plan's one route request
+(the plane routes a run attempt once); the plan's own bookkeeping (the tree
+lookup, the component choice) and the `Provider Tests` gate run on
+`ubuntu-24.04`. The machine shape of each profile comes from the repository's
+approval, not from the request: one macOS shape and one Linux shape.
 
 Jobs on Darkbloom Sandboxes use GitHub's Actions cache, not Blacksmith's
 colocated cache, so their first runs start without cached build products.

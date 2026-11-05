@@ -226,6 +226,37 @@ class CountAndAuditTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "zero tests"):
             shards.counts("✔ Test run with 0 tests passed after 0.001 seconds.")
 
+    def test_each_job_audits_its_own_selections_and_the_last_the_whole_plan(self):
+        weights = {"ProviderCoreTests.A": 30.0, "ProviderCoreTests.B": 20.0, "ProviderCoreTests.C": 10.0}
+        tests = ["ProviderCoreTests.A/a()", "ProviderCoreTests.B/b()", "ProviderCoreTests.C/c()",
+                 "ProviderCoreTests.New/d()", "ProviderCoreTests.ProcessMemoryNativeIntegrationTests/e()",
+                 "ProviderCoreFoundationTests.Pure/f()", "ProviderCoreTests.ProductionPromptParityTests/p()",
+                 "ProviderCoreTests.NemotronTemplateParityLiveTests/n()"]
+        parity = [{"shard": "parity", "pattern": name, "swift_testing": 1, "xctest": 0}
+                  for name in ("ProductionPromptParityTests", "NemotronTemplateParityLiveTests")]
+
+        def own(selections, processes=2, **changed):
+            return [{"shard": selection, "pattern": ISOLATED, "processes": processes, "xctest": 0,
+                     "swift_testing": changed.get(selection, len(shards.planned(tests, selection, ISOLATED,
+                                                                                 weights, processes)))}
+                    for selection in selections]
+
+        # 2 jobs of 2 processes: job 1 runs the parallel class, 1/4, 2/4 and
+        # Prompt Parity (PARITY_SHARD 2); job 2 runs 3/4 and 4/4.
+        first, second = own(("parallel", "1/4", "2/4")) + parity, own(("3/4", "4/4"))
+        self.assertEqual(shards.audit_job(tests, first, ISOLATED, weights, 1, 2, 2), [])
+        self.assertEqual(shards.audit_job(tests, second, ISOLATED, weights, 2, 2, 2), [])
+        # A selection that ran one test too few, a missing one, parity in the
+        # wrong job, or a report planned for another process count fails.
+        self.assertTrue(shards.audit_job(tests, own(("3/4", "4/4"), **{"4/4": 0}), ISOLATED, weights, 2, 2, 2))
+        self.assertTrue(shards.audit_job(tests, own(("3/4",)), ISOLATED, weights, 2, 2, 2))
+        self.assertTrue(shards.audit_job(tests, second + parity, ISOLATED, weights, 2, 2, 2))
+        self.assertTrue(shards.audit_job(tests, own(("parallel", "1/4", "2/4")), ISOLATED, weights, 1, 2, 2))
+        self.assertTrue(shards.audit_job(tests, own(("3/4", "4/4"), processes=1), ISOLATED, weights, 2, 2, 2))
+        # Every test is in exactly one plan, so the job audits add up to the
+        # full-suite audit over all of the reports.
+        self.assertEqual(shards.audit(tests, first + second, ISOLATED, weights, 2), [])
+
     def test_audit_requires_every_shard_to_run_its_plan_and_the_sum_to_match(self):
         weights = {"ProviderCoreTests.A": 10.0, "ProviderCoreTests.B": 10.0}
         tests = ["ProviderCoreTests.A/a()", "ProviderCoreTests.A/b()", "ProviderCoreTests.B/c()",

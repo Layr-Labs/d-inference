@@ -26,6 +26,9 @@ Subcommands:
                          pattern, or `parity` with the parity suite filter
   audit LIST REPORTS     check each selection executed exactly its planned tests
                          and that all of them together executed the full list
+  audit-job LIST REPORTS K/N
+                         the same for one CI job's own reports; job N also
+                         checks that the plans cover the list once
   weights XUNIT...       print measured seconds per suite from xUnit reports;
                          suites they do not cover (SwiftPM writes no XCTest
                          xUnit report for a serial run) keep their seconds in
@@ -233,6 +236,49 @@ def audit(test_ids, reports, isolated, weights, processes=1):
     return errors
 
 
+def audit_job(test_ids, reports, isolated, weights, job, jobs, processes):
+    """Return error lines for one CI job's own reports.
+
+    Each job checks that every selection it ran executed exactly its planned
+    tests, and its Prompt Parity runs if it had any. The last job also checks
+    that the plans of all jobs together list every test once. With every job
+    required to pass, that is the full-suite audit without a job of its own.
+    """
+    total = jobs * processes
+    first, last = (job - 1) * processes + 1, job * processes
+    expected = {"parallel"} if first == 1 else set()
+    expected |= {f"{index}/{total}" for index in range(first, last + 1)}
+    parity = [report for report in reports if report["shard"] == "parity"]
+    own = [report for report in reports if report["shard"] != "parity"]
+    errors = []
+    if {report["shard"] for report in own} != expected or len(own) != len(expected):
+        errors.append(f"Expected one report per selection {sorted(expected)}, got {sorted(r['shard'] for r in own)}")
+    for report in own:
+        if report.get("processes", 1) != processes:
+            errors.append(f"Selection {report['shard']} was planned for {report.get('processes', 1)} processes, not {processes}")
+        plan = planned(test_ids, report["shard"], isolated, weights, processes)
+        ran = report["swift_testing"] + report["xctest"]
+        print(f"selection {report['shard']}: planned {len(plan)}, executed {ran}")
+        if ran != len(plan):
+            errors.append(f"Selection {report['shard']} executed {ran} tests but its plan lists {len(plan)}")
+    parity_job = (PARITY_SHARD - 1) // processes + 1
+    if job == parity_job:
+        errors += audit_parity(test_ids, parity)
+    elif parity:
+        errors.append(f"Prompt Parity ran in job {job}, not job {parity_job}")
+    if job == jobs:
+        expected_tests = [test_id for test_id in test_ids if not re.search(isolated, test_id)]
+        seen = [test_id for selection in ("parallel", *(f"{index}/{total}" for index in range(1, total + 1)))
+                for test_id in planned(test_ids, selection, isolated, weights, processes)]
+        if len(seen) != len(set(seen)):
+            errors.append(f"{len(seen) - len(set(seen))} tests are planned in more than one selection")
+        if set(seen) != set(expected_tests):
+            errors.append(f"{len(set(expected_tests) - set(seen))} listed tests are in no selection")
+        print(f"all selections: plan {len(set(seen))} of {len(expected_tests)} listed tests "
+              f"({len(test_ids) - len(expected_tests)} more run in isolated processes)")
+    return errors
+
+
 def audit_parity(test_ids, reports):
     """Each Prompt Parity suite ran once, with every listed test of that suite."""
     errors = []
@@ -281,6 +327,10 @@ def main():
     command = commands.add_parser("audit")
     command.add_argument("list", type=Path)
     command.add_argument("reports", type=Path)
+    command = commands.add_parser("audit-job")
+    command.add_argument("list", type=Path)
+    command.add_argument("reports", type=Path)
+    command.add_argument("job", help="K/N: this job and the job count")
     command = commands.add_parser("weights")
     command.add_argument("xunit", type=Path, nargs="+")
     args = parser.parse_args()
@@ -305,6 +355,18 @@ def main():
             return 1
         errors = audit(listed_tests(args.list.read_text()), reports, patterns.pop(), load_weights(),
                        processes.pop())
+        for error in errors:
+            print(f"::error::{error}")
+        return 1 if errors else 0
+    elif args.command == "audit-job":
+        job, jobs = parse_shard(args.job)
+        reports = [json.loads(path.read_text()) for path in sorted(args.reports.glob("shard-*.json"))]
+        patterns = {report["pattern"] for report in reports if report["shard"] != "parity"}
+        if len(patterns) != 1:
+            print(f"::error::This job's reports disagree on the isolated-process pattern: {sorted(patterns)}")
+            return 1
+        errors = audit_job(listed_tests(args.list.read_text()), reports, patterns.pop(), load_weights(),
+                           job, jobs, processes_per_job())
         for error in errors:
             print(f"::error::{error}")
         return 1 if errors else 0

@@ -3961,6 +3961,18 @@ Mac whose pair doesn't run clears the intent and waits for the part to end
 (`ClusterService.releaseForSingleMac`) before single-Mac serving starts
 ([going back to serving on one Mac](../provider/two-mac-cluster.md#going-back-to-serving-on-one-mac)).
 
+Single-Mac serving holds a Mac's one serving lock and never ends by itself, so
+neither Mac's part starts beside it. Each Mac's status reports it in
+`soloServing` whenever no part of its own holds the lock, and says why its part
+can't start in `heldBack` (0.10.9; both nil from an older build). At each
+15-second sync the leading Mac reads the other Mac's reason
+(`ClusterService.heldBack(of:)`: `heldBack`, else its `soloServing`), and while
+one is reported its own part doesn't start
+(`ClusterControlPartChoice.waitsForOtherMac`): a part started anyway only waits
+for its missing follower and ends again. The rule applies only while this Mac
+leads and runs the cluster, and never to serving alone (`solo:`); a Mac that
+doesn't answer reports nothing, so its absence follows the control lease.
+
 ## Cluster service listeners follow the cable and the pairing
 
 Each Mac's cluster service answers the other Mac on two listeners: the setup

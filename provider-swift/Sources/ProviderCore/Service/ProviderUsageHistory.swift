@@ -51,7 +51,7 @@ public final class ProviderUsageHistory: @unchecked Sendable {
     public func enqueue(_ record: ProviderUsageRecord) {
         queue.async { [self] in
             do { try self.record(record) }
-            catch { ProviderLogger(subsystem: "dev.darkbloom.provider", category: "usage").warning("Local usage history could not be saved") }
+            catch { ProviderLogger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "usage").warning("Local usage history could not be saved") }
         }
     }
     @discardableResult public func record(_ record: ProviderUsageRecord) throws -> Bool {

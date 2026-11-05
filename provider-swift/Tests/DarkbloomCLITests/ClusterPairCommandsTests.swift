@@ -259,6 +259,24 @@ struct ClusterStatusPlainTests {
         }
     }
 
+    /// 0.10.9 DevNet f1: `Next:` said "Both Macs keep trying by themselves" beside a block that said the pair won't start by
+    /// itself while single-Mac serving runs.
+    @Test("single-Mac serving blocking the pair: `next` says what to run, on both Macs, and a scripted start stops waiting")
+    func soloBlockNext() {
+        let cli = BuildEnvironment.current.cliName
+        for (role, leading) in [(ClusterPairSummary.Role.leader, "this Mac"), (.member, otherMac)] {
+            var blocked = pair(role: role)
+            blocked.state = .notServing
+            blocked.reason = "The pair can't start: a single-Mac Darkbloom provider (process 68099) is serving on this Mac, and the pair "
+                + "can't share a Mac with it"
+            let next = blocked.next ?? ""
+            #expect(!next.contains("keep trying by themselves"), "\(role): \(next)")
+            #expect(next == "Single-Mac serving doesn't stop by itself: run `\(cli) stop --solo` on each Mac named, then `\(cli) start` "
+                + "on either Mac. Or `\(cli) cluster` on \(leading) offers to stop it and start the pair.", "\(role): \(next)")
+            #expect(ClusterPairSummary.isFinalReason(blocked.reason), "\(role): a scripted `start` doesn't wait 10 minutes for it")
+        }
+    }
+
     @Test("plain output: who leads, the model and its split, how it serves, the state in the screens' words, what to do")
     func plainLines() {
         var serving = pair()

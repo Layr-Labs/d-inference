@@ -30,6 +30,30 @@ public struct ClusterOnboardingSoloServing: Sendable, Equatable, Codable {
             + ["Then run `darkbloom start` to start the pair. It won't start by itself while single-Mac serving runs."]
     }
 
+    /// How every block's title begins (`title`): a status line's reason that starts so is this block, whichever Mac says it.
+    public static let titlePrefix = "The pair can't start: a single-Mac Darkbloom provider"
+
+    /// Whether a not-serving reason (`ClusterOnboardingNotServing.reason(inStatusLine:)`) is this block.
+    public static func isBlock(_ reason: String) -> Bool { reason.hasPrefix(titlePrefix) }
+
+    /// On the Mac that joined: the leading Mac's screen offers the stop too (`stopAndStartItem`).
+    public static func leaderOffersLine(_ leader: String?) -> String {
+        "Or choose \"Stop single-Mac serving … and start the pair\" on \(ClusterOnboardingMacName.other(named: leader)): it stops it "
+            + "here and starts both Macs."
+    }
+
+    /// While a block is shown on the Mac that joined: what this window does meanwhile.
+    public static let followWaitingLine = "Waiting until single-Mac serving stops; this window then follows the start (q leaves)"
+
+    /// Said once single-Mac serving stopped on the Mac that joined (the block cleared): the start is followed again.
+    public static let followClearedLine = "Single-Mac serving stopped: following the start."
+
+    /// `darkbloom cluster status`'s `next` for this block: what to run, since the pair never starts by itself meanwhile.
+    public static func next(cli: String, leadingMac: String) -> String {
+        "Single-Mac serving doesn't stop by itself: run `\(cli) stop --solo` on each Mac named, then `\(cli) start` on either "
+            + "Mac. Or `\(cli) cluster` on \(leadingMac) offers to stop it and start the pair."
+    }
+
     /// The choice that stops single-Mac serving (on each Mac named) and starts the pair, with the person's consent.
     public static func stopAndStartItem(_ serving: [ClusterOnboardingSoloServing]) -> String {
         Set(serving.map(\.mac)).count > 1 ? "Stop single-Mac serving on both Macs and start the pair"

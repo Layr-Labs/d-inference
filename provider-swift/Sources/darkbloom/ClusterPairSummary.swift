@@ -400,14 +400,14 @@ extension ClusterPairSummary {
     static let pairingProgress: Set<String> = ["the coordinator paired both Macs", "waiting for the coordinator to pair both Macs"]
 
     /// A reason that ends a start's wait: one that needs a person (a login, the clock, a coordinator rule, matching
-    /// builds, a pair not offered to Darkbloom, which only a new plan or approval changes). Others (Apple verification
+    /// builds, a pair not offered to Darkbloom, which only a new plan or approval changes, single-Mac serving on a Mac). Others (Apple verification
     /// retrying, memory freeing, a busy or reconnecting Mac, the coordinator retrying) are waited through, as the setup
     /// screen does, within the bounded wait.
     static func isFinalReason(_ reason: String?) -> Bool {
         guard let reason else { return true }
         return ClusterOnboardingNotServing.isMissingLogin(reason) || reason.contains("The clock of")
             || reason.contains("doesn't let") || reason.contains("run different Darkbloom builds")
-            || ClusterOnboardingReady.isNotOffered(reason)
+            || ClusterOnboardingReady.isNotOffered(reason) || ClusterOnboardingSoloServing.isBlock(reason)
     }
 
     /// The state the status lines of `darkbloom cluster` say, read as the other Mac's window reads them
@@ -464,6 +464,10 @@ extension ClusterPairSummary {
             if reason.contains("lacks free memory") {
                 return "Quit apps on that Mac; the cluster starts again by itself. Or choose a smaller model: "
                     + "`\(Self.cli) cluster` on \(leadingMac)."
+            }
+            // Single-Mac serving never stops by itself: what to run, never "keep trying" (0.10.9 DevNet f1).
+            if ClusterOnboardingSoloServing.isBlock(reason) {
+                return ClusterOnboardingSoloServing.next(cli: Self.cli, leadingMac: leadingMac)
             }
             if ClusterOnboardingReady.isNotOffered(reason) {
                 return "To offer it to Darkbloom: `\(Self.cli) cluster` on \(leadingMac), then choose the model again (it is "

@@ -1293,7 +1293,17 @@ serving on both Macs and start the pair** (or on the one Mac named) and
 **Leave**. It stops nothing unless you choose to, and it never retries by itself.
 Each Mac's cluster service doesn't start its part while single-Mac serving
 runs there. Its status names that provider, so the other Mac's screen says the
-same thing instead of "no error reported". Plain `darkbloom stop` on a paired
+same thing instead of "no error reported". The Mac that joined shows the same
+✗ in its own window, naming its own provider ("… is serving on this Mac"),
+with `darkbloom stop --solo` and that the leading Mac's screen offers the stop.
+It never says it is registering with the coordinator meanwhile, and it follows
+the start by itself once single-Mac serving stops. The leading Mac's part
+waits too: it doesn't start, and end again every half minute, while the other
+Mac reports single-Mac serving. `darkbloom cluster status` says the block on
+both Macs, with `Next:` ``Single-Mac serving doesn't stop by itself: run
+`darkbloom stop --solo` on each Mac named, then `darkbloom start` on either
+Mac. …``, and a scripted `darkbloom start` ends its wait at once with that
+reason (exit status 3). Plain `darkbloom stop` on a paired
 Mac stops the pair, not single-Mac serving. If the leading
 Mac doesn't answer, `darkbloom stop` says so and that
 `darkbloom cluster stop --local-only` stops this Mac alone.

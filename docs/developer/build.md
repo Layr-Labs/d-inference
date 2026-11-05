@@ -514,9 +514,10 @@ profile's labels with the last one qualified by the size, such as
 `[self-hosted, macOS, ARM64, darkbloom-macos-arm64-4x24]`. The job then runs on
 that `runs_on` value as the plane sent it. Otherwise the lane keeps its
 fallback. The plane names its reason, for example `shape_not_signed` (no signed
-image of that size), `unsupported_runner_class` (the size has no price),
-`image_not_available` (the image is not staged) or `lane_not_enabled` (the
-approval does not name the lane). For each lane, the route job's log and step
+image of that size), `unavailable` (the plane cannot read its image catalog),
+`unsupported_runner_class` (the size has no price), `image_not_available` (the
+image is not staged) or `lane_not_enabled` (the approval does not name the
+lane). For each lane, the route job's log and step
 summary show the size asked, the runner, and the decision with its reason.
 
 ## CI Caching

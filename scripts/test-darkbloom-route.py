@@ -605,7 +605,7 @@ class RouteStepTests(unittest.TestCase):
         decisions = {lane: {"target": "darkbloom", "runs_on": sized(size)} for lane, (_, size, _) in PLAN_LANES.items()}
         reasons = {"test-cluster-1": "shape_not_signed", "build-provider": "unsupported_runner_class",
                    "cluster-release-checks": "image_not_available", "test-cluster-gpu": "lane_not_enabled",
-                   "test-provider-2": "profile_degraded"}
+                   "test-provider-2": "profile_degraded", "test-provider-1": "unavailable"}
         decisions.update({lane: {"target": "fallback", "reason": reason} for lane, reason in reasons.items()})
         with self.plane((200, reply(**decisions), 0)) as plane:
             result, routes, summary = self.route(plane.url, lanes=lanes, JOB_SHAPES="on")

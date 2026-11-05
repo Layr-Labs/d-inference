@@ -41,10 +41,10 @@ def retryable(error):
     # Retry only a failed or cut transfer: a TLS, socket or connection error,
     # a timeout, an incomplete body, a short body or an HTTP 5xx. A wrong
     # digest, an oversize body, an insecure redirect or a 4xx stays final.
+    # HTTPError is an OSError subclass: test it first.
     if isinstance(error, urllib.error.HTTPError):
         return error.code >= 500
-    return isinstance(error, (OSError, urllib.error.URLError, http.client.IncompleteRead,
-                              TransientTransfer))
+    return isinstance(error, (OSError, http.client.IncompleteRead, TransientTransfer))
 
 
 def fetch_once(url):

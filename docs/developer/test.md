@@ -1217,11 +1217,14 @@ attempts per artifact with 1 s and 3 s backoff inside the 120 s deadline. A
 full-size body with the wrong SHA-256, an oversize body, a Content-Length
 mismatch, a cross-origin response, another non-200 status or the deadline fails
 at once. `scripts/prepare-mimo-prompt-fixtures.py` and
-`scripts/prepare-mimo-image-http-fixtures.py` apply the same rule per metadata
-file. The image script classifies curl's exit code: a cut transfer (for example
-exit 18 or 56) retries, and an oversize body (63), a certificate failure or a
-plain-HTTP redirect does not. Provisioning failures fail qualification; they
-must not silently skip vectors.
+`scripts/prepare-mimo-image-http-fixtures.py` apply the same retry rule to each
+metadata file, with these differences. They refuse a redirect to plain HTTP but
+follow a redirect to a different HTTPS host. The MiMo prompt script has no total
+deadline: each connect and read has a 60 s socket timeout. The image script has
+a 120 s deadline for each file, and it classifies curl's exit code: a cut
+transfer (for example exit 18 or 56) retries, and an oversize body (63), a
+certificate failure or a plain-HTTP redirect does not. Provisioning failures
+fail qualification; they must not silently skip vectors.
 
 Public validation means **this implementation matches those fixed expectations**.
 It does not run private Go/Rust implementations, establish current cross-implementation

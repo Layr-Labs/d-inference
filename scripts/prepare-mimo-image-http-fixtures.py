@@ -20,6 +20,7 @@ NAMES = ("config.json", "tokenizer.json", "tokenizer_config.json", "chat_templat
 DOWNLOAD_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = (1, 3)
 DEADLINE_SECONDS = 120
+ATTEMPT_SECONDS = 60
 # curl exit codes of a cut or failed transfer: name resolution (6), connect
 # (7), HTTP/2 framing (16, 92), partial file (18), timeout (28), TLS handshake
 # (35), empty reply (52), send (55) and receive (56). Plain `--retry` skips 18
@@ -74,7 +75,7 @@ def download(name):
     for attempt in range(DOWNLOAD_ATTEMPTS):
         try:
             # curl reads --max-time 0 as no limit, so an attempt gets at least 1 s.
-            return fetch_once(name, size, max(1.0, min(60.0, deadline - time.monotonic())))
+            return fetch_once(name, size, max(1.0, min(ATTEMPT_SECONDS, deadline - time.monotonic())))
         except TransientTransfer as error:
             if attempt + 1 == DOWNLOAD_ATTEMPTS:
                 raise

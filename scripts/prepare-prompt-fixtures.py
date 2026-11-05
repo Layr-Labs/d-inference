@@ -157,12 +157,12 @@ def retryable(error):
     # Retry only a failed or cut transfer: a TLS, socket or connection error,
     # a timeout, an incomplete body, a short body or an HTTP 5xx. Integrity,
     # size, origin, client-status and deadline failures stay final.
+    # HTTPError and FileExistsError are OSError subclasses: test them first.
     if isinstance(error, urllib.error.HTTPError):
         return error.code >= 500
     if isinstance(error, FileExistsError):
         return False  # An output this download did not create; never delete it.
-    return isinstance(error, (OSError, urllib.error.URLError, http.client.IncompleteRead,
-                              TransientTransfer))
+    return isinstance(error, (OSError, http.client.IncompleteRead, TransientTransfer))
 
 
 def download_once(opener, url, output, artifact, deadline):

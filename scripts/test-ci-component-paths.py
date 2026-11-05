@@ -81,6 +81,7 @@ class ComponentPathsTests(unittest.TestCase):
             "scripts/verified_download_cache.py": {"provider"},
             "scripts/provider-test-shards.py": {"provider"},
             "scripts/cluster-test-plan.py": {"provider", "cluster"},
+            "scripts/swift_test_lock_retry.py": {"provider", "cluster"},
             "coordinator/store/postgres/users.go": set(),
             "coordinator/protocol/messages.go": set(),
             "console-ui/package-lock.json": set(),

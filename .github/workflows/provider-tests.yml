@@ -441,6 +441,7 @@ jobs:
           path: |
             ${{ runner.temp }}/provider-unit-shard/*.json
             ${{ runner.temp }}/provider-unit-shard/*.xml
+            ${{ runner.temp }}/provider-unit-shard/attempt-1-*.log
             ${{ runner.temp }}/provider-unit-shard/provider.profdata
           if-no-files-found: error
           retention-days: 14

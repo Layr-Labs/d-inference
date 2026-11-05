@@ -41,6 +41,7 @@ RECIPE_PATHS = (
     "scripts/prepare-provider-release-toolchain.sh",
     "scripts/provider-release-swift.sh",
     "scripts/run-provider-tests.sh",
+    "scripts/swift_test_lock_retry.py",
     "scripts/provider-ci-cold-retry.sh",
     "scripts/run-provider-test-watchdog.py",
     "scripts/run-nested-suite.sh",

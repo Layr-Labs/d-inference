@@ -2,6 +2,7 @@
 """Offline checks of the cluster test plan and the jobs that run it."""
 
 import importlib.util
+import io
 import os
 from pathlib import Path
 import re
@@ -139,25 +140,36 @@ class ClusterTestPlanTests(unittest.TestCase):
     def test_a_grouped_selection_that_finds_the_build_database_locked_runs_once_more(self):
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         # The first run of "locked-once" finds build.db locked, as SwiftPM
-        # reports it, runs and exits 1; "locked" always does; "failing" fails.
+        # reports it, passes its tests and exits 1; "locked" always does;
+        # "locked-failing" finds it locked and a test fails; "failing" fails.
         script = ("import os, sys; name, root = sys.argv[1], sys.argv[2]\n"
                   "runs = os.path.join(root, name)\n"
                   "count = len(open(runs).read()) if os.path.exists(runs) else 0\n"
                   "open(runs, 'a').write('x')\n"
-                  "locked = name == 'locked' or (name == 'locked-once' and count == 0)\n"
+                  "locked = name in ('locked', 'locked-failing') or (name == 'locked-once' and count == 0)\n"
                   "if locked: print('error: unable to attach DB: error: accessing build database '\n"
                   "                 '\"/x/.build/build.db\": database is locked', flush=True)\n"
                   "print(f'run {count + 1}', flush=True)\n"
+                  "if name == 'locked-failing': print('\u2718 Test run with 2 tests failed after 0.1 seconds.')\n"
+                  "else: print('\u2714 Test run with 2 tests passed after 0.1 seconds.')\n"
                   "sys.exit(1 if locked or name == 'failing' else 0)\n")
         selections = (plan.Selection("locked-once", "blocking", 1, group=1),
                       plan.Selection("locked", "blocking", 1, group=2),
-                      plan.Selection("failing", "blocking", 1, group=3))
+                      plan.Selection("failing", "blocking", 1, group=3),
+                      plan.Selection("locked-failing", "blocking", 1, group=4))
         command = lambda selection, output: (ROOT, [sys.executable, "-c", script, selection.name, str(root)])
         with mock.patch.object(plan, "SELECTIONS", selections), mock.patch.object(plan, "command", command), \
-                mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": ""}):
+                mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": ""}), \
+                mock.patch.object(sys, "stdout", io.TextIOWrapper(io.BytesIO(), write_through=True)) as stdout:
             self.assertEqual(plan.run("blocking", 1), 1)
+            printed = stdout.buffer.getvalue().decode()
         runs = {selection.name: len((root / selection.name).read_text()) for selection in selections}
-        self.assertEqual(runs, {"locked-once": 2, "locked": 2, "failing": 1})
+        self.assertEqual(runs, {"locked-once": 2, "locked": 2, "failing": 1, "locked-failing": 1})
+        # The first attempt's log prints before the second's.
+        once = printed.split("::group::locked-once (group 1)", 1)[1].split("::endgroup::", 1)[0]
+        self.assertLess(once.index("Attempt 1's log"), once.index("run 1"))
+        self.assertLess(once.index("run 1"), once.index("Attempt 2's log"))
+        self.assertLess(once.index("Attempt 2's log"), once.index("run 2"))
         # A selection alone has no other process to meet: no retry.
         with mock.patch.object(plan, "command", command):
             status, _ = plan.execute(plan.Selection("locked", "blocking", 1), root)

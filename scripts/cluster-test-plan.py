@@ -22,6 +22,7 @@ Subcommands:
 """
 
 import argparse
+import importlib.util
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import os
@@ -303,8 +304,12 @@ def shards(lane):
     return sorted({selection.shard for selection in SELECTIONS if selection.lane == lane})
 
 
-# SwiftPM's message when another process's startup holds the build database.
-LOCKED_BUILD_DATABASE = re.compile(rb"unable to attach DB: .*database is locked")
+def lock_retry():
+    """scripts/swift_test_lock_retry.py, loaded by path (scripts/ is not a package)."""
+    spec = importlib.util.spec_from_file_location("swift_test_lock_retry", ROOT / "scripts/swift_test_lock_retry.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def execute(selection, output, log=None, temporary=None):
@@ -312,7 +317,10 @@ def execute(selection, output, log=None, temporary=None):
 
     A grouped selection (log given) runs beside another group's process. Its
     SwiftPM can find the build database locked by that process's startup; it
-    then runs the tests and exits 1. Such a selection runs once more.
+    then runs the tests and exits 1. Such a selection runs once more, but only
+    when its log proves every test passed (scripts/swift_test_lock_retry.py).
+    The first attempt's log stays beside the log, as <log>.attempt-1, and
+    prints with it.
     """
     cwd, argv = command(selection, output)
     env = environment(selection)
@@ -320,16 +328,18 @@ def execute(selection, output, log=None, temporary=None):
         env["TMPDIR"] = str(temporary)
     started = time.monotonic()
     for attempt in (1, 2):
-        if log is not None:
-            log.seek(0)
-            log.truncate()
         status = subprocess.run(argv, cwd=cwd, env=env, stdout=log,
                                 stderr=subprocess.STDOUT if log is not None else None).returncode
-        if status == 0 or log is None or attempt == 2 or not LOCKED_BUILD_DATABASE.search(
-                Path(log.name).read_bytes()):
+        if status == 0 or log is None or attempt == 2:
             break
-        print(f"{selection.name}: SwiftPM's build database was locked; running the selection once more",
-              flush=True)
+        log.flush()
+        path = Path(log.name)
+        text = path.read_bytes()
+        if not lock_retry().only_locked(text.decode(errors="replace")):
+            break
+        path.with_name(path.name + ".attempt-1").write_bytes(text)
+        log.seek(0)
+        log.truncate()
     return status, time.monotonic() - started
 
 
@@ -363,6 +373,12 @@ def run(lane, shard):
             finished = [result for future in futures for result in future.result()]
         for selection, status, seconds, path in finished:
             print(f"::group::{selection.name} (group {selection.group})", flush=True)
+            first = path.with_name(path.name + ".attempt-1")
+            if first.is_file():
+                print(f"Attempt 1: every test passed, but SwiftPM's build database was locked; "
+                      f"the selection ran once more. Attempt 1's log:", flush=True)
+                sys.stdout.buffer.write(first.read_bytes())
+                print("Attempt 2's log:", flush=True)
             sys.stdout.buffer.write(path.read_bytes())
             sys.stdout.flush()
             print("::endgroup::", flush=True)

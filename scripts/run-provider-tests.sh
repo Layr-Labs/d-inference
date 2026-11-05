@@ -62,17 +62,21 @@ run_provider_test_selection() {
   echo "Provider test selection $name: ${#arguments} characters of filters"
   # Beside other processes, SwiftPM can find the build database locked by
   # another process's startup; it then runs the tests and exits 1. Such a
-  # selection runs once more.
+  # selection runs once more, but only when its log proves every test passed
+  # (scripts/swift_test_lock_retry.py). The first attempt's log and xUnit
+  # report stay beside the second's, as attempt-1-shard-<name>.*.
   for attempt in 1 2; do
     env -u MIMO_V26_SERIAL_NATIVE_TESTS -u DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST -u DARKBLOOM_ISOLATED_DEADLINE_TEST \
       swift test --skip-build ${lock_flag[@]+"${lock_flag[@]}"} ${parallel_flag[@]+"${parallel_flag[@]}"} "${selected[@]}" \
       --xunit-output "$report.xml" 2>&1 | tee "$report.log"
     status=${PIPESTATUS[0]}
     if [ "$status" = 0 ] || [ "$attempt" = 2 ] || [ "$provider_test_processes" = 1 ] ||
-        ! grep -q 'unable to attach DB: .*database is locked' "$report.log"; then
+        ! python3 "$script_directory/swift_test_lock_retry.py" "$report.log"; then
       break
     fi
-    echo "Provider test selection $name: SwiftPM's build database was locked; running the selection once more"
+    echo "Provider test selection $name: every test passed, but SwiftPM's build database was locked; running the selection once more"
+    mv "$report.log" "$PROVIDER_TEST_REPORT_DIR/attempt-1-shard-$name.log"
+    [ ! -f "$report.xml" ] || mv "$report.xml" "$PROVIDER_TEST_REPORT_DIR/attempt-1-shard-$name.xml"
   done
   python3 "$script_directory/provider-test-shards.py" counts "$selection" "$isolated_pattern" "$report.log" "$report.json" || status=1
   return "$status"

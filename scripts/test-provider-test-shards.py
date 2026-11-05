@@ -304,6 +304,40 @@ class CountAndAuditTests(unittest.TestCase):
                              {"ProviderCoreTests.A": 2.0, "ProviderCoreTests.XCTestClass": 3.0})
 
 
+_LOCK_SPEC = importlib.util.spec_from_file_location("swift_test_lock_retry", ROOT / "scripts/swift_test_lock_retry.py")
+lock_retry = importlib.util.module_from_spec(_LOCK_SPEC)
+_LOCK_SPEC.loader.exec_module(lock_retry)
+
+
+class LockRetryTests(unittest.TestCase):
+    """Only a log whose every test passed, beside the lock message, runs again."""
+
+    LOCKED = ('error: unable to attach DB: error: accessing build database "/Users/runner/_work/d-inference/'
+              'd-inference/provider-swift/.build/build.db": database is locked Possibly there are two '
+              'concurrent builds running in the same filesystem location.\n')
+    XCTEST = "\t Executed 54 tests, with 8 tests skipped and 0 failures (0 unexpected) in 7.575 (7.581) seconds\n"
+    PASSED = "\u2714 Test run with 940 tests in 126 suites passed after 164.700 seconds.\n"
+
+    def test_lock_and_every_test_passed_runs_again(self):
+        # Run 41970825476, selection 1-of-6: the lock, then passing summaries.
+        self.assertTrue(lock_retry.only_locked(self.LOCKED + self.XCTEST + self.PASSED))
+        self.assertTrue(lock_retry.only_locked(self.LOCKED + "Test run with 1 test passed after 0.1 seconds.\n"))
+
+    def test_any_failure_or_missing_proof_does_not_run_again(self):
+        cases = {
+            "no lock": self.XCTEST + self.PASSED,
+            "no Swift Testing summary": self.LOCKED + self.XCTEST,
+            "an XCTest failure": self.LOCKED + self.XCTEST.replace("0 failures (0", "1 failure (1") + self.PASSED,
+            "an XCTest case failed": self.LOCKED + "Test Case '-[A b]' failed (0.1 seconds).\n" + self.PASSED,
+            "a Swift Testing issue": self.LOCKED + "\u2718 Test b() recorded an issue at A.swift:3:5\n" + self.PASSED,
+            "a failed run": self.LOCKED + "\u2718 Test run with 2 tests failed after 0.1 seconds with 1 issue.\n",
+            "a tripwire": self.LOCKED + self.PASSED + "::error::filter executed ZERO tests\n",
+        }
+        for name, text in cases.items():
+            with self.subTest(case=name):
+                self.assertFalse(lock_retry.only_locked(text))
+
+
 class RunnerTests(unittest.TestCase):
     """run-provider-tests.sh with a recording `swift` in place of the toolchain."""
 
@@ -323,19 +357,26 @@ class RunnerTests(unittest.TestCase):
                     "TMPDIR", "DARKBLOOM_STATE_FILE", "DARKBLOOM_LOADED_MODELS_FILE",
                     "DARKBLOOM_VERIFIED_WEIGHTS_FILE")}) + "\\n")
             # STUB_LOCKED=once: the first run of each selection finds the build
-            # database locked, as SwiftPM reports it, runs and exits 1.
-            # STUB_LOCKED=always: every run does.
+            # database locked, as SwiftPM reports it, passes its tests and
+            # exits 1. STUB_LOCKED=always: every run does. STUB_LOCKED=failed:
+            # the first run finds it locked and a test fails.
             mode = os.environ.get("STUB_LOCKED")
             report = sys.argv[sys.argv.index("--xunit-output") + 1] if "--xunit-output" in sys.argv else ""
             seen = report + ".seen"
-            locked = mode == "always" or (mode == "once" and report and not os.path.exists(seen))
+            first = bool(report) and not os.path.exists(seen)
+            locked = mode == "always" or (mode in ("once", "failed") and first)
             if report:
                 open(seen, "a").close()
+                open(report, "w").write(f"<testsuites><!-- attempt {'1' if first else '2'} --></testsuites>")
             if locked:
                 print('error: unable to attach DB: error: accessing build database "/x/.build/build.db": '
                       'database is locked Possibly there are two concurrent builds running in the same '
                       'filesystem location.')
-            print("Test run with 2 tests in 1 suite passed after 0.1 seconds.")
+            if locked and mode == "failed":
+                print('✘ Test "contended" recorded an issue at A.swift:1:1: Expectation failed')
+                print("✘ Test run with 2 tests in 1 suite failed after 0.1 seconds with 1 issue.")
+            else:
+                print("Test run with 2 tests in 1 suite passed after 0.1 seconds.")
             sys.exit(1 if locked else 0)
             """))
         swift.chmod(0o755)
@@ -430,9 +471,19 @@ class RunnerTests(unittest.TestCase):
     def test_a_selection_that_finds_the_build_database_locked_runs_once_more(self):
         # Beside other processes, SwiftPM's startup can find build.db locked;
         # it runs the tests and exits 1. The selection runs once more.
-        calls, _ = self.run_tests("1/2", processes="3", STUB_LOCKED="once")
+        calls, reports = self.run_tests("1/2", processes="3", STUB_LOCKED="once")
         self.assertEqual(sorted(self.selection_of(call) for call in calls),
                          sorted(["1-of-6", "2-of-6", "3-of-6", "parallel"] * 2))
+        # The first attempt's log and xUnit report stay beside the second's.
+        for name in ("1-of-6", "2-of-6", "3-of-6", "parallel"):
+            self.assertIn("database is locked", (reports / f"attempt-1-shard-{name}.log").read_text())
+            self.assertIn("attempt 1", (reports / f"attempt-1-shard-{name}.xml").read_text())
+            self.assertIn("attempt 2", (reports / f"shard-{name}.xml").read_text())
+            self.assertNotIn("database is locked", (reports / f"shard-{name}.log").read_text())
+        # A test that failed beside the lock fails the job: no second attempt.
+        result = self.run_tests("1/2", processes="3", STUB_LOCKED="failed", status=1)
+        self.assertIn("Expectation failed", result.stdout)
+        self.assertNotIn("running the selection once more", result.stdout)
         # Only once: a second lock fails the job.
         self.run_tests("1/2", processes="3", STUB_LOCKED="always", status=1)
         # One process has no other process to meet: no retry.

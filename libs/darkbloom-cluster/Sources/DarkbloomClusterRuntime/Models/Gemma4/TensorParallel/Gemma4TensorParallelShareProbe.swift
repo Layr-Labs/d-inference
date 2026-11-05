@@ -14,7 +14,7 @@ import MLX
 ///
 /// It never fails or holds up a load: memory the gate does not admit, a load
 /// deadline too close, or any error gives no probe, and the timed rounds
-/// stop at the budget. Only a throwaway request that cannot be retired fails
+/// stop at the budget, counted from the first timed round. Only a throwaway request that cannot be retired fails
 /// the load, since its native work may still be running.
 enum Gemma4TensorParallelShareProbe {
     typealias Limits = QwenTensorParallelShareProbe
@@ -49,15 +49,13 @@ enum Gemma4TensorParallelShareProbe {
                     // Any token will do: the outputs are not a tensor-parallel result.
                     _ = try value.prefill(prompt, range: 0..<shape.prompt, check: checked) { $0 }
                     var token = 1
-                    var times: [UInt64] = []
-                    for index in 0..<(Limits.warmupRounds + Limits.timedRounds) {
-                        if index >= Limits.warmupRounds, clock() - started >= Limits.budgetNanoseconds { break }
+                    // The budget bounds the timed rounds, not the set-up, prompt and warm-ups (`ClusterShareProbeRounds`).
+                    let times = try ClusterShareProbeRounds.run(warmup: Limits.warmupRounds, timed: Limits.timedRounds,
+                                                                budgetNanoseconds: Limits.budgetNanoseconds, clock: clock) {
                         token = (token * 37 + 11) % profile.vocabularySize
-                        let roundStarted = clock()
                         _ = try GPU.withCommandBufferLimits(Gemma4TensorParallelModel.decodeCommandBuffers) {
                             try value.decode(token, check: checked) { $0 }
                         }
-                        if index >= Limits.warmupRounds { times.append(clock() - roundStarted) }
                     }
                     try value.retire()
                     guard host.isDrained else { throw ProbeError("Gemma tensor-parallel share probe kept its pages") }

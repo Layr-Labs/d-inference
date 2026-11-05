@@ -47,7 +47,7 @@ final class QwenTensorParallelSwitchableReduction: QwenTensorParallelReduction {
 ///
 /// It never fails or holds up a load: memory the gate does not admit, a load
 /// deadline too close, or any error gives no probe, and the timed rounds stop
-/// at `budgetNanoseconds`. Only a throwaway state that cannot be retired
+/// at `budgetNanoseconds`, counted from the first timed round. Only a throwaway state that cannot be retired
 /// fails the load, since its native work may still be running.
 enum QwenTensorParallelShareProbe {
     static let promptTokens = 64
@@ -130,22 +130,19 @@ enum QwenTensorParallelShareProbe {
                     // Any token will do: the outputs are not a tensor-parallel result.
                     var token = 1
                     func next() -> Int { token = (token * 37 + 11) % profile.vocabularySize; return token }
+                    // The budget bounds the timed rounds, not the set-up, prompt and warm-ups (`ClusterShareProbeRounds`).
                     func timed(_ round: () throws -> Void) throws -> [UInt64] {
-                        var times: [UInt64] = []
-                        for index in 0..<(warmupRounds + timedRounds) {
-                            if index >= warmupRounds, clock() - started >= budgetNanoseconds { break }
-                            let roundStarted = clock()
+                        try ClusterShareProbeRounds.run(warmup: warmupRounds, timed: timedRounds, budgetNanoseconds: budgetNanoseconds,
+                                                        clock: clock) {
                             // Encoded as the native executor encodes a decode round (`decodeCommandBuffers`).
                             try GPU.withCommandBufferLimits(QwenTensorParallelBatchSession.decodeCommandBuffers) { try round() }
-                            if index >= warmupRounds { times.append(clock() - roundStarted) }
                         }
-                        return times
                     }
                     let plain = try timed {
                         _ = try QwenTensorParallelBatchSession.decode([value], tokens: [next()], check: checked)
                     }
                     var window: [UInt64] = []
-                    if let columns = windowColumns, plain.count >= minimumRounds, clock() - started < budgetNanoseconds {
+                    if let columns = windowColumns, plain.count >= minimumRounds {
                         window = try timed {
                             let tokens = MLXArray((0..<columns).map { _ in Int32(next()) }).reshaped([1, columns])
                             let built = try QwenTensorParallelBatchSession.beginWindows([value], tokens: tokens)

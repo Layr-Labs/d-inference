@@ -1063,5 +1063,33 @@ struct ClusterWorkerProtocolTests {
         try check(decoded.first?.tensorParallelLayout == layout && decoded.first?.isConsistent == true, "the layout round-trips")
         try check(!record("pipeline_v1", cuts: []).isConsistent && record("pipeline_v1", cuts: [32]).isConsistent,
             "a pipeline record still needs its cut")
+        try shareProbeRoundsCountTheTimedRoundsOnly()
+    }
+
+    /// Pair-2's M3 Ultra (2026-11-04) logged `darkbloom-share-probe-v1 rank=0 skipped=budget` on every load: its
+    /// throwaway request's set-up, prompt and warm-up rounds (first-use kernel compiles on a busy GPU) ate the 1.5 s
+    /// budget before three timed rounds ran, so the planner never had its share step. The budget bounds the timed
+    /// rounds; the warm-ups always run.
+    static func shareProbeRoundsCountTheTimedRoundsOnly() throws {
+        var now: UInt64 = 0
+        var calls = 0
+        // A slow start: 2 s before the first round, each warm-up 600 ms, each timed round 40 ms.
+        now = 2_000_000_000
+        let times = ClusterShareProbeRounds.run(warmup: 2, timed: 7, budgetNanoseconds: 1_500_000_000, clock: { now }) {
+            calls += 1
+            now += calls <= 2 ? 600_000_000 : 40_000_000
+        }
+        try check(times.count == 7 && times.allSatisfy { $0 == 40_000_000 } && calls == 9,
+            "a slow start and slow warm-ups still give every timed round: \(times.count) rounds, \(calls) calls")
+        // The budget still stops slow timed rounds: 700 ms each, 1.5 s budget -> 3 rounds (the third starts at 1.4 s).
+        now = 0; calls = 0
+        let slow = ClusterShareProbeRounds.run(warmup: 2, timed: 7, budgetNanoseconds: 1_500_000_000, clock: { now }) {
+            calls += 1; now += 700_000_000
+        }
+        try check(slow.count == 3 && calls == 5, "the budget bounds the timed rounds: \(slow.count) rounds, \(calls) calls")
+        // No timed round at all when the budget is zero; the warm-ups ran.
+        now = 0; calls = 0
+        let none = ClusterShareProbeRounds.run(warmup: 2, timed: 7, budgetNanoseconds: 0, clock: { now }) { calls += 1; now += 1 }
+        try check(none.isEmpty && calls == 2, "a zero budget times nothing after the warm-ups")
     }
 }

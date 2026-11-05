@@ -4364,7 +4364,11 @@ baseline is taken before it, so the widened projection constants its forward
 keeps count as a first request's would. Memory the gate does not admit, a load
 deadline nearer than 10 s, a 1.5 s budget reached before three timed rounds, or
 any error gives no probe, never a failed load; only a throwaway request that
-cannot be retired fails it.
+cannot be retired fails it. The budget counts from the first timed round
+(`ClusterShareProbeRounds`): the request's set-up, prompt and warm-up rounds
+always run. Counted from the start, pair-2's M3 Ultra (its GPU shared with the
+desktop, first-use kernel compiles in the warm-ups) logged `skipped=budget` on
+every load, so the planner never had its share step.
 
 The serving leader records both ranks' probes when the pair becomes ready, next
 to the link probe, in owner-only `~/.darkbloom/cluster/share-probes.json`

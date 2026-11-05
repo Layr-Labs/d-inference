@@ -747,6 +747,7 @@ func checkpointTensors(_ directory: URL) throws -> [Tensor] {
         checkLaunchAgreement()
         checkSealCodec()
         checkSealPieces()
+        checkOneTokenLoop()
 
         for path in CommandLine.arguments.dropFirst() {
             let directory = URL(fileURLWithPath: path)
@@ -761,6 +762,7 @@ func checkpointTensors(_ directory: URL) throws -> [Tensor] {
             }
         }
         checkStopRule()
+        checkDecodeSubmission()
         print(failures == 0 ? "PASS" : "FAILED: \(failures)")
         exit(failures == 0 ? 0 : 1)
     }
@@ -805,4 +807,22 @@ func checkStopRule() {
         check(R.Finish(code: finish.code) == finish, "finish code round trip \(finish)")
     }
     check(R.Finish(code: 0) == nil && R.Finish(code: 9) == nil, "unknown finish codes are refused")
+}
+
+// A decode forward's GPU submissions (`QwenTensorParallelLaunch.decodeLayerStride`).
+// Measured on two M5 Ultra 256 GB over JACCL (27B, sealed sums): a step is
+// slowest at one layer a submission (a commit and a GPU wake-up per layer),
+// flat from 8 to 16 layers, and slower again at 32, where the GPU waits for
+// the host's first batch. The product's stride stays in that band (4 to 8
+// submissions for the 27B's 64 layers) and splits both checkpoints evenly.
+func checkDecodeSubmission() {
+    typealias L = QwenTensorParallelLaunch
+    let stride = L.decodeLayerStride
+    check((4...8).contains(L.decodeSubmissions(layers: 64, stride: stride)),
+          "27B decode submissions at stride \(stride): \(L.decodeSubmissions(layers: 64, stride: stride)), measured band 4-8")
+    check(64 % stride == 0 && 32 % stride == 0, "stride \(stride) splits the 27B's 64 and the 9B's 32 layers evenly")
+    check(L.decodeSubmissions(layers: 64, stride: 1) == 64 && L.decodeSubmissions(layers: 64, stride: 0) == 1
+          && L.decodeSubmissions(layers: 64, stride: 24) == 3 && L.decodeSubmissions(layers: 0, stride: 8) == 1,
+          "submission count: one a layer, whole, a partial last batch, no layers")
+    print("decode submission: stride \(stride), \(L.decodeSubmissions(layers: 64, stride: stride)) submissions for 64 layers")
 }

@@ -18,6 +18,7 @@ import Darwin
         signal(SIGALRM) { _ in Darwin._exit(124) }; alarm(600); defer { alarm(0) }
         // A run over pipes that ended closes its end; a late key is then an error, never the end of the checks.
         signal(SIGPIPE, SIG_IGN)
+        aFinishedRunLeavesNothingReadingItsTerminal()
         privateMiMoSelectionRefusesBeforeAnyActionOnMemberOrUnpairedMac()
         terminalPresentationFallbacks()
         // The start's progress on both Macs (2026-11-04).
@@ -782,6 +783,10 @@ import Darwin
         private var exitCode: Int32?
         private(set) var keys = 0
         let done = DispatchSemaphore(value: 0)
+        /// Left once the reader read its last byte and will never use its descriptor again. The terminal closes only
+        /// after that: a reader still polling a closed number reads the next run's terminal once `openpty` reuses the
+        /// number, and takes that run's first lines (its title) or, on its blocking slave end, its keys (q).
+        let reading = DispatchGroup()
 
         init(_ operations: ClusterOnboardingOperations, request: ClusterOnboardingRequest = .init(),
              environment: [String: String] = ["NO_COLOR": "1"], columns: UInt16 = 132, rows: UInt16 = 50, logFile: URL? = nil) {
@@ -791,14 +796,19 @@ import Darwin
             master = primary; slave = secondary
             _ = fcntl(primary, F_SETFL, fcntl(primary, F_GETFL) | O_NONBLOCK)
             let reader = primary
+            reading.enter()
             Thread.detachNewThread { [self] in
+                defer { reading.leave() }
                 var buffer = [UInt8](repeating: 0, count: 4096)
                 while true {
+                    // The end is checked before the poll: a run that had ended by then wrote every byte already, so an
+                    // empty read after it is the end of the text, never a byte still on its way.
+                    let ended = code != nil
                     var descriptor = pollfd(fd: reader, events: Int16(POLLIN), revents: 0)
                     guard Darwin.poll(&descriptor, 1, 20) >= 0 else { return }
                     let count = Darwin.read(reader, &buffer, buffer.count)
-                    if count > 0 { lock.lock(); captured.append(contentsOf: buffer.prefix(count)); lock.unlock() }
-                    if lock.withLock({ exitCode != nil }) && count <= 0 { return }
+                    if count > 0 { lock.withLock { captured.append(contentsOf: buffer.prefix(count)) } }
+                    if ended && count <= 0 { return }
                 }
             }
             let slaveFD = secondary
@@ -833,14 +843,19 @@ import Darwin
             _ = bytes.withUnsafeBytes { Darwin.write(master, $0.baseAddress, $0.count) }
         }
 
+        /// The exit status once the run ended and every byte it wrote was read (nil while it still runs).
         func finish(seconds: Double = 10) -> Int32? {
             _ = done.wait(timeout: .now() + seconds)
+            guard let code else { return nil }
+            reading.wait()
             return code
         }
 
-        /// Closes both ends once the run ended, so a long list of checks never runs out of pseudo-terminals.
+        /// Closes both ends once the run ended and its reader stopped, so a long list of checks never runs out of
+        /// pseudo-terminals and no reader outlives its terminal.
         func release() {
             guard code != nil else { return }
+            reading.wait()
             closeTerminal()
         }
 
@@ -908,6 +923,19 @@ import Darwin
             _ = drained.wait(timeout: .now() + seconds)
             return lock.withLock { exitCode }
         }
+    }
+
+    /// The harness itself (runs 42057277814 and 42082393871, 2026-11-05): a run's reader stopped up to a poll after the
+    /// run's end, so `release` closed the terminal under it, the next run's `openpty` got the same numbers, and the old
+    /// reader took that run's title ("role, before pairing") or its q ("coordinator q"). The reader now stops before
+    /// `finish` returns, and so before `release` closes anything.
+    static func aFinishedRunLeavesNothingReadingItsTerminal() {
+        let run = TerminalRun(operations(Recorder(), pairEvents: memberEvents, pairResult: .failed(["Cancelled: nothing paired."])))
+        expect(run.finish(seconds: 20) != nil, "harness: the run ended")
+        expect(run.reading.wait(timeout: .now()) == .success, "harness: finish returns once the reader read the last byte and stopped")
+        let ended = run.text
+        run.release()
+        expect(run.text == ended, "harness: no byte arrives after finish: \(run.text.dropFirst(ended.count))")
     }
 
     static func leaderFromScratch() {
@@ -4297,8 +4325,8 @@ import Darwin
     }
 
     /// The list (team note: "Model selection should hide model that we don't allow them to be run there"): the model
-    /// serving now marked, each mode with its speed measured on these Macs or "not measured on these Macs yet"; what
-    /// cannot run stays hidden.
+    /// serving now marked, each mode with its speed measured on these Macs or "not measured on these Macs yet"; an
+    /// approved model that cannot run is named with its reason, above the list.
     static func modelListMarksTheCurrentModelAndMeasuredSpeeds() {
         let current = switchChoices[0].listLine(sameTitleElsewhere: false)
         expect(current == "Qwen 3.8 27B · 16.3 GB · tensor parallel 41 tok/s", "list: a model's line: \(current)")
@@ -4308,12 +4336,34 @@ import Darwin
         unmeasured.modes = unmeasured.modes!.map { var mode = $0; mode.measuredTokensPerSecond = nil; return mode }
         expect(unmeasured.listLine(sameTitleElsewhere: false) == "Gemma 4 26B · 15.6 GB · tensor parallel or pipeline · not measured on these Macs yet",
                "list: none measured: \(unmeasured.listLine(sameTitleElsewhere: false))")
-        let hidden = ClusterOnboardingModelChoice(title: "GLM", lines: [], blocker: "too large for this pair", modelID: "glm-5.3-flash", validated: true)
-        let run = TerminalRun(operations(Recorder(), resume: qwenServing, pairEvents: [], pairResult: .failed([]), choices: switchChoices + [hidden]))
-        expect(run.waitFor(prompt(4)), "list screen: two models, GLM hidden")
-        expect(run.text.contains(qwenList) && !run.text.contains("GLM"), "list screen: \(run.text)")
+        // An approved model that cannot run here is never hidden silently (2026-11-05: Qwen 3.8 27B left a pair's list
+        // without a word when its plan failed): it is named with its reason in one line above the list, and cannot be
+        // picked; a model not approved for clusters stays unnamed.
+        let blocked = ClusterOnboardingModelChoice(title: "GLM", lines: [], blocker: "too large for this pair", modelID: "glm-5.3-flash", validated: true)
+        let unapproved = ClusterOnboardingModelChoice(title: "Gemma 4 E4B", lines: [], blocker: "too large for this pair", modelID: "gemma-4-e4b", validated: false)
+        let run = TerminalRun(operations(Recorder(), resume: qwenServing, pairEvents: [], pairResult: .failed([]),
+                                         choices: switchChoices + [blocked, unapproved]))
+        expect(run.waitFor(prompt(4)), "list screen: two models to choose, GLM not among them")
+        expect(run.text.contains("  GLM: not offered on these two Macs: too large for this pair\n" + qwenList),
+               "list screen: the blocked approved model and its reason above the list: \(run.text)")
+        expect(!run.text.contains("Gemma 4 E4B"), "list screen: an unapproved model is not named")
         run.type("q")
         _ = run.finish()
+        // The bug's own reason, plain and with its cause, on a 40-column screen: wrapped, every word kept.
+        let failed = ClusterOnboardingModelChoice(title: "Qwen 3.8 27B", lines: [],
+            blocker: "the plan for it failed (Tensor-parallel request allowance does not cover the requested context and chunk)",
+            modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp", validated: true)
+        let narrow = TerminalRun(operations(Recorder(), resume: qwenServing, pairEvents: [], pairResult: .failed([]),
+                                            choices: Array(switchChoices.dropFirst()) + [failed]), columns: 40)
+        expect(narrow.waitFor(prompt(3)), "list screen, 40 columns: the list")
+        let said = "Qwen 3.8 27B: not offered on these two Macs: the plan for it failed (Tensor-parallel request allowance "
+            + "does not cover the requested context and chunk)"
+        let shown = screen(narrow.text, columns: 40)
+        expect(shown.allSatisfy { $0.count <= 40 } && shown.joined().replacingOccurrences(of: " ", with: "")
+                .contains(said.replacingOccurrences(of: " ", with: "")),
+               "list screen, 40 columns: the reason wraps and keeps every word: \(shown)")
+        narrow.type("q")
+        _ = narrow.finish()
     }
 
     /// A fresh setup says first what it will ask and how long it takes (brief: "one screen before 1/4").

@@ -513,6 +513,106 @@ import Foundation
                 && largest.result.chosen.map { ($0.tensorShares ?? [1, 1]).count == 2 && ($0.tensorShares ?? [1, 1])[1] > ($0.tensorShares ?? [1, 1])[0] } == true)
     }
 
+    /// The regression (2026-11-05), through the guided step's own decision: a pair of M5 Ultras served the 27B in
+    /// tensor parallel with 7 prompts of 71,545 to 94,423 tokens, longer than the model's planned request, and every
+    /// plan of the 27B on that pair then failed, so the model left the pair's list. The records are that pair's Qwen
+    /// records (`libs/darkbloom-cluster/Tests/PlacementChecks/Golden/served/m5ultra-pair-qwen-over-limit-2026-11-05.json`:
+    /// token counts, durations and modes as served; members, builds and request IDs synthetic). A record outside the
+    /// model's limits is skipped and counted; every other record counts as before.
+    static func servedOverLimitRegression() throws {
+        let golden = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("libs/darkbloom-cluster/Tests/PlacementChecks/Golden", isDirectory: true)
+        let layout = try ClusterModelLayout.decode(Data(contentsOf: golden.appendingPathComponent("served/qwen38-27b-tensor-parallel-priced-layout.json")))
+        var ultra = try ClusterDeviceProfile.decode(Data(contentsOf: golden.appendingPathComponent("pairs/m3ultra-m5ultra/profile-mac-b.json")))
+        ultra.speedIndex = .init(chip: ultra.chip, osBuild: ultra.osBuild, benchmark: "qmm_h4096_b4_g64_x16_v1",
+            prefillIndex: 2_337_768, decodeIndex: 46_409)
+        try ultra.validate()
+        let build = hash("d"), earlier = hash("e")
+        let partitions = layout.admittedCuts.enumerated().map { index, cut in
+            ClusterRuntimePartition(planSHA256: String(format: "%064lx", index + 1), stages: [
+                .init(rank: 0, sourceLayerStart: 0, sourceLayerEnd: cut, stagePlanSHA256: String(format: "%064lx", 100 + index),
+                      constructionConfigurationSHA256: hash("2")),
+                .init(rank: 1, sourceLayerStart: cut, sourceLayerEnd: layout.layerCount, stagePlanSHA256: String(format: "%064lx", 200 + index),
+                      constructionConfigurationSHA256: hash("4"))])
+        }
+        let capability = try ClusterRuntimeCapability(runtimeBinarySHA256: build, adapterID: "qwen35-dense-layer-stage", adapterVersion: 1,
+            runtimeModelID: layout.runtimeModelID, artifactSHA256: layout.artifactSHA256, configurationSHA256: layout.configurationSHA256,
+            manifestSHA256: hash("d"), profile: .init(id: "registered_qwen38_27b_greedy_generation_v1", vocabularySize: 248320,
+                maximumPromptTokens: 32768, maximumOutputTokens: 32768, maximumChunkTokens: 512, maximumContextTokens: 65536),
+            profileFingerprint: hash("e"), partitions: partitions, arithmeticPolicyID: "qwen_cbv2_query128_bf16_tf32_default_v1",
+            arithmeticPolicySHA256: hash("5"), supportedPrefillSchedules: [.serial, .oneChunkLookahead],
+            supportedGenerationModes: [.pipeline, .tensorParallel])
+        let description = ClusterPairDescription(schema: ClusterPairDescription.schemaName, clusterID: "fixture",
+            publicModelID: "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            capabilitySHA256: ClusterConfigurationCodec.sha256(try ClusterRuntimeCapabilityCodec.encode(capability)),
+            chunkTokens: 512, requestTimeoutSeconds: 300, coordinatorPort: 5577, members: ["ultra-a", "ultra-b"].enumerated().map { index, id in
+                .init(id: id, host: "192.0.2.\(index + 1)", port: 22, user: "fixture", ownerExecutable: "/fixture/darkbloom",
+                    workerExecutable: "/fixture/darkbloom-cluster-worker", modelDirectory: "/fixture/model", runtimeBinarySHA256: build,
+                    jacclDevice: "rdma_en\(index + 1)", linkAddress: "192.0.2.\(index + 1)", trust: nil, linkSecretFile: "/fixture/\(id).secret")
+            }, tokenizerFiles: [.init(path: "tokenizer.json", sha256: hash("6"), purpose: .tokenizer)],
+            linkControl: .init(port: 5578, linkEpoch: "00000000-0000-4000-8000-000000000001", edgeID: "00000000-0000-4000-8000-000000000002"))
+        let link = ClusterLinkCosts(probe: ClusterWorkerLinkProbe(transport: "jaccl", keyed: true, pointToPointSmallBytes: 64,
+            pointToPointSmallMicroseconds: 171, pointToPointLargeBytes: 4 << 20, pointToPointLargeMicroseconds: 2_495,
+            allSumSmallBytes: 20_480, allSumSmallMicroseconds: 73, allSumLargeBytes: 10_485_760, allSumLargeMicroseconds: 9_550),
+            measuredUTC: "2026-11-05T09:00:00Z")!
+        let file = try JSONSerialization.jsonObject(with: Data(contentsOf:
+            golden.appendingPathComponent("served/m5ultra-pair-qwen-over-limit-2026-11-05.json"))) as! [String: Any]
+        let records = file["records"] as! [[String: Any]]
+        func entries(_ builds: [String]? = nil, keep: ([String: Any]) -> Bool = { _ in true }) -> [ClusterServedSpeedRecords.Entry] {
+            records.filter(keep).compactMap { r in
+                guard let sample = ClusterServedSample.fromTelemetry(route: r["route"] as? String, promptTokens: r["promptTokens"] as! Int,
+                    cachedTokens: r["cachedTokens"] as! Int, completionTokens: r["completionTokens"] as! Int,
+                    firstTokenMilliseconds: r["firstTokenMilliseconds"] as? Double, decodeTokensPerSecond: r["decodeTokensPerSecond"] as? Double,
+                    outcome: r["outcome"] as! String, finishedAt: r["finishedAt"] as! Double) else { return nil }
+                return .init(setup: .init(modelID: r["modelID"] as! String, mode: r["mode"] as! String, cut: r["cut"] as! String,
+                    ranks: r["ranks"] as? [String], rankBuildSHA256: builds ?? (r["rankBuildSHA256"] as? [String])), sample: sample)
+            }
+        }
+        func decide(_ served: [ClusterServedSpeedRecords.Entry], request: (Int, Int)? = nil) throws
+            -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
+            try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "ultra-a",
+                localProfile: ultra, peerProfile: ultra, layout: layout, promptTokens: request?.0, outputTokens: request?.1,
+                served: served, link: link, environment: [:], benchDebugBuild: false)
+        }
+        // Outside the planned request: a prompt and answer longer than the context the 27B's tensor-parallel allowance
+        // covers (65,536 tokens): the 7 records the production fix removed, 71,545 to 94,423 prompt tokens.
+        let context = layout.tensorParallel?.family.requestAllowance?.maximumContextTokens ?? 0
+        let outside = { (r: [String: Any]) -> Bool in (r["promptTokens"] as! Int) + (r["completionTokens"] as! Int) > context }
+        let current = entries(keep: { ($0["rankBuildSHA256"] as! [String]) == [build, build] })
+        let over = records.filter(outside).count
+        require("served over-limit regression: the fixture is the pair's \(records.count) Qwen records, \(current.count) of this build, \(over) of them over the \(context)-token context",
+            records.count == 32 && current.count == 27 && over == 7 && context == 65_536)
+        let decided: (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?)
+        do { decided = try decide(entries()) } catch {
+            require("served over-limit regression: the 27B is planned on the pair with its \(over) over-limit records among the rest (failed: \(error))", false)
+            return
+        }
+        require("served over-limit regression: the 27B is planned on the pair in tensor parallel and its setup saved (\(decided.result.chosen?.mode.rawValue ?? "none"))",
+            decided.result.chosen?.mode == .tensorParallel && decided.setup != nil)
+        require("served over-limit regression: the plan says in one line that it skipped the 7 records; the other 20 of this build count",
+            decided.lines.contains { $0 == "  Skipped 7 speed records longer than the 65,536 tokens planning covers (the longest was 94,522); the other records still count" }
+                && decided.lines.contains { $0.hasPrefix("  tensor_parallel_v1 cut 0-64|0-64 (ultra-a, ultra-b): 20 pair and 0 alone request(s) ->") })
+        // The records within the limits count exactly as they did: for the same request, the plan and setup are the ones
+        // made from them alone, and they still change it.
+        let request = (decided.result.promptTokens, decided.result.outputTokens)
+        let within = try decide(entries(keep: { !outside($0) }), request: request)
+        let unserved = try decide([], request: request)
+        require("served over-limit regression: for the same request the plan is the one made from the records within the limits alone, which still change it",
+            decided.result == within.result && decided.setup == within.setup && within.result != unserved.result
+                && !within.lines.contains { $0.hasPrefix("  Skipped ") })
+        // Records an earlier build kept: another build's are left out before they are evaluated, and the plan is the one
+        // without their speeds; the same build's (an update that did not change the worker) are skipped as above.
+        let asEarlier = try decide(entries([earlier, earlier]))
+        require("served over-limit regression: kept by another worker build, the records are ignored and the 27B still planned",
+            asEarlier.result.chosen?.mode == .tensorParallel && !asEarlier.lines.contains { $0.hasPrefix("  Skipped ") }
+                && asEarlier.lines.contains { $0.hasPrefix("  32 record(s) from other worker builds ignored") })
+        let asCurrent = try decide(entries([build, build]))
+        require("served over-limit regression: every record as this build's, the 7 are skipped and the 25 others count",
+            asCurrent.result.chosen?.mode == .tensorParallel && asCurrent.lines.contains { $0.hasPrefix("  Skipped 7 speed records longer than") }
+                && asCurrent.lines.contains { $0.hasPrefix("  tensor_parallel_v1 cut 0-64|0-64 (ultra-a, ultra-b): 25 pair and 0 alone request(s) ->") })
+    }
+
     /// GLM-5.3 Flash on two M5 Ultra 256 GB through the guided step's own decision (`ClusterPlacementFlow.decide`:
     /// tensor parallel first wherever it fits): its layout as PlacementChecks retains it, with the NextN layer in the
     /// tensor-parallel plan as the family states it (every rank holds it whole; 2 GiB standing in for its request
@@ -1406,6 +1506,7 @@ import Foundation
         try requestMix(layout: layout, description: description, capability: capability, slowTwo: slowTwo)
         try servedBuildScope(layout: layout, description: description, capability: capability, slowTwo: slowTwo)
         try servedBuildRegression()
+        try servedOverLimitRegression()
 
         // A cut the record does not describe is refused, in words.
         let elsewhere = try ClusterPlacementPlanner.evaluate(devices: slowTwo.reversed(), cuts: [20], mode: .pipeline,

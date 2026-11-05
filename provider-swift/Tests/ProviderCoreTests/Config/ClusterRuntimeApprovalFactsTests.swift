@@ -472,9 +472,14 @@ struct ClusterRuntimeApprovalFactsTests {
         #expect(byHand.map(\.mode) == [.pipeline, .pipeline, .tensorParallel, .tensorParallel])
         #expect(byHand.map(\.schedule) == [1, 2, 1, 2])
         #expect(byHand.map(\.cuts) == [[32], [32], [], []])
+        // Its serial tensor parallel rests on its declared assistant's report (`ClusterPublicModels.qwen27TensorAssistant`).
+        let assistant = ClusterPublicModels.qwen27TensorAssistant
         for q in byHand {
             #expect(q.numericsClasses == [metallibClass, metallibClass])
-            #expect(q.promotable && !q.diverged && q.evidenceSHA256 == ClusterPublicModels.evidenceSHA256 && q.qualifiedAt == "2026-11-03T00:00:00Z")
+            #expect(q.promotable && !q.diverged)
+            #expect(q.mode == .tensorParallel && q.schedule == 1
+                ? q.evidenceSHA256 == assistant.evidenceSHA256 && q.qualifiedAt == assistant.qualifiedAt
+                : q.evidenceSHA256 == ClusterPublicModels.evidenceSHA256 && q.qualifiedAt == "2026-11-03T00:00:00Z")
             #expect(q.requestEnvelope == ClusterPublicModels.requestEnvelope(inputModalities: [], servesMedia: true))
         }
         // As a release candidate, the catalog entry's media where the placement serves media (tensor parallel,

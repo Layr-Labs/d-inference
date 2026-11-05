@@ -24,7 +24,8 @@ import MLX
 //       every position's routed expert sets; `compare` then reports where they first differ.
 //       `--mtp-depth D` (paged; a `--mtp yes` checkpoint) decodes in speculative rounds: D proposals a round
 //       from the replicated trained heads, or with `--mtp-script REPORT` the tokens of an earlier report
-//       (forced acceptance), every `--mtp-misses K`-th moved off so the target rejects it.
+//       (forced acceptance), every `--mtp-misses K`-th moved off so the target rejects it. Tensor-parallel
+//       ranks only (simulated, shard, tp): `full` with `--mtp-depth` is refused before loading.
 //   darkbloom-cluster-tp-check mimo compare --reference FILE --candidate FILE [--bitwise yes|no] [--near-tie-ulps U]
 //   darkbloom-cluster-tp-check mimo allsum [--backend ring|socket|jaccl] [--count N]
 //
@@ -164,6 +165,11 @@ enum MiMoCheck {
               (fields["--mtp-script"] == nil && fields["--mtp-misses"] == nil) || fields["--mtp-depth"] != nil,
               fields["--mtp-misses"].map({ Int($0).map { $0 >= 0 } ?? false }) ?? true else {
             throw Failure("mimo run needs --mode full|simulated|shard|tp, --model-dir, --request, a new --report and bounded options")
+        }
+        // `MiMoV26TextModel.forwardVerifyWindow` throws on a whole model: refuse here, before the load.
+        guard mode != "full" || fields["--mtp-depth"] == nil else {
+            throw Failure("--mtp-depth needs --mode simulated, shard or tp: a speculative round's verify window "
+                + "runs only on a tensor-parallel rank, not on the whole model (--mode full)")
         }
         var speculative: MiMoTensorParallelModel.SpeculativeOptions?
         if let depth = fields["--mtp-depth"].flatMap({ Int($0) }) {

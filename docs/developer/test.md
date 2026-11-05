@@ -130,11 +130,7 @@ native MiMo, desktop and installer gates. `Provider Unit Tests Summary` lists th
 the shards together executed the full list, checks that each Prompt Parity run
 executed every listed test of its suite, merges the shards' coverage
 profiles and uploads measured seconds per suite (`provider-test-shard-weights`).
-When the shards drift apart, replace the weights file with that artifact.
-The suites in `KEPT_APART` never share a shard: a process that ran
-`NemotronSuperManagedSlotTests` and then `Qwen4PagingPrefixIntegrationTests`
-crashed with SIGBUS, and each passes alone. The pair stays apart until the
-Nemotron fixture cleanup is fixed. A
+When the shards drift apart, replace the weights file with that artifact. A
 suite moves from the parallel class to the serial class when it fails or flakes
 in parallel; when in doubt, a suite stays serial.
 
@@ -1584,7 +1580,10 @@ registered artifact for them.
    link and on the measured 29 us link, where tensor parallel is predicted faster
    on the prior alone (`predictedFasterOnPriorOnly`), and for 8,192 + 128 or on a
    109 us link. Requests served in tensor parallel decide both ways on both
-   pairs. `provider-swift/Tests/ClusterPlacementChecks/run.sh` checks that the
+   pairs. Every tensor-parallel plan (forced, placed first, or chosen on served
+   requests) has the serial prefill schedule, the only one MiMo's
+   tensor-parallel runtime loads; the speculative pipeline keeps the one-chunk
+   lookahead. `provider-swift/Tests/ClusterPlacementChecks/run.sh` checks that the
    guided step credits MiMo's rounds from its shipped records and prints the
    fastest-plan and logprob lines. Through the guided step it also checks feature
    parity (`ClusterModeParity`) before the evidence rule:
@@ -1656,7 +1655,8 @@ registered artifact for them.
    rollback). Sampled rounds (temperature 0.8: the heads, and the misses scripted
    from the sampled one-token run) must equal the sampled one-token path bit for
    bit. Two `tp` ranks over the ring must equal `simulated` for the heads, the
-   misses and a sampled run.
+   misses and a sampled run. `--mode full` with `--mtp-depth` must be refused
+   before loading: a verify window runs only on a tensor-parallel rank.
 
    `MIMO_ORACLE_PATHS=paged` runs one matrix.
 

@@ -600,7 +600,9 @@ Counting every key: enter for **Yes** on each Mac and enter for the first
 model on the leader (three keys), plus the macOS prompts [above](#the-steps-once).
 
 Running `darkbloom cluster` again on either Mac opens with the same Darkbloom
-mark, beside "Darkbloom cluster" and the part each Mac plays and the cable
+mark, beside "Darkbloom cluster · Leading Mac" or "Darkbloom cluster · Joining
+Mac" (`ClusterOnboardingDriver.title(_:)`; a first setup, before the two Macs
+pair, says "Darkbloom cluster" alone), then the part each Mac plays and the cable
 ("This Mac leads · the other Mac (Apple M3 Ultra, 256 GB) follows · cable
 ready"; with the name System Settings gives this Mac, "This Mac (Studio A)
 leads · …", so two identical Macs each say which they are), then shows the

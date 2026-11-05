@@ -40,6 +40,8 @@ import Darwin
         linkNotReady()
         memberAgain()
         resumedMacsOpenWithTheMark()
+        // The owner, 2026-11-05: each Mac's part by the mark.
+        roleHeaderChecks()
         leaderAgainServing()
         leaderPairedNotServing()
         noModelOffered()
@@ -3615,7 +3617,7 @@ import Darwin
         let run = TerminalRun(operations(recorder, resume: qwenServing, pairEvents: [], pairResult: .failed([]), choices: switchChoices, thisMacName: "Studio A"))
         expect(run.waitFor(prompt(4)), "pair screen: the list")
         let shown = run.text
-        expect(shown.contains("Darkbloom cluster\nThis Mac (Studio A) leads \u{00B7} the other Mac (Apple M3 Ultra, 256 GB) follows \u{00B7} cable ready\n"),
+        expect(shown.contains("Darkbloom cluster \u{00B7} Leading Mac\nThis Mac (Studio A) leads \u{00B7} the other Mac (Apple M3 Ultra, 256 GB) follows \u{00B7} cable ready\n"),
                "pair screen: the opening: \(shown)")
         expect(shown.contains(servingBlock + "\nModel\n" + qwenList + "  " + prompt(4)), "pair screen: the status, then the models, the serving one preselected: \(shown)")
         expect(!shown.contains("Test a response") && !shown.contains("Stop serving") && !shown.contains("Check memory is freed") && !shown.contains("How it works"),

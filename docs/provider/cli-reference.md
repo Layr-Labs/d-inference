@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-04
+> Last updated: 2026-11-05
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -237,7 +237,8 @@ without one is a leftover, which `darkbloom cluster status` names), `start` star
 (`This Mac is in a two-Mac cluster with the other Mac (…): starting the pair.`):
 
 - In a terminal it opens exactly the screen `darkbloom cluster` shows on this
-  Mac (`ClusterPairCommands.openScreen`).
+  Mac (`ClusterPairCommands.openScreen`), whose title names this Mac's part:
+  "Darkbloom cluster · Leading Mac" or "Darkbloom cluster · Joining Mac".
 - Without a terminal (scripts) it starts the pair's saved model on both Macs
   (on the Mac that follows, through the leading Mac), waits up to 10 minutes
   until it serves or says why not, and ends with a result block shaped like

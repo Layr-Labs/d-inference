@@ -55,9 +55,13 @@ def command(*argv, cwd=None):
 
 
 def toolchain():
-    """The toolchain the products need: the Swift compiler, Xcode and the SDK."""
+    """The toolchain the products need: the Swift compiler, Xcode and the SDK.
+
+    Only the compiler line of `swift --version` counts: its `Target:` line
+    names the host's macOS version, which does not change the products.
+    """
     return {
-        "swift": command("swift", "--version"),
+        "swift": command("swift", "--version").partition("\n")[0],
         "xcode": command("xcodebuild", "-version"),
         "sdk": command("xcrun", "--sdk", "macosx", "--show-sdk-version"),
         "sdk_build": command("xcrun", "--sdk", "macosx", "--show-sdk-build-version"),

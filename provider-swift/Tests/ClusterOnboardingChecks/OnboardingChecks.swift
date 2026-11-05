@@ -205,6 +205,8 @@ import Darwin
         followWaitChecks()
         // 0.10.9 DevNet, pair-2 (f2): the joining Mac's last word is the leading Mac's outcome.
         followFinalOutcomeChecks()
+        // R7-1 (DevNet branch.87): the registration's hand-off is no ✗ on the joining Mac.
+        noFalseCrossChecks()
         // A 0.10.8 user's leader screen: its loading line repeated end to end in a narrow window.
         liveLineChecks()
         // 0.10.8, 2026-11-04: one Mac of a pair updated alone; its part ended every 38 s and no screen named the versions.

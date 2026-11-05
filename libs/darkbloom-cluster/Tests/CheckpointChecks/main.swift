@@ -75,7 +75,8 @@ struct FixtureCheckpoint {
             try manifestRefusals()
             try alignedReadContract()
             try CheckpointPayloadCacheCheck.run()
-            print(#"{"passed":true,"groups":4,"modelExecution":false,"mlxUsed":false,"networkUsed":false}"#)
+            try CheckpointStridedReadCheck.run()
+            print(#"{"passed":true,"groups":5,"modelExecution":false,"mlxUsed":false,"networkUsed":false}"#)
         } catch { fputs("FAIL: \(error)\n", stderr); exit(1) }
     }
 

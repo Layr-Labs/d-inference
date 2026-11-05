@@ -1655,7 +1655,8 @@ registered artifact for them.
    rollback). Sampled rounds (temperature 0.8: the heads, and the misses scripted
    from the sampled one-token run) must equal the sampled one-token path bit for
    bit. Two `tp` ranks over the ring must equal `simulated` for the heads, the
-   misses and a sampled run.
+   misses and a sampled run. `--mode full` with `--mtp-depth` must be refused
+   before loading: a verify window runs only on a tensor-parallel rank.
 
    `MIMO_ORACLE_PATHS=paged` runs one matrix.
 

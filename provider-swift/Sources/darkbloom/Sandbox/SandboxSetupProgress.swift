@@ -159,6 +159,20 @@ struct SandboxSizingPlan: Equatable, Sendable {
     var memoryKeptBytes: Int64
     /// Memory kept for a running inference provider.
     var providerMemoryBytes: Int64
+    /// Each disk and the slots placed on it (`disks`, add-on releases with
+    /// work disks); empty from earlier ones.
+    var disks: [Disk] = []
+
+    struct Disk: Equatable, Sendable {
+        /// Its mount point.
+        var path: String
+        /// The install root's own volume, the internal disk.
+        var rootVolume: Bool
+        var freeBytes: Int64
+        var floorBytes: Int64
+        var linuxSlots: Int
+        var macOSSlots: Int
+    }
 }
 
 extension SandboxSizingPlan {
@@ -178,9 +192,16 @@ extension SandboxSizingPlan {
               let cores = object["cores"] as? Int, let coresKept = object["cores_kept"] as? Int,
               let memory = object["memory_bytes"] as? Int64, let memoryKept = object["memory_kept_bytes"] as? Int64,
               let providerMemory = object["provider_memory_bytes"] as? Int64 else { return nil }
+        let disks = (object["disks"] as? [[String: Any]] ?? []).compactMap { disk -> Disk? in
+            guard let path = disk["path"] as? String, let free = disk["free_bytes"] as? Int64,
+                  let floor = disk["floor_bytes"] as? Int64 else { return nil }
+            return Disk(path: path, rootVolume: disk["root_volume"] as? Bool ?? false, freeBytes: free,
+                        floorBytes: floor, linuxSlots: disk["linux_slots"] as? Int ?? 0,
+                        macOSSlots: disk["macos_slots"] as? Int ?? 0)
+        }
         self.init(message: object["message"] as? String, linux: linux, macOS: macOS, freeBytes: free,
                   floorBytes: floor, cores: cores, coresKept: coresKept, memoryBytes: memory,
-                  memoryKeptBytes: memoryKept, providerMemoryBytes: providerMemory)
+                  memoryKeptBytes: memoryKept, providerMemoryBytes: providerMemory, disks: disks)
     }
 }
 
@@ -461,5 +482,18 @@ enum SandboxTerminal {
         emit("\(question) \(defaultYes ? "[Y/n]" : "[y/N]"): ")
         let answer = readInput()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
         return ["y", "yes"].contains(answer) || (defaultYes && answer.isEmpty)
+    }
+
+    /// Asks for a number from 1 to `count` until it gets one; an empty answer
+    /// or the end of input is 1.
+    static func choose(count: Int, readInput: () -> String? = { readLine() },
+                       emit: (String) -> Void = { write($0) }) -> Int {
+        while true {
+            emit("Choose 1-\(count) [1]: ")
+            guard let answer = readInput()?.trimmingCharacters(in: .whitespacesAndNewlines), !answer.isEmpty else {
+                return 1
+            }
+            if let number = Int(answer), (1...count).contains(number) { return number }
+        }
     }
 }

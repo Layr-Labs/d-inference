@@ -92,6 +92,7 @@ enum SandboxStatusView {
             lines.append("  Free slots: \(slots)")
         }
         if !status.images.isEmpty { lines.append("  Images: \(imagesText(status.images))") }
+        lines += diskLines(status.disks)
         if let host = status.hostID { lines.append("  Host: \(host)") }
         let checked = status.lastUpdateCheck.map {
             "last checked \(darkbloom.Status.compactDuration(max(0, now.timeIntervalSince($0)))) ago"
@@ -183,6 +184,22 @@ enum SandboxStatusView {
         if lowered.hasPrefix("linux") { return "Linux" }
         if lowered.hasPrefix("macos") { return "macOS" }
         return platform
+    }
+
+    /// One `Work disk` line per disk when the add-on uses an external drive
+    /// or more than one disk: its state, free space and slots, and what to do
+    /// when it is not online. None for the internal disk alone.
+    static func diskLines(_ disks: [SandboxAddonStatus.Disk]) -> [String] {
+        guard disks.count > 1 || disks.contains(where: { !$0.rootVolume }) else { return [] }
+        return disks.map { disk in
+            var text = disk.path + (disk.rootVolume ? " (internal)" : "") + ": " + disk.state
+            if let free = disk.freeBytes { text += ", \(max(0, free) / SandboxEligibility.gib) GiB free" }
+            let slots = [("Linux", disk.linuxSlots), ("macOS", disk.macOSSlots)].filter { $0.1 > 0 }
+                .map { "\($0.0) \($0.1)" }
+            if !slots.isEmpty { text += "; slots: " + slots.joined(separator: ", ") }
+            if disk.state != "online", let detail = disk.detail { text += " (\(detail))" }
+            return "  Work disk: " + text
+        }
     }
 
     static func jobs(_ count: Int) -> String { count == 1 ? "1 job" : "\(count) jobs" }

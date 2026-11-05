@@ -467,6 +467,9 @@ public struct ClusterOnboardingModeAdvice: Codable, Sendable, Equatable {
     /// Why the faster mode is recommended, with no figures (owner, 2026-11-05: "it should not show tok/s"): the
     /// speeds only rank the modes, measured or predicted; the words never quote them.
     static let fasterWords = "faster here"
+    /// Why a measured mode is recommended over modes only predicted so far.
+    static let onlyMeasuredWords = "the only one measured on these Macs so far"
+    static let fastestMeasuredWords = "the fastest measured on these Macs so far"
 
     /// The recommendation among `options` (nil with fewer than two). `throughDarkbloom`: the pair serves through Darkbloom,
     /// where requests beyond those a mode serves at once are turned away as "at capacity". `serving`: a model serves now,
@@ -500,6 +503,19 @@ public struct ClusterOnboardingModeAdvice: Codable, Sendable, Equatable {
         let speeds: [Double]? = measured ? open.map { $0.measuredTokensPerSecond! }
             : open.allSatisfy({ $0.predictedTokensPerSecond != nil }) ? open.map { $0.predictedTokensPerSecond! } : nil
         let basis = measured ? "measured" : "predicted"
+        // Some modes measured on these Macs and some not: a measurement outranks a prediction (owner, 2026-11-05: "use
+        // measurements when present"). The planner's figures for a mode that hasn't served can be far off (two M5 Ultras,
+        // Gemma: a pipeline predicted at 152 tok/s served 64, beside tensor parallel measured at 111), so the fastest
+        // measured mode is recommended until the others have served too. Through Darkbloom a mode that serves more at
+        // once still comes first, which needs no speed.
+        let measuredOpen = open.filter { $0.measuredTokensPerSecond != nil }
+        if !measured, let best = measuredOpen.max(by: { $0.measuredTokensPerSecond! < $1.measuredTokensPerSecond! }) {
+            if throughDarkbloom, lanesDiffer, let most = mostLanes, lanes(most)! > lanes(best)! {
+                return .init(mode: most.mode, reason: atOnce(most) + "; the others take fewer, and Darkbloom turns the rest away")
+            }
+            let lanesNote = lanesKnown && lanes(best)! > 1 ? " and " + atOnce(best) : ""
+            return .init(mode: best.mode, reason: (measuredOpen.count == 1 ? Self.onlyMeasuredWords : Self.fastestMeasuredWords) + lanesNote)
+        }
         if let speeds {
             let fastest = speeds.indices.max { speeds[$0] < speeds[$1] }!
             let runnerUp = speeds.indices.filter { $0 != fastest }.max { speeds[$0] < speeds[$1] }!
@@ -530,6 +546,9 @@ public struct ClusterOnboardingModeAdvice: Codable, Sendable, Equatable {
         let atOnce = reason.range(of: #"up to (\d+) requests at once"#, options: .regularExpression)
             .map { String(reason[$0]).replacingOccurrences(of: " requests", with: "") }
         if reason.hasPrefix("faster here") { return atOnce.map { "faster, \($0)" } ?? "faster here" }
+        if reason.hasPrefix(Self.onlyMeasuredWords) || reason.hasPrefix(Self.fastestMeasuredWords) {
+            return atOnce.map { "measured, \($0)" } ?? "measured here"
+        }
         if let atOnce, reason.hasPrefix("serves") { return atOnce }
         if reason.hasPrefix("the only one that fits") { return "the only one that fits" }
         if reason.hasPrefix("the only one Darkbloom") { return "the only one served publicly" }

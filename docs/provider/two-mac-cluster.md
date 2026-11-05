@@ -343,6 +343,11 @@ the same words:
   wins, because Darkbloom turns away what a busy pair can't take; serving
   locally only, the mode clearly faster on this pair wins (measured, else the
   planner's prediction; within 5 % counts as the same speed).
+- A measurement outranks a prediction: while some modes have served on this
+  pair and others haven't, the fastest measured one is recommended ("the only
+  one measured on these Macs so far"), because the planner's figure for a mode
+  that hasn't served can be far off (two M5 Ultras, Gemma: a pipeline predicted
+  at 152 tokens/s served 64, beside tensor parallel measured at 111).
 - Nothing fits, or there is no measured or predicted speed and no difference
   in requests at once: "No recommendation for <model> on these two Macs:
   <why>.", nothing is

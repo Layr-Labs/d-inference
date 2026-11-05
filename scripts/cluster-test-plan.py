@@ -13,7 +13,9 @@ runner under libs/darkbloom-cluster/Tests.
 
 Lanes: `blocking` (Cluster Runtime Tests), `nonblocking` (Cluster GPU Tests,
 reported but not failing the workflow) and `focused` (Cluster Focused Checks,
-the model-free runner scripts).
+the model-free runner scripts). In a macOS VM on an M1 to M4 host, the
+`nonblocking` processes get the host GPU's architecture name for MLX
+(`architecture_environment`).
 
 Subcommands:
   run LANE SHARD     run the selections of one shard, each in its own process
@@ -283,6 +285,88 @@ def environment(selection):
     return {**values, **PROCESS_ENVIRONMENT, **selection.environment}
 
 
+# MLX picks kernels by Metal's name for the GPU (`applegpu_g15d`: generation 15,
+# `d` for an Ultra; mlx/backend/metal/device.cpp), and the GPU lane's kernel
+# tests expect its choices for the GPU they run on. In a macOS VM, Metal names
+# the paravirtual GPU `air64_*` (`air64_v27`): MLX reads generation 2 from it
+# and chooses as for a GPU older than the M1, though the host's GPU runs the
+# kernels. The guest's CPU brand string names the host's chip, so there the GPU
+# lane's processes start with MLX_METAL_GPU_ARCH set to the host GPU's name. The
+# other lanes pass in a VM with MLX's own reading and keep it.
+HOST_ARCHITECTURE_LANES = ("nonblocking",)
+GENERIC_ARCHITECTURE_PREFIX = "air64_"
+# Metal's name for each M-series GPU on a Mac: `g` for the base chip, `s` for the
+# Pro and the Max, `d` for the Ultra. (A comment in MLX's device.cpp puts the Pro
+# with `g`, but Pro chips report `s`: the M4 Pro is `applegpu_g16s`.)
+HOST_GPU_ARCHITECTURES = {
+    "M1": "applegpu_g13g", "M1 Pro": "applegpu_g13s", "M1 Max": "applegpu_g13s", "M1 Ultra": "applegpu_g13d",
+    "M2": "applegpu_g14g", "M2 Pro": "applegpu_g14s", "M2 Max": "applegpu_g14s", "M2 Ultra": "applegpu_g14d",
+    "M3": "applegpu_g15g", "M3 Pro": "applegpu_g15s", "M3 Max": "applegpu_g15s", "M3 Ultra": "applegpu_g15d",
+    "M4": "applegpu_g16g", "M4 Pro": "applegpu_g16s", "M4 Max": "applegpu_g16s",
+    "M5": "applegpu_g17g", "M5 Pro": "applegpu_g17s", "M5 Max": "applegpu_g17s", "M5 Ultra": "applegpu_g17d",
+}
+# A VM guest's `machdep.cpu.brand_string` names the host's chip: `Apple M3 Ultra (Virtual)`.
+VIRTUAL_CPU_BRAND = re.compile(r"Apple (M\d+(?: Pro| Max| Ultra)?) \(Virtual\)")
+# From generation 17 (the M5), MLX turns on its NAX kernels (Metal 4 tensor
+# operations; `is_nax_available` in device.cpp). A VM's GPU cannot load them
+# (`Unable to load kernel steel_gemm_fused_nax_...`), so a VM on an M5 keeps
+# Metal's name.
+NAX_GENERATION = 17
+
+
+def host_gpu_architecture(brand):
+    """Metal's name for the host's GPU, from a VM guest's CPU brand string; None for any other string."""
+    match = VIRTUAL_CPU_BRAND.fullmatch(brand)
+    return HOST_GPU_ARCHITECTURES.get(match.group(1)) if match else None
+
+
+def command_output(argv):
+    """The command's stripped output; "" when it cannot run or fails."""
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def metal_architecture():
+    """The default GPU's `MTLDevice.architecture.name`, which MLX reads."""
+    return command_output(["swift", "-e", 'import Metal; print(MTLCreateSystemDefaultDevice()?.architecture.name ?? "")'])
+
+
+def cpu_brand():
+    return command_output(["/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string"])
+
+
+def architecture_environment(lane):
+    """MLX_METAL_GPU_ARCH for a lane's processes: the host GPU's name in a VM
+    whose GPU Metal names generically, unless the caller set the variable (an
+    empty value keeps Metal's name). Nothing on a Mac, for an unknown chip or
+    for a host whose name would turn on MLX's NAX kernels."""
+    if lane not in HOST_ARCHITECTURE_LANES or "MLX_METAL_GPU_ARCH" in os.environ:
+        return {}
+    metal = metal_architecture()
+    if not metal:
+        print("::warning title=MLX GPU architecture::Metal's name for the GPU is unavailable (`swift -e` failed); "
+              "MLX reads its own", flush=True)
+        return {}
+    if not metal.startswith(GENERIC_ARCHITECTURE_PREFIX):
+        return {}
+    brand = cpu_brand()
+    host = host_gpu_architecture(brand)
+    if host is None:
+        print(f"::warning title=MLX GPU architecture::Metal names this VM's GPU {metal}, and the CPU brand "
+              f"{brand!r} names no chip in HOST_GPU_ARCHITECTURES; MLX keeps {metal}", flush=True)
+        return {}
+    if int(host[-3:-1]) >= NAX_GENERATION:
+        print(f"::notice title=MLX GPU architecture::MLX keeps {metal}: {host}, the host GPU of {brand!r}, "
+              "would turn on MLX's NAX kernels, which this VM's GPU cannot load", flush=True)
+        return {}
+    print(f"::notice title=MLX GPU architecture::MLX_METAL_GPU_ARCH={host} (the host GPU of {brand!r}); "
+          f"Metal names this VM's GPU {metal}", flush=True)
+    return {"MLX_METAL_GPU_ARCH": host}
+
+
 def shards(lane):
     return sorted({selection.shard for selection in SELECTIONS if selection.lane == lane})
 
@@ -292,12 +376,13 @@ def run(lane, shard):
     if not selected:
         raise ValueError(f"No selections in {lane} shard {shard}")
     output = Path(tempfile.mkdtemp(prefix="cluster-runner-output-"))
+    architecture = architecture_environment(lane)
     rows = []
     for selection in selected:
         cwd, argv = command(selection, output)
         print(f"::group::{selection.name}", flush=True)
         started = time.monotonic()
-        status = subprocess.run(argv, cwd=cwd, env=environment(selection)).returncode
+        status = subprocess.run(argv, cwd=cwd, env={**environment(selection), **architecture}).returncode
         seconds = time.monotonic() - started
         print("::endgroup::", flush=True)
         rows.append((selection.name, status, seconds))

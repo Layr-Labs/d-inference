@@ -1,0 +1,5 @@
+### Cluster GPU Tests tell MLX the host's GPU in a macOS VM
+
+- In a macOS VM, Metal names the paravirtual GPU `air64_*` (for example `air64_v27`), and MLX chose kernels as for a GPU older than the M1. `scripts/cluster-test-plan.py` now starts each Cluster GPU Tests process in such a VM with `MLX_METAL_GPU_ARCH` set to the host GPU's name, from the chip that the guest's CPU brand string names (`Apple M3 Ultra (Virtual)`: `applegpu_g15d`), unless the variable is already set. A Mac, a VM whose GPU Metal names `applegpu_*`, an unknown chip (logged) and the other cluster lanes keep Metal's name.
+- A VM on an M5 keeps Metal's name too: from generation 17, MLX turns on its NAX kernels, which a VM's GPU cannot load (`Unable to load kernel steel_gemm_fused_nax_...` in a VM on an M5 Max).
+- In a VM on an M3 Ultra, the variable makes `qwen-tp-mtp-gpu-wide-kernel` and `qwen-tp-wide-bench` pass as on the Mac. `qwen-tp-aqv-gpu-fused-kernels`, `qwen-tp-batch-gpu-paged-transient`, `glm53-depth-invariance-widths` and `glm53-window-width-census` still fail; they also fail on that M3 Ultra without a VM.

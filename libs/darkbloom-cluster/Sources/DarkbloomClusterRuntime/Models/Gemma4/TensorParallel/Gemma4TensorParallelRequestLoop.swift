@@ -123,14 +123,9 @@ struct Gemma4TensorParallelRequestLoop {
             let steps = TensorParallelOneTokenLoop<Step>(
                 outputCount: request.outputCount, stopTokenIDs: request.stopTokenIDs, pipelined: pipelined,
                 step: { current, stop in
-                    if pipelined {
-                        return built(try session.submitDecode(after: current.selected, check: check) {
-                            choice.build($0, stop: stop)
-                        })
-                    }
-                    return built(try session.decode(try choice.read(current.selected).token, check: check) {
-                        choice.build($0, stop: stop)
-                    })
+                    let select: (MLXArray) -> MLXArray = { choice.build($0, stop: stop) }
+                    return try built(pipelined ? session.submitDecode(after: current.selected, check: check, select: select)
+                        : session.decode(choice.read(current.selected).token, check: check, select: select))
                 },
                 read: { current in
                     let agreed = try choice.read(current.selected)

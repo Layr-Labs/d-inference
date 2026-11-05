@@ -152,15 +152,9 @@ final class Gemma4TensorParallelPagedSession {
             throw ProbeError("Gemma tensor-parallel decode step differs from its request or pages")
         }
         let input = MLXArray([Int32(token)]).reshaped([1, 1])
-        let text = model.textModel
         var logits: MLXArray?
-        let stride = Gemma4TensorParallelModel.layerStride ?? Gemma4TensorParallelModel.decodeLayerStride
         let output = try state.run(tokenCount: 1, check: check, forward: { caches, _ in
-            let row = Gemma4LayerSubmission.$stride.withValue(stride) {
-                Gemma4BatchDecodeScope.withDecodeFrame(tokens: input, enabled: true) {
-                    text(input, cache: caches.map { $0 as! any KVCache })[0..., -1, 0...]
-                }
-            }
+            let row = decodeRow(input, caches: caches)
             logits = row
             return select(row)
         }, validateOutput: { _ in })
@@ -182,21 +176,26 @@ final class Gemma4TensorParallelPagedSession {
             throw ProbeError("Gemma tensor-parallel decode step differs from its request or pages")
         }
         let input = selected[0 ..< 1].asType(.int32).reshaped([1, 1])
-        let text = model.textModel
         var logits: MLXArray?
-        let stride = Gemma4TensorParallelModel.layerStride ?? Gemma4TensorParallelModel.decodeLayerStride
         let output = try state.submit(tokenCount: 1, check: check, forward: { caches, _ in
-            let row = Gemma4LayerSubmission.$stride.withValue(stride) {
-                Gemma4BatchDecodeScope.withDecodeFrame(tokens: input, enabled: true) {
-                    text(input, cache: caches.map { $0 as! any KVCache })[0..., -1, 0...]
-                }
-            }
+            let row = decodeRow(input, caches: caches)
             logits = row
             return select(row)
         })
         guard let logits else { throw ProbeError("Gemma tensor-parallel decode produced no logits") }
         try Self.validate(logits, rows: 1, model: model)
         return (logits, output)
+    }
+
+    /// One decode row's logits on `input` (`[1, 1]`) at the decode layer
+    /// stride: `decode`'s and `submitDecode`'s forward.
+    private func decodeRow(_ input: MLXArray, caches: [any CBv2AttendingLayerCache]) -> MLXArray {
+        let stride = Gemma4TensorParallelModel.layerStride ?? Gemma4TensorParallelModel.decodeLayerStride
+        return Gemma4LayerSubmission.$stride.withValue(stride) {
+            Gemma4BatchDecodeScope.withDecodeFrame(tokens: input, enabled: true) {
+                model.textModel(input, cache: caches.map { $0 as! any KVCache })[0..., -1, 0...]
+            }
+        }
     }
 
     /// One decode step of each of `sessions` (distinct requests on one model's

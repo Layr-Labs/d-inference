@@ -6693,10 +6693,17 @@ equals that row's alone; the agreement binds `moe-rows-one-collective-v1`.
 Mixed text/media rows retain their own original fused RoPE or MRoPE calculation.
 
 A decode step is submitted while it is built. `QwenTensorParallelBatchSession`
-decodes under `Qwen35LayerSubmission` with a stride of one layer
-(`decodeLayerStride`): after each decoder layer the forward submits what it has
-built (`asyncEval`), so that layer's kernels and collectives run while the host
-builds the next. The driver builds a step only after the previous step's tokens
+decodes under `Qwen35LayerSubmission` with a stride of eight layers
+(`QwenTensorParallelLaunch.decodeLayerStride`): after every eighth decoder layer
+the forward submits what it has built (`asyncEval`), so those layers' kernels and
+collectives run while the host builds the next eight. One layer a submission
+paid a commit and a GPU wake-up per layer: on two M5 Ultra 256 GB over JACCL
+(27B, sealed sums, synthetic 64-token prompt, 128-256 output tokens) a width-one
+step took 21.4 ms at stride 1 and 20.2-20.3 ms at 8 to 16 (25.1 against 19.9-20.4
+ms with the host loaded by other builds), a width-four step 35.4 against
+29.5-29.9 ms, and stride 32 was slower again (21.2 ms). Every stride retired the
+same tokens on both ranks. The stride is not a launch option: it changes only
+when work reaches the GPU. The driver builds a step only after the previous step's tokens
 are read (a plain step's plan is made before them, below), so the request-owned
 path does not build one step ahead as the retired single-lane loop did;
 submitting by layer hides the graph build instead.
@@ -6819,9 +6826,10 @@ earlier build refuses to load. Tokens, logits and native state are unchanged:
 the control limbs are exact in FP32, each element of the sum is added alone,
 and the collective payload quote covers the longer frame
 (`QwenTensorParallelBatchBudget`). `darkbloom-cluster-tp-check qwen-decode`
-(`QwenTensorParallelDecodeBench`) times the driver's decode on two ranks over
-the loopback ring with the control exchanged or folded and checks that both
-retire the same tokens.
+(`QwenTensorParallelDecodeBench`) times the driver's decode on two ranks, over
+the loopback ring or socket or, with `--backend jaccl`, over a pair's JACCL
+link, with the control exchanged or folded, and checks that both retire the
+same tokens; `--layer-strides 1,8,16` compares decode layer strides in one run.
 
 The batch path can restore mutually held original-grid prefix snapshots into
 fresh request-owned state. TP speculative rounds remain a separate integration. Installed owners propagate a priced

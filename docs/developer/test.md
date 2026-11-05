@@ -1580,7 +1580,10 @@ registered artifact for them.
    link and on the measured 29 us link, where tensor parallel is predicted faster
    on the prior alone (`predictedFasterOnPriorOnly`), and for 8,192 + 128 or on a
    109 us link. Requests served in tensor parallel decide both ways on both
-   pairs. `provider-swift/Tests/ClusterPlacementChecks/run.sh` checks that the
+   pairs. Every tensor-parallel plan (forced, placed first, or chosen on served
+   requests) has the serial prefill schedule, the only one MiMo's
+   tensor-parallel runtime loads; the speculative pipeline keeps the one-chunk
+   lookahead. `provider-swift/Tests/ClusterPlacementChecks/run.sh` checks that the
    guided step credits MiMo's rounds from its shipped records and prints the
    fastest-plan and logprob lines. Through the guided step it also checks feature
    parity (`ClusterModeParity`) before the evidence rule:

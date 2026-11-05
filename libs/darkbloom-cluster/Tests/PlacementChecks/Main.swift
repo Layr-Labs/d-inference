@@ -52,6 +52,7 @@ import Foundation
             try checkTensorParallel(inputs, golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkMeasuredShareSteps(inputs, checks)
             try checkServedBuildScope(inputs, golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
+            try checkServedOverLimit(inputs, golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkTensorParallelFeasibility(inputs, checks)
             try checkTensorParallelRequestAllowance(inputs, golden: URL(fileURLWithPath: CommandLine.arguments[2]), checks)
             try checkQwenVisionResidency(inputs, golden: URL(fileURLWithPath: CommandLine.arguments[2]), checks)

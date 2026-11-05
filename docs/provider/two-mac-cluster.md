@@ -161,6 +161,11 @@ follows the start from the cluster's status the two Macs exchange over the cable
    (…): its screen shows the choices."; after a failed test, "To test again, run
    `darkbloom cluster` on the other Mac (…) and choose the model it serves."
 
+Running `darkbloom cluster` on the Mac that joined while the leading Mac runs a
+start (a model or mode change, or a Retry) follows that start the same way: the
+steps, the bytes bar, one row per Mac and the final outcome. It no longer shows
+"This Mac runs its part by itself … Close" while the other Mac loads.
+
 q leaves at any time: "The pair keeps going; run `darkbloom cluster` here to see
 it." The follow is bounded like the leader's start: 15 minutes for the start to
 begin, then 15 minutes for each of its stages (loading; the test and the check
@@ -536,6 +541,21 @@ once; one planned with the one-chunk lookahead takes one at a time
    reason the Macs know ends the wait sooner (a missing login at once, others
    once the wait has run 90 s), with the choices [above](#the-steps-once). There
    is no local API in this mode.
+
+   The wait says only what the Macs report at that moment. "isn't verified by
+   Apple yet" appears only while a Mac reports its App Attest authorization
+   missing. A coordinator trust word on two authorized Macs reads "The
+   coordinator didn't accept the pair yet (<word>)". When the 15 minutes run out
+   with both Macs registered and nothing reported, the ✗ says "The coordinator
+   didn't pair both Macs within 15 minutes; both are registered with it, and it
+   gave no reason". When the coordinator's reason is known (for example a model
+   its catalog doesn't list), that reason is shown instead. q or Esc leaves this
+   wait: "Left the wait: both Macs stay registered and the pair keeps trying to
+   be paired by the coordinator by itself. Check with `darkbloom status`." A
+   `darkbloom cluster stop` from any window or either Mac ends the wait at once
+   with "Stopped (by `darkbloom cluster stop` on one of the Macs): the pair
+   isn't starting any more." The Mac that joined says the same once the leading
+   Mac's status has stayed stopped for 20 seconds.
 
 An approval ends at its `not_after`, which the operator sets; one derived from
 a release ends 90 days after that release registered

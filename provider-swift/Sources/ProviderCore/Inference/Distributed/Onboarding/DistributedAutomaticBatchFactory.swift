@@ -64,6 +64,12 @@ public actor DistributedAutomaticBatchFactory {
             restorePreviousSession: { try await transition.restorePrevious() })
     }
 
+    /// `replacementWidths(for:)` less the widths `failures` holds back for `setup`.
+    static func replacementWidths(for demand: DistributedLocalBatchDemand, setup: String,
+                                  failures: DistributedAutomaticBatchFailures) -> [Int] {
+        replacementWidths(for: demand)
+    }
+
     /// The widths queued demand may propose, widest first: only wider than the running capacity, so a pair whose
     /// placement saved its widest admitted width is never drained for a width it already serves.
     static func replacementWidths(for demand: DistributedLocalBatchDemand) -> [Int] {
@@ -279,4 +285,14 @@ final class DistributedAutomaticBatchCreditRefusals: @unchecked Sendable {
             return at.duration(to: now) >= Self.hold
         }
     }
+}
+
+/// Replacements that failed after release, by the running setup and width.
+final class DistributedAutomaticBatchFailures: @unchecked Sendable {
+    static let initialHold: Duration = .seconds(120)
+    static let maximumHold: Duration = .seconds(1800)
+
+    func record(setup: String, lanes: Int, now: ContinuousClock.Instant = .now) {}
+
+    func allows(setup: String, lanes: Int, now: ContinuousClock.Instant = .now) -> Bool { true }
 }

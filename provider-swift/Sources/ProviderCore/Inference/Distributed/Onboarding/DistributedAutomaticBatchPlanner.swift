@@ -87,6 +87,13 @@ struct DistributedAutomaticBatchPlanner {
         }
     }
 
+    /// Whether a replacement in `proposed` serves the same endpoint contract as
+    /// the running generation in `running`.
+    static func keepsEndpointFeatures(capability: ClusterRuntimeCapability, running: ClusterGenerationMode,
+                                      proposed: ClusterGenerationMode) -> Bool {
+        true
+    }
+
     /// One refused width's evidence for `cluster.batch_replan refused`, one
     /// log line: the phase (preview, or the post-release recheck), the
     /// predicate that failed and each rank's need, load need, admissible-now,

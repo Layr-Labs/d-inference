@@ -6,6 +6,7 @@ import DarkbloomClusterProcess
 import DarkbloomClusterProtocol
 import DarkbloomClusterRemote
 import DarkbloomClusterSecurity
+import ProviderCoreFoundation
 
 /// The wizard's operations as the installed command runs them. Each one is
 /// the function behind an existing `darkbloom cluster` subcommand, a
@@ -307,7 +308,7 @@ final class LiveContext: @unchecked Sendable {
         guard let handle = FileHandle(forReadingAtPath: path) else { throw ClusterSetupFailure("this Mac's cluster worker cannot be read") }
         defer { try? handle.close() }
         var hasher = SHA256()
-        while let chunk = try handle.read(upToCount: 4 << 20), !chunk.isEmpty { hasher.update(data: chunk) }
+        while let chunk = try handle.readDrained(upToCount: 4 << 20), !chunk.isEmpty { hasher.update(data: chunk) }
         let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
         lock.withLock { workerDigest = (key, digest) }
         return digest

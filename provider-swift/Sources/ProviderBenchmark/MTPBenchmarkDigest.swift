@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import ProviderCore
 
 enum MTPBenchmarkDigest {
     private static let artifactDomain = Data(
@@ -15,7 +16,7 @@ enum MTPBenchmarkDigest {
         let handle = try FileHandle(forReadingFrom: file)
         defer { try? handle.close() }
         var hasher = SHA256()
-        while let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty {
+        while let chunk = try handle.readDrained(upToCount: 1024 * 1024), !chunk.isEmpty {
             hasher.update(data: chunk)
         }
         return hex(hasher.finalize())

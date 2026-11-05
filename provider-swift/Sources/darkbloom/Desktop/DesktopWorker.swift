@@ -107,7 +107,7 @@ final class DesktopWorker: @unchecked Sendable {
             }
             var lastProgress = Date.distantPast
             do {
-              while let bytes = try output.fileHandleForReading.read(upToCount: 4096), !bytes.isEmpty {
+              while let bytes = try output.fileHandleForReading.readDrained(upToCount: 4096), !bytes.isEmpty {
                 buffer.append(bytes)
                 let now = Date()
                 if now.timeIntervalSince(lastProgress) >= 0.25 {

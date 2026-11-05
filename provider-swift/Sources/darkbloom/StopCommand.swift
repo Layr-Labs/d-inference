@@ -18,6 +18,43 @@ struct Stop: AsyncParsableCommand {
     @Flag(help: "On a Mac in a two-Mac cluster: stop single-Mac serving on this Mac only; the pair keeps running.")
     var solo = false
 
+    @Flag(help: "With --solo, when single-Mac serving runs on the other Mac instead: stop it there without asking.")
+    var yes = false
+
+    /// The other Mac's single-Mac serving, when `stop --solo` finds none here.
+    static func otherMacSolo(_ found: [ClusterOnboardingSoloServing]) -> ClusterOnboardingSoloServing? {
+        found.first { $0.mac != ClusterOnboardingMacName.this }
+    }
+
+    static func otherMacLines(_ solo: ClusterOnboardingSoloServing, cli: String) -> [String] {
+        ["Single-Mac serving doesn't run on this Mac; it runs on \(solo.mac)" + (solo.pid.map { " (process \($0))" } ?? "") + ".",
+         "Stop it there? `\(cli) stop --solo --yes` does it without asking."]
+    }
+
+    static func otherMacDeclined(_ solo: ClusterOnboardingSoloServing, cli: String) -> String {
+        "Nothing was stopped. On \(solo.mac), run `\(cli) stop --solo`."
+    }
+
+    /// `stop --solo` where none runs here: single-Mac serving on the other Mac is named and stopped there with consent
+    /// (`--yes` for scripts). True when it handled the stop (stopped there); throws when declined or it failed.
+    private func stopOnOtherMac() throws -> Bool {
+        guard solo, let actions = ClusterPairActions.live(config: nil),
+              let there = Self.otherMacSolo(actions.soloServing()) else { return false }
+        let cli = BuildEnvironment.current.cliName
+        let lines = Self.otherMacLines(there, cli: cli)
+        print(lines[0])
+        var go = yes
+        if !go, ClusterPairCommands.isTerminal() {
+            print(lines[1] + " [y/N]: ", terminator: ""); fflush(stdout)
+            go = (readLine() ?? "").trimmingCharacters(in: .whitespaces).lowercased().hasPrefix("y")
+        }
+        guard go else { print(Self.otherMacDeclined(there, cli: cli)); throw ExitCode.failure }
+        switch actions.stopSoloServing() {
+        case .success(let said): for line in said { print(line) }; return true
+        case .failure(let failure): for line in failure.lines { print(line) }; throw ExitCode.failure
+        }
+    }
+
     /// What `darkbloom stop` does on a Mac in a two-Mac cluster.
     enum PairedStop: Equatable {
         /// Stop the pair on both Macs (`ClusterPairCommands.stop`).
@@ -74,8 +111,11 @@ struct Stop: AsyncParsableCommand {
                 throw ExitCode.failure
             }
         }
+        // Stopping single-Mac serving here: a choice of it made before no longer stands.
+        if pair.paired { Start.clearSoloChoice() }
         let wasLoaded = LaunchAgent.isLoaded()
         if pair.paired, !wasLoaded, !uninstall {
+            if stop == .stopSingleMac, !pair.pairingUnreadable, try stopOnOtherMac() { return }
             if stop != .stopHere { for line in pair.soloStopNothing { print(line) } }
             else if !pair.started { print("Nothing serves on this Mac: nothing was stopped.") }
             return

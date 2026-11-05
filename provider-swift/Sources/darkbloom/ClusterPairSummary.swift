@@ -298,7 +298,9 @@ struct ClusterPairSummary: Sendable, Equatable {
 
     /// `darkbloom stop --solo` where no single-Mac serving runs on a Mac in a cluster.
     var soloStopNothing: [String] {
-        ["`\(Self.cli) stop --solo` stops single-Mac serving, and none runs on this Mac: nothing was stopped.", soloLeftPair("stop")]
+        ["`\(Self.cli) stop --solo` stops single-Mac serving, and none runs on this Mac: nothing was stopped.",
+         pairingUnreadable ? Self.checkPairingLine
+            : "The pair keeps running. If single-Mac serving blocks it, it runs on \(otherMac): run `\(Self.cli) stop --solo` there."]
     }
 
     /// After `darkbloom stop --solo` (or `--uninstall`) stopped single-Mac serving on a Mac in a cluster.

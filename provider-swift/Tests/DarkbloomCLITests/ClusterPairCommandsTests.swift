@@ -88,10 +88,21 @@ struct ClusterPairHabitCommandsTests {
         #expect(Stop.pairedStop(pair(), solo: true, uninstall: false) == .stopSingleMac)
         #expect(Stop.pairedStop(pair(), solo: false, uninstall: true) == .stopSingleMac)
         #expect(Stop.pairedStop(.notPaired, solo: false, uninstall: false) == .stopSingleMac)
+        // Never plain `stop` here (solo-steps-failed.md §3.3: it stops the pair and leaves single-Mac serving running).
         #expect(pair().soloStopNothing == [
             "`darkbloom stop --solo` stops single-Mac serving, and none runs on this Mac: nothing was stopped.",
-            "The pair was not stopped; `darkbloom stop` stops both Macs.",
+            "The pair keeps running. If single-Mac serving blocks it, it runs on \(otherMac): run `darkbloom stop --solo` there.",
         ])
+        let found = [ClusterOnboardingSoloServing(mac: "this Mac", pid: nil),
+                     ClusterOnboardingSoloServing(mac: "the other Mac (Apple M5 Max, 128 GB)", pid: 68099)]
+        #expect(Stop.otherMacSolo(found) == found[1])
+        #expect(Stop.otherMacSolo([found[0]]) == nil)
+        #expect(Stop.otherMacLines(found[1], cli: "darkbloom-dev") == [
+            "Single-Mac serving doesn't run on this Mac; it runs on the other Mac (Apple M5 Max, 128 GB) (process 68099).",
+            "Stop it there? `darkbloom-dev stop --solo --yes` does it without asking.",
+        ])
+        #expect(Stop.otherMacDeclined(found[1], cli: "darkbloom-dev")
+            == "Nothing was stopped. On the other Mac (Apple M5 Max, 128 GB), run `darkbloom-dev stop --solo`.")
         #expect(pair().stopAddendum == [
             "This Mac serves in a two-Mac cluster with \(otherMac): it leads; Qwen 3.8 27B through Darkbloom.",
             "The pair was not stopped; `darkbloom stop` stops both Macs.",
@@ -110,6 +121,20 @@ struct ClusterPairHabitCommandsTests {
     @Test("start on a Mac in a cluster starts the pair: the cluster's screen in a terminal, the saved model otherwise")
     func startDecision() throws {
         #expect(Start.pairStart(pair(), solo: false, terminal: true) == .openScreen)
+        // The single-Mac ✗'s "Then run `darkbloom start`" on a started pair that doesn't run (#1793's `pairRunning` false)
+        // while single-Mac serving blocks it: the pair's start, never "Serve on this Mac alone" (it would recreate the block).
+        var blocked = pair()
+        blocked.pairRunning = false
+        blocked.otherMacReachable = true
+        for terminal in [true, false] {
+            let start = Start.pairStart(blocked, solo: false, terminal: terminal, soloBlocked: true)
+            #expect(start == (terminal ? .openScreen : .startPair), "terminal \(terminal): \(start)")
+        }
+        #expect(Start.pairStart(blocked, solo: false, terminal: true) == .choose(aloneByDefault: false), "unblocked: #1793's choice")
+        var silent = blocked
+        silent.otherMacReachable = false
+        #expect(Start.pairStart(silent, solo: false, terminal: false, soloBlocked: true) == .serveAlone(note: silent.servingAloneLine),
+                "the other Mac gone: #1793's serve alone stays")
         #expect(Start.pairStart(pair(role: .member), solo: false, terminal: false) == .startPair)
         // A stopped pair doesn't run here: a script serves this Mac alone (`UnpairedMacServesNormallyTests`).
         #expect(Start.pairStart(pair(role: .member, started: false, serviceRunning: false), solo: false, terminal: false)
@@ -768,9 +793,28 @@ struct ClusterPairControlTests {
         }
         #expect(lines(result?.standardOutputContent) == [
             "`darkbloom stop --solo` stops single-Mac serving, and none runs on this Mac: nothing was stopped.",
-            "The pair was not stopped; `darkbloom stop` stops both Macs.", ""])
+            "The pair keeps running. If single-Mac serving blocks it, it runs on \(otherMac): run `darkbloom stop --solo` there.", ""])
         let calls = pairActionCalls(text(result?.standardErrorContent))
         #expect(calls.isEmpty, "\(calls)")
+    }
+
+    /// solo-steps-failed.md §3.3: `stop --solo` run on the wrong Mac finds single-Mac serving on the other Mac and stops it
+    /// there with consent (`--yes` here); never plain `stop`, and the pair isn't touched.
+    @Test("`darkbloom stop --solo --yes` on the wrong Mac stops single-Mac serving on the other Mac")
+    func stopSoloOnTheWrongMac() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent, \.standardErrorContent]) {
+            var actions = pairActions()
+            actions.soloServing = { [ClusterOnboardingSoloServing(mac: "the other Mac (Apple M5 Max, 128 GB)", pid: 68099)] }
+            actions.stopSoloServing = {
+                FileHandle.standardError.write(Data("pair action: stopSoloServing\n".utf8))
+                return .success(["\u{2713} Stopped single-Mac serving on the other Mac (Apple M5 Max, 128 GB)."])
+            }
+            try await exitWithPair(servingPair(), actions: actions) { _ in try await runCLICommand(Stop.self, ["stop", "--solo", "--yes"]) }
+        }
+        #expect(lines(result?.standardOutputContent) == [
+            "Single-Mac serving doesn't run on this Mac; it runs on the other Mac (Apple M5 Max, 128 GB) (process 68099).",
+            "\u{2713} Stopped single-Mac serving on the other Mac (Apple M5 Max, 128 GB).", ""])
+        #expect(pairActionCalls(text(result?.standardErrorContent)) == ["stopSoloServing"])
     }
 
     @Test("`darkbloom start` in a terminal opens exactly what `darkbloom cluster` runs on this Mac")

@@ -1,5 +1,0 @@
-### A pair keeps a model on its list after a request longer than the model's limit
-
-- A pair no longer loses a model from its list after serving a request longer than the model's limit. On two M5 Ultras, Qwen 3.8 27B vanished from `darkbloom cluster`, and `darkbloom start` could not start it, after the pair served prompts of 71,545 to 94,423 tokens in tensor parallel. The next plan now skips each such served request and still uses every other request the pair served. It says so in one line, for example "Skipped 7 speed records longer than the 65,536 tokens planning covers (the longest was 94,522)".
-- If the speed-up a speculative pipeline served can't be recorded, the plan now says so in one line instead of failing. That pipeline is then predicted at its plain speed, so the plan may choose another mode even where the speculative pipeline served faster.
-- A model approved for clusters that can't be offered on these two Macs now says why, in one line above the model list, instead of disappearing. For example: "Qwen 3.8 27B: not offered on these two Macs: the plan for it failed (…)".

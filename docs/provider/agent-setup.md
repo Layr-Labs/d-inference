@@ -379,9 +379,8 @@ no display) and about how long it takes, then has four steps:
 ([details](two-mac-cluster.md#the-steps-once)).
 
 1. On the leader, run `darkbloom cluster`. It shows `1/4 Connect` and `Allow
-   macOS's password and Local Network prompts.` (over SSH: `Allow macOS's
-   password prompt here and its Local Network prompt on this Mac's screen
-   (Screen Sharing if headless).`). If the cable port isn't set up yet, macOS
+   macOS permissions.` (over SSH: `Allow macOS permissions here and on this
+   Mac's screen (Screen Sharing if headless).`). If the cable port isn't set up yet, macOS
    asks once for the administrator password, and the human types it; a port
    set up before asks nothing. Next come `✓ Cable ready`, `2/4 Pair` and
    ``Run `darkbloom cluster` on the other Mac.``. The leader then waits. If the

@@ -1726,8 +1726,8 @@ public enum ClusterOnboardingDriver {
     /// Connect's first line: every approval the setup asks for on this Mac (2026-11-02 review: "bundle all of the
     /// permissions ahead of time").
     public static func approvalsLine(remote: Bool) -> String {
-        remote ? "Allow macOS's password prompt here and its Local Network prompt on this Mac's screen (Screen Sharing if headless)."
-            : "Allow macOS's password and Local Network prompts."
+        remote ? "Allow macOS permissions here and on this Mac's screen (Screen Sharing if headless)."
+            : "Allow macOS permissions."
     }
 
     /// Said on the Mac that joined when it was asked for `darkbloom cluster local` (a model too, perhaps): nothing of it

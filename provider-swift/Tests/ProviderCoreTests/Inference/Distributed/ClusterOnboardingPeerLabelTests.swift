@@ -388,6 +388,12 @@ struct ClusterOnboardingPeerLabelTests {
 
     /// One line per artifact and name (2026-10-25: GLM-5.3-Flash offered from the folder whose manifest the cluster
     /// worker pins, and "not supported on a cluster yet" right under it for the catalog's clone of the same bytes).
+    @Test func connectsFirstLineAsksForMacOSPermissions() {
+        #expect(ClusterOnboardingDriver.approvalsLine(remote: false) == "Allow macOS permissions.")
+        #expect(ClusterOnboardingDriver.approvalsLine(remote: true)
+            == "Allow macOS permissions here and on this Mac's screen (Screen Sharing if headless).")
+    }
+
     @Test func theModelListShowsOneLinePerArtifactAndName() {
         typealias A = OnboardingLive.ListedArtifact
         let glm = A(aggregate: "3aae", files: "f1")

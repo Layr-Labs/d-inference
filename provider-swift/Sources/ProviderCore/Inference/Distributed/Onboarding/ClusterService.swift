@@ -1680,7 +1680,8 @@ public final class ClusterService: @unchecked Sendable {
             if previous.givesUpPart, verdict.running { say("the other Mac answers again: this Mac's part may start again") }
             return want
         }
-        let singleMacJob = LaunchAgent.isInstalled() && !LaunchAgent.installedJobIsClusterMember()
+        // Set up means loaded (an enabled job): the plist outlives `stop --solo`, which disables and unloads it.
+        let singleMacJob = LaunchAgent.singleMacSetUp()
         let part = ClusterPairWatch.part(want, verdict: verdict, localOnly: scope.isLocalOnly, singleMacJob: singleMacJob)
         if part != want, !previous.givesUpPart, let line = ClusterPairWatch.line(verdict, otherMac: lock.withLock { otherMacNameLocked() },
                                                                                  cli: BuildEnvironment.current.cliName) {

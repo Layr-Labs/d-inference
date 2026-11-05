@@ -174,9 +174,12 @@ struct Start: AsyncParsableCommand {
     }
 
     static func pairStart(_ pair: ClusterPairSummary, solo: Bool, terminal: Bool,
-                          singleMacOptions: [String] = []) -> PairStart {
+                          singleMacOptions: [String] = [], soloBlocked: Bool = false) -> PairStart {
         guard pair.paired else { return .single(note: nil) }
         if pair.pairingUnreadable { return solo ? .single(note: pair.startNote) : .refuse(pair.startRefusal) }
+        // Single-Mac serving blocks a started pair whose other Mac answers: `start` (the ✗'s "Then run `darkbloom start`")
+        // starts the pair, whose screen offers to stop it; never "Serve on this Mac alone", which would recreate the block.
+        if soloBlocked, !solo, singleMacOptions.isEmpty, pair.started, pair.otherMacReachable { return terminal ? .openScreen : .startPair }
         // The pair doesn't run here (stopped, or left from a pair whose other Mac stopped taking part): the way back to
         // single-Mac serving is never refused. A person at a terminal chooses; everything else serves this Mac alone,
         // unless the other Mac answers: a pair that hasn't served yet may still be loading, so only --solo stops it then.
@@ -197,6 +200,12 @@ struct Start: AsyncParsableCommand {
 
     /// How long the leftover part gets to release its model and the serving lock.
     static let releaseSeconds: Double = 300
+
+    /// Single-Mac serving blocks the pair: on this Mac (its serving lock), or as the pair's status says.
+    static func soloBlocksPair(_ pair: ClusterPairSummary) -> Bool {
+        guard pair.paired, ClusterPairSummary.readsThisMacsCluster else { return false }
+        return ProviderInstanceHolder.singleMacServing() != nil || pair.reason.map(ClusterOnboardingSoloServing.isBlock) == true
+    }
 
     /// The person chose single-Mac serving on this paired Mac (`ClusterSoloChoice`): it doesn't step aside for the pair.
     static func recordSoloChoice() {
@@ -259,7 +268,7 @@ struct Start: AsyncParsableCommand {
         if startsSingleMacServing, !ClusterPairSummary.startedByClusterService() {
             let pair = ClusterPairSummary.local()
             let pairStart = Self.pairStart(pair, solo: solo, terminal: ClusterPairCommands.isTerminal(),
-                                           singleMacOptions: singleMacOptions)
+                                           singleMacOptions: singleMacOptions, soloBlocked: Self.soloBlocksPair(pair))
             // Only single-Mac serving opens with the mark here: a refusal starts nothing, and the cluster's screen
             // draws the mark itself.
             var choice = pairStart

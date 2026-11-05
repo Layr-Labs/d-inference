@@ -14,6 +14,7 @@ error is printed and exits 0.
 Subcommands:
   start DIRECTORY [--interval SECONDS]
   report DIRECTORY
+  run DIRECTORY [--interval SECONDS]   the background loop `start` launches
 """
 
 import argparse

@@ -142,11 +142,7 @@ jobs:
     runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
     steps:
-      # SwiftPM's products hold absolute paths, and Blacksmith and Darkbloom
-      # check out to different paths. A job that builds or runs the test
-      # products works at one fixed path: its workspace becomes a link to it,
-      # so every step's working directory resolves there
-      # (scripts/ci-test-products.py).
+      # The fixed build path, as in build-cluster (scripts/ci-test-products.py).
       - name: Work at the fixed build path
         run: |
           cd /
@@ -243,11 +239,7 @@ jobs:
       matrix:
         shard: [1, 2]
     steps:
-      # SwiftPM's products hold absolute paths, and Blacksmith and Darkbloom
-      # check out to different paths. A job that builds or runs the test
-      # products works at one fixed path: its workspace becomes a link to it,
-      # so every step's working directory resolves there
-      # (scripts/ci-test-products.py).
+      # The fixed build path, as in build-cluster (scripts/ci-test-products.py).
       - name: Work at the fixed build path
         run: |
           cd /
@@ -374,7 +366,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
       # Prompt Parity runs once, in shard 1 (the shard of selection
-      # PARITY_SHARD), against this shard's build. A failure fails the shard,
+      # PARITY_SHARD), against the provider products. A failure fails the shard,
       # and with it the Provider Tests gate. The summary checks each run's
       # executed count against the suite list.
       - name: Verify public prompt golden vectors
@@ -665,11 +657,7 @@ jobs:
       matrix:
         shard: [1, 2, 3]
     steps:
-      # SwiftPM's products hold absolute paths, and Blacksmith and Darkbloom
-      # check out to different paths. A job that builds or runs the test
-      # products works at one fixed path: its workspace becomes a link to it,
-      # so every step's working directory resolves there
-      # (scripts/ci-test-products.py).
+      # The fixed build path, as in build-cluster (scripts/ci-test-products.py).
       - name: Work at the fixed build path
         run: |
           cd /
@@ -755,11 +743,7 @@ jobs:
       matrix:
         shard: [1, 2]
     steps:
-      # SwiftPM's products hold absolute paths, and Blacksmith and Darkbloom
-      # check out to different paths. A job that builds or runs the test
-      # products works at one fixed path: its workspace becomes a link to it,
-      # so every step's working directory resolves there
-      # (scripts/ci-test-products.py).
+      # The fixed build path, as in build-cluster (scripts/ci-test-products.py).
       - name: Work at the fixed build path
         run: |
           cd /

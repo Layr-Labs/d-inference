@@ -113,42 +113,29 @@ def product_paths(directory):
     return paths
 
 
-def size(path):
-    return path.stat().st_size
+def commit(root):
+    return command("git", "rev-parse", "HEAD", cwd=root)
 
 
-def note(name, value):
+def mebibytes(path):
+    return f"{path.stat().st_size / 2**20:.1f} MiB"
+
+
+def start_clock():
+    """Note the start of an upload or a download for the later steps of the job."""
     environment = os.environ.get("GITHUB_ENV")
     if environment:
         with open(environment, "a") as handle:
-            handle.write(f"{name}={value}\n")
+            handle.write(f"{STAMP}={time.time():.3f}\n")
 
 
 def elapsed():
+    """The time since `start_clock` in an earlier step of the job."""
     started = os.environ.get(STAMP)
     try:
         return f"{time.time() - float(started):.1f} s"
     except (TypeError, ValueError):
         return "unknown (no start time)"
-
-
-def pack(root, lane, archive):
-    directory = package(root, lane)
-    started = time.monotonic()
-    paths = product_paths(directory)
-    manifest = {"lane": lane, "commit": command("git", "rev-parse", "HEAD", cwd=root),
-                "toolchain": toolchain(), "entries": len(paths)}
-    (directory / ".build" / MANIFEST).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-    paths.append(Path(".build") / MANIFEST)
-    archive.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile("wb", suffix=".list") as listing:
-        listing.write(b"".join(os.fsencode(path) + b"\0" for path in paths))
-        listing.flush()
-        stream(["tar", "--null", "--no-recursion", "-T", listing.name, "-cf", "-"], directory,
-               ["zstd", "-T0", "-3", "-q", "-f", "-o", str(archive)])
-    note(STAMP, f"{time.time():.3f}")
-    print(f"{lane} test products: {len(paths)} entries, {size(archive) / 2**20:.1f} MiB compressed, "
-          f"packed in {time.monotonic() - started:.1f} s")
 
 
 def stream(producer, cwd, consumer):
@@ -161,11 +148,33 @@ def stream(producer, cwd, consumer):
                             f"(exit {first.returncode} and {second.returncode})")
 
 
+def pack(root, lane, archive):
+    directory = package(root, lane)
+    started = time.monotonic()
+    paths = product_paths(directory)
+    manifest = {"lane": lane, "commit": commit(root), "toolchain": toolchain(), "entries": len(paths)}
+    (directory / ".build" / MANIFEST).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    paths.append(Path(".build") / MANIFEST)
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("wb", suffix=".list") as listing:
+        listing.write(b"".join(os.fsencode(path) + b"\0" for path in paths))
+        listing.flush()
+        stream(["tar", "--null", "--no-recursion", "-T", listing.name, "-cf", "-"], directory,
+               ["zstd", "-T0", "-3", "-q", "-f", "-o", str(archive)])
+    start_clock()
+    print(f"{lane} test products: {len(paths)} entries, {mebibytes(archive)} compressed, "
+          f"packed in {time.monotonic() - started:.1f} s")
+
+
+def uploaded(archive):
+    print(f"{archive.name}: {mebibytes(archive)} uploaded in {elapsed()}")
+
+
 def unpack(root, lane, archive):
     directory = package(root, lane)
     if not archive.is_file():
         raise ProductsError(f"{archive} is missing; the download did not complete")
-    print(f"{lane} test products: {size(archive) / 2**20:.1f} MiB downloaded in {elapsed()}")
+    print(f"{lane} test products: {mebibytes(archive)} downloaded in {elapsed()}")
     started = time.monotonic()
     build = directory / ".build"
     if build.exists():
@@ -174,8 +183,7 @@ def unpack(root, lane, archive):
     manifest = json.loads((build / MANIFEST).read_text())
     current = toolchain()
     built = manifest.get("toolchain") or {}
-    expected = {"lane": lane, "commit": command("git", "rev-parse", "HEAD", cwd=root),
-                "toolchain versions": current["versions"]}
+    expected = {"lane": lane, "commit": commit(root), "toolchain versions": current["versions"]}
     found = {"lane": manifest.get("lane"), "commit": manifest.get("commit"),
              "toolchain versions": built.get("versions")}
     for key, value in expected.items():
@@ -205,9 +213,9 @@ def main(argv=None):
         elif args.command == "unpack":
             unpack(args.root, args.lane, args.archive)
         elif args.command == "uploaded":
-            print(f"{args.archive.name}: {size(args.archive) / 2**20:.1f} MiB uploaded in {elapsed()}")
+            uploaded(args.archive)
         else:
-            note(STAMP, f"{time.time():.3f}")
+            start_clock()
     except (ProductsError, OSError, ValueError) as error:
         print(f"::error title=Test products::{error}")
         return 1

@@ -163,8 +163,6 @@ extension ClusterOnboardingDriver {
         let timing = operations.followTiming
         console.say("  " + waitingForStartLine(leader))
         let looks = ClusterOnboardingMailbox<ClusterOnboardingLeaderStatus>()
-        // The two Macs' versions, read with each look: a split never clears by itself, so the wait ends at once on it.
-        let splits = ClusterOnboardingMailbox<ClusterOnboardingVersionSplit>()
         var asking = false, asked = Date.distantPast
         var begun = Date()
         var started: Date?, latest: String?, stage = 0, step: ClusterOnboardingLeaderStep?, lastStatus: String?
@@ -181,20 +179,27 @@ extension ClusterOnboardingDriver {
             console.settle()
             console.say(line)
         }
+        // The two Macs' versions, read on the looks' cadence: a split never clears by itself, so the wait ends at once.
+        let splits = ClusterOnboardingMailbox<ClusterOnboardingVersionSplit?>()
+        var splitAsking = false, splitAsked = Date.distantPast
         while true {
+            if !splitAsking, Date().timeIntervalSince(splitAsked) >= timing.pollSeconds {
+                (splitAsking, splitAsked) = (true, Date())
+                Thread.detachNewThread { splits.post(operations.versionSplit()) }
+            }
+            if let read = splits.take().last {
+                splitAsking = false
+                if let split = read {
+                    console.settle()
+                    console.result(false, split.title + ".", split.remedies)
+                    console.say("  " + versionSplitAfterLine(leader))
+                    return 1
+                }
+            }
             if !asking, Date().timeIntervalSince(asked) >= timing.pollSeconds {
                 asking = true
                 asked = Date()
-                Thread.detachNewThread {
-                    if let split = operations.versionSplit() { splits.post(split) }
-                    looks.post(operations.leaderStatus?() ?? .init(lines: operations.status(), step: nil))
-                }
-            }
-            if let split = splits.take().last {
-                console.settle()
-                console.result(false, split.title + ".", split.remedies)
-                console.say("  " + versionSplitAfterLine(leader))
-                return 1
+                Thread.detachNewThread { looks.post(operations.leaderStatus?() ?? .init(lines: operations.status(), step: nil)) }
             }
             if let look = looks.take().last {
                 asking = false

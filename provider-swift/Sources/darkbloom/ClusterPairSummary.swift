@@ -405,9 +405,9 @@ extension ClusterPairSummary {
     /// screen does, within the bounded wait.
     static func isFinalReason(_ reason: String?) -> Bool {
         guard let reason else { return true }
+        if reason.contains(ClusterOnboardingVersionSplit.reasonMarker) { return true }
         return ClusterOnboardingNotServing.isMissingLogin(reason) || reason.contains("The clock of")
             || reason.contains("doesn't let") || reason.contains("run different Darkbloom builds")
-            || reason.contains(ClusterOnboardingVersionSplit.reasonMarker)
             || ClusterOnboardingReady.isNotOffered(reason)
     }
 

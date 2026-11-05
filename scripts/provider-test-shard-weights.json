@@ -147,7 +147,7 @@
 "ProviderAppAttestTests.AppAttestShadowTests": 0.055,
 "ProviderAppAttestTests.AppAttestStallRestartPolicyTests": 0.004,
 "ProviderAppAttestTests.AppleAppAttestServiceTests": 0.048,
-"ProviderAppAttestTests.EnrollmentRecoveryTests": 22.2,
+"ProviderAppAttestTests.EnrollmentRecoveryTests": 0.017,
 "ProviderAppAttestTests.KeyHistoryAndPreflightTests": 0.005,
 "ProviderAppAttestTests.NativeErrorChainTests": 0.002,
 "ProviderAppAttestTests.QualificationAssertionCallbacksTests": 0.142,

@@ -630,8 +630,23 @@ Approval sources, checks and saved fields:
 Counting every key: enter for **Yes** on each Mac and enter for the first
 model on the leader (three keys), plus the macOS prompts [above](#the-steps-once).
 
+In a color terminal at least 40 columns wide, each step folds to one line once
+the next step begins: "✓ 2/4 Pair (1 min 12 s)". The lines that stay are the
+pairing code, each question with the answer given, and an outcome block. A step
+that showed a ✗ stays whole, as does a step taller than the window (rows that
+scrolled off can't be redrawn) and a step during which another command wrote to
+the terminal (`sudo`, `darkbloom login`). The last step and the outcome stay
+whole. The whole flow, line by line, goes to a log file for this run
+(`~/.darkbloom/cluster-setup/screens/screen-<UTC time>Z-<pid>.log`; the 20
+newest are kept, `ClusterOnboardingTerminal.screenLog`). Its path is the last
+line ("Full log: …"), and a ✗ block names it as well. Plain output (a pipe,
+`NO_COLOR`, `TERM=dumb`) has every line already: nothing folds and no log is
+written.
+
 Running `darkbloom cluster` again on either Mac opens with the same Darkbloom
-mark, beside "Darkbloom cluster" and the part each Mac plays and the cable
+mark, beside "Darkbloom cluster · Leading Mac" or "Darkbloom cluster · Joining
+Mac" (`ClusterOnboardingDriver.title(_:)`; a first setup, before the two Macs
+pair, says "Darkbloom cluster" alone), then the part each Mac plays and the cable
 ("This Mac leads · the other Mac (Apple M3 Ultra, 256 GB) follows · cable
 ready"; with the name System Settings gives this Mac, "This Mac (Studio A)
 leads · …", so two identical Macs each say which they are), then shows the

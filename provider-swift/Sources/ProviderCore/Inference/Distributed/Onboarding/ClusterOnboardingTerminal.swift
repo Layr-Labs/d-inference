@@ -45,6 +45,24 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     private var configured = false
     public private(set) var closed = false
 
+    /// The step folding of a colour window (the owner, 2026-11-05: "all captured in one, instead of keep dropping down a
+    /// million lines"): what the current step said since its heading, each line with whether it stays when the step
+    /// folds (a question and its answer, the pairing code, an outcome block). Nil outside a step.
+    private struct StepLines {
+        let title: String
+        let began: Date
+        var lines: [(text: String, keeps: Bool)] = []
+        /// False once something this window can't count wrote there (a command run in the terminal) or a ✗ was shown.
+        var foldable = true
+    }
+    private var step: StepLines?
+    /// The lines `result` says stay when their step folds.
+    private var keeping = false
+    /// The whole flow, line by line and plain, for a colour window whose finished steps fold; its path as said.
+    private var log: FileHandle?
+    private let logPath: String?
+    private var saidLogPath = false
+
     /// What a signal (Ctrl-C) says before the command ends.
     static var stoppedLine: String { ClusterOnboardingCommand.named("Stopped. Run `darkbloom cluster` again to continue where it was.") }
     /// `stoppedLine`'s bytes, made before the handlers are set: a signal handler only writes them.
@@ -56,7 +74,7 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     /// A list is up with the cursor hidden: a signal shows it again before the command ends.
     nonisolated(unsafe) private static var cursorHidden = false
 
-    public init(input: Int32, output: Int32, environment: [String: String] = ProcessInfo.processInfo.environment) {
+    public init(input: Int32, output: Int32, environment: [String: String] = ProcessInfo.processInfo.environment, logFile: URL? = nil) {
         self.input = input; self.output = output
         echoesInput = isatty(input) == 1 && isatty(output) == 1
         usesColor = Self.supportsColor(inputIsTerminal: isatty(input) == 1,
@@ -67,6 +85,14 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
         decorates = usesColor && ClusterOnboardingBrand.drawsBlocks(environment) && columns >= 40
         animates = decorates && environment["DARKBLOOM_NO_ANIMATION"] == nil && environment["CI"] == nil
         brand = ClusterOnboardingBrand.colour(environment)
+        // Only a window that folds keeps a log: a plain transcript is the whole flow already.
+        if decorates, let logFile, let handle = Self.openLog(logFile) {
+            log = handle
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            logPath = logFile.path.hasPrefix(home + "/") ? "~" + logFile.path.dropFirst(home.count) : logFile.path
+        } else {
+            logPath = nil
+        }
         guard isatty(input) == 1, tcgetattr(input, &saved) == 0 else { return }
         var mode = saved
         mode.c_lflag &= ~tcflag_t(ICANON | ECHO)
@@ -101,6 +127,13 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     deinit { restore() }
 
     public func restore() {
+        if let logPath, !saidLogPath {
+            saidLogPath = true
+            settle()
+            write(Self.logLine(logPath) + "\n")
+        }
+        try? log?.close()
+        log = nil
         guard configured else { return }
         configured = false
         _ = tcsetattr(input, TCSANOW, &saved)
@@ -108,6 +141,7 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     }
 
     public func say(_ line: String) {
+        record(line, keeps: keeping)
         guard let live = working else { write(line + "\n"); return }
         // The said line takes the live rows' place; the live rows move below it.
         write(climb() + "\r\u{1B}[J" + line + "\n")
@@ -137,11 +171,86 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     public func result(_ succeeded: Bool, _ title: String, _ lines: [String]) {
         let rule = usesColor ? "\u{1B}[2m" + ClusterOnboardingDriver.resultRule + "\u{1B}[0m" : ClusterOnboardingDriver.resultRule
         let mark = succeeded ? ClusterOnboardingDriver.done : ClusterOnboardingDriver.failed
+        // An outcome block stays when its step folds, and a ✗ keeps its whole step (its next steps are there).
+        keeping = true
+        defer { keeping = false }
+        if !succeeded { step?.foldable = false }
         say("")
         say(rule)
         say(usesColor ? "\u{1B}[1;\(succeeded ? "32" : "31")m\(mark) \(title)\u{1B}[0m" : "\(mark) \(title)")
         for line in lines { say("  " + line) }
+        if !succeeded, let logPath {
+            saidLogPath = true
+            say("  " + Self.logLine(logPath))
+        }
         say(rule)
+    }
+
+    /// "Full log: ~/.darkbloom/cluster-setup/screens/…".
+    static func logLine(_ path: String) -> String { "Full log: " + path }
+
+    /// Counts `line` in the current step (a colour window's fold) and writes it to the log, plain.
+    private func record(_ line: String, keeps: Bool) {
+        guard decorates else { return }
+        step?.lines.append((line, keeps))
+        if let log { log.write(Data((Self.plain(ClusterOnboardingCommand.named(line)) + "\n").utf8)) }
+    }
+
+    /// `text` without its terminal codes.
+    static func plain(_ text: String) -> String {
+        text.replacingOccurrences(of: "\u{1B}\\[[0-9;?]*[A-Za-z]", with: "", options: .regularExpression)
+    }
+
+    /// The rows `text` takes in a window `width` columns wide.
+    static func rows(_ text: String, width: Int) -> Int {
+        plain(ClusterOnboardingCommand.named(text)).components(separatedBy: "\n").reduce(0) {
+            $0 + max(1, (ClusterOnboardingBrand.textColumns($1) + width - 1) / width)
+        }
+    }
+
+    /// The window's height in rows now (0 when unknown).
+    private var windowRows: Int {
+        var window = winsize()
+        return ioctl(output, TIOCGWINSZ, &window) == 0 ? Int(window.ws_row) : 0
+    }
+
+    /// The step that just finished, folded to one line ("✓ 2/4 Pair (1 min 12 s)") above the lines that stay, when all
+    /// of it is still in the window: rows that scrolled off can't be redrawn, so a taller step is left as it is.
+    private func foldFinishedStep() {
+        guard decorates, let finished = step else { return }
+        step = nil
+        guard finished.foldable else { return }
+        settle()
+        let width = max(1, columns)
+        // The blank line and the heading, then every line said since.
+        let rows = 2 + finished.lines.reduce(0) { $0 + Self.rows($1.text, width: width) }
+        let height = windowRows
+        guard height > 0, rows < height else { return }
+        let time = ClusterOnboardingLoadRows.elapsed(Date().timeIntervalSince(finished.began))
+        var folded = "\u{1B}[\(rows)A\r\u{1B}[J"
+        folded += "\u{1B}[\(brand)m\(ClusterOnboardingDriver.done)\u{1B}[0m \(finished.title) (\(time))\n"
+        for line in finished.lines where line.keeps { folded += line.text + "\n" }
+        write(folded)
+    }
+
+    /// A new file for this run's log in `directory` (owner-only), the 20 newest kept; nil when it can't be made.
+    public static func screenLog(in directory: URL, now: Date = Date()) -> URL? {
+        let manager = FileManager.default
+        guard (try? manager.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])) != nil
+        else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let names = ((try? manager.contentsOfDirectory(atPath: directory.path)) ?? [])
+            .filter { $0.hasPrefix("screen-") && $0.hasSuffix(".log") }.sorted()
+        for old in names.dropLast(19) { try? manager.removeItem(at: directory.appendingPathComponent(old)) }
+        return directory.appendingPathComponent("screen-\(formatter.string(from: now))Z-\(getpid()).log")
+    }
+
+    private static func openLog(_ file: URL) -> FileHandle? {
+        guard FileManager.default.createFile(atPath: file.path, contents: nil, attributes: [.posixPermissions: 0o600]) else { return nil }
+        return try? FileHandle(forWritingTo: file)
     }
 
     /// The setup's opening: the mark beside its name where the terminal can
@@ -154,6 +263,8 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
         // behind: such a window keeps the heading lines (and the meter).
         let widest = 2 + ClusterOnboardingBrand.width + 3 + (texts.map(\.count).max() ?? 0)
         guard decorates, widest < columns else { heading(title); if !subtitle.isEmpty { say(subtitle) }; return }
+        record(title, keeps: false)
+        if !subtitle.isEmpty { record(subtitle, keeps: false) }
         let beside = ["\u{1B}[1m\(texts[0])\u{1B}[0m", "\u{1B}[2m\(texts[1])\u{1B}[0m",
                       "\u{1B}[2m\(texts[2])\u{1B}[0m", ""]
         func draw(_ revealed: Int) {
@@ -191,6 +302,7 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     /// one shows; in a transcript only the logged reports, as plain lines.
     public func progress(_ text: (_ width: Int?) -> String, logged: Bool) {
         guard decorates else { if logged { say("  " + text(nil)) }; return }
+        if logged, let log { log.write(Data(("  " + Self.plain(text(nil)) + "\n").utf8)) }
         // Redrawn at most eight times a second: a copy or download reports more often than a person reads.
         let now = DispatchTime.now().uptimeNanoseconds
         let due = now &- progressDrawn >= 125_000_000
@@ -239,6 +351,8 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     }
 
     public func heading(_ title: String) {
+        foldFinishedStep()
+        defer { if decorates, ClusterOnboardingBrand.meter(title) != nil { step = StepLines(title: title, began: Date()) } }
         say("")
         // No screen clearing: trust codes and recovery steps stay in
         // scrollback. Color never carries status by itself.
@@ -294,6 +408,8 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     public func choose(_ options: [String], selected: Int, abandon: () -> Bool) -> Int? {
         guard !options.isEmpty else { return nil }
         settle()
+        // The question above the list stays when its step folds.
+        if let last = step?.lines.indices.last { step?.lines[last].keeps = true }
         let start = min(max(0, selected), options.count - 1)
         return usesColor ? pick(options.map { text in { _ in text } }, start, abandon) : typedChoice(options, start, abandon)
     }
@@ -302,6 +418,8 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     public func chooseFitting(_ options: [(_ room: Int?) -> String], selected: Int, abandon: () -> Bool) -> Int? {
         guard !options.isEmpty else { return nil }
         settle()
+        // The question above the list stays when its step folds, as in `choose`.
+        if let last = step?.lines.indices.last { step?.lines[last].keeps = true }
         let start = min(max(0, selected), options.count - 1)
         return usesColor ? pick(options, start, abandon) : typedChoice(options.map { $0(nil) }, start, abandon)
     }
@@ -357,6 +475,10 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
             if let chosen {
                 let chosenRows = rows(chosen, room())
                 write("  \u{1B}[\(brand)m\(marker)\u{1B}[0m " + chosenRows.joined(separator: "\n    ") + "\n")
+                // Each row the chosen option takes stays when its step folds, as it was written.
+                for (index, row) in chosenRows.enumerated() {
+                    record(index == 0 ? "  \u{1B}[\(brand)m\(marker)\u{1B}[0m " + row : "    " + row, keeps: true)
+                }
             }
             return chosen
         }
@@ -467,6 +589,8 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     /// The terminal in its ordinary mode while `body` runs (sudo reads a password there), the live line cleared.
     public func suspended<T>(_ body: () -> T) -> T {
         settle()
+        // What the command writes there isn't counted: this step can't fold.
+        step?.foldable = false
         guard configured else { return body() }
         _ = tcsetattr(input, TCSANOW, &saved)
         defer { _ = tcsetattr(input, TCSANOW, &reading) }

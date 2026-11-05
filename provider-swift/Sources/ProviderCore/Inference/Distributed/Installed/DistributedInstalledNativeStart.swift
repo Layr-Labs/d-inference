@@ -23,10 +23,21 @@ enum DistributedInstalledNativeStart {
 
     /// The resource policy a native start carries for a capability. The one
     /// formula: the native start below and the release's cluster runtime
-    /// facts (`ClusterRuntimeApprovalFacts`) both call it.
+    /// facts (`ClusterRuntimeApprovalFacts`) both call it. A resident assistant
+    /// this build declares public for the artifact (`ClusterPublicModels.tensorAssistant`)
+    /// adds its launch arguments (depth, `--tp-mtp-inventory-sha256`,
+    /// verification) and evidence, so a coordinator's approval, and every
+    /// start under it, names the declared assistant; without one the digest
+    /// is unchanged.
     static func resourcePolicySHA256(_ capability: ClusterRuntimeCapability) -> Data {
+        resourcePolicySHA256(capability, assistant: ClusterPublicModels.tensorAssistant(for: capability))
+    }
+
+    /// `resourcePolicySHA256` with the public assistant a given declaration names.
+    static func resourcePolicySHA256(_ capability: ClusterRuntimeCapability, assistant: ClusterPublicTensorAssistant?) -> Data {
         digest(["darkbloom/installed-resource-policy/v1", capability.arithmeticPolicyID,
-            capability.arithmeticPolicySHA256, capability.stateSemantics, capability.schedulingPolicy])
+            capability.arithmeticPolicySHA256, capability.stateSemantics, capability.schedulingPolicy]
+            + (assistant?.resourcePolicyFields ?? []))
     }
 
     /// The runtime block a member registers in its plan for a model

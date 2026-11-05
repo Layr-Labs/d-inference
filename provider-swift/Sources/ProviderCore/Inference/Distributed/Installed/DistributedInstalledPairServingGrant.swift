@@ -661,16 +661,21 @@ public enum ClusterPairServingGrants {
     /// The one line a plan or the onboarding shows about public traffic for a
     /// model served in `mode`: qualified in the families its records grant or
     /// the owner declared public (`ClusterPublicModels`), unless the placement
-    /// decodes with Qwen's speculative assistant (`tensorAssistant`), which no
-    /// qualification covers.
+    /// decodes with Qwen's speculative assistant (`tensorAssistant`) and the
+    /// owner declared none public for the artifact
+    /// (`ClusterPublicModels.tensorAssistant`; a setup saved for coordinator
+    /// pairing carries exactly the declared one, `ClusterConfiguration.validate`).
     public static func publicTrafficLine(runtimeModelID: String, artifactSHA256: String? = nil, mode: ClusterGenerationMode?,
                                          tensorAssistant: Bool = false, decisions: ClusterPairServingDecisions = decisions,
-                                         publicModels: [ClusterPublicModel] = ClusterPublicModels.declared) -> String {
+                                         publicModels: [ClusterPublicModel] = ClusterPublicModels.current) -> String {
         let grant = try? grant(runtimeModelID: runtimeModelID, publicModelID: runtimeModelID, artifactSHA256: artifactSHA256,
                                decisions: decisions)
+        let declaredAssistant = artifactSHA256.flatMap {
+            ClusterPublicModels.tensorAssistant(runtimeModelID: runtimeModelID, artifactSHA256: $0, in: publicModels)
+        }
         return ClusterPairOwnerServing.publicTrafficLine(grant: grant, declared: ClusterPublicModels.families(
             runtimeModelID: runtimeModelID, artifactSHA256: artifactSHA256, in: publicModels), mode: mode,
-            tensorAssistant: tensorAssistant)
+            tensorAssistant: tensorAssistant && declaredAssistant == nil)
     }
 
     /// One rank of a placement, checked on the Mac that runs it with that
@@ -786,8 +791,8 @@ public struct ClusterPairOwnerServing: Sendable, Equatable {
     /// The one line shown for a model or placement with no public grant.
     public static let notYetQualified = "not yet qualified for public traffic"
     /// The one line shown for a placement of a qualified model and mode that decodes with Qwen's speculative
-    /// assistant: the assistant serves local clusters only, so the setup is never offered to the coordinator
-    /// (`ClusterConfiguration.tensorAssistantServesLocally`).
+    /// assistant this build does not declare public: such an assistant serves local clusters only, so the setup is
+    /// never offered to the coordinator (`ClusterConfiguration.tensorAssistantServesLocally`).
     public static let tensorAssistantNotOffered = "not offered for public traffic: it decodes with Qwen's speculative "
         + "assistant, which serves local clusters only (with [backend] mtp_mode \"auto\", a cluster served through Darkbloom is planned without it)"
 

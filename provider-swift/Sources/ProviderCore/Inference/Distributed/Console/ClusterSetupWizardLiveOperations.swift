@@ -561,9 +561,9 @@ final class LiveContext: @unchecked Sendable {
         let mtpMode: MTPMode
         do { mtpMode = try ConfigManager.loadOrDefaults(from: settings.providerConfiguration).backend.mtpMode }
         catch { return .failed("The provider configuration could not be read: \(clean(ClusterConsoleText.bounded(error)))") }
-        // A setup that serves through the coordinator carries no speculative assistant: under `auto` its plan quotes
-        // the ordinary target only.
-        let discovery = ClusterPlacementTensorAssistantSelection.discoveryMode(mtpMode, coordinator: coordinator)
+        // A setup that serves through the coordinator carries only the speculative assistant this build declares
+        // public for the artifact: under `auto` its plan quotes that one, or the ordinary target only
+        // (`ClusterPlacementTensorAssistantSelection.discoveryMode`).
         let readings = models.filter {
             settings.privateGLMImageQualification ? ClusterGLMOnboardingSelection.accepts($0)
                 : ClusterMiMoOnboardingSelection.accepts($0, qualifying: settings.privateMiMoImageQualification)
@@ -614,7 +614,7 @@ final class LiveContext: @unchecked Sendable {
                         return ClusterPlacementBatchScope.tensorParallelWidths.compactMap { lanes in
                             try? ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool, modelDirectory: directory,
                                 publicModelID: model.modelID, capability: admitted, mode: mode, chunkTokens: chunk,
-                                deadline: deadline(), lanes: lanes)
+                                deadline: deadline(), lanes: lanes, coordinator: coordinator)
                         }.filter { $0.request == singleton.request && $0.assistant?.policy == singleton.assistant?.policy }
                     }
                     if mtpMode != .off, SpecDecArtifactFunnel.killSwitchEnabled(environment: ProcessInfo.processInfo.environment),
@@ -627,9 +627,9 @@ final class LiveContext: @unchecked Sendable {
                     } else {
                         let discovered = try ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool,
                             modelDirectory: directory, publicModelID: model.modelID, capability: admitted,
-                            mode: discovery, chunkTokens: chunk, deadline: deadline())
+                            mode: mtpMode, chunkTokens: chunk, deadline: deadline(), coordinator: coordinator)
                         assistantQuote = discovered.map { .success($0) }
-                        discoveredWidths = widths(of: discovered, mode: discovery)
+                        discoveredWidths = widths(of: discovered, mode: mtpMode)
                         // Only a discovered assistant may give way to the ordinary target (`assistantOrTarget`).
                         if discovered?.assistant != nil {
                             var target: ClusterPlacementTensorBatchQuote?

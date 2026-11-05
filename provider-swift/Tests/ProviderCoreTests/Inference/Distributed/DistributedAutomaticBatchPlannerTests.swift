@@ -771,23 +771,69 @@ final class DistributedAutomaticBatchPlannerTests {
     }
 
     /// Which plans ask for Qwen's speculative assistant (`discoveryMode`): under the default `auto`, a cluster that
-    /// serves locally only, as before, and never one served through the coordinator, whose setup may not carry it;
-    /// an explicit `on` in either case; never `off`.
-    @Test func aClusterServedThroughTheCoordinatorAsksForTheAssistantOnlyUnderAnExplicitOn() throws {
+    /// serves locally only, as before, and one served through the coordinator only when this build declares the
+    /// assistant public for the artifact (`declared`); an explicit `on` in either case; never `off`.
+    @Test func aClusterServedThroughTheCoordinatorAsksForTheAssistantUnderAutoOnlyWhenDeclared() throws {
         let artifact = try inlineAssistantArtifact()
-        func asks(_ configured: MTPMode, coordinator: Bool) throws -> Bool {
+        func asks(_ configured: MTPMode, coordinator: Bool, declared: Bool = false) throws -> Bool {
             try ClusterPlacementTensorAssistantSelection.automaticCandidate(
-                mode: ClusterPlacementTensorAssistantSelection.discoveryMode(configured, coordinator: coordinator),
+                mode: ClusterPlacementTensorAssistantSelection.discoveryMode(configured, coordinator: coordinator, declared: declared),
                 runtimeModelID: ClusterQwenTensorAssistantPolicy.runtimeModelID, modelDirectory: artifact.directory,
                 publicModelID: artifact.modelID, artifactSHA256: artifact.aggregate,
                 manifestSHA256: ClusterConfigurationCodec.sha256(artifact.manifest), environment: [:])
         }
         #expect(try asks(.auto, coordinator: false))
         #expect(try !asks(.auto, coordinator: true))
+        #expect(try asks(.auto, coordinator: true, declared: true))
         #expect(try asks(.on, coordinator: false) && asks(.on, coordinator: true))
-        #expect(try !asks(.off, coordinator: false) && !asks(.off, coordinator: true))
+        #expect(try !asks(.off, coordinator: false) && !asks(.off, coordinator: true) && !asks(.off, coordinator: true, declared: true))
         #expect(ClusterPlacementTensorAssistantSelection.discoveryMode(.auto, coordinator: true) == .off)
+        #expect(ClusterPlacementTensorAssistantSelection.discoveryMode(.auto, coordinator: true, declared: true) == .auto)
         #expect(ClusterPlacementTensorAssistantSelection.discoveryMode(.auto, coordinator: false) == .auto)
+    }
+
+    /// A coordinator-paired setup plans the declared public assistant (`ClusterPublicModels.tensorAssistant`): its
+    /// depth with singleton verification (no cohort argument), and the native helper's quote must return exactly the
+    /// declared policy, inventory included; a local cluster's automatic cohort quote is refused there.
+    @Test func aCoordinatorPlanQuotesExactlyTheDeclaredSingletonAssistant() throws {
+        let (_, cap, _, _) = try fixture()
+        let declared = try ClusterQwenTensorAssistantPolicy(depth: 3, inventorySHA256: hash("8"))
+        let arguments = try ClusterPlacementTensorAssistantSelection.discoveryArguments(modelDirectory: "/fixture/model",
+            promptTokens: 32768, outputTokens: 32768, chunkTokens: 128, declared: declared)
+        #expect(arguments.suffix(2) == ["--mtp-depth", "3"])
+        #expect(!arguments.contains(ClusterQwenTensorAssistantPolicy.verificationArgument))
+        #expect(!arguments.contains(ClusterQwenTensorAssistantPolicy.inventoryArgument))
+        // The native helper's quote of the memory plan's whole request (as `automaticQuotePinsNativeInventory...`).
+        func quote(_ verification: ClusterQwenTensorAssistantPolicy.Verification = .singleton, depth: Int = 3,
+                   assistant: Bool = true) throws -> ClusterPlacementTensorBatchQuote {
+            let original = try assistantQuote(1, depth: depth, verification: verification)
+            let request = try ClusterPlacementRequestScope(runtimeModelID: cap.runtimeModelID,
+                artifactSHA256: cap.artifactSHA256, configurationSHA256: cap.configurationSHA256,
+                promptTokens: cap.profile.maximumPromptTokens, outputTokens: cap.profile.maximumOutputTokens,
+                maximumPromptTokens: cap.profile.maximumPromptTokens, maximumOutputTokens: cap.profile.maximumOutputTokens,
+                maximumContextTokens: cap.profile.maximumContextTokens, requestChargeEveryRankBytes: gib)
+            return try .init(request: request, lanes: 1, chunkTokens: original.chunkTokens,
+                perLaneStateBytes: original.perLaneStateBytes, sharedBytesExcludingCollectives: original.sharedBytesExcludingCollectives,
+                allowance: original.allowance, assistant: assistant ? original.assistant : nil)
+        }
+        let singleton = try quote()
+        try ClusterPlacementTensorAssistantSelection.requireDiscoveredQuote(singleton, capability: cap, chunkTokens: 128,
+                                                                           declared: declared)
+        for other in [try quote(.admittedCohort), try quote(depth: 2), try quote(assistant: false)] {
+            #expect(throws: (any Error).self) {
+                try ClusterPlacementTensorAssistantSelection.requireDiscoveredQuote(other, capability: cap, chunkTokens: 128,
+                                                                                   declared: declared)
+            }
+        }
+        let otherInventory = try ClusterQwenTensorAssistantPolicy(depth: 3, inventorySHA256: hash("9"))
+        #expect(throws: (any Error).self) {
+            try ClusterPlacementTensorAssistantSelection.requireDiscoveredQuote(singleton, capability: cap, chunkTokens: 128,
+                                                                               declared: otherInventory)
+        }
+        // A local cluster keeps its automatic cohort policy.
+        #expect(throws: (any Error).self) {
+            try ClusterPlacementTensorAssistantSelection.requireDiscoveredQuote(singleton, capability: cap, chunkTokens: 128)
+        }
     }
 
     @Test func automaticQuotePinsNativeInventoryAndCompleteWidthOneScope() throws {

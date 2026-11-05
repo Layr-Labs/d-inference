@@ -587,9 +587,11 @@ public enum ClusterControlPartChoice: Sendable, Equatable {
 
     /// Why this Mac's part of the pair (`key` "cluster:…") waits instead of starting: the other Mac reports its own part
     /// can't start for a reason that doesn't clear by itself (`otherMacHeldBack`; single-Mac serving there). A part started
-    /// anyway only waits for its missing follower and ends again (every 38 s on pair-2). Never for serving alone ("solo:").
-    public static func waitsForOtherMac(key: String, otherMacHeldBack: String?) -> String? {
-        guard key.hasPrefix("cluster:"), let reason = otherMacHeldBack, !reason.isEmpty else { return nil }
+    /// anyway only waits for its missing follower and ends again (every 38 s on pair-2). Never for serving alone ("solo:"),
+    /// and only while this Mac leads (`leads`): only the leader reads that reason, so a member never waits on one it read
+    /// while it led.
+    public static func waitsForOtherMac(key: String, otherMacHeldBack: String?, leads: Bool) -> String? {
+        guard leads, key.hasPrefix("cluster:"), let reason = otherMacHeldBack, !reason.isEmpty else { return nil }
         return reason
     }
 

@@ -375,9 +375,11 @@ struct ParityClusterServer {
     }
 
     /// Commits the script on the request's lease as the worker pair would,
-    /// then acknowledges retirement. Returns without acting when no request
-    /// reaches the pair (a refusal before admission).
-    func drive(after reservations: Int, script: [Int], failure: Bool, stop: ParityStopFlag) async {
+    /// then acknowledges retirement, once `retirement` opens when one is
+    /// given (a pair whose ranks are still finishing a step). Returns without
+    /// acting when no request reaches the pair (a refusal before admission).
+    func drive(after reservations: Int, script: [Int], failure: Bool, stop: ParityStopFlag,
+               retirement: LocalHostLatch? = nil) async {
         let owner = session.base
         while owner.reserveCount == reservations {
             if stop.isSet { return }
@@ -394,6 +396,7 @@ struct ParityClusterServer {
             if !lease.send(event) { break }
         }
         if failure { lease.send(.finished(.error("fixture failure"))) }
+        await retirement?.wait()
         lease.acknowledge()
     }
 

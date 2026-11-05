@@ -1,6 +1,6 @@
 # Provider trust during MDM and App Attest coexistence
 
-> Last updated: 2026-11-01
+> Last updated: 2026-11-04
 
 Darkbloom supports two independent provider authorization paths: legacy MDM/APNs verification and qualified App Attest. A connection can satisfy either or both. This explanation separates those paths from their shared dispatch checks and from claims neither path proves. The [authorization reference](../../reference/provider-authorization.md) owns configuration, deadlines and migration procedures.
 
@@ -124,6 +124,16 @@ and [coordinator/registry/autopilot_reward_snapshot.go](https://github.com/Layr-
 Platform security, signed-artifact qualification and physical SIP/boot transitions need adversarial evidence on supported hardware. Synthetic tests establish code behavior, not resistance to every host compromise. Legacy trust-reuse timing premises likewise remain qualification assumptions. The [encryption explanation](encryption.md) owns the plaintext and key-lifetime model; attestation does not alter it.
 
 `verifyBundleSignature` (`SecurityHardening.swift`) waits for `codesign`, and `DarkbloomMDMRemoval.readProfiles` waits for `profiles`, with no time limit, so a stuck child holds up that check or removal. The exit comes from `ProcessExitObserver`, which does not run the calling thread's run loop.
+
+A build made with SDK 27.2 must not compare Dates with `>=` or `<=`. SDK 27.2
+back-deploys those two operators as weak imports, and pre-release macOS 27.2
+builds (26B5091g) lack them. The App Attest key-generation budget, enrollment
+resume, stall restart and key history checks then jump to address 0 and the
+provider crashes in a loop. App Attest stays pending on that Mac; the crash
+relaxes no authorization. These checks use `timeIntervalSince(_:)`, with the
+same thresholds. The release build refuses a binary that imports either symbol
+(`scripts/check-provider-weak-imports.py`, see the
+[build guide](../../developer/build.md#sdk-27-release-builds-and-caches)).
 
 ## Code map
 

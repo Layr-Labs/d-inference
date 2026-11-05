@@ -50,7 +50,10 @@ next pass:
   writer cannot go below one 5 ms pass there.
 - An owner that prepares for 1.5 s before the hello costs the writer no spin,
   and the hello wakes it for the first command.
-- An idle writer renews every 5 s on time; after a fence it sends no renewal
+- An idle writer renews every 5 s on time: each renewal is late by no more
+  than this host wakes any thread that waits for a deadline (measured during
+  the same 10 s on the writer's primitive and priority, plus 5 ms; at least
+  15 ms, and below the 50 ms idle bound). After a fence it sends no renewal
   and does not spin on the stale renewal time while the owner retires a child
   that needs three seconds.
 

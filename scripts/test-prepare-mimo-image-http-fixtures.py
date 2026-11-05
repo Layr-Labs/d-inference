@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 from pathlib import Path
 import struct
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -13,6 +14,21 @@ SPEC = importlib.util.spec_from_file_location(
     "fixtures", Path(__file__).with_name("prepare-mimo-image-http-fixtures.py"))
 F = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(F)
+
+
+class Curl:
+    """Plays one curl outcome per attempt: (exit code, final HTTP status, body written to --output)."""
+
+    def __init__(self, *outcomes):
+        self.outcomes = list(outcomes)
+        self.argv = []
+
+    def __call__(self, argv, **_):
+        self.argv.append(argv)
+        code, status, body = self.outcomes.pop(0)
+        if body is not None:
+            Path(argv[argv.index("--output") + 1]).write_bytes(body)
+        return subprocess.CompletedProcess(argv, code, status, "")
 
 
 class FixtureTests(unittest.TestCase):
@@ -81,6 +97,69 @@ class FixtureTests(unittest.TestCase):
         self.assertIn(F.PINS.FILES["config.json"][1], candidate)
         self.assertTrue(all(not name.endswith(".safetensors") for name in F.NAMES))
         self.assertLess(sum(F.PINS.FILES[name][0] for name in F.NAMES), 12 * 1024 * 1024)
+
+    body = b"config.json fixture\n"
+
+    def download(self, *outcomes):
+        """Runs download() on a synthetic pin against scripted curl outcomes."""
+        self.curl = Curl(*outcomes)
+        with mock.patch.dict(F.PINS.FILES, {"config.json": (len(self.body), hashlib.sha256(self.body).hexdigest())}), \
+                mock.patch.object(F.subprocess, "run", self.curl), mock.patch.object(F.time, "sleep") as sleep:
+            self.sleep = sleep
+            return F.download("config.json")
+
+    def test_cut_transfers_are_retried_with_backoff(self):
+        cases = {
+            "partial file": (18, "200", self.body[:4]),
+            "TLS EOF": (56, "200", self.body[:4]),
+            "connection refused": (7, "000", None),
+            "timeout": (28, "200", None),
+            "HTTP 503": (0, "503", b"busy"),
+            "short body": (0, "200", self.body[:-1]),
+            "empty body": (0, "200", None),
+        }
+        for case, failure in cases.items():
+            with self.subTest(case=case):
+                self.assertEqual(self.download(failure, (0, "200", self.body)), self.body)
+                self.assertEqual(len(self.curl.argv), 2)
+                self.sleep.assert_called_once_with(1)
+                argv = self.curl.argv[0]
+                self.assertNotIn("--fail", argv)
+                self.assertLessEqual(float(argv[argv.index("--max-time") + 1]), 60)
+
+    def test_three_cut_transfers_fail_after_three_attempts(self):
+        with self.assertRaisesRegex(F.TransientTransfer, "curl 18"):
+            self.download(*[(18, "200", self.body[:4])] * 3, (0, "200", self.body))
+        self.assertEqual(len(self.curl.argv), 3)
+        self.assertEqual([call.args for call in self.sleep.call_args_list], [(1,), (3,)])
+
+    def test_integrity_size_status_and_policy_failures_are_not_retried(self):
+        cases = {
+            "oversize body": ((63, "200", None), subprocess.CalledProcessError),
+            "certificate failure": ((60, "000", None), subprocess.CalledProcessError),
+            "plain-HTTP redirect": ((1, "301", None), subprocess.CalledProcessError),
+            "HTTP 404": ((0, "404", b"missing"), ValueError),
+        }
+        for case, (failure, error) in cases.items():
+            with self.subTest(case=case):
+                with self.assertRaises(error):
+                    self.download(failure, (0, "200", self.body))
+                self.assertEqual(len(self.curl.argv), 1)
+                self.sleep.assert_not_called()
+        # A full-size body with the wrong digest is returned once and refused by prepare.
+        self.assertEqual(self.download((0, "200", b"x" * len(self.body)), (0, "200", self.body)),
+                         b"x" * len(self.body))
+        self.assertEqual(len(self.curl.argv), 1)
+        with tempfile.TemporaryDirectory() as root, self.assertRaisesRegex(ValueError, "SHA-256 mismatch"):
+            F.prepare(Path(root) / "fixture", fetch=lambda name: b"x" * F.PINS.FILES[name][0])
+
+    def test_retries_stay_inside_the_deadline(self):
+        # The 1 s backoff would end after the deadline: stop instead of sleeping.
+        with mock.patch.object(F, "DEADLINE_SECONDS", 0.5), \
+                self.assertRaisesRegex(ValueError, "timed out"):
+            self.download((56, "200", None), (0, "200", self.body))
+        self.assertEqual(len(self.curl.argv), 1)
+        self.sleep.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -328,7 +328,10 @@ Pushes to `master` and pull requests into `master` select every component, so a
 The gate also checks the CI plans on every run, skipped or not: the cluster
 plan's audit (`scripts/cluster-test-plan.py audit`) and the self-tests of the
 shard plans, the component classifier, the tested-change lookup, the route and
-the workflow pins. `dev` has no Release Integrity, so these run there too.
+the workflow pins. It also runs the offline self-tests of the prompt fixture
+downloaders (`scripts/test-prepare-prompt-fixtures.py`,
+`scripts/test-prepare-mimo-prompt-fixtures.py`). `dev` has no Release
+Integrity, so these run there too.
 
 | Workflow | Runs for | Jobs |
 |---|---|---|

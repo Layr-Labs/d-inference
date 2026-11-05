@@ -239,7 +239,14 @@ func afterServedTensorParallel(_ devices: [ClusterPlacementDevice], layout: Clus
         measuredUTC: "2026-11-01T00:00:00Z").measurements
     let speeds = ClusterSpeedEstimator.estimate(devices: devices.map { .init(chip: $0.profile.chip, osBuild: $0.profile.osBuild) },
         artifactSHA256: layout.artifactSHA256, promptTokens: prompt, measurements: derived)
-    return zip(devices, speeds).map { .init(label: $0.label, profile: $0.profile, speed: $1) }
+    // The served record's whole-model rates are the ones it started from: a constructed measurement stays one, as the
+    // flow's own whole-model record would be merged with the served shard rates (`ClusterSpeedEstimator`).
+    return zip(devices, speeds).map { device, speed in
+        .init(label: device.label, profile: device.profile, speed: .init(source: speed.source, absolute: speed.absolute,
+            rested: speed.rested, sustained: speed.sustained, hashBytesPerSecond: speed.hashBytesPerSecond,
+            materializeBytesPerSecond: speed.materializeBytesPerSecond, promptTokens: speed.promptTokens,
+            explanation: speed.explanation, wholeModelEstimated: device.speed.wholeModelEstimated))
+    }
 }
 
 /// Retained registered metadata (names, shapes, dtypes and byte counts only).

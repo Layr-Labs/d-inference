@@ -72,6 +72,28 @@ final class VerifiedCheckpoint {
             return nil
         }
 
+        /// `count` runs of `length` bytes, `stride` apart from `offset`, back to back into `destination`
+        /// (`CheckpointAlignedReader.read(…stride:count:…)` when the payload cache is bypassed).
+        @discardableResult
+        func read(into destination: UnsafeMutableRawBufferPointer, offset: Int, length: Int, stride: Int,
+                  count: Int) throws -> CheckpointAlignedReadAccounting? {
+            let total = length.multipliedReportingOverflow(by: count)
+            let span = stride.multipliedReportingOverflow(by: max(0, count - 1))
+            guard offset >= 0, length >= 0, count >= 0, stride >= length, !total.overflow, total.partialValue == destination.count,
+                  !span.overflow, count == 0 || span.partialValue <= size - offset - length else {
+                throw ProbeError("Checkpoint read out of range: \(path)")
+            }
+            if bypassesPayloadCache && !destination.isEmpty {
+                return try CheckpointAlignedReader.read(descriptor: descriptor, fileSize: size, into: destination,
+                    offset: offset, length: length, stride: stride, count: count, checkUnchanged: checkUnchanged)
+            }
+            for run in 0..<count where length > 0 {
+                try readOrdinary(into: UnsafeMutableRawBufferPointer(start: destination.baseAddress!.advanced(by: run * length),
+                                                                     count: length), offset: offset + run * stride)
+            }
+            return nil
+        }
+
         // The original cached/reference/checksum copy path remains unchanged.
         private func readOrdinary(into destination: UnsafeMutableRawBufferPointer, offset: Int) throws {
             guard offset >= 0, offset <= size, destination.count <= size - offset else {

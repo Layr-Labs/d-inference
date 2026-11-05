@@ -757,7 +757,7 @@ Next: Leave both Macs running: Darkbloom retries by itself. Or serve locally onl
 | Exit status | `state` | Meaning |
 |---|---|---|
 | `0` | `serving` | The pair serves: through Darkbloom once the coordinator has it, or on the leading Mac's local API when it serves locally only |
-| `3` | `loading`, `not_serving`, `unknown` | Not serving yet: loading, or a reason in `reason` (such as macOS keeping a Mac off the local network, or a pair not offered to Darkbloom, below) |
+| `3` | `loading`, `not_serving`, `unknown` | Not serving yet: loading, or a reason in `reason` (such as macOS keeping a Mac off the local network, or a pair not offered to Darkbloom, below). A load whose part keeps ending gives that end as its reason, as the start's screen says it: "this Mac's part ended (exit 1: deadline) and starts again by itself" |
 | `4` | `stopped` | Stopped (Stop in `darkbloom cluster`, or `darkbloom cluster stop`), also while the other Mac isn't answering |
 | `5` | `other_mac_away` | The pair is started and the other Mac isn't answering over the cable (its cluster service is off, it sleeps, or waits for a login) |
 | `6` | `not_paired` | This Mac isn't in a cluster |

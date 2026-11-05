@@ -16,6 +16,11 @@ extension OnboardingLive {
         return found
     }
 
+    /// The leading Mac's start stopped at the single-Mac block (true), or went past it (false): `localStatus` says the block.
+    func markSoloBlocked(_ blocked: Bool) {
+        try? store.updateRecord { $0.soloBlockedAt = blocked ? Date().timeIntervalSince1970 : nil }
+    }
+
     /// The start's failure while single-Mac serving blocks the pair; nil when none does.
     func soloServingFailure() -> ClusterOnboardingFailure? {
         let found = soloServing()

@@ -1302,6 +1302,9 @@ public struct ClusterOnboardingOperations: Sendable {
     /// The two Macs' versions when they differ (this Mac's; the other Mac's status), read before the parts start, during
     /// the wait and before a Retry: nil when one version or unknown. Not in `init`: only the live operations set it.
     public var versionSplit: @Sendable () -> ClusterOnboardingVersionSplit? = { nil }
+    /// Marks (true) or clears the leading Mac's start as stopped at the single-Mac block (`ClusterSetupRecord.soloBlockedAt`).
+    /// Not in `init`: only the live operations set it.
+    public var markSoloBlocked: @Sendable (Bool) -> Void = { _ in }
     /// Stops single-Mac serving on each Mac that runs it (`darkbloom stop --solo` there), asked only after the person
     /// chose it; its lines say what was stopped. Not in `init`: only the live operations set it.
     public var stopSoloServing: @Sendable () -> Result<[String], ClusterOnboardingFailure> = {
@@ -2152,6 +2155,15 @@ public enum ClusterOnboardingDriver {
         if request.scope == nil, request.model == nil, leaderStarting(operations) {
             return followStart(leader: resume.leaderName ?? resume.peerName, operations, console)
         }
+        // Single-Mac serving blocks the pair (this Mac's, or the leading Mac's): the same ✗ as the leading Mac's screen,
+        // naming it, never just "Stopped" (0.10.9 DevNet build C, R8-1: the joining Mac said "Stopped … Close" while its own
+        // single-Mac provider blocked the leader's start).
+        let solo = operations.soloServing()
+        if !solo.isEmpty {
+            console.result(false, ClusterOnboardingSoloServing.title(solo) + ".",
+                           ClusterOnboardingSoloServing.remedies(solo) + [ClusterOnboardingSoloServing.leaderOffersLine(resume.leaderName ?? resume.peerName)])
+            return 1
+        }
         showStatus(operations, console)
         console.say("  " + memberRunsByItselfLine)
         console.say("")
@@ -2794,9 +2806,11 @@ public enum ClusterOnboardingDriver {
         if registers { operations.markRegistrationPending() }
         while true {
             let outcome = startOutcome(title: title, scope: scope, mayRegister: &mayRegister, operations, console)
-            // The start's steps are over (left: they go on by themselves, and the published figures age out).
+            // The start's steps are over (left: they go on by themselves, and the published figures age out). A pair that
+            // doesn't serve publishes its ✗ in their place below, with no gap between them where the Mac that joined would
+            // read no start and show the status' ✗ without its next step.
             switch outcome {
-            case .left, .leftPairWait: break
+            case .left, .leftPairWait, .notServing: break
             default: operations.publishStart(nil)
             }
             switch outcome {
@@ -2959,6 +2973,8 @@ public enum ClusterOnboardingDriver {
     static func clearSoloServing(_ serving: [ClusterOnboardingSoloServing], _ operations: ClusterOnboardingOperations,
                                  _ console: ClusterOnboardingConsole) -> Bool {
         guard !serving.isEmpty else { return true }
+        // Published in this Mac's record, so both Macs' status and the joining Mac's screen say the same block.
+        operations.markSoloBlocked(true)
         console.result(false, ClusterOnboardingSoloServing.title(serving) + ".", ClusterOnboardingSoloServing.remedies(serving))
         guard console.choose([ClusterOnboardingSoloServing.stopAndStartItem(serving), "Leave"], selected: 0) == 0 else {
             console.say(soloServingLeftLine)

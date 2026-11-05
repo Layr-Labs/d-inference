@@ -82,7 +82,9 @@ class ProviderBuildDefaultTests(unittest.TestCase):
         # Release Integrity runs only in CI (master) (David, 2026-11-04).
         ci = (ROOT / ".github/workflows/ci-master.yml").read_text(encoding="utf-8")
         job = re.search(r"(?ms)^  release-integrity:\n(.*?)(?=^  [a-z][a-z0-9_-]*:\n)", ci).group(1)
-        self.assertNotIn("\n    if:", job)
+        # Nothing but cancellation skips it: it waits only for the plan whose
+        # route it reads.
+        self.assertEqual(re.findall(r"(?m)^    if: (.+)$", job), ["${{ !cancelled() }}"])
         self.assertIn("TARGET_BRANCH: ${{ github.base_ref || github.ref_name }}", job)
         self.assertIn("python3 scripts/test-provider-build-default.py", job)
         self.assertIn('python3 scripts/provider-build-default.py --branch "$TARGET_BRANCH"', job)

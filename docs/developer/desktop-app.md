@@ -328,7 +328,9 @@ ordinary provider component suites remain required for changes to shared code.
 
 `.github/workflows/desktop.yml` runs the frontend tests and build, including
 for changes to `scripts/install.sh`, which the app bundles. Manual workflow
-dispatch also produces unsigned macOS review artifacts. It does not publish a
+dispatch also produces unsigned macOS review artifacts, on a Darkbloom
+Sandbox Mac when the route grants one, otherwise on Blacksmith
+([CI Runner Routing](build.md#ci-runner-routing)). It does not publish a
 release or establish attestation qualification.
 
 ## Hardware load

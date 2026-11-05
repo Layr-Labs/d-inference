@@ -42,6 +42,7 @@ GRANTED = {"release-integrity": LINUX, "test-provider": MACOS,
 PROVIDER = "${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}"
 SDK = "${{ (github.event_name == 'push' || needs.changes.outputs.sdk == 'true') && 1 || 0 }}"
 CLUSTER = "${{ needs.changes.outputs.cluster == 'true' && 1 || 0 }}"
+DISPATCH = "${{ github.event_name == 'workflow_dispatch' && 1 || 0 }}"
 PULL_REQUEST_WARM = "${{ github.event_name == 'pull_request' && 2 || 0 }}"
 # Every routed job: (profile, fallback label, count expression or None for 1)
 # of each lane it reads.
@@ -62,7 +63,10 @@ ROUTED = {
         "docs-impact": ("linux_arm64", LINUX_FALLBACK, None),
     },
     "landing.yml": {"check": ("linux_arm64", LINUX_FALLBACK, None)},
-    "desktop.yml": {"frontend": ("linux_arm64", LINUX_FALLBACK, None)},
+    "desktop.yml": {
+        "frontend": ("linux_arm64", LINUX_FALLBACK, None),
+        "review-package": ("macos_arm64", MACOS_FALLBACK, DISPATCH),
+    },
     "nightly-linear-package.yml": {"test": ("linux_arm64", LINUX_FALLBACK, None)},
     "provider-release-cache.yml": {"warm": ("macos_arm64", MACOS_FALLBACK, PULL_REQUEST_WARM)},
 }

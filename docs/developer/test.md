@@ -1895,10 +1895,14 @@ removed first, its failure fatal only when `CLUSTER_RUNTIME_SEND` is true, and
 HTTPS plane with a throwaway certificate; the host needs Bash, Python, jq, curl
 and openssl. It covers the default-off switch, fork pull requests, exact label
 grants, HTTP errors, the single retry, timeouts, untrusted or plain-HTTP planes
-and hostile reply text. It also pins each routed job's lanes (one per provider
-or cluster shard, matching the job's matrix), fallback, timeout and read-only
-permissions, and keeps release workflows on literal Blacksmith runners. No check
-contacts the real plane.
+and hostile reply text. It covers [job sizes](build.md#job-sizes) both ways:
+while `DARKBLOOM_JOB_SHAPES` is not exactly `on`, CI's request is byte for byte
+the request without sizes; while it is on, each lane sends its size and takes
+only the labels of that size. It also covers bad sizes and the macOS cap order.
+It also pins each routed job's lanes (one per provider or cluster shard,
+matching the job's matrix), size, fallback, timeout and read-only permissions,
+and keeps release workflows on literal Blacksmith runners. No check contacts
+the real plane.
 
 Docs-impact tests retain provider, protocol, privacy, native capacity, cache,
 release/model publication and fixture mappings. Historical links need exact

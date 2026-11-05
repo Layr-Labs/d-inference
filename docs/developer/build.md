@@ -324,20 +324,22 @@ the workflow pins. `dev` has no Release Integrity, so these run there too.
 
 ### Build Once
 
-Each lane builds its debug test products once, on a large Blacksmith runner
-(`blacksmith-12vcpu-macos-27`), and its test jobs run them with
-`swift test --skip-build`. No test job compiles the provider or the cluster
-packages.
+Each lane builds its debug test products once, on a large 12 vCPU runner, and
+its test jobs run them with `swift test --skip-build`. No test job compiles the
+provider or the cluster packages. Every job below reads its runner from the
+route ([CI Runner Routing](#ci-runner-routing)). Its fallback is
+`blacksmith-12vcpu-macos-27`. While job sizes are off, a 12x32 job keeps its
+fallback without asking ([Job sizes](#job-sizes)).
 
 | Job | Runner | Needs | Does |
 |---|---|---|---|
-| `build-cluster` (Build cluster test products) | Blacksmith, 12 vCPU | - | Builds the cluster lane (`.github/actions/provider-ci-build`), uploads `cluster-test-products` |
-| `build-provider` (Build provider test products) | Blacksmith, 12 vCPU | - | Builds the provider lane, uploads `provider-test-products` |
-| `cluster-release-checks` (Cluster Release Build Checks) | Blacksmith, 12 vCPU | - | Compiles the release build of the worker capability and prefill schedule checks, and runs them |
-| `test-provider`, shards 1 and 2 | routed | `build-provider` | The provider selections, Prompt Parity, the native gates, the audit and coverage |
-| `test-cluster`, shards 1 to 3 | routed | `build-cluster` | The blocking cluster selections |
-| `test-cluster-gpu`, shards 1 and 2 | Blacksmith, 12 vCPU | `build-cluster` | The non-blocking cluster GPU selections |
-| `test-cluster-focused`, shards 1 and 2 | routed | - | The focused runner scripts (shard 1); the stage metadata, provisioning and onboarding runners (shard 2) |
+| `build-cluster` (Build cluster test products) | routed, 12x32 | - | Builds the cluster lane (`.github/actions/provider-ci-build`), uploads `cluster-test-products` |
+| `build-provider` (Build provider test products) | routed, 12x32 | - | Builds the provider lane, uploads `provider-test-products` |
+| `cluster-release-checks` (Cluster Release Build Checks) | routed, 12x32 | - | Compiles the release build of the worker capability and prefill schedule checks, and runs them |
+| `test-provider`, shards 1 and 2 | routed, 4x24 | `build-provider` | The provider selections, Prompt Parity, the native gates, the audit and coverage |
+| `test-cluster`, shards 1 to 3 | routed, 4x24 | `build-cluster` | The blocking cluster selections |
+| `test-cluster-gpu`, shards 1 and 2 | routed, 12x32 | `build-cluster` | The non-blocking cluster GPU selections |
+| `test-cluster-focused`, shards 1 and 2 | routed, 4x24 | - | The focused runner scripts (shard 1); the stage metadata, provisioning and onboarding runners (shard 2) |
 
 The cluster lane builds in a job of its own, so the cluster tests start as soon
 as their products are up; GitHub starts a job only when every job it needs is
@@ -393,7 +395,7 @@ lane, `format('<job>-{0}', matrix.shard)`.
 
 | Workflow | Routed jobs | Fallback |
 |---|---|---|
-| `provider-tests.yml` (lanes requested by `provider-plan.yml`) | `test-provider` (lanes `test-provider-1` and `test-provider-2`, one per shard), `test-cluster` (lanes `test-cluster-1` to `test-cluster-3`), `test-cluster-focused` (one lane, `test-cluster-focused`, requested for both shards) | `blacksmith-12vcpu-macos-27` |
+| `provider-tests.yml` (lanes requested by `provider-plan.yml`) | `test-provider` (lanes `test-provider-1` and `test-provider-2`, one per shard), `test-cluster` (lanes `test-cluster-1` to `test-cluster-3`), `test-cluster-focused` (one lane, `test-cluster-focused`, requested for both shards), `build-cluster`, `build-provider`, `cluster-release-checks`, `test-cluster-gpu` (one lane, requested for both shards) | `blacksmith-12vcpu-macos-27` |
 | `ci-master.yml` (lanes requested by `provider-plan.yml`) | `release-integrity`, `docs` | `blacksmith-4vcpu-ubuntu-2404` |
 | `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
 | `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
@@ -417,17 +419,17 @@ Routing is off unless the repository variable `DARKBLOOM_ROUTING` is exactly
 `on`. The repository variable `DARKBLOOM_MACOS_LANES`, when set to a number
 from 0 to 99, caps the macOS jobs one run asks for: the route keeps the lanes
 in the caller's order while they fit, and the others keep their fallback
-without asking (any other value asks for no macOS lane). `provider-plan.yml`
-asks for the blocking test jobs only, critical path first: `test-cluster-2`
-(the concurrent groups), `test-cluster-3` (the Gemma 4 base suites),
-`test-cluster-focused` (count 2), then the provider shards and
-`test-cluster-1`: 7 jobs. A lane gets the jobs of its whole matrix, so the two
-focused shards share the lane name the approval lists. While it is off, and for pull requests from forks, every job keeps its
+without asking (any other value asks for no macOS lane). A lane gets the jobs
+of its whole matrix, so the two focused shards share the lane name the approval
+lists, and the two GPU shards share `test-cluster-gpu`.
+
+While routing is off, and for pull requests from forks, every job keeps its
 fallback and the plane is not contacted. When it is on, the route job sends one
 `POST /v1/ci/routes` to `DARKBLOOM_SANDBOX_URL` (default
 `https://api-sandbox.darkbloom.dev`) for the jobs that will run, retrying at
 most once after a transient failure. It uses a grant only when the grant
-repeats the exact Darkbloom labels for the job's profile. Errors, timeouts and
+repeats the exact Darkbloom labels for the job's profile, qualified by the
+lane's size when it sends one ([Job sizes](#job-sizes)). Errors, timeouts and
 malformed replies keep the fallback; the plane never fails the route job.
 Every job of a lane shares one `runs-on` value, so the plane grants a lane
 whole, for its requested job count, or not at all. Each shard is therefore a
@@ -456,14 +458,14 @@ keep their fallback, so a push saves caches on Darkbloom only from an admitted
 branch and only in routed lanes ([CI Caching](#ci-caching)).
 Release, signing, publication, model registration, review automation and
 `master` or dispatched cache warming keep literal Blacksmith labels. In CI,
-every blocking test job reads its lane of the plan's one route request (the
+every macOS job reads its lane of the plan's one route request (the
 plane routes a run attempt once); the plan's own bookkeeping (the tree lookup,
-the component choice) and the `Provider Tests` gate run on `ubuntu-24.04`. The
-machine shape of each profile comes from the repository's approval, not from
-the request: one macOS shape and one Linux shape. The macOS shape is small
-(4 vCPU, 16 GiB), so the build jobs, Cluster Release Build Checks and Cluster
-GPU Tests (peaks of 18.5 to 24.7 GiB) use `blacksmith-12vcpu-macos-27`
-directly and never ask the plane.
+the component choice) and the `Provider Tests` gate run on `ubuntu-24.04`.
+A lane without a size gets the machine shape of its profile from the
+repository's approval: one macOS shape and one Linux shape. The macOS shape is
+small (4 vCPU, 16 GiB). The build jobs, Cluster Release Build Checks and
+Cluster GPU Tests need more, so they ask only with their size
+([Job sizes](#job-sizes)).
 
 Jobs on Darkbloom Sandboxes use GitHub's Actions cache, not Blacksmith's
 colocated cache, so their first runs start without cached build products.
@@ -471,6 +473,52 @@ Darkbloom Linux sandboxes are ARM64; the Blacksmith Linux fallback is x64. The
 decision is fixed for the run: **Re-run failed jobs** reuses it, so turn routing
 off and use **Re-run all jobs** to move a run back to Blacksmith. See the
 [routing checks](test.md#focused-tooling-checks).
+
+### Job sizes
+
+A macOS lane can ask for a size, `<vCPUs>x<GiB>`. The route job checks each
+size against this grammar (lowercase decimal, no leading zeros) and fails on a
+bad value, before it sends a request. The route job sends sizes only when the
+repository variable `DARKBLOOM_JOB_SHAPES` is exactly `on`. While it is off:
+
+- The request has no size. It is byte for byte the request of a lane table
+  without sizes.
+- The 7 blocking test jobs ask without a size, as before sizes. Their runners
+  do not change.
+- A lane marked `required` keeps its fallback without asking. It takes no
+  place under the `DARKBLOOM_MACOS_LANES` cap.
+
+The lane table in the `route` job of `provider-plan.yml` is the one place that
+names each job's lane and size. The lanes are in cap order: the critical-path
+test shards first, then the 12x32 jobs.
+
+| Lane | Jobs | Size | While sizes are off |
+|---|---|---|---|
+| `test-cluster-2` (the concurrent groups) | 1 | 4x24 | asks without a size |
+| `test-cluster-3` (the Gemma 4 base suites) | 1 | 4x24 | asks without a size |
+| `test-cluster-focused` | 2 | 4x24 | asks without a size |
+| `test-provider-2` | 1 | 4x24 | asks without a size |
+| `test-cluster-1` | 1 | 4x24 | asks without a size |
+| `test-provider-1` | 1 | 4x24 | asks without a size |
+| `build-cluster` | 1 | 12x32 | Blacksmith, not asked |
+| `build-provider` | 1 | 12x32 | Blacksmith, not asked |
+| `cluster-release-checks` | 1 | 12x32 | Blacksmith, not asked |
+| `test-cluster-gpu` | 2 | 12x32 | Blacksmith, not asked |
+
+A run that tests every component asks for 12 macOS jobs while sizes are on,
+and 7 while they are off. The test jobs peak at 21.5 GiB, the build jobs at
+18.8 GiB, and GPU shard 2 at 32.8 GiB.
+
+A lane sent with a size uses a grant only when the grant's labels are its
+profile's labels with the last one qualified by the size, such as
+`[self-hosted, macOS, ARM64, darkbloom-macos-arm64-4x24]`. The job then runs on
+that `runs_on` value as the plane sent it. Otherwise the lane keeps its
+fallback. The plane names its reason, for example `shape_not_signed` (no signed
+image of that size), `unavailable` (the plane cannot read its image catalog),
+`unsupported_runner_class` (the size has no price), `image_not_available` (the
+image is not staged) or `lane_not_enabled` (the approval does not name the
+lane). For each lane, the route job's log and step summary show the size
+asked, the runner, and the decision with its reason.
 
 ## CI Caching
 

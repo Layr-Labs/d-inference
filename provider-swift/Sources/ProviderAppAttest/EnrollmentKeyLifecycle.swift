@@ -3,7 +3,7 @@ import Foundation
 extension ShadowKeyRecord {
     func mayGenerateKey(at now: Date) -> Bool {
         guard let allowed = generationAllowedAt else { return false }
-        return now >= allowed
+        return now.timeIntervalSince(allowed) >= 0
     }
 
     /// Earliest replacement time for a retired or failed key: one hour after

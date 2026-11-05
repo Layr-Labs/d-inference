@@ -629,7 +629,11 @@ the source-bound unsigned artifact on `blacksmith-12vcpu-macos-27`. It does not
 wait for an environment approval. `qualify-sdk` passes only when all five
 `qualify-sdk-shard` jobs pass and together executed the full provider suite.
 Release SDK selection is SDK 27.2 / Apple Swift 6.4.2 (Xcode 27.2), with `SDKROOT` covering
-compilation and linking; the final recorded SDK must match. The
+compilation and linking; the final recorded SDK must match. Before the
+handoff, the release lane runs `scripts/check-provider-weak-imports.py` on every
+built binary. It refuses a binary that imports Foundation's back-deployed
+`Date.>=` or `Date.<=`, which pre-release macOS 27.2 builds lack
+([build guide](../developer/build.md#sdk-27-release-builds-and-caches)). The
 checksum-pinned GitHub CLI is installed by
 `scripts/install-macos-github-cli.sh` before downloads. Missing `gh` in an old
 run is a tooling failure, not a model or notarization failure.

@@ -69,6 +69,7 @@ on:
       - 'scripts/provider-cluster-runtime-models.py'
       - 'scripts/provider-cluster-runtime-facts.sh'
       - 'scripts/build-cluster-helpers.sh'
+      - 'scripts/check-provider-weak-imports.py'
       - 'scripts/sign-cluster-helpers.sh'
       - 'scripts/stage-swiftpm-resource-bundles.sh'
       - 'scripts/prepare-provider-release-toolchain.sh'

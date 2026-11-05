@@ -507,7 +507,7 @@ public final class ClusterService: @unchecked Sendable {
             guard refused else { memoryRefusals = nil; return false }
             let count = (memoryRefusals?.key == key ? memoryRefusals!.count : 0) + 1
             memoryRefusals = (key, count)
-            guard count >= Self.memoryRefusalsBeforeReplan, !memoryReplanInFlight, !stopping, Date() >= nextMemoryReplan,
+            guard count >= Self.memoryRefusalsBeforeReplan, !memoryReplanInFlight, !stopping, Date().timeIntervalSince(nextMemoryReplan) >= 0,
                   sameSplitReplans < Self.memoryReplansWithSameSplit, control?.leads == true else { return false }
             memoryReplanInFlight = true
             nextMemoryReplan = Date().addingTimeInterval(Self.memoryReplanSeconds)
@@ -643,7 +643,7 @@ public final class ClusterService: @unchecked Sendable {
     private func syncMembers(say: @escaping @Sendable (String) -> Void) {
         guard let record = try? store.readRecord(), let leadership = record.leadership, leadsAndRunsCluster() else { return }
         let begin: Bool = lock.withLock {
-            guard !syncing, !stopping, Date() >= nextSync else { return false }
+            guard !syncing, !stopping, Date().timeIntervalSince(nextSync) >= 0 else { return false }
             syncing = true
             nextSync = Date().addingTimeInterval(ClusterOnboardingSync.dueEverySeconds)
             return true
@@ -906,7 +906,7 @@ public final class ClusterService: @unchecked Sendable {
                let acknowledgement = supervisionAcknowledgement(in: directory),
                acknowledgement.servicePID == writer, acknowledgement.idle,
                acknowledgement.publication != previousAcknowledgement { return true }
-            if Date() >= deadline { return false }
+            if Date().timeIntervalSince(deadline) >= 0 { return false }
             usleep(100_000)
         } while Date() < deadline
         return false
@@ -1041,7 +1041,7 @@ public final class ClusterService: @unchecked Sendable {
         guard let leadership = (try? store.readRecord())?.leadership, leadership.serving, let model = leadership.modelName,
               lock.withLock({ control?.leads == true }) else { return }
         let begin: Bool = lock.withLock {
-            guard !updateInFlight, !stopping, Date() >= nextUpdateCheck else { return false }
+            guard !updateInFlight, !stopping, Date().timeIntervalSince(nextUpdateCheck) >= 0 else { return false }
             updateInFlight = true
             nextUpdateCheck = Date().addingTimeInterval(ClusterOnboardingUpdate.checkEverySeconds)
             return true
@@ -1123,7 +1123,7 @@ public final class ClusterService: @unchecked Sendable {
     /// before its part starts (`supervise`), never by stopping a running pair.
     private func checkApproval(say: @escaping @Sendable (String) -> Void) {
         let begin: Bool = lock.withLock {
-            guard !approvalInFlight, !updateInFlight, !stopping, control?.leads == true, Date() >= nextApprovalCheck else { return false }
+            guard !approvalInFlight, !updateInFlight, !stopping, control?.leads == true, Date().timeIntervalSince(nextApprovalCheck) >= 0 else { return false }
             approvalInFlight = true
             return true
         }
@@ -1579,7 +1579,7 @@ public final class ClusterService: @unchecked Sendable {
         }
         // The restart backoff holds back only the part that ended: serving alone after the grace starts at once.
         guard running == nil, let key, lock.withLock({ !stopping && ClusterControlPartChoice.mayStart(key: key, endedKey: endedKey,
-                                                                                                  backoffElapsed: Date() >= nextStart) })
+                                                                                                  backoffElapsed: Date().timeIntervalSince(nextStart) >= 0) })
         else { return }
         let arguments: [String]
         let what: String

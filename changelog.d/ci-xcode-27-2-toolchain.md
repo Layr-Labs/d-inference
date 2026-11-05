@@ -5,3 +5,4 @@
 - The toolchain step tries the image's Xcode, then each installed Xcode, and takes the first with SDK 27.2. When it selects another Xcode than the image's, it exports `DEVELOPER_DIR`, so Metal, `xcodebuild` and signing use the same Xcode. When no Xcode qualifies, it names the installed ones.
 - `PROVIDER_SDK_VERSION` is the SDK that was selected, not a fixed 27.0. A resumed release signs an unsigned build only when that build linked SDK 27.2.
 - `mise.toml` pins Swift 6.4.2.
+- No provider code compares Dates with `>=` or `<=`. SDK 27.2 back-deploys these two operators. Pre-release macOS 27.2 builds (26B5091g) do not export them, and DevNet build `0.10.6-dev.branch.87` crashed in a loop on such a Mac. `scripts/check-date-comparisons.py` refuses the pattern in source. The release build refuses a binary that imports either symbol (`scripts/check-provider-weak-imports.py`).

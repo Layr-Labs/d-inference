@@ -229,7 +229,7 @@ extension QwenTensorParallelResidentRuntime {
             },
             profiledRound: { [self] profile in
                 log("darkbloom-tp-mtp-profile-v1 rank=\(collective.rank) scope=\(records.requestID) capacity=\(batchLanes) " + profile.fields)
-            })
+            }, buildsAhead: batchBuildsAhead)
         let driver = try QwenTensorParallelBatchDriver(executor: executor, book: batchBook,
             capacity: batchLanes, vocabulary: admission.profile.vocabularySize, buildsAhead: batchBuildsAhead)
         do {

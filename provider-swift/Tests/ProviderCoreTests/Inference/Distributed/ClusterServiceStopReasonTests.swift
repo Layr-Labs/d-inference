@@ -67,6 +67,30 @@ struct ClusterServiceStopReasonTests {
                 "what each Mac can and can't say: \(lines)")
     }
 
+    /// The two Macs run different versions (one updated alone, account 668cf2b3 on 11-04): the ✗ says so first, with
+    /// both versions and the command on the Mac that's behind, in each direction, instead of guessing at the link.
+    @Test func aVersionSplitIsNamedFirstWithTheMacAndTheCommand() {
+        let own = ClusterServiceStatus.Child(running: false, starts: 13, lastEnd: "exit 1", restartInSeconds: 30, lastError: "closed")
+        let other = ClusterServiceStatus.Child(running: true, starts: 1, lastEnd: nil, restartInSeconds: nil, lastError: nil)
+        let there = "The other Mac (Apple M4 Max, 128 GB)"
+        let behindThere = OnboardingLive.errorLines(here: "This Mac", there: there, own: own, other: other, otherUnreachable: nil,
+                                                    thisVersion: "0.10.8", otherVersion: "0.10.7")
+        #expect(behindThere.first == "The two Macs run different Darkbloom versions: The other Mac (Apple M4 Max, 128 GB) runs 0.10.7, this Mac runs 0.10.8.")
+        #expect(behindThere.dropFirst().first == "On the other Mac (Apple M4 Max, 128 GB), run `darkbloom update`; the pair starts once both Macs run 0.10.8.")
+        #expect(!behindThere.contains { $0.contains("doesn't report its worker restarting") }, "no guess at the cause: \(behindThere)")
+
+        let behindHere = OnboardingLive.errorLines(here: "This Mac", there: there, own: own, other: other, otherUnreachable: nil,
+                                                   thisVersion: "0.10.8", otherVersion: "0.10.9")
+        #expect(behindHere.dropFirst().first == "On this Mac, run `darkbloom update`; the pair starts once both Macs run 0.10.9.")
+
+        let same = OnboardingLive.errorLines(here: "This Mac", there: there, own: own, other: other, otherUnreachable: nil,
+                                             thisVersion: "0.10.9", otherVersion: "0.10.9")
+        let unknown = OnboardingLive.errorLines(here: "This Mac", there: there, own: own, other: other, otherUnreachable: nil,
+                                                thisVersion: "0.10.9", otherVersion: nil)
+        let before = OnboardingLive.errorLines(here: "This Mac", there: there, own: own, other: other, otherUnreachable: nil)
+        #expect(same == before && unknown == before, "one version, or the other Mac's unknown: the lines as before")
+    }
+
     /// A part that ends by itself keeps its own reason, without the live row's progress word.
     @Test func aPartThatEndsByItselfKeepsItsReason() {
         let line = "starting; this Mac's part ended (exit 1: Tensor-parallel shard load needs 49.08 GiB) and starts again by itself"

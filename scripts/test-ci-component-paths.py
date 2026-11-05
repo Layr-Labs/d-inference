@@ -325,7 +325,7 @@ class WorkflowRoutingTests(unittest.TestCase):
             self.assertIn("    needs: plan\n    if: ${{ !cancelled() }}\n", master[policy])
         self.assertIn("python3 scripts/test-ci-component-paths.py", master["release-integrity"])
         dev = (ROOT / ".github/workflows/ci-dev.yml").read_text()
-        self.assertEqual(set(workflow.job_blocks(dev.split("\njobs:\n", 1)[1])), {"tests"})
+        self.assertEqual(set(workflow.job_blocks(dev.split("\njobs:\n", 1)[1])), {"plan", "tests"})
         self.assertIn("    uses: ./.github/workflows/provider-tests.yml\n", dev)
 
     def test_detector_has_full_history_no_credentials_or_api_truncation(self):

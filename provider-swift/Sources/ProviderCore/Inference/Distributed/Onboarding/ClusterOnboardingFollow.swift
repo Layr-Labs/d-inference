@@ -51,6 +51,11 @@ extension ClusterOnboardingDriver {
                "If it still doesn't start, run `darkbloom --version` on both Macs; if they differ, run `darkbloom update` on the one that's behind."]
     }
 
+    /// After the version split's ✗ on the Mac that joined.
+    static func versionSplitAfterLine(_ leader: String?) -> String {
+        ClusterOnboardingCommand.named("Once both Macs run the same version, run `darkbloom cluster` on \(ClusterOnboardingMacName.other(named: leader)) again; this Mac follows it by itself.")
+    }
+
     /// After that block: nothing stops here.
     public static let notStartedAfterLine = "When it starts, this Mac runs its part by itself; run `darkbloom cluster` here to see it."
 
@@ -187,7 +192,23 @@ extension ClusterOnboardingDriver {
             console.settle()
             console.say(line)
         }
+        // The two Macs' versions, read on the looks' cadence: a split never clears by itself, so the wait ends at once.
+        let splits = ClusterOnboardingMailbox<ClusterOnboardingVersionSplit?>()
+        var splitAsking = false, splitAsked = Date.distantPast
         while true {
+            if !splitAsking, Date().timeIntervalSince(splitAsked) >= timing.pollSeconds {
+                (splitAsking, splitAsked) = (true, Date())
+                Thread.detachNewThread { splits.post(operations.versionSplit()) }
+            }
+            if let read = splits.take().last {
+                splitAsking = false
+                if let split = read {
+                    console.settle()
+                    console.result(false, split.title + ".", split.remedies)
+                    console.say("  " + versionSplitAfterLine(leader))
+                    return 1
+                }
+            }
             if !asking, Date().timeIntervalSince(asked) >= timing.pollSeconds {
                 asking = true
                 asked = Date()

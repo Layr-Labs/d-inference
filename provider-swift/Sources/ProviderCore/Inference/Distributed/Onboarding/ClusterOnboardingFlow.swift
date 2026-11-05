@@ -741,9 +741,26 @@ public enum ClusterOnboardingUpdate {
     }
 
     /// The member's log and status line while it waits for the leader's setup after an update.
-    public static func memberWaitLine(version: String) -> String {
+    public static func memberWaitLine(version: String, otherVersion: String? = nil) -> String {
         "this Mac runs Darkbloom v\(version), but its saved setup is for an earlier build: "
             + "waiting for the other Mac's setup for v\(version) (the old setup is not started)"
+            + splitClause(thisVersion: version, otherVersion: otherVersion)
+    }
+
+    /// The control leader's line while the two Macs don't answer with one build: with the other Mac's version, when it
+    /// runs another, the Mac to update and the command.
+    public static func leaderWaitLine(macs: String, model: String, thisVersion: String, otherVersion: String?) -> String {
+        "Darkbloom changed on \(macs): waiting until both Macs answer with the same build to set the cluster up again for \(model)"
+            + splitClause(thisVersion: thisVersion, otherVersion: otherVersion)
+    }
+
+    /// "; the other Mac runs v0.10.8, this Mac v0.10.9: run `darkbloom update` on the other Mac", or nothing when one
+    /// version (or the other Mac's is unknown).
+    static func splitClause(thisVersion: String, otherVersion: String?) -> String {
+        guard let split = ClusterOnboardingVersionSplit.detect(thisVersion: thisVersion, otherVersion: otherVersion,
+                                                               other: ClusterOnboardingMacName.other) else { return "" }
+        return "; the other Mac runs v\(split.otherVersion), this Mac v\(split.thisVersion): run "
+            + ClusterOnboardingCommand.named("`darkbloom update`") + " on " + split.olderMac
     }
 
     /// Both Macs' teardown summaries (`ClusterService.teardownLines`, one per Mac) say nothing is left running.
@@ -1057,9 +1074,87 @@ public enum ClusterOnboardingSync {
     }
 }
 
+/// The two Macs of a pair run different Darkbloom versions (one updated alone): a cause that never clears by itself
+/// until the older Mac updates, so the start ends at once with it named, before single-Mac serving or any part end.
+/// `other` is the other Mac as the screens name it ("the other Mac (Apple M4 Max, 128 GB)"); commands are named for the
+/// running build (`ClusterOnboardingCommand`).
+public struct ClusterOnboardingVersionSplit: Sendable, Equatable {
+    public var thisVersion: String
+    public var otherVersion: String
+    public var other: String
+
+    /// A split when both versions are known, numeric, and differ; nil otherwise (one version, or the other Mac's unknown:
+    /// an older peer without a supervisor publishes none).
+    public static func detect(thisVersion: String?, otherVersion: String?, other: String) -> ClusterOnboardingVersionSplit? {
+        guard let thisVersion, let otherVersion, older(thisVersion, otherVersion) != nil else { return nil }
+        return .init(thisVersion: thisVersion, otherVersion: otherVersion, other: other)
+    }
+
+    /// Whether `a` is older than `b`; nil when equal or not numeric.
+    static func older(_ a: String, _ b: String) -> Bool? {
+        func numbers(_ text: String) -> [Int]? {
+            let parts = text.trimmingCharacters(in: .whitespaces).split(separator: ".").map { Int($0) }
+            return parts.isEmpty || parts.contains(nil) ? nil : parts.compactMap { $0 }
+        }
+        guard let left = numbers(a), let right = numbers(b) else { return nil }
+        for index in 0..<max(left.count, right.count) {
+            let (x, y) = (index < left.count ? left[index] : 0, index < right.count ? right[index] : 0)
+            if x != y { return x < y }
+        }
+        return nil
+    }
+
+    public var behindHere: Bool { Self.older(thisVersion, otherVersion) == true }
+    public var newer: String { behindHere ? otherVersion : thisVersion }
+    public var older: String { behindHere ? thisVersion : otherVersion }
+    /// The Mac to run the update on, mid-sentence.
+    public var olderMac: String { behindHere ? ClusterOnboardingMacName.this : other }
+
+    /// The ✗ title, without its final period.
+    public var title: String {
+        "The two Macs run different Darkbloom versions: \(ClusterOnboardingMacName.sentence(other)) runs \(otherVersion), "
+            + "this Mac runs \(thisVersion)"
+    }
+
+    /// What to do, one line each.
+    public var remedies: [String] {
+        ["On \(olderMac), run `darkbloom update`; the pair starts once both Macs run \(newer).",
+         "Check with `darkbloom --version` on both Macs."].map(ClusterOnboardingCommand.named)
+    }
+
+    /// The reason in the status line, the same on both Macs (the joining Mac shows the leading Mac's), so it names the
+    /// versions and the command, not "this Mac" (`ClusterPairSummary` names the Mac per window).
+    public var reason: String {
+        "the two Macs run different Darkbloom versions, \(newer) and \(older): run "
+            + ClusterOnboardingCommand.named("`darkbloom update`") + " on the Mac with \(older)"
+    }
+
+    public static let reasonMarker = "the two Macs run different Darkbloom versions"
+
+    /// The next step for `reason` as read on a Mac running `thisVersion`: the Mac to update, named, and the command.
+    public static func next(reason: String, thisVersion: String, other: String, cli: String) -> String? {
+        guard reason.contains(reasonMarker),
+              let colon = reason.range(of: ", ", range: reason.range(of: reasonMarker)!.upperBound..<reason.endIndex)
+        else { return nil }
+        let tail = reason[colon.upperBound...]
+        guard let and = tail.range(of: " and "), let end = tail.range(of: ":") else { return nil }
+        let newer = String(tail[..<and.lowerBound]), older = String(tail[and.upperBound..<end.lowerBound])
+        let mac = thisVersion == older ? ClusterOnboardingMacName.this : thisVersion == newer ? other : "the Mac with \(older)"
+        return "On \(mac), run `\(cli) update`; then check that `\(cli) --version` shows \(newer) on both Macs."
+    }
+
+    public var failure: ClusterOnboardingFailure {
+        var failure = ClusterOnboardingFailure([title + "."] + remedies)
+        failure.versionSplit = self
+        return failure
+    }
+}
+
 /// A step that failed, in words for the screen.
 public struct ClusterOnboardingFailure: Error, Sendable, Equatable {
     public var lines: [String]
+    /// The two Macs run different versions (`ClusterOnboardingVersionSplit`): no Retry until the older Mac updates.
+    public var versionSplit: ClusterOnboardingVersionSplit?
     /// Single-Mac serving that blocks the pair (`ClusterOnboardingSoloServing`): a cause that never clears by itself, so
     /// the start offers to stop it instead of a Retry. Empty for any other failure.
     public var soloServing: [ClusterOnboardingSoloServing] = []
@@ -1197,6 +1292,9 @@ public struct ClusterOnboardingOperations: Sendable {
     /// Single-Mac serving on either Mac (this Mac's provider instance lock; the other Mac's status), read right before
     /// the pair's parts start: empty when none runs or it can't be told. Not in `init`: only the live operations set it.
     public var soloServing: @Sendable () -> [ClusterOnboardingSoloServing] = { [] }
+    /// The two Macs' versions when they differ (this Mac's; the other Mac's status), read before the parts start, during
+    /// the wait and before a Retry: nil when one version or unknown. Not in `init`: only the live operations set it.
+    public var versionSplit: @Sendable () -> ClusterOnboardingVersionSplit? = { nil }
     /// Stops single-Mac serving on each Mac that runs it (`darkbloom stop --solo` there), asked only after the person
     /// chose it; its lines say what was stopped. Not in `init`: only the live operations set it.
     public var stopSoloServing: @Sendable () -> Result<[String], ClusterOnboardingFailure> = {
@@ -2606,6 +2704,8 @@ public enum ClusterOnboardingDriver {
                 return 1
             }
         }
+        // Different versions, then single-Mac serving: neither ends by itself, so each is said before anything starts.
+        guard clearVersionSplit(operations.versionSplit(), operations, console) else { return 1 }
         // Single-Mac serving on either Mac never ends by itself: said once, before anything starts, never waited for.
         guard clearSoloServing(operations.soloServing(), operations, console) else { return 1 }
         switch busy(console, "Starting both Macs", operations.serve) {
@@ -2644,6 +2744,8 @@ public enum ClusterOnboardingDriver {
         case served(title: String, lines: [String], ready: ClusterOnboardingReady), testFailed, notServing([String]), left
         /// Single-Mac serving blocks the pair (`ClusterOnboardingSoloServing`): no Retry, it never clears by itself.
         case soloServing([ClusterOnboardingSoloServing])
+        /// The two Macs run different versions (`ClusterOnboardingVersionSplit`): no Retry until the older Mac updates.
+        case versionSplit(ClusterOnboardingVersionSplit)
     }
 
     /// After the start. Serving and Done are said only once the model is loaded on both Macs and a request answered
@@ -2678,6 +2780,14 @@ public enum ClusterOnboardingDriver {
                 console.say("")
                 console.say("Setup saved, but the test failed. To test again, run `darkbloom cluster` and choose \(title): it sends one test request.")
                 return 1
+            case .versionSplit(let split):
+                guard clearVersionSplit(split, operations, console),
+                      clearSoloServing(operations.soloServing(), operations, console) else { return 1 }
+                if case .failure(let failure) = busy(console, "Starting both Macs", operations.serve) {
+                    for line in failure.lines { console.say("  " + line) }
+                    return 1
+                }
+                continue
             case .soloServing(let serving):
                 guard clearSoloServing(serving, operations, console) else { return 1 }
                 if case .failure(let failure) = busy(console, "Starting both Macs", operations.serve) {
@@ -2691,6 +2801,8 @@ public enum ClusterOnboardingDriver {
                 operations.publishStart(.failed(title: block.title, lines: block.lines, retry: true))
                 switch notServing(lines, operations, console) {
                 case .retry:
+                    // The versions first: a Retry of a pair split across versions would only end the same way.
+                    guard clearVersionSplit(operations.versionSplit(), operations, console) else { return 1 }
                     // A pair stopped meanwhile (`cluster stop --service` on a Mac): Retry starts it again and says so, instead
                     // of waiting for parts nothing would start (the pair-2 run, P2-4).
                     if operations.status().first?.hasPrefix("Stopped") == true {
@@ -2740,6 +2852,7 @@ public enum ClusterOnboardingDriver {
         let ready: ClusterOnboardingReady
         switch waitForParts(title: title, operations, console) {
         case .success(let value)?: ready = value
+        case .failure(let failure)? where failure.versionSplit != nil: return .versionSplit(failure.versionSplit!)
         case .failure(let failure)? where !failure.soloServing.isEmpty: return .soloServing(failure.soloServing)
         case .failure(let failure)?: return .notServing(failure.lines)
         case nil: return .left
@@ -2780,6 +2893,25 @@ public enum ClusterOnboardingDriver {
     /// process and what to run there, then the choice to stop it on each Mac named and start the pair, or to leave.
     /// True when nothing blocks the pair (none ran, or the person chose to stop it and it stopped); false when nothing
     /// starts, said on the last line.
+    /// Different versions on the two Macs: the ✗ with the Mac to update and the command, then Check again (the versions
+    /// are read again; the start goes on once they match) or Leave. True when nothing splits the pair (any more).
+    static func clearVersionSplit(_ split: ClusterOnboardingVersionSplit?, _ operations: ClusterOnboardingOperations,
+                                  _ console: ClusterOnboardingConsole) -> Bool {
+        guard var split else { return true }
+        while true {
+            console.result(false, split.title + ".", split.remedies)
+            guard console.choose([versionCheckAgainItem, "Leave"], selected: 0) == 0 else {
+                console.say(versionSplitLeftLine)
+                return false
+            }
+            guard let still = operations.versionSplit() else { return true }
+            split = still
+        }
+    }
+
+    public static let versionCheckAgainItem = "Check the versions again (after `darkbloom update` on the Mac named)"
+    public static let versionSplitLeftLine = "The pair was not started. Run `darkbloom update` on the Mac named, then `darkbloom cluster` here."
+
     static func clearSoloServing(_ serving: [ClusterOnboardingSoloServing], _ operations: ClusterOnboardingOperations,
                                  _ console: ClusterOnboardingConsole) -> Bool {
         guard !serving.isEmpty else { return true }

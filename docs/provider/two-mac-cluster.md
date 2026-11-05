@@ -1087,6 +1087,11 @@ happens by itself; `darkbloom cluster` says which applies to each Mac.
 
 ## Updating Darkbloom on the pair
 
+**For pair owners:** run `darkbloom update` on **both** Macs, then check that
+`darkbloom --version` shows the same version on both. If either Mac ever ran a
+plain `darkbloom start` before 0.10.8 (which meant single-Mac serving), run
+`darkbloom stop --solo` on that Mac first.
+
 The Macs of a pair update themselves together, as a single Mac does, while
 `auto_update` is on (the default) and `DARKBLOOM_NO_UPDATE_CHECK` is not set on
 either Mac. Nothing needs to be run. Every 30 minutes, at the pair's update slot
@@ -1143,6 +1148,47 @@ from a plain `darkbloom start` before 0.10.8, which meant single-Mac serving),
 `darkbloom update` restarts the pair and leaves single-Mac serving as it is. It
 says so, with `darkbloom stop --solo` to remove it. The watchdog doesn't start it
 again while the pair is started.
+
+### When the two Macs run different versions
+
+One Mac can end up on a newer release than the other: it updated alone through
+single-Mac serving, `darkbloom update` ran on it only, or the other Mac was
+asleep or off at the pair's update slot. Then:
+
+- **The older Mac catches up within about a minute** (from 0.10.9), once its
+  cluster service sees the other Mac running a newer release, or updating to
+  one. It runs the pair's update at once instead of waiting for the slot: one
+  immediate try per release, then the slots as before. It never installs a
+  release it quarantined. With automatic updates off, its cluster service log
+  says "the other Mac runs v<version>, newer than this Mac's v<version>, and
+  automatic updates are off on this Mac: run `darkbloom update` on this Mac".
+- **The provider's own background updater does not leave the pair split.** When
+  it updates a Mac whose pair actually runs there, it also asks that Mac's
+  cluster service to restart into the release together with the other Mac, as
+  `darkbloom update` does, so the other Mac follows. The watchdog doesn't
+  install a release while the pair runs on that Mac. A Mac that only serves
+  alone, its pair gone, simply updates.
+- **Both screens say it at once:** "✗ The two Macs run different Darkbloom
+  versions: The other Mac (…) runs 0.10.7, this Mac runs 0.10.8.", then "On <the
+  older Mac>, run `darkbloom update`; the pair starts once both Macs run
+  <version>." The start doesn't wait or loop. It offers **Check the versions
+  again** (it reads both versions again, and starts the pair once they match)
+  or **Leave**. A Retry after any other failure checks the versions first. The
+  version split is said before single-Mac serving when both apply.
+- **`darkbloom status` and `darkbloom cluster status --json`** give the reason
+  "the two Macs run different Darkbloom versions, <newer> and <older>: run
+  `darkbloom update` on the Mac with <older>", and as `next` the Mac to update,
+  named for each Mac: "On this Mac, run `darkbloom update`; …" or "On the other
+  Mac (…), run `darkbloom update`; …".
+- **The wait lines in the cluster service log name the other Mac's version:**
+  the leader's "Darkbloom changed on …: waiting until both Macs answer with the
+  same build …" and the other Mac's "waiting for the other Mac's setup for
+  v<version> …" end with "; the other Mac runs v<version>, this Mac v<version>:
+  run `darkbloom update` on <the older Mac>".
+
+The other Mac's version comes from its cluster service, which publishes it from
+0.10.7 on. If the other Mac publishes no version, check with `darkbloom --version`
+on both Macs. DevNet builds say `darkbloom-dev`.
 
 While a Mac serves, the re-plan uses the speed it measured while idle and never
 runs a GPU benchmark beside the model

@@ -72,6 +72,7 @@ extension ClusterOnboardingOperations {
         made.publishStep = { live.publishStep($0) }
         made.thisVersion = ProviderCore.version
         made.soloServing = { live.soloServing() }
+        made.versionSplit = { live.versionSplit() }
         made.stopSoloServing = { live.stopSoloServing() }
         made.publishStart = { live.publishStart($0) }
         made.thisRank = { live.context.savedConfiguration().configuration?.localRank }
@@ -1727,7 +1728,11 @@ final class OnboardingLive: @unchecked Sendable {
         while Date() < deadline {
             // Single-Mac serving on either Mac never ends by itself: the wait ends at once with it named, never a loop of
             // part ends (read every few polls: it asks the other Mac over the cable).
-            if polls % Self.soloServingEveryPolls == 0, let solo = soloServingFailure() { return .failure(solo) }
+            // Different versions come first: the older Mac must update before anything else can be fixed.
+            if polls % Self.soloServingEveryPolls == 0 {
+                if let split = versionSplit() { return .failure(split.failure) }
+                if let solo = soloServingFailure() { return .failure(solo) }
+            }
             polls += 1
             var once: (ready: ClusterOnboardingReady?, line: String, parts: [ClusterOnboardingStartProgress.Part]?)
             if forwards {
@@ -1829,18 +1834,18 @@ final class OnboardingLive: @unchecked Sendable {
     /// `refusalSaid`: the ✗ already says a Local Network refusal and what to do (`errorLines`).
     func lastErrors(fallback: String?, own snapshot: (child: ClusterServiceStatus.Child?, worker: OwnWorker)? = nil,
                     refusalSaid: Bool = false) -> [String] {
-        let other: (child: ClusterServiceStatus.Child?, unreachable: String?)
+        let other: (child: ClusterServiceStatus.Child?, unreachable: String?, version: String?)
         do {
             let status = try JSONDecoder().decode(ClusterServiceStatus.self, from: try command(.init(op: .status), seconds: 10))
-            other = (status.child, nil)
+            other = (status.child, nil, status.pairUpdate?.running)
         } catch {
-            other = (nil, (error as? ClusterSetupFailure)?.text ?? "\(error)")
+            other = (nil, (error as? ClusterSetupFailure)?.text ?? "\(error)", nil)
         }
         // This start's: since its wait began (the ✗'s diagnostics file too), else no longer ago than a wait lasts.
         let own = snapshot ?? ownPart(since: lock.withLock { waitBegan } ?? Date().addingTimeInterval(-Self.readyWaitSeconds))
         var lines = Self.errorLines(here: Self.sentence(here), there: Self.sentence(there), own: own.child,
                                     other: other.child, otherUnreachable: other.unreachable, ownWorker: own.worker,
-                                    refusalSaid: refusalSaid)
+                                    refusalSaid: refusalSaid, thisVersion: ProviderCore.version, otherVersion: other.version)
         if let fallback { lines.append("Last progress: \(fallback).") }
         return lines.map { ClusterConsoleText.boundedAtWord(context.clean($0), maximum: 300) }
     }
@@ -1891,7 +1896,14 @@ final class OnboardingLive: @unchecked Sendable {
     /// says the refusal and what to do, so a part refused by it is said plainly instead of in its follower's own words
     /// (the pair-2 re-test, R-4); any other ✗ keeps the part's reason (A-3).
     static func errorLines(here: String, there: String, own: ClusterServiceStatus.Child?, other: ClusterServiceStatus.Child?,
-                           otherUnreachable: String?, ownWorker: OwnWorker = .notSeen, refusalSaid: Bool = false) -> [String] {
+                           otherUnreachable: String?, ownWorker: OwnWorker = .notSeen, refusalSaid: Bool = false,
+                           thisVersion: String? = nil, otherVersion: String? = nil) -> [String] {
+        // The Macs run different versions (one updated alone): that is the cause, with the Mac and the command, and no
+        // guess at the link. `otherVersion` is what the other Mac's supervisor publishes (`pairUpdate.running`).
+        if let split = ClusterOnboardingVersionSplit.detect(thisVersion: thisVersion, otherVersion: otherVersion,
+                                                            other: there.prefix(1).lowercased() + there.dropFirst()) {
+            return [split.title + "."] + split.remedies
+        }
         func line(_ mac: String, _ child: ClusterServiceStatus.Child?, unreachable: String? = nil) -> String {
             if let unreachable { return "\(mac): did not answer over the cable (\(unreachable))." }
             guard let child else { return "\(mac): no report." }
@@ -2359,6 +2371,10 @@ final class OnboardingLive: @unchecked Sendable {
         if leadership?.serving != true {
             lines.append("Stopped\(leadership?.modelName.map { "; last model " + modelTitle($0) } ?? "").")
             if let scope = leadership?.scope, scope.isLocalOnly { lines.append("When it starts: " + scope.line + ".") }
+        } else if let split = versionSplit() {
+            // Different versions never clear by themselves: both windows say it, with the versions and the command.
+            lines.append(ClusterOnboardingNotServing.statusLine(model: model, reason: split.reason))
+            lines += split.remedies
         } else if let solo = soloServingFailure() {
             // Single-Mac serving blocks the pair and never ends by itself: both windows say it, naming the Mac and process.
             lines.append(ClusterOnboardingNotServing.statusLine(model: model, reason: ClusterOnboardingSoloServing.title(solo.soloServing)))

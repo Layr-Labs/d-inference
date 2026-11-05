@@ -144,6 +144,48 @@ struct ClusterServiceUpdateTests {
         #expect(follows.all == ["follow"], "the next check is a minute later")
     }
 
+    /// A cluster ID whose update slot is at least ten minutes away, so no slot fires during the test.
+    private func distantClusterID() -> String {
+        let now = Date().timeIntervalSince1970
+        for index in 0..<100_000 {
+            let id = "slot-far-\(index)"
+            if ClusterMemberUpdateSlot.nextSlot(after: now, clusterID: id) - now > 600 { return id }
+        }
+        return "slot-far-none"
+    }
+
+    /// The other Mac runs a newer release: with automatic updates on, the supervisor runs the pair's cycle at once, long
+    /// before its slot, so this Mac catches up within the follow check's minute. With them off it runs none.
+    @Test(arguments: [true, false])
+    func supervisorFollowsAnOtherMacOnANewerReleaseAtOnce(autoUpdate: Bool) async throws {
+        let directory = try temporaryDirectory("cluster-follow-forward")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let calls = Recorder(), follows = Recorder(), reexecs = Recorder()
+        let supervisor = ClusterMemberSupervisor(configuration: configuration(directory: directory, script: "exec sleep 60",
+            autoUpdate: autoUpdate, clusterID: distantClusterID(), reexecs: reexecs,
+            follow: { _, _ in
+                follows.add("follow")
+                return .otherMacNewer("2.0.0")
+            }) { request, log, restart in
+                calls.add(request ?? "cycle")
+                log("cluster update: test cycle")
+                try? await restart("2.0.0")
+                return .restarted(from: "1.0.0", to: "2.0.0", drained: true)
+            })
+        let run = Task { await supervisor.run() }
+        #expect(await waitUntil(seconds: 5) { !follows.all.isEmpty })
+        if autoUpdate {
+            #expect(await waitUntil(seconds: 15) { !reexecs.all.isEmpty }, "the cycle ran before the slot and restarted the service")
+            #expect(calls.all == ["cycle"])
+            #expect(state(directory)?.lastRun?.end == "stopped to restart into v2.0.0")
+        } else {
+            try await Task.sleep(nanoseconds: 3_000_000_000)
+            #expect(calls.all.isEmpty && reexecs.all.isEmpty, "automatic updates are off: `darkbloom update` is the operator's")
+        }
+        supervisor.requestStop()
+        #expect(await run.value == 0)
+    }
+
     // MARK: - The slot
 
     /// At the pair's slot the cycle runs beside the serving service; its restart stops the service and the supervisor

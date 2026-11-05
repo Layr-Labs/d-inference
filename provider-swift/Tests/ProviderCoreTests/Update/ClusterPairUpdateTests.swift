@@ -558,6 +558,42 @@ struct ClusterPairUpdateTests {
         try peer.fixture.updater(baseURL: peer.baseURL).beginUpdateSession(operation: "lease-check").release()
     }
 
+    /// The other Mac already runs a newer release (it updated alone: its single-Mac updater, `darkbloom update` there,
+    /// or this Mac was asleep at the slot). The follow check says so, and the cycle the supervisor then runs at once
+    /// finds the other Mac ready and updates this Mac. The same or an older release on the other Mac is nothing to follow.
+    @Test func partnerOnANewerReleaseIsFollowedForwardAtOnce() async throws {
+        let behind = try await PairMac.make(part: false), ahead = try await PairMac.make(part: false)
+        defer { Task { await behind.cleanUp(); await ahead.cleanUp() } }
+        try await ahead.installCandidate()
+        try ahead.promote()
+        func publish(_ running: String) {
+            ClusterPairUpdate.writeProgress(.init(phase: .idle, running: running, writtenAt: Date().timeIntervalSince1970),
+                                            to: ahead.progressPath)
+        }
+        let log = Lines(), restarts = Restarts()
+        for running in ["1.0.0", "0.9.0"] {
+            publish(running)
+            let outcome = await behind.cycle(partner: ahead, log: log).followRollback { restarts.record("behind", $0) }
+            #expect(outcome == .nothingToFollow, "the other Mac on v\(running)")
+        }
+        // The other Mac is updating to a newer release (a single-Mac updater there asked its pair to follow): followed
+        // while its progress is fresh, not once it went stale.
+        let now = Date().timeIntervalSince1970
+        ClusterPairUpdate.writeProgress(.init(phase: .staged, target: "2.0.0", running: "1.0.0", writtenAt: now), to: ahead.progressPath)
+        #expect(await behind.cycle(partner: ahead, log: log).followRollback { restarts.record("behind", $0) } == .otherMacNewer("2.0.0"))
+        ClusterPairUpdate.writeProgress(.init(phase: .staged, target: "2.0.0", running: "1.0.0",
+                                              writtenAt: now - ClusterPairUpdate.progressStaleSeconds - 5), to: ahead.progressPath)
+        #expect(await behind.cycle(partner: ahead, log: log).followRollback { restarts.record("behind", $0) } == .nothingToFollow)
+        publish("2.0.0")
+        let outcome = await behind.cycle(partner: ahead, log: log).followRollback { restarts.record("behind", $0) }
+        #expect(outcome == .otherMacNewer("2.0.0"))
+        #expect(restarts.all.isEmpty, "the follow check itself installs nothing")
+
+        let cycle = await behind.cycle(partner: ahead, log: log).run { restarts.record("behind", $0) }
+        #expect(cycle == .restarted(from: "1.0.0", to: "2.0.0", drained: true), "\(log.all)")
+        #expect(restarts.all == ["behind:2.0.0"])
+    }
+
     /// Both Macs keep v2 quarantined: neither's next check installs it again, each one's progress says so, and the Mac
     /// that rolled back first finds nothing to follow in its peer's rollback (no loop). A peer that keeps another
     /// release for rollback cannot follow and changes nothing.

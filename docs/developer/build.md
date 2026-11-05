@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-03
+> Last updated: 2026-11-04
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -266,11 +266,13 @@ see [resource and release tooling checks](test.md#focused-tooling-checks).
 Darkbloom Sandbox when its plane grants one, otherwise the job's Blacksmith
 fallback. It runs on GitHub-hosted `ubuntu-24.04` with no token permissions or
 checkout. Each routed job runs on `fromJSON(needs.route.outputs.routes)['<lane>']`,
-where the lane is the job's name.
+where the lane is the job's name; each shard of a sharded job reads its own
+lane, `format('<job>-{0}', matrix.shard)`.
 
 | Workflow | Routed jobs | Fallback |
 |---|---|---|
 | `ci.yml` | `release-integrity`, `docs` | `blacksmith-4vcpu-ubuntu-2404` |
+| `ci.yml` | `test-provider` (lanes `test-provider-1` to `test-provider-3`, one per shard), `test-provider-summary`, `test-provider-sdk`, `test-cluster-checks`, `test-cluster` (lanes `test-cluster-1` to `test-cluster-3`), `test-cluster-gpu` (lanes `test-cluster-gpu-1` and `test-cluster-gpu-2`), `test-cluster-focused` | `blacksmith-12vcpu-macos-27` |
 | `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
 | `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
 | `provider-release-cache.yml` | `warm`, pull requests only | `blacksmith-12vcpu-macos-27` |
@@ -283,20 +285,34 @@ fallback and the plane is not contacted. When it is on, the route job sends one
 most once after a transient failure. It uses a grant only when the grant
 repeats the exact Darkbloom labels for the job's profile. Errors, timeouts and
 malformed replies keep the fallback; the plane never fails the route job.
+Every job of a lane shares one `runs-on` value, so the plane grants a lane
+whole, for its requested job count, or not at all. Each shard is therefore a
+lane of its own and runs on a Darkbloom Mac whenever one is free,
+independently of the other shards. The plane grants only the lanes its
+approval names; any other lane keeps its fallback.
+
+```mermaid
+flowchart LR
+  C["changes<br/>(classifier)"] --> Q{"routing on, same-repo<br/>run, lane count > 0?"}
+  Q -- no --> F["Blacksmith fallback<br/>(macOS: blacksmith-12vcpu-macos-27)"]
+  Q -- yes --> R["one POST /v1/ci/routes<br/>for all requested lanes"]
+  R --> P{"plane grants the lane<br/>with the exact labels?"}
+  P -->|"no, error or timeout"| F
+  P -- yes --> D["Darkbloom Sandbox<br/>(darkbloom-macos-arm64)"]
+  classDef dark fill:#d4f7dc,stroke:#1a7f37,color:#0b2e13
+  classDef fallback fill:#fff4ce,stroke:#9a6700,color:#3b2300
+  class D dark
+  class F fallback
+```
+
+A push run asks exactly as a same-repository pull request does; the request
+names only the repository, run and lanes, and the plane's approval decides
+which pushed branches it admits. Other branches get `branch_not_admitted` and
+keep their fallback, so a push saves caches on Darkbloom only from an admitted
+branch and only in routed lanes ([CI Caching](#ci-caching)).
 Release, signing, publication, model registration, review automation and
 `master` or dispatched cache warming keep literal Blacksmith labels. The
 component classifier and the `Provider Tests` gate run on `ubuntu-24.04`.
-
-The macOS jobs of `ci.yml` (`test-provider`, `test-provider-summary`,
-`test-provider-sdk`, `test-cluster-checks`, `test-cluster`, `test-cluster-gpu`
-and `test-cluster-focused`) are not routed. They always run on
-`blacksmith-12vcpu-macos-27`. In 43 provider shard jobs on Darkbloom macOS
-sandboxes (2026-10-31 to 11-02), the median job took 17.3 min against 9.8 min
-on Blacksmith (362 jobs). The depth-1 checkout took 146 s at the median and up
-to 22 min, against 13 s on Blacksmith. The sandboxes found almost no build
-cache. Saving the cache took about 150 s. Five jobs stopped in checkout until
-the 60-minute job timeout. `scripts/test-darkbloom-route.py` checks that these
-jobs keep the literal label.
 
 Jobs on Darkbloom Sandboxes use GitHub's Actions cache, not Blacksmith's
 colocated cache, so their first runs start without cached build products.

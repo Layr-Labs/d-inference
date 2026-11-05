@@ -71,6 +71,8 @@ MIMO_NATIVE_COMMANDS = {
         "../scripts/run-nested-suite.sh testGracefulDrainAfterServedRequestRetiresNativeOwnerWithinDeadline --no-parallel",
 }
 COVERAGE_STEPS = ("Collect provider coverage profiles", "Merge shard coverage profiles")
+# Each shard's own audit and coverage report (test_only_the_provider_lane_collects_and_reports_coverage).
+SHARD_CHECK_STEPS = ("Check this shard's selections against the suite list", "Report provider coverage")
 SHARD_UPLOAD = "Upload shard counts, timings and coverage"
 LANES = {
     "test-provider": "provider",
@@ -354,7 +356,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             "./scripts/test-install-atomic.sh",
         )
         runs = [run_command(step) for step in steps
-                if field(step, "run") and field(step, "name", indent=6) not in (*COVERAGE_STEPS, *PARITY_STEPS)]
+                if field(step, "run")
+                and field(step, "name", indent=6) not in (*COVERAGE_STEPS, *PARITY_STEPS, *SHARD_CHECK_STEPS)]
         self.assertEqual(runs, list(expected))
         test_step = next(step for step in steps if run_command(step) == PROVIDER_TEST_COMMAND)
         self.assertEqual(field(test_step, "id"), "provider-unit-tests")

@@ -4853,8 +4853,15 @@ stops, cancellations and retirements.
   took 12.0 ms against 13.4 ms read-then-build; Gemma's pair has not been
   measured. The tokens are the read-then-build path's. A rank's own stop and a
   refused page growth (which keeps the margin's rows) ride one step later, as
-  in GLM's loop. Sampled requests, and greedy ones asking for logprobs (a
-  collective of their own), are built after each token is read.
+  in GLM's loop. Sampled requests are built ahead too: rank 0's draw is
+  `QwenStageTokenSampler.sample`, the product's `CBv2DefaultSampler`, which
+  advances its penalty counts with each drawn token on the device and its keyed
+  step index with each draw, so a draw built before the previous token is read
+  is still the draw at its output index with the history up to it; each step
+  keeps its own lazy logprob gather (`takePendingStepLogprobs`). Greedy
+  requests asking for logprobs read each step first: their vocabulary-split
+  top-k gather is a collective evaluated on the host after the token is
+  agreed, which would wait for the step built ahead.
 - Prompt prefixes. Each rank keeps its own heads' state at a prompt's chunk
   boundaries as the Gemma pipeline keeps a stage's, in the pipeline's memory
   tier and the owner's encrypted SSD tier (`Gemma4TensorParallelPrefix`). A

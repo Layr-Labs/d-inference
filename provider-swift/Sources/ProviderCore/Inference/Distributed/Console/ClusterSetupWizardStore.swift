@@ -102,6 +102,10 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
     /// that joined never shows an early ✓. A local-only start marks itself too, until its test is answered (its outcome
     /// clears it): the status then says the leading Mac is testing it, never that it checks with Darkbloom.
     public var registrationPendingPID: Int32? = nil
+    /// When the leading Mac's start last stopped at the single-Mac block (`ClusterOnboardingSoloServing`; its ✗ and offer
+    /// were on screen) on a pair that isn't started: the status of both Macs says the block, not just "Stopped", while
+    /// single-Mac serving still runs (0.10.9 DevNet build C, R8-1). A start, a stop and the consented stop clear it.
+    public var soloBlockedAt: Double? = nil
     /// When the process `registrationPendingPID` names started (microseconds since 1970): the pid counts only while
     /// the process that has it started then, so a pid the system gave to another process never does.
     public var registrationPendingStarted: UInt64? = nil

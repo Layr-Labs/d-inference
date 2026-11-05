@@ -222,6 +222,10 @@ import Darwin
         // for minutes while its own part waited for its single-Mac provider (process 68099).
         soloServingOnTheJoiningMacIsSaidOnBothScreens()
         theJoiningMacFollowsTheStartOnceSingleMacServingStops()
+        // 0.10.9 DevNet build C (R8-1): the joining Mac opened on a stopped pair while its own single-Mac provider blocked
+        // the leader's start, and said "Stopped … Close" with no ✗.
+        theJoiningMacOnAStoppedPairSaysTheBlock()
+        stoppedLocalPairSwitchedToDarkbloomKeepsItsMode()
         print("onboarding checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -3021,6 +3025,43 @@ import Darwin
         let text = run.text
         expect(text.contains(joiningBlockTitle) && text.contains("  " + ClusterOnboardingSoloServing.followClearedLine + "\n")
                && text.contains("\u{2713} Serving Qwen 3.8 27B"), "f1 cleared: the block, then the start, then ✓: \(text)")
+    }
+
+    /// Build C (P2): a stopped pair serving locally, switched to Darkbloom from the list's scope line, starts its last model
+    /// in the mode it served in (tensor parallel), never the planner's recommendation (pipeline).
+    static func stoppedLocalPairSwitchedToDarkbloomKeepsItsMode() {
+        var resume = gemmaStopped
+        resume.scope = .localOnly(bind: "0.0.0.0")
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder, resume: resume, pairEvents: [], pairResult: .failed([]), choices: switchChoices,
+            statusLines: ["Stopped; last model Gemma 4 26B."]))
+        expect(run.waitFor("  3) Switch to serving through Darkbloom (both Macs logged in)\n"), "P2: the scope line: \(run.text)"); run.type("3")
+        _ = run.finish(seconds: 30)
+        let modes = recorder.all.filter { $0.hasPrefix("useMode") }
+        expect(modes == ["useMode 1 tensor_parallel_v1"], "P2: the mode it served in: \(recorder.all)")
+    }
+
+    static func theJoiningMacOnAStoppedPairSaysTheBlock() {
+        let recorder = Recorder()
+        var made = operations(recorder, resume: memberResume(serving: false), pairEvents: [], pairResult: .failed([]),
+                              statusLines: ["Stopped; last model Gemma 4 26B."])
+        made.soloServing = { recorder.note("soloServing"); return [.init(mac: "this Mac", pid: 29049)] }
+        let run = TerminalRun(made)
+        expect(run.finish() == 1, "R8-1 joining: not a quiet Close: \(run.text)")
+        let text = run.text
+        expect(text.contains("\u{2717} The pair can't start: a single-Mac Darkbloom provider (process 29049) is serving on this Mac, and the "
+               + "pair can't share a Mac with it.\n"), "R8-1 joining: the same ✗ as the leader's, naming this Mac: \(text)")
+        expect(text.contains("On this Mac: run `darkbloom stop --solo` to stop single-Mac serving there.")
+               && text.contains(ClusterOnboardingSoloServing.leaderOffersLine("Apple M3 Ultra, 256 GB")), "R8-1 joining: what to run, and the leader's offer")
+        expect(!text.contains(ClusterOnboardingDriver.memberRunsByItselfLine) && !text.contains("  1) Close\n"), "R8-1 joining: never \"Stopped … Close\"")
+        // Nothing blocks: the screen it always showed.
+        let plain = Recorder()
+        var unblocked = operations(plain, resume: memberResume(serving: false), pairEvents: [], pairResult: .failed([]),
+                                   statusLines: ["Stopped; last model Gemma 4 26B."])
+        unblocked.soloServing = { [] }
+        let quiet = TerminalRun(unblocked)
+        expect(quiet.waitFor(prompt(2)), "R8-1 unblocked: Close or Start over"); quiet.type("\r")
+        expect(quiet.finish() == 0 && quiet.text.contains(ClusterOnboardingDriver.memberRunsByItselfLine), "R8-1 unblocked: as before")
     }
 
     static func soloServingOnBothMacsIsSaidBeforeAnythingStarts() {

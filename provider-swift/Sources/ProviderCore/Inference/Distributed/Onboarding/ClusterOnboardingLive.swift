@@ -74,6 +74,7 @@ extension ClusterOnboardingOperations {
         made.soloServing = { live.soloServing() }
         made.versionSplit = { live.versionSplit() }
         made.stopSoloServing = { live.stopSoloServing() }
+        made.markSoloBlocked = { live.markSoloBlocked($0) }
         made.publishStart = { live.publishStart($0) }
         made.thisRank = { live.context.savedConfiguration().configuration?.localRank }
         made.servesThroughDarkbloom = { live.leadership?.scope.isLocalOnly != true }
@@ -1504,6 +1505,7 @@ final class OnboardingLive: @unchecked Sendable {
     func serve() -> Result<[String], ClusterOnboardingFailure> {
         // The person starts the pair from this Mac: a choice of single-Mac serving made here before no longer stands.
         ClusterSoloChoice.clear(in: store.paths.directory)
+        markSoloBlocked(false)
         return routed(.init(op: .serve), acting: true, local: { localServe() }) { $0.lines }
     }
 
@@ -2386,7 +2388,11 @@ final class OnboardingLive: @unchecked Sendable {
         // One line for the screen (the banner above says which Mac leads): what serves and where, or why it does not.
         let model = (leadership?.modelName).map(modelTitle) ?? "the chosen model"
         let now = session()
-        if leadership?.serving != true {
+        if leadership?.serving != true, (try? store.readRecord())?.soloBlockedAt != nil, let solo = soloServingFailure() {
+            // The leading Mac's start stopped at the single-Mac block: both Macs say it while single-Mac serving runs.
+            lines.append(ClusterOnboardingNotServing.statusLine(model: model, reason: ClusterOnboardingSoloServing.title(solo.soloServing)))
+            lines += ClusterOnboardingSoloServing.remedies(solo.soloServing).map(ClusterOnboardingCommand.named)
+        } else if leadership?.serving != true {
             lines.append("Stopped\(leadership?.modelName.map { "; last model " + modelTitle($0) } ?? "").")
             if let scope = leadership?.scope, scope.isLocalOnly { lines.append("When it starts: " + scope.line + ".") }
         } else if let split = versionSplit() {
@@ -2433,7 +2439,8 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     func stop() -> Result<[String], ClusterOnboardingFailure> {
-        routed(.init(op: .stop), seconds: 330, acting: true, local: { localStop() }) { $0.lines }
+        markSoloBlocked(false)
+        return routed(.init(op: .stop), seconds: 330, acting: true, local: { localStop() }) { $0.lines }
     }
 
     func verifyTeardown() -> Result<[String], ClusterOnboardingFailure> {

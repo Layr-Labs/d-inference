@@ -5,6 +5,7 @@ import importlib.util
 import itertools
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -288,14 +289,28 @@ class WorkflowRoutingTests(unittest.TestCase):
     def test_every_pull_request_runs_exactly_one_ci_workflow(self):
         # CI (dev) runs for pull requests into any branch but master (dev and
         # stacked branches); CI (master) for pull requests into master. The
-        # two lists are disjoint and cover every base.
-        dev = (ROOT / ".github/workflows/ci-dev.yml").read_text().split("\npermissions:", 1)[0]
-        master = (ROOT / ".github/workflows/ci-master.yml").read_text().split("\npermissions:", 1)[0]
-        self.assertIn("  pull_request:\n    branches-ignore: [master, main]\n", dev)
-        self.assertNotIn("    branches: [dev]\n  pull_request", dev)
-        self.assertIn("  pull_request:\n    branches: [master, main]\n", master)
-        self.assertIn("  push:\n", dev)
-        self.assertIn("    branches: [dev]\n", dev.split("  pull_request:", 1)[0])
+        # two filters are disjoint and cover every base.
+        def triggers(filename):
+            """The `on:` block as {event: {key: value}}, one level deep."""
+            text = (ROOT / ".github/workflows" / filename).read_text()
+            block = text.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
+            events = {}
+            for line in block.splitlines():
+                event = re.fullmatch(r"  ([a-z_]+):(?: (.*))?", line)
+                option = re.fullmatch(r"    ([a-z-]+): (.*)", line)
+                if event:
+                    events[event.group(1)] = {}
+                elif option:
+                    events[list(events)[-1]][option.group(1)] = option.group(2)
+            return events
+
+        dev, master = triggers("ci-dev.yml"), triggers("ci-master.yml")
+        self.assertEqual(dev, {"push": {"branches": "[dev]"},
+                               "pull_request": {"branches-ignore": "[master, main]"}})
+        self.assertEqual(master, {"push": {"branches": "[master, main]"},
+                                  "pull_request": {"branches": "[master, main]"}})
+        dev = (ROOT / ".github/workflows/ci-dev.yml").read_text()
+        master = (ROOT / ".github/workflows/ci-master.yml").read_text()
         # Both run the same plan and tests, whatever the base.
         for text in (dev, master):
             self.assertNotIn("github.base_ref", text)

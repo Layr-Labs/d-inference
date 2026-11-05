@@ -1585,14 +1585,14 @@ public enum ClusterOnboardingDriver {
         let named = shownName(operations.thisMacName())
         guard let role = resume.role else { return onboard(operations, console, request: request) }
         if let problem = resume.pairingProblem {
-            console.banner(title, role == .leader ? leaderSubtitle(named: named) : followerSubtitle(named: named))
+            console.banner(title(role), role == .leader ? leaderSubtitle(named: named) : followerSubtitle(named: named))
             return offerPairAgain(problem, operations, console, request: request)
         }
         // The other Mac is asked first, so the opening says who leads, who follows and whether the cable works
         // (2026-11-04, the owner: "much clearer of what is what"). A cable on a port that is not set up is said below.
         let answered = resume.unsetCablePort == nil ? otherMacAnswers(operations, console) : nil
         let peer = role == .leader ? resume.peerName : resume.leaderName ?? resume.peerName
-        console.banner(title, pairLine(role, named: named, other: peer, cableReady: answered == true))
+        console.banner(title(role), pairLine(role, named: named, other: peer, cableReady: answered == true))
         switch role {
         case .member: return member(resume, operations, console, request: request, answered: answered)
         case .leader: return leader(resume, operations, console, justPaired: false, request: request, answered: answered)
@@ -1804,6 +1804,14 @@ public enum ClusterOnboardingDriver {
     /// cluster` run again): the same mark, with the part this Mac plays. `named`: this Mac's own name beside "This
     /// Mac" (`thisMac`).
     public static let title = "Darkbloom cluster"
+
+    /// The opening's title on a paired Mac: which part this Mac plays, by the mark, so each Mac's screen says it at the
+    /// top (the owner, 2026-11-05: "so the user always knows which machine is the leader, and which is the member").
+    /// Before pairing the role is not known, and the title is `title` alone.
+    public static func title(_ role: ClusterOnboardingRole) -> String { title + " \u{00B7} " + roleWords(role) }
+
+    /// "Leading Mac", "Joining Mac": the words the screens use for the two Macs.
+    public static func roleWords(_ role: ClusterOnboardingRole) -> String { role == .leader ? "Leading Mac" : "Joining Mac" }
     public static let leaderSubtitle = "This Mac leads"
     static func leaderSubtitle(named: String?) -> String { thisMac(named: named) + " leads" }
     static func followerSubtitle(named: String? = nil) -> String { thisMac(named: named) + " follows the other Mac" }

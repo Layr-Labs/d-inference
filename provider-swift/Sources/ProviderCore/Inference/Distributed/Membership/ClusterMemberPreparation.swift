@@ -52,16 +52,6 @@ public struct ClusterMemberPreparation: Sendable {
         }
     }
 
-    /// Why the coordinator will serve only this account's own requests from the pair this setup offers, nil when it
-    /// may serve the public or the setup offers none (`ClusterPublicServingCheck`).
-    public func ownerOnlyReason() -> String? {
-        let configuration = validation.plan.configuration
-        guard let attachment = configuration.nativeMember else { return nil }
-        return ClusterPublicServingCheck.ownerOnlyReason(clusterApproval: attachment.clusterApproval,
-                                                         handSaved: attachment.approval != nil,
-                                                         family: configuration.selectedGenerationMode.servingFamily)
-    }
-
     /// What a member registers for its pair's model: the artifact's scan, with image and video input only where
     /// the placed mode's ranks serve them (`ClusterModelFeaturePolicy.mediaContract`). The scan reads the model's
     /// configuration, which declares vision whatever the placement; the coordinator routes media by

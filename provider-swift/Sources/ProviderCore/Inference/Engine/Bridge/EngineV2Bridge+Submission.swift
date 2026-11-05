@@ -770,9 +770,6 @@ extension EngineV2Bridge {
         // replaces this with the engine-queue commit instant returned by the
         // admission transaction.
         var engineAdmittedAt = ContinuousClock.now
-        // A pair's first-token allowance as its engine arms it, also for a
-        // request without a coordinator budget (the wedge monitor's backstop).
-        var distributedFirstTokenAllowance: ContinuousClock.Instant?
         guard canSubmitWithNativeOwner(), let engine = ownedEngine else {
             await releasePreSubmitResources(
                 requestID: id,
@@ -802,9 +799,6 @@ extension EngineV2Bridge {
                     try policy.restricting(bounded, receivedAt: distributedOrigin,
                                            inputTokenCount: promptTokens.count)
                 } ?? bounded
-            }
-            distributedFirstTokenAllowance = selectedContext.map { context in
-                context.firstTokenDeadline.map { min($0, context.generationDeadline) } ?? context.generationDeadline
             }
             if let distributed, let selectedContext, let httpResponse {
                 // Actual token count and trusted origin have selected this
@@ -945,13 +939,13 @@ extension EngineV2Bridge {
                     // Without a projected admission the engine still enforces
                     // the origin-anchored deadlines selected above. A bare
                     // submit would start a fresh budget with no first-token limit.
-                    // Awaited, never waited for on this actor: the pair's
-                    // reservations run one after another, each for up to 30 s,
-                    // and cancels and capacity reads need this actor meanwhile.
-                    let submitted = try await distributed.submitAwaitingQueue(
-                        engineRequest, deadlineContext: selectedContext)
-                    events = submitted.events
-                    if clusterQwenMedia != nil { nativeRetirement = submitted.retirement }
+                    if clusterQwenMedia != nil {
+                        let submitted = try distributed.submitWithRetirement(engineRequest, deadlineContext: selectedContext)
+                        events = submitted.events
+                        nativeRetirement = submitted.retirement
+                    } else {
+                        events = try distributed.submit(engineRequest, deadlineContext: selectedContext)
+                    }
                 } else {
                     events = try engine.submit(engineRequest)
                 }
@@ -1061,8 +1055,7 @@ extension EngineV2Bridge {
         )
         consumePrefillReceipt(id: id, receipt: prefillReceipt)
         // Wedge instrumentation: the request is now in the engine's hands.
-        wedgeMonitor.recordAdmit(
-            now: .now, id: id, firstTokenDeadline: distributedFirstTokenAllowance ?? firstContentDeadline?.instant)
+        wedgeMonitor.recordAdmit(now: .now)
 
         // Emit one engagement event for an accepted media request.
         if multimodal != nil {

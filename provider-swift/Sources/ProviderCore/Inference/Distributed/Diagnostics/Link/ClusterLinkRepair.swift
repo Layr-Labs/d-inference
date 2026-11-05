@@ -307,13 +307,10 @@ public enum ClusterLinkRepair {
         guard let paths = try? ClusterUserPaths() else { return nil }
         let store = ClusterLinkAliasStore(paths: paths)
         let isolationStore = ClusterLinkIsolationStore(paths: paths)
-        // Where no prompt can show (SSH with no desktop), none is tried: the outcome is the same, without the wait.
-        let cannotPrompt = ClusterLinkApprovalSession.cannotPrompt()
-        return Environment(toolRunner: ClusterLinkReadinessProbe.boundedToolRunner,
-            requestApproval: { cannotPrompt ? .unavailable : ClusterLinkApproval.request($0) },
+        return Environment(toolRunner: ClusterLinkReadinessProbe.boundedToolRunner, requestApproval: ClusterLinkApproval.request,
             machineIdentifier: ClusterLinkMachineIdentity.hardwareUUID, loadRecord: store.load, updateRecord: store.update,
             pause: { usleep(verificationIntervalMicroseconds) }, readsIsolation: true,
-            requestIsolationApproval: { cannotPrompt ? .unavailable : ClusterLinkApproval.request(isolation: $0) },
+            requestIsolationApproval: { ClusterLinkApproval.request(isolation: $0) },
             loadIsolationRecord: isolationStore.load, updateIsolationRecord: isolationStore.update,
             writeManualScript: { isolationStore.writeScript(name: $0, body: $1) })
     }

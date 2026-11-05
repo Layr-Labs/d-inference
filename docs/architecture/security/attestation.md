@@ -16,12 +16,11 @@ describes the consumed contract; provider support does not activate platform pol
 ## Provider connection control
 
 `provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift` consumes
-`app_attest_shadow`, `trust_status`, `attestation_challenge` and
+`app_attest_shadow`, `trust_status` and
 connection invalidation independently of the ordered inference/model consumer.
-These actor-isolated handlers do not await model work. A suspended model load,
-or a cancel waiting for a two-Mac pair's engine, therefore does not postpone
-starting App Attest, answering a challenge (the coordinator allows 30 s) or
-writing received authorization to daemon state. Connect, disconnect and stream termination clear the old local
+These actor-isolated handlers do not await model work. A suspended model load
+therefore does not postpone starting App Attest or writing received authorization
+to daemon state. Connect, disconnect and stream termination clear the old local
 grant and invalidate the previous App Attest task generation before subsequent
 challenges are handled. Delayed model cleanup does not clear a replacement
 connection's grant.

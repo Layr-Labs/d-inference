@@ -188,7 +188,7 @@ extension EngineV2Bridge {
             if nativeRetirement != nil { pendingSubmissionIDs.insert(id) }
             continuation.yield(.error("request stream closed by engine teardown"))
             if !sawFirstToken {
-                wedgeMonitor.recordTerminalWithoutFirstToken(id: id)
+                wedgeMonitor.recordTerminalWithoutFirstToken()
             }
             dropRequest(id: id)
         }
@@ -294,7 +294,7 @@ extension EngineV2Bridge {
             }
         }
         if !sawFirstToken {
-            wedgeMonitor.recordTerminalWithoutFirstToken(id: id)
+            wedgeMonitor.recordTerminalWithoutFirstToken()
         }
     }
 

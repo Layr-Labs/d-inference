@@ -13,13 +13,10 @@ import DarkbloomClusterSecurity
 enum ClusterApprovalAttachment {
     /// The refusal of an approval beside unequal tensor-parallel shares: the member's registration names no shares
     /// (`NativePairMemberRoster`), so such a setup could never register. A cluster served through Darkbloom is planned
-    /// with equal shares (`ClusterPlacementFlow.decide`), as choosing its model again in `darkbloom cluster` plans it
-    /// (the list has no key m, which this named before). In this build's command, and short enough to reach the leader
-    /// whole through the other Mac's refusal and the link's (`ClusterSetupFailure` keeps 240 characters).
-    static var unequalTensorSharesServeLocally: String {
-        ClusterOnboardingCommand.named("Unequal tensor-parallel shares serve local clusters only (the coordinator can't "
-            + "register them yet); choose the model again in `darkbloom cluster` for equal shares")
-    }
+    /// with equal shares (`ClusterPlacementFlow.decide`). Short enough to reach the leader whole through the other
+    /// Mac's refusal (`ClusterSetupFailure` keeps 240 characters).
+    static let unequalTensorSharesServeLocally = "Unequal tensor-parallel shares serve local clusters only (the coordinator "
+        + "registration carries no shares yet); press m in `darkbloom cluster` to plan equal shares"
 
     /// The block digests of a build-pinned `approval` that are not this Mac's facts, by their contract names; `model`
     /// when the facts describe no entry for the approval's model. A model approval is never compared with facts.

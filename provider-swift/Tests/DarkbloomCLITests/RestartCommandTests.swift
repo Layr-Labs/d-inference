@@ -14,4 +14,10 @@ struct RestartCommandTests {
         let command = try Darkbloom.parseAsRoot(["restart"])
         #expect(command is Restart)
     }
+
+    @Test("restart command name and help are set")
+    func restartConfiguration() {
+        #expect(Restart.configuration.commandName == "restart")
+        #expect(Restart.configuration.abstract.contains("Restart"))
+    }
 }

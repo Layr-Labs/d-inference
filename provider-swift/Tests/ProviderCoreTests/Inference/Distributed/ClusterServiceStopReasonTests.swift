@@ -67,30 +67,6 @@ struct ClusterServiceStopReasonTests {
                 "what each Mac can and can't say: \(lines)")
     }
 
-    /// The two Macs run different versions (one updated alone, account 668cf2b3 on 11-04): the ✗ says so first, with
-    /// both versions and the command on the Mac that's behind, in each direction, instead of guessing at the link.
-    @Test func aVersionSplitIsNamedFirstWithTheMacAndTheCommand() {
-        let own = ClusterServiceStatus.Child(running: false, starts: 13, lastEnd: "exit 1", restartInSeconds: 30, lastError: "closed")
-        let other = ClusterServiceStatus.Child(running: true, starts: 1, lastEnd: nil, restartInSeconds: nil, lastError: nil)
-        let there = "The other Mac (Apple M4 Max, 128 GB)"
-        let behindThere = OnboardingLive.errorLines(here: "This Mac", there: there, own: own, other: other, otherUnreachable: nil,
-                                                    thisVersion: "0.10.8", otherVersion: "0.10.7")
-        #expect(behindThere.first == "The two Macs run different Darkbloom versions: The other Mac (Apple M4 Max, 128 GB) runs 0.10.7, this Mac runs 0.10.8.")
-        #expect(behindThere.dropFirst().first == "On the other Mac (Apple M4 Max, 128 GB), run `\(ClusterOnboardingCommand.name) update`; the pair starts once both Macs run 0.10.8.")
-        #expect(!behindThere.contains { $0.contains("doesn't report its worker restarting") }, "no guess at the cause: \(behindThere)")
-
-        let behindHere = OnboardingLive.errorLines(here: "This Mac", there: there, own: own, other: other, otherUnreachable: nil,
-                                                   thisVersion: "0.10.8", otherVersion: "0.10.9")
-        #expect(behindHere.dropFirst().first == "On this Mac, run `\(ClusterOnboardingCommand.name) update`; the pair starts once both Macs run 0.10.9.")
-
-        let same = OnboardingLive.errorLines(here: "This Mac", there: there, own: own, other: other, otherUnreachable: nil,
-                                             thisVersion: "0.10.9", otherVersion: "0.10.9")
-        let unknown = OnboardingLive.errorLines(here: "This Mac", there: there, own: own, other: other, otherUnreachable: nil,
-                                                thisVersion: "0.10.9", otherVersion: nil)
-        let before = OnboardingLive.errorLines(here: "This Mac", there: there, own: own, other: other, otherUnreachable: nil)
-        #expect(same == before && unknown == before, "one version, or the other Mac's unknown: the lines as before")
-    }
-
     /// A part that ends by itself keeps its own reason, without the live row's progress word.
     @Test func aPartThatEndsByItselfKeepsItsReason() {
         let line = "starting; this Mac's part ended (exit 1: Tensor-parallel shard load needs 49.08 GiB) and starts again by itself"
@@ -314,8 +290,7 @@ struct ClusterServiceStopReasonTests {
         #expect(OnboardingLive.otherMacRefused(running), "the leader reads the member's refusal")
         let lines = OnboardingLive.localNetworkRefusalLines(otherMac: "The other Mac (Apple M5 Max, 128 GB)", app: "Darkbloom Dev")
         #expect(lines.first?.contains("macOS keeps Darkbloom Dev there off the local network") == true
-                && lines.contains { $0.contains("System Settings → Privacy & Security → Local Network → turn on “Darkbloom” "
-                    + "(macOS lists Darkbloom Dev as “Darkbloom”)") }
+                && lines.contains { $0.contains("System Settings → Privacy & Security → Local Network → turn on “Darkbloom Dev”") }
                 && lines.contains { $0.contains("Screen Sharing") }, "what to do there: \(lines)")
     }
 
@@ -347,45 +322,14 @@ struct ClusterServiceStopReasonTests {
         let app = "Darkbloom Dev", leader = "The other Mac (Apple M5 Ultra, 256 GB)"
         let own = OnboardingLive.localNetworkRefusalLines(line: OnboardingLive.localNetworkLine(forwarded: false), otherMac: leader, app: app)
         #expect(own?.first == "The other Mac can't reach this Mac over the cable: macOS keeps Darkbloom Dev there off the local network")
-        #expect(own?.last == "\(leader): System Settings → Privacy & Security → Local Network → turn on “Darkbloom” (macOS lists "
-                + "Darkbloom Dev as “Darkbloom”); if it isn't listed, click Allow when macOS asks on that Mac's screen, the next time "
-                + "Darkbloom Dev dials over the cable (on a Mac with no display, through Screen Sharing). Then choose Retry here.",
-                "the screen's own step: \(String(describing: own))")
+        #expect(own?.last == "\(leader): System Settings → Privacy & Security → Local Network → turn on “Darkbloom Dev” (on a Mac with no "
+                + "display, through Screen Sharing). Then choose Retry here.", "the screen's own step: \(String(describing: own))")
         let forwarded = OnboardingLive.localNetworkRefusalLines(line: OnboardingLive.localNetworkLine(forwarded: true), otherMac: leader,
                                                                 app: app)
         #expect(forwarded?.first == "This Mac can't reach the other Mac over the cable: macOS keeps Darkbloom Dev off the local network."
                 && forwarded?.last?.hasPrefix("On this Mac: System Settings → Privacy & Security → Local Network") == true
                 && forwarded?.last?.contains("choose Retry here") == true, "the member's own screen: \(String(describing: forwarded))")
         #expect(OnboardingLive.localNetworkRefusalLines(line: "starting", otherMac: leader, app: app) == nil)
-    }
-
-    /// R4-4 (the M5 Ultra pair's DevNet runs): the hints sent the owner to a "Darkbloom Dev" row under Local Network.
-    /// Both apps share the bundle ID `io.darkbloom.provider`, so macOS lists the DevNet app as "Darkbloom"; and where macOS
-    /// never recorded an answer for the app there is no row at all: it asks on that Mac's screen at the next dial, and
-    /// someone must click Allow. Every hint names the row macOS shows, in both identities, and says what to do without one.
-    @Test func theLocalNetworkHintsNameTheRowMacOSShows() {
-        #expect(ClusterService.localNetworkRow == "Darkbloom", "the row is the bundle ID's name in every build")
-        #expect(ClusterOnboardingCommand.localNetworkRow == ClusterService.localNetworkRow)
-        let leader = "The other Mac (Apple M5 Ultra, 256 GB)"
-        for (app, alias) in [("Darkbloom", ""), ("Darkbloom Dev", " (macOS lists Darkbloom Dev as “Darkbloom”)")] {
-            func steps(_ screen: String) -> String {
-                "System Settings → Privacy & Security → Local Network → turn on “Darkbloom”\(alias); if it isn't listed, click Allow when "
-                    + "macOS asks on \(screen), the next time \(app) dials over the cable (on a Mac with no display, through Screen Sharing)"
-            }
-            let blocked = ClusterOnboardingDriver.localNetworkBlockedLines(app: app, row: "Darkbloom")
-            #expect(blocked == ["This Mac can't reach the other Mac over the cable: macOS keeps \(app) off the local network.",
-                                "On this Mac: " + steps("this Mac's screen") + "; the start goes on by itself once it's on."],
-                    "\(app), this Mac: \(blocked)")
-            let refused = OnboardingLive.localNetworkRefusalLines(otherMac: leader, app: app, row: "Darkbloom")
-            #expect(refused == ["The other Mac can't reach this Mac over the cable: macOS keeps \(app) there off the local network",
-                                "\(leader): " + steps("that Mac's screen") + ". Then choose Retry here."],
-                    "\(app), the other Mac: \(refused)")
-            #expect(!(blocked + refused).joined().contains("turn on “Darkbloom Dev”"), "never a row macOS doesn't show")
-        }
-        // `cluster status` says the same, with the command that starts the pair again.
-        let status = ClusterLocalNetworkAccess.statusWords(.otherMac, otherMac: leader, app: "Darkbloom Dev", cli: "darkbloom-dev")
-        #expect(status.next.contains("turn on “Darkbloom” (macOS lists Darkbloom Dev as “Darkbloom”); if it isn't listed, click Allow")
-                && status.next.hasSuffix("Then run `darkbloom-dev start` here, or choose Retry in `darkbloom-dev cluster`."), "\(status.next)")
     }
 
     /// The pair-2 re-test (R-4): the leader's Local Network ✗ said the refusal three times, the last in the follower's own

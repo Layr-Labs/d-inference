@@ -40,8 +40,7 @@ enum ClusterLinkApproval {
         run(arguments(for: request))
     }
 
-    /// Shows the prompt for `arguments` and waits for the answer (`GLM5NextWiredLimitRequest` asks through it too).
-    static func run(_ arguments: [String]) -> ClusterLinkApprovalResult {
+    private static func run(_ arguments: [String]) -> ClusterLinkApprovalResult {
         result(of: ClusterLinkToolProcess.execute(executable: executable, arguments: arguments,
             deadline: DispatchTime.now().uptimeNanoseconds + promptTimeoutNanoseconds,
             maximumOutputBytes: maximumOutputBytes, mergingStandardError: true))

@@ -707,12 +707,11 @@ final class LiveContext: @unchecked Sendable {
     /// (the other Mac's, when it forwarded the choice).
     func adopt(folder: String, planKey: String, peer: ClusterSetupReport,
                here: String = ClusterOnboardingMacName.this, there: String = ClusterOnboardingMacName.other) -> ClusterConsoleActionResult {
-        // The listed plan, or the plan of another mode the question offered (`ClusterSetupModelOption.familyPlans`).
-        guard let decision = lock.withLock({ decisions[folder] }), let placement = decision.placement(planKey: planKey),
-              let capability = decision.capability else {
+        guard let decision = lock.withLock({ decisions[folder] }), let plan = decision.option.plan,
+              ClusterSetupState.planKey(decision.option.model, plan) == planKey,
+              let setup = decision.setup, let capability = decision.capability else {
             return .init(succeeded: false, lines: ["The plan changed. Choose the model again; nothing was saved."])
         }
-        let plan = placement.plan, setup = placement.setup
         let input = pairInput()
         guard let memberID = input.pair?.memberID, let localData = setup.configurations[memberID],
               let peerID = setup.configurations.keys.first(where: { $0 != memberID }), let peerData = setup.configurations[peerID] else {

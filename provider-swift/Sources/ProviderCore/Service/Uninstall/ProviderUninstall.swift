@@ -165,11 +165,6 @@ public enum ProviderUninstall {
     static let ownClusterStep = "Remove this install's cluster service"
     static let stillServingReason = "serving did not stop (see the failed step above)"
     static let servicesRunningReason = "a Darkbloom service may still be running (see the failed step above)"
-    /// What a failed cable step leaves once the pairing is forgotten, and the one command that finishes it.
-    static func cableLeftNote(cli: String = BuildEnvironment.current.cliName) -> String {
-        "The pairing is already forgotten; only the cable port setup is left. To finish, run `\(cli) uninstall` again (it kept the app for that)."
-    }
-
     static let cableRetryReason =
         "kept, so the uninstall can run again and undo the cable port setup (it holds the app and the cable records)"
 
@@ -240,11 +235,6 @@ public enum ProviderUninstall {
             cableUndone = true
         } else {
             cableUndone = await step(cableStep, operations.removeCableSetup)
-            // The pairing is forgotten before the cable step (it tells the other Mac over the cable): a cable step that
-            // failed says plainly that the pairing is gone and what finishes the rest (R5-2).
-            if !cableUndone, pairing != nil, let failed = steps.last, failed.name == cableStep {
-                steps[steps.count - 1] = .init(name: cableStep, status: .failed, detail: (failed.detail.map { $0 + " " } ?? "") + cableLeftNote())
-            }
         }
         // Never delete files from under a running cluster service of this install, or one that can't be told apart:
         // looked up right before the first deletion, after the steps above (the cable step can wait for a password).

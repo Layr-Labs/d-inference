@@ -115,31 +115,15 @@ public struct ClusterOnboardingLoadRows: Sendable {
 
     public init(started: Date) { self.started = started }
 
-    /// `width`: the room of a live row; a Mac's row that does not fit drops its layers, then its long words, before
-    /// the terminal would cut it.
-    public mutating func rows(_ title: String, report: String?, now: Date, width: Int? = nil) -> [String] {
+    public mutating func rows(_ title: String, report: String?, now: Date) -> [String] {
         let parts = report?.components(separatedBy: "\n").filter { !$0.isEmpty } ?? []
         let head = (parts.first.map { "\(title) (\($0))" } ?? title) + " \u{00B7} " + Self.elapsed(now.timeIntervalSince(started))
         return [head] + parts.dropFirst().map { row in
             let mac = row.components(separatedBy: ": ").first ?? row
-            let ready = row.hasSuffix(": ready") || row.contains(": ready (")
-            if ready, readyAt[mac] == nil { readyAt[mac] = now }
-            let end = ready ? readyAt[mac] ?? now : now
-            let time = " \u{00B7} " + Self.elapsed(end.timeIntervalSince(started))
-            return ClusterOnboardingStartWords.fitted(Self.shorter(row).map { $0 + time }, width: width)
+            if row.hasSuffix(": ready"), readyAt[mac] == nil { readyAt[mac] = now }
+            let end = row.hasSuffix(": ready") ? readyAt[mac] ?? now : now
+            return row + " \u{00B7} " + Self.elapsed(end.timeIntervalSince(started))
         }
-    }
-
-    /// A Mac's row, then shorter forms of it: without its layers, "Other Mac", "loading".
-    static func shorter(_ row: String) -> [String] {
-        var forms = [row]
-        func add(_ text: String) { if text != forms.last { forms.append(text) } }
-        let bare = row.replacingOccurrences(of: #" \(layers [^)]*\)"#, with: "", options: .regularExpression)
-        add(bare)
-        add(bare.replacingOccurrences(of: "The other Mac", with: "Other Mac"))
-        add(forms.last!.replacingOccurrences(of: "loading its share", with: "loading")
-            .replacingOccurrences(of: "starting its part", with: "starting"))
-        return forms
     }
 
     /// "48 s", "1 min 15 s".
@@ -203,55 +187,17 @@ public enum ClusterOnboardingNotServing {
         return "The coordinator didn't accept the pair (\(shown))"
     }
 
-    /// `words(reason:mac:)` for a coordinator refusal on a pair whose Macs report their App Attest authorization:
-    /// Apple verification is named only when a Mac reports it missing (`anyUnverified`); otherwise a trust word is the
-    /// coordinator's, said as such (DevNet, 2026-11-05: `private_text` on two authorized Macs read "isn't verified").
-    public static func words(reason: String, mac: String, anyUnverified: Bool) -> String {
-        let said = words(reason: reason, mac: mac)
-        guard !anyUnverified, said.contains("isn't verified by Apple yet") else { return said }
-        let code = reason.count <= 80 && ClusterOnboardingDeployment.shownPlainly(reason) ? reason : "no reason given"
-        return "The coordinator didn't accept the pair yet (\(code)); both Macs are verified by Apple, and it retries by itself"
-    }
-
     /// What to do next, said under the reason (the choices follow it).
     public static func remedy(forReason line: String) -> String? {
         if isMissingLogin(line) { return "Run `\(ClusterOnboardingCommand.name) login` on each Mac named, then Retry; or serve locally only." }
         if line.contains("isn't verified by Apple yet") { return "Then choose Retry, or serve locally only now." }
         if line.contains("lacks free memory") { return "Quit apps on that Mac, then Retry; or change the model." }
-        return notPublicRemedy(forReason: line)
+        return nil
     }
 
     /// The outcome block's title when nothing serves (`reason` without its final period): the leader's after a start,
     /// and the other Mac's from the status.
-    public static func title(reason: String) -> String {
-        reason.hasPrefix(notPublicPrefix) ? reason + "." : "Not serving: \(reason)."
-    }
-
-    /// A pair the coordinator paired but sends no public request (`ClusterPublicServingCheck`): the reason starts with
-    /// this and ends with why, in parentheses.
-    public static let notPublicPrefix = "Not serving publicly: the coordinator paired both Macs but doesn't send public requests to this pair ("
-    static let notPublicModelApproval = ", which serves only this account's own requests"
-    static let notPublicModel = " isn't approved for public pairs"
-    static let notPublicFamilies = " is approved for public pairs in "
-
-    /// What to do about a not-public reason, nil for any other line.
-    static func notPublicRemedy(forReason line: String) -> String? {
-        guard line.hasPrefix(notPublicPrefix) else { return nil }
-        let command = ClusterOnboardingCommand.name
-        if line.contains(notPublicModelApproval) {
-            return "Update both Macs (`\(command) update`) to a release that approves this model for public pairs, then run `\(command) cluster` again."
-        }
-        if line.contains(notPublicModel) {
-            return "Choose a model approved for public pairs in `\(command) cluster`; this one serves this account's own requests."
-        }
-        if let start = line.range(of: notPublicFamilies)?.upperBound, let end = line.range(of: " only)", options: .backwards)?.lowerBound,
-           start < end {
-            var families = String(line[start..<end])
-            if let and = families.range(of: " and ", options: .backwards) { families.replaceSubrange(and, with: " or ") }
-            return "Choose \(families) in `\(command) cluster`."
-        }
-        return nil
-    }
+    public static func title(reason: String) -> String { "Not serving: \(reason)." }
 
     /// The status line of a pair that does not serve yet (`OnboardingLive.localStatus`); the other Mac's window reads
     /// it back (`reason(inStatusLine:)`) to show the outcome block.
@@ -269,48 +215,4 @@ public enum ClusterOnboardingNotServing {
     static func joined(_ macs: [String]) -> String {
         macs.count <= 1 ? (macs.first ?? ClusterOnboardingMacName.other) : macs.dropLast().joined(separator: ", ") + " and " + macs.last!
     }
-}
-
-/// The leading Mac's wait for the coordinator to pair both Macs (`OnboardingLive.pairServing`), decided look by look:
-/// a reason the Macs report now ends it (a missing login at once, any other after the settle), and at the bound the ✗
-/// says what the last look said. A reason seen earlier and gone since (a new key's App Attest authorization, which
-/// lands a minute after registering) is never the ✗'s: with both Macs registered and nothing reported, the coordinator
-/// simply didn't pair them (DevNet Gemma pair, 2026-11-05: the 15-minute ✗ blamed Apple while both Macs were authorized
-/// and the coordinator refused `serves_model`).
-public struct ClusterOnboardingPairWait: Sendable {
-    public let started: Double
-    public let bound: Double
-    public let settle: Double
-    /// What the latest look reported, nil when nothing.
-    public private(set) var current: String?
-
-    public init(started: Double, bound: Double = 900, settle: Double = 90) {
-        self.started = started; self.bound = bound; self.settle = settle
-    }
-
-    /// One look: `reason`, what the Macs report now; `holds`, a reason only a person mends (a login, a catalog refusal),
-    /// which ends the wait at once. The ✗'s reason when the wait ends now, else nil.
-    public mutating func look(reason: String?, holds: Bool, now: Double) -> String? {
-        current = reason
-        if let reason, holds || now - started >= settle { return reason }
-        if now - started >= bound { return timedOut }
-        return nil
-    }
-
-    /// The ✗'s reason at the bound: what the last look still reported, else that the coordinator didn't pair them.
-    public var timedOut: String { current ?? Self.notPaired(minutes: Int((bound / 60).rounded())) }
-
-    public static func notPaired(minutes: Int = 15) -> String {
-        "The coordinator didn't pair both Macs within \(minutes) minutes; both are registered with it, and it gave no reason"
-    }
-}
-
-/// A stop from anywhere (`darkbloom cluster stop` in another window, or on the other Mac) while a screen waits for the
-/// pair: the wait ends at once with this, on both Macs.
-public enum ClusterOnboardingStopped {
-    public static let line = "Stopped (by `darkbloom cluster stop` on one of the Macs): the pair isn't starting any more. "
-        + "Run `darkbloom cluster` on the leading Mac to start it again."
-    /// What a screen that leaves the coordinator's wait says: what keeps going, and how to check.
-    public static let leftPairWaitLine = "Left the wait: both Macs stay registered and the pair keeps trying to be paired by "
-        + "the coordinator by itself. Check with `darkbloom status`."
 }

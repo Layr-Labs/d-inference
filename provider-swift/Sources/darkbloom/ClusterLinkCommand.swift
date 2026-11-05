@@ -101,11 +101,6 @@ extension Cluster {
         private func repair() async throws {
             let device = device, removing = remove, dryRun = dryRun
             let mode = temporary ? ClusterLinkRepair.Mode.temporary : .durable
-            if !dryRun, ClusterLinkApprovalSession.cannotPrompt() {
-                // Said before anything is tried; the result below then says what an administrator can run here instead.
-                let lines = ClusterLinkApprovalSession.lines(command: "darkbloom cluster link --\(removing ? "remove" : "fix")")
-                for line in lines { json ? printError(line) : print(line) }
-            }
             // Blocks while the person at the screen answers the macOS prompt; a dry run asks nothing.
             let result = await Task.detached {
                 removing ? ClusterLinkRepair.remove(device: device, dryRun: dryRun)

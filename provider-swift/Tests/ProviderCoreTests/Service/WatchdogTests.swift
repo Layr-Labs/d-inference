@@ -68,6 +68,11 @@ struct WatchdogDecisionTests {
         )
         #expect(past == .restart)
     }
+
+    @Test("default grace period is five minutes")
+    func defaultGraceIsFiveMinutes() {
+        #expect(WatchdogPolicy.defaultGraceSeconds == 300)
+    }
 }
 
 /// The reboot guard: a downSince armed in a previous uptime must not survive to

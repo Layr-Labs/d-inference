@@ -42,10 +42,6 @@ public enum LaunchAgent: Sendable {
         isLoaded(label: label)
     }
 
-    /// Single-Mac serving is set up on this Mac: its job is loaded (`stop` disables and unloads it; the plist stays on
-    /// disk for `restart`), and it isn't a cluster member's job.
-    public static func singleMacSetUp() -> Bool { isLoaded() && !installedJobIsClusterMember() }
-
     private static func isLoaded(label: String) -> Bool {
         LaunchctlControl.printSucceeds(label: label)
     }

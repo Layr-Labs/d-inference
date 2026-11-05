@@ -215,15 +215,6 @@ func classifierChecks() {
     check(unknown.reason == .unclassified && unknown.guidance.code == "unknown_failure", "B-fallback an unmatched error is unclassified with the generic guidance")
     check(ClusterGuidance.explain(nil).code == "unknown_failure" && ClusterGuidance.explain("").code == "unknown_failure",
           "B-explain explain() never returns nothing")
-    // 0.10.8 on a pair (2026-11-04): single-Mac serving held the provider instance lock. The lock now names its owner in
-    // words, and the guidance's command stops single-Mac serving only: plain `darkbloom stop` on a paired Mac stops the pair.
-    let soloHeld = ClusterFailureClassifier.classify(message: "a single-Mac Darkbloom provider (process 9523) is serving on this Mac; "
-        + "`darkbloom stop --solo` stops it")
-    check(soloHeld.reason == .localProviderRunning, "B-solo the named single-Mac provider is classified as local_provider_running")
-    let soloGuidance = ClusterGuidance.guidance(for: .localProviderRunning)
-    check(soloGuidance.command == "darkbloom stop --solo", "B-solo the guidance's command is `darkbloom stop --solo`: \(soloGuidance.command ?? "none")")
-    check(soloGuidance.steps.allSatisfy { !$0.contains("`darkbloom stop`") } && soloGuidance.steps.contains { $0.contains("`darkbloom stop --solo`") },
-          "B-solo no step says plain `darkbloom stop`: \(soloGuidance.steps)")
     let everyReason = ClusterFailureReason.allCases.allSatisfy { !ClusterGuidance.guidance(for: $0).steps.isEmpty }
     check(everyReason, "B-guidance every reason has guidance with steps")
     let codes = Set(ClusterFailureReason.allCases.map { ClusterGuidance.guidance(for: $0).code })

@@ -10,9 +10,6 @@ struct ClusterPairActions: Sendable {
     var serve: @Sendable () -> Result<[String], ClusterOnboardingFailure>
     var stop: @Sendable () -> Result<[String], ClusterOnboardingFailure>
     var verifyTeardown: @Sendable () -> Result<[String], ClusterOnboardingFailure>
-    /// Single-Mac serving on either Mac, and its stop with consent (`stop --solo` on the wrong Mac).
-    var soloServing: @Sendable () -> [ClusterOnboardingSoloServing] = { [] }
-    var stopSoloServing: @Sendable () -> Result<[String], ClusterOnboardingFailure> = { .failure(.init("not available")) }
 
     /// Tests give the commands actions of their own.
     @TaskLocal static var forTesting: ClusterPairActions?
@@ -23,11 +20,8 @@ struct ClusterPairActions: Sendable {
         if let actions = forTesting { return actions }
         guard ClusterPairSummary.readsThisMacsCluster,
               let operations = try? ClusterOnboardingOperations.live(.clusterService(config: config, worker: worker)) else { return nil }
-        var actions = ClusterPairActions(resume: operations.resume, ensureService: operations.ensureService, serve: operations.serve,
-                                         stop: operations.stop, verifyTeardown: operations.verifyTeardown)
-        actions.soloServing = operations.soloServing
-        actions.stopSoloServing = operations.stopSoloServing
-        return actions
+        return ClusterPairActions(resume: operations.resume, ensureService: operations.ensureService, serve: operations.serve,
+                                  stop: operations.stop, verifyTeardown: operations.verifyTeardown)
     }
 }
 

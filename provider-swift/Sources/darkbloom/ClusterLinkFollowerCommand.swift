@@ -53,18 +53,12 @@ extension Cluster {
                 line(ClusterService.followerLinkRefused + reason)
                 // macOS answers a dial with "host unreachable" before trying the
                 // cable when this process may not use the local network.
-                if reason.hasSuffix("(unreachable)") { line(refusalLine(app: ClusterService.appName, row: ClusterService.localNetworkRow)) }
+                if reason.hasSuffix("(unreachable)") {
+                    line("this process \(ClusterService.localNetworkRefusal): macOS refused the dial before the cable was tried. "
+                        + "Allow \(ClusterService.appName) under System Settings > Privacy & Security > Local Network (once), "
+                        + "or start the follower from a session that has that access.")
+                }
             }
-        }
-
-        /// The line after a dial macOS refused because this process may not use the local network: the row to turn on
-        /// in System Settings (`row`, R4-4: the DevNet app's reads "Darkbloom"), and where there is none, the prompt.
-        static func refusalLine(app: String, row: String) -> String {
-            "this process \(ClusterService.localNetworkRefusal): macOS refused the dial before the cable was tried. "
-                + "Turn on “\(row)” under System Settings > Privacy & Security > Local Network"
-                + ClusterOnboardingDriver.localNetworkRowNote(app: app, row: row)
-                + "; if it isn't listed, click Allow when macOS asks on this Mac's screen at the next dial. "
-                + "Or start the follower from a session that has that access."
         }
 
         static func line(_ text: String) {

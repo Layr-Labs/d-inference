@@ -25,26 +25,6 @@ public enum ClusterGPUMemoryLimit {
     public static func ceilingBytes(physicalMemoryBytes: Int) -> Int {
         ceilingMegabytes(physicalMemoryBytes: physicalMemoryBytes) << 20
     }
-
-    /// The least memory, in GiB, of a Mac Darkbloom raises the limit on.
-    public static let minimumRaisableMemoryGiB = 128
-
-    /// Whether the chip's own name ("Apple M<generation>", then at most one of Pro, Max or Ultra) is Apple silicon, of
-    /// any M generation. An Intel name, a virtual machine ("Apple M5 (Virtual)") or anything else is not.
-    public static func isAppleSilicon(chipName: String) -> Bool {
-        let words = chipName.lowercased().split(separator: " ").map(String.init)
-        guard (2...3).contains(words.count), words[0] == "apple", words[1].count >= 2, words[1].first == "m",
-              words[1].dropFirst().allSatisfy(\.isASCII), words[1].dropFirst().allSatisfy(\.isNumber),
-              words[1].dropFirst().first != "0" else { return false }
-        return words.count == 2 || ["pro", "max", "ultra"].contains(words[2])
-    }
-
-    /// Whether Darkbloom raises this Mac's limit (`darkbloom cluster gpu-limit`, with its owner's consent): any Apple
-    /// silicon Mac with 128 GB of memory or more (owner, 2026-11-05: "yes widen, why wouldn't we"), whatever its
-    /// generation. On any other Mac the limit is what macOS keeps, and a plan is held to it.
-    public static func raisedByDarkbloom(chipName: String, physicalMemoryBytes: Int) -> Bool {
-        isAppleSilicon(chipName: chipName) && physicalMemoryBytes >> 30 >= minimumRaisableMemoryGiB
-    }
 }
 
 extension ClusterDeviceProfile {
@@ -52,12 +32,10 @@ extension ClusterDeviceProfile {
     public var gpuMemoryLimitCeilingBytes: Int { ClusterGPUMemoryLimit.ceilingBytes(physicalMemoryBytes: physicalMemoryBytes) }
 
     /// This profile as it reads once its GPU limit is raised to the ceiling; nil when the limit is already there or
-    /// above, so raising it would change nothing, or when Darkbloom does not raise this Mac's limit
-    /// (`ClusterGPUMemoryLimit.raisedByDarkbloom`), so no raise is offered that nothing would make.
+    /// above, so raising it would change nothing.
     public func withGPUMemoryLimitRaised() throws -> ClusterDeviceProfile? {
         let ceiling = gpuMemoryLimitCeilingBytes
-        guard ClusterGPUMemoryLimit.raisedByDarkbloom(chipName: chip, physicalMemoryBytes: physicalMemoryBytes),
-              ceiling > residentCapacityBytes else { return nil }
+        guard ceiling > residentCapacityBytes else { return nil }
         var raised = try ClusterDeviceProfile(chip: chip, performanceCores: performanceCores, efficiencyCores: efficiencyCores,
             gpuCores: gpuCores, osVersion: osVersion, osBuild: osBuild, physicalMemoryBytes: physicalMemoryBytes,
             gpuRecommendedWorkingSetBytes: gpuRecommendedWorkingSetBytes, gpuMaximumBufferBytes: gpuMaximumBufferBytes,

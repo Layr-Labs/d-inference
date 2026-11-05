@@ -144,48 +144,6 @@ struct ClusterServiceUpdateTests {
         #expect(follows.all == ["follow"], "the next check is a minute later")
     }
 
-    /// A cluster ID whose update slot is at least ten minutes away, so no slot fires during the test.
-    private func distantClusterID() -> String {
-        let now = Date().timeIntervalSince1970
-        for index in 0..<100_000 {
-            let id = "slot-far-\(index)"
-            if ClusterMemberUpdateSlot.nextSlot(after: now, clusterID: id) - now > 600 { return id }
-        }
-        return "slot-far-none"
-    }
-
-    /// The other Mac runs a newer release: with automatic updates on, the supervisor runs the pair's cycle at once, long
-    /// before its slot, so this Mac catches up within the follow check's minute. With them off it runs none.
-    @Test(arguments: [true, false])
-    func supervisorFollowsAnOtherMacOnANewerReleaseAtOnce(autoUpdate: Bool) async throws {
-        let directory = try temporaryDirectory("cluster-follow-forward")
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let calls = Recorder(), follows = Recorder(), reexecs = Recorder()
-        let supervisor = ClusterMemberSupervisor(configuration: configuration(directory: directory, script: "exec sleep 60",
-            autoUpdate: autoUpdate, clusterID: distantClusterID(), reexecs: reexecs,
-            follow: { _, _ in
-                follows.add("follow")
-                return .otherMacNewer("2.0.0")
-            }) { request, log, restart in
-                calls.add(request ?? "cycle")
-                log("cluster update: test cycle")
-                try? await restart("2.0.0")
-                return .restarted(from: "1.0.0", to: "2.0.0", drained: true)
-            })
-        let run = Task { await supervisor.run() }
-        #expect(await waitUntil(seconds: 5) { !follows.all.isEmpty })
-        if autoUpdate {
-            #expect(await waitUntil(seconds: 15) { !reexecs.all.isEmpty }, "the cycle ran before the slot and restarted the service")
-            #expect(calls.all == ["cycle"])
-            #expect(state(directory)?.lastRun?.end == "stopped to restart into v2.0.0")
-        } else {
-            try await Task.sleep(nanoseconds: 3_000_000_000)
-            #expect(calls.all.isEmpty && reexecs.all.isEmpty, "automatic updates are off: `darkbloom update` is the operator's")
-        }
-        supervisor.requestStop()
-        #expect(await run.value == 0)
-    }
-
     // MARK: - The slot
 
     /// At the pair's slot the cycle runs beside the serving service; its restart stops the service and the supervisor
@@ -281,49 +239,6 @@ struct ClusterServiceUpdateTests {
                 "the request is answered once")
         supervisor.requestStop()
         #expect(await run.value == 0)
-    }
-
-    /// R5-3 (M5 Ultra pair, 0.10.7 → 0.10.8): the restarted service published `idle` running the new release before
-    /// the command saw its own request reach `restarting`, and the command waited out its whole timeout. This Mac
-    /// running the release it asked for is the restart done, and the command says so.
-    @Test func darkbloomUpdateEndsOnceThisMacRunsTheRelease() async throws {
-        let directory = try temporaryDirectory("cluster-update-restarted")
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let progressPath = ClusterServiceAgent.updateProgressPath(serviceDirectory: directory)
-        ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "1.0.0", writtenAt: Date().timeIntervalSince1970 - 30),
-                                        to: progressPath)
-        let request = ClusterPairUpdate.Request(createdAt: Date().timeIntervalSince1970)
-        let restarted = Task {
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            ClusterPairUpdate.writeProgress(.init(phase: .drained, target: "2.0.0", running: "1.0.0", cycleStartedAt: 1,
-                request: request.id, writtenAt: Date().timeIntervalSince1970), to: progressPath)
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            // The new service's first word: no cycle, no request, the new release.
-            ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "2.0.0", writtenAt: Date().timeIntervalSince1970,
-                                                  detail: "up to date"), to: progressPath)
-        }
-        let said = Recorder(), started = Date()
-        let outcome = try await ClusterServiceUpdateRequest.restart(into: "2.0.0", request: request, serviceDirectory: directory,
-                                                                   timeoutSeconds: 10, pollSeconds: 0.1, say: { said.add($0) })
-        await restarted.value
-        #expect(outcome == .restarted, "\(said.all)")
-        #expect(Date().timeIntervalSince(started) < 5, "ended once the new release ran, not at the timeout")
-        #expect(said.all.last == "This Mac's cluster service now runs v2.0.0; the cluster sets itself up again once both Macs run it.",
-                "\(said.all)")
-        #expect(!said.all.contains { $0.contains("Still waiting") }, "\(said.all)")
-    }
-
-    /// The old service still running the old release, with no word on the request, is no restart: the command waits.
-    @Test func darkbloomUpdateKeepsWaitingWhileThisMacRunsTheOldRelease() async throws {
-        let directory = try temporaryDirectory("cluster-update-old")
-        defer { try? FileManager.default.removeItem(at: directory) }
-        ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "1.0.0", writtenAt: Date().timeIntervalSince1970),
-                                        to: ClusterServiceAgent.updateProgressPath(serviceDirectory: directory))
-        let said = Recorder()
-        let outcome = try await ClusterServiceUpdateRequest.restart(into: "2.0.0", request: .init(createdAt: Date().timeIntervalSince1970),
-            serviceDirectory: directory, timeoutSeconds: 1, pollSeconds: 0.1, say: { said.add($0) })
-        #expect(outcome == .waiting)
-        #expect(said.all.last?.hasPrefix("Still waiting after 1 s") == true, "\(said.all)")
     }
 
     /// A supervisor of an earlier build publishes no progress: the command says how to restart instead of waiting.

@@ -48,8 +48,7 @@ extension Start {
         print("  Updates are coordinated: both members drain and update at the cluster's update slot.")
         let identity = ClusterMemberPermissionIdentity.current(executablePath: Self.currentExecutablePath())
         if identity.verdict == .askedOnce {
-            print("  Permissions: macOS asks once for Local Network on this Mac's own screen; click Allow when it appears")
-            print("  (on a Mac with no display, through Screen Sharing).")
+            print("  Permissions: macOS asks once for Local Network on this Mac; click Allow when it appears.")
         } else {
             print("  Permissions: macOS will not ask once for this build:")
             for problem in identity.problems { print("    - \(problem)") }

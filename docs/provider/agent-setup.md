@@ -70,22 +70,9 @@ set up, three commands work from your shell without a terminal:
 10. Use `sudo` only where a Darkbloom message asks for it, and let the human type the password.
 11. On a paired Mac, `darkbloom start`, `stop`, `restart` and `status` act on
     the pair, from either Mac, and say so in their first line. Single-Mac
-    options such as `--model` are refused there (exit status 64) while the pair
-    runs. Add `--solo` only when the human wants single-Mac serving on this Mac
-    alone: it is refused while the pair runs here. While the pair doesn't run
-    here (stopped, or the other Mac gone), `darkbloom start` serves this Mac
-    alone and says so in its first line ([going back to serving on one
-    Mac](two-mac-cluster.md#going-back-to-serving-on-one-mac)).
-12. Before `darkbloom cluster` on a pair, tell the human to be at both Macs'
-    screens, or to open Screen Sharing to each Mac with no display (a Mac
-    Studio, a MacBook with its lid closed): every macOS prompt of the setup
-    (the cable port's password, Local Network's Allow, the pairing code's Yes)
-    is on that Mac's own screen. Never run the setup, `darkbloom cluster link
-    --fix` or `--remove`, or `darkbloom uninstall` on a pair Mac over SSH: macOS
-    can't show its approval prompt there, and Darkbloom says so and stops
-    (``macOS can't show its approval prompt over SSH. Run `darkbloom cluster` in
-    Terminal on this Mac's own screen, or through Screen Sharing.``). Pass that
-    on to the human; never choose "Go on over SSH" for them.
+    options such as `--model` are refused there (exit status 64). Add `--solo`
+    only when the human wants single-Mac serving on this Mac alone, and only
+    while the pair is stopped: it is refused while this Mac's part of the pair serves.
 
 ### What only the human can do
 
@@ -99,9 +86,9 @@ start, then ask for each one when it comes up and wait.
 | Darkbloom login | [Step 2](#2-log-in-and-check-the-mac-every-mac), on each Mac | Opens the URL that `darkbloom login` prints in a browser, signs in, and enters the code it prints |
 | Turn on RDMA over Thunderbolt (two Macs) | [Step 4](#4-two-macs-connect-the-cable-and-check-the-link), once per Mac, as an administrator | On macOS 27: System Settings → Privacy & Security → RDMA over Thunderbolt, then restart. On macOS 26: starts the Mac in Recovery, runs `rdma_ctl enable` in Terminal, then restarts |
 | Plug in the cable (two Macs) | Step 4 | Connects one Thunderbolt 5 cable directly between a Thunderbolt 5 port on each Mac, with no dock or hub |
-| macOS administrator password for the cable port | [Step 5](#5-two-macs-pair-them), once per Mac, only while the port isn't set up | Types it into macOS's prompt on that Mac's own screen (Screen Sharing on a Mac with no display). Not over SSH: macOS can't show its prompt there ([rule 12](#rules-for-the-agent)) |
+| macOS administrator password for the cable port | [Step 5](#5-two-macs-pair-them), once per Mac, only while the port isn't set up | Types it into macOS's prompt. Over SSH, types it into `sudo` in that terminal |
 | Confirm the pairing code | Step 5 | Checks that both screens show the same six digits, then chooses **Yes** on each Mac |
-| Local Network permission | Step 5, right after pairing, on each Mac | At the Mac's own screen (Screen Sharing on a Mac with no display): System Settings → Privacy & Security → Local Network → turns on “Darkbloom” (the DevNet app is listed under that name too). With no such row, macOS has never asked on that Mac: it asks on that Mac's screen the next time the app dials over the cable, and the human clicks **Allow** there. If macOS's firewall is on, also lets Darkbloom accept incoming connections (System Settings → Network → Firewall) |
+| Local Network permission | Step 5, right after pairing, on each Mac | At the Mac's own screen (Screen Sharing on a Mac with no display): System Settings → Privacy & Security → Local Network → turns on “Darkbloom” (on DevNet, “Darkbloom Dev”), and clicks **Allow** if macOS asks. Don't wait for a prompt: on a Mac with no display it may never show. If macOS's firewall is on, also lets Darkbloom accept incoming connections (System Settings → Network → Firewall) |
 | Choose the model | Step 3 or [step 6](#6-two-macs-choose-the-model-on-the-leader), and when changing it later | Picks from the list that you read out |
 | Screen Sharing (headless Macs) | Any macOS prompt, and the login session | macOS prompts appear only on the Mac's own screen, so the human opens it with Screen Sharing. Apple's App Attest also needs someone logged in to the Mac's desktop |
 | Log in to macOS after a restart or power cut | Any time | Logs in on that Mac. With FileVault on, the disk stays locked until then, and Darkbloom serves again only after that. A pair serves only once both Macs are logged in |
@@ -162,9 +149,8 @@ page with these names ([dev build identity](../operations/provider-release.md#de
   is free on both. The card says which. Only one app serves a pair on a Mac at
   a time. `8001` is only the DevNet app's default for single-Mac local serving.
 - **The DevNet app names `darkbloom-dev`** in its screens, commands and hints,
-  and the Local Network lines name “Darkbloom Dev”, but tell the human to turn
-  on the row macOS lists, “Darkbloom”: both apps share one bundle ID. Type
-  `darkbloom-dev`; the plain `darkbloom` command is the production app.
+  and the Local Network lines name “Darkbloom Dev”. Type `darkbloom-dev`; the
+  plain `darkbloom` command is the production app.
 
 ## Steps
 
@@ -375,15 +361,15 @@ with status 1. So the human runs it in Terminal on each Mac and reads the
 screen to you, or pastes it. If you have a real interactive terminal on that
 Mac, you may run `NO_COLOR=1 darkbloom cluster` there yourself: it then prints
 plain lines and numbered choices. Even then, the pairing code and every macOS
-prompt are the human's (rules 6 and 7). A first setup opens, on both Macs, with what the
-human will be asked on each Mac's own screen (Screen Sharing for a Mac with
-no display) and about how long it takes, then has four steps:
+prompt are the human's (rules 6 and 7). A first setup opens with what the
+human will be asked and about how long it takes, then has four steps:
 **1/4 Connect**, **2/4 Pair**, **3/4 Model** and **4/4 Start**
 ([details](two-mac-cluster.md#the-steps-once)).
 
 1. On the leader, run `darkbloom cluster`. It shows `1/4 Connect` and `Allow
-   macOS permissions.` (over SSH: `Allow macOS permissions here and on this
-   Mac's screen (Screen Sharing if headless).`). If the cable port isn't set up yet, macOS
+   macOS's password and Local Network prompts.` (over SSH: `Allow macOS's
+   password prompt here and its Local Network prompt on this Mac's screen
+   (Screen Sharing if headless).`). If the cable port isn't set up yet, macOS
    asks once for the administrator password, and the human types it; a port
    set up before asks nothing. Next come `✓ Cable ready`, `2/4 Pair` and
    ``Run `darkbloom cluster` on the other Mac.``. The leader then waits. If the
@@ -399,27 +385,15 @@ no display) and about how long it takes, then has four steps:
    Local Network access. The screen may ask for it (for example `Click Allow on
    the Local Network prompt for Darkbloom. Allow it on the other Mac too.`, then
    `✓ Allowed`; on DevNet it names Darkbloom Dev), but don't wait for a macOS
-   prompt in this terminal. **STOP** on each Mac: the human, at that Mac's own
-   screen (Screen Sharing on a Mac with no display), opens System Settings →
-   Privacy & Security → Local Network and turns on “Darkbloom”. The DevNet app
-   is listed as “Darkbloom” too: both apps share one bundle ID. If the list has
-   no “Darkbloom” row, macOS has never asked on that Mac: it asks on that Mac's
-   screen the next time the app dials over the cable (when the pair starts),
-   and the human clicks **Allow** there. You can't see or change this setting.
-   If it is still off when the pair starts, the leader's ✗ in step 7 says so
-   within about 20 seconds ([Local Network](#on-a-two-mac-pair)).
+   prompt: on a Mac with no display it may never show. **STOP** on each Mac:
+   the human, at that Mac's own screen (Screen Sharing on a Mac with no
+   display), opens System Settings → Privacy & Security → Local Network and
+   turns on “Darkbloom” (on DevNet, “Darkbloom Dev”). You can't see or change
+   this setting. If it is still off when the pair starts, the leader's ✗ in
+   step 7 says so within about 20 seconds ([Local Network](#on-a-two-mac-pair)).
 4. The other Mac then says ``Waiting for the other Mac (…) to choose the model
-   and start…``. With a leader on this release or later, it also says once what
-   the leader's screen waits on, such as ``The other Mac (…): it's waiting for
-   Allow on its Local Network prompt.`` or ``… it's waiting for a model to be
-   chosen on its screen.``: **STOP** and have the human answer it on the
-   leader. Its live line shows how long it has waited out of 15 minutes. It then
-   follows the start, one line per change, such as ``The other Mac: <status>.``.
-   If it ends with ``✗ Not serving: The two Macs run different Darkbloom
-   builds.``, run `darkbloom update` on the Mac it names (or on the one whose
-   `darkbloom --version` is lower), then `darkbloom cluster` on the leader. If
-   it ends with ``✗ Not serving: The other Mac (…) didn't start a model within
-   15 minutes.``, the leader's screen is still waiting on the step it names. When a part ends there, it adds ``Choose Retry
+   and start…`` and follows the start, one line per change, such as
+   ``The other Mac: <status>.``. When a part ends there, it adds ``Choose Retry
    on the other Mac (…): its screen shows the choices.``. If macOS keeps this
    Mac off the local network, it says ``This Mac can't reach the other Mac
    over the cable: macOS keeps Darkbloom off the local network.`` and where to
@@ -452,8 +426,7 @@ A line ends with `copy` or `download` when one Mac lacks the model. Lines that
 end with `does not fit now` (apps hold the memory it needs) or
 `not enough free disk` come after the others.
 
-Tell the human how the split works. Never choose a model for them; for the
-mode, take the one the screen recommends (step 2):
+Tell the human how the split works. Never choose a mode for them:
 
 - **Tensor parallel** splits every layer across both Macs. Each Mac holds
   half of every layer, and both work on every token.
@@ -471,14 +444,9 @@ mode, take the one the screen recommends (step 2):
 1. **STOP**: read the list to the human and ask which model to serve. Enter
    selects the first line. Rule 5 applies: a `download` model is downloaded on
    the leader and then copied, so it takes its full size on each Mac.
-2. If the screen then asks ``How should both Macs split <model>?``, its first
-   line is ``Recommended for <model> on these two Macs: <mode>, <why>.`` (the
-   why is shorter, or left out, in a narrow window) and that mode's line
-   ends with `· recommended for these Macs`; Enter selects it. Pick the
-   recommended mode unless the human wants the other: it is the one that fits,
-   serves more requests at once through Darkbloom, or is faster on these Macs.
-   When the line is ``No recommendation for <model> on these two Macs: <why>.``, read the why
-   to the human and keep the selected line unless they choose otherwise.
+2. If the screen then asks ``How should both Macs split <model>?``, the first
+   choice is the fastest mode measured on these Macs, or the planner's choice
+   when none is measured yet. Keep it unless the human wants the other.
 3. If the model still has to reach a Mac, a second list offers `Download`,
    `Copy to the other Mac (about N s)` or `Copy from the other Mac`, and
    `Cancel`. Enter selects the first. Progress is shown, and an interrupted
@@ -588,11 +556,10 @@ Check all three:
    | Exit status | `state` | Do |
    |---|---|---|
    | `0` | `serving` | Go on |
-   | `3` | `not_serving` with `reason` ``This Mac can't reach the other Mac over the cable: macOS keeps Darkbloom off the local network`` or ``The other Mac can't reach this Mac over the cable: macOS keeps Darkbloom there off the local network`` (on DevNet, both name Darkbloom Dev) | macOS keeps that Mac off the local network, and nothing changes until someone turns it on. Don't wait. **STOP**: ask the human to do this on the Mac `next` names: System Settings → Privacy & Security → Local Network → turn on “Darkbloom” (the DevNet app is listed under that name too); if it isn't listed, click **Allow** when macOS asks on that Mac's screen, the next time the app dials over the cable; through Screen Sharing on a Mac with no display. Then run `darkbloom start` (on either Mac), or choose **Retry** in `darkbloom cluster` on the leader ([Local Network](#on-a-two-mac-pair)) |
-   | `3` | `not_serving` with `reason` ``not offered to Darkbloom (…)`` | The pair serves on the leading Mac's local API only: the coordinator doesn't have it, and it earns nothing. The parenthesis says why. Don't restart anything. **STOP**: ask the human to run `darkbloom cluster` on the leader and choose the model again, which plans it for Darkbloom and asks the coordinator (`next` says the same) |
+   | `3` | `not_serving` with `reason` ``This Mac can't reach the other Mac over the cable: macOS keeps Darkbloom off the local network`` or ``The other Mac can't reach this Mac over the cable: macOS keeps Darkbloom there off the local network`` (on DevNet, both name Darkbloom Dev) | macOS keeps that Mac off the local network, and nothing changes until someone turns it on. Don't wait. **STOP**: ask the human to do this on the Mac `next` names: System Settings → Privacy & Security → Local Network → turn on “Darkbloom” (on DevNet, “Darkbloom Dev”), through Screen Sharing on a Mac with no display. Then run `darkbloom start` (on either Mac), or choose **Retry** in `darkbloom cluster` on the leader ([Local Network](#on-a-two-mac-pair)) |
    | `3` | `not_serving` with another `reason` | Follow `next` and [troubleshooting](#troubleshooting) |
    | `3` | `loading`, `unknown` | Check again every few minutes, for up to 15 minutes, without restarting anything (rule 8). If it still says so after 15 minutes, **STOP**: the human runs `darkbloom cluster` on the leader, which shows more |
-   | `4` | `stopped` | The pair is stopped. If the other Mac isn't answering too, the lines add ``The other Mac (…) isn't answering over the cable.``. During a model or mode change, or while the pair updates Darkbloom, `status` and `cluster status` can read `stopped` (exit 4) or `unknown` for a minute or two while the pair is actually reloading. If such a change happened recently, or the status showed "Updating…", wait about a minute and check again before you act. Only if it still reads `stopped`: **STOP**, ask the human, then run `darkbloom start` |
+   | `4` | `stopped` | The pair is stopped. If the other Mac isn't answering too, the lines add ``The other Mac (…) isn't answering over the cable.``. **STOP**: ask the human, then run `darkbloom start` |
    | `5` | `other_mac_away` | The other Mac isn't answering over the cable. **STOP**: `next` says why and what to run on that Mac |
    | `6` | `not_paired` | This Mac isn't in a pair. Go back to [step 5](#5-two-macs-pair-them) |
    | `7` | `pairing_unreadable` | This Mac's pairing record couldn't be read. **STOP**: the human runs `darkbloom cluster` on this Mac to check it |
@@ -658,7 +625,7 @@ otherwise ([stopping and starting again](two-mac-cluster.md#stopping-and-startin
 | Change or test the model, or switch between serving through Darkbloom and locally only | The leader, in a terminal | `darkbloom cluster`, or `darkbloom start` in a terminal ([below](#the-pairs-model-list)) |
 | Start over and pair again | Either Mac, in a terminal | `darkbloom cluster` → **Start over (unpair and set up again)** → **Yes, start over**. Then run `darkbloom cluster` on the other Mac and choose **Start over (unpair and set up again)**, or **Pair again**, if it offers it ([pairing again](two-mac-cluster.md#pairing-again)) |
 | Update | Every Mac | `darkbloom update` on each Mac, and the pair restarts together. Automatic updates are on by default |
-| Serve on one Mac alone instead of the pair | That Mac | While the pair runs: stop it first (`darkbloom stop`), then `darkbloom start --solo --model <id>`. While it doesn't run here (the other Mac is gone or stopped clustering): `darkbloom start` serves this Mac alone. `--solo` is refused only while the pair runs here. `stop --solo`, `restart --solo` and `status --solo` act on single-Mac serving alone. Stop it with `darkbloom stop --solo` before you start the pair again |
+| Serve on one Mac alone instead of the pair | That Mac | Stop the pair first (`darkbloom stop`), then `darkbloom start --solo --model <id>`. `--solo` is refused while this Mac's part of the pair serves. `stop --solo`, `restart --solo` and `status --solo` act on single-Mac serving alone. Stop it with `darkbloom stop --solo` before you start the pair again |
 | Stop one Mac whose partner is gone for good | That Mac | `darkbloom cluster stop --local-only` |
 | Keep this Mac's cluster service from starting at login | That Mac | `darkbloom cluster stop --service`. It stops the pair first. `darkbloom cluster` turns it on again |
 | List the cluster commands | Any Mac | `darkbloom cluster --help` |
@@ -779,9 +746,7 @@ yet"](troubleshooting.md#a-two-mac-cluster-says-not-serving-yet) and
 
 | Signal | Cause | Do |
 |---|---|---|
-| The human stopped clustering, and the Mac is online but gets no requests; `darkbloom status` says ``The other Mac (…) hasn't answered for 15 min; this Mac's part stopped.`` or ``The pair hasn't served for … min``; on 0.10.8 `darkbloom start --solo` says ``This Mac's part of the pair holds its serving lock`` | The Mac kept the pair's saved start, so its cluster service ran its part of a pair that no longer forms. That part registers only as a pair member, which gets no ordinary requests | With the human's go, run `darkbloom start` on that Mac (0.10.9 or later): it stops the leftover part and serves this Mac alone. On 0.10.8: `darkbloom cluster pair --status`, then `darkbloom cluster pair --forget <pin>`, then `darkbloom start`. Never plain `darkbloom stop` on 0.10.8 for this: it acts on the pair |
-| ``✗ The pair can't start: a single-Mac Darkbloom provider (process <N>) is serving on <Mac>, …``; a cluster status or log line ``a single-Mac Darkbloom provider (process <N>) is serving on this Mac, so this Mac's part can't start``; an incident `local_provider_running`. In 0.10.8 the same cause read ``another update operation owns the lock (pid <N>, provider-instance)`` and looped ``this Mac's part ended … and starts again by itself`` | Single-Mac serving runs on that Mac and holds its one serving lock, so the pair's part can't start there. It doesn't end by itself | **STOP**: ask the human whether to stop single-Mac serving on each Mac named. With their go, run `darkbloom stop --solo` on that Mac, then `darkbloom start` (on DevNet, `darkbloom-dev`). In `darkbloom cluster`, **Stop single-Mac serving on both Macs and start the pair** does both. Both Macs' `darkbloom cluster status` say the block, with `next` ``Single-Mac serving doesn't stop by itself: …`` (`state` `not_serving`, exit status 3), and the joining Mac's window shows the same ✗. Neither Mac keeps restarting its part meanwhile; don't wait for it to clear by itself. From 0.10.9, single-Mac serving that nobody chose since the pair was started steps aside by itself (`darkbloom status` says ``Single-Mac serving stepped aside for the pair …``). Only a choice the human made (`start --solo`, **Serve on this Mac alone**) keeps it. `darkbloom stop --solo` on the other Mac finds it there and asks (`--yes` for scripts) Never plain `darkbloom stop` for this: on a paired Mac it stops the pair and leaves single-Mac serving running |
-| The leader's ✗ says ``The other Mac can't reach this Mac over the cable: macOS keeps Darkbloom there off the local network.``, then ``The other Mac (…): System Settings → Privacy & Security → Local Network → turn on “Darkbloom”; if it isn't listed, click Allow when macOS asks on that Mac's screen, the next time Darkbloom dials over the cable (on a Mac with no display, through Screen Sharing). Then choose Retry here.``. On that other Mac: ``This Mac can't reach the other Mac over the cable: macOS keeps Darkbloom off the local network.`` (on DevNet, both name Darkbloom Dev, and add that macOS lists Darkbloom Dev as “Darkbloom”). `darkbloom cluster status` shows the same reason as ``✗ Not serving: <reason>.``, then ``Next: …`` (`--json`: `state` `not_serving`, exit status 3), on that Mac at once, and on the leading Mac from about 20 seconds into its part, steadily after that while that Mac stays refused | macOS keeps that Mac's cluster service off the local network, so its link to the other Mac is refused | **STOP**: the human, at that Mac's screen (Screen Sharing if it has no display), opens System Settings → Privacy & Security → Local Network and turns on “Darkbloom” (the DevNet app is listed under that name too), or, with no such row, clicks **Allow** when macOS asks on that screen. Then choose **Retry** where the ✗ offers it (usually on the leader), or run `darkbloom start` on either Mac, as `next` says. Until then, `darkbloom start` on the Mac that is kept off ends at once with the same lines and exit status 1 |
+| The leader's ✗ says ``The other Mac can't reach this Mac over the cable: macOS keeps Darkbloom there off the local network.``, then ``The other Mac (…): System Settings → Privacy & Security → Local Network → turn on “Darkbloom” (on a Mac with no display, through Screen Sharing). Then choose Retry here.``. On that other Mac: ``This Mac can't reach the other Mac over the cable: macOS keeps Darkbloom off the local network.`` (on DevNet, both name Darkbloom Dev). `darkbloom cluster status` shows the same reason as ``✗ Not serving: <reason>.``, then ``Next: …`` (`--json`: `state` `not_serving`, exit status 3), on that Mac at once, and on the leading Mac from about 20 seconds into its part, steadily after that while that Mac stays refused | macOS keeps that Mac's cluster service off the local network, so its link to the other Mac is refused | **STOP**: the human, at that Mac's screen (Screen Sharing if it has no display), opens System Settings → Privacy & Security → Local Network and turns on “Darkbloom” (on DevNet, “Darkbloom Dev”). Then choose **Retry** where the ✗ offers it (usually on the leader), or run `darkbloom start` on either Mac, as `next` says. Until then, `darkbloom start` on the Mac that is kept off ends at once with the same lines and exit status 1 |
 | doctor: ``[FAIL] cluster savedConfiguration: <file> saves this Mac's cluster setup, but other users can open it (mode 644); run `chmod 600 <file>` …`` | The saved setup is in a file other users can open | **STOP**: tell the human, and run that `chmod 600` command only with their go ([step 2](#2-log-in-and-check-the-mac-every-mac)) |
 | After installing another Darkbloom app on a paired Mac (DevNet beside production, or the signed release over a local build), `darkbloom cluster` shows the old pairing as usual, or says the other Mac isn't answering, and offers no **Pair again** | The apps share the pairing, and the new app may not notice that its key differs | With the human's go, choose **Start over (unpair and set up again)** → **Yes, start over** on both Macs, then pair as in step 5. It unpairs the Mac for both apps |
 | doctor: `[FAIL] cluster localLinkIsolation.rdma_enN: clusterSubnetInUse: The cluster port enN cannot be isolated yet (the cluster subnet 10.219/16 is already used on this Mac) …`, on a version below 0.10.8 | A known false alarm on paired Macs: macOS reaches the port's own address through a loopback route | Don't stop for it, and never run `darkbloom cluster link --remove` because of it. Verify serving instead, and update both Macs. 0.10.8 no longer reports it |

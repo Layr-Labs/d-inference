@@ -1,4 +1,3 @@
-import CryptoKit
 import Darwin
 import Foundation
 import Testing
@@ -15,8 +14,6 @@ import Testing
 struct ClusterServicePartStartCacheTests {
     @Test func aPartStartsWithItsModelsPagesOutOfTheFileCache() throws {
         let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
-        // The setups pin the worker this Mac has installed, as after the leader's sync for the build it runs.
-        try macs.readopt(runtime: Self.sha256(macs.follower.worker))
         try withExtendedLifetime(macs) {
             let follower = macs.follower, leader = macs.leader
             let folder = follower.model
@@ -75,67 +72,6 @@ struct ClusterServicePartStartCacheTests {
             }
             for (url, data) in files { #expect(try Data(contentsOf: url) == data, "\(url.lastPathComponent) changed") }
         }
-    }
-
-    /// R5-4 (M5 Ultra pair, 0.10.7 → 0.10.8): after an update the member's saved setup still pins the previous
-    /// build's worker. Its part refused the installed inputs and ended at once, six times, until the leader synced the
-    /// setup for the new build. The member now waits for that setup, says so once, and starts nothing.
-    @Test func aMemberWhoseSetupPinsAnEarlierWorkerWaitsForTheLeadersSetup() throws {
-        let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
-        try withExtendedLifetime(macs) {
-            let follower = macs.follower, leader = macs.leader
-            try #require(try Self.sha256(follower.worker) != macs.saved(follower).capability.runtimeBinarySHA256)
-            try FileManager.default.moveItem(at: follower.pairing.directory,
-                                             to: follower.home.appendingPathComponent("pairing-elsewhere", isDirectory: true))
-            let starts = ClusterApprovalRecorder<Int>()
-            let wizard = ClusterSetupOperations.LiveSettings(providerConfiguration: follower.provider,
-                darkbloomExecutable: URL(fileURLWithPath: "/usr/bin/true"), sessionArguments: [], pair: nil, dryRun: true,
-                version: "fixture")
-            let service = ClusterService(settings: .init(wizard: wizard, leaderArguments: [], followerArguments: []),
-                paths: follower.paths, recoveryGraceSeconds: 0.2, supervisionIntervalSeconds: 0.1,
-                beforePartStart: { starts.append(1) },
-                powerAssertionReason: "Cluster member setup wait test " + UUID().uuidString)
-            var leadership = ClusterOnboardingLeadership(role: "member", leaderPin: leader.pin, peerPin: leader.pin,
-                peerName: "fixture leader", since: "fixture")
-            leadership.serving = true; leadership.modelName = ClusterApprovalMacs.model
-            _ = try service.store.updateRecord { $0.leadership = leadership }
-            let now = ClusterService.monotonicSeconds()
-            let claim = ClusterControlClaim(term: 1, leaderID: leader.memberID, members: [leader.memberID, follower.memberID],
-                                            reason: "fixture")
-            var node = ClusterControlNode(localID: follower.memberID,
-                members: [.init(memberID: follower.memberID, name: "fixture", memoryBytes: 1, gpuCores: 1),
-                          .init(memberID: leader.memberID, name: "fixture leader", memoryBytes: 1, gpuCores: 1)],
-                claim: claim, rankOrder: [leader.memberID, follower.memberID], now: now, ttl: 3_600)
-            _ = node.receiveLease(from: leader.memberID, offered: claim, running: true, facts: [], now: now)
-            try #require(node.leaderRunsCluster)
-            service.lock.withLock { service.control = node }
-
-            let stop = DispatchSemaphore(value: 0), done = DispatchSemaphore(value: 0)
-            let lines = ClusterApprovalRecorder<String>()
-            Thread.detachNewThread {
-                _ = try? service.run(stop: stop) { lines.append($0) }
-                done.signal()
-            }
-            let wait = ClusterOnboardingUpdate.memberWaitLine(version: ProviderCore.version)
-            let deadline = Date().addingTimeInterval(20)
-            while !lines.values.contains(wait), starts.values.isEmpty, Date() < deadline { usleep(20_000) }
-            // Further ticks: still nothing starts, and the wait is said once.
-            usleep(1_000_000)
-            let waited = lines.values, startedWhileOld = starts.values.count
-            // The leader's setup for the build this Mac runs arrives: the part starts.
-            try macs.readopt(runtime: Self.sha256(follower.worker))
-            let until = Date().addingTimeInterval(20)
-            while starts.values.isEmpty, Date() < until { usleep(20_000) }
-            stop.signal()
-            #expect(done.wait(timeout: .now() + 30) == .success, "the service did not stop")
-            #expect(startedWhileOld == 0, "the old setup's part started: \(waited)")
-            #expect(waited.filter { $0 == wait }.count == 1, "\(waited)")
-            #expect(!starts.values.isEmpty, "the part did not start with the new setup: \(lines.values)")
-        }
-    }
-
-    private static func sha256(_ url: URL) throws -> String {
-        SHA256.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined()
     }
 
     /// `count` bytes of a seeded sequence (no two files alike, nothing the file system compresses away).

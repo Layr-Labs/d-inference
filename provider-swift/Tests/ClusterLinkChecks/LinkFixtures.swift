@@ -225,9 +225,6 @@ struct FakeLinkTools {
         case .routeTable: return isolation.routes
         case .dnsConfiguration: return isolation.dns
         case .dhcpPacket(let interface): return isolation.dhcpPackets[interface] ?? .unavailable
-        case .networkServicePreferences: return isolation.servicePreferences
-        case .currentNetworkSet: return isolation.currentSet
-        case .networkServiceOrderPreferences(let set): return isolation.serviceOrderPreferences[set] ?? .unavailable
         }
     }
 

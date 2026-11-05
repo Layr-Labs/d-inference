@@ -11,6 +11,15 @@ import Testing
 // don't require a live engine. End-to-end generation is covered by the
 // live test suites.
 
+@Test("availableModels reports the registry keys sorted")
+func multiModelEngineReportsRegistry() async throws {
+    let engine = MultiModelBatchSchedulerEngine(
+        registryProvider: { @Sendable in [:] }
+    )
+    let models = try await engine.availableModels()
+    #expect(models.isEmpty)
+}
+
 @Test("availableModels returns sorted ids")
 func multiModelEngineReturnsSortedIDs() async throws {
     let entry = MultiModelBatchSchedulerEngine.ModelRegistryEntry(

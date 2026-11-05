@@ -1149,15 +1149,7 @@ struct ProviderUninstallTests {
                          "Delete " + ProviderUninstall.installFolderLabel(fixture.paths)])
         let summary = ProviderUninstall.summary(report, plan: plan)
         transcript("everything-summary-link-declined", summary, fixture)
-        #expect(summary.contains("  failed   Undo the cable port setup: the macOS prompt was declined; nothing was changed "
-            + ProviderUninstall.cableLeftNote()), "\(summary)")
-        // R5-2: the pairing was forgotten first (it tells the other Mac over the cable); the failed cable step says so,
-        // and the one command that finishes the rest.
-        let cable = report.steps.first { $0.name == ProviderUninstall.cableStep }
-        #expect(cable?.detail == "the macOS prompt was declined; nothing was changed " + ProviderUninstall.cableLeftNote(),
-                "\(String(describing: cable?.detail))")
-        #expect(ProviderUninstall.cableLeftNote(cli: "darkbloom-dev") == "The pairing is already forgotten; only the cable port setup is left. "
-            + "To finish, run `darkbloom-dev uninstall` again (it kept the app for that).")
+        #expect(summary.contains("  failed   Undo the cable port setup: the macOS prompt was declined; nothing was changed"))
         #expect(summary.contains { $0.hasPrefix("  done     Delete Settings: ") })
 
         // A cluster service that did not stop: every other service is still removed, and no file is deleted under it.

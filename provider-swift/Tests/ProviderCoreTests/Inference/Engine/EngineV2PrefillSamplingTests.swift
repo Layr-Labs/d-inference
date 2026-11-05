@@ -61,7 +61,6 @@ final class PrefillScriptEngine: CBv2Engine, @unchecked Sendable {
 
     private let lock = NSLock()
     private var _continuations: [AsyncStream<CBv2Event>.Continuation] = []
-    private var _continuationsByID: [CBv2RequestID: AsyncStream<CBv2Event>.Continuation] = [:]
     private var _ordinarySubmissionCount = 0
     private var _requests: [CBv2Request] = []
 
@@ -137,7 +136,7 @@ final class PrefillScriptEngine: CBv2Engine, @unchecked Sendable {
 
     func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
         lock.withLock { _ordinarySubmissionCount += 1; _requests.append(request) }
-        return makeStream(for: request.id)
+        return makeStream()
     }
 
     func submit(
@@ -179,7 +178,7 @@ final class PrefillScriptEngine: CBv2Engine, @unchecked Sendable {
         switch behavior {
         case .admit, .suspendThenAdmit:
             return .admitted(
-                stream: makeStream(for: request.id),
+                stream: makeStream(),
                 projectedWork: projectedWork,
                 admittedAt: admittedAt,
                 retirement: retirement)
@@ -188,17 +187,15 @@ final class PrefillScriptEngine: CBv2Engine, @unchecked Sendable {
         }
     }
 
-    private func makeStream(for id: CBv2RequestID) -> AsyncStream<CBv2Event> {
+    private func makeStream() -> AsyncStream<CBv2Event> {
         let (stream, continuation) = AsyncStream<CBv2Event>.makeStream()
-        lock.withLock { _continuations.append(continuation); _continuationsByID[id] = continuation }
+        lock.withLock { _continuations.append(continuation) }
         return stream
     }
-    /// Finishes the cancelled request's own stream (the latest one for an id
-    /// this engine never streamed).
     func cancel(_ id: CBv2RequestID) {
         let continuation = lock.withLock {
             _cancelledRequestIDs.append(id)
-            return _continuationsByID[id] ?? _continuations.last
+            return _continuations.last
         }
         continuation?.yield(.finished(
             reason: .cancelled,
@@ -206,36 +203,11 @@ final class PrefillScriptEngine: CBv2Engine, @unchecked Sendable {
         continuation?.finish()
     }
     func capacity() -> CBv2CapacitySnapshot {
-        lock.withLock { _capacityHold }?.passThrough()
-        return CBv2CapacitySnapshot(
+        CBv2CapacitySnapshot(
             activeRequests: 0, waitingRequests: 0, kvBytesInUse: 0,
             kvBytesCapacity: 0, activeTokens: 0)
     }
     func shutdown() async {}
-
-    private var _capacityHold: EngineQueueHold?
-    /// Capacity reads then wait while `hold` is held, as reads of an engine
-    /// whose queue a pair's rank reservation holds once waited.
-    func setCapacityHold(_ hold: EngineQueueHold?) { lock.withLock { _capacityHold = hold } }
-}
-
-/// Holds whoever passes through it while held, and counts them.
-final class EngineQueueHold: @unchecked Sendable {
-    private let condition = NSCondition()
-    private var held = false
-    private var heldPassages = 0
-
-    func hold() { condition.withLock { held = true } }
-    func release() { condition.withLock { held = false; condition.broadcast() } }
-    /// Callers that found the hold held (each waited until its release).
-    var heldCount: Int { condition.withLock { heldPassages } }
-
-    func passThrough() {
-        condition.lock()
-        if held { heldPassages += 1 }
-        while held { condition.wait() }
-        condition.unlock()
-    }
 }
 
 struct PrefillStubTokenizer: MLXLMCommon.Tokenizer {

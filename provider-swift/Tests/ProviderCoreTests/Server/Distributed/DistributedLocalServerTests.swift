@@ -60,6 +60,20 @@ import Testing
     #expect(done.cleanupComplete)
 }
 
+/// No fixed lifetime: the server keeps serving past what used to be the
+/// session's lifetime and stops only when it is asked to (or the session fails).
+@Test func distributedLocalServerHasNoLifetimeAndServesUntilStopped() async throws {
+    let session = LocalHostTestSession(); session.lifetimeNanoseconds = 1_000_000_000
+    let discovery = LocalHostDiscovery()
+    let host = localHost(session, discovery: discovery)
+    try await host.start()
+    try await Task.sleep(for: .milliseconds(1_500))
+    let serving = await host.status
+    #expect(serving.phase == .serving && discovery.value != nil)
+    let done = await host.stop(until: localHostDeadline())
+    #expect(done.cleanupComplete && session.base.reserveCount == 0 && discovery.value == nil)
+}
+
 @Test func distributedLocalServerDoesNotEquateListenerExitOrNativeCleanupWithOwnerACK() async throws {
     let session = LocalHostTestSession(); session.holdOwnerACK = true
     let host = localHost(session)

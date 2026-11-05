@@ -4,7 +4,6 @@ import MLXLMCommon
 extension DistributedCBv2Engine {
     func receive(_ event: DistributedResidentEvent, state: DistributedRequestState) -> Bool {
         guard isActive(state) else { return false }
-        defer { publishCapacity() }
         // The prefix report arrives after the last token, when the request
         // may already have its terminal; it only feeds usage and receipts.
         if case .promptCache(let reused, let stored) = event {
@@ -204,8 +203,7 @@ extension DistributedCBv2Engine {
             do { try await ContinuousClock().sleep(until: deadline) }
             catch { return }
             guard let self, let state else { return }
-            // Never wait for a reservation holding the queue; the check runs after it.
-            self.onQueueWithoutWaiting { self.checkDeadline(state) }
+            self.onQueue { self.checkDeadline(state) }
         }
     }
 
@@ -231,7 +229,6 @@ extension DistributedCBv2Engine {
             residentPrefixPublication?(receipt, state.storedPromptFrontiers)
         }
         actives[state.generation] = nil
-        publishCapacity()
         state.continuation.onTermination = nil
         if !state.terminalPublished {
             state.continuation.yield(.finished(reason: reason, usage: usage))

@@ -93,9 +93,6 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
     /// Why the pair serves on the leader's local API although its coordinator offers a cluster approval (one line,
     /// `ClusterApprovalSync`); nil when it is offered for pairing or the coordinator offers none.
     public var approvalNote: String? = nil
-    /// How far the leading Mac's start is (`ClusterOnboardingStartProgressMark`), published in its status for the Mac
-    /// that joined; nil when no start set it.
-    public var startProgress: ClusterOnboardingStartProgressMark? = nil
     /// The leading Mac's start that serves through Darkbloom and has not yet asked the coordinator whether to offer the
     /// pair (its process id; only the screen's start sets it, `OnboardingLive.markRegistrationPending`; `localRegister`,
     /// a failed test and a stop clear it): the status says the start is not over while that process runs, so the Mac
@@ -105,9 +102,6 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
     /// When the process `registrationPendingPID` names started (microseconds since 1970): the pid counts only while
     /// the process that has it started then, so a pid the system gave to another process never does.
     public var registrationPendingStarted: UInt64? = nil
-    /// What the leading Mac's setup screen waits on now (`ClusterOnboardingLeaderStepMark`), published in its status for
-    /// the Mac that joined; nil when nothing set it.
-    public var onboardingStep: ClusterOnboardingLeaderStepMark? = nil
     /// The start's outcome when its test request failed (the failure's first line, without its period): the leading
     /// Mac's status says it, so the Mac that joined ends with the same ✗. The next start or serve, a passing test and a
     /// stop clear it.

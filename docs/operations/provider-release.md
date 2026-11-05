@@ -27,47 +27,61 @@ runs the resolve, build, qualification, signing, R2 staging and publication
 chain for one environment. To find the newest dev release, read
 `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
-`ProviderCore.version` is prepared as `0.10.7`, a patch release over `v0.10.6`.
-The two Macs of a pair set up with `darkbloom cluster` update together by
-themselves (#1702), and `darkbloom update --rollback` puts back a Mac's previous
-release (#1729), which the other Mac of a pair follows (#1739). Gemma 4 and
-MiMo-V2.6-Flash gain tensor parallel on a pair (#1706, #1707, #1716), chosen
-only on its own measured speed and only where it keeps every feature of the mode
-it would replace (#1715), and `ClusterPublicModels` declares both public in
-pipeline and tensor parallel (#1736). The operator's enabled-model filter wins
-over coordinator model changes (#1730). Both Macs of a pair must run 0.10.7: a
-pair of mixed builds refuses to pair, and a pair on 0.10.6 updates by hand once
+`ProviderCore.version` is prepared as `0.10.8`, a patch release over `v0.10.7`.
+On a paired Mac, `darkbloom start`, `stop`, `restart` and `status` act on the
+pair (#1774), and `darkbloom cluster` on a set-up pair works like
+`darkbloom start` (#1778). `darkbloom uninstall` removes Darkbloom, with or
+without its models (#1772, #1780). App Attest keeps working after a self-update
+(#1765) and keeps an attestation cut off by a disconnect or a stop (#1763). The
+cluster setup says Serving only once the pair is loaded (#1764), offers Pair
+again and Start over to Macs paired before (#1770), plans by the load gate's own
+memory rule (#1767) and clears a model's file cache before loading it (#1768).
+This is the first tag whose release job writes the GitHub release page with
+`scripts/provider_release_notes.py`, which lists every pull request of the
+release ([GitHub release notes](#github-release-notes), #1786). Both Macs of a
+pair must run 0.10.8: a pair of mixed builds refuses to pair, and a pair on
+0.10.7 updates itself
 ([updating Darkbloom on the pair](../provider/two-mac-cluster.md#updating-darkbloom-on-the-pair)).
-See the [`v0.10.7` changelog entry](../../CHANGELOG.md) for the full scope.
+See the [`v0.10.8` changelog entry](../../CHANGELOG.md) for the full scope.
 
-Before tagging `v0.10.7`:
+Before tagging `v0.10.8`:
 
 - Confirm that the tagged commit pins `libs/mlx` and the nested `mlx` to
-  `72dffa2d` and `libs/mlx-swift` to `c633d221`, as v0.10.6 did, and
-  `libs/mlx-swift-lm` to `32f5c744`, its fork's `main`. Only the SDK pin moves
-  (from `7933a0fa`): SDK #370, #371, #375 to #377 and #379 to #384 change Swift
-  files only, and the one Metal kernel they add compiles at run time
-  (`MLXFast.metalKernel`), not into `mlx.metallib`.
-- The tag build's `metallib_hash` should equal v0.10.6's
+  `72dffa2d`, `libs/mlx-swift` to `c633d221` and `libs/mlx-swift-lm` to
+  `32f5c744`, as v0.10.7 did. No MLX or SDK pin moves.
+- The tag build's `metallib_hash` should equal v0.10.7's
   `98bab9d77dc5078ad8dd8f1fd17e8f3581415193506e4791a3c4f1ebaab614be`, because
   the MLX core is unchanged. A different hash needs an explanation, such as a
   changed Metal toolchain.
-- `PROD_CLUSTER_RUNTIME_ENABLED` is `true` since v0.10.6, so this tag registers
-  a cluster runtime facts block. On the exact tag tree, re-run the release's
-  facts step read-only against production's catalog, as for 0.10.6:
+- `PROD_CLUSTER_RUNTIME_ENABLED` is `true`, so this tag registers a cluster
+  runtime facts block. On the exact tag tree, re-run the release's facts step
+  read-only against production's catalog, as for 0.10.7:
   `scripts/provider-cluster-runtime-facts.sh <app> darkbloom prod <new folder>`,
   with an unsigned app staged the way the build job stages it, must exit 0.
-  The facts step leaves out a model the catalog lacks, so check the rows of
-  `gemma-4-26b-qat-4bit` and `mimo-v2.6-flash-mopd` as well as
-  `glm-5.3-flash` and `EigenLabs/Qwen3.8-27B-4bit-mtp`.
-- Check the coordinator's catalog room
-  ([cluster runtime facts](#cluster-runtime-facts)): v0.10.6's block holds 24
-  approvals, and this release adds 2 per model of its block, within the bound
-  of 64. The next release with a block can leave v0.10.6's approvals out, which
-  ends public serving for pairs still on 0.10.6; a pair on 0.10.7 or later
-  updates itself first.
+  Check the catalog rows of `glm-5.3-flash`, `EigenLabs/Qwen3.8-27B-4bit-mtp`,
+  `gemma-4-26b-qat-4bit` and `mimo-v2.6-flash-mopd`.
+- The facts step reads only a catalog row's ID, aggregate, R2 prefix and input
+  modalities (`scripts/provider-cluster-runtime-models.py`), so a row's
+  `max_output_length` changes neither the facts nor the registration. A pair
+  still accepts at most 32,768 output tokens per request for Qwen3.8-27B and
+  MiMo-V2.6-Flash, and refuses more (`request_exceeds_context`); 0.10.8 does
+  not change that. Production's catalog rows for these two models list 65,536
+  and 131,072, and the coordinator gives a request without `max_tokens` its
+  row's value, so pairs refuse those requests too and the coordinator tries
+  single Macs instead.
+  Aligning the rows is a separate catalog decision; until then, expect these
+  refusals when you check that pairs serve (step 5).
+- Decide on the coordinator's catalog room
+  ([cluster runtime facts](#cluster-runtime-facts)) before the tag. Production
+  holds 24 approvals from v0.10.6 and 24 from v0.10.7, and this release adds 2
+  per model of its block (24 for 12 models). With more than 8 models, the three
+  releases pass the bound of 64. Releases are taken newest first, each whole,
+  so v0.10.6's approvals are left out: pairs
+  still on 0.10.6 stop serving through Darkbloom, and the coordinator logs
+  `release cluster approvals omitted` for v0.10.6. Pairs on 0.10.7 update
+  themselves first.
 - The tagged commit is on `master` and verified, holds `ProviderCore.version`
-  `0.10.7`, keeps the plain-build default `prod`
+  `0.10.8`, keeps the plain-build default `prod`
   (`scripts/provider-build-default.py --branch master`), and its `changelog.d/`
   holds only `README.md` (`make changelog-check` prints
   `changelog: 0 valid fragment(s)`; a fragment there reached `master` without
@@ -75,31 +89,35 @@ Before tagging `v0.10.7`:
 
 Roll out in this order; each step is a separate approval:
 
-1. Production platform: the coordinator deploys first
-   ([darkbloom-platform#679](https://github.com/Layr-Labs/darkbloom-platform/pull/679),
-   merged as `f9c1b2d6a3`).
-   0.10.7's registration needs nothing new from it: the payload has 0.10.6's
-   fields, and the block keeps the `darkbloom_cluster_runtime_v2` schema. Its
-   new parity qualifications use generation modes the coordinator already
-   knows, MiMo-V2.6-Flash's speculative pipeline (`pipeline_mtp_v1`) included.
-   Confirm that production's `/health` `build_commit` is `f9c1b2d6a3`.
+1. Production platform: 0.10.8's registration needs nothing new from the
+   coordinator. The payload has 0.10.7's fields, and the block keeps the
+   `darkbloom_cluster_runtime_v2` schema; the facts dry run shows its models
+   and modes. Confirm that production's `/health` `build_commit` is the
+   coordinator that registered v0.10.7 (`f9c1b2d6a3`) or a later reviewed
+   deploy, and that no coordinator swap overlaps this release's publication.
 2. Merge into `master`, each squash-merged after its approval: first the `dev`
-   to `master` release snapshot (#1754), then this preparation, which is
-   cherry-picked onto `master` after #1754's squash. Its tree must not bring
+   to `master` release snapshot (#1782), then this preparation, which is
+   cherry-picked onto `master` after #1782's squash. Its tree must not bring
    back a rendered fragment. Let SDK 27 release preparation pass on `master`.
-3. Re-run the facts dry run on the tag tree and check the catalog room, as
+3. Re-run the facts dry run on the tag tree, and decide on the catalog room, as
    above.
-4. Tag `v0.10.7` on this preparation's squash commit
+4. Tag `v0.10.8` on this preparation's squash commit
    ([step 4](#4-tag-and-push-production-source)). After registration, check
    that `GET /v1/cluster/approvals` lists the derived
-   `release/0.10.7/<model>/s<1|2>` approvals and that the coordinator log has no
-   `release cluster approvals omitted`.
-5. Each pair on 0.10.6 updates by hand once: `darkbloom update` on both Macs,
-   then log out and back in on both. Single Macs, and pairs from 0.10.7 on,
-   update by themselves.
+   `release/0.10.8/<model>/s<1|2>` approvals beside v0.10.7's, and that
+   `release cluster approvals omitted` in the coordinator log names no release
+   but v0.10.6. Check that the GitHub release page lists the pull requests
+   #1782 carried from `dev` and the two merged directly into `master` (#1752,
+   #1771), and that the job logged no `Release notes for v0.10.8` warning (one
+   names git as the title source, or says the generated part is missing).
+5. Pairs on 0.10.7 update themselves at their update slot, or at once with
+   `darkbloom update` on each Mac. A pair still on 0.10.6 updates by hand once:
+   `darkbloom update` on both Macs, then log out and back in on both. Single
+   Macs update by themselves. Check that each pair serves again, not only that
+   it registered.
 6. The platform snapshots its provider contracts from the tagged commit
    (`python3 scripts/provider-contracts.py snapshot <tag commit>`), sets
-   `LatestProviderVersion` to `0.10.7` in the coordinator's `server.go` in the
+   `LatestProviderVersion` to `0.10.8` in the coordinator's `server.go` in the
    same change and adds the revision row to its provider-contract reference.
    `LatestProviderVersion` is a fallback and does not gate publication.
 
@@ -119,25 +137,24 @@ approvals. This preparation tags, deploys and enables nothing; merging it into
 `master` publishes nothing, because the staging lane runs only while
 `STAGING_ENABLED` is `true`.
 
-Platform evidence, inspected on 2026-11-03 (recheck before tagging):
+Platform evidence, inspected on 2026-11-04 (recheck before tagging):
 
 | Claim | Source |
 |---|---|
-| The coordinator knows the generation mode `pipeline_mtp_v1` and puts it in the `pipeline_speculative` family, at #679's merge commit (`f9c1b2d6a3`), unchanged from platform `master` before it (`482ca9db`) | [`cluster_generation_mode.go` at `f9c1b2d6a3`](https://github.com/Layr-Labs/darkbloom-platform/blob/f9c1b2d6a3c590bcbf03f11b8ccbdbe383a54449/coordinator/protocol/cluster_generation_mode.go) (`ClusterPlanModeFamily`) |
-| At #679's merge commit (`f9c1b2d6a3`), the platform still pins the provider contracts at d-inference `8effff7f` (v0.10.4) and keeps `LatestProviderVersion` at `0.10.4`; step 6 moves both | [`contracts/provider/manifest.json` at `f9c1b2d6a3`](https://github.com/Layr-Labs/darkbloom-platform/blob/f9c1b2d6a3c590bcbf03f11b8ccbdbe383a54449/contracts/provider/manifest.json) (`source_revision`); [`server.go` at `f9c1b2d6a3`](https://github.com/Layr-Labs/darkbloom-platform/blob/f9c1b2d6a3c590bcbf03f11b8ccbdbe383a54449/coordinator/api/server.go) (`LatestProviderVersion`) |
+| Production's coordinator runs platform `f9c1b2d6a3`, which registered v0.10.7 and its `darkbloom_cluster_runtime_v2` block, and serves 24 `release/0.10.6/…` and 24 `release/0.10.7/…` approvals | `GET https://api.darkbloom.dev/health` (`build_commit`) and `GET https://api.darkbloom.dev/v1/cluster/approvals`, read on 2026-11-04 |
+| At `f9c1b2d6a3`, the platform still pins the provider contracts at d-inference `8effff7f` (v0.10.4) and keeps `LatestProviderVersion` at `0.10.4`; step 6 moves both | [`contracts/provider/manifest.json` at `f9c1b2d6a3`](https://github.com/Layr-Labs/darkbloom-platform/blob/f9c1b2d6a3c590bcbf03f11b8ccbdbe383a54449/contracts/provider/manifest.json) (`source_revision`); [`server.go` at `f9c1b2d6a3`](https://github.com/Layr-Labs/darkbloom-platform/blob/f9c1b2d6a3c590bcbf03f11b8ccbdbe383a54449/coordinator/api/server.go) (`LatestProviderVersion`) |
+| The catalog holds at most 64 approvals and takes releases newest first, each whole | [`NativeRuntimeCatalogWithReleases` at `f9c1b2d6a3`](https://github.com/Layr-Labs/darkbloom-platform/blob/f9c1b2d6a3c590bcbf03f11b8ccbdbe383a54449/coordinator/registry/cluster_release_approvals.go) |
+| A request without `max_tokens` gets its catalog row's `max_output_length` (Qwen3.8-27B 65,536, MiMo-V2.6-Flash 131,072), and a pair's public request envelope admits up to 1,048,576 output tokens, so routing does not keep such a request off a pair | [`consumer.go` at `f9c1b2d6a3`](https://github.com/Layr-Labs/darkbloom-platform/blob/f9c1b2d6a3c590bcbf03f11b8ccbdbe383a54449/coordinator/api/inference/consumer.go) (`EnsureMaxTokensBound`); `ClusterPublicModels.maximumTokens` in this repository; `GET https://api.darkbloom.dev/v1/models/catalog`, read on 2026-11-04 |
 | `LatestProviderVersion` must equal the snapshotted `ProviderCore.version` | [`provider_version_sync_test.go` at `5ba280d8`](https://github.com/Layr-Labs/darkbloom-platform/blob/5ba280d89aa5e9bd4fbf05e0dfa848059cd3b585/coordinator/tests/api/provider_version_sync_test.go) (`TestLatestProviderVersionMatchesProviderCore`) |
 
-The production coordinator was not inspected for this preparation; step 1
-checks its `/health`.
-
-`v0.10.6` was [published on 2026-10-31](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.6)
+`v0.10.7` was [published on 2026-11-03](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.7)
+from `7512eeeae0682b120f3d86abbc712861bdbf2bda`, `v0.10.6` was
+[published on 2026-10-31](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.6)
 from `84ddfdba6bb704bf1c68f97c7060289079380ceb`, `v0.10.5` was
 [published on 2026-10-30](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.5)
 from `d3bbcd064ea290fbeb500e5c51c7870e3695741c`, `v0.10.4` was
 [published on 2026-10-28](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.4)
-from `8effff7f7067fec70b2e3b58de0a4ba47ea3986c`, `v0.10.3` was
-[published on 2026-10-26](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.3)
-from `3ddd11ce8d7204cc5aadefd2050376c583da4ff8`. Publication does not establish
+from `8effff7f7067fec70b2e3b58de0a4ba47ea3986c`. Publication does not establish
 that every optional feature or environment has been activated.
 
 ## Prerequisites
@@ -611,7 +628,7 @@ After `build-provider` and `qualify-sdk` succeed, `build-and-release` consumes
 the source-bound unsigned artifact on `blacksmith-12vcpu-macos-27`. It does not
 wait for an environment approval. `qualify-sdk` passes only when all five
 `qualify-sdk-shard` jobs pass and together executed the full provider suite.
-Release SDK selection is SDK 27.0 / Apple Swift 6.4, with `SDKROOT` covering
+Release SDK selection is SDK 27.2 / Apple Swift 6.4.2 (Xcode 27.2), with `SDKROOT` covering
 compilation and linking; the final recorded SDK must match. The
 checksum-pinned GitHub CLI is installed by
 `scripts/install-macos-github-cli.sh` before downloads. Missing `gh` in an old

@@ -193,11 +193,11 @@ On the `dev` branch a plain `swift build` is a DevNet build:
 `prod`. Set `DARKBLOOM_RELEASE_ENVIRONMENT=prod` to build a production binary
 from the `dev` branch.
 
-CI enforces both defaults. The Release Integrity job runs
+CI enforces the master default. CI (master)'s Release Integrity job runs
 `scripts/provider-build-default.py`: a pull request into master, or a push to
-master, fails unless the default is `prod`; one into or to `dev` fails unless
-it is `dev`. Every release of master runs the same check and stops before the
-build if the default is not `prod`.
+master, fails unless the default is `prod`. Every release of master runs the
+same check and stops before the build if the default is not `prod`. CI (dev)
+has no Release Integrity, so no CI job checks `dev`'s default.
 
 Use the `dev` branch to run a provider from source against the DevNet
 coordinator. A push to `dev` that changes the provider publishes the DevNet
@@ -255,20 +255,41 @@ then the same tests, `.github/workflows/provider-tests.yml` (the provider
 shards, the cluster jobs and the `Provider Tests` gate). Pull requests and
 pushes run the same jobs; only pushes save caches.
 
-CI tests each tree once. The gate of a passing run uploads an artifact named
-`ci-tested-tree-<tree>`. Every run first looks for that artifact
-(`scripts/ci-tested-tree.py`): when a completed, successful run of the same
-workflow file from this repository recorded the same tree, the run starts no
-test job and the gate passes, citing that run. A pull request is tested on its
-test merge commit, so the push of its merge commit, when `dev` or `master` did
-not move meanwhile, has the same tree and is not tested again. Any doubt (no
-artifact, a failed or foreign run, an API error) runs the tests. Such a push
-runs one build-only job instead, Refresh build caches, for the components it
-changed, so the branch caches stay fresh.
+CI tests each change once (`scripts/ci-tested-tree.py`). The gate of a passing
+run that tested something uploads an empty artifact named
+`ci-tested-<tree>-<base>-<head>-p<0|1>c<0|1>m<0|1>`: the tree it tested, the
+event's base and head commits (`push` and the pushed commit for a push), and
+the components that ran (provider, cluster, MiMo audio). Before testing, a run
+looks for a record of its own change that covers every component it selected:
+
+- a pull request: its own tree, base and head;
+- a push of commit S: S's tree with S's two parents as base and head (the pull
+  request that S merges, tested against S's first parent), or an earlier run of
+  the same push.
+
+The record counts only when the run that uploaded it completed successfully,
+ran the same workflow file of this repository (not a fork) for the matching
+event, and tested the record's head commit. Then the run starts no test job
+and the gate passes, citing that run. A pull request is tested on its test
+merge commit, so the push of its merge commit, when the base branch did not
+move meanwhile, has the same tree and is not tested again. A squash or rebase
+merge has one parent and is tested again. Any doubt (no record, a failed or
+foreign run, an API error) runs the tests. Such a push runs one build-only job
+instead, Refresh build caches, for the components it changed, so the branch
+caches stay fresh.
+
+Pull requests and pushes into `dev` select the components their diff touches.
+Pushes to `master` and pull requests into `master` select every component, so a
+`master` record always covers the whole suite.
+
+The gate also checks the CI plans on every run, skipped or not: the cluster
+plan's audit (`scripts/cluster-test-plan.py audit`) and the self-tests of the
+shard plans, the component classifier, the tested-change lookup, the route and
+the workflow pins. `dev` has no Release Integrity, so these run there too.
 
 | Workflow | Runs for | Jobs |
 |---|---|---|
-| `ci-dev.yml` (CI (dev)) | pull requests into `dev`, pushes to `dev` | the tests only |
+| `ci-dev.yml` (CI (dev)) | pull requests into any branch but `master` (`dev` and stacked branches), pushes to `dev` | the tests only |
 | `ci-master.yml` (CI (master)) | pull requests into `master`, pushes to `master` | the tests, `Release Integrity` and `Docs Lint` |
 
 Release Integrity and Docs Lint are CI (master)'s own jobs, so their checks keep
@@ -386,7 +407,7 @@ the caches of the runners it ran on.
 | Metal library | `$RUNNER_TEMP/metallib-cache` | `metallib-key`, exact only | each build lane |
 | MiMo metadata downloads | `$RUNNER_TEMP/mimo-metadata-cache`, one file per pinned SHA-256 | `mimo-metadata-v1-<hash of the pin scripts>`, exact only | each provider shard |
 | MiMo audio codec | `$RUNNER_TEMP/mimo-audio-source` | `mimo-audio-source-v2-<sha256>`, exact only; fetched only when the audio gate runs ([test guide](test.md)) | the last provider shard |
-| Cluster metadata build | `$RUNNER_TEMP/cluster-native-metadata` | toolchain, submodule pins, manifests and paths, then the commit | `test-cluster-checks` |
+| Cluster metadata build | `$RUNNER_TEMP/cluster-native-metadata` | toolchain, submodule pins, manifests and paths, then the commit | `test-cluster-focused` |
 
 The Swift test build has three nested restore tiers. `swift-prefix` binds the
 toolchain, the dependency manifests and pins, the checkout path and the CI
@@ -399,7 +420,9 @@ gitlinks (`libs/mlx`, `libs/mlx-swift`, `libs/mlx-swift-lm`), so a change to
 restored only for unchanged files, so SwiftPM rebuilds what changed. If a build
 restored from the loose tier fails, `scripts/provider-ci-cold-retry.sh` deletes
 the restored builds and the step builds once more from nothing; a failure over
-an entry of the job's own recipe fails the step at once. A Darkbloom host keeps
+an entry of the job's own recipe fails the step at once. CI (master) restores
+only the first tier (`strict-cache`), so a build that may be released never
+reuses objects of another recipe or dependency set. A Darkbloom host keeps
 the entries it saved (10 GiB per repository), so there a push saves at most one
 build per lane and UTC day; other runners key the build by commit.
 
@@ -449,10 +472,8 @@ flowchart LR
 
 - Swift build prefixes contain no pull-request data; the commit is only the
   key's suffix. A pull request that changes a CI recipe file, a manifest, a
-  lockfile or a submodule pin has a new prefix and builds cold. On a pull
-  request, the provider summary job restores the base branch's build like the
-  shards and rebuilds what the commit changed; on a push it restores the
-  shards' own build.
+  lockfile or a submodule pin has a new `swift-prefix`; on `dev` it restores
+  a looser tier and rebuilds what changed, on `master` it builds cold.
 - `actions/cache` stores a path outside the workspace relative to the
   workspace, so the SwiftPM key includes `<layout>`, a hash of `$HOME` and the
   workspace path. The cluster key reads only each submodule's state, pin and

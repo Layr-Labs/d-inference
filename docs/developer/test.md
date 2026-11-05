@@ -1282,7 +1282,7 @@ whose 1.5 s budget includes the first use of the Qwen TP kernels on the Mac. Eve
 | Opt-in | Cluster GPU Tests (non-blocking) | The switched tests that fail on the CI runners' GPU, the long-running tests and the benchmarks. The job reports their results and does not fail the workflow |
 | Needs a model | None | The tests that need a model directory, an artifact or its metadata (`REQUIRES_MODEL`). CI has no model |
 
-`python3 scripts/test-cluster-test-plan.py` (Release Integrity) checks that the
+`python3 scripts/test-cluster-test-plan.py` (the `Provider Tests` gate and Release Integrity) checks that the
 plan names each gated test in the sources once, and each runner under
 `libs/darkbloom-cluster/Tests` once. When you add an environment gate to a
 runtime test, add the test to a selection or to `REQUIRES_MODEL`.

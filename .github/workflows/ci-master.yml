@@ -59,7 +59,10 @@ jobs:
       skip: ${{ needs.plan.outputs.skip }}
       tested_run: ${{ needs.plan.outputs.tested_run }}
       tree: ${{ needs.plan.outputs.tree }}
+      base: ${{ needs.plan.outputs.base }}
+      head: ${{ needs.plan.outputs.head }}
       routes: ${{ needs.plan.outputs.routes }}
+      strict_cache: true
 
   release-integrity:
     name: Release Integrity

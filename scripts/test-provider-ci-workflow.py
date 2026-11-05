@@ -254,6 +254,25 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                                         capture_output=True, timeout=5)
                 self.assertEqual(result.returncode == 0, failed is None, results)
 
+    def test_the_gate_checks_the_ci_plans_on_every_run(self):
+        # dev has no Release Integrity: the gate audits the cluster plan and
+        # runs the plan self-tests on every run, skipped or not.
+        steps = {field(step, "name", indent=6): step for step in step_blocks(self.jobs["provider-test-gate"])}
+        check = steps["Check the CI plans"]
+        self.assertIsNone(field(check, "if"))
+        commands = run_command(check).splitlines()
+        for command in ("python3 scripts/cluster-test-plan.py audit", "python3 scripts/test-cluster-test-plan.py",
+                        "python3 scripts/test-provider-test-shards.py", "python3 scripts/test-ci-component-paths.py",
+                        "python3 scripts/test-ci-tested-tree.py"):
+            self.assertIn(command, commands)
+        # The record names its change through the lookup's own code, and only
+        # a run that tested something records.
+        record = steps["Name the record of the change these tests passed"]
+        self.assertIn('python3 scripts/ci-tested-tree.py name --tree "$TREE" --base "$BASE" --head "$HEAD"', record)
+        for name in ("Name the record of the change these tests passed", "Upload the record"):
+            self.assertEqual(field(steps[name], "if"),
+                             "${{ inputs.skip != 'true' && (inputs.provider == 'true' || inputs.cluster == 'true') }}")
+
     def test_each_lane_checks_out_recursive_sources_before_its_build(self):
         for job_id, lane in LANES.items():
             with self.subTest(lane=lane):
@@ -712,12 +731,26 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(len(calls), 5)
         for call in calls:
             self.assertEqual(field(call, "save-caches", indent=10), "${{ env.SAVE_CACHES }}")
+            self.assertEqual(field(call, "strict-cache", indent=10), "${{ inputs.strict_cache }}")
+
+    def test_master_restores_only_the_strict_cache_tier(self):
+        # Master runs (pushes and pull requests into master) restore only an
+        # entry of this exact recipe; dev may restore the looser tiers.
+        self.assertIn("      strict_cache: {type: boolean, default: false}\n",
+                      WORKFLOW.read_text().split("\njobs:\n", 1)[0])
+        self.assertIn("      strict_cache: true\n", MASTER_WORKFLOW.read_text())
+        self.assertIn("      strict_cache: false\n", DEV_WORKFLOW.read_text())
+        self.assertIn("  strict-cache:\n", ACTION.read_text().split("\nruns:\n", 1)[0])
 
     def test_every_checkout_reuses_master_git_and_falls_back_to_a_cold_checkout(self):
-        # The tree lookup checks out only its script, without the .git cache.
+        # The tree lookup checks out only its script, and the gate the files of
+        # its CI plan checks (blobs on demand), both without the .git cache.
         self.assertIn("sparse-checkout: scripts/ci-tested-tree.py", self.jobs["tested"])
+        gate = self.jobs["provider-test-gate"]
+        self.assertEqual(gate.count("actions/checkout@"), 1)
+        self.assertIn("          filter: blob:none\n          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}\n", gate)
         checkouts = {job_id: job for job_id, job in self.jobs.items()
-                     if "actions/checkout@" in job and job_id != "tested"}
+                     if "actions/checkout@" in job and job_id not in ("tested", "provider-test-gate")}
         self.assertEqual(set(checkouts), {"release-integrity", "docs", *LANES, "test-cluster", "test-cluster-gpu",
                                           "test-cluster-focused", "refresh-caches"})
         for job_id, job in checkouts.items():
@@ -865,9 +898,13 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("key: ${{ steps.build-key.outputs.key }}", swift_cache)
         # This recipe's entries first, then any recipe's with the same toolchain,
         # dependencies and checkout path, then any with the same MLX pins.
+        # With strict-cache (master), only this recipe's entries: the looser
+        # tiers evaluate to empty lines, which actions/cache ignores.
         self.assertIn("restore-keys: |\n          ${{ steps.keys.outputs.swift-prefix }}\n"
-                      "          ${{ steps.keys.outputs.swift-loose-prefix }}\n"
-                      "          ${{ steps.keys.outputs.swift-mlx-prefix }}\n", swift_cache)
+                      "          ${{ inputs.strict-cache != 'true' && steps.keys.outputs.swift-loose-prefix || '' }}\n"
+                      "          ${{ inputs.strict-cache != 'true' && steps.keys.outputs.swift-mlx-prefix || '' }}\n",
+                      swift_cache)
+        self.assertIn("strict-cache:\n", action.split("\nruns:\n", 1)[0])
         save = next(step for step in steps if field(step, "name", indent=4) == "Save lane-specific Swift test build")
         self.assertIn("key: ${{ steps.build-key.outputs.key }}", save)
         # Every build step builds once more from nothing only through the retry

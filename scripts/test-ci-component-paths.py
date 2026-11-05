@@ -240,7 +240,7 @@ class GitDiffTests(unittest.TestCase):
         provider_only = self.commit()
         self.assertEqual(self.pr(head, provider_only),
                          {"provider": True, "cluster": False, "mimo_audio": False})
-        for ref in ("refs/heads/topic", "refs/heads/dev", "refs/heads/master"):
+        for ref in ("refs/heads/topic", "refs/heads/dev"):
             self.assertEqual(self.run_detector("push", {"before": head, "after": provider_only, "ref": ref}),
                              {"provider": True, "cluster": False, "mimo_audio": False})
         self.write("libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/New.swift")
@@ -251,11 +251,30 @@ class GitDiffTests(unittest.TestCase):
         self.write("provider-swift/Tests/ProviderCoreTests/MiMo/MiMoV26ManagedAudioProviderTests.swift")
         audio = self.commit()
         self.assertEqual(self.pr(cluster, audio), {"provider": True, "cluster": False, "mimo_audio": True})
-        # A push to a default branch selects by its diff, as a pull request does.
-        for ref in ("refs/heads/master", "refs/heads/main", "refs/heads/dev"):
-            self.assertFalse(any(self.run_detector("push", {**event, "ref": ref}).values()))
+        # A push to dev selects by its diff, as a pull request into dev does.
+        self.assertFalse(any(self.run_detector("push", {**event, "ref": "refs/heads/dev"}).values()))
         self.assertTrue(all(self.run_detector("push", {**event, "before": "0" * 40}).values()))
         self.assertTrue(all(self.run_detector("workflow_dispatch", {}).values()))
+
+    def test_master_pushes_and_pull_requests_into_master_select_every_component(self):
+        # Master is the release line: a docs-only change into master still
+        # runs every component, so a master record always covers them all.
+        self.write("landing/new.ts")
+        head = self.commit()
+        everything = dict.fromkeys(routing.COMPONENTS, True)
+        for ref in ("refs/heads/master", "refs/heads/main"):
+            with self.subTest(ref=ref):
+                self.assertEqual(self.run_detector("push", {"before": self.base, "after": head, "ref": ref}),
+                                 everything)
+        for branch in ("master", "main"):
+            with self.subTest(base=branch):
+                event = {"pull_request": {"base": {"sha": self.base, "ref": branch}, "head": {"sha": head}}}
+                self.assertEqual(self.run_detector("pull_request", event), everything)
+        # Into dev or a stacked branch, the diff decides.
+        for branch in ("dev", "ci/stacked"):
+            with self.subTest(base=branch):
+                event = {"pull_request": {"base": {"sha": self.base, "ref": branch}, "head": {"sha": head}}}
+                self.assertFalse(any(self.run_detector("pull_request", event).values()))
 
     def test_missing_invalid_revisions_and_unsupported_events_fail_closed(self):
         for before in ("f" * 40, "--help", "", None):
@@ -265,6 +284,27 @@ class GitDiffTests(unittest.TestCase):
 
 
 class WorkflowRoutingTests(unittest.TestCase):
+    def test_every_pull_request_runs_exactly_one_ci_workflow(self):
+        # CI (dev) runs for pull requests into any branch but master (dev and
+        # stacked branches); CI (master) for pull requests into master. The
+        # two lists are disjoint and cover every base.
+        dev = (ROOT / ".github/workflows/ci-dev.yml").read_text().split("\npermissions:", 1)[0]
+        master = (ROOT / ".github/workflows/ci-master.yml").read_text().split("\npermissions:", 1)[0]
+        self.assertIn("  pull_request:\n    branches-ignore: [master, main]\n", dev)
+        self.assertNotIn("    branches: [dev]\n  pull_request", dev)
+        self.assertIn("  pull_request:\n    branches: [master, main]\n", master)
+        self.assertIn("  push:\n", dev)
+        self.assertIn("    branches: [dev]\n", dev.split("  pull_request:", 1)[0])
+        # Both run the same plan and tests, whatever the base.
+        for text in (dev, master):
+            self.assertNotIn("github.base_ref", text)
+        for filename in ("ci-dev.yml", "ci-master.yml"):
+            jobs = workflow.job_blocks((ROOT / ".github/workflows" / filename).read_text().split("\njobs:\n", 1)[1])
+            with self.subTest(workflow=filename):
+                self.assertIn("    uses: ./.github/workflows/provider-plan.yml\n", jobs["plan"])
+                self.assertIn("    uses: ./.github/workflows/provider-tests.yml\n", jobs["tests"])
+                self.assertIn("    needs: plan\n    if: ${{ !cancelled() }}\n", jobs["tests"])
+
     def test_public_provider_workflows_have_no_backend_execution_or_private_access(self):
         for filename in ("ci-dev.yml", "ci-master.yml", "provider-tests.yml", "component-changes.yml",
                          "provider-release-cache.yml",
@@ -292,6 +332,12 @@ class WorkflowRoutingTests(unittest.TestCase):
         self.assertIn("uses: ./.github/workflows/component-changes.yml", plan["changes"])
         self.assertIn("contents: read", plan["changes"])
         self.assertIn("    needs: [changes, tested]\n", plan["components"])
+        # The lookup needs the classifier's components: a record must cover them.
+        self.assertIn("    needs: changes\n    if: ${{ !cancelled() && needs.changes.result == 'success' }}\n",
+                      plan["tested"])
+        self.assertIn("          SELECTED: provider=${{ needs.changes.outputs.provider }},"
+                      "cluster=${{ needs.changes.outputs.cluster }},"
+                      "mimo_audio=${{ needs.changes.outputs.mimo_audio }}\n", plan["tested"])
         self.assertIn("    needs: [components, tested]\n", plan["route"])
         for name in routing.COMPONENTS:
             self.assertIn(f"      {name}: ${{{{ steps.choose.outputs.{name} }}}}\n", plan["components"])
@@ -309,7 +355,10 @@ class WorkflowRoutingTests(unittest.TestCase):
         for name, job in ci.items():
             if name != "refresh-caches":
                 self.assertNotIn("github.event_name", job, name)
-        self.assertNotIn("github.event_name", "".join(plan[name] for name in ("changes", "tested", "components")))
+        self.assertNotIn("github.event_name", "".join(plan[name] for name in ("changes", "components")))
+        # The lookup reads the event only to bind a record to its change.
+        self.assertEqual(plan["tested"].count("github.event_name"), 1)
+        self.assertIn("          EVENT: ${{ github.event_name }}\n", plan["tested"])
         # The Provider SDK Tests lane is gone (David, 2026-11-04): its suites run
         # in the SDK's own Fork Tests.
         self.assertNotIn("test-provider-sdk", ci)

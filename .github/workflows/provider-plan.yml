@@ -35,6 +35,11 @@ on:
         value: ${{ jobs.tested.outputs.tested_run }}
       tree:
         value: ${{ jobs.tested.outputs.tree }}
+      base:
+        description: The tested change's base (`push` for a push)
+        value: ${{ jobs.tested.outputs.base }}
+      head:
+        value: ${{ jobs.tested.outputs.head }}
       routes:
         value: ${{ jobs.route.outputs.routes }}
 
@@ -49,6 +54,8 @@ jobs:
 
   tested:
     name: Find an earlier test of this tree
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -58,28 +65,45 @@ jobs:
       skip: ${{ steps.lookup.outputs.skip }}
       tested_run: ${{ steps.lookup.outputs.tested_run }}
       tree: ${{ steps.tree.outputs.tree }}
+      base: ${{ steps.tree.outputs.base }}
+      head: ${{ steps.tree.outputs.head }}
     steps:
-      # On a pull request github.sha is its test merge commit; on a push, the
-      # pushed commit. Only the lookup script is checked out.
+      # On a pull request github.sha is its test merge commit of the event's
+      # base and head; on a push, the pushed commit. Only the lookup script is
+      # checked out.
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
           sparse-checkout: scripts/ci-tested-tree.py
           sparse-checkout-cone-mode: false
-      - name: Name the tree this run tests
+      - name: Name the change this run tests
         id: tree
-        run: echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || 'push' }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          {
+            echo "tree=$(git rev-parse 'HEAD^{tree}')"
+            echo "base=$BASE"
+            echo "head=$HEAD"
+          } >> "$GITHUB_OUTPUT"
       - name: Look for a successful run that tested it
         id: lookup
         env:
           GITHUB_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           WORKFLOW_REF: ${{ github.workflow_ref }}
+          EVENT: ${{ github.event_name }}
+          SHA: ${{ github.sha }}
           TREE: ${{ steps.tree.outputs.tree }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          SELECTED: provider=${{ needs.changes.outputs.provider }},cluster=${{ needs.changes.outputs.cluster }},mimo_audio=${{ needs.changes.outputs.mimo_audio }}
           RUN_ID: ${{ github.run_id }}
         run: |
           python3 scripts/ci-tested-tree.py lookup --repository "$REPOSITORY" \
-            --workflow-ref "$WORKFLOW_REF" --tree "$TREE" --run-id "$RUN_ID"
+            --workflow-ref "$WORKFLOW_REF" --event "$EVENT" --sha "$SHA" --tree "$TREE" \
+            --base "$BASE" --head "$HEAD" --components "$SELECTED" --run-id "$RUN_ID"
 
   # The components the test jobs run: the classifier's, or none when the tree
   # was tested. A failed lookup has already answered "test".

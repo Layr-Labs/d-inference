@@ -1,15 +1,16 @@
 name: CI (dev)
 
-# Pull requests into dev and pushes to dev run the provider and cluster
-# tests (.github/workflows/provider-tests.yml) and nothing else: Release
-# Integrity, Docs Lint and the contribution gates run only for master
+# Pull requests into any branch but master (dev, and stacked feature
+# branches) and pushes to dev run the provider and cluster tests
+# (.github/workflows/provider-tests.yml) and nothing else: Release Integrity,
+# Docs Lint and the contribution gates run only for master
 # (.github/workflows/ci-master.yml, docs-impact.yml).
 on:
   push:
     # Pushes to dev save the caches that pull requests into dev restore.
     branches: [dev]
   pull_request:
-    branches: [dev]
+    branches-ignore: [master, main]
 
 permissions:
   contents: read
@@ -45,4 +46,7 @@ jobs:
       skip: ${{ needs.plan.outputs.skip }}
       tested_run: ${{ needs.plan.outputs.tested_run }}
       tree: ${{ needs.plan.outputs.tree }}
+      base: ${{ needs.plan.outputs.base }}
+      head: ${{ needs.plan.outputs.head }}
       routes: ${{ needs.plan.outputs.routes }}
+      strict_cache: false

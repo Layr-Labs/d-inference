@@ -17,7 +17,12 @@ on:
       skip: {type: string, required: true}
       tested_run: {type: string, required: true}
       tree: {type: string, required: true}
+      base: {type: string, required: true}
+      head: {type: string, required: true}
       routes: {type: string, required: true}
+      # true: restore only this recipe's builds (master: release-bound
+      # builds never reuse objects of another recipe or dependency set).
+      strict_cache: {type: boolean, default: false}
 
 permissions:
   contents: read
@@ -102,6 +107,7 @@ jobs:
         with:
           lane: provider
           save-caches: ${{ env.SAVE_CACHES }}
+          strict-cache: ${{ inputs.strict_cache }}
       # The provider lane builds with --enable-code-coverage. Every provider
       # process after this step writes its own profile here, and the report
       # step at the end of this job merges them.
@@ -495,6 +501,7 @@ jobs:
         with:
           lane: cluster
           save-caches: ${{ env.SAVE_CACHES }}
+          strict-cache: ${{ inputs.strict_cache }}
       - name: Run cluster runtime tests
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
         timeout-minutes: 40
@@ -557,6 +564,7 @@ jobs:
         with:
           lane: cluster
           save-caches: ${{ env.SAVE_CACHES }}
+          strict-cache: ${{ inputs.strict_cache }}
       - name: Run non-blocking cluster GPU tests
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
         continue-on-error: true
@@ -743,21 +751,48 @@ jobs:
           esac
           test "$CLUSTER_RESULT" = "$cluster_expected"
           test "$CLUSTER_FOCUSED_RESULT" = "$cluster_expected"
-      # The record a later run of the same tree finds (scripts/ci-tested-tree.py):
-      # it counts only once the whole run succeeded.
-      - name: Record the tree these tests passed
-        if: ${{ inputs.skip != 'true' }}
+      # The CI plans run on dev too, not only in master's Release Integrity:
+      # the cluster plan's audit against the sources and this workflow, the
+      # provider shard plan, the component classifier, the tested-change
+      # lookup, the route and the workflow pins. Python only; no build.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          filter: blob:none
+          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
+          sparse-checkout-cone-mode: false
+      - name: Check the CI plans
+        run: |
+          python3 scripts/cluster-test-plan.py audit
+          python3 scripts/test-cluster-test-plan.py
+          python3 scripts/test-provider-test-shards.py
+          python3 scripts/test-ci-component-paths.py
+          python3 scripts/test-ci-tested-tree.py
+          python3 scripts/test-darkbloom-route.py
+          python3 scripts/test-provider-ci-workflow.py
+      # The record a later run of the same change finds (scripts/ci-tested-tree.py):
+      # the tree, the event's base and head, and the components that ran. It
+      # counts only once the whole run succeeded. A run that tested nothing
+      # records nothing.
+      - name: Name the record of the change these tests passed
+        id: record
+        if: ${{ inputs.skip != 'true' && (inputs.provider == 'true' || inputs.cluster == 'true') }}
         env:
           TREE: ${{ inputs.tree }}
+          BASE: ${{ inputs.base }}
+          HEAD: ${{ inputs.head }}
+          RAN: provider=${{ inputs.provider }},cluster=${{ inputs.cluster }},mimo_audio=${{ inputs.mimo_audio }}
         run: |
-          mkdir -p "$RUNNER_TEMP/tested-tree"
-          printf '%s\n' "$TREE" > "$RUNNER_TEMP/tested-tree/tree"
-      - name: Upload the tested tree
-        if: ${{ inputs.skip != 'true' }}
+          name=$(python3 scripts/ci-tested-tree.py name --tree "$TREE" --base "$BASE" --head "$HEAD" --components "$RAN")
+          mkdir -p "$RUNNER_TEMP/tested-change"
+          printf '%s\n' "$name" > "$RUNNER_TEMP/tested-change/record"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+      - name: Upload the record
+        if: ${{ inputs.skip != 'true' && (inputs.provider == 'true' || inputs.cluster == 'true') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ci-tested-tree-${{ inputs.tree }}
-          path: ${{ runner.temp }}/tested-tree/tree
+          name: ${{ steps.record.outputs.name }}
+          path: ${{ runner.temp }}/tested-change/record
           if-no-files-found: error
           retention-days: 30
 
@@ -811,9 +846,11 @@ jobs:
         with:
           lane: provider
           save-caches: ${{ env.SAVE_CACHES }}
+          strict-cache: ${{ inputs.strict_cache }}
       - name: Build cluster test products and save their caches
         if: ${{ !cancelled() && inputs.changed_cluster == 'true' }}
         uses: ./.github/actions/provider-ci-build
         with:
           lane: cluster
           save-caches: ${{ env.SAVE_CACHES }}
+          strict-cache: ${{ inputs.strict_cache }}

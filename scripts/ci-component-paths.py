@@ -116,8 +116,21 @@ def revision(value):
     return git("rev-parse", "--verify", value + "^{commit}").decode().strip()
 
 
+RELEASE_BRANCHES = ("master", "main")
+
+
+def full_run(event_name, event):
+    """Master is the release line: its pushes and the pull requests into it test every component."""
+    if event_name == "push":
+        return event.get("ref") in tuple(f"refs/heads/{branch}" for branch in RELEASE_BRANCHES)
+    if event_name == "pull_request":
+        return event["pull_request"]["base"].get("ref") in RELEASE_BRANCHES
+    return False
+
+
 def changed_paths(event_name, event):
-    if event_name == "workflow_dispatch":
+    """The changed paths, or None when every component runs."""
+    if event_name == "workflow_dispatch" or full_run(event_name, event):
         return None
     if event_name == "pull_request":
         base = revision(event["pull_request"]["base"]["sha"])
@@ -146,6 +159,7 @@ def main():
     paths = changed_paths(args.event_name, event)
     # Pull requests and pushes select alike: a push diffs against the
     # branch's previous commit (`before`); without one, everything runs.
+    # Master pushes and pull requests into master select everything.
     selected = dict.fromkeys(COMPONENTS, True) if paths is None else classify(paths)
     output = "".join(f"{name}={str(enabled).lower()}\n" for name, enabled in selected.items())
     if args.output:

@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-04
+> Last updated: 2026-11-05
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -141,7 +141,12 @@ follows the start from the cluster's status the two Macs exchange over the cable
    in `darkbloom cluster` on either Mac) and this Mac keeps following. Offered,
    it says "Offered to Darkbloom as a pair for <model>; waiting for Darkbloom to
    accept this pair…" and waits as the leader does, so both screens end the
-   same way. Every start the leader's screen makes publishes its test's outcome,
+   same way. When Darkbloom's model catalog does not list the model, Darkbloom
+   never pairs the Macs for it; each Mac's part reads the catalog after it
+   registers, and both screens and `darkbloom cluster status` end with "✗ Not
+   serving: The coordinator does not pair Macs for <model>: its model catalog
+   does not list it" (`ClusterLocalServing.catalogRefusal`) instead of waiting.
+   Every start the leader's screen makes publishes its test's outcome,
    and this Mac ends with it, without a test of its own: a pass with the leader's
    response time ("Test response in 0.61 s (the leading Mac's test)"), a failure
    with the same ✗, reason and note ("Setup saved, but the test failed."; through

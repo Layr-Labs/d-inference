@@ -175,6 +175,15 @@ struct ClusterPairHabitCommandsTests {
         #expect(ClusterPairSummary.ownState(started: true, own: own) == (.serving, nil))
         own.child.pair = "starting"
         #expect(ClusterPairSummary.ownState(started: true, own: own) == (.loading, nil))
+        // A part the coordinator will not pair (its catalog lacks the model): not serving, with the reason, instead of
+        // "waiting for the coordinator" (DevNet Gemma pair, 2026-11-05).
+        let refusal = ClusterLocalServing.catalogRefusal(modelID: "gemma-4-26b-qat-4bit", catalogIDs: ["glm-5.3-flash"])!
+        var refused = own
+        refused.child.pair = nil
+        refused.child.notice = refusal
+        #expect(ClusterPairSummary.ownState(started: true, own: refused) == (.notServing, refusal))
+        refused.child.notice = ClusterLocalServing.offeredNotice
+        #expect(ClusterPairSummary.ownState(started: true, own: refused) == (.loading, nil))
         own.control = .init(leaderID: "a", leaderName: "Apple M3 Ultra, 256 GB", term: 1, reason: "", leads: true,
                             line: "The other Mac (Apple M5 Max, 128 GB) is gone; …", mode: "waiting")
         #expect(ClusterPairSummary.ownState(started: true, own: own) == (.otherMacAway, "The other Mac (Apple M5 Max, 128 GB) is gone; …"))

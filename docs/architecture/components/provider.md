@@ -65,20 +65,33 @@ flowchart LR
 
 ### Process boundaries
 
-`ProviderLoop+Serve.swift` reads App Attest messages, authorization status and
-connection invalidation before forwarding slower events to its ordered work
-consumer. An inference handler awaiting a model load therefore cannot hold a
-renewal reply or a received grant update. Both consumers belong to the same
-serve invocation; shutdown finishes the work stream and waits for its consumer.
-The [attestation lifecycle](../security/attestation.md#provider-connection-control)
+`ProviderLoop+Serve.swift` reads App Attest messages, authorization status,
+attestation challenges, coordinator cancels and connection invalidation before
+forwarding slower events to its ordered work consumer. An inference handler
+awaiting a model load therefore cannot hold a renewal reply, a received grant
+update or a challenge answer. Both consumers belong to the same serve
+invocation; shutdown finishes the work stream and waits for its consumer. The
+[attestation lifecycle](../security/attestation.md#provider-connection-control)
 owns the connection and trust guarantees.
+
+A coordinator cancel never waits in the work consumer. Cancelling reaches the
+request's engine, and a two-Mac pair's engine can be held for up to 30 s by a
+rank reservation (see [the pair engine queue](../inference.md)); a cancel in the
+consumer used to hold every later event that long, so challenges timed out and
+new requests spent their first-content budget waiting. The reader now holds a
+cancel for a request whose admission has not returned and applies it when that
+admission returns, exactly where the consumer applied it; any other cancel runs
+at once, beside the consumer (`routeCoordinatorCancel` in
+`provider-swift/Sources/ProviderCore/ProviderLoop+WorkFIFO.swift`). A cancel
+therefore never runs before or during its own request's admission and is never
+lost, and it waits for no other request's work.
 
 An accepted request whose model is not resident releases the work consumer when
 it starts waiting for the load (`releaseWorkFIFO` in
 `provider-swift/Sources/ProviderCore/ProviderLoop+WorkFIFO.swift`), so later
-inference requests, cancels and attestation challenges are not held behind
-weight loading. A coordinator cancel for the waiting request is applied when its
-admission returns, where the serial consumer applied it. Connection, drain and
+inference requests are not held behind weight loading. A coordinator cancel for
+the waiting request is applied when its admission returns, before the events
+that wait for it. Connection, drain and
 model-management events, and the end of the work stream, still wait for it. So
 does a request for another model that is not resident, before its pre-accept
 capacity check (`awaitReleasedLoads`): the waiting load may not yet hold the

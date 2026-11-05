@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """CPU checks for metadata authentication and actual deterministic PNG pixels."""
+import hashlib
 import importlib.util
 from pathlib import Path
 import struct
 import tempfile
 import unittest
+from unittest import mock
 import zlib
 
 SPEC = importlib.util.spec_from_file_location(
@@ -34,6 +36,29 @@ class FixtureTests(unittest.TestCase):
             self.assertEqual(kinds, [b"IHDR", b"IDAT", b"IEND"])
             self.assertEqual(position, len(data))
         self.assertNotEqual(F.png((255, 0, 0)), F.png((0, 0, 255)))
+
+    def test_cached_metadata_is_used_only_when_its_bytes_match_the_pin(self):
+        payloads = {name: f"{name} fixture\n".encode() for name in F.NAMES}
+        pins = {name: (len(data), hashlib.sha256(data).hexdigest()) for name, data in payloads.items()}
+        calls = []
+        def fetch(name):
+            calls.append(name)
+            return payloads[name]
+        with tempfile.TemporaryDirectory() as root, mock.patch.dict(F.PINS.FILES, pins):
+            cache = Path(root) / "cache"
+            cached = F.cached(fetch, cache, lambda name: F.PINS.FILES[name][1])
+            F.prepare(Path(root) / "first", fetch=cached)
+            F.prepare(Path(root) / "second", fetch=cached)
+            self.assertEqual(calls, list(F.NAMES))
+            # A corrupted entry is fetched again; a wrong download is refused and not kept.
+            (cache / pins[F.NAMES[0]][1]).write_bytes(b"corrupted")
+            F.prepare(Path(root) / "third", fetch=cached)
+            self.assertEqual(calls, [*F.NAMES, F.NAMES[0]])
+            empty = Path(root) / "empty"
+            with self.assertRaisesRegex(ValueError, "SHA-256 mismatch"):
+                F.prepare(Path(root) / "fourth", fetch=F.cached(lambda name: b"corrupt", empty,
+                                                                 lambda name: F.PINS.FILES[name][1]))
+            self.assertFalse(empty.exists())
 
     def test_corrupt_metadata_refuses(self):
         with tempfile.TemporaryDirectory() as root:

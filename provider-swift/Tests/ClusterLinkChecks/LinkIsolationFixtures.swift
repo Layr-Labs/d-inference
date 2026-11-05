@@ -12,6 +12,11 @@ struct FakeIsolationTools {
     var routes = ClusterLinkToolOutcome.unavailable
     var dns = ClusterLinkToolOutcome.unavailable
     var dhcpPackets: [String: ClusterLinkToolOutcome] = [:]
+    /// `NetworkServices`, `CurrentSet` and the set's IPv4 order from the network preferences (a removal of a port's
+    /// only service reads them).
+    var servicePreferences = ClusterLinkToolOutcome.unavailable
+    var currentSet = ClusterLinkToolOutcome.unavailable
+    var serviceOrderPreferences: [String: ClusterLinkToolOutcome] = [:]
 }
 
 /// Tool text captured on the two Macs on 2026-10-09 with read-only commands
@@ -403,7 +408,22 @@ enum IsolationFixtures {
         tools.isolation.serviceInfo["Darkbloom Cluster Link (en6)"] = .output(manualServiceInfo(address: address.dottedDecimal))
         tools.isolation.bridgePreferences = .output(macBBridgePreferencesWithoutPort)
         tools.isolation.routes = .output(macBIsolatedRoutes(address: address.dottedDecimal))
+        // Darkbloom's service is the only one on Thunderbolt 2 (the ports start in the bridge): its ID in the preferences.
+        tools.isolation.servicePreferences = .output(servicePreferences([(serviceID("e6"), "Darkbloom Cluster Link (en6)", "en6"),
+                                                                         (serviceID("b0"), "Thunderbolt Bridge", "bridge0")]))
+        tools.isolation.currentSet = .output("/Sets/\(networkSet)\n")
+        tools.isolation.serviceOrderPreferences[networkSet] = .output("[\"\(serviceID("b0"))\",\"\(serviceID("e6"))\"]")
         return tools
+    }
+
+    /// The network set and service IDs of the fixtures' preferences.
+    static let networkSet = "D8185C32-7BC9-46CB-BDF8-FB71374DDB40"
+    static func serviceID(_ tag: String) -> String { "00000000-0000-4000-8000-0000000000" + tag.uppercased() }
+
+    /// `plutil -extract NetworkServices json` for these services.
+    static func servicePreferences(_ services: [(id: String, name: String, device: String)]) -> String {
+        "{" + services.map { "\"\($0.id)\":{\"UserDefinedName\":\"\($0.name)\",\"Interface\":{\"DeviceName\":\"\($0.device)\",\"Type\":\"Ethernet\"}}" }
+            .joined(separator: ",") + "}"
     }
 
     // MARK: three isolated Macs after pairing
@@ -448,6 +468,12 @@ enum IsolationFixtures {
                 serviceInfo: [ClusterLinkServiceName.cluster(interface: port): .output(IsolationFixtures.manualServiceInfo(address: address))],
                 bridgePreferences: .output(bridges), routes: .output(IsolationFixtures.routeTable(routes + extraRoutes)),
                 dns: .output("DNS configuration\n\n" + IsolationFixtures.resolver(1, servers: ["192.0.2.1"], interface: wifi, scoped: false)))
+            // Darkbloom's services in the preferences, each the only one on its port (pair-2's MacBook).
+            let ours = ([port] + otherPorts).map { (id: IsolationFixtures.serviceID("a" + String($0.last!)), name: ClusterLinkServiceName.cluster(interface: $0), device: $0) }
+            tools.isolation.servicePreferences = .output(IsolationFixtures.servicePreferences(ours))
+            tools.isolation.currentSet = .output("/Sets/\(IsolationFixtures.networkSet)\n")
+            tools.isolation.serviceOrderPreferences[IsolationFixtures.networkSet] = .output("[\"\(IsolationFixtures.serviceID("f0"))\","
+                + ours.map { "\"\($0.id)\"" }.joined(separator: ",") + "]")
             return tools
         }
     }

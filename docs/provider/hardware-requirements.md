@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-10-25
+> Last updated: 2026-11-05
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -58,10 +58,21 @@ buffers past it fail with "Insufficient Memory". Set the values the production
 and `vm.global_user_wire_limit=261134011596` and `vm.user_wire_limit=261134011596`
 (95% of physical memory), then restart the provider. The
 [troubleshooting steps](troubleshooting.md#glm-53-flash-gpu-wired-memory-limit)
-keep them after a reboot. Only the 256 GB values are defined
+keep them after a reboot. Only the 256 GB values are defined for one Mac
 (`provider-swift/Sources/ProviderCore/Diagnostics/GLM5NextWiredLimit.swift`,
 `GLM5NextWiredLimit.recommendation`); they change no admission or capacity
-figure.
+figure. A rank of a GLM pair, which on a 128 GB Mac holds about half the
+model, uses the same derivation for 128 and 256 GB, applied with
+[`darkbloom cluster gpu-limit`](../reference/configuration.md#gpu-memory-limit-for-a-glm-pair)
+(`GLM5NextWiredLimit.pairRankRecommendation`).
+
+A GLM pair of 128 GB Macs serves as a pipeline only. An M4 Max can be one of
+them: its part is sized to the GPU limit its macOS reports (107.52 GiB on
+macOS 26). `darkbloom cluster gpu-limit` raises the limit on any Apple silicon
+Mac with 128 GB or more (an M4 Max, M3 Ultra, M2 Ultra, M1 Ultra or M3 Max as
+well as an M5), so where a raise makes a split fit the setup names that step
+first, and otherwise says "needs more memory"
+([two-Mac cluster](two-mac-cluster.md)).
 
 Current backend behavior is owned by the
 [platform's latest default branch](https://github.com/Layr-Labs/darkbloom-platform/tree/master).

@@ -149,11 +149,13 @@ struct Status: AsyncParsableCommand {
         let now = Date().timeIntervalSince1970
         guard let state = DaemonStateFile.read() else {
             print(Self.daemonNotRunningLine(paired: pair.paired, unsure: pair.pairingUnreadable))
+            if let line = Self.steppedAsideLine(paired: pair.paired) { print(line) }
             return
         }
         let alive = daemonProcessAlive(pid: state.pid)
         if !alive {
             print(Self.daemonNotRunningLine(paired: pair.paired, unsure: pair.pairingUnreadable, staleStateFile: true))
+            if let line = Self.steppedAsideLine(paired: pair.paired) { print(line) }
             return
         }
         print(daemonHealthLine(

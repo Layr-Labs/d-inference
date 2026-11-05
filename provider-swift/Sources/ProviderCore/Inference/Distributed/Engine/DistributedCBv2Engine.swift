@@ -8,6 +8,9 @@ import MLXLMCommon
 public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
     let queue = DispatchQueue(label: "darkbloom.experimental.distributed-engine")
     let queueKey = DispatchSpecificKey<UInt8>()
+    /// Where the ranks' reservations wait, one after another, off `queue`
+    /// (`DistributedCBv2Engine+Admission.swift`).
+    let admissionQueue = DispatchQueue(label: "darkbloom.experimental.distributed-engine.admission")
     let owner: any DistributedResidentExecutionOwner
     let identity: DistributedResidentIdentity
     let profile: DistributedResidentExecutionProfile
@@ -19,11 +22,20 @@ public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
     /// owner's `concurrentRequests`.
     var actives: [UUID: DistributedRequestState] = [:]
     func isActive(_ state: DistributedRequestState) -> Bool { actives[state.generation] === state }
+    /// Lanes held by requests submitted but not yet in `actives` (waiting for
+    /// their reservation, or in it), by request ID; and those of them a cancel
+    /// named meanwhile.
+    var admitting: [CBv2RequestID: Int] = [:]
+    var cancelledWhileAdmitting: Set<CBv2RequestID> = []
+    var admittingCount: Int { admitting.values.reduce(0, +) }
     /// The request, for an owner that serves one at a time (and its tests).
     var active: DistributedRequestState? { actives.count == 1 ? actives.values.first : nil }
     var invalidated = false
     var stopping = false
     var shutdownTask: Task<Void, Never>?
+    /// The capacity the queue last computed, which `capacity()` answers from
+    /// off the queue (`DistributedCBv2Engine+Capacity.swift`).
+    let capacityPublication = DistributedCapacityPublication()
     /// The seed of every sampled request that names none (see `resolvingSeed`).
     let fallbackSeed = UInt64.random(in: .min ... .max)
     /// The pair's MTP counts over every request that reported them
@@ -62,11 +74,12 @@ public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
         queue.setSpecific(key: queueKey, value: 1)
         owner.setReadinessInvalidationHandler { [weak self] in
             guard let self else { return }
-            self.onQueue { self.invalidate() }
+            self.onQueue { self.invalidate(); self.publishCapacity() }
         }
         guard onQueue({ readyCapacity() != nil }) else {
             throw DistributedEngineError.unavailable
         }
+        onQueue { _ = publishCapacity() }
     }
 
     func onQueue<T>(_ body: () throws -> T) rethrows -> T {
@@ -82,26 +95,15 @@ public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
         if DispatchQueue.getSpecific(key: queueKey) != nil { body() } else { queue.async(execute: body) }
     }
 
+    /// Returns at once. A request whose reservation is in flight, or still
+    /// waiting, is stopped as soon as it is admitted.
     public func cancel(_ id: CBv2RequestID) {
-        onQueue {
-            guard let state = actives.values.first(where: { $0.request.id == id }) else { return }
-            stop(state, reason: .cancelled)
-        }
-    }
-
-    public func capacity() -> CBv2CapacitySnapshot {
-        onQueue {
-            let capacity = readyCapacity() ?? 0
-            let states = Array(actives.values)
-            let reserved = states.reduce(0) { $0 + max(0, $1.lease.reservedBytes) }
-            let inUse = states.reduce(0) { $0 + $1.lease.bytesInUse }
-            if inUse < 0 || inUse > reserved { invalidate() }
-            return CBv2CapacitySnapshot(
-                activeRequests: states.count, waitingRequests: 0,
-                kvBytesInUse: max(0, inUse), kvBytesCapacity: invalidated ? 0 : capacity,
-                kvBytesBackendCapacity: invalidated ? 0 : capacity,
-                kvBytesReserved: reserved,
-                activeTokens: states.reduce(0) { $0 + $1.request.promptTokens.count + $1.completionTokens })
+        onQueueWithoutWaiting { [self] in
+            if let state = actives.values.first(where: { $0.request.id == id }) {
+                stop(state, reason: .cancelled)
+            } else if admitting[id] != nil {
+                cancelledWhileAdmitting.insert(id)
+            }
         }
     }
 
@@ -109,7 +111,7 @@ public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
     public func mtpTotalsSnapshot() -> DistributedMTPTotals { onQueue { mtpTotals } }
 
     public func updateKVBytesCapacity(_ bytes: Int) {
-        onQueue { capacityLimit = max(0, bytes) }
+        onQueue { capacityLimit = max(0, bytes); publishCapacity() }
     }
 
     public func shutdown() async {
@@ -123,11 +125,18 @@ public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
         stopping = true
         let pending = Array(actives.values)
         for state in pending { stop(state, reason: .cancelled) }
-        let task = Task { [owner] in
+        let task = Task { [self, owner] in
             for state in pending { await state.retired.wait() }
+            // A reservation in flight returns into a stopping engine, which
+            // stops its request at once; wait for those too.
+            let late = await withCheckedContinuation { done in
+                admissionQueue.async { [self] in queue.async { [self] in done.resume(returning: Array(actives.values)) } }
+            }
+            for state in late { await state.retired.wait() }
             await owner.shutdown()
         }
         shutdownTask = task
+        publishCapacity()
         return task
     }
 

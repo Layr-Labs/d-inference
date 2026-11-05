@@ -138,9 +138,22 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
         case otherMacStillRuns(String)
         /// Another update or recovery holds the update lease; the next check tries again.
         case busy
+        /// The other Mac already runs this newer release (it updated alone). Nothing was changed: the supervisor runs
+        /// the pair's cycle at once instead of at the slot, and that cycle finds the other Mac ready.
+        case otherMacNewer(String)
         /// The cycle that followed it ended as an update cycle ends: `.restarted` once the earlier release is restored
         /// and the restart asked for.
         case followed(AutoUpdateController.Outcome)
+    }
+
+    /// The newer release the other Mac runs, or is updating to (a fresh working phase), than `mine`; nil when none.
+    public static func ahead(of mine: String, partner progress: ClusterPairUpdateProgress, now: Double) -> String? {
+        guard let running = SemanticVersion(mine) else { return nil }
+        if let theirs = SemanticVersion(progress.running), running < theirs { return progress.running }
+        let working: Set<ClusterPairUpdateProgress.Phase> = [.checking, .staged, .draining, .drained, .restarting]
+        guard working.contains(progress.phase), now - progress.writtenAt <= ClusterPairUpdate.progressStaleSeconds,
+              let target = progress.target, let theirs = SemanticVersion(target), running < theirs else { return nil }
+        return target
     }
 
     /// The other Mac rolled back and quarantined the release this Mac runs (`ClusterPairUpdateProgress.quarantined`),
@@ -171,6 +184,12 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
         if let mine = recorded?.quarantine?.version, progress.running == mine, progress.quarantined != mine,
            Self.installed(recorded) != mine {
             return .otherMacStillRuns("the other Mac still runs v\(mine), which is quarantined on this Mac")
+        }
+        // The other Mac updated alone and runs a newer release, or is updating to one (a single-Mac updater or
+        // `darkbloom update` there asked its pair to follow): this Mac follows it forward, never into one it quarantined.
+        if let ahead = Self.ahead(of: Self.installed(recorded) ?? updater.currentVersion, partner: progress, now: Self.now()),
+           recorded?.quarantine?.version != ahead {
+            return .otherMacNewer(ahead)
         }
         // A Mac that runs the release it quarantined (installed again with `--override-quarantine`) rolled nothing back.
         guard let quarantined = progress.quarantined, progress.running != quarantined,

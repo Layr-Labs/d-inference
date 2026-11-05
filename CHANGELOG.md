@@ -414,7 +414,7 @@ Published 2026-11-03 ([release](https://github.com/Layr-Labs/d-inference/release
 
 - Affected: a pair of two different Macs set up with `darkbloom cluster` to serve through Darkbloom, with a Qwen model planned in tensor parallel. The planner gave the faster Mac the larger share of every layer (for example 2:1 on an M3 Ultra and an M5 Max), and the coordinator registration cannot name unequal shares yet. Both Macs still said `Registered with the coordinator as a cluster member`, then each Mac's part refused to register ("The saved roster registration is not valid for this Mac: invalidPlan"), the pair fell back to the leader's local API, and the coordinator never formed it or routed it a request. This hit Qwen3.8 27B, which pairs only in tensor parallel, and Qwen3.5 9B where tensor parallel was chosen. GLM-5.3-Flash, pipeline splits and two identical Macs were not affected.
 - A pair served through Darkbloom is now planned with equal tensor-parallel shares, so it registers and is routed like a pair of identical Macs; on two different Macs the slower one sets the pace. A pair that serves you alone (`darkbloom cluster local`) keeps the faster unequal split.
-- A setup saved with unequal shares (by 0.10.6, or a local cluster switched to Darkbloom with `p`) is not offered for pairing, and the leader says why before it stops either Mac's part: `Not offered for pairing: this Mac's check refused it: Unequal tensor-parallel shares serve local clusters only …`. If `darkbloom cluster` shows this once both Macs run this release, press `m` and choose the model again: it is planned with equal shares and registers.
+- A setup saved with unequal shares (by 0.10.6, or a local cluster switched to Darkbloom with `p`) is not offered for pairing, and the leader says why before it stops either Mac's part: `Not offered for pairing: this Mac's check refused it: Unequal tensor-parallel shares serve local clusters only …`. If `darkbloom cluster` shows this once both Macs run this release, choose the model again there: it is planned with equal shares and registers.
 
 ### Both Macs of a pair roll back together
 
@@ -422,7 +422,7 @@ Published 2026-11-03 ([release](https://github.com/Layr-Labs/d-inference/release
 - The other Mac checks at its start and every minute while no update runs, also with automatic updates off. It finishes the accepted requests of its part first, as for an update, restores the release it kept from before its last update, quarantines the rolled-back release and restarts. Both Macs then skip that release, and the next newer release updates both.
 - A Mac that keeps another earlier release, or none, or whose part serves on the leader's local API or alone, does not follow (yet) and says so once in `~/.darkbloom/cluster-setup/service.log`. While a pair runs on it, a Mac whose partner stops answering during the follow waits at most a minute, then changes nothing and tries again at the pair's next update slot. A Mac whose partner quarantined a release does not install that release either.
 - Both Macs need this release or a later one, and the release a Mac rolls back to must have it too: the Mac that rolled back reports the rollback from the restored release. A rollback of this release itself is therefore not followed; rollbacks of later releases are.
-- To roll back a pair by hand, stop one Mac's cluster service with `darkbloom cluster stop`, run `darkbloom update --rollback` there, and start it again with `darkbloom cluster`; the other Mac follows.
+- To roll back a pair by hand, stop one Mac's cluster service with `darkbloom cluster stop --service`, run `darkbloom update --rollback` there, and start it again with `darkbloom cluster`; the other Mac follows.
 
 ### Two-Mac pairs recover after losing a rank during a stop
 
@@ -451,7 +451,7 @@ Published 2026-11-03 ([release](https://github.com/Layr-Labs/d-inference/release
 - When the two Macs pair again while their cluster services run (`darkbloom cluster` or `darkbloom cluster pair`), each service starts its setup and control-lease listeners again with the new pairing within about 5 seconds. They used to keep the earlier pairing's key until the service restarted, so the other Mac's leases and its "Reading both Macs over the cable" step were refused (`refused (handshakeRejected)`). The service log says `this Mac's pairing changed (<cluster label>): answering the paired Mac with the new one`.
 - A Mac left with no pairing stops answering over the cable. A pairing store that cannot be read leaves the listeners as they are.
 - A Mac that paired again under a new Secure Enclave key of its own drops its earlier control state, as it already did when the other Mac's key changed.
-- A cluster service started by an earlier release keeps the earlier behavior until it restarts (log out and back in, or `darkbloom cluster stop` and then `darkbloom cluster`).
+- A cluster service started by an earlier release keeps the earlier behavior until it restarts (log out and back in, or `darkbloom cluster stop --service` and then `darkbloom cluster`).
 
 ### Tensor parallel for Gemma 4 and MiMo only on measured speed
 

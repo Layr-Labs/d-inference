@@ -90,7 +90,8 @@ public enum ClusterHardwarePrior {
     /// a pipeline is open (the layout has tensor-parallel facts and the link's
     /// reduction was measured keyed): seconds of compute are then compared
     /// with seconds of link. Unchanged otherwise, or when a device that needs
-    /// it has no usable index.
+    /// it has no usable index. Macs of the same hardware (`sameHardwareIndex`)
+    /// get the same estimate.
     public static func absolute(_ devices: [ClusterPlacementDevice], layout: ClusterModelLayout,
                                 link: ClusterLinkCosts) -> [ClusterPlacementDevice] {
         guard layout.tensorParallel != nil, link.reduction?.keyed == true,
@@ -98,13 +99,37 @@ public enum ClusterHardwarePrior {
         var result: [ClusterPlacementDevice] = []
         for device in devices {
             if device.speed.absolute { result.append(device); continue }
-            guard let rates = absoluteRates(profile: device.profile, layout: layout),
-                  let index = device.profile.speedIndex else { return devices }
+            var profile = device.profile
+            profile.speedIndex = sameHardwareIndex(for: device.profile, among: devices.map(\.profile))
+            guard let rates = absoluteRates(profile: profile, layout: layout),
+                  let index = profile.speedIndex else { return devices }
             result.append(.init(label: device.label, profile: device.profile,
                 speed: .init(source: .transferredByDeviceIndex, absolute: true, rested: rates, sustained: nil,
                     explanation: "estimate from this Mac's own device index (\(index.benchmark)): the model's weight bytes per token "
-                        + "at the bytes per second the index moved; this model's own speed is unknown")))
+                        + "at the bytes per second the index moved; this model's own speed is unknown", wholeModelEstimated: true)))
         }
         return result
+    }
+
+    /// The index a Mac's estimate is made from: the fastest that any Mac of
+    /// the same hardware (chip, GPU cores and OS build) measured with the same
+    /// benchmark, whose ratio to it the speed estimate already takes as 1. A
+    /// pipeline's time is each Mac's layers at that Mac's rate, so between
+    /// two such Macs any difference, however small, moved the whole cut to
+    /// one end. A Mac's index is about a second of GPU work and reads slow
+    /// beside other GPU work: on two M5 Ultras just after another app's pair
+    /// stopped, an index 0.1% lower offered GLM's pipeline as 1 layer / 44
+    /// where 24 / 21 loads once the pair has served (whose speeds are keyed
+    /// by the hardware, the same for both). Nil without an index.
+    static func sameHardwareIndex(for profile: ClusterDeviceProfile, among profiles: [ClusterDeviceProfile]) -> ClusterDeviceIndex? {
+        guard let own = profile.speedIndex else { return nil }
+        let peers = profiles.compactMap { other -> ClusterDeviceIndex? in
+            guard other.chip == profile.chip, other.gpuCores == profile.gpuCores, other.osBuild == profile.osBuild,
+                  let index = other.speedIndex, index.benchmark == own.benchmark, (try? index.validate()) != nil else { return nil }
+            return index
+        }
+        return .init(chip: own.chip, osBuild: own.osBuild, benchmark: own.benchmark,
+                     prefillIndex: peers.map(\.prefillIndex).max() ?? own.prefillIndex,
+                     decodeIndex: peers.map(\.decodeIndex).max() ?? own.decodeIndex)
     }
 }

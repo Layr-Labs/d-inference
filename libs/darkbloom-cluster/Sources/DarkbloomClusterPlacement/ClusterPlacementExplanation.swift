@@ -147,10 +147,19 @@ public enum ClusterPlacementExplanation {
                                  devices: [ClusterPlacementDevice] = []) -> [String] {
         var lines: [String] = []
         for r in c.ranks {
-            lines.append("Rank \(r.rank): \(r.device), layers \(r.firstLayer) to \(r.endLayer - 1) (\(r.endLayer - r.firstLayer)). "
+            let head = "Rank \(r.rank): \(r.device), layers \(r.firstLayer) to \(r.endLayer - 1) (\(r.endLayer - r.firstLayer)). "
                 + "It holds \(gibText(r.weightsBytes)) of weights and needs \(gibText(r.needBytes, roundUp: true)) admissible "
-                + "against \(gibText(r.admissibleNowBytes)): \(fitText(r.fit, need: r.needBytes, device: r.device, devices))."
-                + (r.withinGPUWorkingSet ? "" : " That is more than its GPU says an application may keep resident."))
+                + "against \(gibText(r.admissibleNowBytes)): "
+            if let short = r.gpuWorkingSetShortBytes {
+                lines.append(head + gpuText(short: short, device: r.device, devices) + ".")
+                continue
+            }
+            let requests = r.servingContextTokens.map { tokens in
+                " Its requests are admitted as they arrive: " + (tokens > 0 ? "up to \(tokens) tokens of context fit now."
+                    : "none fits now beside the loaded weights; a request is admitted once memory is free.")
+            } ?? ""
+            lines.append(head + "\(fitText(r.fit, need: r.needBytes, device: r.device, devices))."
+                + (r.withinGPUWorkingSet ? "" : " That is more than its GPU says an application may keep resident.") + requests)
         }
         let modeText: String
         switch c.mode {
@@ -166,6 +175,16 @@ public enum ClusterPlacementExplanation {
         }
         lines.append("Mode: \(modeText); prefill schedule \(c.prefillSchedule == .oneChunkLookahead ? "one chunk of lookahead" : "serial").")
         return lines
+    }
+
+    /// A rank whose GPU cannot keep resident what it needs there
+    /// (`ClusterPlacementRank.gpuWorkingSetShortBytes`): the GPU's limit binds, not free memory.
+    static func gpuText(short: Int, device: String, _ devices: [ClusterPlacementDevice]) -> String {
+        let capacity = devices.first { $0.label == device }.map {
+            " (\(gibText($0.profile.residentCapacityBytes)), macOS's GPU wired-memory limit)"
+        } ?? ""
+        return "its GPU keeps \(gibText(short, roundUp: true)) too little resident\(capacity) for its weights beside what "
+            + "loading holds or the largest request; freeing memory cannot change that, raising the GPU's limit can"
     }
 
     /// Shares as whole percentages in rank order, e.g. "25/75".
@@ -310,10 +329,16 @@ public enum ClusterPlacementExplanation {
                 lines.append("  The closest admitted placement:")
                 lines += candidate(closest, basis: result.basis, prompt: result.promptTokens, outputs: result.outputTokens, devices: devices).map { "    " + $0 }
             }
+            let gpuBound = refusal.closest?.ranks.contains { $0.gpuWorkingSetShortBytes != nil } ?? false
             if refusal.fitsAtAStructuralCut {
                 lines.append("  A cut this runtime does not admit would fit. The cut list refuses this model, not the Macs' memory.")
             } else if refusal.fitsAtSomeLayerBoundary {
                 lines.append("  A layer boundary the model's stage plan cannot cut at would fit. The plan's cut rule refuses this model, not the Macs' memory.")
+            } else if gpuBound {
+                lines.append("  What a Mac's GPU keeps resident decides this, not its free memory: raising the GPU's limit on the Mac "
+                    + "that is short (macOS's GPU wired-memory limit) changes the answer; freeing memory does not.")
+            } else if let closest = refusal.closest, closest.ranks.allSatisfy({ $0.fit.possible }) {
+                lines.append("  Freeing memory as each rank of the closest placement says above would let it load.")
             } else {
                 lines.append("  Freeing memory on these Macs cannot change this: at every layer boundary and in every order, some share is more than its Mac can ever admit"
                     + (devices.contains { $0.profile.memory.wiredLooksHeldByAProgram }

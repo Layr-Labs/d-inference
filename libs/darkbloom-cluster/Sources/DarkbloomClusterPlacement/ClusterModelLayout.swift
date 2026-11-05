@@ -139,6 +139,10 @@ public struct ClusterModelLayout: Codable, Equatable, Sendable {
     /// Their memory fit cannot shrink with the workload used to predict speed.
     /// Nil preserves request-sized accounting for older/dynamic adapters.
     public var reservesFullRequestScope: Bool? = nil
+    /// A family whose pipeline LOAD reserves no request: each request is
+    /// admitted when it arrives (GLM's serving ranks). Nil for every other
+    /// family, and omitted then, so their layouts read as before.
+    public var requestsOnArrival: ClusterRequestsOnArrival? = nil
 
 
     public init(schema: String = ClusterModelLayout.schemaName, runtimeModelID: String, artifactSHA256: String,
@@ -192,7 +196,9 @@ public struct ClusterModelLayout: Codable, Equatable, Sendable {
               maximumPromptTokens > 0, maximumOutputTokens > 0,
               (1...maximumPromptTokens).contains(maximumChunkTokens),
               boundaryBytesPerToken > 0, requestChargeEveryRankBytes >= 0,
-              (requestChargeEveryRankBytesPerToken ?? 0) >= 0, (allowanceEveryRankBytes ?? 0) >= 0 else {
+              (requestChargeEveryRankBytesPerToken ?? 0) >= 0, (allowanceEveryRankBytes ?? 0) >= 0,
+              requestsOnArrival.map({ $0.loadAllowanceEveryRankBytes >= 0 && $0.requestAllowanceEveryRankBytes >= 0
+                  && $0.requestAllowanceLastRankBytes >= 0 }) ?? true else {
             throw ClusterPlacementError("Model layout is malformed")
         }
         // The head is part of what no range loads, and its credit is a speed-up.
@@ -278,6 +284,32 @@ public struct ClusterModelLayout: Codable, Equatable, Sendable {
     }
 }
 
+/// How a family whose pipeline LOAD reserves no request is placed: a rank on
+/// what it needs to load (its weights, their construction copies
+/// `Part.requestWorkBytes` and `loadAllowanceEveryRankBytes`), against live
+/// memory with the gate's headroom and the GPU's working set; the working set
+/// must also hold the memory plan's whole request beside the weights, as each
+/// request is admitted against it when it arrives. Its layout's loaded bytes
+/// are each tensor's allocator bound already, so no page is added per tensor.
+public struct ClusterRequestsOnArrival: Codable, Equatable, Sendable {
+    /// What only loading holds on every rank beside its layers' weights and
+    /// their construction copies: metadata ledgers, host read buffers, the
+    /// largest expert bank's construction copy.
+    public let loadAllowanceEveryRankBytes: Int
+    /// What every rank's request holds beside its layers' state, whatever its
+    /// context: the activation floor, the host workspace, the residual that
+    /// crosses the cut and the wire buffers.
+    public let requestAllowanceEveryRankBytes: Int
+    /// What the last rank's request holds beside that: a chunk's logits.
+    public let requestAllowanceLastRankBytes: Int
+
+    public init(loadAllowanceEveryRankBytes: Int, requestAllowanceEveryRankBytes: Int, requestAllowanceLastRankBytes: Int) {
+        self.loadAllowanceEveryRankBytes = loadAllowanceEveryRankBytes
+        self.requestAllowanceEveryRankBytes = requestAllowanceEveryRankBytes
+        self.requestAllowanceLastRankBytes = requestAllowanceLastRankBytes
+    }
+}
+
 /// One stored tensor as an artifact's header names it.
 public struct ClusterPlacementStoredTensor: Equatable, Sendable {
     public let name: String
@@ -356,6 +388,8 @@ public protocol ClusterPlacementFamily {
     /// See `ClusterModelLayout.allowanceEveryRankBytes`.
     var allowanceEveryRankBytes: Int? { get }
     var reservesFullRequestScope: Bool { get }
+    /// See `ClusterModelLayout.requestsOnArrival`.
+    var requestsOnArrival: ClusterRequestsOnArrival? { get }
 
     /// Which of the two stages the family's own plan gives a stored tensor
     /// when stage 0 holds `cut` layers: 0, 1, or nil when no stage loads it.
@@ -409,6 +443,7 @@ extension ClusterPlacementFamily {
     public var requestChargeEveryRankBytesPerToken: Int? { nil }
     public var allowanceEveryRankBytes: Int? { nil }
     public var reservesFullRequestScope: Bool { false }
+    public var requestsOnArrival: ClusterRequestsOnArrival? { nil }
     public func loadedBytes(ofStoredTensor name: String, storedBytes: Int) -> Int { storedBytes }
     public func requestWorkBytes(ofStoredTensor name: String, storedBytes: Int) -> Int { 0 }
     public func loadsAtBothEnds(storedTensor name: String) -> Bool { false }
@@ -564,6 +599,7 @@ public enum ClusterModelLayoutBuilder {
             requestChargeEveryRankBytesPerToken: family.requestChargeEveryRankBytesPerToken)
         value.allowanceEveryRankBytes = family.allowanceEveryRankBytes
         value.reservesFullRequestScope = family.reservesFullRequestScope ? true : nil
+        value.requestsOnArrival = family.requestsOnArrival
         try value.validate()
         // The head no range loads, and the speed-up the family's row credits it with.
         var built = value

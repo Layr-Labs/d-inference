@@ -16,6 +16,15 @@
 // after that load, which may already hold the memory sized for a second copy.
 //
 // `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores the fully serial FIFO.
+//
+// Coordinator cancels and attestation challenges never enter the FIFO: the
+// connection reader handles them. Cancelling a request reaches its engine, and
+// a pair's engine can be held by a rank reservation for up to 30 s, during
+// which a cancel in the FIFO held back every later event. A cancel for a
+// request whose admission has not returned is held and applied when it
+// returns, exactly where the FIFO applied it; any other cancel runs at once,
+// beside the FIFO. Either way a cancel never runs during its own request's
+// admission, and never waits behind another request's work.
 
 import Foundation
 
@@ -96,6 +105,7 @@ extension ProviderLoop {
         await awaitReleasedAdmission(requestId)
         guard coldLoadReleasesWorkFIFO else {
             await admit(nil)
+            coordinatorAdmissionReturned(requestId)
             return
         }
         let gate = WorkFIFOGate()
@@ -111,7 +121,14 @@ extension ProviderLoop {
     func releaseWorkFIFO(_ gate: WorkFIFOGate?, requestId: String, modelId: String) {
         guard let gate, releasedAdmissions[requestId] == nil else { return }
         releasedAdmissions[requestId] = ReleasedAdmission(modelId: modelId)
-        if !gate.open() { releasedAdmissions.removeValue(forKey: requestId) }
+        guard gate.open() else {
+            releasedAdmissions.removeValue(forKey: requestId)
+            return
+        }
+        // A cancel that arrived during the admission now waits with it.
+        if cancelsAwaitingAdmission.remove(requestId) != nil {
+            releasedAdmissions[requestId]?.cancelPending = true
+        }
     }
 
     /// Called before the fast admission check of a request whose model is
@@ -148,6 +165,43 @@ extension ProviderLoop {
         return true
     }
 
+    /// The connection reader queued this coordinator request for admission.
+    func noteCoordinatorAdmissionQueued(_ requestId: String) {
+        unreturnedCoordinatorAdmissions[requestId, default: 0] += 1
+    }
+
+    /// A coordinator cancel, as the connection reader reads it. A request
+    /// still queued for admission, or being admitted, keeps it until that
+    /// admission returns; any other request is cancelled now.
+    func routeCoordinatorCancel(_ requestId: String) {
+        if deferCancelForReleasedAdmission(requestId) { return }
+        if unreturnedCoordinatorAdmissions[requestId] != nil {
+            cancelsAwaitingAdmission.insert(requestId)
+            return
+        }
+        startCoordinatorCancellation(requestId)
+    }
+
+    /// The admission of a coordinator request returned: a cancel held for it
+    /// runs now.
+    func coordinatorAdmissionReturned(_ requestId: String) {
+        guard let count = unreturnedCoordinatorAdmissions[requestId] else { return }
+        guard count <= 1 else {
+            unreturnedCoordinatorAdmissions[requestId] = count - 1
+            return
+        }
+        unreturnedCoordinatorAdmissions.removeValue(forKey: requestId)
+        if cancelsAwaitingAdmission.remove(requestId) != nil {
+            startCoordinatorCancellation(requestId)
+        }
+    }
+
+    /// Cancels beside the work FIFO: neither the connection reader nor the
+    /// FIFO waits for it to reach the engine.
+    private func startCoordinatorCancellation(_ requestId: String) {
+        Task { await handleCancellation(requestId: requestId) }
+    }
+
     /// Waits until every released admission has returned.
     func awaitReleasedAdmissions() async {
         while let requestId = releasedAdmissions.keys.first {
@@ -167,6 +221,7 @@ extension ProviderLoop {
     }
 
     private func finishWorkFIFOAdmission(_ gate: WorkFIFOGate, requestId: String) async {
+        defer { coordinatorAdmissionReturned(requestId) }
         // An admission that never released resumes the FIFO here.
         if gate.open() { return }
         guard releasedAdmissions[requestId] != nil else { return }

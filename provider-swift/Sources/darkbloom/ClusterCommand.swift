@@ -22,7 +22,8 @@ struct Cluster: AsyncParsableCommand {
         abstract: abstract,
         subcommands: [Setup.self, Local.self, Console.self, Plan.self, Configure.self, Status.self, Doctor.self, Link.self, Recover.self, WorkerOwner.self,
                       Report.self, Inbox.self, LinkChannel.self, LinkFollower.self, MemberIdentity.self, Pair.self, Incidents.self,
-                      Service.self, Stop.self, Reap.self, VerifyTeardown.self, CancelAll.self, GLMCalibrationQuote.self, GLMCalibrationCandidates.self, GLMCalibrationRun.self, RuntimeFacts.self],
+                      Service.self, Stop.self, Reap.self, VerifyTeardown.self, CancelAll.self, GLMCalibrationQuote.self, GLMCalibrationCandidates.self, GLMCalibrationRun.self, RuntimeFacts.self,
+                      GPULimit.self],
         defaultSubcommand: Setup.self)
 
     struct Configure: AsyncParsableCommand {

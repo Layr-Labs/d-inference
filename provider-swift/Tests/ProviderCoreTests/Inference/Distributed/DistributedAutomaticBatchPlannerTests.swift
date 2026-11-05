@@ -25,11 +25,13 @@ final class DistributedAutomaticBatchPlannerTests {
         return result
     }
 
+    /// `gpuCores` tells other hardware apart: Macs of the same hardware are planned at the same index
+    /// (`ClusterHardwarePrior.sameHardwareIndex`), so a faster index alone is a faster Mac only on other hardware.
     private func profile(free: Int = 200 * 1_073_741_824, decodeIndex: Double = 25_000,
-                         osBuild: String = "CHECK") throws -> ClusterDeviceProfile {
+                         osBuild: String = "CHECK", gpuCores: Int = 40) throws -> ClusterDeviceProfile {
         let physical = 256 * gib
         var p = try ClusterDeviceProfile(chip: "Constructed planner fixture", performanceCores: 8, efficiencyCores: 4,
-            gpuCores: 40, osVersion: "27.0", osBuild: osBuild, physicalMemoryBytes: physical,
+            gpuCores: gpuCores, osVersion: "27.0", osBuild: osBuild, physicalMemoryBytes: physical,
             gpuRecommendedWorkingSetBytes: 192 * gib, gpuMaximumBufferBytes: 128 * gib,
             allocatorLimitBytes: 230 * gib,
             memory: .init(gatePolicy: "fixture", sampledUTC: "2026-10-23T00:00:00Z", judged: true, unjudgedReason: nil,
@@ -588,7 +590,7 @@ final class DistributedAutomaticBatchPlannerTests {
     /// Each Mac's own share steps, as its last load timed them alone and the
     /// serving leader kept them (`ClusterShareProbeHistory`, in this home), are
     /// what a replacement balances the tensor-parallel split by: the device
-    /// index alone gives the faster-indexed "a" two thirds; "a" measured 9 ms at
+    /// index alone gives the faster-indexed "a" (other hardware: more GPU cores) two thirds; "a" measured 9 ms at
     /// 2/3 and "b" 4 ms at 1/3 move the plan to 1:1. Another model's probes and
     /// an unrelated member's change nothing.
     @Test func testRecordedShareProbesBalanceTheTensorSplit() throws {
@@ -600,7 +602,7 @@ final class DistributedAutomaticBatchPlannerTests {
         let layout = try ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: object))
         func shares() throws -> [Int] {
             let decided = try DistributedAutomaticBatchPlanner.decide(description: pair, capability: cap, localMemberID: "a",
-                localProfile: profile(decodeIndex: 50_000), peerProfile: profile(), layout: layout, scope: scope, homeDirectory: home)
+                localProfile: profile(decodeIndex: 50_000, gpuCores: 80), peerProfile: profile(), layout: layout, scope: scope, homeDirectory: home)
             #expect(decided.result.chosen?.mode == .tensorParallel && decided.setup != nil)
             return decided.result.chosen?.tensorShares ?? [1, 1]
         }
@@ -990,7 +992,7 @@ final class DistributedAutomaticBatchPlannerTests {
         let model = ClusterSetupLocalModel(folder: "Qwen3.8-27B-4bit-mtp-fixture", modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp",
             version: "fixture", artifactSHA256: artifact, totalBytes: 16_320_415_757)
         let link = try #require(ClusterLinkProbeHistory.costs(homeDirectory: home, members: ["a", "b"]))
-        let local = try profile(decodeIndex: 50_000), peer = try profile()
+        let local = try profile(decodeIndex: 50_000, gpuCores: 80), peer = try profile()
         let quote = try assistantQuote(1, artifact: artifact, assistant: false)
         func plan(coordinator: Bool) throws -> ClusterConfiguration {
             let reading = ClusterSetupPlanning.ModelReading(model: model, layout: .success(layout),

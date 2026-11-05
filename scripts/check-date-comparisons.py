@@ -37,9 +37,13 @@ _DATE_TYPE = r"Date[?!]?(?![A-Za-z0-9_])"
 # `name: Date`, `label name: Date` and `var name: Date?`.
 _DATE_DECLARATION = re.compile(rf"\b({_IDENT})\s*:\s*{_DATE_TYPE}")
 _OTHER_DECLARATION = re.compile(rf"\b({_IDENT})\s*:\s*(?:\[|\(|(?!Date[?!]?(?![A-Za-z0-9_]))[A-Z][A-Za-z0-9_.]*)")
-# File-wide evidence for names that no declaration in scope settles.
+# File-wide evidence for names that no declaration in scope settles. A Date
+# followed by a member (`Date().timeIntervalSince(start)`) is that member's
+# value, not a Date.
+_NO_MEMBER = r"(?![ \t]*[?!]?\.)"
 _DATE_VALUE = re.compile(
-    rf"\b(?:let|var)\s+({_IDENT})\s*=\s*(?:Date\s*\(|Date\.(?:now|distantPast|distantFuture)\b|[^=\n]*\.addingTimeInterval\()")
+    rf"\b(?:let|var)\s+({_IDENT})\s*=\s*(?:Date\s*\((?:[^()\n]|\([^()\n]*\))*\){_NO_MEMBER}|"
+    rf"Date\.(?:now|distantPast|distantFuture)\b{_NO_MEMBER}|[^=\n]*\.addingTimeInterval\()")
 _OTHER_VALUE = re.compile(
     rf"\b(?:let|var)\s+({_IDENT})\s*=\s*(?:-?[0-9.]|\"|\[|true\b|false\b|(?!Date\b)[A-Z][A-Za-z0-9_]*\s*[.(])")
 _DATE_FUNCTION = re.compile(

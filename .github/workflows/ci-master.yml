@@ -1,0 +1,235 @@
+name: CI (master)
+
+# Pull requests into master and pushes to master run the provider and
+# cluster tests (.github/workflows/provider-tests.yml), Release Integrity and
+# Docs Lint. Pull requests into dev run only the tests (ci-dev.yml).
+on:
+  push:
+    # Pushes to master save the caches that pull requests into master restore.
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+permissions:
+  contents: read
+
+env:
+  # Only pushes to master save the .git caches of the jobs below. A pull
+  # request restores its base branch's entries and saves none
+  # (docs/developer/build.md#ci-caching).
+  SAVE_CACHES: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+  # Every checkout but Docs Lint's skips the evidence tarballs and landing media
+  # (408 MB of the tree), which only Docs Lint reads. The rest of the evidence
+  # stays: provider-ci-cache.py hashes every tracked Package.swift.
+  CHECKOUT_SPARSE: |
+    /*
+    !/docs/reports/evidence/**/*.gz
+    !/landing/public/media/
+
+# Only revisions of the same PR supersede each other; pushes stay independent.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  plan:
+    uses: ./.github/workflows/provider-plan.yml
+    permissions:
+      contents: read
+      actions: read
+    with:
+      linux_lanes: |
+        release-integrity linux_arm64 blacksmith-4vcpu-ubuntu-2404
+        docs linux_arm64 blacksmith-4vcpu-ubuntu-2404
+
+  tests:
+    name: Tests
+    needs: plan
+    if: ${{ !cancelled() }}
+    uses: ./.github/workflows/provider-tests.yml
+    permissions:
+      contents: read
+    with:
+      provider: ${{ needs.plan.outputs.provider }}
+      cluster: ${{ needs.plan.outputs.cluster }}
+      mimo_audio: ${{ needs.plan.outputs.mimo_audio }}
+      changed_provider: ${{ needs.plan.outputs.changed_provider }}
+      changed_cluster: ${{ needs.plan.outputs.changed_cluster }}
+      changes_result: ${{ needs.plan.outputs.changes_result }}
+      skip: ${{ needs.plan.outputs.skip }}
+      tested_run: ${{ needs.plan.outputs.tested_run }}
+      tree: ${{ needs.plan.outputs.tree }}
+      base: ${{ needs.plan.outputs.base }}
+      head: ${{ needs.plan.outputs.head }}
+      routes: ${{ needs.plan.outputs.routes }}
+      strict_cache: true
+
+  release-integrity:
+    name: Release Integrity
+    # A top-level job, so its check is named exactly Release Integrity, the
+    # name master's ruleset requires. It reads its lane of the run's one route
+    # request (provider-plan.yml).
+    needs: plan
+    if: ${{ !cancelled() }}
+    runs-on: ${{ fromJSON(needs.plan.outputs.routes)['release-integrity'] }}
+    timeout-minutes: 30
+    steps:
+      # Every checkout in this workflow uses the same five steps: restore the
+      # newest .git a push saved, discard it unless git fsck accepts it, check
+      # out, and save .git once a day per branch (docs/developer/build.md#ci-caching).
+      - name: Select today's .git cache
+        id: git-day
+        run: |
+          day=$(date -u +%F)
+          echo "day=$day" >> "$GITHUB_OUTPUT"
+          echo "month=${day%-*}" >> "$GITHUB_OUTPUT"
+          echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
+      - name: Restore the newest saved .git
+        id: git-cache
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: git-v1-${{ runner.os }}-${{ steps.git-day.outputs.day }}
+          restore-keys: |
+            git-v1-${{ runner.os }}-${{ steps.git-day.outputs.month }}-
+            git-v1-${{ runner.os }}-
+      - name: Discard a damaged cached .git
+        run: |
+          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+              git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
+            echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
+            rm -rf .git
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false # Keeps the job token out of the saved .git/config.
+          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
+          sparse-checkout-cone-mode: false
+      - name: Save .git for later runs
+        if: env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: ${{ steps.git-cache.outputs.cache-primary-key }}
+      # A plain build of master must be prod and a plain build of dev must be
+      # dev. The target is the pull request's base branch, or the pushed branch.
+      - name: Check the provider's plain-build default for the target branch
+        env:
+          TARGET_BRANCH: ${{ github.base_ref || github.ref_name }}
+        run: |
+          python3 scripts/test-provider-build-default.py
+          python3 scripts/provider-build-default.py --branch "$TARGET_BRANCH"
+      - name: Validate changelog fragments
+        run: |
+          python3 scripts/test-changelog.py
+          make changelog-check
+      - name: Check provider release and installer integrity
+        run: |
+          ./scripts/check-release-version.sh
+          python3 scripts/test-provider-release-resolution.py
+          python3 scripts/test-provider-release-resume.py
+          python3 scripts/test-provider-release-toolchain.py
+          python3 scripts/test-provider-release-cache.py
+          python3 scripts/test-prepare-metal-toolchain.py
+          python3 scripts/test-provider-release-pipeline.py
+          python3 scripts/test-provider-release-publication.py
+          python3 scripts/test-provider-release-notes.py
+          python3 scripts/test-provider-cluster-runtime-models.py
+          python3 scripts/test-release-dev-branch.py
+          python3 scripts/test-provider-release-artifact.py
+          python3 scripts/test-provider-signing-validation.py
+          python3 scripts/test-provider-identity.py
+          python3 scripts/test-provider-test-watchdog.py
+          python3 scripts/test-stage-test-metallib.py
+          python3 scripts/test-provider-ci-cache.py
+          python3 scripts/test-provider-ci-workflow.py
+          python3 scripts/test-provider-test-shards.py
+          python3 scripts/test-cluster-test-plan.py
+          python3 scripts/test-ci-component-paths.py
+          python3 scripts/test-darkbloom-route.py
+          python3 scripts/test-ci-tested-tree.py
+          python3 scripts/test-prepare-prompt-fixtures.py
+          python3 provider-swift/Tests/test_protocol_fixture_resources.py
+          python3 scripts/test-app-attest-entitlements.py
+          ./scripts/test-setup-macos-homebrew.sh
+      # SDK 27.2 back-deploys Date's >= and <=; pre-release macOS 27.2 builds
+      # lack the symbols. The release build also checks the built binaries.
+      - name: Refuse back-deployed Date comparisons in provider source
+        run: |
+          python3 scripts/test-check-date-comparisons.py
+          python3 scripts/test-check-provider-weak-imports.py
+          python3 scripts/check-date-comparisons.py
+      - name: Test advisory threat review with local HTTP fixtures
+        run: |
+          python3 .github/scripts/test-threat-model-review.py
+          python3 .github/scripts/test-threat-full-scan.py
+          python3 .github/scripts/test-threat-ensemble.py
+          python3 .github/scripts/test-threat-budget.py
+          python3 .github/scripts/test-threat-bedrock.py
+          python3 .github/scripts/test-threat-diagnostics.py
+          python3 .github/scripts/test-threat-integration-scope.py
+      - name: Test native GPU CI routing without a GPU
+        run: python3 scripts/test-native-gpu-ci.py
+      - name: Test model registry workflow with loopback HTTP
+        run: python3 scripts/test_model_registry_workflow.py
+      - name: Test bounded MiMo provider fixture provisioning offline
+        run: python3 scripts/test-prepare-mimo-provider-fixtures.py
+      - name: Test serving qualification evidence and catalogs without a GPU
+        run: python3 -m unittest discover -s scripts/serving_performance -t scripts -p 'test_*.py'
+      - name: Test actual-call and bounded timing receipts without a GPU
+        run: |
+          python3 -m unittest discover -s scripts/benchmarks -p test_radix_forward_shapes.py
+          python3 reports/runtime-kv-path-2026-10-09/qualification/test_curate_runs.py
+          python3 reports/runtime-kv-path-2026-10-09/qualification/test_run_suite.py
+
+  docs:
+    name: Docs Lint
+    needs: plan
+    if: ${{ !cancelled() }}
+    runs-on: ${{ fromJSON(needs.plan.outputs.routes)['docs'] }}
+    # Full-history checkouts of this repository have taken up to 21 minutes.
+    timeout-minutes: 45
+    steps:
+      - name: Select today's .git cache
+        id: git-day
+        run: |
+          day=$(date -u +%F)
+          echo "day=$day" >> "$GITHUB_OUTPUT"
+          echo "month=${day%-*}" >> "$GITHUB_OUTPUT"
+          echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
+      # Full history: a separate key family, so shallow jobs never restore it.
+      - name: Restore the newest saved .git
+        id: git-cache
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: git-full-v1-${{ runner.os }}-${{ steps.git-day.outputs.day }}
+          restore-keys: |
+            git-full-v1-${{ runner.os }}-${{ steps.git-day.outputs.month }}-
+            git-full-v1-${{ runner.os }}-
+      - name: Discard a damaged cached .git
+        run: |
+          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+              git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
+            echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
+            rm -rf .git
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0 # Frozen source links require committed document provenance.
+          filter: blob:none # Old file contents are fetched only when read.
+          persist-credentials: false
+      - name: Save .git for later runs
+        if: env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: ${{ steps.git-cache.outputs.cache-primary-key }}
+      - name: Initialize pinned SDK documentation
+        run: git submodule update --init --depth 1 libs/mlx-swift-lm
+      - name: Test historical source-link validation
+        run: python3 scripts/test-docs-check-historical-links.py
+      - name: Test date-only freshness stamping
+        run: python3 scripts/test-docs-stamp.py
+      - name: Check freshness stamps, links, cited paths, orphans
+        run: ./scripts/docs-check.sh

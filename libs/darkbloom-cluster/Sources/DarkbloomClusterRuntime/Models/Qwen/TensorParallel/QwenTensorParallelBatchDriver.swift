@@ -319,7 +319,7 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
     /// `aheadHeldLimit`. `inFlight`: each submitted, unread step's slots,
     /// counting the step being built.
     private func decision(inFlight: [Int: Int], host: QwenBatchServingHost, decisions: inout QwenBatchDecisionProgress,
-                          check: () throws -> Void) throws -> [Float] {
+                          peerCancelled: Set<Int>, check: () throws -> Void) throws -> [Float] {
         var barrier = false
         if executor.rank == 0 {
             let answers = try decisions.serviceAndPoll(host)
@@ -327,7 +327,7 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
             for (id, proceed) in answers.sorted(by: { $0.key.uuidString < $1.key.uuidString }) {
                 guard let record = records.values.first(where: { $0.id == id }) else { continue }
                 if proceed, record.finish(true, count: record.published) == nil {
-                    try publishHeld(record, decisions: &decisions, host: host, peerCancelled: [])
+                    try publishHeld(record, decisions: &decisions, host: host, peerCancelled: peerCancelled)
                 } else {
                     // The next plan leaves this lane (a stop, or its last token answered):
                     // nothing more is published meanwhile.
@@ -342,7 +342,7 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
             guard let native = record.native, let flight = inFlight[slot] else { barrier = true; continue }
             // Selected once every submitted step is read, the next step and the decided one too.
             let selected = record.tokens.count + flight + 2
-            if cancelled(record) || record.ended || !native.canSelectNext || !native.plainSelection
+            if cancelled(record) || peerCancelled.contains(slot) || record.ended || !native.canSelectNext || !native.plainSelection
                 || selected > record.reservation.request.outputCount
                 || (executor.rank == 0 && selected - record.published > Self.aheadHeldLimit) {
                 barrier = true
@@ -420,7 +420,7 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
                         let handle = try executor.submitDecode(lanes.map { $0.native! },
                             inputs: .after(previous.handle, rows: Array(previous.slots.indices)), control: {
                                 words = try decision(inFlight: Dictionary(uniqueKeysWithValues: previous.slots.map { ($0, 2) }),
-                                                     host: host, decisions: &decisions, check: check)
+                                                     host: host, decisions: &decisions, peerCancelled: peerCancelled, check: check)
                                 return words
                             }, check: laneCheck)
                         let next = Pending(step: step, slots: previous.slots, handle: handle, planWords: 0,
@@ -469,8 +469,10 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
                         let folds = executor.carriesSelectionControl && prompts.isEmpty
                             && lanes.allSatisfy { $0.native!.plainSelection }
                         if folds {
-                            // The successor's plan rides this sum unless its decision was already read.
-                            let carriesPlan = decided[step + 1] == nil
+                            // The successor's plan rides this sum unless a continuation was already
+                            // decided for it (after a barrier the plan rides, so no exchange follows).
+                            let carriesPlan: Bool
+                            if case .some(.some) = decided[step + 1] { carriesPlan = false } else { carriesPlan = true }
                             let carrying = Set(decode)
                             var nextPlan: QwenBatchWire.Header?, nextReport: QwenBatchWire.Reply?
                             var planWords = 0, decisionWords: [Float] = []
@@ -491,7 +493,7 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
                                     }
                                     planWords = words.count
                                     decisionWords = try decision(inFlight: Dictionary(uniqueKeysWithValues: decode.map { ($0, 1) }),
-                                                                 host: host, decisions: &decisions, check: check)
+                                                                 host: host, decisions: &decisions, peerCancelled: peerCancelled, check: check)
                                     return words + decisionWords
                                 }, check: laneCheck)
                             pending = Pending(step: step, slots: decode, handle: handle, planWords: planWords,
@@ -529,6 +531,9 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
             }
         } catch {
             let primary = error
+            // A submitted step is drained before its lanes retire: its read may fail as well (the
+            // primary error stands), and no token of it is selected.
+            if let submitted = pending { pending = nil; _ = try? executor.readDecode(submitted.handle, check: {}) }
             do { try retireAll() }
             catch { throw ProbeError("\(primary); Qwen TP batch cleanup failed (\(error))") }
             throw primary

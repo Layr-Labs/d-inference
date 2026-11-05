@@ -42,6 +42,8 @@ import Darwin
         resumedMacsOpenWithTheMark()
         // The owner, 2026-11-05: each Mac's part by the mark.
         roleHeaderChecks()
+        // The owner, 2026-11-05: "all captured in one, instead of keep dropping down a million lines in the CLI".
+        stepFoldChecks()
         leaderAgainServing()
         leaderPairedNotServing()
         noModelOffered()
@@ -294,7 +296,8 @@ import Darwin
                          "Loading Qwen3.8-27B-4bit-mtp on both Macs", "Sending a test request"] {
                 expect(!screen.contains { $0.contains(live + "\u{2026}") }, "colour: the live line \(live) is replaced, never left behind")
             }
-            expect(run.text.contains("\u{1B}[\(ClusterOnboardingBrand.height)A") == animated, "colour: the mark blooms only when animating")
+            // The bloom climbs the mark's height and draws it again (a folded step climbs too, then erases).
+            expect(run.text.contains("\u{1B}[\(ClusterOnboardingBrand.height)A  \u{1B}[") == animated, "colour: the mark blooms only when animating")
             expect(!run.text.contains("\u{1B}[2J") && !run.text.contains("\u{1B}[H"), "colour: no screen clearing")
             expect(recorder.all == ["checkLink", "pair", "answer y", "ensureService", "reachMembers", "planModels", "recheckFit 0", "adopt 0",
                 "serve", "waitReady", "testRequest", "register", "waitReady", "pairServing"], "colour: operations in order: \(recorder.all)")
@@ -769,9 +772,9 @@ import Darwin
         let done = DispatchSemaphore(value: 0)
 
         init(_ operations: ClusterOnboardingOperations, request: ClusterOnboardingRequest = .init(),
-             environment: [String: String] = ["NO_COLOR": "1"], columns: UInt16 = 132) {
+             environment: [String: String] = ["NO_COLOR": "1"], columns: UInt16 = 132, rows: UInt16 = 50, logFile: URL? = nil) {
             var primary: Int32 = -1, secondary: Int32 = -1
-            var window = winsize(ws_row: 50, ws_col: columns, ws_xpixel: 0, ws_ypixel: 0)
+            var window = winsize(ws_row: rows, ws_col: columns, ws_xpixel: 0, ws_ypixel: 0)
             precondition(openpty(&primary, &secondary, nil, nil, &window) == 0)
             master = primary; slave = secondary
             _ = fcntl(primary, F_SETFL, fcntl(primary, F_GETFL) | O_NONBLOCK)
@@ -788,7 +791,7 @@ import Darwin
             }
             let slaveFD = secondary
             Thread.detachNewThread { [self] in
-                let console = ClusterOnboardingTerminal(input: slaveFD, output: slaveFD, environment: environment)
+                let console = ClusterOnboardingTerminal(input: slaveFD, output: slaveFD, environment: environment, logFile: logFile)
                 let code = ClusterOnboardingDriver.run(operations, console: console, request: request)
                 console.restore()
                 usleep(100_000)

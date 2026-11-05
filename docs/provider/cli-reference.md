@@ -239,6 +239,9 @@ without one is a leftover, which `darkbloom cluster status` names), `start` star
 - In a terminal it opens exactly the screen `darkbloom cluster` shows on this
   Mac (`ClusterPairCommands.openScreen`), whose title names this Mac's part:
   "Darkbloom cluster · Leading Mac" or "Darkbloom cluster · Joining Mac".
+  In a color terminal each finished step folds to one line, and the run's whole
+  flow goes to `~/.darkbloom/cluster-setup/screens/` ("Full log: …" at the end);
+  see [Two Macs as one provider](two-mac-cluster.md).
 - Without a terminal (scripts) it starts the pair's saved model on both Macs
   (on the Mac that follows, through the leading Mac), waits up to 10 minutes
   until it serves or says why not, and ends with a result block shaped like

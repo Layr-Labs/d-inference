@@ -1772,7 +1772,8 @@ public final class ClusterService: @unchecked Sendable {
         // The other Mac said its part can't start for a reason that doesn't clear by itself: this Mac's part waits for that
         // to change instead of starting, waiting for its missing follower and ending every 38 s (0.10.9 DevNet f1).
         if running == nil, let key {
-            let reason = ClusterControlPartChoice.waitsForOtherMac(key: key, otherMacHeldBack: lock.withLock { peerHeldBack })
+            let reason = ClusterControlPartChoice.waitsForOtherMac(key: key, otherMacHeldBack: lock.withLock { peerHeldBack },
+                                                                    leads: leadsAndRunsCluster())
             let before = lock.withLock { () -> String? in defer { peerHeldBackSaid = reason }; return peerHeldBackSaid }
             if let reason {
                 if before != reason { say("the other Mac's part can't start (\(reason)): this Mac's part waits for that to change") }

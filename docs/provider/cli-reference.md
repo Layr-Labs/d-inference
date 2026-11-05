@@ -790,6 +790,14 @@ through Darkbloom" (`OnboardingLive.notOfferedLines`):
   planned for Darkbloom). Or serve locally only: `darkbloom cluster local` on <the leading Mac>."
 - `darkbloom start` without a terminal stops waiting at once on this reason (exit 3).
 
+While single-Mac serving runs on either Mac of a started pair, the pair can't start there and it doesn't stop by
+itself. Both Macs read `not_serving` (exit 3), never "keep trying by themselves":
+- `reason` is "The pair can't start: a single-Mac Darkbloom provider (process <N>) is serving on <Mac>, and the pair
+  can't share a Mac with it".
+- `next` is "Single-Mac serving doesn't stop by itself: run `darkbloom stop --solo` on each Mac named, then
+  `darkbloom start` on either Mac. Or `darkbloom cluster` on <the leading Mac> offers to stop it and start the pair."
+- `darkbloom start` without a terminal stops waiting at once on this reason (exit 3).
+
 During a model or mode change, or while the pair updates Darkbloom, `status` and `cluster status` can read `stopped`
 (exit 4) or `unknown` for a minute or two while the pair is actually reloading. If such a change happened recently,
 or the status showed "Updating…", wait about a minute and check again before acting. Run `darkbloom start` only if it

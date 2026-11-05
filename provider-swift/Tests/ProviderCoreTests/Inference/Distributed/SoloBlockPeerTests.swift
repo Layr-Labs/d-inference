@@ -26,9 +26,10 @@ struct SoloBlockPeerTests {
         let base = #""serving":true,"sessionLeader":false,"child":{"running":false,"starts":0}"#
         let member = try status("{\(base),\"soloServing\":{\"pid\":68099}}")
         let held = ClusterService.heldBack(of: member)
-        #expect(ClusterControlPartChoice.waitsForOtherMac(key: "cluster:84377e741989", otherMacHeldBack: held) != nil)
+        #expect(ClusterControlPartChoice.waitsForOtherMac(key: "cluster:84377e741989", otherMacHeldBack: held, leads: true) != nil)
+        #expect(ClusterControlPartChoice.waitsForOtherMac(key: "cluster:84377e741989", otherMacHeldBack: held, leads: false) == nil)
         #expect(ClusterControlPartChoice.waitsForOtherMac(key: "cluster:84377e741989",
-            otherMacHeldBack: ClusterService.heldBack(of: try status("{\(base)}"))) == nil)
-        #expect(ClusterControlPartChoice.waitsForOtherMac(key: "solo:EigenLabs/Qwen3.8-27B-4bit-mtp", otherMacHeldBack: held) == nil)
+            otherMacHeldBack: ClusterService.heldBack(of: try status("{\(base)}")), leads: true) == nil)
+        #expect(ClusterControlPartChoice.waitsForOtherMac(key: "solo:EigenLabs/Qwen3.8-27B-4bit-mtp", otherMacHeldBack: held, leads: true) == nil)
     }
 }

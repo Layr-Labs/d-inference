@@ -784,10 +784,13 @@ import Darwin
         expect(P.mayStart(key: "cluster:abc", endedKey: "cluster:abc", backoffElapsed: true), "backoff elapsed")
         // 0.10.9 DevNet f1: the leader's part ended every 38 s while the other Mac's single-Mac provider held its part back.
         let held = "a single-Mac Darkbloom provider (process 68099) is serving there"
-        expect(P.waitsForOtherMac(key: "cluster:abc", otherMacHeldBack: held) == held, "held back there: this Mac's part waits")
-        expect(P.waitsForOtherMac(key: "cluster:abc:local-only@127.0.0.1", otherMacHeldBack: held) == held, "local only: waits too")
-        expect(P.waitsForOtherMac(key: "solo:m", otherMacHeldBack: held) == nil, "serving alone never waits for the other Mac")
-        expect(P.waitsForOtherMac(key: "cluster:abc", otherMacHeldBack: nil) == nil, "nothing held back: it starts")
+        expect(P.waitsForOtherMac(key: "cluster:abc", otherMacHeldBack: held, leads: true) == held, "held back there: this Mac's part waits")
+        expect(P.waitsForOtherMac(key: "cluster:abc:local-only@127.0.0.1", otherMacHeldBack: held, leads: true) == held, "local only: waits too")
+        expect(P.waitsForOtherMac(key: "solo:m", otherMacHeldBack: held, leads: true) == nil, "serving alone never waits for the other Mac")
+        expect(P.waitsForOtherMac(key: "cluster:abc", otherMacHeldBack: nil, leads: true) == nil, "nothing held back: it starts")
+        // A reason read while this Mac led stays in memory after control moves to the other Mac: as a member, its part
+        // follows the leader's lease, never that reason (it would never start, and the leader's part would end every 38 s).
+        expect(P.waitsForOtherMac(key: "cluster:abc", otherMacHeldBack: held, leads: false) == nil, "no longer leading: never waits")
         expect(!P.mayStart(key: "solo:m", endedKey: "solo:m", backoffElapsed: false), "a crashing solo server backs off too")
         expect(P.mayStart(key: "cluster:abc", endedKey: nil, backoffElapsed: false), "nothing ended: at once")
     }

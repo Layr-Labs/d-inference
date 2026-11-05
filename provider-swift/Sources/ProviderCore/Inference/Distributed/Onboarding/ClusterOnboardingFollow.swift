@@ -321,10 +321,11 @@ extension ClusterOnboardingDriver {
                 case .testFailed:
                     console.settle()
                     return followTestFailed(status, leader: leader, console)
-                case .notOffered where look.start != nil:
+                case .notOffered where current != nil:
                     // R7-1 (DevNet branch.87): the leading Mac's status says "not offered" between its local test and the
                     // registration that starts both parts again as cluster members. While it still publishes its start's
-                    // step the start is not over: this Mac follows it, and the leading Mac's own ✗ (`failed`) ends it.
+                    // step the start is not over: this Mac follows it, and the leading Mac's own ✗ (`failed`) ends it. The
+                    // step is `current`, filtered: an earlier start's ✗ still published is no start running.
                     offeredWait = nil
                 case .notOffered:
                     // The leading Mac's ✗, in its words: why, and where the pair answers meanwhile.

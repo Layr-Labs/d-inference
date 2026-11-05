@@ -13,6 +13,7 @@ extension OnboardingChecks {
         theRegistrationHandOffIsNoCross()
         aLeadersPublishedCrossAfterNotOfferedEndsIt()
         aNotOfferedPairWithNoStartRunningIsStillItsOutcome()
+        anEarlierStartsCrossNeverHidesANotOfferedOutcome()
     }
 
     static let handOffNotOffered = [ClusterOnboardingNotServing.statusLine(model: "Z.ai: GLM-5.3-Flash", reason: ClusterOnboardingReady.notOfferedReason(nil)),
@@ -65,9 +66,29 @@ extension OnboardingChecks {
     static func aNotOfferedPairWithNoStartRunningIsStillItsOutcome() {
         let run = TerminalRun(followingTheUltra(Recorder(), status: [["Stopped."], handOffNotOffered]))
         defer { run.release() }
-        expect(run.waitFor(codeQuestion), "not offered, no start: the code"); run.type("y")
-        expect(run.finish(seconds: 30) == 1, "not offered, no start: the ✗ at once, exit 1: \(run.text)")
+        expect(run.waitFor(codeQuestion), "not offered, no start: the code")
+        let typed = Date()
+        run.type("y")
+        expect(run.finish(seconds: 30) == 1, "not offered, no start: the ✗, exit 1: \(run.text)")
+        expect(Date().timeIntervalSince(typed) < 10, "not offered, no start: at once, not at the 15-minute bound")
         expect(run.text.contains("\u{2717} Not serving: not offered to Darkbloom (no cluster approval is attached to its setup).\n"),
                "not offered, no start: the leading Mac's status is the outcome")
+    }
+
+    /// The review of R7-1 (B1): the leading Mac's ✗ from an earlier start stays published for 30 minutes. Opened then (no
+    /// leader screen publishes a step, the status says "not offered"), the joining Mac must end with that true ✗ at once,
+    /// never follow a start that isn't running until the 15-minute bound.
+    static func anEarlierStartsCrossNeverHidesANotOfferedOutcome() {
+        let earlier = ClusterOnboardingStartProgress.failed(title: ClusterOnboardingNotServing.title(reason: ClusterOnboardingReady.notOfferedReason(nil)),
+                                                            lines: [], retry: true)
+        let run = TerminalRun(followingTheUltra(Recorder(), status: [["Stopped."], handOffNotOffered], start: [earlier], step: nil))
+        defer { run.release() }
+        expect(run.waitFor(codeQuestion), "earlier ✗, not offered: the code")
+        let typed = Date()
+        run.type("y")
+        expect(run.finish(seconds: 30) == 1, "earlier ✗, not offered: exit 1: \(run.text)")
+        expect(Date().timeIntervalSince(typed) < 10, "earlier ✗, not offered: at once, not at the 15-minute bound")
+        expect(run.text.contains("\u{2717} Not serving: not offered to Darkbloom (no cluster approval is attached to its setup).\n")
+               && !run.text.contains("didn't say how its start ended"), "earlier ✗, not offered: the true ✗: \(run.text)")
     }
 }

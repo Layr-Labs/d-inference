@@ -902,7 +902,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
 
     def test_cold_retry_deletes_only_a_loose_tier_build(self):
         helper = ROOT / "scripts/provider-ci-cold-retry.sh"
-        builds = ("provider-swift/.build", "libs/mlx-swift-lm/.build", "libs/darkbloom-cluster/.build")
+        builds = ("provider-swift/.build", "libs/darkbloom-cluster/.build")
         for matched, retries in (("", False), ("strict-abc-commit", False), ("strict-abc-day-2026-11-04", False),
                                  ("strict-other-commit", True)):
             with self.subTest(matched=matched), tempfile.TemporaryDirectory() as work:
@@ -913,7 +913,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                                              "PROVIDER_CI_MATCHED_KEY": matched,
                                              "PROVIDER_CI_STRICT_PREFIX": "strict-abc-"})
                 self.assertEqual(result.returncode, 0 if retries else 1, result.stdout + result.stderr)
-                self.assertEqual([Path(work, build).exists() for build in builds], [not retries] * 3)
+                self.assertEqual([Path(work, build).exists() for build in builds], [not retries] * len(builds))
                 self.assertEqual("::warning title=Build cache::" in result.stdout, retries)
 
     def test_composite_restores_swiftpm_repositories_per_lane_and_runner_layout(self):

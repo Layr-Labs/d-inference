@@ -208,12 +208,40 @@ public enum ClusterOnboardingNotServing {
         if isMissingLogin(line) { return "Run `\(ClusterOnboardingCommand.name) login` on each Mac named, then Retry; or serve locally only." }
         if line.contains("isn't verified by Apple yet") { return "Then choose Retry, or serve locally only now." }
         if line.contains("lacks free memory") { return "Quit apps on that Mac, then Retry; or change the model." }
-        return nil
+        return notPublicRemedy(forReason: line)
     }
 
     /// The outcome block's title when nothing serves (`reason` without its final period): the leader's after a start,
     /// and the other Mac's from the status.
-    public static func title(reason: String) -> String { "Not serving: \(reason)." }
+    public static func title(reason: String) -> String {
+        reason.hasPrefix(notPublicPrefix) ? reason + "." : "Not serving: \(reason)."
+    }
+
+    /// A pair the coordinator paired but sends no public request (`ClusterPublicServingCheck`): the reason starts with
+    /// this and ends with why, in parentheses.
+    public static let notPublicPrefix = "Not serving publicly: the coordinator paired both Macs but doesn't send public requests to this pair ("
+    static let notPublicModelApproval = ", which serves only this account's own requests"
+    static let notPublicModel = " isn't approved for public pairs"
+    static let notPublicFamilies = " is approved for public pairs in "
+
+    /// What to do about a not-public reason, nil for any other line.
+    static func notPublicRemedy(forReason line: String) -> String? {
+        guard line.hasPrefix(notPublicPrefix) else { return nil }
+        let command = ClusterOnboardingCommand.name
+        if line.contains(notPublicModelApproval) {
+            return "Update both Macs (`\(command) update`) to a release that approves this model for public pairs, then run `\(command) cluster` again."
+        }
+        if line.contains(notPublicModel) {
+            return "Choose a model approved for public pairs in `\(command) cluster`; this one serves this account's own requests."
+        }
+        if let start = line.range(of: notPublicFamilies)?.upperBound, let end = line.range(of: " only)", options: .backwards)?.lowerBound,
+           start < end {
+            var families = String(line[start..<end])
+            if let and = families.range(of: " and ", options: .backwards) { families.replaceSubrange(and, with: " or ") }
+            return "Choose \(families) in `\(command) cluster`."
+        }
+        return nil
+    }
 
     /// The status line of a pair that does not serve yet (`OnboardingLive.localStatus`); the other Mac's window reads
     /// it back (`reason(inStatusLine:)`) to show the outcome block.

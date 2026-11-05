@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-04
+> Last updated: 2026-11-05
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -693,8 +693,9 @@ darkbloom cluster gpu-limit [--undo]
 | `--undo` | flag | `false` | Remove the job that keeps the limit raised and return `iogpu.wired_limit_mb` to the macOS default |
 
 Lets this Mac's GPU keep its memory less 16 GiB resident, so GLM-5.3-Flash runs
-on two 128 GB Macs with room for long requests (M5 Macs of 128 or 256 GB only;
-exit 2 elsewhere). It prints the current and the new limit, asks once (`y`), and
+on two 128 GB Macs with room for long requests (Apple silicon Macs with 128 GB
+or more only; exit 2 elsewhere, with the reason, and where the Mac does not
+report the limits). It prints the current and the new limit, asks once (`y`), and
 then macOS asks an administrator to approve. Where the limits are already met,
 it installs the boot job that keeps them if that job is missing or differs, and
 changes nothing if it is in place. It needs a terminal; without one it prints
@@ -788,6 +789,14 @@ through Darkbloom" (`OnboardingLive.notOfferedLines`):
   serve.
 - `next` is "To offer it to Darkbloom: `darkbloom cluster` on <the leading Mac>, then choose the model again (it is
   planned for Darkbloom). Or serve locally only: `darkbloom cluster local` on <the leading Mac>."
+- `darkbloom start` without a terminal stops waiting at once on this reason (exit 3).
+
+While single-Mac serving runs on either Mac of a started pair, the pair can't start there and it doesn't stop by
+itself. Both Macs read `not_serving` (exit 3), never "keep trying by themselves":
+- `reason` is "The pair can't start: a single-Mac Darkbloom provider (process <N>) is serving on <Mac>, and the pair
+  can't share a Mac with it".
+- `next` is "Single-Mac serving doesn't stop by itself: run `darkbloom stop --solo` on each Mac named, then
+  `darkbloom start` on either Mac. Or `darkbloom cluster` on <the leading Mac> offers to stop it and start the pair."
 - `darkbloom start` without a terminal stops waiting at once on this reason (exit 3).
 
 During a model or mode change, or while the pair updates Darkbloom, `status` and `cluster status` can read `stopped`

@@ -22,6 +22,9 @@ public struct ClusterOnboardingStartProgress: Codable, Sendable, Equatable {
         case testing
         /// The pair registers with Darkbloom's coordinator.
         case registering
+        /// The start ended with ✗ on the leading Mac's screen (`title`, `lines`; `retry`: its screen offers Retry). The
+        /// Mac that joined ends with the same ✗; it never judges the pair by a wait of its own.
+        case failed
         /// A phase a later build adds.
         case unknown
 
@@ -62,10 +65,59 @@ public struct ClusterOnboardingStartProgress: Codable, Sendable, Equatable {
     public var parts: [Part]?
     /// When this phase began (seconds since 1970), so both screens count from the same moment.
     public var since: Double?
+    /// `failed`: the leading Mac's ✗ title and the lines under it, each Mac named by its part (`failed(title:lines:retry:)`),
+    /// and whether its screen offers Retry.
+    public var title: String?
+    public var lines: [String]?
+    public var retry: Bool?
 
     public init(_ phase: Phase, done: Int64? = nil, total: Int64? = nil, toLeader: Bool? = nil, parts: [Part]? = nil,
                 since: Double? = nil) {
         self.phase = phase; self.done = done; self.total = total; self.toLeader = toLeader; self.parts = parts; self.since = since
+    }
+
+    /// The leading Mac's final ✗, from its screen's words: "this Mac" (the leading Mac) and "the other Mac (…)" (the Mac
+    /// that joined) are kept as who they are, so the Mac that joined names each from its side (`viewed(leader:)`).
+    public static func failed(title: String, lines: [String], retry: Bool) -> ClusterOnboardingStartProgress {
+        var made = ClusterOnboardingStartProgress(.failed)
+        made.title = Self.byPart(title)
+        made.lines = lines.map(Self.byPart)
+        made.retry = retry
+        return made
+    }
+
+    /// The same, as the Mac that joined says it: the leading Mac named `leader` ("the other Mac (Apple M3 Ultra, …)"),
+    /// itself "this Mac".
+    public func viewed(leader: String?) -> ClusterOnboardingStartProgress {
+        var shown = self
+        func view(_ text: String) -> String {
+            let other = ClusterOnboardingMacName.other(named: leader)
+            return text.replacingOccurrences(of: Self.joinedToken.upper, with: ClusterOnboardingMacName.sentence(ClusterOnboardingMacName.this))
+                .replacingOccurrences(of: Self.joinedToken.lower, with: ClusterOnboardingMacName.this)
+                .replacingOccurrences(of: Self.leaderToken.upper, with: ClusterOnboardingMacName.sentence(other))
+                .replacingOccurrences(of: Self.leaderToken.lower, with: other)
+        }
+        shown.title = title.map(view)
+        shown.lines = lines?.map(view)
+        return shown
+    }
+
+    static let joinedToken = (upper: "\u{1}J", lower: "\u{1}j")
+    static let leaderToken = (upper: "\u{1}L", lower: "\u{1}l")
+
+    /// The leading Mac's words with each Mac as a token: "the other Mac" with or without its name is the Mac that
+    /// joined, "this Mac" with or without its name the leading Mac.
+    static func byPart(_ text: String) -> String {
+        var text = text
+        for (pattern, upper, lower) in [(#"([Tt])he other Mac( \([^)]*\))?"#, joinedToken.upper, joinedToken.lower),
+                                        (#"([Tt])his Mac( \([^)]*\))?"#, leaderToken.upper, leaderToken.lower)] {
+            guard let expression = try? NSRegularExpression(pattern: pattern) else { continue }
+            for match in expression.matches(in: text, range: NSRange(text.startIndex..., in: text)).reversed() {
+                guard let range = Range(match.range, in: text), let first = Range(match.range(at: 1), in: text) else { continue }
+                text.replaceSubrange(range, with: text[first] == "T" ? upper : lower)
+            }
+        }
+        return text
     }
 
     /// The parts ready, of all of them.
@@ -98,8 +150,12 @@ public struct ClusterOnboardingStartProgressMark: Codable, Sendable, Equatable {
 
     /// Figures older than this are not shown: whoever published them stopped.
     public static let freshSeconds: Double = 30
+    /// How long the leading Mac's ✗ counts as the start's outcome.
+    public static let outcomeSeconds: Double = 1_800
 
     public func current(now: Double, started processStarted: (Int32) -> UInt64?) -> ClusterOnboardingStartProgress? {
+        // The leading Mac's ✗ outlives its screen for a while (the person may leave it): it is the start's outcome.
+        if progress.phase == .failed { return now - at < Self.outcomeSeconds ? progress : nil }
         guard processStarted(pid) == started else { return nil }
         switch progress.phase {
         case .downloading, .copying, .loading: return now - at < Self.freshSeconds ? progress : nil
@@ -130,7 +186,7 @@ public enum ClusterOnboardingStartStep: String, Sendable, CaseIterable {
         case .loading: self = .load
         case .testing: self = .test
         case .registering: self = .darkbloom
-        case .unknown: return nil
+        case .failed, .unknown: return nil
         }
     }
 
@@ -227,6 +283,8 @@ public enum ClusterOnboardingStartWords {
             return viewerLeads ? ["Test: sending a test request", "Test"] : ["Test: \(other) sends a test request", "Test"]
         case .registering:
             return ["Darkbloom: registering both Macs with the coordinator", "Darkbloom: registering", "Darkbloom"]
+        case .failed:
+            return [progress.title ?? "Not serving"]
         case .unknown:
             return ["Starting"]
         }
@@ -271,7 +329,7 @@ public struct ClusterOnboardingStartLog: Sendable {
     /// The lines to say for `progress` at `now` (seconds since 1970). `plain`: the window has no live rows, so the
     /// part changes and a copy's bytes are said too.
     public mutating func update(_ progress: ClusterOnboardingStartProgress?, now: Double, plain: Bool) -> [String] {
-        guard let progress, progress.phase != .unknown else { return [] }
+        guard let progress, progress.phase != .unknown, progress.phase != .failed else { return [] }
         var lines = [String]()
         if progress.phase != phase {
             if let phase, let step = ClusterOnboardingStartStep(phase), ClusterOnboardingStartStep(progress.phase) != step {

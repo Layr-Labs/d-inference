@@ -1,3 +1,4 @@
+import DarkbloomClusterPlacement
 import Darwin
 import Foundation
 
@@ -155,17 +156,31 @@ public enum GLM5NextWiredLimit {
             chipFamily: chipFamily, memoryGiB: ProcessInfo.processInfo.physicalMemory >> 30)
     }
 
-    /// The same derivation for a rank of a GLM-5.3-Flash pair
+    /// The derivation for a rank of a GLM-5.3-Flash pair
     /// (`darkbloom cluster gpu-limit`): the GPU may keep physical memory less
-    /// 16 GiB resident. Two 128 GB M5 Max hold the pipeline (each about half
-    /// the model, its load scratch and its requests on the GPU) only with the
-    /// limit raised, and the 256 GB production hosts run the same values. Nil
-    /// where the command does not apply (`GLM5NextGPULimitEligibility`).
+    /// what macOS keeps resident (16 GiB, a sixteenth from 512 GB: the
+    /// planner's own ceiling, `ClusterGPUMemoryLimit.ceilingMegabytes`), and
+    /// the user wire limits are 95% of memory. The 256 GB production hosts run
+    /// the same values. Nil where the command does not apply
+    /// (`GLM5NextGPULimitEligibility`: Apple silicon with 128 GB or more).
     public static func pairRankRecommendation(chipName: String, physicalMemoryBytes: UInt64) -> Recommendation? {
         guard GLM5NextGPULimitEligibility.applies(chipName: chipName, physicalMemoryBytes: physicalMemoryBytes) else {
             return nil
         }
-        return derived(memoryGiB: physicalMemoryBytes >> 30)
+        return pairRankDerived(memoryGiB: physicalMemoryBytes >> 30)
+    }
+
+    private static func pairRankDerived(memoryGiB: UInt64) -> Recommendation {
+        let physicalBytes = memoryGiB << 30
+        return Recommendation(memoryGiB: memoryGiB,
+            gpuWiredLimitMB: UInt64(ClusterGPUMemoryLimit.ceilingMegabytes(physicalMemoryBytes: Int(physicalBytes))),
+            userWireLimitBytes: physicalBytes * 95 / 100)
+    }
+
+    /// Why this Mac gets no pair-rank recommendation (`GLM5NextGPULimitEligibility.refusal`); nil where it gets one.
+    public static func pairRankRefusalForThisMac() -> String? {
+        GLM5NextGPULimitEligibility.refusal(chipName: (try? sysctlString("machdep.cpu.brand_string")) ?? "",
+            physicalMemoryBytes: ProcessInfo.processInfo.physicalMemory)
     }
 
     public static func pairRankRecommendationForThisMac() -> Recommendation? {
@@ -175,7 +190,8 @@ public enum GLM5NextWiredLimit {
 
     /// Whether `value` is a pair rank's recommendation: the only values the command applies.
     static func isPairRankRecommendation(_ value: Recommendation) -> Bool {
-        GLM5NextGPULimitEligibility.memoryGiB.contains(value.memoryGiB) && value == derived(memoryGiB: value.memoryGiB)
+        value.memoryGiB >= UInt64(ClusterGPUMemoryLimit.minimumRaisableMemoryGiB) && value.memoryGiB <= 1 << 20
+            && value == pairRankDerived(memoryGiB: value.memoryGiB)
     }
 
     /// The coordinator catalog build or the local qualification download.

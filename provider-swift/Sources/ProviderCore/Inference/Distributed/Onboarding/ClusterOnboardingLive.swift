@@ -72,6 +72,7 @@ extension ClusterOnboardingOperations {
         made.publishStep = { live.publishStep($0) }
         made.thisVersion = ProviderCore.version
         made.soloServing = { live.soloServing() }
+        made.versionSplit = { live.versionSplit() }
         made.stopSoloServing = { live.stopSoloServing() }
         made.publishStart = { live.publishStart($0) }
         made.thisRank = { live.context.savedConfiguration().configuration?.localRank }
@@ -1501,7 +1502,9 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     func serve() -> Result<[String], ClusterOnboardingFailure> {
-        routed(.init(op: .serve), acting: true, local: { localServe() }) { $0.lines }
+        // The person starts the pair from this Mac: a choice of single-Mac serving made here before no longer stands.
+        ClusterSoloChoice.clear(in: store.paths.directory)
+        return routed(.init(op: .serve), acting: true, local: { localServe() }) { $0.lines }
     }
 
     /// The screen's start through Darkbloom, which asks the coordinator after its test whether to offer the pair
@@ -1725,7 +1728,11 @@ final class OnboardingLive: @unchecked Sendable {
         while Date() < deadline {
             // Single-Mac serving on either Mac never ends by itself: the wait ends at once with it named, never a loop of
             // part ends (read every few polls: it asks the other Mac over the cable).
-            if polls % Self.soloServingEveryPolls == 0, let solo = soloServingFailure() { return .failure(solo) }
+            // Different versions come first: the older Mac must update before anything else can be fixed.
+            if polls % Self.soloServingEveryPolls == 0 {
+                if let split = versionSplit() { return .failure(split.failure) }
+                if let solo = soloServingFailure() { return .failure(solo) }
+            }
             polls += 1
             var once: (ready: ClusterOnboardingReady?, line: String, parts: [ClusterOnboardingStartProgress.Part]?)
             if forwards {
@@ -1827,18 +1834,18 @@ final class OnboardingLive: @unchecked Sendable {
     /// `refusalSaid`: the ✗ already says a Local Network refusal and what to do (`errorLines`).
     func lastErrors(fallback: String?, own snapshot: (child: ClusterServiceStatus.Child?, worker: OwnWorker)? = nil,
                     refusalSaid: Bool = false) -> [String] {
-        let other: (child: ClusterServiceStatus.Child?, unreachable: String?)
+        let other: (child: ClusterServiceStatus.Child?, unreachable: String?, version: String?)
         do {
             let status = try JSONDecoder().decode(ClusterServiceStatus.self, from: try command(.init(op: .status), seconds: 10))
-            other = (status.child, nil)
+            other = (status.child, nil, status.pairUpdate?.running)
         } catch {
-            other = (nil, (error as? ClusterSetupFailure)?.text ?? "\(error)")
+            other = (nil, (error as? ClusterSetupFailure)?.text ?? "\(error)", nil)
         }
         // This start's: since its wait began (the ✗'s diagnostics file too), else no longer ago than a wait lasts.
         let own = snapshot ?? ownPart(since: lock.withLock { waitBegan } ?? Date().addingTimeInterval(-Self.readyWaitSeconds))
         var lines = Self.errorLines(here: Self.sentence(here), there: Self.sentence(there), own: own.child,
                                     other: other.child, otherUnreachable: other.unreachable, ownWorker: own.worker,
-                                    refusalSaid: refusalSaid)
+                                    refusalSaid: refusalSaid, thisVersion: ProviderCore.version, otherVersion: other.version)
         if let fallback { lines.append("Last progress: \(fallback).") }
         return lines.map { ClusterConsoleText.boundedAtWord(context.clean($0), maximum: 300) }
     }
@@ -1889,7 +1896,14 @@ final class OnboardingLive: @unchecked Sendable {
     /// says the refusal and what to do, so a part refused by it is said plainly instead of in its follower's own words
     /// (the pair-2 re-test, R-4); any other ✗ keeps the part's reason (A-3).
     static func errorLines(here: String, there: String, own: ClusterServiceStatus.Child?, other: ClusterServiceStatus.Child?,
-                           otherUnreachable: String?, ownWorker: OwnWorker = .notSeen, refusalSaid: Bool = false) -> [String] {
+                           otherUnreachable: String?, ownWorker: OwnWorker = .notSeen, refusalSaid: Bool = false,
+                           thisVersion: String? = nil, otherVersion: String? = nil) -> [String] {
+        // The Macs run different versions (one updated alone): that is the cause, with the Mac and the command, and no
+        // guess at the link. `otherVersion` is what the other Mac's supervisor publishes (`pairUpdate.running`).
+        if let split = ClusterOnboardingVersionSplit.detect(thisVersion: thisVersion, otherVersion: otherVersion,
+                                                            other: there.prefix(1).lowercased() + there.dropFirst()) {
+            return [split.title + "."] + split.remedies
+        }
         func line(_ mac: String, _ child: ClusterServiceStatus.Child?, unreachable: String? = nil) -> String {
             if let unreachable { return "\(mac): did not answer over the cable (\(unreachable))." }
             guard let child else { return "\(mac): no report." }
@@ -2150,7 +2164,7 @@ final class OnboardingLive: @unchecked Sendable {
     func offeredReadiness(_ offered: String, own: ClusterServiceStatus.Child?) -> (ready: ClusterOnboardingReady?, line: String) {
         let peer = (try? JSONDecoder().decode(ClusterServiceStatus.self, from: command(.init(op: .status), seconds: 10)))?.child
         func registered(_ child: ClusterServiceStatus.Child?) -> Bool {
-            child?.running == true && child?.notice == ClusterLocalServing.offeredNotice
+            child?.running == true && ClusterLocalServing.registeredOffered(notice: child?.notice)
         }
         if registered(own), registered(peer) {
             return (.init(servedBy: here, port: 0, deployment: savedDeployment(perspective: true) ?? leadership?.deployment,
@@ -2182,7 +2196,9 @@ final class OnboardingLive: @unchecked Sendable {
             if look.serving { return .success([look.test ?? ""]) }
             if let reason = look.reason {
                 last = reason
-                let settle = ClusterOnboardingNotServing.isMissingLogin(reason) ? 0 : Self.pairReasonSettleSeconds
+                // A login missing, a model the coordinator's catalog does not list, or an owner-only pair holds until a person acts.
+                let settle = ClusterOnboardingNotServing.isMissingLogin(reason) || ClusterLocalServing.pairRefusal(notice: reason) != nil
+                    || ClusterPublicServingCheck.ownerOnly(notice: reason) != nil ? 0 : Self.pairReasonSettleSeconds
                 if Date().timeIntervalSince(started) >= settle { return .failure(.init(reason)) }
             }
             if look.progress != said { progress(look.progress); said = look.progress }
@@ -2200,11 +2216,17 @@ final class OnboardingLive: @unchecked Sendable {
         let peer = try? JSONDecoder().decode(ClusterServiceStatus.self, from: command(.init(op: .status), seconds: 10))
         let localRankZero = context.savedConfiguration().configuration?.localRank == 0
         let rankZero = (localRankZero ? own : peer)?.child.pair.flatMap(ClusterOnboardingPairReport.state)
-        if case .serving(let test)? = rankZero { return (true, test, "serving", nil) }
+        if case .serving(let test)? = rankZero {
+            // Paired and answering, but the coordinator sends this pair no public request: not ✓.
+            for child in [own?.child, peer?.child] {
+                if let reason = ClusterPublicServingCheck.ownerOnly(notice: child?.notice) { return (false, nil, "serving", reason) }
+            }
+            return (true, test, "serving", nil)
+        }
         // The wait, then one row per Mac (`ClusterOnboardingLoadRows`): registered, then loading once the coordinator
         // committed the start (rank 0's part says so for both).
         func row(_ mac: String, _ child: ClusterServiceStatus.Child?) -> String {
-            let registered = child?.running == true && child?.notice == ClusterLocalServing.offeredNotice
+            let registered = child?.running == true && ClusterLocalServing.registeredOffered(notice: child?.notice)
             let state = rankZero == .starting ? "loading its share"
                 : registered ? "registered; waiting for the coordinator" : "registering with the coordinator"
             return ClusterOnboardingMacName.sentence(mac) + ": " + state
@@ -2220,6 +2242,10 @@ final class OnboardingLive: @unchecked Sendable {
         }
         if case .stopped(let why)? = rankZero {
             return (false, nil, progress, ClusterOnboardingNotServing.words(reason: why, mac: "one of the Macs"))
+        }
+        // The coordinator refuses every pair for a model its catalog does not list, and tells neither Mac.
+        for child in [own?.child, peer?.child] {
+            if let refusal = ClusterLocalServing.pairRefusal(notice: child?.notice) { return (false, nil, progress, refusal) }
         }
         return (false, nil, progress, nil)
     }
@@ -2313,7 +2339,11 @@ final class OnboardingLive: @unchecked Sendable {
             step.version = step.version ?? ProviderCore.version
             return .init(step: step, pid: pid, started: started, at: Date().timeIntervalSince1970)
         }
-        try? store.updateRecord { $0.onboardingStep = mark }
+        try? store.updateRecord { record in
+            record.onboardingStep = mark
+            // A screen that moved on (a new start, another model) ends an earlier start's ✗ as the outcome to follow.
+            if step != nil, record.startProgress?.progress.phase == .failed { record.startProgress = nil }
+        }
     }
 
     /// The setup step the status publishes, while it counts.
@@ -2353,6 +2383,10 @@ final class OnboardingLive: @unchecked Sendable {
         if leadership?.serving != true {
             lines.append("Stopped\(leadership?.modelName.map { "; last model " + modelTitle($0) } ?? "").")
             if let scope = leadership?.scope, scope.isLocalOnly { lines.append("When it starts: " + scope.line + ".") }
+        } else if let split = versionSplit() {
+            // Different versions never clear by themselves: both windows say it, with the versions and the command.
+            lines.append(ClusterOnboardingNotServing.statusLine(model: model, reason: split.reason))
+            lines += split.remedies
         } else if let solo = soloServingFailure() {
             // Single-Mac serving blocks the pair and never ends by itself: both windows say it, naming the Mac and process.
             lines.append(ClusterOnboardingNotServing.statusLine(model: model, reason: ClusterOnboardingSoloServing.title(solo.soloServing)))

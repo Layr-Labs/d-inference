@@ -59,7 +59,15 @@ public enum ProviderInstanceHolder {
     /// The single-Mac provider serving on this Mac now, nil when none does (nothing holds the lock, or this Mac's part
     /// of the pair does).
     public static func singleMacServing(lockFile: URL = defaultLockFile()) -> Holder? {
-        guard let holder = current(lockFile: lockFile), holder.kind == .singleMac else { return nil }
+        singleMac(current(lockFile: lockFile), recordedPartPID: ClusterService.recordedPart(ClusterService.published())?.pid)
+    }
+
+    /// `holder` when it is single-Mac serving: never this Mac's pair part the cluster service recorded (`recordedPartPID`),
+    /// even once it outlived its service and launchd adopted it (an orphaned part, whose arguments read like `start
+    /// --local`): `stop --solo` can't stop it, so the person is never told to.
+    public static func singleMac(_ holder: Holder?, recordedPartPID: Int32?) -> Holder? {
+        guard let holder, holder.kind == .singleMac else { return nil }
+        if let recordedPartPID, holder.pid == recordedPartPID { return nil }
         return holder
     }
 

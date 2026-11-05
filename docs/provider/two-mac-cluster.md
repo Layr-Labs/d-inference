@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-04
+> Last updated: 2026-11-05
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -141,7 +141,18 @@ follows the start from the cluster's status the two Macs exchange over the cable
    in `darkbloom cluster` on either Mac) and this Mac keeps following. Offered,
    it says "Offered to Darkbloom as a pair for <model>; waiting for Darkbloom to
    accept this pair…" and waits as the leader does, so both screens end the
-   same way. Every start the leader's screen makes publishes its test's outcome,
+   same way. When Darkbloom's model catalog does not list the model, Darkbloom
+   never pairs the Macs for it; each Mac's part reads the catalog after it
+   registers, and both screens and `darkbloom cluster status` end with "✗ Not
+   serving: The coordinator does not pair Macs for <model>: its model catalog
+   does not list it" (`ClusterLocalServing.catalogRefusal`) instead of waiting.
+   A pair Darkbloom pairs under an approval that serves only this account's own
+   requests (a model approval such as `devnet/<model>/s1`, a pair approval saved
+   by hand, a model a release doesn't approve for public pairs, or a mode it
+   doesn't approve) ends with "✗ Not serving publicly: the coordinator paired
+   both Macs but doesn't send public requests to this pair (<why>)." and what to
+   do, never ✓ (`ClusterPublicServingCheck`).
+   Every start the leader's screen makes publishes its test's outcome,
    and this Mac ends with it, without a test of its own: a pass with the leader's
    response time ("Test response in 0.61 s (the leading Mac's test)"), a failure
    with the same ✗, reason and note ("Setup saved, but the test failed."; through
@@ -156,16 +167,28 @@ follows the start from the cluster's status the two Macs exchange over the cable
    leading Mac failed." under the not-serving line. Switching between local
    only and serving through Darkbloom, the next start or serve, and a stop
    clear it.
-3. It ends with the same ✓ or ✗ block as the leader's screen. After ✓: "You can
-   close this window." After ✗: the reason, then "Choose Retry on the other Mac
-   (…): its screen shows the choices."; after a failed test, "To test again, run
-   `darkbloom cluster` on the other Mac (…) and choose the model it serves."
+3. Offered to Darkbloom and not serving yet, it waits for the leading Mac's
+   outcome and never judges the pair by a wait of its own. A reason that clears
+   by itself keeps it waiting, with a live row and the time of the bound, e.g.
+   "Waiting for Apple to verify this Mac (Darkbloom retries by itself) · 2 of
+   15 min" or "Waiting for Darkbloom to pair both Macs".
+4. It ends with the leading Mac's outcome. After ✓, the same ✓ block, then "You
+   can close this window." After the leading Mac's ✗ (`ClusterControlReply.start`
+   with phase `failed`, named from this Mac's side), the same ✗ and next step,
+   then "Choose Retry on the other Mac (…): its screen shows the choices." That
+   line appears only in that ✗, since the leading Mac's screen shows Retry then.
+   After a failed test: "To test again, run `darkbloom cluster` on the other Mac
+   (…) and choose the model it serves." It ends early only for a reason of its
+   own, such as a different Darkbloom build.
 
 q leaves at any time: "The pair keeps going; run `darkbloom cluster` here to see
 it." The follow is bounded like the leader's start: 15 minutes for the start to
 begin, then 15 minutes for each of its stages (loading; the test and the check
-with Darkbloom; the registration's restart), then the pair's own wait once it is
-offered. Its end always says why. A signed
+with Darkbloom; the registration's restart; the wait once it is offered). A
+leading Mac that says no outcome within a stage's bound (an earlier release
+publishes none) ends it with "✗ Not serving: The other Mac (…) didn't say how
+its start ended within 15 minutes.", the last state, and "Its screen shows how
+the start ended and what to do next." Its end always says why. A signed
 Darkbloom.app's login agent keeps serving; without one, as for a development
 build, the screen ends "Keep this window open." and the Mac serves only while
 the window stays open. The Start step opens with "Loading
@@ -938,11 +961,29 @@ half on what loading needs, and each request is checked against the memory free
 when it arrives (a longer request than fits then gets a retryable "busy" answer,
 never an out-of-memory crash). Its plan fits two M5 Max 128 GB at the default
 limit too. When a GPU limit is what stops a GLM plan, the plan says so and, on
-an M5 Mac with 128 or 256 GB, names the one command that changes it:
+an Apple silicon Mac with 128 GB or more, names the one command that changes it:
 `darkbloom cluster gpu-limit`. Run it on that Mac yourself: it asks once, then
 macOS asks an administrator, and it raises the limit to the Mac's memory less
 16 GiB (112 GiB of 128 GB), also after restarts. `darkbloom cluster gpu-limit
 --undo` takes it back ([GPU memory limit for a GLM pair](../reference/configuration.md#gpu-memory-limit-for-a-glm-pair)).
+
+Only modes that load on the pair are offered. On two 128 GB Macs that is the
+pipeline: tensor parallel needs more than either Mac has. On an M4 Max with an
+M5 Max, each Mac's part is sized by its own GPU limit (107.52 GiB on macOS 26),
+and `darkbloom cluster gpu-limit` runs on both (any Apple silicon Mac with
+128 GB or more), so the plan counts a raise on either. When nothing fits as the Macs
+are, the model's row says which of two things holds:
+
+- **"Needs `darkbloom cluster gpu-limit` first"**, naming the Mac, its part's
+  GPU need and the limit: a split fits once that Mac's limit is raised. Run the
+  command there, then `darkbloom cluster` again. Nothing loads before.
+- **"Needs more memory"**, with the reason: no split fits even with the limits
+  Darkbloom can raise, or the Macs together cannot hold the model. Intel Macs
+  and Macs under 128 GB are never raised.
+
+These rules (`ClusterGPUMemoryLimit.raisedByDarkbloom`,
+`ClusterSetupPlanning.gpuLimitSteps`, `refusalWords`) are checked pair by pair
+in `libs/darkbloom-cluster/Tests/PlacementChecks/GLMPairOfferChecks.swift`.
 
 When several splits predict the same time (two identical Macs, or Macs with
 equal measured speed), the one that leaves each Mac the largest share of its
@@ -1075,6 +1116,11 @@ happens by itself; `darkbloom cluster` says which applies to each Mac.
 
 ## Updating Darkbloom on the pair
 
+**For pair owners:** run `darkbloom update` on **both** Macs, then check that
+`darkbloom --version` shows the same version on both. If either Mac ever ran a
+plain `darkbloom start` before 0.10.8 (which meant single-Mac serving), run
+`darkbloom stop --solo` on that Mac first.
+
 The Macs of a pair update themselves together, as a single Mac does, while
 `auto_update` is on (the default) and `DARKBLOOM_NO_UPDATE_CHECK` is not set on
 either Mac. Nothing needs to be run. Every 30 minutes, at the pair's update slot
@@ -1131,6 +1177,47 @@ from a plain `darkbloom start` before 0.10.8, which meant single-Mac serving),
 `darkbloom update` restarts the pair and leaves single-Mac serving as it is. It
 says so, with `darkbloom stop --solo` to remove it. The watchdog doesn't start it
 again while the pair is started.
+
+### When the two Macs run different versions
+
+One Mac can end up on a newer release than the other: it updated alone through
+single-Mac serving, `darkbloom update` ran on it only, or the other Mac was
+asleep or off at the pair's update slot. Then:
+
+- **The older Mac catches up within about a minute** (from 0.10.9), once its
+  cluster service sees the other Mac running a newer release, or updating to
+  one. It runs the pair's update at once instead of waiting for the slot: one
+  immediate try per release, then the slots as before. It never installs a
+  release it quarantined. With automatic updates off, its cluster service log
+  says "the other Mac runs v<version>, newer than this Mac's v<version>, and
+  automatic updates are off on this Mac: run `darkbloom update` on this Mac".
+- **The provider's own background updater does not leave the pair split.** When
+  it updates a Mac whose pair actually runs there, it also asks that Mac's
+  cluster service to restart into the release together with the other Mac, as
+  `darkbloom update` does, so the other Mac follows. The watchdog doesn't
+  install a release while the pair runs on that Mac. A Mac that only serves
+  alone, its pair gone, simply updates.
+- **Both screens say it at once:** "✗ The two Macs run different Darkbloom
+  versions: The other Mac (…) runs 0.10.7, this Mac runs 0.10.8.", then "On <the
+  older Mac>, run `darkbloom update`; the pair starts once both Macs run
+  <version>." The start doesn't wait or loop. It offers **Check the versions
+  again** (it reads both versions again, and starts the pair once they match)
+  or **Leave**. A Retry after any other failure checks the versions first. The
+  version split is said before single-Mac serving when both apply.
+- **`darkbloom status` and `darkbloom cluster status --json`** give the reason
+  "the two Macs run different Darkbloom versions, <newer> and <older>: run
+  `darkbloom update` on the Mac with <older>", and as `next` the Mac to update,
+  named for each Mac: "On this Mac, run `darkbloom update`; …" or "On the other
+  Mac (…), run `darkbloom update`; …".
+- **The wait lines in the cluster service log name the other Mac's version:**
+  the leader's "Darkbloom changed on …: waiting until both Macs answer with the
+  same build …" and the other Mac's "waiting for the other Mac's setup for
+  v<version> …" end with "; the other Mac runs v<version>, this Mac v<version>:
+  run `darkbloom update` on <the older Mac>".
+
+The other Mac's version comes from its cluster service, which publishes it from
+0.10.7 on. If the other Mac publishes no version, check with `darkbloom --version`
+on both Macs. DevNet builds say `darkbloom-dev`.
 
 While a Mac serves, the re-plan uses the speed it measured while idle and never
 runs a GPU benchmark beside the model
@@ -1257,7 +1344,7 @@ of the leading Mac's start, and where to choose Retry when a part keeps ending.
   model on each Mac. If the plan names `darkbloom cluster gpu-limit` for a Mac
   whose GPU keeps too little resident, run it on that Mac (it asks once, then
   macOS asks an administrator), then `darkbloom cluster` again. The plan names
-  it only on the Macs it runs on, M5 Macs with 128 or 256 GB. Running it on
+  it only on the Macs it runs on, Apple silicon Macs with 128 GB or more. Running it on
   both Macs leaves room for long requests. `darkbloom cluster gpu-limit --undo`
   takes it back. A request longer than what fits at that moment is refused, not
   run out of memory ([figures](../architecture/hardware-support.md#glm-53-flash-pairs-on-128-gb-macs)).
@@ -1293,7 +1380,32 @@ serving on both Macs and start the pair** (or on the one Mac named) and
 **Leave**. It stops nothing unless you choose to, and it never retries by itself.
 Each Mac's cluster service doesn't start its part while single-Mac serving
 runs there. Its status names that provider, so the other Mac's screen says the
-same thing instead of "no error reported". Plain `darkbloom stop` on a paired
+same thing instead of "no error reported". The Mac that joined shows the same
+✗ in its own window, naming its own provider ("… is serving on this Mac"),
+with `darkbloom stop --solo` and that the leading Mac's screen offers the stop.
+It never says it is registering with the coordinator meanwhile, and it follows
+the start by itself once single-Mac serving stops. The leading Mac's part
+waits too: it doesn't start, and end again every half minute, while the other
+Mac reports single-Mac serving. `darkbloom cluster status` says the block on
+both Macs, with `Next:` ``Single-Mac serving doesn't stop by itself: run
+`darkbloom stop --solo` on each Mac named, then `darkbloom start` on either
+Mac. …``, and a scripted `darkbloom start` ends its wait at once with that
+reason (exit status 3).
+
+When nobody chose single-Mac serving since the pair was started on that Mac
+(for example, the update from 0.10.8 restarted a job a plain `darkbloom start`
+left set up, or a login or the watchdog started it), the Mac's cluster service
+stops it by itself, as `darkbloom stop --solo` does. It writes that to its log,
+and `darkbloom status` on that Mac says ``Single-Mac serving stepped aside for
+the pair at <time> (process <N>): …``. It doesn't stop single-Mac serving you
+chose yourself (`darkbloom start --solo`, or **Serve on this Mac alone**)
+until you start the pair from that Mac, or the other Mac's screen offers the
+stop and you accept. It never stops it while the pair isn't running there.
+Parts that ended because single-Mac serving held the lock don't make the pair
+fall back to local-only serving. Once the blocker is gone, the pair is offered
+to Darkbloom again straight away. `darkbloom stop --solo` on the Mac without
+single-Mac serving finds it on the other Mac and offers to stop it there
+(`--yes` for scripts). Plain `darkbloom stop` on a paired
 Mac stops the pair, not single-Mac serving. If the leading
 Mac doesn't answer, `darkbloom stop` says so and that
 `darkbloom cluster stop --local-only` stops this Mac alone.

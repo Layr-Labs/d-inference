@@ -316,12 +316,29 @@ def shards(lane):
     return sorted({selection.shard for selection in SELECTIONS if selection.lane == lane})
 
 
-def lock_retry():
-    """scripts/swift_test_lock_retry.py, loaded by path (scripts/ is not a package)."""
-    spec = importlib.util.spec_from_file_location("swift_test_lock_retry", ROOT / "scripts/swift_test_lock_retry.py")
+def script(name):
+    """scripts/<name>.py (dashes as underscores in the module name), loaded by path (scripts/ is not a package)."""
+    spec = importlib.util.spec_from_file_location(name.replace("-", "_"), ROOT / f"scripts/{name}.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def lock_retry():
+    """scripts/swift_test_lock_retry.py."""
+    return script("swift_test_lock_retry")
+
+
+def mark(event, selection, pid):
+    """Report-only: tell scripts/ci-resource-sampler.py, in a sampled job, that
+    `selection` starts or ends under pid, so its report names the selection of
+    each large process."""
+    if not os.environ.get("CI_RESOURCE_SAMPLES"):
+        return
+    try:
+        script("ci-resource-sampler").mark(event, selection.name, pid)
+    except Exception as error:  # Report-only: never fail a selection.
+        print(f"::warning title=Resource sampler::{type(error).__name__}: {error}", flush=True)
 
 
 def execute(selection, output, log=None, temporary=None):
@@ -340,8 +357,17 @@ def execute(selection, output, log=None, temporary=None):
         env["TMPDIR"] = str(temporary)
     started = time.monotonic()
     for attempt in (1, 2):
-        status = subprocess.run(argv, cwd=cwd, env=env, stdout=log,
-                                stderr=subprocess.STDOUT if log is not None else None).returncode
+        # subprocess.run, with the child's pid marked for the resource sampler.
+        with subprocess.Popen(argv, cwd=cwd, env=env, stdout=log,
+                              stderr=subprocess.STDOUT if log is not None else None) as child:
+            mark("start", selection, child.pid)
+            try:
+                status = child.wait()
+            except BaseException:
+                child.kill()
+                raise
+            finally:
+                mark("end", selection, child.pid)
         if status == 0 or log is None or attempt == 2:
             break
         log.flush()

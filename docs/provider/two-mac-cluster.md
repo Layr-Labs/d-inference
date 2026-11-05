@@ -179,7 +179,11 @@ follows the start from the cluster's status the two Macs exchange over the cable
    line appears only in that ✗, since the leading Mac's screen shows Retry then.
    After a failed test: "To test again, run `darkbloom cluster` on the other Mac
    (…) and choose the model it serves." It ends early only for a reason of its
-   own, such as a different Darkbloom build.
+   own, such as a different Darkbloom build. Between its local test and the
+   registration that starts both parts again as cluster members, the leading
+   Mac's status says "not offered to Darkbloom". While the leading Mac still
+   publishes its start's step, this Mac keeps following until the leading Mac
+   shows ✓ or ✗; the 15-minute bound of each stage still applies.
 
 Running `darkbloom cluster` on the Mac that joined while the leading Mac runs a
 start (a model or mode change, or a Retry) follows that start the same way: the

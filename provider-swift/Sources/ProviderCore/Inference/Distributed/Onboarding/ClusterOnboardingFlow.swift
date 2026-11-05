@@ -2794,9 +2794,11 @@ public enum ClusterOnboardingDriver {
         if registers { operations.markRegistrationPending() }
         while true {
             let outcome = startOutcome(title: title, scope: scope, mayRegister: &mayRegister, operations, console)
-            // The start's steps are over (left: they go on by themselves, and the published figures age out).
+            // The start's steps are over (left: they go on by themselves, and the published figures age out). A pair that
+            // doesn't serve publishes its ✗ in their place below, with no gap between them where the Mac that joined would
+            // read no start and show the status' ✗ without its next step.
             switch outcome {
-            case .left, .leftPairWait: break
+            case .left, .leftPairWait, .notServing: break
             default: operations.publishStart(nil)
             }
             switch outcome {

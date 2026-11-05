@@ -1304,6 +1304,9 @@ public struct ClusterOnboardingOperations: Sendable {
     public var versionSplit: @Sendable () -> ClusterOnboardingVersionSplit? = { nil }
     /// Stops single-Mac serving on each Mac that runs it (`darkbloom stop --solo` there), asked only after the person
     /// chose it; its lines say what was stopped. Not in `init`: only the live operations set it.
+    /// Marks (true) or clears the leading Mac's start as stopped at the single-Mac block (`ClusterSetupRecord.soloBlockedAt`).
+    /// Not in `init`: only the live operations set it.
+    public var markSoloBlocked: @Sendable (Bool) -> Void = { _ in }
     public var stopSoloServing: @Sendable () -> Result<[String], ClusterOnboardingFailure> = {
         .failure(.init("This build cannot stop single-Mac serving from here: run `darkbloom stop --solo` on each Mac named."))
     }
@@ -2152,6 +2155,15 @@ public enum ClusterOnboardingDriver {
         if request.scope == nil, request.model == nil, leaderStarting(operations) {
             return followStart(leader: resume.leaderName ?? resume.peerName, operations, console)
         }
+        // Single-Mac serving blocks the pair (this Mac's, or the leading Mac's): the same ✗ as the leading Mac's screen,
+        // naming it, never just "Stopped" (0.10.9 DevNet build C, R8-1: the joining Mac said "Stopped … Close" while its own
+        // single-Mac provider blocked the leader's start).
+        let solo = operations.soloServing()
+        if !solo.isEmpty {
+            console.result(false, ClusterOnboardingSoloServing.title(solo) + ".",
+                           ClusterOnboardingSoloServing.remedies(solo) + [ClusterOnboardingSoloServing.leaderOffersLine(resume.leaderName ?? resume.peerName)])
+            return 1
+        }
         showStatus(operations, console)
         console.say("  " + memberRunsByItselfLine)
         console.say("")
@@ -2961,6 +2973,8 @@ public enum ClusterOnboardingDriver {
     static func clearSoloServing(_ serving: [ClusterOnboardingSoloServing], _ operations: ClusterOnboardingOperations,
                                  _ console: ClusterOnboardingConsole) -> Bool {
         guard !serving.isEmpty else { return true }
+        // Published in this Mac's record, so both Macs' status and the joining Mac's screen say the same block.
+        operations.markSoloBlocked(true)
         console.result(false, ClusterOnboardingSoloServing.title(serving) + ".", ClusterOnboardingSoloServing.remedies(serving))
         guard console.choose([ClusterOnboardingSoloServing.stopAndStartItem(serving), "Leave"], selected: 0) == 0 else {
             console.say(soloServingLeftLine)

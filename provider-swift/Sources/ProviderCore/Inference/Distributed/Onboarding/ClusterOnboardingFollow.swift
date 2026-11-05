@@ -138,10 +138,12 @@ extension ClusterOnboardingDriver {
     }
 
     /// The stage of the leader's start that `status` shows, after `stage`: 1 loading or starting, 2 its test and check
-    /// with Darkbloom, 3 anything after that check (the registration's stop and restart). Never back, so a status that
+    /// with Darkbloom, 3 anything after that check (the registration's stop and restart), 4 offered and waiting to serve. Never back, so a status that
     /// goes back and forth inside one stage never starts its bound again.
     static func followStage(_ status: [String], after stage: Int) -> Int {
         guard let first = status.first else { return stage }
+        // Offered and not serving yet: the pair's own wait, with the whole bound as on the leading Mac (`pairServing`).
+        if followed(status) == .offered { return max(stage, 4) }
         if first.contains(ClusterOnboardingReady.offerPendingWords) { return max(stage, 2) }
         if stage >= 2 { return 3 }
         return followed(status) == .starting ? max(stage, 1) : stage
@@ -162,7 +164,10 @@ extension ClusterOnboardingDriver {
         var begun = Date()
         var started: Date?, latest: String?, stage = 0, step: ClusterOnboardingLeaderStep?, lastStatus: String?
         // Each line once: a status that goes back and forth between two lines never repeats them.
-        var said = Set<String>(), saidRetry = false, saidBlocked = false
+        var said = Set<String>(), saidBlocked = false
+        // Offered to Darkbloom and not serving yet: why, as the leading Mac's status says it. Every such reason may clear
+        // by itself (Apple's verification, the coordinator's pairing), so this Mac waits for the leading Mac's outcome.
+        var offeredWait: String?, saidOffered = false
         // The start's progress as the leading Mac publishes it (`ClusterOnboardingStartProgress`): its own heading, then
         // its step, a bar of the real bytes and each Mac's part as the live rows; each step done said once. Its time
         // counts from when this Mac first saw the step (the two Macs' clocks may differ).
@@ -200,6 +205,11 @@ extension ClusterOnboardingDriver {
                     }
                 }
                 if let first = status.first { lastStatus = first.hasSuffix(".") ? String(first.dropLast()) : first }
+                // The leading Mac's start ended with ✗ on its screen: the same ✗, in its words, and where its choices are.
+                if let ended = look.start, ended.phase == .failed {
+                    console.settle()
+                    return followFailed(ended.viewed(leader: leader), leader: leader, console)
+                }
                 // The leading Mac refused every model and its window ended: nothing will start, so the same ✗ now.
                 if let refused = step, refused.kind == .refused {
                     console.settle()
@@ -227,15 +237,20 @@ extension ClusterOnboardingDriver {
                 // The start's own rows say it where the leading Mac publishes them.
                 if let latest, seen == .starting, start == nil || console.liveWidth == nil {
                     sayOnce("  The other Mac: " + latest + ".")
-                    if !saidRetry, latest.contains("part ended") { saidRetry = true; console.say(retryOnLeaderLine(leader)) }
                 }
                 switch seen {
                 case .serving:
                     console.settle()
                     return followServed(status, leader: leader, operations, console)
                 case .offered:
-                    console.settle()
-                    return followPair(status, leader: leader, operations, console)
+                    if !saidOffered, let first = status.first {
+                        saidOffered = true
+                        let model = first.components(separatedBy: ClusterOnboardingNotServing.statusMarker).first ?? "the model"
+                        console.settle()
+                        console.say("  " + ClusterOnboardingReady.offeredLine(model: model))
+                    }
+                    offeredWait = status.first.flatMap(ClusterOnboardingNotServing.reason(inStatusLine:)).map(offeredWaitingWords)
+                    if let offeredWait, console.liveWidth == nil { sayOnce("  " + offeredWait + ".") }
                 case .testFailed:
                     console.settle()
                     return followTestFailed(status, leader: leader, console)
@@ -246,14 +261,13 @@ extension ClusterOnboardingDriver {
                     console.say(retryOnLeaderLine(leader))
                     return 1
                 case .starting, .notStarted:
-                    break
+                    offeredWait = nil
                 }
             }
             if let started, Date().timeIntervalSince(started) >= timing.seconds {
                 console.settle()
-                console.result(false, ClusterOnboardingNotServing.title(reason: "The pair didn't report serving within \(minutes(timing.seconds)) minutes"),
-                               latest.map { ["Last: " + $0 + "."] } ?? [])
-                console.say(retryOnLeaderLine(leader))
+                console.result(false, ClusterOnboardingNotServing.title(reason: noOutcomeReason(leader, seconds: timing.seconds)),
+                               (latest.map { ["Last: " + $0 + "."] } ?? []) + [noOutcomeLine])
                 return 1
             }
             if started == nil, Date().timeIntervalSince(begun) >= timing.seconds {
@@ -263,7 +277,12 @@ extension ClusterOnboardingDriver {
                 console.say(notStartedAfterLine)
                 return 1
             }
-            if let start, let width = console.liveWidth {
+            if let offeredWait, let started {
+                let waited = Date().timeIntervalSince(started)
+                console.progress({ width in fitted([offeredWait + " \u{00B7} " + waitedWords(waited, of: timing.seconds) + " (q leaves)",
+                                                    offeredWait + " \u{00B7} " + waitedWords(waited, of: timing.seconds)], width: width) },
+                                 logged: false)
+            } else if let start, let width = console.liveWidth {
                 console.workingRows(ClusterOnboardingStartWords.liveRows(start, viewerLeads: false, viewerRank: operations.thisRank(),
                     darkbloom: darkbloom, elapsed: Date().timeIntervalSince(stepSeen), width: width))
             } else if let started, let latest {
@@ -336,34 +355,34 @@ extension ClusterOnboardingDriver {
         return 1
     }
 
-    /// Offered to Darkbloom: the pair's own wait, as the leading Mac's (`pairServing`: the coordinator pairs both Macs,
-    /// both load their share, the pair answers its first request), with its rows per Mac; q leaves it.
-    static func followPair(_ status: [String], leader: String?, _ operations: ClusterOnboardingOperations,
-                           _ console: ClusterOnboardingConsole) -> Int32 {
-        let model = status.first?.components(separatedBy: ClusterOnboardingNotServing.statusMarker).first ?? "the model"
-        console.say("  " + ClusterOnboardingReady.offeredLine(model: model))
-        guard let result = waitWithRows("Serving \(model) through Darkbloom", console, leaving: leaves, operations.pairServing) else {
-            return leftFollow(operations, console)
-        }
-        switch result {
-        case .success(let lines):
-            let tested = "Test response" + (lines.first.flatMap { $0.isEmpty ? nil : " " + $0 } ?? "")
-            let now = operations.status()
-            if case .serving = followed(now), let first = now.first {
-                _ = showOutcome([first] + now.dropFirst() + [ClusterOnboardingReady.offeredAPILine, tested], console)
-            } else {
-                console.result(true, "Serving \(model)" + pairServedMarker, [ClusterOnboardingReady.offeredAPILine, tested])
-            }
-            return followServedEnd(operations, console)
-        case .failure(let failure):
-            let first = failure.lines.first ?? "The pair did not report serving"
-            let reason = first.hasSuffix(".") ? String(first.dropLast()) : first
-            console.result(false, ClusterOnboardingNotServing.title(reason: reason),
-                           Array(failure.lines.dropFirst()) + (ClusterOnboardingNotServing.remedy(forReason: reason).map { [$0] } ?? []))
-            console.say(retryOnLeaderLine(leader))
-            return 1
-        }
+    /// The leading Mac's start ended with ✗ (`ClusterOnboardingStartProgress.failed`, named from this Mac): its title and
+    /// lines, then where its choices are when its screen offers Retry.
+    static func followFailed(_ ended: ClusterOnboardingStartProgress, leader: String?, _ console: ClusterOnboardingConsole) -> Int32 {
+        console.result(false, ended.title ?? ClusterOnboardingNotServing.title(reason: "the start ended"), ended.lines ?? [])
+        if ended.retry == true { console.say(retryOnLeaderLine(leader)) }
+        return 1
     }
+
+    /// What this Mac waits for while the pair is offered to Darkbloom and not serving yet: a reason the leading Mac's
+    /// status gives, which clears by itself or ends in the leading Mac's ✗.
+    static func offeredWaitingWords(_ reason: String) -> String {
+        if let mac = reason.components(separatedBy: " isn't verified by Apple yet").first, mac != reason {
+            return "Waiting for Apple to verify \(mac.prefix(1).lowercased() + mac.dropFirst()) (Darkbloom retries by itself)"
+        }
+        if reason.lowercased().contains("coordinator") || reason.lowercased().contains("registering") {
+            return "Waiting for Darkbloom to pair both Macs"
+        }
+        return "Waiting for the other Mac's start: " + reason
+    }
+
+    /// The ✗ when the leading Mac said no outcome within the bound (an older leader publishes none): what is known.
+    static func noOutcomeReason(_ leader: String?, seconds: Double) -> String {
+        "\(ClusterOnboardingMacName.sentence(ClusterOnboardingMacName.other(named: leader))) didn't say how its start ended within "
+            + "\(minutes(seconds)) minutes"
+    }
+
+    /// Under that ✗: where the outcome is.
+    public static let noOutcomeLine = "Its screen shows how the start ended and what to do next."
 
     /// After ✓: what happens after a restart, and whether this window may close.
     static func followServedEnd(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {

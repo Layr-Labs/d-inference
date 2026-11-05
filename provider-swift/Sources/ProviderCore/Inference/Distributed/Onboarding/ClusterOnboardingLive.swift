@@ -2313,7 +2313,11 @@ final class OnboardingLive: @unchecked Sendable {
             step.version = step.version ?? ProviderCore.version
             return .init(step: step, pid: pid, started: started, at: Date().timeIntervalSince1970)
         }
-        try? store.updateRecord { $0.onboardingStep = mark }
+        try? store.updateRecord { record in
+            record.onboardingStep = mark
+            // A screen that moved on (a new start, another model) ends an earlier start's ✗ as the outcome to follow.
+            if step != nil, record.startProgress?.progress.phase == .failed { record.startProgress = nil }
+        }
     }
 
     /// The setup step the status publishes, while it counts.

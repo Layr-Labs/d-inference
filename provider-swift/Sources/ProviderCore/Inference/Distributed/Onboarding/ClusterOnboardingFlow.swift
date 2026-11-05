@@ -1302,11 +1302,11 @@ public struct ClusterOnboardingOperations: Sendable {
     /// The two Macs' versions when they differ (this Mac's; the other Mac's status), read before the parts start, during
     /// the wait and before a Retry: nil when one version or unknown. Not in `init`: only the live operations set it.
     public var versionSplit: @Sendable () -> ClusterOnboardingVersionSplit? = { nil }
-    /// Stops single-Mac serving on each Mac that runs it (`darkbloom stop --solo` there), asked only after the person
-    /// chose it; its lines say what was stopped. Not in `init`: only the live operations set it.
     /// Marks (true) or clears the leading Mac's start as stopped at the single-Mac block (`ClusterSetupRecord.soloBlockedAt`).
     /// Not in `init`: only the live operations set it.
     public var markSoloBlocked: @Sendable (Bool) -> Void = { _ in }
+    /// Stops single-Mac serving on each Mac that runs it (`darkbloom stop --solo` there), asked only after the person
+    /// chose it; its lines say what was stopped. Not in `init`: only the live operations set it.
     public var stopSoloServing: @Sendable () -> Result<[String], ClusterOnboardingFailure> = {
         .failure(.init("This build cannot stop single-Mac serving from here: run `darkbloom stop --solo` on each Mac named."))
     }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Emit compatible cache keys for provider and nested SDK CI.
 
-Run `keys --lane provider|sdk|cluster` after Metal toolchain setup.
+Run `keys --lane provider|cluster` after Metal toolchain setup.
 Redirect scalar stdout to GITHUB_OUTPUT. Swift restore prefixes retain all
 compatibility boundaries;
 the shared metallib key is exact-only. Cache hits never authorize skipping tests
@@ -19,9 +19,12 @@ from provider_release_cache import identity, tracked
 
 
 CACHE_VERSION = "v1"
+# Swift build keys have three nested tiers since v3 (see keys()).
+SWIFT_CACHE_VERSION = "v3"
+# The MLX gitlinks: the provider's most expensive dependencies to compile.
+MLX_GITLINKS = ("libs/mlx", "libs/mlx-swift", "libs/mlx-swift-lm")
 LANE_PURPOSES = {
     "provider": "provider-debug-tests",
-    "sdk": "sdk-nested-debug-tests",
     "cluster": "cluster-runtime-debug-tests",
 }
 MLX_SOURCE = "libs/mlx-swift/Source/Cmlx/mlx"
@@ -29,7 +32,7 @@ SWIFT_WRAPPER = Path(__file__).resolve().with_name("provider-release-swift.sh")
 METALLIB_RECIPE_PATHS = ("scripts/fetch-metallib.sh", "scripts/stage-test-metallib.sh",
                          "scripts/install-release-cmake.sh")
 RECIPE_PATHS = (
-    ".github/workflows/ci.yml",
+    ".github/workflows/provider-tests.yml",
     ".github/actions/provider-ci-build/action.yml",
     "scripts/provider-ci-cache.py",
     "scripts/test-provider-ci-cache.py",
@@ -38,6 +41,8 @@ RECIPE_PATHS = (
     "scripts/prepare-provider-release-toolchain.sh",
     "scripts/provider-release-swift.sh",
     "scripts/run-provider-tests.sh",
+    "scripts/swift_test_lock_retry.py",
+    "scripts/provider-ci-cold-retry.sh",
     "scripts/run-provider-test-watchdog.py",
     "scripts/run-nested-suite.sh",
     "scripts/run-paged-kernel-tests.sh",
@@ -124,14 +129,30 @@ def keys(root: Path, lane: str, metadata: dict | None = None) -> dict[str, str]:
                         for path in (root / "scripts/provider_release_cache").glob("*.py"))
     recipe = {path: tracked.file_hash(root, path) if (root / path).exists() else "absent"
               for path in sorted(recipe_paths)}
-    compatibility_hash = identity.digest({
-        "version": CACHE_VERSION, "purpose": LANE_PURPOSES[lane],
+    # Three nested tiers; a restore key matches by prefix, so each tier's
+    # prefix starts the next one's. The MLX prefix binds the toolchain, the
+    # checkout path and the MLX gitlinks only. The loose prefix adds the
+    # dependency manifests and pins (Package.swift, Package.resolved, every
+    # gitlink). The strict prefix adds the CI recipe (workflows, scripts), which
+    # changes often and rarely changes an object. A build restored from a
+    # looser tier rebuilds what changed (restore-mtimes; MLX's objects stay
+    # valid when its pins and the toolchain match) and, if it fails, builds once
+    # from nothing (scripts/provider-ci-cold-retry.sh).
+    mlx_pins = {path: commit for path, commit in sources.gitlinks.items()
+                if any(path == name or path.startswith(name + "/") for name in MLX_GITLINKS)}
+    mlx_hash = identity.digest({
+        "version": SWIFT_CACHE_VERSION, "purpose": LANE_PURPOSES[lane],
         "checkout": checkout_path, "resolved_checkout": str(root),
-        "toolchain": metadata, "dependencies": dependencies, "recipe": recipe,
+        "toolchain": metadata, "mlx": mlx_pins,
     })
+    dependency_hash = identity.digest({"version": SWIFT_CACHE_VERSION, "dependencies": dependencies})
+    recipe_hash = identity.digest({"version": SWIFT_CACHE_VERSION, "recipe": recipe})
     commit = tracked.git(root, "rev-parse", "HEAD").decode("ascii").strip()
-    prefix = f"provider-ci-swift-{CACHE_VERSION}-{LANE_PURPOSES[lane]}-{compatibility_hash}-"
-    result = {"swift-prefix": prefix, "swift-key": prefix + commit}
+    mlx_prefix = f"provider-ci-swift-{SWIFT_CACHE_VERSION}-{LANE_PURPOSES[lane]}-{mlx_hash}-"
+    loose_prefix = f"{mlx_prefix}{dependency_hash[:32]}-"
+    prefix = f"{loose_prefix}{recipe_hash[:32]}-"
+    result = {"swift-mlx-prefix": mlx_prefix, "swift-loose-prefix": loose_prefix,
+              "swift-prefix": prefix, "swift-key": prefix + commit}
 
     mlx_commit = sources.gitlinks.get(MLX_SOURCE)
     if mlx_commit is None:

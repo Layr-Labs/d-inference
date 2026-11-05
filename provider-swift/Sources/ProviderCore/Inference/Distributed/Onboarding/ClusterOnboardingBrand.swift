@@ -84,7 +84,7 @@ public enum ClusterOnboardingBrand {
     static func textColumns(_ text: String) -> Int { text.reduce(0) { $0 + columns($1) } }
 
     /// The start of `text` that fits `room` columns.
-    private static func cut(_ text: String, _ room: Int) -> String {
+    static func cut(_ text: String, _ room: Int) -> String {
         var fitted = "", used = 0
         for character in text {
             let width = columns(character)

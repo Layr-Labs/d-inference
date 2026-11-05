@@ -3947,7 +3947,11 @@ off the serving lock while the other Mac answers, and `Start.pairStart` and
 `Restart.pairRestart` act on the pair then, except for `start --solo` and the
 terminal's choice. A 0.10.8 service publishes none; its control mode then
 decides (`waiting`, `alone`, `cannotServe` and `idle` mean the other Mac isn't
-taking part). A reboot of a few minutes stays `running`. `darkbloom start` on a
+taking part). A reboot of a few minutes stays `running`. The windows run on
+`ClusterControlClock.awakeSeconds` (`CLOCK_UPTIME_RAW`, paused in system sleep):
+`ClusterPairWatch.tick(raw:awake:...)` places each new answer from the lease clock
+on the awake clock no earlier than the previous tick, so waking from a long sleep
+never gives up a part by itself. `darkbloom start` on a
 Mac whose pair doesn't run clears the intent and waits for the part to end
 (`ClusterService.releaseForSingleMac`) before single-Mac serving starts
 ([going back to serving on one Mac](../provider/two-mac-cluster.md#going-back-to-serving-on-one-mac)).

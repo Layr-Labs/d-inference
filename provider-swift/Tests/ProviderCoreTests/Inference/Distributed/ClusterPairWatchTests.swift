@@ -22,6 +22,40 @@ struct ClusterPairWatchTests {
                 + "to serve this Mac alone, or `darkbloom cluster` to start the pair again.")
     }
 
+    @Test("time asleep doesn't count: waking after a long sleep keeps the part, and gives up 15 awake minutes later")
+    func sleepDoesNotCount() {
+        var watch = ClusterPairWatch()
+        // `raw` counts sleep (the lease clock); `awake` pauses during system sleep.
+        var raw = 50_000.0, awake = 2_000.0
+        let answered = raw
+        #expect(watch.tick(raw: raw, awake: awake, intent: true, otherAnsweredAt: answered, serving: true) == .running)
+        raw += 60; awake += 60
+        #expect(watch.tick(raw: raw, awake: awake, intent: true, otherAnsweredAt: answered, serving: true) == .running)
+        // Two hours asleep: the first tick on waking, before the other Mac's next answer, keeps the part.
+        raw += 2 * 3_600; awake += 1
+        #expect(watch.tick(raw: raw, awake: awake, intent: true, otherAnsweredAt: answered, serving: false) == .running)
+        // The other Mac answers again: running.
+        raw += 5; awake += 5
+        #expect(watch.tick(raw: raw, awake: awake, intent: true, otherAnsweredAt: raw, serving: true) == .running)
+        // It stays gone: given up 15 awake minutes after its last answer, not before.
+        let last = raw
+        raw += 14 * minute; awake += 14 * minute
+        #expect(watch.tick(raw: raw, awake: awake, intent: true, otherAnsweredAt: last, serving: false) == .running)
+        raw += minute; awake += minute
+        #expect(watch.tick(raw: raw, awake: awake, intent: true, otherAnsweredAt: last, serving: false).givesUpPart)
+    }
+
+    @Test("a start's 15-minute window doesn't count sleep either")
+    func startWindowSkipsSleep() {
+        var watch = ClusterPairWatch()
+        var raw = 1_000.0, awake = 1_000.0
+        #expect(watch.tick(raw: raw, awake: awake, intent: true, otherAnsweredAt: nil, serving: false) == .running)
+        raw += 3 * 3_600 + 10 * minute; awake += 10 * minute
+        #expect(watch.tick(raw: raw, awake: awake, intent: true, otherAnsweredAt: nil, serving: false) == .running)
+        raw += 5 * minute; awake += 5 * minute
+        #expect(watch.tick(raw: raw, awake: awake, intent: true, otherAnsweredAt: nil, serving: false).givesUpPart)
+    }
+
     @Test("a pair whose other Mac reboots for a few minutes keeps running, and forms again")
     func rebootDoesNotBreakThePair() {
         var watch = ClusterPairWatch()

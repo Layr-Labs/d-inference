@@ -1597,7 +1597,8 @@ public final class ClusterService: @unchecked Sendable {
             if case .serving = Self.pairReport(in: serviceFiles.rankLog, from: offset) {} else { servingNow = false }
         }
         let (verdict, previous) = lock.withLock { () -> (ClusterPairWatch.Verdict, ClusterPairWatch.Verdict) in
-            let verdict = pairWatch.tick(now: now, intent: intent, otherAnsweredAt: answered, serving: servingNow)
+            let verdict = pairWatch.tick(raw: now, awake: ClusterControlClock.awakeSeconds(), intent: intent,
+                                         otherAnsweredAt: answered, serving: servingNow)
             defer { pairVerdict = verdict }
             return (verdict, pairVerdict)
         }

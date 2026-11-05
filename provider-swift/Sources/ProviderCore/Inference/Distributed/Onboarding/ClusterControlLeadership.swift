@@ -538,6 +538,8 @@ public enum ClusterControlSoloAdmission {
 /// clock). Uptime stops while a Mac sleeps, so a woken leader would count a member that left during the sleep as present.
 public enum ClusterControlClock {
     public static func seconds() -> Double { Double(clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)) / 1e9 }
+    /// Like `seconds`, but paused while the system sleeps (`ClusterPairWatch`'s windows).
+    public static func awakeSeconds() -> Double { Double(clock_gettime_nsec_np(CLOCK_UPTIME_RAW)) / 1e9 }
 }
 
 /// Owner decision 6's absence grace before serving alone: universal (no model, chip or member input). Only a developer
@@ -630,6 +632,25 @@ public struct ClusterPairWatch: Sendable, Equatable {
     public let giveUpSeconds: Double
 
     public init(giveUpSeconds: Double = ClusterPairWatch.giveUpSeconds) { self.giveUpSeconds = giveUpSeconds }
+
+    /// The last answer seen (on the lease clock) and when it was, on the awake clock.
+    private var answeredRaw: Double?
+    private var answeredAwake: Double?
+    private var lastAwake: Double?
+
+    /// One supervision tick on two clocks: `raw`, the lease clock (`ClusterControlClock.seconds`, which counts system
+    /// sleep, as `otherAnsweredAt` does) and `awake` (`ClusterControlClock.awakeSeconds`, which doesn't). The windows
+    /// run on the awake clock, so a Mac waking from a long sleep keeps its part until the other Mac has had 15 awake
+    /// minutes to answer. An answer is placed on the awake clock when first seen, never earlier than the last tick.
+    public mutating func tick(raw: Double, awake: Double, intent: Bool, otherAnsweredAt: Double?, serving: Bool) -> Verdict {
+        if let answered = otherAnsweredAt, answered != answeredRaw {
+            let ago = max(0, raw - answered)
+            answeredAwake = awake - min(ago, lastAwake.map { max(0, awake - $0) } ?? ago)
+            answeredRaw = answered
+        }
+        lastAwake = awake
+        return tick(now: awake, intent: intent, otherAnsweredAt: answeredAwake, serving: serving)
+    }
 
     /// One supervision tick. `otherAnsweredAt`: `ClusterControlNode.otherAnsweredAt` (nil: not in this process's
     /// lifetime). `serving`: this Mac's part runs and its pair serves now.

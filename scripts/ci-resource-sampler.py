@@ -4,9 +4,9 @@
 `start` runs the sampler in the background and gives later steps the samples
 directory as CI_RESOURCE_SAMPLES. Every INTERVAL seconds it writes one CSV row:
 
-- memory by class, from `vm_stat`: app (anonymous pages less purgeable ones),
-  wired (this holds the GPU memory Metal keeps resident), file cache
-  (file-backed and purgeable pages, which the kernel can reclaim), compressed,
+- memory by class, from `vm_stat`: app (anonymous pages less purgeable ones;
+  Metal buffers count here), wired, file cache (file-backed and purgeable
+  pages, which the kernel can reclaim), compressed,
   and used = app + wired + compressed, as Activity Monitor counts it; swap in
   use (`sysctl vm.swapusage`) and the kernel's memory pressure level
   (`kern.memorystatus_vm_pressure_level`: 1 normal, 2 warning, 4 critical);
@@ -406,8 +406,8 @@ def summary(directory):
         f" | {facts['pressure']} | {facts['busy_vcpus']['mean']:.2f} | {facts['busy_vcpus']['p95']:.2f} | "
         f"{facts['busy_vcpus']['max']:.2f} |",
         "",
-        "Each class peaks at its own time. Used = app + wired + compressed (`vm_stat`); wired holds resident "
-        "GPU memory; the file cache is reclaimable.",
+        "Each class peaks at its own time. Used = app + wired + compressed (`vm_stat`); app holds Metal "
+        "buffers; the file cache is reclaimable.",
     ]
     if facts["peaks"]["used_bytes"]:
         moment = facts["peaks"]["used_bytes"]["time"]

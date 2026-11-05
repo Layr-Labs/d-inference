@@ -386,10 +386,9 @@ size and the upload or download time.
 Every macOS job runs `scripts/ci-resource-sampler.py` in the background from
 its checkout on. Every 5 s it records:
 
-- Memory by class, from `vm_stat`: app (anonymous less purgeable pages), wired
-  (this holds resident GPU memory), file cache (reclaimable), compressed, and
-  used = app + wired + compressed. Also swap in use and the memory pressure
-  level.
+- Memory by class, from `vm_stat`: app (anonymous less purgeable pages; Metal
+  buffers count here), wired, file cache (reclaimable), compressed, and used =
+  app + wired + compressed. Also swap in use and the memory pressure level.
 - Busy vCPUs, from the host's CPU ticks.
 - The physical footprint of each process of the runner user, from
   `proc_pid_rusage`. This is the counter that `footprint` and Activity Monitor

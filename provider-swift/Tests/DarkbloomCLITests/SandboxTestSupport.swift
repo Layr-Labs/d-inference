@@ -56,6 +56,16 @@ enum SandboxFixtures {
 
     static let minimal = #"{"schema":1,"state":"ready"}"#
 
+    /// `ready` with these slot counts (all free unless jobs run) and running jobs.
+    static func ready(linux: Int, macOS: Int, jobsRunning: Int = 0) -> String {
+        ready.replacingOccurrences(
+            of: #""jobs_running":0"#, with: #""jobs_running":\#(jobsRunning)"#
+        ).replacingOccurrences(
+            of: #""slots":{"linux":{"free":1,"total":1},"macos":{"free":1,"total":1}}"#,
+            with: #""slots":{"linux":{"free":\#(max(0, linux - jobsRunning)),"total":\#(linux)},"#
+                + #""macos":{"free":\#(macOS),"total":\#(macOS)}}"#)
+    }
+
     static func status(_ json: String) -> SandboxAddonStatus {
         guard let status = SandboxAddonStatus(json: json) else { fatalError("fixture does not decode: \(json)") }
         return status
@@ -174,16 +184,21 @@ enum FakeSandboxInstaller {
     /// `plan` lines make it an installer with plan mode (add-on 1.1.1): with
     /// `--plan` it records its arguments, prints them, installs nothing and
     /// exits with `planExitStatus`. Without, the script never names `--plan`.
+    /// `planStandardError` goes to stderr in plan mode. `workDisks` makes it
+    /// name `--disk`, as a release with work disks does.
     static func script(events: [String] = events, plan: [String]? = nil, planExitStatus: Int32 = 0,
+                       planStandardError: String? = nil,
                        addonStatus: String = SandboxFixtures.downloading, standardError: String? = nil,
-                       exitStatus: Int32 = 0, jsonProgress: Bool = true) -> String {
-        let header = jsonProgress ? "# Understands --json-progress." : "# An installer from before progress events."
+                       exitStatus: Int32 = 0, jsonProgress: Bool = true, workDisks: Bool = false) -> String {
+        let header = (jsonProgress ? "# Understands --json-progress." : "# An installer from before progress events.")
+            + (workDisks ? " Takes \(SandboxInstaller.diskOption) (work disks)." : "")
         let plain = jsonProgress ? "" : "echo '==> Darkbloom Sandbox 1.0.0 downloaded and checked'"
         let planMode = plan.map { lines in
             """
             if [ "${1:-}" = \(SandboxInstaller.planOption) ]; then
             printf '%s\\n' "$@" > "$root/plan-arguments"
             \(lines.map { "printf '%s\\n' \(quoted($0))" }.joined(separator: "\n"))
+            \(planStandardError.map { "echo \(quoted($0)) >&2" } ?? "")
             exit \(planExitStatus)
             fi
             """

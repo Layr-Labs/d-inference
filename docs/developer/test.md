@@ -135,11 +135,18 @@ suite moves from the parallel class to the serial class when it fails or flakes
 in parallel; when in doubt, a suite stays serial.
 
 The jobs that use the `provider-ci-build` action and Cluster Metadata Checks
-restore their build cache by the exact key first, then by the key prefix. A
-push to `dev`, `main` or `master` saves its build. A pull request saves its build only when it restored nothing.
-Its later pushes then restore that entry or the base branch's entry and add no
-new entry, so they do not evict the base branch's entries. CI has no separate
-push-only Swift cache job.
+restore their build cache by the exact key first, then by the key prefix. Only
+a push to `dev` or `master` saves a build; a pull request restores its base
+branch's entry and saves nothing ([CI caching](build.md#ci-caching)). CI has
+no separate push-only Swift cache job.
+
+The last provider shard runs the MiMo audio gate (`testNativeAudioRelease`),
+whose fixture needs the 1.87 GB pinned audio codec, only when the gate's
+inputs change (`MIMO_AUDIO` in `scripts/ci-component-paths.py`: the MiMo,
+audio and media provider code, the MiMo tests, the MLX pins, the audio and
+provider fixture scripts and the gate's recipe) and on every `master` push, which runs every
+component. A pull request outside those inputs neither downloads the codec
+nor runs the gate.
 
 The SDK has independent test products under `libs/mlx-swift-lm`. CI validates
 native memory ownership, cancellation, media decoding, paged KV and resource

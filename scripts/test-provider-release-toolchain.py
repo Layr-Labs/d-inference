@@ -2,6 +2,7 @@
 """Exercise toolchain selection/argument propagation without installing software."""
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import tempfile
@@ -60,6 +61,60 @@ class ReleaseToolchainTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.root / "env").exists())
 
+
+
+class ReleaseCMakeTests(unittest.TestCase):
+    """The image's tool-cache CMake is used when complete and exact; otherwise download."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="release cmake ")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        stubs = self.root / "bin"
+        stubs.mkdir()
+        # An Apple Silicon Mac whose network refuses, recording each download.
+        (stubs / "uname").write_text('#!/bin/sh\ncase "$1" in -s) echo Darwin ;; -m) echo arm64 ;; esac\n')
+        (stubs / "curl").write_text(f'#!/bin/sh\necho "$@" >> "{self.root}/curl.log"\nexit 7\n')
+        for stub in stubs.iterdir():
+            stub.chmod(0o755)
+        self.cache = self.root / "toolcache"
+        self.env = {**os.environ, "PATH": f"{stubs}:{os.environ['PATH']}", "RUNNER_TOOL_CACHE": str(self.cache),
+                    "RUNNER_TEMP": str(self.root), "GITHUB_PATH": str(self.root / "path")}
+
+    def provision(self, version="3.31.12", complete=True):
+        cmake = self.cache / "cmake/3.31.12/universal/CMake.app/Contents/bin/cmake"
+        cmake.parent.mkdir(parents=True)
+        cmake.write_text(f"#!/bin/sh\necho 'cmake version {version}'\n")
+        cmake.chmod(0o755)
+        if complete:
+            (self.cache / "cmake/3.31.12/universal.complete").touch()
+        return cmake.parent
+
+    def install(self):
+        return subprocess.run([str(ROOT / "scripts/install-release-cmake.sh")], env=self.env,
+                              text=True, capture_output=True)
+
+    def test_uses_the_complete_exact_tool_cache_copy_without_downloading(self):
+        cached = self.provision()
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / "path").read_text(), f"{cached}\n")
+        self.assertFalse((self.root / "curl.log").exists())
+
+    def test_downloads_when_the_tool_cache_copy_is_absent_incomplete_or_another_version(self):
+        for case in ("absent", "incomplete", "another version"):
+            with self.subTest(case=case):
+                shutil.rmtree(self.cache, ignore_errors=True)
+                for leftover in ("curl.log", "path"):
+                    (self.root / leftover).unlink(missing_ok=True)
+                if case != "absent":
+                    self.provision(version="3.30.0" if case == "another version" else "3.31.12",
+                                   complete=case != "incomplete")
+                result = self.install()
+                # The refused download fails the step; nothing reaches PATH.
+                self.assertEqual(result.returncode, 7, result.stderr)
+                self.assertIn("/v3.31.12/cmake-3.31.12-macos-universal.tar.gz", (self.root / "curl.log").read_text())
+                self.assertFalse((self.root / "path").exists())
 
 if __name__ == "__main__":
     unittest.main()

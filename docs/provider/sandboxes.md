@@ -1,6 +1,6 @@
 # Host Darkbloom Sandbox CI jobs
 
-> Last updated: 2026-11-02
+> Last updated: 2026-11-03
 
 How to let this Mac run Darkbloom Sandbox jobs, approved GitHub Actions jobs in
 Linux and macOS virtual machines, beside the inference provider: set it up,
@@ -44,6 +44,9 @@ into your Darkbloom balance.
    rules.
    To choose the number of jobs, add `--linux-slots <n>` and `--macos-slots <n>`;
    `--macos-slots 1` keeps one of macOS's two macOS VMs for your own use.
+   To put the VM images and jobs on an external drive, add `--disk <volume>`,
+   or pick the drive when setup asks; see
+   [Use an external drive](#use-an-external-drive).
 
 2. Approve this Mac in your browser. The installer opens the approval page with
    the code filled in, and setup prints the link and code as well. Sign in with
@@ -55,6 +58,45 @@ into your Darkbloom balance.
    its VM images in the background, the sizes setup showed under Disk. The Mac
    takes jobs once an image is installed. To keep setup open until then, add
    `--wait-ready` to step 1.
+
+## Use an external drive
+
+If the internal disk is what limits this Mac, or to spare it the wear, give the
+jobs another drive. The VM images and the jobs then use that drive. The add-on,
+its settings and its logs stay in `~/DarkbloomSandbox`. This needs add-on 1.2.0
+or later; with an earlier release setup says so and changes nothing.
+
+1. Use a Thunderbolt or USB4 NVMe SSD that stays connected and powered. A job
+   on a drive that goes away is stopped and is not paid.
+2. Format it as APFS in Disk Utility. Erasing deletes everything on the drive.
+   Setup never formats a drive.
+3. Turn on ownership, which macOS leaves off for external drives. Setup offers
+   to do this for you (step 4). To do it yourself:
+
+   ```bash
+   sudo diskutil enableOwnership /Volumes/FastSSD
+   ```
+
+4. Run `darkbloom sandbox setup`. On a first setup it lists the drives with
+   room for jobs and asks where the VM images and jobs go. Press Enter to keep
+   the internal disk, or type the drive's number. You can also name the drive.
+   Repeat `--disk` for more drives, and add `--disk ~` to keep using the
+   internal disk too:
+
+   ```bash
+   darkbloom sandbox setup --disk /Volumes/FastSSD
+   ```
+
+Setup checks each drive before it installs anything. When ownership is off,
+setup prints the command and asks whether to run it. If you agree, sudo asks
+for your password, and setup checks the drive again. With `--yes`, or without
+a terminal, setup prints the command and stops. When a drive is not APFS, setup
+stops and tells you to erase it as APFS in Disk Utility; setup never formats a
+drive. The plan then shows each drive, its free space and the jobs it gets.
+Each drive keeps its own free space: a tenth of the drive, 50 to 100 GiB.
+Running setup again keeps the drives you chose; give `--disk` again to change
+them. `darkbloom sandbox status` shows each drive, its free space and slots,
+and what to do when one is not connected.
 
 ## Verify
 
@@ -76,17 +118,36 @@ Settled jobs are in the console under **Billing → Earnings**.
 | Take jobs again | `darkbloom sandbox resume` |
 | Follow the add-on's log | `darkbloom sandbox logs -f` |
 | Change the jobs at a time | `darkbloom sandbox setup --linux-slots <n> --macos-slots <n>` |
+| Put the images and jobs on an external drive | `darkbloom sandbox setup --disk /Volumes/<name>` |
 | Remove the add-on and its files | `darkbloom sandbox uninstall` |
 
 Uninstalling ends running jobs, which are not paid: pause first and uninstall
 once they finish. Running `setup` again at any time is safe: it reports the
 state, continues an unfinished setup or repairs the add-on.
 
+On a Mac that is set up, `setup` also asks the installer for the add-on's plan
+again. When the plan fits other job counts, for example after you freed disk,
+setup shows them beside the installed ones and asks `[Y/n]`. Yes reinstalls
+with the plan's counts and restarts the add-on. The installer does not wait
+for jobs: if one is running, it refuses and changes nothing, and setup says to
+run it again when the job finishes. With `--yes` or without a terminal, setup
+applies the plan only when it adds jobs and removes none; otherwise it prints
+the command that applies it. When the counts match, setup reports as before.
+While jobs run, setup skips the check. The
+[CLI reference](./cli-reference.md#setup) has the details.
+
 ## Troubleshooting
 
 - **`Free up N GiB of disk for one Linux job`.** No job fits in the free disk.
   The disk rules are under [Prerequisites](#prerequisites). Free the space it
   names, then run setup again.
+- **`no macOS jobs (limited by free disk space)`, while Finder shows more
+  free.** The plan counts what `df -h ~` shows as Avail. Finder also counts
+  purgeable space, which macOS frees only when it needs to. Restart, or remove
+  Time Machine local snapshots (`tmutil listlocalsnapshots /` lists them), to
+  free it now. Setup's line `A macOS job needs about N GB more` says how much
+  more free space a macOS job needs beside the planned Linux jobs. Then run
+  setup again: it offers the new plan.
 - **`On the waitlist`.** Darkbloom has not approved your account yet. With
   add-on 1.1.2 and later you can close the window: the Mac keeps waiting, also
   across restarts, and enrolls by itself once your account is approved;
@@ -94,13 +155,27 @@ state, continues an unfinished setup or repairs the add-on.
   Ctrl-C if you like: the Mac enrolls once it is approved, and `setup` follows
   the waiting enrollment when you run it again. A restart ends that wait; run
   setup again after one.
+- **`[FAIL] Work disk: … ignores file ownership`.** Ownership is off on the
+  drive. Answer yes when setup offers to turn it on, or run the `↳ fix:`
+  command (`sudo diskutil enableOwnership …`) yourself, then run setup again.
+- **`Work disk: … offline` in `darkbloom sandbox status`.** The drive is not
+  connected, so its slots take no jobs. Connect it again; its slots take jobs
+  once its images are checked.
+- **`[FAIL] Work disk: … is not APFS`** or **`is not a mounted drive`.** Format
+  the drive as APFS in Disk Utility, or connect it, then run setup again.
+- **`work disks need add-on 1.2.0 or later`.** The add-on release on offer
+  cannot use other drives yet. Run setup without `--disk`.
 - **`[WARN] Network`, `Power` or `Sleep`.** These do not block setup, but a
   sleeping, unplugged or dropped Mac loses its running jobs, and lost jobs are
   not paid. Follow the `↳ fix:` line.
 - **`This Mac was not enrolled`** (exit status 3). The code was denied or
   expired, or the waitlist request ended. Run setup again for a new code.
-- **`Jobs are running on this Mac`** (exit status 4). An add-on update or a
-  slot change waits for running jobs; run setup again once they finish.
+- **`A job is running on this Mac`** (exit status 4). The installer refuses
+  to replace the add-on or change its slots while a job runs, and changes
+  nothing; it does not wait. Run setup again when the job finishes;
+  `darkbloom sandbox pause` keeps new ones from starting. Setup never passes
+  the installer's `--force`, which would stop running jobs, and stopped jobs
+  aren't paid.
 - **`This version of the add-on …`.** The add-on predates the command; it
   updates itself, or `darkbloom sandbox setup` updates it now.
 - **`Sandboxes: installed; the add-on did not answer within 2s`.** `darkbloom

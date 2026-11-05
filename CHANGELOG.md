@@ -8,9 +8,729 @@ or console deployment, feature activation, model promotion or hardware
 qualification. Sections marked historical retain the original candidate's
 qualification, opt-in and deployment limits rather than claiming activation.
 
-## v0.10.6 — candidate (unpublished)
+## v0.10.8 — candidate (unpublished)
 
-Prepared on 2026-10-31; tagging and publication are separate steps.
+Prepared on 2026-11-04; tagging and publication are separate steps.
+
+### Upgrade and rollout notes
+
+- Both Macs of a pair must run 0.10.8. A pair whose Macs run different builds refuses to pair: it fails closed ("the two Macs run different Darkbloom builds; install the same Darkbloom on both") until both Macs run the same release. The pair's own update installs a release on both Macs or on neither.
+- A pair on 0.10.7 updates itself; nothing needs to be run. With `auto_update` on (the default) and `DARKBLOOM_NO_UPDATE_CHECK` unset on both Macs, at the pair's update slot (every 30 minutes) both Macs download and verify 0.10.8, the pair finishes the requests it accepted (at most 120 seconds, never cancelling one), and both Macs install it, restart their cluster services and set the pair up again. To update at once, run `darkbloom update` on each Mac; no log-out is needed. Two cases wait, as `docs/provider/two-mac-cluster.md` ("Updating Darkbloom on the pair") describes: a pair serving on the leader's local API (`darkbloom cluster local`) or a Mac serving alone does not update while it serves, and a pair whose cluster services were started by 0.10.6 (updated by hand but never logged out) must log out and back in on both Macs, or restart them, once.
+- A pair still on 0.10.6 stops serving through Darkbloom once 0.10.8 registers, if 0.10.8's cluster runtime facts list more than 8 models (0.10.7's listed 12). The production coordinator keeps at most 64 pair approvals, newest release first and each release whole: 0.10.6 and 0.10.7 hold 24 each, and 0.10.8 adds 2 per model, so 0.10.6's are left out. Such a pair updates by hand once, as 0.10.7's notes say: `darkbloom update` on both Macs, then log out and back in on both. Single Macs do not use pair approvals.
+- `darkbloom update --rollback` puts back the release a Mac ran before its last update (0.10.7, after this update) and quarantines the one it leaves. On a Mac that serves in a pair it refuses and changes nothing; stop that Mac's cluster service with `darkbloom cluster stop --service`, run `darkbloom update --rollback`, then start it again with `darkbloom cluster`, and the other Mac follows to the same release. From 0.10.8 on, plain `darkbloom cluster stop` stops serving on both Macs and leaves their cluster services on, so where the published v0.10.7 entries say `darkbloom cluster stop` for a rollback or a restart of the cluster service, use `darkbloom cluster stop --service`.
+- New commands. `darkbloom uninstall` takes Darkbloom off a Mac: **Remove everything**, or **Keep models** for a later reinstall (`--everything` or `--keep-models` with `--yes`, and `--dry-run`, for scripts). On a paired Mac, `darkbloom start`, `stop`, `restart` and `status` now act on the pair, from either Mac, and `--solo` acts on single-Mac serving on this Mac only. `darkbloom stop` stops serving on both Macs; they stay stopped after a restart until `darkbloom start` on either Mac. `darkbloom cluster status` answers in plain words, with `--json` and an exit status for scripts and agents (`--details` is the earlier report).
+- Macs stuck in App Attest's `is_supported_false` after a self-update serve again (#1765). When Apple first answers unsupported, 0.10.8 refreshes macOS's record of its own app (LaunchServices) and asks Apple again, once each time the provider starts or a scheduled availability window opens. So the update to 0.10.8 clears it too, although 0.10.7's updater installs it, and 0.10.8's updater refreshes the record after every later update. 0.10.7's automatic restart for this state had cleared 1 of 117 Macs.
+- Known limitation, unchanged from 0.10.7: a pair serving in tensor parallel prefills prompts one at a time, oldest first. A short request that arrives while a long prompt is being prefilled waits for it. If that wait passes the short request's first-token allowance (10 seconds plus a share per prompt token, or the coordinator's first-content budget), the request ends with a first-token timeout, which the local API reports as `server_error` "Response generation failed". It is a timeout behind another request, and the request is safe to retry. It shows under mixed load with long prompts: in a 20-minute test on one pair, with prompts of about 56,000 tokens among short ones and up to 32 requests at once, 102 of 178 requests timed out this way. The pair kept serving, and a client that disconnects during a long prompt now frees its place within seconds once the pair receives the cancel. Through Darkbloom, a cancel can take 20 to 30 seconds to reach a pair that is busy with other long prompts, and under sustained load with long prompts the coordinator can end a pair's serving and set it up again, failing the requests in flight; they are safe to retry. Both are unchanged from 0.10.7.
+- Known limitation, unchanged from 0.10.7: on a pair serving locally only, **Switch to serving through Darkbloom** doesn't offer the pair to Darkbloom until the pair starts again, although both screens show ✓ and `darkbloom status` says it is earning through Darkbloom. Stop the pair and start it again with **Serve through Darkbloom** (`darkbloom stop`, then `darkbloom cluster`).
+- Known limitation: a GLM-5.3-Flash pair in pipeline serves one request at a time, and a request cancelled while its prompt is being read keeps that one place until the prompt is read. Tensor parallel serves several requests at once and was about 2.6 times faster per request on two M5 Ultras, so use it for GLM pairs.
+- Known limitation: during a model or mode change on a pair, or while a pair updates itself, `darkbloom status` and `darkbloom cluster status` can read `stopped` (exit 4) or `unknown` on either Mac for a minute or two. Check again after a minute before acting on it, including before running `darkbloom start`.
+- The registration is the one 0.10.7 sent: the same fields and a `darkbloom_cluster_runtime_v2` block, carried while `PROD_CLUSTER_RUNTIME_ENABLED` is `true`. The scripts that build the registration and its cluster runtime facts, and `ClusterPublicModels`, are unchanged since v0.10.7, so the production coordinator needs nothing new. The release jobs, their permissions and their order are unchanged too; only the notes on the GitHub release page are written differently. After the tag the platform snapshots its provider contracts from the tagged commit and sets `LatestProviderVersion` to `0.10.8`.
+- MLX pins are unchanged from v0.10.7: `libs/mlx` and the nested `mlx` (`72dffa2d`), `libs/mlx-swift` (`c633d221`) and `libs/mlx-swift-lm` (`32f5c744`), so the tag build's `metallib_hash` should equal v0.10.7's `98bab9d7…614be`.
+- The 20 entries below are the pending fragments rendered verbatim, in filename order. The two CI entries (#1752, #1771) and the release page entry (#1786) change no provider artifact. #1780 and #1784 have no entry of their own: they update entries of earlier pull requests (#1780 the uninstall entry of #1772), as #1783 and #1786 also do. The 0.10.7 entries that #1774 corrected after publication (`darkbloom cluster stop` to `darkbloom cluster stop --service`) are not repeated; the rollback note above carries that change.
+
+### App Attest keeps an attestation cut off by a disconnect or a stop
+
+- When the coordinator connection ends, or the provider is stopped or restarted (`darkbloom stop`, the cluster service restarting this Mac's part, an update), while Apple is attesting a new App Attest key, the provider now waits up to 30 seconds for Apple's answer and keeps the proof. The next connection sends it instead of retiring the key, so the Mac no longer loses private serving for an hour, and a pair it leads can serve once both Macs are verified.
+- A crash or forced kill during that Apple call still retires the key under the same one-hour rule, and the hourly key budget is unchanged.
+
+### App Attest keeps working after a self-update
+
+- After a self-update, 12–15% of updating macOS 27 Macs reported App Attest as unsupported (`is_supported_false`) for minutes to hours. Restarting did not help: 0.10.7's automatic restart for this state fixed 1 of 117 Macs. Macs without the Darkbloom MDM profile received no inference until it cleared. The cause: Apple's answer depends on macOS's record of the installed app (LaunchServices), and the update replaced `Darkbloom.app` without refreshing that record.
+- The updater now refreshes that record right after it installs a release.
+- When Apple first reports App Attest as unsupported, the provider now refreshes the record for its own app and asks Apple again before it answers the coordinator, once each time the provider starts or a scheduled availability window opens. This also covers the update to this release, which the previous release's updater installs.
+- When the provider already runs in the logged-in GUI session, `darkbloom doctor` no longer advises logging in through Screen Sharing and restarting for `is_supported_false`. It explains that this usually follows a self-update and prints the `lsregister -f` command that refreshes the record by hand.
+
+### CI caches .git and SwiftPM repositories; only master and dev pushes save caches
+
+- Every `ci.yml` job that checks out restores the newest saved `.git` first, so the checkout fetches only new objects and reuses submodule clones. A restored `.git` that `git fsck` rejects is deleted first; no step continues on error. The `.git` key names the UTC day, so each branch saves `.git` at most once a day. The full-history `docs` job keeps its own entries.
+- The build lanes restore SwiftPM's repository clones, which a cold build otherwise downloads.
+- Checkouts download less. Every job but Docs Lint skips the evidence tarballs under `docs/reports/evidence` and `landing/public/media` (408 MB of tarballs and landing videos), which no other job reads. Docs Lint and Docs Impact fetch history without file contents, about 37 MiB instead of about 1 GB, and fetch old file versions only when the provenance check reads them.
+- Only pushes to `master` and `dev` save CI caches. A pull request restores its base branch's entries, then `master`'s, and saves none, so it no longer evicts them from the repository's 10 GB Actions cache.
+- Provider builds on Darkbloom Macs use the CMake 3.31.12 already in the image's tool cache instead of downloading 80 MB each time; other runners still download and verify it.
+- The MiMo audio gate, and the 1.87 GB codec its fixture needs, run only when the gate's inputs change (MiMo, audio and media provider code, the MiMo tests, the MLX pins, the fixture scripts or the gate's recipe) and on every `master` push. Pull requests never save the codec.
+- Checkouts no longer keep the job token in `.git/config`, which the `.git` cache would otherwise store.
+- Each job logs whether `actions/cache` compresses with zstd or gzip; entries saved with one are not restored by a runner using the other.
+- Limitation: on a pull request, the provider summary job restores its base branch's newest compatible build and rebuilds the commit's changes instead of reusing its shards' build.
+
+### CI's macOS jobs ask for Darkbloom Sandboxes again
+
+- The macOS jobs of `ci.yml` read the Darkbloom route again, as they did before they moved to Blacksmith only. Each provider shard (`test-provider-1` to `test-provider-3`), the shard summary (`test-provider-summary`), the SDK lane (`test-provider-sdk`), the cluster metadata checks (`test-cluster-checks`), each cluster runtime and GPU shard (`test-cluster-1` to `test-cluster-3`, `test-cluster-gpu-1`, `test-cluster-gpu-2`) and the cluster focused checks (`test-cluster-focused`) run on a Darkbloom Mac when the plane grants their lane, and on `blacksmith-12vcpu-macos-27` otherwise.
+- A lane is requested only when its job runs: the provider lanes when provider inputs change, the SDK lane on pushes and SDK-lane changes, and the cluster lanes when cluster inputs change.
+- The provider shard count, the cache-save rules and the `.git` and SwiftPM caches are unchanged.
+- Limitation: a lane the plane's approval does not name keeps Blacksmith, as do all lanes while `DARKBLOOM_ROUTING` is not `on` and for pull requests from forks.
+
+### The everyday commands show the Darkbloom mark in a terminal
+
+- In a terminal, `darkbloom start`, `stop`, `restart`, `status` and `update` open with the Darkbloom mark beside the
+  command's name, blooming once as the cluster setup's does, and show its turning one-row live line while they wait
+  for a drain, a restart or an update's download.
+- Look only: every line the commands print is unchanged and in the same order, and so are their exit statuses.
+- Scripts, logs, the background service's files, `NO_COLOR`, `TERM=dumb` and narrow windows keep exactly the plain
+  output. `DARKBLOOM_NO_ANIMATION` or `CI` keeps the mark and the live line still.
+- On a paired Mac, `darkbloom start` in a terminal opens the cluster's screen, which already draws the mark, so it
+  isn't drawn twice.
+- A command that refuses before doing any work (an unreadable pairing record, nothing to restart, flags that can't go
+  together), or finds nothing to do (`stop --solo` with no single-Mac serving), prints only its lines, with no mark.
+- The mark appears once, at the top of the command you ran: `unenroll` and `autopilot enable`, which run `stop --solo`
+  and `start` inside themselves, show none.
+
+### A pair no longer drops all its requests when one request runs out of time before it starts
+
+- Only that request now fails, with a deadline error, and the pair keeps serving.
+
+### A client that disconnects during a long prompt no longer stalls a two-Mac pair
+
+- On a pair that serves several requests at once, a request whose client disconnects before any output now stops within seconds instead of first running its whole prompt, and the pair serves the next request at once. Before, a 60,000-token prompt kept both Macs busy for about 4 minutes, and the requests that arrived meanwhile failed. A pair that serves one request at a time still runs the prompt to its end.
+
+### Two-Mac cluster: Serve locally only starts the faster local plan, and a closing link names the other Mac
+
+- Choosing **Serve locally only** at the first setup's login check now starts the local plan: the model is planned again
+  for serving locally before anything starts, so Qwen 3.8 27B in tensor parallel keeps the speculative assistant that
+  only local serving uses (measured on one pair: 15.7 tok/s without it, 36–39 tok/s with it).
+- When a part keeps ending because the link to the other Mac keeps closing, the ✗ says so and names the other Mac's side
+  ("the other Mac's worker ended or the cable dropped") instead of blaming this Mac and calling the other "running, no
+  error reported"; the ✗ title no longer begins with "starting; ".
+- The DevNet app's cluster screens and `status` name its own command (`darkbloom-dev …`), not the production
+  `darkbloom`.
+- The mode you choose for a model is now the one that loads, also for GLM-5.3-Flash. When a part keeps ending, the
+  message names the Mac whose worker actually stopped, this Mac's included (or says it can't tell), gives the other
+  Mac's own reason when it can't connect (for example, macOS blocking its local network access), and no longer shows a
+  planned model switch as a crash. The DevNet app names its own command in more messages.
+- When macOS's Local Network setting keeps a Mac's Darkbloom app from reaching the other Mac, every screen now says so
+  and what to do on that Mac (turn on Darkbloom under Privacy & Security → Local Network, through Screen Sharing on a Mac
+  with no display), instead of "the other Mac did not answer". Retry starts a stopped pair again, q leaves a start's wait
+  at once, and the joining Mac's window shows how the leading Mac's start is going.
+- The Local Network ✗ no longer ends with a line that repeated its instruction and was cut off mid-sentence, and a ✗
+  line too long for the screen is cut at a word and marked with "…". In the DevNet app, the pairing screen's firewall
+  hint and its line about a reinstall name Darkbloom Dev.
+- While a model serves, the question of how both Macs split a model says the split is decided when it loads, instead of
+  offering one that may not be the split that loads; one layer reads "1 layer". The joining Mac's last lines say whether
+  it serves again after a restart as its cluster service stands when they're shown.
+- The card after a start says "Starts by itself at login on both Macs." only when the cluster service on both Macs
+  does; otherwise it names the Mac where it doesn't, or says the other Mac doesn't say (an older Darkbloom there).
+
+### `darkbloom cluster` after setup works like `darkbloom start`
+
+- Run again on a set-up pair, `darkbloom cluster` (and `darkbloom start` on a paired Mac) opens with both Macs and the
+  cable ("This Mac (Studio A) leads · the other Mac (Apple M3 Ultra, 256 GB) follows · cable ready") and the pair's
+  status, then the pair's model list instead of a menu. The model serving now ("serving now", or "last used" when
+  stopped) is preselected: Enter keeps it, or starts it again in the mode it served in.
+- Each model shows its modes with the speed this pair served it at, or "not measured on these Macs yet". A model that
+  runs more than one way asks how both Macs split it (the fastest measured first, tensor parallel or pipeline one
+  keypress away, on mixed Macs too).
+- A line under the models switches between local only and serving through Darkbloom (both logins are checked first,
+  before the local API stops); another starts over after one question.
+- Choosing another model while one serves asks once, then says "✓ Stopped … on both Macs" and shows each Mac's load.
+  Choosing the serving model in its mode sends one test request and shows its result ("Already serving …; test
+  response in 0.61 s", or the ✗ block with its choices); a pair served only through Darkbloom says this Mac has no local
+  API to test from.
+- Every start ends like `darkbloom start`: the outcome block, then the model in its mode and split, the Macs, where it
+  serves, the log, whether it starts by itself at login on each Mac, and `darkbloom stop` / `restart` / `status`. A
+  pair that does not serve keeps its ✗ block with Retry, Change model, Serve locally only and Diagnostics.
+- The Mac that follows says that its part runs by itself, where to change the model, and that `darkbloom stop` there
+  stops both Macs; Enter closes it.
+- When the other Mac does not answer, the screen no longer says `darkbloom cluster stop` turned its service off, and
+  says to run `darkbloom start` or `darkbloom cluster` there.
+- A fresh setup opens with what it will ask and how long it takes.
+- During the first setup the Mac that joins keeps its window open: it waits for the leading Mac to choose the model,
+  follows the start, and ends with the leading Mac's own outcome instead of a test of its own: ✓ with the leading Mac's
+  response time, or the same ✗ and reason ("Choose Retry on the other Mac" after ✗). Both windows tell the same story,
+  serving locally only or through Darkbloom, also when the leading Mac's test request fails or when it checks with
+  Darkbloom before it offers the pair (until then, neither Mac's status shows ✓). q leaves and the pair keeps going.
+- Once the pair is registered, the screen says "Offered to Darkbloom as a pair for <model>; waiting for Darkbloom to
+  accept this pair…" instead of "Registered with the coordinator as a cluster member" and the approval's ID, which read
+  as if Darkbloom had already accepted the pair.
+- When the other Mac isn't found within about 25 s at "2/4 Pair", the screen says what to check (the other Mac on this
+  screen, macOS's firewall, or pairing directly with `darkbloom cluster pair --listen` and `--connect <address>`) and
+  keeps waiting.
+- A part that stops serving is reported with its own reason ("the coordinator reported this member's runtime as
+  outdated", from its log), not "CancellationError()", on screen and in the diagnostics file.
+- Switching how a pair serves no longer announces the result before it is known.
+- The serving model chosen in another mode asks as a mode change ("Switch Gemma 4 26B from tensor parallel to pipeline?
+  It stops serving on both Macs while it loads again …"), and the list names the mode it serves in when it shows another
+  ("serving now in pipeline"); a set-up pair with no model to list (or whose planning fails)
+  still offers Start over and Quit; a pair that doesn't serve is never marked "serving now"; a failed test says "Not
+  serving" once, and its Retry waits for the pair as the start's Retry does.
+- A mode is offered only where it keeps every feature of the model. Qwen 3.8 27B is therefore offered in tensor
+  parallel only: in pipeline it would lose image and video input and logprobs. Choose the mode on the leading Mac; a
+  model chosen on the Mac that follows starts in the mode Darkbloom's plan picks.
+- The status shows the leading Mac's latest test. When a later test fails (testing the serving model again, its Retry,
+  or the test after switching between local only and serving through Darkbloom), the status shows ✗ with "The last
+  test from the leading Mac failed." instead of the earlier ✓ and response time. Switching between local only and
+  serving through Darkbloom clears the test results, as a new start or a stop does.
+
+### `darkbloom cluster` counts only the disk space that is free now
+
+- Before a model is downloaded or copied between the two Macs, each Mac that receives it must have the model's size free on disk now, plus 2.1 GB to spare. Space macOS could free later is no longer counted, such as Time Machine local snapshots or files iCloud keeps elsewhere. On one Mac Studio, macOS reported 256.6 GB available with only 54.1 GB actually free, and the setup offered a 172.9 GB download that could not fit.
+- When that space would have made room, the refusal says so: "Can't start Xiaomi: MiMo-V2.6-Flash: this Mac has 54.1 GB free; the model needs 172.9 GB and 2.1 GB to spare. macOS could free up to 202.5 GB more (purgeable files such as local snapshots), but Darkbloom doesn't count on it. Free space, then run `darkbloom cluster` again."
+- The model list shows such a model last, ending "not enough free disk". The setup's Disk line and its low-disk warning use the same figure.
+
+### Large models no longer loop on "not enough memory" on 128 GB Macs
+
+- Large models such as MiMo V2.6 Flash no longer refuse to start on two 128 GB Macs. Each start used to read the whole model into macOS's file cache first. Loading a Mac's share then made macOS compress other memory, the memory check stopped counting the cache, and the start was refused, again and again. On 2026-11-01 a pair of 128 GB M4 Max Macs was refused 680 times in a row and never served.
+- Each Mac now clears its model's files from the file cache before its part starts, and each load clears the cached pages of the weight files it reads. The loads read from the SSD into free memory, so nothing has to be compressed. Only the model's own files are cleared. Their contents are never changed and no password is asked for.
+- The same cause sometimes refused Qwen3.8 27B for one start on a busy 128 GB MacBook Pro. That refusal is fixed too.
+- A load can take a few seconds longer, because its weights now come from the SSD instead of memory.
+- The worker log now records each load's memory check in one `darkbloom-load-memory-v1` line: what it needed, what was free, how much file cache there was, and how much was compressed during the load. A refusal now explains itself.
+
+### On a Mac in a two-Mac cluster, the everyday commands control the pair
+
+- `darkbloom stop`, `start`, `restart` and `status` now work on a paired Mac the way they work on one Mac, and each
+  says first that it acts on the pair. `--solo` on any of them acts on single-Mac serving on this Mac only and never
+  touches the pair.
+- `darkbloom stop` (or `darkbloom cluster stop`) stops serving on both Macs, from either Mac. They stay stopped when
+  a Mac restarts, and both Macs stay reachable, so `darkbloom start` on either Mac starts the pair again. It ends by
+  checking that the memory was freed on both Macs. If the leading Mac doesn't answer, it says so and how to stop this
+  Mac alone. The earlier `cluster stop`, which also turns this Mac's cluster service off, is
+  `darkbloom cluster stop --service`.
+- `darkbloom start` opens the same screen as `darkbloom cluster` in a terminal. In a script it starts the pair's saved
+  model, waits until it serves, and ends with a short summary, as single-Mac start does; the exit status says whether
+  it serves. Single-Mac options such as `--model` need `--solo` there; without it, `start` names them and
+  starts nothing.
+- `darkbloom restart` restarts the pair with its current model. `darkbloom status` starts with the pair: who leads,
+  the model, whether it serves now and what to do.
+- `darkbloom stop` no longer says "Provider service is not running" on a paired Mac, and never stops the cluster's own
+  part when stopping single-Mac serving.
+- `darkbloom cluster status` answers in plain words, with `--json` for scripts and agents and an exit status (0
+  serving, 3 not serving yet, 4 stopped, 5 the other Mac isn't answering, 6 not in a cluster, 7 this Mac's pairing
+  record can't be read). The earlier detailed report is `--details`.
+- A Mac whose pairing record can't be read is never reported as "not in a cluster": the commands say so and how to
+  check it (`darkbloom cluster`). `start`, `stop` and `restart` then change nothing without `--solo`.
+- `darkbloom cluster --help` lists the other cluster commands and what each is for.
+- `darkbloom cluster link --remove` on a paired Mac warns first that it undoes the working cable setup and stops the
+  cluster on both Macs, and asks once (`--yes` for scripts).
+- `darkbloom stop` says the pair stopped only once both Macs' parts have ended (it waits up to a minute); otherwise it
+  says it asked both Macs and what is still running. A failed stop on the Mac that follows says what is known.
+  `darkbloom restart` starts the pair again only once both parts have ended. A script `start` waits through the
+  coordinator's pairing and an Apple verification retry instead of reporting "not serving".
+- A cluster service left from an earlier pairing no longer makes a Mac count as paired; `darkbloom cluster status`
+  names it and how to remove it. `--solo` refuses while this Mac's part of the pair serves (they share one serving
+  lock). The app's local mode says plainly that it isn't available on a paired Mac.
+- `darkbloom update --rollback`'s advice turns the cluster service off with `darkbloom cluster stop --service`.
+- The DevNet app names `darkbloom-dev` in every command it suggests for a pair: the card after `start` and
+  `restart`, `cluster stop --service`, `cluster local`, `cluster pair --forget` and the hints. Its Local Network hint
+  names the app to allow, Darkbloom Dev.
+- `stop`, `restart`, `cluster stop --service` and a script `start` say what they are waiting for and for how long at
+  most, instead of going quiet for minutes.
+- With Darkbloom and Darkbloom Dev on one Mac, each lists only its own cluster incidents. Incidents recorded before
+  this count as Darkbloom's.
+- The leading Mac's service log notes the other Mac's status checks once a minute, not every second.
+- Darkbloom Dev keeps its cluster incidents in a file of its own, so Darkbloom never lists them, even before
+  Darkbloom itself updates.
+- Right after Darkbloom Dev is installed on a paired Mac, `darkbloom-dev doctor` no longer fails with "Configuration
+  input is unsafe, empty or oversized" before a cluster setup is chosen with it. A saved setup in a file that other
+  users can open fails with the fix (`chmod 600 …`).
+- In the DevNet app, `darkbloom-dev cluster` without a terminal, the "Cluster service" line of `status`, Ctrl-C in
+  the setup screen and the pair update hints name `darkbloom-dev`.
+- `darkbloom cluster status --json` on the leading Mac says whether the other Mac answers while they run the cluster.
+- On the Mac that follows, `cluster status` and `status` wait at most 10 seconds for the leading Mac's answer, and say
+  so when it is slow; past that they show this Mac's own view.
+- `darkbloom unenroll` (leaving fully) and the app's local mode no longer stop with an internal error when they stop or
+  drain the provider first.
+- `status` and `cluster status` no longer say "loading" while macOS keeps a Mac off the local network: both Macs say
+  the pair is not serving and what to turn on, on which Mac. A stopped pair reads stopped even when the other Mac has
+  gone.
+- On the leading Mac, that "not serving" now holds while the other Mac stays refused, also while the leading Mac's
+  part restarts; `cluster status --json` then lists the same "Not serving" line as the plain output. The DevNet app's
+  stopped pair names its own `local` command.
+- `cluster status --json` gives the serving mode and each Mac's share, and the "Model:" line of `status` and `cluster
+  status` names the mode, for every mode. Before, a pair serving GLM-5.3-Flash in pipeline left them out.
+
+### A paired Mac's cable port is no longer reported as not isolated
+
+- `darkbloom cluster link` and `darkbloom cluster doctor` no longer report a paired Mac's cable port as not isolated ("the cluster subnet 10.219/16 is already used on this Mac") because macOS routes the port's own address through the loopback.
+
+### Cluster model list: one rule for what fits
+
+- The cluster's plan now judges a Mac's memory with every app closed the way the load-time memory gate does, which counts cached files: a 128 GB Mac can give a model 120 GiB, not 75.6 GiB. MiMo V2.6 Flash on two 128 GB Macs, and large models on an M3 Ultra with an M5 Max, are offered (with "Quit apps first" when apps hold the memory) instead of being called too large even with every application closed.
+- A split whose GPU part is larger than a Mac's GPU memory limit is no longer offered just because memory happens to be free; it would fail with "Insufficient Memory".
+- A Mac under memory pressure is no longer described as fitting on cached files the gate will not count; the plan says to quit apps there first.
+
+### `darkbloom cluster` on Macs paired before: next steps, Pair again and Start over
+
+- A Mac whose saved pairing was made with another Secure Enclave key (after
+  moving between the Darkbloom and DevNet apps, or after the installer made a
+  new key) now says so when `darkbloom cluster` opens and offers **Pair again**,
+  instead of its usual menu while every start of its part failed with "pair
+  again".
+- When the other Mac does not answer over the cable, the screen names that Mac,
+  its likely reasons (its cluster service is off, or it is asleep, off, or
+  waiting for someone to log in) and the command to run there. It keeps **Start
+  over**, which asks first, since a Mac that is away is not a
+  broken pairing; the Mac that follows also offers **Try again**. This ends the
+  case where one Mac waited at "2/4 Pair" while the other, still holding an
+  earlier pairing, showed its status and ended.
+- Choosing a model no longer spins on "Reading both Macs over the cable" with no
+  reason: the screen says why it is still waiting and, on a Mac paired before,
+  ends with **Try again**, **Start over** and **Quit**.
+- The Mac that follows names the Mac it follows and the command to run there,
+  instead of "Nothing to do here".
+- Setting up a cable port from `darkbloom cluster` continues to the Mac's usual
+  screen instead of ending there.
+- Every paired Mac offers **Start over**, which asks once (No by
+  default). It and **Pair again** unpair this Mac exactly as `darkbloom cluster
+  pair --forget` does, then run the ordinary pairing with the code on both
+  screens.
+
+### `darkbloom cluster` says Serving and Done only once the model is loaded
+
+- The setup ends with its outcome between two rules: `✓ Serving <model> through Darkbloom on both Macs (<split>)` (or
+  `on this Mac's local API only`) with the API and the test response, then Done; or `✗ Not serving: <reason>.` with
+  the next step. Before, a pair registered with the coordinator said Serving and Done on both Macs while nothing was
+  loaded.
+- Such a pair is now awaited, at most 15 minutes, until both Macs loaded the model and it answered its first request.
+- The reasons it names: a Mac without a Darkbloom login, a Mac Apple hasn't verified yet (with when Darkbloom retries
+  by itself; don't restart either Mac until then), a Mac without free memory for its share, or a part that keeps
+  ending. **Retry**, **Change model**, **Serve locally only** and **Diagnostics** follow; q exits with status 1 and
+  never says Done.
+- Switching a serving pair between serving through Darkbloom and locally only, from the leading Mac, now ends the same
+  way as a start: tested (or, for a pair registered with the coordinator, awaited until it serves), then the outcome
+  block. Before, a registered pair was called serving at once.
+- A missing login is named before the Start step starts anything, with **Log in on this Mac** (or **Check again**),
+  **Serve locally only** and **Cancel**.
+- The Start step says loading takes a few minutes for a large model; a color terminal shows one live row per Mac with
+  its time so far.
+- `darkbloom cluster` status calls a registered pair serving only while it serves, else
+  `<model> is not serving yet: <reason>.`, and says a Mac serving alone is still loading until its solo server answers.
+  The other Mac shows the same outcome block, and its setup ends with the same ✓ or ✗ as the leading Mac.
+
+### A setup prompt for AI agents
+
+- New provider how-to, `docs/provider/agent-setup.md`, for a person to hand to their own AI agent. The agent installs and checks the signed release, logs in with the person's help, and either serves on one Mac or pairs two Macs over a Thunderbolt 5 cable. It then proves the result with `darkbloom status`, `darkbloom cluster status --json` (its exit status and `state`) and a test request, instead of trusting the setup screen alone.
+- It lists, up front, what only the person can do, such as the Terms of Service, the Darkbloom login, the RDMA switch, the macOS password and Local Network prompts, the pairing code, the model choice and Screen Sharing for headless Macs. It also sets the agent's safety rules, among them: no security settings changed, no Darkbloom files or Keychain items deleted by hand, no `darkbloom cluster link --remove` unless asked, and no large download without asking.
+- Once a pair is set up, the agent checks it with `darkbloom cluster status --json` and starts or stops both Macs with `darkbloom start` and `darkbloom stop`, all without a terminal. The page also covers changing the model, pairing again, `--solo`, troubleshooting by message, and `darkbloom uninstall`.
+- Checked by an agent that followed it on a real two-Mac pair: it now has a DevNet variant (`darkbloom-dev`, the DevNet installer, `Darkbloom Dev.app`; a pair's local API on port 8000 in both apps), tells the agent to have the person turn on Local Network access in System Settings on each Mac instead of waiting for a macOS prompt, quotes the screens and the `darkbloom cluster status` reason that say when macOS keeps a Mac off the local network (the agent then stops and asks instead of waiting), and covers the app switch that offers no **Pair again**.
+- Documentation only: no provider artifact changes.
+
+### Uninstall Darkbloom: remove everything, or keep the models
+
+- `darkbloom uninstall` takes Darkbloom off a Mac in one step. In a terminal it shows two choices with this Mac's sizes: **Remove everything** (the app, settings, pairing, logs and all models) or **Keep models** (everything else goes; a reinstall reuses the models). Esc cancels, and **Remove everything** asks once more, with the size of the models it deletes. Run it as yourself: with `sudo` it refuses and says so.
+- Both choices stop serving the way `darkbloom stop` does. On a Mac in a two-Mac pair, that means both Macs stop, from either Mac, and this Mac's cluster service is turned off; when the other Mac doesn't answer, only this Mac's part stops. Then they remove every Darkbloom background service, revoke this Mac's account token where the coordinator can confirm it, unpair, undo the cable port setup (macOS asks for your password) and delete Darkbloom's settings, logs, caches, the app and the `darkbloom` command link.
+- **Keep models** leaves the models Darkbloom downloaded and the cluster model store in place: after installing again, `darkbloom start` or `darkbloom cluster` finds them without downloading. The sizes count APFS clones once.
+- It never deletes a models folder you chose or the cluster model store beside it, even inside `~/.darkbloom`, nor anything outside Darkbloom's folders (links that point elsewhere, another disk mounted in them), and never touches Keychain keys; the summary lists what was kept and where. When a folder of Darkbloom's could not be removed, the summary says Darkbloom is not fully removed, says why, and the command exits 1. On a paired Mac it ends with what to run on the other Mac.
+- On a Mac with both the production Darkbloom and Darkbloom Dev, uninstalling one keeps this Mac's pairing, cluster setup and cable port setup, which the other still uses, removes only its own cluster service, and says so; uninstall the other one too to remove them. When your models folder is `~/.darkbloom` itself, the summary says Darkbloom is not fully removed and what to do. A dry run also names a cluster service running without a login agent.
+- A cluster service that runs without its login agent (development builds, or a Mac where launchd did not take it) is now stopped before anything is deleted: with one install, any `darkbloom cluster service` is; beside the other install, only this install's, and the other's keeps running. A cluster service it doesn't stop, or can't tell apart, makes the uninstall delete nothing and say why. The two choices' lines say only what each removes on this Mac.
+- Uninstalling one install of a serving pair beside the other install on this Mac now stops the pair first, on both Macs, as `darkbloom stop` does, so the other Mac no longer keeps restarting its part. It says so before it waits for accepted requests to finish (up to about 6 min); if the other Mac doesn't answer, the summary names it and the command to run there.
+- Uninstalling Darkbloom Dev beside the production Darkbloom also removes Darkbloom Dev's own cluster incident log (with its lock and corrupt copy), which it kept in the shared cluster folder, and names it in the summary.
+- For scripts and agents: `--everything` or `--keep-models` with `--yes`, and `--dry-run` (with `--json`) to list every action and path without changing anything. `darkbloom stop --uninstall` works as before.
+
+### Release pages list every pull request in the release
+
+- A provider release page on GitHub now lists every pull request in the release, with its title, its author where known, and a link. This includes the pull requests that reached `master` through `dev` in a squash merge, which GitHub's generated list left out: the v0.10.7 page showed 5 of its 50 pull requests. Pull requests merged directly into `master` are listed separately. The promotion of `dev`, the release preparation and syncs of `master` into `dev` are named once, not listed as changes.
+- When the release job cannot read pull requests through GitHub's API, the titles come from the merge commits, and an author is shown only where a commit's GitHub address names the account.
+- The page also shows the release's whole `CHANGELOG.md` section, with its upgrade and rollout notes. The update banner's short summary is unchanged.
+
+### A pair Mac reinstalled with `install.sh` no longer acts on releases it does not run
+
+- `install.sh` (or a copied app) replaces Darkbloom without updating the record the updater keeps of what is installed. A pair Mac reinstalled this way could keep an older release as "pending": at every update slot it then tried to reinstall the release it already ran, and three unexpected stops of its cluster service would have restored an old release that the other Mac cannot pair with.
+- Before each start of its cluster service, a pair Mac now checks that record against the installed app. When they differ, the record is corrected to the installed release, the stale pending release is dropped, and the copy kept for rollback is removed, because the other Mac does not have it. The Mac logs one line saying what changed. Rollback is possible again after the next update, which keeps a copy of the release that ran.
+- A kept copy recorded under the wrong version by an earlier update, on a Mac reinstalled with `install.sh`, is now recorded as the release its app really is and kept, so the Mac can still roll back to the release the other Mac returns to. A kept copy that cannot be verified is removed. An update over a reinstalled app now records that app as the release it is.
+- A damaged install (a file missing or unreadable) is not taken for a reinstall: its failed starts still count, and the third restores the kept copy, as before.
+- The release a Mac runs is never offered as an update: the update slot reports it up to date instead of downloading it, reinstalling it and restarting the cluster service.
+
+## v0.10.7
+
+Published 2026-11-03 ([release](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.7)).
+
+### Upgrade and rollout notes
+
+- Both Macs of a pair must update to 0.10.7. The Gemma 4 and MiMo-V2.6-Flash plans change (#1706, #1707, #1715), as does the Qwen tensor-parallel control wire (#1727), and a pair whose Macs run different builds refuses to pair: it fails closed until both Macs run the same release.
+- A pair on 0.10.6 cannot update itself into 0.10.7: its cluster service predates the pair's coordinated update. On each pair, once: run `darkbloom update` on both Macs, then log out and back in on both (or restart them), as `docs/provider/two-mac-cluster.md` ("Updating Darkbloom on the pair") describes. From 0.10.7 on, the two Macs of a pair update together by themselves (#1702). If `darkbloom cluster` then says that a Qwen pair of two different Macs, which 0.10.6 saved with unequal tensor-parallel shares, is not offered for pairing, press `m` and choose the model again: it is planned with equal shares and registers (#1723).
+- Gemma 4 and MiMo-V2.6-Flash tensor parallel are public (#1736): `ClusterPublicModels` declares `gemma-4-26b-qat-4bit` and `mimo-v2.6-flash-mopd` in pipeline and tensor parallel, as it does GLM-5.3-Flash and Qwen3.8-27B, and MiMo-V2.6-Flash's speculative pipeline too, so this release's cluster runtime facts carry their pair-serving grants and parity qualifications. Their tensor parallel is in this build (#1706, #1707, #1716), and a pair chooses it only on tensor parallel's own measured speed and only where it keeps every feature of the mode it would replace (#1715), so normal setups keep the pipeline for now. Speed on a real pair is not measured for either model's tensor parallel, and MiMo has no tensor-parallel qualification record yet. The entry "MiMo-V2.6-Flash and Gemma 4 26B QAT serve public cluster traffic" below says their tensor parallel serves once its code is in the build: in 0.10.7 it is.
+- `darkbloom update --rollback` (#1729) puts back the release a Mac ran before its last update (0.10.6, after this update) and quarantines the one it leaves, without contacting a coordinator. It refuses on a Mac that serves in a pair: stop that Mac's cluster service first. The other Mac follows a rollback only to a release that has #1739, so a pair rolled back to 0.10.6 needs the rollback on each Mac.
+- The operator's enabled-model filter wins over coordinator model changes (#1730): with `enabled_models` set, a coordinator `load_model` or `prefetch_model` outside it is refused (`model_not_selected`), and a provider no longer moves to a new build of a model by itself; `darkbloom switch` takes one.
+- On one Mac, Gemma 4 replies keep the space before punctuation (#1693) and characters outside its vocabulary (#1703), with the same token IDs and cache keys, and a client `stop` sequence matches only the answer's `content`, not reasoning (#1650).
+- The registration is the one 0.10.6 sent: the same fields and a `darkbloom_cluster_runtime_v2` block, carried while `PROD_CLUSTER_RUNTIME_ENABLED` is `true`. After the tag the platform snapshots its provider contracts from the tagged commit and sets `LatestProviderVersion` to `0.10.7`.
+- MLX pins: `libs/mlx` and the nested `mlx` (`72dffa2d`) and `libs/mlx-swift` (`c633d221`) are unchanged from v0.10.6. `libs/mlx-swift-lm` moves from `7933a0fa` to `32f5c744`, its fork's `main` (SDK #370, #371, #375 to #377 and #379 to #384). It changes Swift files only, and the one Metal kernel it adds, an FP32-output variant of MiMo's decode down projection, compiles at run time (`MLXFast.metalKernel`), not into `mlx.metallib`, so the tag build's `metallib_hash` should equal v0.10.6's `98bab9d7…614be`. Complete SSD checkpoints stay per build: 0.10.7 does not restore those 0.10.6 wrote.
+- The 39 entries below are the pending fragments rendered verbatim, in filename order. #1711 (a latent GPT-OSS cache-metadata fix), #1743 (two race fixes; one keeps `darkbloom cluster stop` from failing with "could not save the stop request") and the CI and test PRs #1665, #1691, #1733, #1737, #1741, #1747, #1749, #1750 and #1753 have no entry.
+
+### App Attest restart covers the first episode after an update
+
+- The `is_supported_false` restart now also works in the first process after an update from a version that did not record its App Attest authorizations. At serve start, when `app-attest-verified.json` is missing, the provider fills it once from the previous `daemon-state.json`, with evidence from the last 7 days: the last successful Apple call of a stored key that Apple attested, or an App Attest grant left by an unclean exit. All other conditions stay the same.
+- A Mac whose previous provider was itself reporting `is_supported_false` has no such evidence, so it still waits for the coordinator to grant App Attest again.
+
+### App Attest recovers by itself after a self-update
+
+- A provider that launchd runs as its provider job now relaunches through launchd after a startup self-update, as it already did after a background update. Only a provider that launchd does not run, such as `darkbloom start --foreground` in a terminal, replaces itself in place. A background update or App Attest restart in such a provider no longer starts the LaunchAgent instead.
+- When App Attest reports `is_supported_false` on a Mac that the coordinator verified for App Attest in the last 7 days, the provider restarts once through launchd. It waits until the state lasts 5 minutes and the provider is idle, and it checks Apple's answer again after the drain. If the new process still reports unsupported, it does not restart again until the coordinator verifies the Mac again. This restart and the stall restart share one limit: one automatic App Attest restart per 6 hours. Cluster members never restart for it.
+- The provider keeps the time of its last App Attest authorization in `app-attest-verified.json` beside the daemon state file.
+- The local provider log gets an `App Attest entitlement evidence` line at startup and at each `is_supported_false` answer: the start reason, the App Attest entitlements of the running process and of the code on disk, and the executable's modification time relative to the process start. It is not sent to the coordinator.
+
+### Cache restores finish sooner
+
+- Restoring a prefix-cache checkpoint decodes its older attention rows from the
+  default `balanced` checkpoint precision on the CPU. The decoder now checks each
+  row for values its native type cannot hold once per row instead of once per
+  eight values, with the same bytes and the same refusals. On Gemma 4 26B
+  follow-up requests served from the SSD cache, time to first token fell by about
+  0.2 s per restore (about 25% over an 11-request conversation on an M3 Ultra),
+  and responses that save a checkpoint also end about 0.2 s sooner. Output is
+  unchanged.
+
+### Responses that save a cache checkpoint finish sooner
+
+- Saving a prefix-cache checkpoint encodes its older attention rows at the default
+  `balanced` checkpoint precision. That encoding now prepares its buffers and its
+  check once per segment instead of once per row and writes the same bytes. On a
+  Gemma 4 26B request that saves a checkpoint, the end of the response arrived
+  about 0.7 s sooner (1.7–2.0 s → 1.0–1.2 s on an M3 Ultra), with identical
+  output. Requests that save no checkpoint are unchanged.
+
+### Pair Macs set up with `darkbloom cluster` update themselves
+
+- A Mac set up with `darkbloom cluster` now updates itself, as a single Mac does: with `auto_update` on (the default) and without `DARKBLOOM_NO_UPDATE_CHECK`, its cluster service checks the coordinator's latest release every 30 minutes, at the pair's update slot, which both Macs derive from their pairing's cluster ID.
+- Each Mac downloads, verifies and stages the release while the pair serves. Only once both Macs have it does the pair stop taking new requests; the Mac that serves the pair finishes its accepted requests (at most 120 seconds, never cancelling one), then both Macs install the release and restart their cluster services, and the cluster sets itself up again for the new release with no command run.
+- A pair under constant traffic updates too: once it takes no new requests, the accepted ones finish. A pair still running a request at the bound takes requests again and tries at the next slot. A release one Mac cannot download or verify is installed on neither Mac; both try again at the next slot.
+- An installed release is promoted once its cluster service has stayed healthy for 10 minutes; three starts of its service that end on their own restore the previous release and quarantine the new one, as the watchdog does for a single Mac.
+- Before a Mac restarts into an installed release, its cluster service runs the new `darkbloom --version` once (at most 30 seconds). A release that does not answer with its version is never restarted into: the Mac restores the previous release at once, quarantines the new one and starts its cluster service again, so a release that cannot start no longer leaves the Mac with nothing to roll it back.
+- `darkbloom update` on a cluster Mac installs the release and then restarts the cluster service into it together with the other Mac, after the pair drained; logging out and back in is no longer needed. Run it on both Macs (or let the other Mac update at the next slot); the first Mac waits up to 15 minutes for the second, also when automatic updates are off. A Mac whose partner has automatic updates off downloads nothing at the slot.
+- A pair that serves on the leader's local API, or a Mac that serves alone, is not drained for an update yet: it does not update while it serves, and a cluster set to serve locally (`darkbloom cluster local`) or a Mac serving alone downloads nothing at the slot.
+- A cluster service started by an earlier release does none of this: to reach this release, run `darkbloom update` on both Macs, then log out and back in on both (or restart them) once.
+
+### Tensor parallel only where it keeps every feature
+
+- On a two-Mac pair, Gemma 4 and MiMo V2.6 Flash use tensor parallel only where it keeps every feature and caching behavior of the mode it would replace: prompt-prefix and SSD cache reuse, speculative (MTP) rounds, batch lanes, media, penalties and logit bias, stop handling and logprobs. What tensor parallel adds, such as logprobs where the pipeline has none, never counts against it. Each mode's features come from the installed cluster worker's capability record.
+- Gemma 4's tensor parallel keeps every feature of its pipeline, prompt-prefix and SSD reuse included, so its measured speed decides. MiMo's tensor parallel decodes in speculative rounds, so it keeps every feature of the speculative pipeline and its measured speed decides; only where the plain pipeline is the mode it would replace do that pipeline's batch lanes keep it. The plan's "Tensor parallel or pipeline" line says what tensor parallel would drop ("Pipeline: tensor parallel would drop batch lanes up to 8 (it serves 1) that the pipeline keeps; held back until it keeps them."), and the model list says "tensor parallel: drops a feature".
+- Where only tensor parallel fits the two Macs, the plan refuses with that reason and saves no setup, instead of saving one with fewer features. The developer's forced mode (debug builds) still places tensor parallel, and the plan says exactly what it drops.
+- Qwen and GLM plans are unchanged.
+
+### Simpler two-Mac cluster setup
+
+- `darkbloom cluster` setup says far less: four steps (Connect, Pair, Model, Start), a line per thing that happened,
+  and the next thing to do last. Every choice is a list (↑↓ and enter, as `darkbloom start` picks models; numbered in
+  plain transcripts); q or Esc cancels.
+- The model list shows only the models approved for clusters (GLM-5.3-Flash, Qwen3.8 27B, MiMo-V2.6-Flash and
+  Gemma 4 26B QAT) that the two Macs can serve, each with its size and its split: tensor parallel or pipeline. The
+  serving lines name the split too.
+- The Mac you set up on leads and keeps leading: every plan puts rank 0 on it, the cluster service's own re-plans
+  included, so a pair set up with 0.10.6 whose other Mac took over leading moves back at its next plan.
+- macOS's password and Local Network prompts come at stated moments (sudo in the terminal over SSH); both Macs ask
+  about Darkbloom's Local Network access right after pairing, and the setup waits until Allow or q.
+- Both Macs confirm the pairing code; the Mac that follows only shows the status. The serving line says whether the
+  pair earns through Darkbloom or serves locally only.
+- `darkbloom doctor` includes the cluster's checks on a Mac paired for a cluster.
+
+### Qwen pairs of two different Macs register with the coordinator
+
+- Affected: a pair of two different Macs set up with `darkbloom cluster` to serve through Darkbloom, with a Qwen model planned in tensor parallel. The planner gave the faster Mac the larger share of every layer (for example 2:1 on an M3 Ultra and an M5 Max), and the coordinator registration cannot name unequal shares yet. Both Macs still said `Registered with the coordinator as a cluster member`, then each Mac's part refused to register ("The saved roster registration is not valid for this Mac: invalidPlan"), the pair fell back to the leader's local API, and the coordinator never formed it or routed it a request. This hit Qwen3.8 27B, which pairs only in tensor parallel, and Qwen3.5 9B where tensor parallel was chosen. GLM-5.3-Flash, pipeline splits and two identical Macs were not affected.
+- A pair served through Darkbloom is now planned with equal tensor-parallel shares, so it registers and is routed like a pair of identical Macs; on two different Macs the slower one sets the pace. A pair that serves you alone (`darkbloom cluster local`) keeps the faster unequal split.
+- A setup saved with unequal shares (by 0.10.6, or a local cluster switched to Darkbloom with `p`) is not offered for pairing, and the leader says why before it stops either Mac's part: `Not offered for pairing: this Mac's check refused it: Unequal tensor-parallel shares serve local clusters only …`. If `darkbloom cluster` shows this once both Macs run this release, press `m` and choose the model again: it is planned with equal shares and registers.
+
+### Both Macs of a pair roll back together
+
+- When one Mac of a `darkbloom cluster` pair rolls a release back (three failed starts of its cluster service, a failed start check, or `darkbloom update --rollback` while its cluster service was stopped), the other Mac now rolls back to the same earlier release, and the pair serves it together. Before, the pair stayed split until a newer release updated both Macs.
+- The other Mac checks at its start and every minute while no update runs, also with automatic updates off. It finishes the accepted requests of its part first, as for an update, restores the release it kept from before its last update, quarantines the rolled-back release and restarts. Both Macs then skip that release, and the next newer release updates both.
+- A Mac that keeps another earlier release, or none, or whose part serves on the leader's local API or alone, does not follow (yet) and says so once in `~/.darkbloom/cluster-setup/service.log`. While a pair runs on it, a Mac whose partner stops answering during the follow waits at most a minute, then changes nothing and tries again at the pair's next update slot. A Mac whose partner quarantined a release does not install that release either.
+- Both Macs need this release or a later one, and the release a Mac rolls back to must have it too: the Mac that rolled back reports the rollback from the restored release. A rollback of this release itself is therefore not followed; rollbacks of later releases are.
+- To roll back a pair by hand, stop one Mac's cluster service with `darkbloom cluster stop`, run `darkbloom update --rollback` there, and start it again with `darkbloom cluster`; the other Mac follows.
+
+### Two-Mac pairs recover after losing a rank during a stop
+
+- A two-Mac pair no longer stays unable to serve when it loses a rank while
+  its slot is stopping. Until the provider restarted, its leader refused every
+  later start, and `darkbloom cluster stop` left that Mac's part still
+  releasing.
+- Fixed a deadlock in the pair's request engine. Stopping the pair slot
+  cancelled a request's stream while the engine was telling that request the
+  pair had lost a rank. The stream's cancellation waited for the engine, and the
+  engine waited for the cancellation to finish, so the slot never stopped.
+  Cancellation and stream termination now never wait for the engine.
+- The leader also releases a committed start as soon as its session ends,
+  instead of after the old slot has fully stopped, so a slow stop can no longer
+  make it refuse later starts with "a committed start is already served". The
+  release receipt still waits, bounded, for the slot to retire, and a pair still
+  never serves two slots at once.
+
+### MiMo-V2.6-Flash and Gemma 4 26B QAT serve public cluster traffic
+
+- Two more models are approved for public traffic on two-Mac clusters, in pipeline and tensor parallel, as GLM-5.3-Flash and Qwen3.8 27B are: MiMo-V2.6-Flash (`mimo-v2.6-flash-mopd`) and Gemma 4 26B QAT (`gemma-4-26b-qat-4bit`). A release's cluster runtime facts carry their pair-serving grants and parity qualifications, so a pair of either model earns through Darkbloom on any Apple silicon pair, and `darkbloom cluster` lists them.
+- Their tensor parallel serves once its code is in the build (Gemma 4 and MiMo tensor parallel PRs); until then they pair as a pipeline. MiMo-V2.6-Flash's speculative pipeline, its default split, is declared too.
+
+### A running cluster service answers after the Macs pair again
+
+- When the two Macs pair again while their cluster services run (`darkbloom cluster` or `darkbloom cluster pair`), each service starts its setup and control-lease listeners again with the new pairing within about 5 seconds. They used to keep the earlier pairing's key until the service restarted, so the other Mac's leases and its "Reading both Macs over the cable" step were refused (`refused (handshakeRejected)`). The service log says `this Mac's pairing changed (<cluster label>): answering the paired Mac with the new one`.
+- A Mac left with no pairing stops answering over the cable. A pairing store that cannot be read leaves the listeners as they are.
+- A Mac that paired again under a new Secure Enclave key of its own drops its earlier control state, as it already did when the other Mac's key changed.
+- A cluster service started by an earlier release keeps the earlier behavior until it restarts (log out and back in, or `darkbloom cluster stop` and then `darkbloom cluster`).
+
+### Tensor parallel for Gemma 4 and MiMo only on measured speed
+
+- Gemma 4 and MiMo V2.6 Flash pairs choose tensor parallel only once tensor parallel's own speed is measured on both Macs: each Mac's half timed by a tensor-parallel load (Gemma), or requests this Darkbloom build served in tensor parallel. An estimate from the Macs' device index alone does not choose it, because the index overstates what half a model saves on big Macs: on two M5 Ultra it predicts a short Gemma request 6% faster in tensor parallel, where the plans expect decode 6-8% slower.
+- When the estimate says tensor parallel would be faster, the pair keeps the pipeline. The plan's "Tensor parallel or pipeline" line says the predicted gain and that it comes from the device index, and the model list says "tensor parallel: not measured yet".
+- Normal setups do not load tensor parallel to measure it, so these pairs keep the pipeline for now. MiMo does not yet time its halves at load, so MiMo pairs reach tensor parallel only from requests the same build served in tensor parallel.
+- Tensor parallel must also keep every feature of the mode it would replace (see "Tensor parallel only where it keeps every feature").
+- Qwen and GLM still choose tensor parallel wherever it fits.
+
+### Fresh MDM removal guidance
+
+- Keep `darkbloom status` and both `darkbloom doctor` authorization summaries from offering MDM removal when the coordinator decision is too old for removal readiness. An unexpired App Attest serving lease stays visible; removal advice asks for fresh readiness and keeps existing profiles installed. The `darkbloom unenroll` checks are unchanged.
+
+### Gemma 4 replies keep characters outside its vocabulary
+
+- A Gemma 4 reply that ended in characters its vocabulary writes as byte tokens, such as many newer emoji, rare CJK and most Hangul syllables, lost all of them: `all zipped up 🗜` came back as `all zipped up `, and a reply made only of such characters came back empty. A long reply could also corrupt such a character when streaming restarted its decode inside its bytes.
+- The Swift tokenizer library releases byte tokens only when a later token arrives. The provider's tokenizer bridge now releases a trailing run itself. `/detokenize` keeps it too.
+- Token IDs, numeric logprobs, sampling and cache keys do not change, with one exception: a stop string that a trailing run completes now matches when the run completes, one token sooner, so `completion_tokens` can fall by one.
+- A streamed reply's `logprobs` gains the entries of those tokens, which it used to drop. A byte token's `logprobs` text and `bytes` are U+FFFD or its ASCII character instead of empty, not the real byte. A reply cut inside a character by `max_tokens` now ends in U+FFFD instead of dropping it.
+
+### Gemma 4 plain decode commits by operation count
+
+- Plain decode steps of Gemma 4, the rows served without its assistant, commit a Metal command buffer every 100 operations instead of many times per step. Outputs are bitwise identical. Prefill and assistant rounds keep MLX's defaults.
+
+### Gemma 4 text keeps its spaces before punctuation
+
+- Gemma 4 replies, reasoning and tool arguments no longer lose the space before `.`, `,`, `?` and `!`, or repeat a quote. `git add .` came back as `git add.`, `bash ./run.sh` as `bash./run.sh`, `x != y` as `x!= y`, and, when streamed, `role = 'start'` as `role = ''start'`.
+- Gemma 4's published `tokenizer_config.json` omits `clean_up_tokenization_spaces`, and the Swift tokenizer library reads a missing key as cleanup on, where Python Transformers reads it as off. The provider now resolves a missing key to off in memory for every model. An explicit Boolean is kept.
+- Token IDs, sampling, model state and cache keys do not change. Only the text decoded from the same tokens does. Stop strings match the text as spelled: one with a space before punctuation can now match, and one that matched only the cleaned text (`add.` for `add .`) no longer does.
+
+### Faster Gemma 4 pipeline pairs
+
+- Gemma 4 pipeline stages compute a prompt chunk's expert blocks in one shared dispatch per operation instead of one subgraph per prompt token, with the same bytes for every token (unchanged arithmetic receipt). Batch-decode rows share the same dispatch. On one synthetic expert layer this cut a 2,048-token chunk from about 370 ms to about 31 ms; pair throughput is not yet measured.
+- A Gemma 4 pipeline pair whose setup prefills serially, coordinator-registered pairs included, now serves four requests at once. Each lane is admitted against live memory on both Macs. A pair planned with the one-chunk lookahead keeps serving one request at a time.
+- The planner's hardware prior counts 8 of Gemma 4's 128 experts per token instead of every expert byte.
+
+### Gemma 4 tensor parallel on two-Mac clusters
+
+- Gemma 4 26B (QAT 4-bit and 8-bit) can run tensor parallel on a pair: each Mac holds half of every layer's heads and expert channels, both share every token over the encrypted link, and the pair returns the same tokens a single Mac would on the synthetic checks. Text only.
+- The planner chooses tensor parallel for Gemma 4 only where it predicts it faster than the pipeline, from tensor parallel's own speed measured on both Macs (see "Tensor parallel for Gemma 4 and MiMo only on measured speed"). Prompt-heavy requests keep the pipeline. Qwen and GLM still choose tensor parallel wherever it fits.
+- In tensor parallel, Gemma 4 returns logprobs (`logprobs` / `top_logprobs`), and each Mac reserves memory for its own half of the model: about 8.0 GB of weights at QAT 4-bit (14.9 GB at 8-bit) plus its own KV, with a conservative 5.5 GiB activation reserve until a pair measures one.
+- Gemma 4 tensor parallel keeps prompt prefixes as the pipeline does, in memory and in the encrypted SSD tier: a repeated or shared prompt prefix is restored only when both Macs hold it, with exactly the tokens of a request that prefilled the whole prompt, and it survives a restart of both Macs. Each request reserves room for its own prompt's prefix (about 0.44 GB a Mac for a 32K-token prompt); kept prefixes use free memory only and are dropped first when memory runs short.
+- Gemma 4 tensor-parallel pairs serve one request at a time unless `DARKBLOOM_CLUSTER_BATCH_LANES` names more. Speed on a real pair is not measured yet.
+
+### A latent stop race in GLM tensor parallel's one-token decode
+
+- No released pair is affected, and serving is unchanged: every v0.10.6 GLM-5.3-Flash tensor-parallel pair loads the model's NextN (MTP) layer and decodes every request in MTP rounds, which already end both Macs together when a request stops just before the model's end token.
+- The one-token decode, which only a build without that layer runs, now does the same: both Macs end at the end token and return the text up to the stop (for example, a stop string that matched just before the answer ended). Before, the stopped Mac built one more step alone and waited in a collective the other Mac, already finished at that token, never joined, so the request would stall and fail on both Macs.
+
+### GPT-OSS plain decode commits by operation count
+
+- Plain decode steps of GPT-OSS commit a Metal command buffer every 100 operations instead of after almost every MoE layer. Outputs are bitwise identical. Prefill keeps MLX's defaults.
+
+### MiMo pipeline decode command buffers and expert routing
+
+- MiMo V2.6 Flash pairs encode decode steps, lane steps and speculative rounds
+  in Metal command buffers of up to 100 operations with no input-size bound, as
+  GLM and Qwen tensor parallel already do. Prefill keeps the rank's limits.
+  Tokens, logits and caches are byte-identical on synthetic stages. The speed
+  effect on the registered model has not been measured yet.
+- A MiMo request's memory charge now prices every full-attention layer's decode
+  score rows at once, which the larger command buffers can keep alive together.
+  The LOAD quote is unchanged. Only requests whose prompt frames are shorter
+  than a stage's full-attention layers times the decode rows (32 tokens at most)
+  are charged slightly more.
+- The planner's hardware prior now counts MiMo's routed experts at the 8 of 256
+  a token uses: 10.77 GB read per decode step instead of 166.6 GB. The prior
+  prices only tensor parallel, so MiMo's pipeline plans are unchanged.
+
+### MiMo image-candidate pairs keep cluster prompt prefixes
+
+- A MiMo V2.6 Flash pair serving the private, local-only image candidate no
+  longer fails its requests while the cluster prefix cache is on (the
+  default). That candidate is the only MiMo load with contiguous caches. MiMo
+  still required the five metadata values that older MLX SDKs wrote for a
+  sliding-window cache, while the pinned SDK writes seven (adding the capacity
+  origin and a wrapped flag), so requests, text or image, failed at their
+  first prompt-prefix capture. Prefixes are now captured and restored. The
+  four text serving modes use paged histories with prefix reuse off and were
+  not affected.
+
+### MiMo V2.6 Flash tensor parallel on two-Mac clusters
+
+- MiMo V2.6 Flash text can run tensor parallel on a pair: each Mac holds half of every layer's heads and expert channels and half of the output head, both share every token over the encrypted link, and on the synthetic checks the two Macs agree bit for bit with a one-process simulation of both halves. The image candidate stays a pipeline.
+- Each Mac's half of a layer's attention output and feed-forward is kept at full 32-bit precision until both halves are added, then rounded once, so a pair never rounds more than one Mac does. On the synthetic checks, the two halves of an expert's output add up bit for bit to the full output that one Mac rounds once.
+- The planner chooses tensor parallel for MiMo only where it predicts it faster than the pipeline with speculative decoding, which MiMo's qualification records credit 1.37x, from tensor parallel's own speed measured on both Macs (see "Tensor parallel for Gemma 4 and MiMo only on measured speed"). Two 128 GB Macs, which cannot hold MiMo alone, can serve it this way. Qwen and GLM still choose tensor parallel wherever it fits.
+- In tensor parallel, MiMo returns logprobs (`logprobs` / `top_logprobs`), serves one request at a time with speculative decoding (see "MiMo V2.6 Flash tensor parallel with speculative decoding"), and each Mac reserves memory for its own half: 84.0 GB of weights plus its own KV, work and buffers, with a conservative 5.5 GiB activation reserve until a pair measures one (about 100 GiB per Mac at the longest request, the draft heads included).
+- No MiMo tensor-parallel qualification record exists yet, and speed on a real pair is not measured.
+
+### MiMo V2.6 Flash tensor parallel with speculative decoding
+
+- A MiMo V2.6 Flash tensor-parallel pair decodes with MiMo's own trained draft heads: each round checks up to two drafted tokens in one pass through the pair, so every token a round keeps shares that pass's link and weight costs.
+- It is on by default: the installed provider starts both Macs' tensor-parallel workers with two drafts a round.
+- Output is identical to tensor parallel without drafting, token for token and bit for bit on the synthetic checks: greedy (with or without logprobs) and sampled. Each Mac's halves stay at full 32-bit precision inside a round too, exactly as in a one-token step. Every kind of stop works inside a round. Requests with penalties or a logit bias, and sampled requests that ask for logprobs, decode one token at a time, as in the speculative pipeline.
+- Each Mac holds the draft heads whole (about 2 GB more) and reserves their per-request state, and the plan counts both before it chooses tensor parallel. Two 128 GB Macs still fit, at about 100 GiB a Mac.
+- Because MiMo's tensor parallel now keeps the speculative pipeline's rounds, feature parity no longer holds it back where that pipeline is the mode it would replace; its measured speed decides, and the plan credits the rounds no speed-up until they are measured. Where the plain pipeline is the mode it would replace, that pipeline's batch lanes still keep it.
+- Not yet measured on a real pair: the speed-up, the heads' acceptance rate and qualification records.
+
+### The Models page shows what the network registered
+
+- Each model on the Models page now says whether this Mac's live registration carries it: "Registered with the network" (the network sends it requests), "Registered for Autopilot" (Autopilot can load it), or, for a selected or pool model, a warning "Not registered with the network yet". Before, the page showed only what was selected, downloaded or loaded, so a selected model the network did not know looked like it was serving.
+- The provider writes the registered set to its state file (`registered_models`).
+- A Mac with Autopilot that is busy at every check, or always under a lease, now reports a newly verified build after at most 10 minutes. The re-registration closes admission, lets accepted requests finish, then reconnects. Before, such a Mac could wait without end, and Autopilot could not use the build.
+
+### Pipeline decode command buffers for the remaining cluster models
+
+- Cluster pairs of the Qwen and Bonsai rows, Nemotron 3.5 Lightning, Gemma 4,
+  GPT-OSS 20B and GLM-5.3-Flash encode decode steps (pipeline and phase split),
+  lane steps and speculative rounds in Metal command buffers of up to 100
+  operations with no input-size bound, as GLM and Qwen tensor parallel already
+  do. Prefill keeps the rank's limits. Tokens, logits and caches are
+  byte-identical on synthetic stages. The speed effect on registered models has
+  not been measured yet, and each family keeps the change only if a pair A/B
+  shows a gain.
+- A request's memory charge on those pairs, other than GLM's, now prices every
+  attending layer's decode rows at once, which the larger command buffers can
+  keep alive together. The LOAD quotes are unchanged. Only requests whose prompt
+  frames are shorter than their decode rows (at most 80) are charged more, and
+  only on a rank that decodes.
+
+### The enabled-model filter wins over coordinator model changes
+
+- A model you deselect with `darkbloom switch` or delete with `darkbloom models remove` no longer comes back on its own. Before, when the coordinator moved a public model to a newer build, every Mac serving that model downloaded the newer build, served it in place of the build its operator chose and loaded it, even when `enabled_models` left it out. For example, with `gemma-4-26b` selected and `gemma-4-26b-qat-4bit` deselected, `gemma-4-26b-qat-4bit` returned within minutes and `darkbloom status` showed `Serving outside the enabled model filter: gemma-4-26b-qat-4bit`.
+- With `enabled_models` set, the provider now refuses a coordinator `load_model` or `prefetch_model` for a model outside it (`model_not_selected`), and keeps serving the build you selected when its public model moves to a build you did not list. The log then says `desired_models: <model> → <build> is outside the enabled model filter; not converging`.
+- **Your provider no longer moves to a new build of a model by itself.** To take one, run `darkbloom switch` and pick the model's public name; the picker shows its newest build under that name. Until you do, the newer build gets that model's requests first.
+- `darkbloom switch` applies its selection as the filter at once, without a restart.
+- Nothing changes with an empty `enabled_models` (serve every downloaded model), or for Autopilot's consented downloads and placements.
+
+### Child process exit waits
+
+- Report a finished child process without the former polling and run-loop delay. Bounded children (the paged-kernel preflight, update staging, runtime smoke and signature checks, `darkbloom doctor` and `verify` probes) are reported up to about 120 ms sooner each, and waiting for `launchctl`, `codesign`, `profiles`, `open` and `log` no longer runs the calling thread's run loop. Timeouts and the SIGTERM-then-SIGKILL escalation are unchanged.
+
+### Provider status App Attest lease
+
+- Keep `darkbloom status` and `darkbloom doctor` reporting App Attest authorization until the coordinator lease expires. They required a renewal within the last 10 seconds, so one delayed renewal showed `Trust: self_signed / online` although serving continued. `darkbloom unenroll` still requires a renewal within 10 seconds before offering MDM removal.
+
+### Roll a Mac back to its previous release
+
+- `darkbloom update --rollback` restores the release a Mac ran before its last update. When the updater installs a release, it keeps the signed release it replaces; the rollback puts that release back, also after the new one has served for 10 minutes and was promoted.
+- It shows the installed and restored versions and asks `Roll back to vX? [y/N]` before changing anything (`--yes` skips the question). The running provider finishes its accepted requests (`--timeout`, `--force` as for `darkbloom update`), the kept release replaces the installed one in the watchdog's journaled swap under the update lease, and the provider restarts on it. It contacts no coordinator.
+- The rolled-back release is quarantined on that Mac: the provider's 30-minute update check, the startup check and the watchdog do not reinstall it, and the next newer release installs normally, so automatic updates can stay on. `darkbloom update --override-quarantine` installs it again on request.
+- It refuses and changes nothing on a Mac that serves in a `darkbloom cluster` pair, while a provider runs in the foreground (`darkbloom start --foreground`), while another update or recovery runs, when no earlier release is kept or the kept one is already installed, when the installed bundle is not the release the updater recorded, and when the kept release fails its hash or signature check.
+- Only one earlier release is kept. A Mac rolls back to the release it ran before its last update, not further.
+
+### Qwen tensor-parallel decode control in the selection sum
+
+- A Qwen tensor-parallel pair's plain decode step now carries the next step's
+  plan and report in its own sealed selection sum, so the step pays one sealed
+  sum and one host read fewer than before. Tokens, logits and native state are
+  unchanged; assisted (MTP) rows, prompt steps and idle steps keep their own
+  exchange.
+- Owner answers, cancellations and joins now apply one step later while plain
+  rows decode. A row decodes its next token once the owner answered the token
+  before it, so an answer that arrives while a step computes no longer leaves
+  the row idle for a step. Rank 0 still publishes a token only after the
+  owner's answer to the one before it. A token selected before a stop answer is
+  never published, so streamed text, usage and logprobs are unchanged.
+- A clean stop the owner asks for (a stop string, for example) can cost one
+  more forward, which is discarded. On a one-lane pair every such stop after a
+  request's first token does (assisted rows excepted), and that request's
+  finish arrives one decode step later than before.
+- Both ranks of a pair must run this build: the load agreement binds the new
+  control wire (`qwen-tp-independent-history-batch-v2-folded-control`).
+- `darkbloom-cluster-tp-check qwen-decode` times the batch driver's decode on
+  two ranks over the loopback ring, with the control exchanged or folded, and
+  checks that both retire the same tokens.
+
+### Qwen tensor-parallel decode routes, row exactness and finiteness check
+
+- A Qwen3.8-27B tensor-parallel row now decodes the same bytes alone as beside
+  other rows and in verify windows on the registered weights. A one-row decode
+  step's fused SwiGLU computed its sigmoid with Metal's fast `exp`, while
+  cohort and window steps use MLX's precise `exp`. The two round a gate of
+  exactly bf16 -6.84375 differently, which could change later tokens. Dense
+  Qwen tensor-parallel output changes only where a one-row decode step meets
+  that gate value, and there it now equals the cohort path. Regenerate
+  tensor-parallel serving references recorded with earlier builds once.
+  Single-Mac output is unchanged.
+- A non-finite logit on either rank of a Qwen tensor-parallel pair now fails
+  both ranks in the same selection step, before any token is published;
+  previously the other rank waited in the selection collective. The check moved
+  into the selection's sealed sum, so a decode step no longer pays a separate
+  finiteness read. Selected tokens are unchanged.
+- Each rank logs its decode routes once per load, when it first serves
+  (`darkbloom-qwen-tp-decode-census-v1`): which projections take the
+  batch-invariant kernel and at which layout per row count, the attention and
+  residual-norm routes, and the arithmetic switches in force.
+- `darkbloom-cluster-tp-check qwen-rows` checks, on one Mac over the loopback
+  ring, that a Qwen3.8-27B row decodes the same bytes alone, beside other rows
+  and in verify windows at the registered per-rank widths, with random weights
+  that follow the registered artifact's value statistics or with the registered
+  checkpoint itself; `qwen-rows layers` names the first layer that differs.
+
+### Qwen tensor-parallel pairs serve up to 8 requests at once, sized to memory
+
+- `darkbloom cluster` now sets how many requests a Qwen tensor-parallel pair
+  serves at once: 8, 6, 4 or 2, the most that both Macs' memory holds now with
+  the full load reservation for that many. The pair serves them from its first
+  load. Before, it served one at a time: a local pair widened only after a
+  burst, through a reload the burst waited for, and a pair serving Darkbloom
+  traffic never widened.
+- On two idle Macs, Qwen3.8-27B serves 8 at once from 64 GB a Mac without the
+  speculative assistant (4 at 48 GB, 2 at 32 or 36 GB), and 8 from 96 GB a Mac
+  with it (local clusters only); smaller Macs serve fewer. Two M5 Ultras serve 8 either
+  way. When not even 2 fit, the pair serves one request at a time, as before.
+- Memory safety is unchanged: both Macs reserve that many requests' full memory
+  when the model loads and admit each request alone. A local pair set up
+  narrower still widens when requests queue; a pair set up for 8 is never
+  reloaded for it.
+- Existing setups keep serving one request at a time until they are planned
+  again, as after an update. A pair serving Darkbloom traffic keeps its width
+  beside its approval; no approval, registration or committed-start digest
+  changes.
+
+### Qwen tensor-parallel prompt wavefront
+
+- A Qwen tensor-parallel pair now prefills a text prompt faster, in steps of up
+  to eight consecutive 512-token frames built as one graph, layer by layer:
+  while one frame's sealed sum crosses the link, the next frame computes. Every frame
+  keeps its own shapes and kernels, so logits, KV, recurrent state, prefix
+  captures and tokens are unchanged. Steps run two frames while another lane
+  decodes and end at the prompt-cache capture point. Media prompts, assisted
+  (MTP) prompts, packed KV and routed-expert models keep one frame a step.
+- The merged step's frames in flight are charged in LOAD, the placement quote
+  and each request's charge: a Qwen3.8-27B tensor-parallel rank needs about
+  367 MB more at any width.
+- `darkbloom-cluster-tp-check qwen-prefill --wavefronts 1,8` and
+  `darkbloom-cluster-tp-check qwen-wavefront` measure the merged steps on one
+  rank and on two ranks over the loopback ring.
+  `DARKBLOOM_QWEN_TP_PROMPT_WAVEFRONT=0` restores one frame a step for
+  diagnosis; both ranks must agree.
+
+### Qwen3.8 27B tensor parallel reuses whole prompt prefixes
+
+- A Qwen tensor-parallel pair now reuses a repeated prompt's prefix to its last whole 512-token chunk instead of at most 4,096 tokens, including prompts longer than 32,768 tokens: a repeated 33K-token prompt restores 32,768 tokens on both Macs, as one Mac does. It also keeps the boundaries the next turn of a conversation and prompts that share a long system prompt need, so in each of these cases it reuses at least what one Mac reuses, to the nearest 512 tokens.
+- A prefix restored from memory returns exactly the tokens of a request that prefilled the whole prompt (checked bit for bit on synthetic pairs at 8K, 16K and 32K boundaries); one restored from the SSD tier's default `balanced` records is close but not identical, as before. Both Macs must hold a boundary; otherwise both start from zero.
+- Each request reserves room for its own prompt's prefix (about 1.8 GB a Mac for a 32K-token prompt on the 27B), and a pair loads with one such prefix per lane: about 1.1 GB a Mac more than before at one lane. Every pair size that ran the 27B in tensor parallel still does. Kept prefixes use free memory only (half of what is left after loading) and are dropped first when memory runs short. Prefixes kept on SSD by an earlier build are not reused.
+- Requests served by the assistant (MTP) lanes still reuse at most 4,096 prompt tokens, less than one Mac reuses for a long prompt; deepening them is a separate change. Speed on a real pair is not measured yet.
+
+### Stop sequences no longer match Gemma 4 or `<think>` reasoning
+
+- A client `stop` sequence on Gemma 4 models such as `gemma-4-26b-qat-4bit`,
+  and on models that reason in `<think>` blocks (Qwen 3.5, 3.6 and 3.8,
+  among others), now matches only the text returned as `content`. With
+  reasoning on, it used to match the reasoning too, so a sequence that
+  appeared while the model reasoned (for example `"."` or `"\n\n"`) ended the
+  request before any answer: `finish_reason` `stop`, reasoning only, empty
+  content.
+- With tools declared, tool-call frames are not cut either, except a frame
+  whose arguments quote its own closing tag, or a bare `<function=…>` frame
+  written without its wrapper. When a request has no tool handler (no declared
+  tools, or a media request on a family without native media tools), a literal
+  tool tag in an answer is text the client receives, and stops still apply to it.
+  Whitespace before the answer's first character (the blank line after
+  `</think>`) cannot complete a stop sequence on its own.
+- A stop sequence that names a marker no longer fires on it: `</think>`, or
+  `<tool_call>` with tools declared.
+
+### Sandbox setup shows the add-on's own sizing plan
+
+- `darkbloom sandbox setup` now asks the Darkbloom Sandbox installer for the add-on's own plan before it asks you to confirm. After its own chip, macOS, session, network, power and sleep checks, setup runs the downloaded installer with `--plan` (add-on 1.1.1 and later). The installer verifies the release and sizes this Mac without installing anything. Setup then prints the plan's cores, memory and disk lines and how many Linux and macOS jobs this Mac can run at a time. Example: `Disk: 157 GiB free; 100 GiB stays free for you; Linux images 4 GiB + 30 GiB per Linux job; macOS images 46 GiB + 40 GiB per macOS job`.
+- Disk follows the add-on's rules. A tenth of the disk (50 to 100 GiB) stays free. The first job of a platform also needs that platform's VM images (Linux 4 GiB, macOS 46 GiB, nothing once installed). Each Linux job takes 30 GiB and each macOS job 40 GiB.
+- When no job fits, setup prints the plan's message and how much disk to free for one Linux job and for one macOS job. It then stops without installing.
+- The installer is now downloaded before the question, so the plan is shown before you confirm. Nothing is installed before you answer `y`.
+- With an older installer that cannot report a plan, setup prints `[INFO] Sizing` and estimates with the same rules.
+- Setup's output is line-buffered: run over ssh or into a pipe, it shows the approval link as soon as the installer has it, not once setup ends.
+- With add-on 1.1.2 and later, a Mac waiting for approval keeps waiting in the background, also across restarts, and enrolls by itself, and setup now says so. On the waitlist it says you can close the window, and after Ctrl-C it says that the Mac keeps waiting; both point at `darkbloom sandbox status`. With an earlier add-on, setup words both as before.
+
+### Sandbox setup offers the add-on's new plan on a Mac that is set up
+
+- Running `darkbloom sandbox setup` on a Mac that is set up now asks the Darkbloom Sandbox installer for the add-on's plan again (`--plan`, which changes nothing). When the plan's Linux and macOS job counts differ from the installed ones, setup shows the plan's CPU, memory and disk lines and asks, for example `This Mac now fits 1 Linux + 1 macOS (installed: 3 Linux + 0 macOS). If a job is running, the installer refuses and changes nothing. Apply? [Y/n]`. Yes reinstalls with the plan's counts; no prints the `--linux-slots`/`--macos-slots` command that applies it later. When the counts match, the output is exactly as before.
+- With `--yes` or without a terminal, setup applies the plan only when it adds jobs and removes none; otherwise it prints `Not applied` and the command, and exits 0.
+- While jobs run, setup skips the check and says to run it again once they finish. When the installer refuses because a job is running (exit 4), setup now says that a job is running, to run setup again when it finishes, and that it never passes the installer's `--force`, which would stop running jobs, which aren't paid.
+- Explicit `--linux-slots`/`--macos-slots`, an installer without `--plan` and a failed download behave as before. A platform missing from the add-on's `status --json` counts as 0 slots.
+- When the add-on's plan gives macOS no job for want of free disk space, setup adds one line: ``Free space here is what `df -h ~` shows as Avail; Finder also counts purgeable space, which macOS frees only when it needs to (restarting, or removing Time Machine local snapshots: `tmutil listlocalsnapshots /`, frees it now). A macOS job needs about N GB more.`` N counts the disk the plan's Linux jobs take, so a Mac planned for 3 Linux jobs and no macOS job gets a real number.
+
+## v0.10.6
+
+Published 2026-10-31 ([release](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.6)).
 
 ### Upgrade and rollout notes
 

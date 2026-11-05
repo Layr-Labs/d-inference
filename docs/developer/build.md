@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-04
+> Last updated: 2026-11-05
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -73,6 +73,18 @@ make landing-install landing-build
 `libs/mlx-swift/Source/Cmlx/mlx`, matching the Cmlx target. Top-level `libs/mlx`
 is a separate dependency pin. Native resources must match the compiled host
 library; a warm cache cannot waive that requirement.
+
+MLX's configure fetches Apple's metal-cpp headers from developer.apple.com,
+and CMake's FetchContent does not try again when the download fails. On a
+Darkbloom macOS sandbox runner, the image carries that archive at
+`/usr/local/libexec/darkbloom/share/metal-cpp/metal-cpp_26.zip`. When the
+nested MLX core names that archive and its SHA-256 is the one the script pins,
+`scripts/fetch-metallib.sh` unzips it into the build directory and passes
+`-DFETCHCONTENT_SOURCE_DIR_METAL_CPP`. The build then makes no download. In
+any other case, FetchContent downloads the archive as before.
+`MLX_METAL_CPP_ARCHIVE` names another local copy, which must have the same
+SHA-256. The headers are the same bytes either way, so the metallib and its
+cache key do not change.
 
 The pinned core orders fast Metal fence waits after earlier kernels in the
 current concurrent pass as well as prior passes. Rebuild the Cmlx host object

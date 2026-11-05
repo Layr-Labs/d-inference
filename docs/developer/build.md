@@ -384,10 +384,27 @@ version), it warns and runs the products. Both sides print the archive
 size and the upload or download time.
 
 Every macOS job runs `scripts/ci-resource-sampler.py` in the background from
-its checkout on: every 5 s it records the memory in use (active, wired and
-compressed pages from `vm_stat`), the memory pressure level, the busy vCPUs and
-the largest process (`ps`). The job's last steps print the peaks and the busy
-vCPUs to the log and the step summary, and upload the samples as
+its checkout on. Every 5 s it records:
+
+- Memory by class, from `vm_stat`: app (anonymous less purgeable pages), wired
+  (this holds resident GPU memory), file cache (reclaimable), compressed, and
+  used = app + wired + compressed. Also swap in use and the memory pressure
+  level.
+- Busy vCPUs, from the host's CPU ticks.
+- The physical footprint of each process of the runner user, from
+  `proc_pid_rusage`. This is the counter that `footprint` and Activity Monitor
+  show, and it includes IOAccelerator (Metal) memory. The sampler keeps the
+  sum and the three largest processes by lifetime peak.
+
+The provider and cluster test runners mark the start and end of each test
+selection (`ci-resource-sampler.py mark`), so the report names the selection
+of each large process and the selections that ran at the peak. When a
+process's footprint grows by 2 GiB, `/usr/bin/footprint` (if present) writes
+its breakdown by category beside the samples, at most twice a job.
+
+The job's last steps print the peaks, the three largest processes, the busy
+vCPUs and the sampled time scaled to 4 and 8 vCPUs to the log and the step
+summary. They upload the samples and `summary.json` as
 `resource-samples-<job>-<index>`. The sampler is report-only: its steps never
 fail a job.
 

@@ -147,33 +147,10 @@ struct Gemma4TensorParallelSpeculationTests {
     /// A random assistant with the synthetic target's geometry (its own four
     /// layers read the target's last sliding and full layers).
     static func assistant() throws -> Gemma4AssistantDraftModel {
-        let text: [String: Any] = [
-            "model_type": "gemma4_text", "hidden_size": 64, "intermediate_size": 128, "num_hidden_layers": 4,
-            "layer_types": ["sliding_attention", "sliding_attention", "sliding_attention", "full_attention"],
-            "num_attention_heads": 16, "num_key_value_heads": 8, "num_global_key_value_heads": 2,
-            "head_dim": 256, "global_head_dim": 512, "sliding_window": 16, "vocab_size": 512,
-            "vocab_size_per_layer_input": 0, "hidden_size_per_layer_input": 0, "num_kv_shared_layers": 4,
-            "attention_k_eq_v": true, "enable_moe_block": false, "tie_word_embeddings": true,
-            "use_double_wide_mlp": false, "attention_bias": false, "rms_norm_eps": 1e-6,
-            "max_position_embeddings": 4096, "hidden_activation": "gelu_pytorch_tanh",
-            "rope_parameters": [
-                "sliding_attention": ["rope_type": "default", "rope_theta": 10000.0],
-                "full_attention": ["rope_type": "proportional", "rope_theta": 1_000_000.0, "partial_rotary_factor": 0.25],
-            ],
-        ]
-        let root: [String: Any] = ["model_type": "gemma4_assistant", "backbone_hidden_size": 256,
-                                   "use_ordered_embeddings": false, "num_centroids": 64,
-                                   "centroid_intermediate_top_k": 8, "text_config": text]
-        let configuration = try JSONDecoder().decode(Gemma4AssistantConfiguration.self,
-            from: JSONSerialization.data(withJSONObject: root))
-        return try withRandomState(MLXRandom.RandomState(seed: 11)) {
-            let model = try Gemma4AssistantDraftModel(config: configuration)
-            model.update(parameters: ModuleParameters.unflattened(model.parameters().flattened().map {
-                ($0.0, $0.1.asType(.bfloat16))
-            }))
-            eval(model)
-            return model
-        }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("gemma4-assistant-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Device.withDefaultDevice(.cpu) { try Gemma4TensorParallelModel.writeSyntheticAssistant(directory: directory) }
+        return try Gemma4AssistantCheckpoint.loadModel(directory: directory)
     }
 
     struct LoopCase: @unchecked Sendable {
@@ -384,5 +361,18 @@ struct Gemma4TensorParallelSpeculationTests {
             #expect(try Self.loop(models, LoopCase(depth: 3, script: (reference, wrong)))[0].tokens == reference)
         }
         #expect(try Self.loop(models, LoopCase(depth: 2, realAssistant: true))[0].tokens == reference)
+    }
+
+    /// The tool path (`generateRounds`, what `darkbloom-cluster-tp-check gemma
+    /// run --mtp-depth` runs): the plain path's tokens, with its counts.
+    @Test func theToolsRoundsGiveThePlainTokens() throws {
+        let directory = try Self.synthetic()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = try Gemma4TensorParallelModel.load(modelDirectory: directory, role: .full, reduction: nil)
+        let plain = try model.generatePaged(prompt: Self.prompt, outputCount: 10, chunk: Self.chunk)
+        let rounds = try model.generateRounds(prompt: Self.prompt, outputCount: 10, chunk: Self.chunk,
+                                              assistant: Gemma4AssistantCheckpoint(try Self.assistant()), depth: 3)
+        #expect(rounds.generation.tokenIDs == plain.tokenIDs)
+        #expect(rounds.rounds.depth == 3 && rounds.rounds.rounds >= 1 && rounds.rounds.proposedByPosition.count == 3)
     }
 }

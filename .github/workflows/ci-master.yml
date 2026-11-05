@@ -77,11 +77,14 @@ jobs:
       - name: Select today's .git cache
         id: git-day
         run: |
-          day=$(date -u +%F)
-          echo "day=$day" >> "$GITHUB_OUTPUT"
-          echo "month=${day%-*}" >> "$GITHUB_OUTPUT"
-          echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
+          fail=0
+          day=$(date -u +%F) || { echo "::error title=failed::day=$(date -u +%F)"; fail=1; }
+          echo "day=$day" >> "$GITHUB_OUTPUT" || { echo "::error title=failed::echo "day=$day" >> "$GITHUB_OUTPUT""; fail=1; }
+          echo "month=${day%-*}" >> "$GITHUB_OUTPUT" || { echo "::error title=failed::echo "month=${day%-*}" >> "$GITHUB_OUTPUT""; fail=1; }
+          echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)" || { echo "::error title=failed::echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)""; fail=1; }
+          exit "$fail"
       - name: Restore the newest saved .git
+        if: ${{ !cancelled() }}
         id: git-cache
         uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
@@ -91,12 +94,15 @@ jobs:
             git-v1-${{ runner.os }}-${{ steps.git-day.outputs.month }}-
             git-v1-${{ runner.os }}-
       - name: Discard a damaged cached .git
+        if: ${{ !cancelled() }}
         run: |
-          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
-              git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
-            echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
-            rm -rf .git
-          fi
+          fail=0
+          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null && || { echo "::error title=failed::if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&"; fail=1; }
+          git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then || { echo "::error title=failed::git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then"; fail=1; }
+          echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it." || { echo "::error title=failed::echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it.""; fail=1; }
+          rm -rf .git || { echo "::error title=failed::rm -rf .git"; fail=1; }
+          fi || { echo "::error title=failed::fi"; fail=1; }
+          exit "$fail"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false # Keeps the job token out of the saved .git/config.
@@ -111,67 +117,85 @@ jobs:
       # A plain build of master must be prod and a plain build of dev must be
       # dev. The target is the pull request's base branch, or the pushed branch.
       - name: Check the provider's plain-build default for the target branch
+        if: ${{ !cancelled() }}
         env:
           TARGET_BRANCH: ${{ github.base_ref || github.ref_name }}
         run: |
-          python3 scripts/test-provider-build-default.py
-          python3 scripts/provider-build-default.py --branch "$TARGET_BRANCH"
+          fail=0
+          python3 scripts/test-provider-build-default.py || { echo "::error title=failed::python3 scripts/test-provider-build-default.py"; fail=1; }
+          python3 scripts/provider-build-default.py --branch "$TARGET_BRANCH" || { echo "::error title=failed::python3 scripts/provider-build-default.py --branch "$TARGET_BRANCH""; fail=1; }
+          exit "$fail"
       - name: Validate changelog fragments
+        if: ${{ !cancelled() }}
         run: |
-          python3 scripts/test-changelog.py
-          make changelog-check
+          fail=0
+          python3 scripts/test-changelog.py || { echo "::error title=failed::python3 scripts/test-changelog.py"; fail=1; }
+          make changelog-check || { echo "::error title=failed::make changelog-check"; fail=1; }
+          exit "$fail"
       - name: Check provider release and installer integrity
+        if: ${{ !cancelled() }}
         run: |
-          ./scripts/check-release-version.sh
-          python3 scripts/test-provider-release-resolution.py
-          python3 scripts/test-provider-release-resume.py
-          python3 scripts/test-provider-release-toolchain.py
-          python3 scripts/test-provider-release-cache.py
-          python3 scripts/test-prepare-metal-toolchain.py
-          python3 scripts/test-provider-release-pipeline.py
-          python3 scripts/test-provider-release-publication.py
-          python3 scripts/test-provider-release-notes.py
-          python3 scripts/test-provider-cluster-runtime-models.py
-          python3 scripts/test-release-dev-branch.py
-          python3 scripts/test-provider-release-artifact.py
-          python3 scripts/test-provider-signing-validation.py
-          python3 scripts/test-provider-identity.py
-          python3 scripts/test-provider-test-watchdog.py
-          python3 scripts/test-stage-test-metallib.py
-          python3 scripts/test-provider-ci-cache.py
-          python3 scripts/test-provider-ci-workflow.py
-          python3 scripts/test-provider-test-shards.py
-          python3 scripts/test-cluster-test-plan.py
-          python3 scripts/test-ci-component-paths.py
-          python3 scripts/test-darkbloom-route.py
-          python3 scripts/test-ci-tested-tree.py
-          python3 scripts/test-prepare-prompt-fixtures.py
-          python3 provider-swift/Tests/test_protocol_fixture_resources.py
-          python3 scripts/test-app-attest-entitlements.py
-          ./scripts/test-setup-macos-homebrew.sh
+          fail=0
+          ./scripts/check-release-version.sh || { echo "::error title=failed::./scripts/check-release-version.sh"; fail=1; }
+          python3 scripts/test-provider-release-resolution.py || { echo "::error title=failed::python3 scripts/test-provider-release-resolution.py"; fail=1; }
+          python3 scripts/test-provider-release-resume.py || { echo "::error title=failed::python3 scripts/test-provider-release-resume.py"; fail=1; }
+          python3 scripts/test-provider-release-toolchain.py || { echo "::error title=failed::python3 scripts/test-provider-release-toolchain.py"; fail=1; }
+          python3 scripts/test-provider-release-cache.py || { echo "::error title=failed::python3 scripts/test-provider-release-cache.py"; fail=1; }
+          python3 scripts/test-prepare-metal-toolchain.py || { echo "::error title=failed::python3 scripts/test-prepare-metal-toolchain.py"; fail=1; }
+          python3 scripts/test-provider-release-pipeline.py || { echo "::error title=failed::python3 scripts/test-provider-release-pipeline.py"; fail=1; }
+          python3 scripts/test-provider-release-publication.py || { echo "::error title=failed::python3 scripts/test-provider-release-publication.py"; fail=1; }
+          python3 scripts/test-provider-release-notes.py || { echo "::error title=failed::python3 scripts/test-provider-release-notes.py"; fail=1; }
+          python3 scripts/test-provider-cluster-runtime-models.py || { echo "::error title=failed::python3 scripts/test-provider-cluster-runtime-models.py"; fail=1; }
+          python3 scripts/test-release-dev-branch.py || { echo "::error title=failed::python3 scripts/test-release-dev-branch.py"; fail=1; }
+          python3 scripts/test-provider-release-artifact.py || { echo "::error title=failed::python3 scripts/test-provider-release-artifact.py"; fail=1; }
+          python3 scripts/test-provider-signing-validation.py || { echo "::error title=failed::python3 scripts/test-provider-signing-validation.py"; fail=1; }
+          python3 scripts/test-provider-identity.py || { echo "::error title=failed::python3 scripts/test-provider-identity.py"; fail=1; }
+          python3 scripts/test-provider-test-watchdog.py || { echo "::error title=failed::python3 scripts/test-provider-test-watchdog.py"; fail=1; }
+          python3 scripts/test-stage-test-metallib.py || { echo "::error title=failed::python3 scripts/test-stage-test-metallib.py"; fail=1; }
+          python3 scripts/test-provider-ci-cache.py || { echo "::error title=failed::python3 scripts/test-provider-ci-cache.py"; fail=1; }
+          python3 scripts/test-provider-ci-workflow.py || { echo "::error title=failed::python3 scripts/test-provider-ci-workflow.py"; fail=1; }
+          python3 scripts/test-provider-test-shards.py || { echo "::error title=failed::python3 scripts/test-provider-test-shards.py"; fail=1; }
+          python3 scripts/test-cluster-test-plan.py || { echo "::error title=failed::python3 scripts/test-cluster-test-plan.py"; fail=1; }
+          python3 scripts/test-ci-component-paths.py || { echo "::error title=failed::python3 scripts/test-ci-component-paths.py"; fail=1; }
+          python3 scripts/test-darkbloom-route.py || { echo "::error title=failed::python3 scripts/test-darkbloom-route.py"; fail=1; }
+          python3 scripts/test-ci-tested-tree.py || { echo "::error title=failed::python3 scripts/test-ci-tested-tree.py"; fail=1; }
+          python3 scripts/test-prepare-prompt-fixtures.py || { echo "::error title=failed::python3 scripts/test-prepare-prompt-fixtures.py"; fail=1; }
+          python3 provider-swift/Tests/test_protocol_fixture_resources.py || { echo "::error title=failed::python3 provider-swift/Tests/test_protocol_fixture_resources.py"; fail=1; }
+          python3 scripts/test-app-attest-entitlements.py || { echo "::error title=failed::python3 scripts/test-app-attest-entitlements.py"; fail=1; }
+          ./scripts/test-setup-macos-homebrew.sh || { echo "::error title=failed::./scripts/test-setup-macos-homebrew.sh"; fail=1; }
+          exit "$fail"
       - name: Test advisory threat review with local HTTP fixtures
+        if: ${{ !cancelled() }}
         run: |
-          python3 .github/scripts/test-threat-model-review.py
-          python3 .github/scripts/test-threat-full-scan.py
-          python3 .github/scripts/test-threat-ensemble.py
-          python3 .github/scripts/test-threat-budget.py
-          python3 .github/scripts/test-threat-bedrock.py
-          python3 .github/scripts/test-threat-diagnostics.py
-          python3 .github/scripts/test-threat-integration-scope.py
+          fail=0
+          python3 .github/scripts/test-threat-model-review.py || { echo "::error title=failed::python3 .github/scripts/test-threat-model-review.py"; fail=1; }
+          python3 .github/scripts/test-threat-full-scan.py || { echo "::error title=failed::python3 .github/scripts/test-threat-full-scan.py"; fail=1; }
+          python3 .github/scripts/test-threat-ensemble.py || { echo "::error title=failed::python3 .github/scripts/test-threat-ensemble.py"; fail=1; }
+          python3 .github/scripts/test-threat-budget.py || { echo "::error title=failed::python3 .github/scripts/test-threat-budget.py"; fail=1; }
+          python3 .github/scripts/test-threat-bedrock.py || { echo "::error title=failed::python3 .github/scripts/test-threat-bedrock.py"; fail=1; }
+          python3 .github/scripts/test-threat-diagnostics.py || { echo "::error title=failed::python3 .github/scripts/test-threat-diagnostics.py"; fail=1; }
+          python3 .github/scripts/test-threat-integration-scope.py || { echo "::error title=failed::python3 .github/scripts/test-threat-integration-scope.py"; fail=1; }
+          exit "$fail"
       - name: Test native GPU CI routing without a GPU
+        if: ${{ !cancelled() }}
         run: python3 scripts/test-native-gpu-ci.py
       - name: Test model registry workflow with loopback HTTP
+        if: ${{ !cancelled() }}
         run: python3 scripts/test_model_registry_workflow.py
       - name: Test bounded MiMo provider fixture provisioning offline
+        if: ${{ !cancelled() }}
         run: python3 scripts/test-prepare-mimo-provider-fixtures.py
       - name: Test serving qualification evidence and catalogs without a GPU
+        if: ${{ !cancelled() }}
         run: python3 -m unittest discover -s scripts/serving_performance -t scripts -p 'test_*.py'
       - name: Test actual-call and bounded timing receipts without a GPU
+        if: ${{ !cancelled() }}
         run: |
-          python3 -m unittest discover -s scripts/benchmarks -p test_radix_forward_shapes.py
-          python3 reports/runtime-kv-path-2026-10-09/qualification/test_curate_runs.py
-          python3 reports/runtime-kv-path-2026-10-09/qualification/test_run_suite.py
-
+          fail=0
+          python3 -m unittest discover -s scripts/benchmarks -p test_radix_forward_shapes.py || { echo "::error title=failed::python3 -m unittest discover -s scripts/benchmarks -p test_radix_forward_shapes.py"; fail=1; }
+          python3 reports/runtime-kv-path-2026-10-09/qualification/test_curate_runs.py || { echo "::error title=failed::python3 reports/runtime-kv-path-2026-10-09/qualification/test_curate_runs.py"; fail=1; }
+          python3 reports/runtime-kv-path-2026-10-09/qualification/test_run_suite.py || { echo "::error title=failed::python3 reports/runtime-kv-path-2026-10-09/qualification/test_run_suite.py"; fail=1; }
+          exit "$fail"
   docs:
     name: Docs Lint
     needs: plan

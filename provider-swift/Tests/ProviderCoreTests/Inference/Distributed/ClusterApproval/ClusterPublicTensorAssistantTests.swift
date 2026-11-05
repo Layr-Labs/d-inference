@@ -13,6 +13,7 @@ import DarkbloomClusterSecurity
 @Suite("Public Qwen tensor assistant", .serialized)
 struct ClusterPublicTensorAssistantTests {
     static let report = "docs/reports/2026-11-01-qwen27-public-assistant.md"
+    static let qualifiedAt = "2026-11-05T00:00:00Z"
 
     static func policy(depth: Int = 3, inventory: Character = "8",
                        verification: ClusterQwenTensorAssistantPolicy.Verification = .singleton) throws -> ClusterQwenTensorAssistantPolicy {
@@ -26,7 +27,7 @@ struct ClusterPublicTensorAssistantTests {
             artifactSHA256: ClusterApprovalMacs.hash(artifact), families: [.pipeline, .tensorParallel], schedules: [1, 2],
             ranks: ClusterPublicModels.twoM5Ultras)
         model.tensorAssistant = try assistant.map {
-            try ClusterPublicTensorAssistant(policy: $0, evidenceDocument: report, evidenceSHA256: ClusterApprovalMacs.hash("d"))
+            try ClusterPublicTensorAssistant(policy: $0, evidenceDocument: report, evidenceSHA256: ClusterApprovalMacs.hash("d"), qualifiedAt: Self.qualifiedAt)
         }
         return [model]
     }
@@ -53,22 +54,46 @@ struct ClusterPublicTensorAssistantTests {
         return (facts, approval)
     }
 
-    @Test func aDeclarationNamesOnlySingletonVerificationAndAReport() throws {
+    /// Either verification may be declared (the local automatic policy verifies admitted cohorts); the report must be a
+    /// Markdown record with its digest and an RFC 3339 qualification instant.
+    @Test func aDeclarationNamesItsPolicyReportAndQualificationInstant() throws {
         let singleton = try Self.policy()
-        let declared = try ClusterPublicTensorAssistant(policy: singleton, evidenceDocument: Self.report, evidenceSHA256: ClusterApprovalMacs.hash("d"))
+        let declared = try ClusterPublicTensorAssistant(policy: singleton, evidenceDocument: Self.report, evidenceSHA256: ClusterApprovalMacs.hash("d"), qualifiedAt: Self.qualifiedAt)
         #expect(declared.resourcePolicyFields == ["qwen27_tensor_assistant_v1", "depth=3",
             "--tp-mtp-inventory-sha256=" + ClusterApprovalMacs.hash("8"), "verification=singleton_ready_set_v1",
             "evidence=" + ClusterApprovalMacs.hash("d")])
-        #expect(throws: (any Error).self) {
-            try ClusterPublicTensorAssistant(policy: try Self.policy(verification: .admittedCohort), evidenceDocument: Self.report,
-                evidenceSHA256: ClusterApprovalMacs.hash("d"))
-        }
-        for (document, digest) in [("mainnet/qwen27.md", ClusterApprovalMacs.hash("d")), ("docs/reports/a.txt", ClusterApprovalMacs.hash("d")),
-                                   (Self.report, "not-a-digest")] {
+        let cohort = try ClusterPublicTensorAssistant(policy: try Self.policy(verification: .admittedCohort), evidenceDocument: Self.report,
+            evidenceSHA256: ClusterApprovalMacs.hash("d"), qualifiedAt: Self.qualifiedAt)
+        #expect(cohort.resourcePolicyFields[3] == "verification=admitted_target_cohort_v1")
+        for (document, digest, instant) in [("mainnet/qwen27.md", ClusterApprovalMacs.hash("d"), Self.qualifiedAt),
+                                            ("docs/reports/a.txt", ClusterApprovalMacs.hash("d"), Self.qualifiedAt),
+                                            (Self.report, "not-a-digest", Self.qualifiedAt),
+                                            (Self.report, ClusterApprovalMacs.hash("d"), "2026-11-05")] {
             #expect(throws: (any Error).self) {
-                try ClusterPublicTensorAssistant(policy: singleton, evidenceDocument: document, evidenceSHA256: digest)
+                try ClusterPublicTensorAssistant(policy: singleton, evidenceDocument: document, evidenceSHA256: digest, qualifiedAt: instant)
             }
         }
+    }
+
+    /// A release's facts: the model's tensor-parallel qualifications rest on the declared assistant's report and
+    /// instant, its pipeline ones on the model declaration's; without an assistant every one rests on the latter.
+    @Test func theTensorParallelQualificationsRestOnTheAssistantsEvidence() throws {
+        func qualifications(_ assistant: ClusterQwenTensorAssistantPolicy?) throws -> [ClusterRuntimeApprovalFacts.ParityQualification] {
+            ClusterRuntimeApprovalFacts.parityQualifications(try Self.declaration(assistant)[0], metallibSHA256: ClusterApprovalMacs.hash("9"),
+                inputModalities: ["text"], layers: 64, servesMedia: { _ in false })
+        }
+        let assisted = try qualifications(try Self.policy(verification: .admittedCohort)), plain = try qualifications(nil)
+        #expect(assisted.map(\.mode) == [.pipeline, .pipeline, .tensorParallel, .tensorParallel])
+        for (with, without) in zip(assisted, plain) {
+            if with.mode == .tensorParallel {
+                #expect(with.evidenceSHA256 == ClusterApprovalMacs.hash("d") && with.qualifiedAt == Self.qualifiedAt)
+            } else {
+                #expect(with == without)
+            }
+            #expect(without.evidenceSHA256 == ClusterPublicModels.evidenceSHA256 && without.qualifiedAt == ClusterPublicModels.qualifiedAt)
+            #expect(with.requestEnvelope == without.requestEnvelope && with.cuts == without.cuts && with.schedule == without.schedule)
+        }
+        try ClusterRuntimeApprovalFacts.validate(assisted, of: ClusterApprovalMacs.model)
     }
 
     /// The lookup a setup's checks, its planning and every resource policy use: the declared model's artifact, in
@@ -126,7 +151,7 @@ struct ClusterPublicTensorAssistantTests {
             capability.arithmeticPolicySHA256, capability.stateSemantics, capability.schedulingPolicy])
         #expect(DistributedInstalledNativeStart.resourcePolicySHA256(capability) == legacy)
         let declared = try ClusterPublicTensorAssistant(policy: try Self.policy(), evidenceDocument: Self.report,
-                                                        evidenceSHA256: ClusterApprovalMacs.hash("d"))
+                                                        evidenceSHA256: ClusterApprovalMacs.hash("d"), qualifiedAt: Self.qualifiedAt)
         let assisted = DistributedInstalledNativeStart.resourcePolicySHA256(capability, assistant: declared)
         #expect(assisted == digest(["darkbloom/installed-resource-policy/v1", capability.arithmeticPolicyID,
             capability.arithmeticPolicySHA256, capability.stateSemantics, capability.schedulingPolicy] + declared.resourcePolicyFields))
@@ -137,10 +162,10 @@ struct ClusterPublicTensorAssistantTests {
         var variants: Set<Data> = [legacy, assisted]
         for other in [try Self.policy(depth: 2), try Self.policy(inventory: "9")] {
             variants.insert(DistributedInstalledNativeStart.resourcePolicySHA256(capability, assistant:
-                try ClusterPublicTensorAssistant(policy: other, evidenceDocument: Self.report, evidenceSHA256: ClusterApprovalMacs.hash("d"))))
+                try ClusterPublicTensorAssistant(policy: other, evidenceDocument: Self.report, evidenceSHA256: ClusterApprovalMacs.hash("d"), qualifiedAt: Self.qualifiedAt)))
         }
         variants.insert(DistributedInstalledNativeStart.resourcePolicySHA256(capability, assistant:
-            try ClusterPublicTensorAssistant(policy: try Self.policy(), evidenceDocument: Self.report, evidenceSHA256: ClusterApprovalMacs.hash("e"))))
+            try ClusterPublicTensorAssistant(policy: try Self.policy(), evidenceDocument: Self.report, evidenceSHA256: ClusterApprovalMacs.hash("e"), qualifiedAt: Self.qualifiedAt)))
         #expect(variants.count == 5)
     }
 
@@ -171,6 +196,9 @@ struct ClusterPublicTensorAssistantTests {
                                                 ClusterApprovalMacs.hash("8")])
                 #expect(DistributedInstalledSpeculation(configuration: saved.configuration, capability: saved.capability)
                         == .init(enabled: true, offReason: DistributedInstalledSpeculation.enabledReason))
+                // Its speed records say it served through Darkbloom with the assistant (`ClusterServedSpeedRecords.Setup.servedAs`).
+                let facts = plan.observabilityFacts(membershipEpoch: nil)
+                #expect(facts.serving == .darkbloom && facts.tensorAssistant == true)
             }
             // The release facts of the build that declared nothing name another resource policy: refused unchanged.
             let undeclared = try ClusterPublicModels.$declarationOverride.withValue(try Self.declaration(nil)) {

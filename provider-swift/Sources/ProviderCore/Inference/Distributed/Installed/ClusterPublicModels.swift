@@ -36,21 +36,28 @@ public struct ClusterPublicModel: Sendable, Equatable {
 
 /// A resident assistant the owner declared public for one model's tensor
 /// parallel placement: the exact policy a coordinator-paired setup must save
-/// (depth, the inline head's inventory, singleton verification) and the
-/// evidence document it rests on, whose SHA-256 is `evidenceSHA256` (a test
-/// holds them equal).
+/// (depth, the inline head's inventory, verification) and the evidence
+/// document it rests on, whose SHA-256 is `evidenceSHA256` (a test holds them
+/// equal). The evidence and `qualifiedAt` are those of the model's
+/// tensor-parallel parity qualifications in a release's facts
+/// (`ClusterRuntimeApprovalFacts.parityQualifications`), so the qualification
+/// a coordinator derives names the speculative decoding it covers.
 public struct ClusterPublicTensorAssistant: Sendable, Equatable {
     public let policy: ClusterQwenTensorAssistantPolicy
     public let evidenceDocument: String
     public let evidenceSHA256: String
+    /// RFC 3339: when the evidence was recorded.
+    public let qualifiedAt: String
 
-    public init(policy: ClusterQwenTensorAssistantPolicy, evidenceDocument: String, evidenceSHA256: String) throws {
+    public init(policy: ClusterQwenTensorAssistantPolicy, evidenceDocument: String, evidenceSHA256: String,
+                qualifiedAt: String) throws {
         try policy.validate()
-        guard policy.verification == .singleton, ClusterConfigurationSyntax.hash(evidenceSHA256),
-              evidenceDocument.hasPrefix("docs/reports/"), evidenceDocument.hasSuffix(".md") else {
-            throw ClusterConfigurationError.invalid("A public tensor assistant declares singleton verification and its evidence report")
+        guard ClusterConfigurationSyntax.hash(evidenceSHA256), evidenceDocument.hasPrefix("docs/reports/"),
+              evidenceDocument.hasSuffix(".md"), ClusterPairApproval.unixNanoseconds(rfc3339: qualifiedAt) != nil else {
+            throw ClusterConfigurationError.invalid("A public tensor assistant names its evidence report, its digest and when it was qualified")
         }
         self.policy = policy; self.evidenceDocument = evidenceDocument; self.evidenceSHA256 = evidenceSHA256
+        self.qualifiedAt = qualifiedAt
     }
 
     /// What the declaration adds to the resource policy a native start and a

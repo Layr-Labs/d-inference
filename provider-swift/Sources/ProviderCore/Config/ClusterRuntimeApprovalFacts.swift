@@ -323,7 +323,10 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
     /// (a pipeline needs the model's `layers`: without them its records are
     /// left out), its ranks in this build's numerics class, its envelope
     /// admitting media only when its mode `servesMedia` for this model
-    /// (`ClusterModelFeaturePolicy.mediaContract`).
+    /// (`ClusterModelFeaturePolicy.mediaContract`). A model declared with a
+    /// resident assistant (`ClusterPublicModel.tensorAssistant`) has its
+    /// tensor-parallel qualifications rest on the assistant's evidence: a pair
+    /// of that build decodes with it.
     static func parityQualifications(_ declared: ClusterPublicModel, metallibSHA256: String, inputModalities: [String],
                                      layers: Int?, servesMedia: (ClusterGenerationMode) -> Bool) -> [ParityQualification] {
         let classes = numericsClasses(declared.ranks, metallibSHA256: metallibSHA256)
@@ -332,10 +335,11 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
                 return [ParityQualification]()
             }
             let envelope = ClusterPublicModels.requestEnvelope(inputModalities: inputModalities, servesMedia: servesMedia(placement.mode))
+            let assistant = family == .tensorParallel ? declared.tensorAssistant : nil
             return declared.schedules.sorted().map { schedule in
                 ParityQualification(schedule: schedule, numericsClasses: classes, cuts: placement.cuts, mode: placement.mode,
-                    promotable: true, diverged: false, evidenceSHA256: ClusterPublicModels.evidenceSHA256,
-                    qualifiedAt: ClusterPublicModels.qualifiedAt, requestEnvelope: envelope)
+                    promotable: true, diverged: false, evidenceSHA256: assistant?.evidenceSHA256 ?? ClusterPublicModels.evidenceSHA256,
+                    qualifiedAt: assistant?.qualifiedAt ?? ClusterPublicModels.qualifiedAt, requestEnvelope: envelope)
             }
         }
     }

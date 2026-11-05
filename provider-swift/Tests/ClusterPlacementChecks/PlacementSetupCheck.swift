@@ -591,7 +591,7 @@ import Foundation
         require("served over-limit regression: the 27B is planned on the pair in tensor parallel and its setup saved (\(decided.result.chosen?.mode.rawValue ?? "none"))",
             decided.result.chosen?.mode == .tensorParallel && decided.setup != nil)
         require("served over-limit regression: the plan says in one line that it skipped the 7 records; the other 20 of this build count",
-            decided.lines.contains { $0.hasPrefix("  7 record(s) skipped: requests outside this model's limits") }
+            decided.lines.contains { $0 == "  Skipped 7 speed records longer than the 65,536 tokens planning covers (the longest was 94,522); the other records still count" }
                 && decided.lines.contains { $0.hasPrefix("  tensor_parallel_v1 cut 0-64|0-64 (ultra-a, ultra-b): 20 pair and 0 alone request(s) ->") })
         // The records within the limits count exactly as they did: for the same request, the plan and setup are the ones
         // made from them alone, and they still change it.
@@ -600,16 +600,16 @@ import Foundation
         let unserved = try decide([], request: request)
         require("served over-limit regression: for the same request the plan is the one made from the records within the limits alone, which still change it",
             decided.result == within.result && decided.setup == within.setup && within.result != unserved.result
-                && !within.lines.contains { $0.contains("record(s) skipped") })
+                && !within.lines.contains { $0.hasPrefix("  Skipped ") })
         // Records an earlier build kept: another build's are left out before they are evaluated, and the plan is the one
         // without their speeds; the same build's (an update that did not change the worker) are skipped as above.
         let asEarlier = try decide(entries([earlier, earlier]))
         require("served over-limit regression: kept by another worker build, the records are ignored and the 27B still planned",
-            asEarlier.result.chosen?.mode == .tensorParallel && !asEarlier.lines.contains { $0.contains("record(s) skipped") }
+            asEarlier.result.chosen?.mode == .tensorParallel && !asEarlier.lines.contains { $0.hasPrefix("  Skipped ") }
                 && asEarlier.lines.contains { $0.hasPrefix("  32 record(s) from other worker builds ignored") })
         let asCurrent = try decide(entries([build, build]))
         require("served over-limit regression: every record as this build's, the 7 are skipped and the 25 others count",
-            asCurrent.result.chosen?.mode == .tensorParallel && asCurrent.lines.contains { $0.hasPrefix("  7 record(s) skipped:") }
+            asCurrent.result.chosen?.mode == .tensorParallel && asCurrent.lines.contains { $0.hasPrefix("  Skipped 7 speed records longer than") }
                 && asCurrent.lines.contains { $0.hasPrefix("  tensor_parallel_v1 cut 0-64|0-64 (ultra-a, ultra-b): 25 pair and 0 alone request(s) ->") })
     }
 

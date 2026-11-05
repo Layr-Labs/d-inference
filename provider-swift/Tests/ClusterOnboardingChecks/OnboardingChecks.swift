@@ -4321,6 +4321,21 @@ import Darwin
         expect(!run.text.contains("Gemma 4 E4B"), "list screen: an unapproved model is not named")
         run.type("q")
         _ = run.finish()
+        // The bug's own reason, plain and with its cause, on a 40-column screen: wrapped, every word kept.
+        let failed = ClusterOnboardingModelChoice(title: "Qwen 3.8 27B", lines: [],
+            blocker: "the plan for it failed (Tensor-parallel request allowance does not cover the requested context and chunk)",
+            modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp", validated: true)
+        let narrow = TerminalRun(operations(Recorder(), resume: qwenServing, pairEvents: [], pairResult: .failed([]),
+                                            choices: Array(switchChoices.dropFirst()) + [failed]), columns: 40)
+        expect(narrow.waitFor(prompt(3)), "list screen, 40 columns: the list")
+        let said = "Qwen 3.8 27B: not offered on these two Macs: the plan for it failed (Tensor-parallel request allowance "
+            + "does not cover the requested context and chunk)"
+        let shown = screen(narrow.text, columns: 40)
+        expect(shown.allSatisfy { $0.count <= 40 } && shown.joined().replacingOccurrences(of: " ", with: "")
+                .contains(said.replacingOccurrences(of: " ", with: "")),
+               "list screen, 40 columns: the reason wraps and keeps every word: \(shown)")
+        narrow.type("q")
+        _ = narrow.finish()
     }
 
     /// A fresh setup says first what it will ask and how long it takes (brief: "one screen before 1/4").

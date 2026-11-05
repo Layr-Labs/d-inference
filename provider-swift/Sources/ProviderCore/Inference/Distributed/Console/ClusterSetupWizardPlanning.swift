@@ -304,9 +304,15 @@ enum ClusterSetupPlanning {
             } catch where String(describing: error).contains(ClusterConfiguration.peerBuildDiffers) {
                 return blocked(differentBuilds)
             } catch {
-                return blocked("Planning failed (\(ClusterConsoleText.bounded(String(describing: error), maximum: 160))).")
+                return blocked(planFailed(error))
             }
         }
+    }
+
+    /// The plain blocker for a model whose plan threw, with the planner's own cause: "not offered on these two Macs:
+    /// the plan for it failed (<cause>)" on the setup's list.
+    static func planFailed(_ error: Error) -> String {
+        "the plan for it failed (\(ClusterConsoleText.bounded(String(describing: error), maximum: 160)))"
     }
 
     /// The plain blocker for a model no cluster stage adapter of this build runs.

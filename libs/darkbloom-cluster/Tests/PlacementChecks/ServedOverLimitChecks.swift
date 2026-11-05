@@ -81,24 +81,68 @@ func checkServedOverLimit(_ inputs: RetainedQwenInputs, golden: URL, _ checks: P
     checks.require("served over limit: the 27B is planned on the pair in tensor parallel (\(decided.chosen ?? "none"))",
         decided.chosen == ClusterGenerationMode.tensorParallel.rawValue)
     checks.require("served over limit: the plan says in one line that it skipped the 7 records, and the other 20 of this build still count",
-        decided.lines.contains("  7 record(s) skipped: requests outside this model's limits, or otherwise ones the plan cannot evaluate (the longest 94522 prompt and answer tokens); the other records still count")
+        decided.lines.contains("  Skipped 7 speed records longer than the 65,536 tokens planning covers (the longest was 94,522); the other records still count")
             && decided.lines.contains { $0.hasPrefix("  tensor_parallel_v1 cut 0-64|0-64 (ultra-a, ultra-b): 20 pair and 0 alone request(s) ->") }
             && decided.lines.contains { $0.hasPrefix("  5 record(s) from other worker builds ignored") })
     // The records within the limits count exactly as they did: the plan is byte for byte the one made from them alone
     // (that they change the plan is `PlacementSetupCheck.servedOverLimitRegression`'s, on measured speeds).
     let within = try plan(["--served", try served { !outside($0) }, "--served-build", build])
     checks.require("served over limit: the plan is byte for byte the one made from the records within the limits alone, with the same line for them",
-        decided.result == within.result && !within.lines.contains { $0.contains("record(s) skipped") }
+        decided.result == within.result && !within.lines.contains { $0.hasPrefix("  Skipped ") }
             && within.lines.contains { $0.hasPrefix("  tensor_parallel_v1 cut 0-64|0-64 (ultra-a, ultra-b): 20 pair and 0 alone request(s) ->") })
     // Records an earlier build kept: another build's are left out before they are evaluated; the same build's (a
     // worker build an update did not change) are evaluated and skipped. Neither fails the plan.
     let asEarlier = try plan(["--served", try served(builds: [earlier, earlier]), "--served-build", build])
     checks.require("served over limit: kept by another worker build, the records are ignored, the plan the one without them",
         asEarlier.result == unserved.result && asEarlier.lines.contains { $0.hasPrefix("  32 record(s) from other worker builds ignored") }
-            && !asEarlier.lines.contains { $0.contains("record(s) skipped") })
+            && !asEarlier.lines.contains { $0.hasPrefix("  Skipped ") })
     let asCurrent = try plan(["--served", try served(builds: [build, build]), "--served-build", build])
     checks.require("served over limit: every record as this build's, the 7 are skipped and the 25 others count",
         asCurrent.chosen == ClusterGenerationMode.tensorParallel.rawValue
-            && asCurrent.lines.contains { $0.hasPrefix("  7 record(s) skipped:") }
+            && asCurrent.lines.contains { $0.hasPrefix("  Skipped 7 speed records longer than") }
             && asCurrent.lines.contains { $0.hasPrefix("  tensor_parallel_v1 cut 0-64|0-64 (ultra-a, ultra-b): 25 pair and 0 alone request(s) ->") })
+    try checkServedOverLimitFallbacks(checks)
+}
+
+/// The calibration's two other ways around a record that cannot be used: a setup that cannot be calibrated even
+/// after its unevaluable requests are skipped is skipped whole and counted, and a speculative speed-up that cannot
+/// be recorded is said in one line. Neither fails the plan.
+private func checkServedOverLimitFallbacks(_ checks: PlacementChecks) throws {
+    let layout = try syntheticLayout(layers: 32, layerGiB: 0.25, modes: [.pipeline])
+    let devices = [try SyntheticMac.idle(64).device("m3", speed: measured(prefill: 1_000, decode: 40)),
+                   try SyntheticMac.idle(64).device("m5", speed: measured(prefill: 1_000, decode: 40))]
+    let setup = ClusterServedSpeedRecords.Setup(modelID: "m", mode: ClusterGenerationMode.pipeline.rawValue,
+        cut: ClusterServedSpeedRecords.Setup.cut([16], layerCount: 32), ranks: ["m3", "m5"])
+    let alone = (0..<3).map { index in ClusterServedSpeedRecords.Entry(setup: setup, sample: .init(route: .alone, member: "m3",
+        promptTokens: 1024, outputTokens: 128, firstTokenSeconds: 1.2, decodeTokensPerSecond: 30, finishedAt: Double(1_000 + index))) }
+    // A measurement time longer than a speed record holds (64 bytes): no measurement of the setup can be written.
+    let whole = try ClusterServedCalibration.measurements(entries: alone, devices: devices, layout: layout, link: .unmeasured,
+        measuredUTC: String(repeating: "x", count: 65))
+    checks.require("served over limit: a setup that cannot be calibrated at all is skipped whole and counted, not the plan's failure (\(whole.lines))",
+        whole.measurements.isEmpty
+            && whole.lines == ["  Skipped 3 speed records the plan could not evaluate on this model (the longest was 1,152 tokens); the other records still count"])
+    let served = try ClusterServedCalibration.measurements(entries: alone, devices: devices, layout: layout, link: .unmeasured,
+        measuredUTC: "2026-11-05T09:00:00Z")
+    checks.require("served over limit: the same records with a valid time are calibrated, no line skipped",
+        served.measurements.count == 1 && !served.lines.contains { $0.hasPrefix("  Skipped ") })
+    checks.require("served over limit: the skipped line's numbers carry thousands separators and say the limit when every skipped record is over it",
+        ClusterServedCalibration.skippedLine([], coveredTokens: 65_536) == nil
+            && ClusterServedCalibration.skippedLine([.init(route: .pair, member: nil, promptTokens: 1_000_000, outputTokens: 234_567,
+                firstTokenSeconds: 1, decodeTokensPerSecond: 1, finishedAt: 0)], coveredTokens: 65_536)
+                == "  Skipped 1 speed record longer than the 65,536 tokens planning covers (the longest was 1,234,567); the other records still count")
+    // The speculative pipeline's served speed-up rides on the plain pipeline's record; one that cannot hold the note
+    // (its provenance over 1,024 bytes) is not credited, and the plan says so in one line.
+    guard let plain = served.measurements.first else {
+        checks.require("served over limit: the plain record to credit", false)
+        return
+    }
+    let credited = ClusterServedCalibration.crediting(plain, pipelineSpeculativeFactor: 1.5)
+    let full = try ClusterSpeedMeasurement(key: plain.key, promptTokens: plain.promptTokens, chunkTokens: plain.chunkTokens,
+        probedLayers: plain.probedLayers, layerCount: plain.layerCount, rested: plain.rested, sustained: nil,
+        measuredUTC: plain.measuredUTC, provenance: String(repeating: "p", count: 1_000))
+    checks.require("served over limit: a speed-up is credited on the plain record, and one whose record cannot hold it is not",
+        credited?.rested.pipelineSpeculativeFactor == 1.5 && ClusterServedCalibration.crediting(full, pipelineSpeculativeFactor: 1.5) == nil)
+    checks.require("served over limit: an uncredited speed-up is said in one line, with what it can do to the plan",
+        ClusterServedCalibration.uncreditedLine([]) == nil
+            && ClusterServedCalibration.uncreditedLine(["m5"]) == "  The speculative pipeline's served speed-up on m5 is not credited (its speed record could not be updated): the plan predicts that pipeline at its plain decode there, so it may choose another mode even where the speculative pipeline served faster")
 }

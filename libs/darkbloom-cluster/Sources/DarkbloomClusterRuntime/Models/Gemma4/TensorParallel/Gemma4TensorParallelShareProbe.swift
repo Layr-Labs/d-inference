@@ -38,8 +38,8 @@ enum Gemma4TensorParallelShareProbe {
         } catch { return skipped("memory") }
         var session: Gemma4TensorParallelPagedSession?
         do {
-            let times = try reduction.locally { () throws -> [UInt64] in
-                try MLX.withError { error -> [UInt64] in
+            let rounds = try reduction.locally { () throws -> Limits.Rounds in
+                try MLX.withError { error -> Limits.Rounds in
                     func checked() throws { try error.check(); try check() }
                     let host = try model.pagedHost(lanes: 1, maximumTokens: shape.prompt + shape.outputs,
                         chunkTokens: shape.prompt)
@@ -47,11 +47,10 @@ enum Gemma4TensorParallelShareProbe {
                         outputCount: shape.outputs)
                     session = value
                     let prompt = (0..<shape.prompt).map { ($0 * 131 + 17) % profile.vocabularySize }
-                    guard !Limits.limitReached(started: started, clock: clock) else { throw Limits.LimitReached() }
                     // Any token will do: the outputs are not a tensor-parallel result.
                     _ = try value.prefill(prompt, range: 0..<shape.prompt, check: checked) { $0 }
                     var token = 1
-                    let times = try Limits.rounds(started: started, clock: clock) {
+                    let phase = try Limits.rounds(started: started, clock: clock) {
                         token = (token * 37 + 11) % profile.vocabularySize
                         _ = try GPU.withCommandBufferLimits(Gemma4TensorParallelModel.decodeCommandBuffers) {
                             try value.decode(token, check: checked) { $0 }
@@ -59,12 +58,11 @@ enum Gemma4TensorParallelShareProbe {
                     }
                     try value.retire()
                     guard host.isDrained else { throw ProbeError("Gemma tensor-parallel share probe kept its pages") }
-                    return times
+                    return phase
                 }
             }
-            guard times.count >= Limits.minimumRounds else {
-                return skipped(Limits.limitReached(started: started, clock: clock) ? "limit" : "budget")
-            }
+            let times = rounds.times
+            guard times.count >= Limits.minimumRounds else { return skipped(rounds.reason) }
             let probe = ClusterWorkerShareProbe(sharePerMille: share,
                 plainStepMicroseconds: max(1, Int(times.sorted()[times.count / 2] / 1000)), rounds: times.count)
             return probe.valid ? probe : skipped("bounds")
@@ -75,7 +73,7 @@ enum Gemma4TensorParallelShareProbe {
                     throw ProbeError("Gemma tensor-parallel share probe could not retire its request (\(error))")
                 }
             }
-            return skipped(error is Limits.LimitReached ? "limit" : "error_" + qwenPrefixLogWord(error))
+            return skipped("error_" + qwenPrefixLogWord(error))
         }
     }
 }

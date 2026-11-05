@@ -4364,13 +4364,14 @@ baseline is taken before it, so the widened projection constants its forward
 keeps count as a first request's would. Each phase's timed rounds stop 1.5 s
 after its first timed round. The prefill and the warm-up rounds do not count
 against that budget: the probe is the loaded model's first forward in its
-worker process, and the kernels compile on first use. The whole probe, prefill and warm-up included,
-stops 8 s after it starts, less than the 10 s deadline margin. Memory the gate
-does not admit, a load deadline nearer than 10 s, fewer than three timed rounds
-in the budget (`skipped=budget`), the 8 s limit (`skipped=limit`) or any error
-gives no probe, never a failed load; only a throwaway request that cannot be
-retired fails it. The Gemma probe (`Gemma4TensorParallelShareProbe`) uses the
-same rounds, budget and limit (`QwenTensorParallelShareProbe.rounds`).
+worker process, and the kernels compile on first use. No round starts 8 s after
+the probe started, prefill and warm-up included, which is less than the 10 s
+deadline margin. Memory the gate does not admit, a load deadline nearer than
+10 s, fewer than three timed rounds in the budget (`skipped=budget`), the 8 s
+limit (`skipped=limit`) or any error gives no probe, never a failed load; only
+a throwaway request that cannot be retired fails it. The Gemma probe
+(`Gemma4TensorParallelShareProbe`) uses the same rounds, budget and limit
+(`QwenTensorParallelShareProbe.rounds`).
 
 The serving leader records both ranks' probes when the pair becomes ready, next
 to the link probe, in owner-only `~/.darkbloom/cluster/share-probes.json`

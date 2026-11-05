@@ -85,7 +85,7 @@ struct QwenTensorParallelShareProbeTests {
         typealias Probe = QwenTensorParallelShareProbe
         final class Time { var now: UInt64 = 1_000_000_000 }
         let ms: UInt64 = 1_000_000
-        func phase(setup: UInt64, warmup: UInt64, timed: UInt64) -> [UInt64] {
+        func phase(setup: UInt64, warmup: UInt64, timed: UInt64) -> Probe.Rounds {
             let time = Time()
             let started = time.now
             time.now += setup
@@ -96,13 +96,14 @@ struct QwenTensorParallelShareProbeTests {
             }
         }
         #expect(phase(setup: 5_000 * ms, warmup: 1_000 * ms, timed: 20 * ms)
-            == Array(repeating: 20 * ms, count: Probe.timedRounds))
-        #expect(phase(setup: 0, warmup: 10 * ms, timed: 1_000 * ms) == [1_000 * ms, 1_000 * ms])
-        #expect(phase(setup: Probe.limitNanoseconds, warmup: 10 * ms, timed: 10 * ms).isEmpty)
-        #expect(phase(setup: 1_000 * ms, warmup: 4_000 * ms, timed: 10 * ms).isEmpty)
-        #expect(phase(setup: Probe.limitNanoseconds - 1_100 * ms, warmup: 0, timed: 300 * ms).count == 4)
-        #expect(Probe.limitReached(started: 0, clock: { Probe.limitNanoseconds })
-            && !Probe.limitReached(started: 0, clock: { Probe.limitNanoseconds - 1 }))
+            == .init(times: Array(repeating: 20 * ms, count: Probe.timedRounds)))
+        let budget = phase(setup: 0, warmup: 10 * ms, timed: 1_000 * ms)
+        #expect(budget == .init(times: [1_000 * ms, 1_000 * ms]) && budget.reason == "budget")
+        let limit = phase(setup: Probe.limitNanoseconds, warmup: 10 * ms, timed: 10 * ms)
+        #expect(limit == .init(limited: true) && limit.reason == "limit")
+        #expect(phase(setup: 1_000 * ms, warmup: 4_000 * ms, timed: 10 * ms) == .init(limited: true))
+        #expect(phase(setup: Probe.limitNanoseconds - 1_100 * ms, warmup: 0, timed: 300 * ms)
+            == .init(times: Array(repeating: 300 * ms, count: 4), limited: true))
         #expect(Probe.minimumRounds > 2 && Probe.limitNanoseconds < Probe.deadlineMarginNanoseconds)
     }
 
@@ -146,10 +147,12 @@ struct QwenTensorParallelShareProbeTests {
             #expect(try measure(shard, admit: { _, _ in throw Refused() }) == nil)
             #expect(try measure(shard, deadline: DispatchTime.now().uptimeNanoseconds + 1_000_000_000) == nil)
             #expect(try measure(shard, windowColumns: 7) == nil)
-            // The clock moves a whole budget between every two readings: no figure.
+            // Each clock reading moves more than half the budget: one timed round in it, no figure.
             var tick: UInt64 = 0
-            #expect(try measure(shard, clock: { tick += QwenTensorParallelShareProbe.budgetNanoseconds; return tick }) == nil)
-            // The probe is past its limit before its prefill: no figure.
+            #expect(try measure(shard, clock: {
+                tick += QwenTensorParallelShareProbe.budgetNanoseconds / 2 + 50_000_000; return tick
+            }) == nil)
+            // The probe is past its limit before its first round: no figure.
             var readings = 0
             #expect(try measure(shard, clock: {
                 readings += 1

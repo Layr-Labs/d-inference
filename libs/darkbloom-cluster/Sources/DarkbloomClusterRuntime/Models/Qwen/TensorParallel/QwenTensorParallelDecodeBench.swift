@@ -49,13 +49,8 @@ public enum QwenTensorParallelDecodeBench {
                             width: Int, promptTokens: Int, outputTokens: Int, sampled: Bool, folds: [Bool],
                             repeats: Int, answerDelayMicroseconds: Int, layerStride: Int? = nil,
                             log: (String) -> Void) throws -> Bool {
-        guard let layerStride else {
-            return try run(model: model, configuration: configuration, group: group, width: width, promptTokens: promptTokens,
-                outputTokens: outputTokens, sampled: sampled, folds: folds, repeats: repeats,
-                answerDelayMicroseconds: answerDelayMicroseconds, log: log)
-        }
         // A stride to compare against the product's (`QwenTensorParallelBatchSession.decodeLayerStride`).
-        return try QwenTensorParallelBatchSession.$layerStride.withValue(layerStride) {
+        try QwenTensorParallelBatchSession.$layerStride.withValue(layerStride ?? QwenTensorParallelBatchSession.layerStride) {
             try run(model: model, configuration: configuration, group: group, width: width, promptTokens: promptTokens,
                 outputTokens: outputTokens, sampled: sampled, folds: folds, repeats: repeats,
                 answerDelayMicroseconds: answerDelayMicroseconds, log: log)

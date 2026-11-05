@@ -202,8 +202,10 @@ enum ClusterSetupPlanning {
                     quote == nil ? [] : quote == discovered ? reading.tensorWidthQuotes : reading.targetFallbackWidthQuotes
                 }
                 // The plan a start makes for `family` (nil: the planner's own choice), with the quote it was made with.
-                func place(_ family: ClusterForcedMode?) throws -> (decided: (lines: [String], result: ClusterPlacementResult,
-                                                                              setup: ClusterPlacementSetup?), quote: ClusterPlacementTensorBatchQuote?) {
+                func place(_ family: ClusterForcedMode?, raised: (local: ClusterDeviceProfile, peer: ClusterDeviceProfile)? = nil) throws
+                    -> (decided: (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?),
+                        quote: ClusterPlacementTensorBatchQuote?) {
+                    let localProfile = raised?.local ?? localProfile, peerProfile = raised?.peer ?? peerProfile
                     let selected = try assistantOrTarget(discovered,
                         fallback: try? reading.targetFallbackQuote?.get()) { quote in
                         try ClusterPlacementFlow.decide(description: pair, capability: capability.record, localMemberID: localMemberID,
@@ -232,7 +234,18 @@ enum ClusterSetupPlanning {
                     // Macs by chip and memory, as pairing shows them, never by member ID.
                     let names = [localMemberID: "\(localProfile.chip), \(localProfile.physicalMemoryBytes >> 30) GB",
                                  peerID: "\(peerProfile.chip), \(peerProfile.physicalMemoryBytes >> 30) GB"]
-                    return blocked(refusalWords(decided.result, localMemberID: localMemberID, names: names))
+                    // Nothing fits as the Macs are. Where `darkbloom cluster gpu-limit` runs (`ClusterGPUMemoryLimit.raisedByDarkbloom`)
+                    // and a placement fits once it has, the row names that step on each Mac that needs it; nothing loads before.
+                    let raisedLocal = try localProfile.withGPUMemoryLimitRaised(), raisedPeer = try peerProfile.withGPUMemoryLimitRaised()
+                    if raisedLocal != nil || raisedPeer != nil,
+                       let after = try? place(chosenModes[reading.model.modelID],
+                                              raised: (raisedLocal ?? localProfile, raisedPeer ?? peerProfile)).decided.result.chosen,
+                       after.possible,
+                       let steps = gpuLimitSteps(after, profiles: [localMemberID: localProfile, peerID: peerProfile], names: names) {
+                        return blocked(steps)
+                    }
+                    return blocked(refusalWords(decided.result, localMemberID: localMemberID, names: names,
+                                                profiles: [localMemberID: localProfile, peerID: peerProfile]))
                 }
                 // Offered only when each Mac's start would serve the chosen placement (the planner already keeps away
                 // from the shapes that diverged on these chips, so this holds unless the two disagree).
@@ -317,7 +330,25 @@ enum ClusterSetupPlanning {
     }
 
     /// Why a model is not offered, plain action or fact first (the screen cuts long reasons).
-    static func refusalWords(_ result: ClusterPlacementResult, localMemberID: String, names: [String: String] = [:]) -> String {
+    /// The step a placement that fits only once some Macs' GPU limits are raised needs first: on each such Mac, its
+    /// part's GPU need against the limit macOS keeps now and the limit `darkbloom cluster gpu-limit` sets, in whole GB
+    /// as Macs' memory is named (the need rounded up, the limits down). Nil when no rank needs more than its Mac's limit.
+    static func gpuLimitSteps(_ placement: ClusterPlacementCandidate, profiles: [String: ClusterDeviceProfile],
+                              names: [String: String]) -> String? {
+        let macs = placement.ranks.compactMap { rank -> String? in
+            guard let profile = profiles[rank.device], let need = rank.gpuResidentBytes, need > profile.residentCapacityBytes else { return nil }
+            return "on \(names[rank.device] ?? rank.device) its part needs \((need + (1 << 30) - 1) >> 30) GB of GPU memory, and macOS "
+                + "allows \(profile.residentCapacityBytes >> 30) GB; `darkbloom cluster gpu-limit` raises it to "
+                + "\(profile.gpuMemoryLimitCeilingBytes >> 30) GB"
+        }
+        guard !macs.isEmpty else { return nil }
+        return "Needs `darkbloom cluster gpu-limit` first: " + macs.joined(separator: "; ") + ". Run it on "
+            + (macs.count == 1 ? "that Mac" : "each of those Macs") + " (it asks once, then macOS asks an administrator), "
+            + "then `darkbloom cluster` again."
+    }
+
+    static func refusalWords(_ result: ClusterPlacementResult, localMemberID: String, names: [String: String] = [:],
+                             profiles: [String: ClusterDeviceProfile] = [:]) -> String {
         func name(_ device: String) -> String { names[device] ?? device }
         // Only tensor parallel fits, and it would drop a feature of the model's other modes (`ClusterModeParity`).
         if result.tensorParallel?.verdict == .dropsFeatures, let why = result.modesReason { return why }
@@ -329,11 +360,25 @@ enum ClusterSetupPlanning {
         if let alone = result.alone.first(where: { $0.fit.possible }) {
             return "\(name(alone.device)) can serve it alone in single-Mac Darkbloom."
         }
+        // A GPU limit no step of Darkbloom's raises (`ClusterGPUMemoryLimit.raisedByDarkbloom`) is all that stops the
+        // closest placement (each Mac's memory at rest holds its part): said as that, never as free memory.
+        let closest = result.refusal?.closest?.ranks ?? []
+        let memoryHolds = closest.allSatisfy { rank in profiles[rank.device].map { rank.needBytes <= $0.atRestAdmissibleBytes } ?? false }
+        let gpuShort = !memoryHolds ? [] : closest.filter { rank in
+            guard let profile = profiles[rank.device] else { return false }
+            return !rank.withinGPUWorkingSet || (rank.gpuResidentBytes ?? 0) > profile.residentCapacityBytes
+        }
+        if !gpuShort.isEmpty {
+            let limits = gpuShort.compactMap { rank in profiles[rank.device].map { "\(name(rank.device)) allows \($0.residentCapacityBytes >> 30) GB" } }
+            return "Needs more memory: no split of it fits these Macs' GPU memory limits, even with `darkbloom cluster gpu-limit` "
+                + "where it runs (" + limits.joined(separator: "; ") + "). Darkbloom raises that limit only on "
+                + GLM5NextGPULimitEligibility.macs + "."
+        }
         if let refusal = result.refusal {
             let total = ClusterSetupScreen.gib(refusal.modelLoadedBytes)
-            return "Too large for these Macs together: it needs \(total), even with every application closed."
+            return "Needs more memory: these Macs together cannot hold its \(total), even with every application closed."
         }
-        return "Too large for these Macs together right now."
+        return "Needs more memory: too large for these Macs together right now."
     }
 
     /// The mode families the screen may offer (owner, 2026-11-04: tensor parallel and pipeline both offered), the

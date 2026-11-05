@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-04
+> Last updated: 2026-11-05
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -943,6 +943,24 @@ an M5 Mac with 128 or 256 GB, names the one command that changes it:
 macOS asks an administrator, and it raises the limit to the Mac's memory less
 16 GiB (112 GiB of 128 GB), also after restarts. `darkbloom cluster gpu-limit
 --undo` takes it back ([GPU memory limit for a GLM pair](../reference/configuration.md#gpu-memory-limit-for-a-glm-pair)).
+
+Only modes that load on the pair are offered. On two 128 GB Macs that is the
+pipeline: tensor parallel needs more than either Mac has. On an M4 Max with an
+M5 Max, the M4 Max keeps the GPU limit macOS gives it (107.52 GiB on macOS 26;
+Darkbloom raises the limit only on M5 Macs with 128 or 256 GB), and the
+planner sizes each Mac's part by its own limit. When nothing fits as the Macs
+are, the model's row says which of two things holds:
+
+- **"Needs `darkbloom cluster gpu-limit` first"**, naming the Mac, its part's
+  GPU need and the limit: a split fits once that Mac's limit is raised. Run the
+  command there, then `darkbloom cluster` again. Nothing loads before.
+- **"Needs more memory"**, with the reason: no split fits even with the limits
+  Darkbloom can raise (for example, an M4 Max whose macOS keeps 96 GiB for the
+  GPU), or the Macs together cannot hold the model.
+
+These rules (`ClusterGPUMemoryLimit.raisedByDarkbloom`,
+`ClusterSetupPlanning.gpuLimitSteps`, `refusalWords`) are checked pair by pair
+in `libs/darkbloom-cluster/Tests/PlacementChecks/GLMPairOfferChecks.swift`.
 
 When several splits predict the same time (two identical Macs, or Macs with
 equal measured speed), the one that leaves each Mac the largest share of its

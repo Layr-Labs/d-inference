@@ -428,7 +428,8 @@ enum ClusterSetupPlanning {
             measured: result.basis.source == .measured, alone: alone, aloneAsFast: result.aloneAsFast,
             fitsNow: ranks.allSatisfy { $0.fit == "now" }, needsBytes: ranks.compactMap(\.shortBytes).max(), explanation: lines,
             modeReason: ClusterPlacementExplanation.deploymentReason(result),
-            tensorParallelNote: ClusterPlacementExplanation.tensorParallelNote(result)?.rawValue)
+            tensorParallelNote: result.modesReason == ClusterTensorParallelProof.reason
+                ? ClusterOnboardingModelChoice.notLoadedOnRealMacsNote : ClusterPlacementExplanation.tensorParallelNote(result)?.rawValue)
     }
 
     static func fitCode(_ fit: ClusterPlacementFit) -> String {

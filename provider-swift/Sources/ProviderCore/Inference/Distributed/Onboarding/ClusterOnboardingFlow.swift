@@ -294,8 +294,15 @@ public struct ClusterOnboardingModelChoice: Codable, Sendable, Equatable {
         let move = provision.map { $0.leaderDownloads && !$0.fromOtherMac ? "download" : "copy" }
         // Each mode with its speed measured on these Macs (an older leader sends only the planner's split).
         let how = modes.flatMap(ClusterOnboardingMode.listWords) ?? ClusterOnboardingDeployment.shownMarker(split)
-        return ([name] + [size, how, move].compactMap { $0 }).joined(separator: " · ")
+        // The one note the line keeps: a mode the model has that isn't offered at all, and why.
+        let notOffered = tensorParallelNote == Self.notLoadedOnRealMacsNote ? Self.notLoadedOnRealMacsWords : nil
+        return ([name] + [size, how, notOffered, move].compactMap { $0 }).joined(separator: " · ")
     }
+
+    /// `tensorParallelNote` for a model whose tensor parallel isn't offered because it hasn't loaded on real Macs
+    /// (`ClusterTensorParallelProof`), and what the list line says for it.
+    public static let notLoadedOnRealMacsNote = "tensor parallel: not offered yet"
+    static let notLoadedOnRealMacsWords = "tensor parallel isn't offered yet (it hasn't loaded on real Macs)"
 }
 
 /// The command the cluster screens tell the person to run: the running identity's CLI name

@@ -4901,6 +4901,19 @@ decode step is mostly a per-token floor that two ranks do not halve, while 61
 sums cross the link: about 0.67-0.93x one M5 Ultra's decode, unmeasured
 [INFERENCE].
 
+**Tensor parallel only once it has loaded on real Macs.** `ClusterTensorParallelProof`,
+in `ClusterPlacementFlow.decide` before feature parity, leaves a model's
+tensor-parallel modes out of the policy while the model is in
+`notLoadedOnRealMacs` (MiMo V2.6 today: on two M5 Ultra 256 GB Macs, 0.10.9
+DevNet, its tensor-parallel load ran past the pair's startup deadline and never
+served). It is a rule about the model, never the hardware, so no measured
+link, served record or kept mode brings tensor parallel back; the plan's
+`modesReason` says why, a person's earlier choice of tensor parallel plans the
+pipeline, and only a developer's forced mode still places it. The setup's model
+list adds "tensor parallel isn't offered yet (it hasn't loaded on real Macs)"
+to the model's line. No capability record or digest changes. The model leaves
+the set once its tensor parallel has loaded and served on two Macs.
+
 **Feature parity before tensor parallel.** The guided step plans a `fastest`
 family's tensor parallel only where it keeps every feature and caching behavior
 of the mode it would replace (owner, 2026-11-01). Each mode's features come from

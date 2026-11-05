@@ -73,7 +73,8 @@ public enum ClusterPlacementFlow {
                               coordinator: Bool = false,
                               assumeUnmeasuredLink: Bool = true,
                               environment: [String: String] = ProcessInfo.processInfo.environment,
-                              benchDebugBuild: Bool = ClusterPlannerBenchCap.isDebugBuild) throws
+                              benchDebugBuild: Bool = ClusterPlannerBenchCap.isDebugBuild,
+                              tensorParallelNotLoaded: Set<String> = ClusterTensorParallelProof.notLoadedOnRealMacs) throws
         -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
         // Developer bench only (`ClusterPlannerBenchCap`): a debug build may be told to plan as if each Mac could
         // give less memory than it detected; a release build refuses. The load gates never see this.
@@ -289,6 +290,12 @@ public enum ClusterPlacementFlow {
             policy.modes = [.tensorParallel]; policy.schedules = [.serial]
             policy.modesReason = policy.modesReason ?? "a capacity change keeps the running tensor-parallel shares"
             policy.requiredTensorShares = incumbentTensorShares
+        }
+        // A model whose tensor parallel hasn't loaded on real Macs is planned without it (`ClusterTensorParallelProof`);
+        // a person's earlier choice of tensor parallel then plans the pipeline. A developer's forced mode places it.
+        if ClusterTensorParallelProof.apply(to: &policy, layout: layout, forced: developerForced != nil, notLoaded: tensorParallelNotLoaded),
+           policy.forcedMode == .tensorParallel {
+            policy.forcedMode = nil
         }
         // Feature parity (`ClusterModeParity`): tensor parallel is planned only where it keeps every feature of the
         // mode it would replace, as the worker's capability record declares them, and is left out before anything is

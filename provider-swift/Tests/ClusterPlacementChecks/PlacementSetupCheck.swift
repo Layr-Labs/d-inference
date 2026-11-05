@@ -1075,12 +1075,15 @@ import Foundation
             return (0..<3).map { .init(setup: setup, sample: .init(route: .pair, member: nil, promptTokens: 128, outputTokens: 128,
                 firstTokenSeconds: 0.08, decodeTokensPerSecond: decode, finishedAt: Double($0))) }
         }
+        // As the plan decides once MiMo's tensor parallel has loaded on real Macs (`ClusterTensorParallelProof`; until
+        // then it is never offered, checked below): the parity and evidence rules that take over.
         func decide(_ records: [ClusterServedSpeedRecords.Entry],
-                    record: (ClusterRuntimeCapability, ClusterPairDescription)? = nil)
+                    record: (ClusterRuntimeCapability, ClusterPairDescription)? = nil, proven: Bool = true)
             throws -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
             try ClusterPlacementFlow.decide(description: record?.1 ?? bothDescription, capability: record?.0 ?? both,
                 localMemberID: "mac-one", localProfile: ultras.local, peerProfile: ultras.peer, layout: layout, measurements: [alone],
-                promptTokens: 128, outputTokens: 128, served: records, link: ultras.link, environment: [:], benchDebugBuild: false)
+                promptTokens: 128, outputTokens: 128, served: records, link: ultras.link, environment: [:], benchDebugBuild: false,
+                tensorParallelNotLoaded: proven ? [] : ClusterTensorParallelProof.notLoadedOnRealMacs)
         }
         func line(_ decided: (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?), _ prefix: String) -> String {
             decided.lines.first { $0.hasPrefix(prefix) } ?? "-"
@@ -1126,6 +1129,41 @@ import Foundation
                 held.result.chosen.map { !$0.mode.usesTensorParallelDecode } == true
                     && held.result.tensorParallel?.verdict == .dropsFeatures && held.lines.contains(lanesLine) && held.setup != nil)
         }
+
+        // As this build plans MiMo: its tensor parallel hasn't loaded on real Macs (0.10.9 DevNet, two M5 Ultras: each
+        // Mac's part ended "exit 1: deadline"), so no plan offers it, whatever was measured or served, and the plan
+        // says why; the speculative pipeline is planned. A rule about the model: the same on any Macs.
+        let runs: Set<ClusterShardOption.Verdict> = [.chosen, .slower, .predictedFasterOnPriorOnly, .reductionNotMeasured]
+        func offersTensorParallel(_ result: ClusterPlacementResult) -> Bool {
+            result.chosen.map { $0.mode.usesTensorParallelDecode } == true
+                || result.alternatives.contains { $0.mode.usesTensorParallelDecode }
+                || result.shards?.options.contains { $0.kind == .tensorParallel && runs.contains($0.verdict) } == true
+        }
+        for (name, records) in [("nothing served in tensor parallel", [ClusterServedSpeedRecords.Entry]()),
+                                ("three requests served in tensor parallel at 95 tok/s", served(95, build: hash("a")))] {
+            let unproven = try decide(records, proven: false)
+            require("MiMo not loaded on real Macs: 2x 256 GB, \(name): the speculative pipeline, tensor parallel not offered, and the plan says why (\(line(unproven, "  Pipeline:")))",
+                unproven.result.chosen?.mode == .pipelineMTP && !offersTensorParallel(unproven.result)
+                    && unproven.result.modesReason == "tensor parallel isn't offered for this model yet: it hasn't loaded on real Macs"
+                    && line(unproven, "  Pipeline:").contains("it hasn't loaded on real Macs") && unproven.setup != nil)
+        }
+        let smaller = try ClusterPlacementFlow.decide(description: bothDescription, capability: both, localMemberID: "mac-one",
+            localProfile: local, peerProfile: peer, layout: layout)
+        require("MiMo not loaded on real Macs: 2x 128 GB, as the setup plans it by default: tensor parallel not offered",
+            !offersTensorParallel(smaller.result) && smaller.result.modesReason == ClusterTensorParallelProof.reason)
+        // A person's earlier choice of tensor parallel plans the pipeline; a developer's forced mode still places it
+        // (that is how the proof is made).
+        let chosenBefore = try ClusterPlacementFlow.decide(description: bothDescription, capability: both, localMemberID: "mac-one",
+            localProfile: ultras.local, peerProfile: ultras.peer, layout: layout, measurements: [alone], promptTokens: 128,
+            outputTokens: 128, link: ultras.link, chosenMode: .tensorParallel, environment: [:], benchDebugBuild: false)
+        require("MiMo not loaded on real Macs: an earlier choice of tensor parallel plans a pipeline instead",
+            chosenBefore.result.chosen.map { !$0.mode.usesTensorParallelDecode } == true && chosenBefore.setup != nil)
+        var policy = ClusterPlacementPolicy()
+        require("MiMo not loaded on real Macs: a developer's forced mode keeps tensor parallel; another model is untouched",
+            !ClusterTensorParallelProof.apply(to: &policy, layout: layout, forced: true) && policy.modes == nil
+                && !ClusterTensorParallelProof.apply(to: &policy, layout: layout, forced: false, notLoaded: ["registered_glm5_next"])
+                && policy.modes == nil && ClusterTensorParallelProof.apply(to: &policy, layout: layout, forced: false)
+                && policy.modes?.contains(where: \.usesTensorParallelDecode) == false)
     }
 
     /// The Gemma 4 QAT 4-bit golden layout (with the family's tensor-parallel facts and `fastest_v1`), `adjust`ed, and

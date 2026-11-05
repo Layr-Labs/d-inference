@@ -52,6 +52,7 @@ xcrun swiftc -j 4 "${task_flags[@]}" -D DARKBLOOM_CLUSTER_FIXTURE_ARTIFACTS -par
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementRequestLimits.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterModelFeaturePolicy.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterModeParity.swift" \
+  "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterTensorParallelProof.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/DistributedResidentExecution.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Requests/DistributedRequestDeadlineContext.swift" \
   "$task_provider/Tests/ClusterPlacementChecks/PlacementSetupCheck.swift" -o "$task_build/setup-check"

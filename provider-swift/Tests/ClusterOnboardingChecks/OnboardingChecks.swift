@@ -2029,6 +2029,12 @@ import Darwin
                      tensorParallelNote: note).listLine(sameTitleElsewhere: false) == "m · 6.1 GB", "model line: name and size, no note: \(note)")
         }
         expect(C(title: "m", lines: [], blocker: nil).listLine(sameTitleElsewhere: false) == "m", "model line: no size known, the name")
+        // The one note the line keeps: a model whose tensor parallel isn't offered at all until it has loaded on real Macs.
+        let mimo = [ClusterOnboardingMode(mode: "pipeline_mtp_v1", split: nil, measuredTokensPerSecond: nil)]
+        expect(C(title: "Xiaomi: MiMo-V2.6-Flash", lines: ["172.9 GB"], blocker: nil, tensorParallelNote: "tensor parallel: not offered yet",
+                 modes: mimo).listLine(sameTitleElsewhere: false)
+               == "Xiaomi: MiMo-V2.6-Flash · 172.9 GB · speculative pipeline · not measured on these Macs yet · "
+                + "tensor parallel isn't offered yet (it hasn't loaded on real Macs)", "model line: tensor parallel not offered, and why")
         expect(C(title: "m", lines: ["6.1 GB"], blocker: nil, modelID: "org/m").listLine(sameTitleElsewhere: true) == "m (org/m) · 6.1 GB",
                "model line: a shared title says its id")
         let copy = ClusterOnboardingProvisionOffer(lines: [], downloadAlternative: true, leaderDownloads: false)

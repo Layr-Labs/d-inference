@@ -2139,16 +2139,16 @@ final class OnboardingLive: @unchecked Sendable {
         }
     }
 
-    /// Whether a part's end is said in the live rows (`readinessOnce`, `offeredReadiness`) as an end that starts again by
-    /// itself, on either Mac: not a clean stop ("stopped", or exit 0 with no reason), which a planned switch makes on both
-    /// Macs (the DevNet run, A-10, B18); an exit 0 that says why (a refused dial, A-3) is still said.
     /// "; <mac>'s part ended (<end>: <last error>) and starts again by itself" while that part keeps ending: what the
-    /// start's screen adds to its loading line (`readinessOnce`) and `cluster status` gives as its reason (`status`).
+    /// start's screen adds to its loading line (`readinessOnce`) and `cluster status` gives as its reason (`localStatus`).
     static func endedClause(mac: String, child: ClusterServiceStatus.Child?) -> String? {
         guard let child, !child.running, let end = child.lastEnd, endShown(child) else { return nil }
         return "; \(mac)'s part ended (\(end)\(child.lastError.map { ": " + $0 } ?? "")) and starts again by itself"
     }
 
+    /// Whether a part's end is said in the live rows (`readinessOnce`, `offeredReadiness`) as an end that starts again by
+    /// itself, on either Mac: not a clean stop ("stopped", or exit 0 with no reason), which a planned switch makes on both
+    /// Macs (the DevNet run, A-10, B18); an exit 0 that says why (a refused dial, A-3) is still said.
     static func endShown(_ child: ClusterServiceStatus.Child) -> Bool {
         guard let end = child.lastEnd else { return false }
         return !(end == "stopped" || (end == "exit 0" && child.lastError == nil))

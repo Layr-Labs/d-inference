@@ -262,7 +262,8 @@ enum ClusterSetupPlanning {
                 }
                 let profiles = [localMemberID: localProfile, peerID: peerProfile]
                 var plan = summary(decided.result, chosen: chosen, lines: decided.lines, localMemberID: localMemberID, profiles: profiles)
-                plan.modes = modes(decided.result, served: served, pair: pair, localMemberID: localMemberID)
+                plan.modes = modes(decided.result, served: served, pair: pair, localMemberID: localMemberID,
+                                   serving: coordinator ? .darkbloom : .local, tensorAssistant: assistantQuote?.assistant != nil)
                 plan.publicTraffic = ClusterPairServingGrants.publicTrafficLine(runtimeModelID: capability.record.runtimeModelID,
                     artifactSHA256: capability.record.artifactSHA256, mode: chosen.mode,
                     tensorAssistant: assistantQuote?.assistant != nil && chosen.mode == .tensorParallel)
@@ -385,15 +386,17 @@ enum ClusterSetupPlanning {
     /// chosen first: the planner's own sharded candidates that run here (not ones that do not fit, no runtime executes,
     /// a qualification check kept out, or that would drop a feature), one per family (the pipeline family's best:
     /// plain, compact or speculative), each with the decode rate this pair served it at, read as the planner reads its
-    /// served requests (`ClusterServedModes.figures` over this build's records of this model on these Macs).
+    /// served requests (`ClusterServedModes.figures` over this build's records of this model on these Macs, served the way
+    /// the plan will serve: `serving`, and tensor parallel with Qwen's tensor assistant exactly when `tensorAssistant`).
     static func modes(_ result: ClusterPlacementResult, served: [ClusterServedSpeedRecords.Entry], pair: ClusterPairDescription,
-                      localMemberID: String) -> [ClusterSetupPlanSummary.Mode]? {
+                      localMemberID: String, serving: ClusterServedScope, tensorAssistant: Bool) -> [ClusterSetupPlanSummary.Mode]? {
         guard let shards = result.shards else { return nil }
         let runs: Set<ClusterShardOption.Verdict> = [.chosen, .slower, .predictedFasterOnPriorOnly, .reductionNotMeasured]
         let members = Set(pair.members.map(\.id))
         let pairServed = served.filter { $0.setup.modelID == pair.publicModelID && ($0.setup.ranks.map { Set($0) == members } ?? false) }
         let builds = Dictionary(pair.members.map { ($0.id, $0.runtimeBinarySHA256) }, uniquingKeysWith: { first, _ in first })
-        let figures = ClusterServedModes.figures(ClusterServedSpeedRecords.servedBy(builds, pairServed).current,
+        let figures = ClusterServedModes.figures(ClusterServedSpeedRecords.servedAs(serving, tensorAssistant: tensorAssistant,
+                                                     ClusterServedSpeedRecords.servedBy(builds, pairServed).current),
                                                  promptTokens: result.promptTokens, outputTokens: result.outputTokens)
         var families = Set<ClusterForcedMode>(), modes = [ClusterSetupPlanSummary.Mode]()
         for option in shards.options.sorted(by: { ($0.verdict == .chosen ? 0 : 1) < ($1.verdict == .chosen ? 0 : 1) })

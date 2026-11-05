@@ -42,9 +42,11 @@ COMPLETENESS_CONTRACT="$(
         | shasum -a 256 | cut -d' ' -f1
 )"
 # Apple's metal-cpp archive as a Darkbloom macOS sandbox image ships it
-# (darkbloom-sandbox images/macos/pins.env METAL_CPP_*). MLX_METAL_CPP_ARCHIVE
-# names another local copy; it must have the same SHA-256.
-METAL_CPP_ARCHIVE="${MLX_METAL_CPP_ARCHIVE:-/usr/local/libexec/darkbloom/share/metal-cpp/metal-cpp_26.zip}"
+# (darkbloom-sandbox images/macos/pins.env METAL_CPP_*), used only while MLX
+# names this archive. MLX_METAL_CPP_ARCHIVE names another local copy of it,
+# under any file name; it must have the same SHA-256.
+METAL_CPP_NAME="metal-cpp_26.zip"
+METAL_CPP_ARCHIVE="${MLX_METAL_CPP_ARCHIVE:-/usr/local/libexec/darkbloom/share/metal-cpp/$METAL_CPP_NAME}"
 METAL_CPP_SHA256="4df3c078b9aadcb516212e9cb03004cbc5ce9a3e9c068fa3144d021db585a3a4"
 TARGET_ARG="${1:-debug}"
 
@@ -305,7 +307,7 @@ if [ ! -s "$CACHED" ]; then
     # bytes either way, so the cache key does not change.
     metal_cpp_args=()
     if [ -f "$METAL_CPP_ARCHIVE" ]; then
-        if grep -Fq "/metal/cpp/files/$(basename "$METAL_CPP_ARCHIVE")" "$MLX_SRC/CMakeLists.txt" &&
+        if grep -Fq "/metal/cpp/files/$METAL_CPP_NAME" "$MLX_SRC/CMakeLists.txt" &&
             [ "$(shasum -a 256 "$METAL_CPP_ARCHIVE" | cut -d' ' -f1)" = "$METAL_CPP_SHA256" ] &&
             unzip -q "$METAL_CPP_ARCHIVE" -d "$BUILD_DIR/metal-cpp-archive" &&
             [ -f "$BUILD_DIR/metal-cpp-archive/metal-cpp/Metal/Metal.hpp" ]; then

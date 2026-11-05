@@ -80,10 +80,11 @@ Darkbloom macOS sandbox runner, the image carries that archive at
 `/usr/local/libexec/darkbloom/share/metal-cpp/metal-cpp_26.zip`. When the
 nested MLX core names that archive and its SHA-256 is the one the script pins,
 `scripts/fetch-metallib.sh` unzips it into the build directory and passes
-`-DFETCHCONTENT_SOURCE_DIR_METAL_CPP`. The build then makes no download. In
-any other case, FetchContent downloads the archive as before.
-`MLX_METAL_CPP_ARCHIVE` names another local copy, which must have the same
-SHA-256. The headers are the same bytes either way, so the metallib and its
+`-DFETCHCONTENT_SOURCE_DIR_METAL_CPP`. The build then makes no download from
+developer.apple.com; MLX's other dependencies still come from GitHub. In any
+other case, FetchContent downloads the archive as before.
+`MLX_METAL_CPP_ARCHIVE` names another local copy of that archive, under any
+file name, which must have the same SHA-256. The headers are the same bytes either way, so the metallib and its
 cache key do not change.
 
 The pinned core orders fast Metal fence waits after earlier kernels in the

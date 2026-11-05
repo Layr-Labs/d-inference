@@ -294,6 +294,20 @@ lane, `format('<job>-{0}', matrix.shard)`.
 | `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
 | `provider-release-cache.yml` | `warm`, pull requests only | `blacksmith-12vcpu-macos-27` |
 
+`.github/workflows/darkbloom-watchdog.yml` is darkbloom-sandbox's GitHub-side
+watchdog (`public/darkbloom-actions/.github/workflows/watchdog.yml` at
+31236c54), copied unchanged: update it by copying a newer one, never by
+editing. Every 10 minutes it finds a run of this repository whose job with a
+Darkbloom label has waited queued with no runner for
+`DARKBLOOM_WATCHDOG_MINUTES` while no Darkbloom job of the run moved, marks
+it with a `Darkbloom watchdog` check run, cancels it and re-runs its route job
+(`Select Runners`, here `plan / route / Select Runners`) and the jobs that
+need it; the new route keeps every fallback. A run is rescued once; stranded
+again, it is only cancelled. Its token has `actions: write` and
+`checks: write` on this repository and nothing else. Only CI and the other
+routed workflows carry Darkbloom labels, so release and signing runs are never
+touched. `DARKBLOOM_WATCHDOG=off` turns it off.
+
 Routing is off unless the repository variable `DARKBLOOM_ROUTING` is exactly
 `on`. The repository variable `DARKBLOOM_MACOS_LANES`, when set to a number
 from 0 to 99, caps the macOS jobs one run asks for: the route keeps the lanes

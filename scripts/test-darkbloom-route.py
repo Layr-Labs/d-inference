@@ -78,6 +78,9 @@ CI_ROUTED = {
     ("ci-master.yml", "release-integrity"): "needs.plan.outputs.routes",
     ("ci-master.yml", "docs"): "needs.plan.outputs.routes",
 }
+# darkbloom-sandbox's GitHub-side watchdog (public/darkbloom-actions
+# .github/workflows/watchdog.yml at 31236c54), copied unchanged.
+WATCHDOG = "darkbloom-watchdog.yml"
 # Credentialed, release, review or publication workflows keep literal runners.
 UNROUTED = ("release-swift.yml", "release-provider.yml", "release-dev-branch.yml",
             "release-desktop.yml", "provider-signing-validation.yml", "register-model.yml",
@@ -504,7 +507,7 @@ class RouteWorkflowTests(unittest.TestCase):
 
     def test_every_workflow_is_classified(self):
         self.assertEqual(set(self.texts), set(ROUTED) | set(UNROUTED) | set(CALLERS) |
-                         {"darkbloom-route.yml", "component-changes.yml", PLAN, "provider-tests.yml"})
+                         {"darkbloom-route.yml", "component-changes.yml", PLAN, "provider-tests.yml", WATCHDOG})
 
     def test_router_is_isolated_and_defaults_to_the_sandbox_plane(self):
         text = self.texts["darkbloom-route.yml"]
@@ -690,7 +693,8 @@ class RouteWorkflowTests(unittest.TestCase):
                 for runner in re.findall(r"(?m)^\s+runs-on: (.+)$", text):
                     self.assertRegex(runner, r"^blacksmith-[a-z0-9-]+$")
         for filename, text in self.texts.items():
-            if filename != "darkbloom-route.yml":
+            # The watchdog names the labels it looks for; it routes nothing.
+            if filename not in ("darkbloom-route.yml", WATCHDOG):
                 with self.subTest(workflow=filename):
                     for label in ("self-hosted", "darkbloom-linux-arm64", "darkbloom-macos-arm64"):
                         self.assertNotIn(label, text)
@@ -700,6 +704,34 @@ class RouteWorkflowTests(unittest.TestCase):
                 if name not in routed and not job_field(job, "uses"):
                     with self.subTest(workflow=filename, job=name):
                         self.assertRegex(job_field(job, "runs-on"), r"^(blacksmith-[a-z0-9-]+|ubuntu-24\.04)$")
+
+    def test_watchdog_rescues_only_this_repositorys_routed_runs(self):
+        text = self.texts[WATCHDOG]
+        header, body = text.split("\njobs:\n", 1)
+        # Scheduled and on demand only; no token permission at the top.
+        self.assertEqual(re.findall(r"(?m)^  ([a-z_]+):$", header.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]),
+                         ["schedule", "workflow_dispatch"])
+        self.assertIn("\npermissions: {}\n", header)
+        watch, = jobs(text).values()
+        self.assertEqual(job_field(watch, "runs-on"), "ubuntu-24.04")
+        # Cancel and re-run, read and write its marker: on this repository only.
+        self.assertEqual(permissions(watch, 4), {"actions": "write", "checks": "write"})
+        self.assertIn('"${api%/}/repos/$REPOSITORY/$path"', body)
+        self.assertIn("REPOSITORY: ${{ github.repository }}", body)
+        for forbidden in ("uses:", "secrets.", "checkout", "id-token", "contents:"):
+            self.assertNotIn(forbidden, body)
+        # It acts only on runs with a queued Darkbloom-labelled job, and the
+        # release, signing and credentialed workflows never carry one.
+        self.assertIn('index("self-hosted") != null and any(.[]; startswith("darkbloom-"))', body)
+        for filename in UNROUTED:
+            for runner in re.findall(r"(?m)^\s+runs-on: (.+)$", self.texts[filename]):
+                self.assertNotIn("darkbloom", runner, filename)
+            self.assertNotIn("self-hosted", self.texts[filename], filename)
+        # The route job it re-runs is CI's: provider-plan.yml's, called as
+        # `plan / route / Select Runners`, which it matches by suffix.
+        self.assertIn('route_job=${ROUTE_JOB:-Select Runners}', body)
+        self.assertIn('(.name | endswith(" / " + $name))', body)
+        self.assertIn("    name: Select Runners\n", jobs(self.texts["darkbloom-route.yml"])["select"])
 
     def test_classifier_gate_and_route_need_no_routed_runner(self):
         ci = jobs(self.texts["provider-tests.yml"])

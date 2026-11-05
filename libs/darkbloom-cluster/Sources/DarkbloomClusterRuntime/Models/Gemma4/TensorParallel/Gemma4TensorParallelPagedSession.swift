@@ -240,6 +240,11 @@ extension Gemma4TensorParallelModel {
     public static func withLayerStride<R>(_ stride: Int?, _ body: () throws -> R) rethrows -> R {
         try $layerStride.withValue(stride, operation: body)
     }
+    /// The bench modes a `withLayerStride` stride reaches: ranks that decode
+    /// on the calling thread (`full`, `shard`, `tp`). `simulated` runs both
+    /// ranks on `Gemma4TensorParallelLocalPair`'s own threads, which never see
+    /// the stride, so a stride there is refused instead of silently ignored.
+    public static func benchLayerStrideApplies(mode: String) -> Bool { ["full", "shard", "tp"].contains(mode) }
 
     /// Greedy generation as `generate`, on this model's paged KV through the
     /// resident runtime's own request path (`Gemma4TensorParallelPagedSession`,

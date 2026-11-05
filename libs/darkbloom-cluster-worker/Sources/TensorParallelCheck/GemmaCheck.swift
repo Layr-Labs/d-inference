@@ -162,7 +162,9 @@ enum GemmaCheck {
         guard !sealed || mode == "tp" else { throw Failure("--reduction sealed-bench applies to a tp rank only") }
         let pack = (fields["--pack"] ?? "yes") == "yes"
         let layerStride = fields["--layer-stride"].flatMap { Int($0) }
-        guard layerStride == nil || paged else { throw Failure("--layer-stride applies to the paged path") }
+        guard layerStride == nil || (paged && Gemma4TensorParallelModel.benchLayerStrideApplies(mode: mode)) else {
+            throw Failure("--layer-stride applies to the paged path of a full, shard or tp rank (simulated ranks run on their own threads)")
+        }
         try ProcessForcedExit.routeTerminationSignals()
         ProcessNativeMemoryRelease.installForForcedExit()
         try ProcessDeadline.arm(uptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + UInt64(deadline) * 1_000_000_000,

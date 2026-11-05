@@ -122,6 +122,9 @@ struct Gemma4TensorParallelRuntimeTests {
         Gemma4TensorParallelModel.withLayerStride(8) { #expect(Gemma4TensorParallelModel.layerStride == 8) }
         Gemma4TensorParallelModel.withLayerStride(nil) { #expect(Gemma4TensorParallelModel.layerStride == nil) }
         #expect(Gemma4TensorParallelModel.layerStride == nil)
+        // Only ranks that decode on the calling thread see it: `simulated` is refused.
+        #expect(["full", "shard", "tp"].allSatisfy { Gemma4TensorParallelModel.benchLayerStrideApplies(mode: $0) })
+        #expect(!["simulated", "split-sum", ""].contains { Gemma4TensorParallelModel.benchLayerStrideApplies(mode: $0) })
     }
 
     /// Batch lanes: three requests of different lengths decode together on

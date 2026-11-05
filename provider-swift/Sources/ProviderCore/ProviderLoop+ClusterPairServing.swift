@@ -166,7 +166,7 @@ extension ProviderLoop: NativePairMemberServingHost {
         let telemetry = context.observabilityFacts.map { facts in
             DistributedPairTelemetryContext(modelID: facts.modelID, mode: facts.mode, cut: facts.cut,
                 log: ClusterObservability.current().telemetryLog(sessionID: epoch.uuidString.lowercased()), ranks: facts.ranks,
-                rankBuildSHA256: identity.peers.map(\.buildSHA256))
+                rankBuildSHA256: identity.peers.map(\.buildSHA256), serving: facts.serving, tensorAssistant: facts.tensorAssistant)
         }
         let specification = ClusterPairSlotSpecification(publicModelID: context.publicModelID,
             modelType: context.modelType, tokenizer: context.tokenizer, eosTokenIDs: context.eosTokenIDs,
@@ -209,7 +209,8 @@ extension ProviderLoop: NativePairMemberServingHost {
         let diagnostics = (start.endpoint as? ClusterRemoteWorkerEndpoint).map { [DistributedSessionFacts.tail($0.diagnosticTail)] } ?? []
         let facts = DistributedSessionFacts(clusterID: base.clusterID, memberID: base.memberID, modelID: base.modelID,
             mode: base.mode, cut: base.cut, membershipEpoch: start.membershipEpoch.uuidString.lowercased(),
-            diagnostics: diagnostics, terminations: [], peerHosts: base.peerHosts, peerUsers: base.peerUsers, ranks: base.ranks)
+            diagnostics: diagnostics, terminations: [], peerHosts: base.peerHosts, peerUsers: base.peerUsers, ranks: base.ranks,
+            serving: base.serving, tensorAssistant: base.tensorAssistant)
         return ClusterObservability.current().recordFailure(stateCode, source: "member",
             error: String(describing: error), facts: facts)?.guidanceCode
     }

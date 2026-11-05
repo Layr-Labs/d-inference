@@ -234,10 +234,10 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
     }
 
     /// A decode forward is submitted to the GPU every this many layers
-    /// (`Qwen35LayerSubmission`), so the GPU and the collectives run the
-    /// layers already built while the host builds the rest. Evaluation order
-    /// only: the logits and every committed state keep their bits.
-    static let decodeLayerStride = 1
+    /// (`QwenTensorParallelLaunch.decodeLayerStride`, where the measured
+    /// choice is). Evaluation order only: the logits and every committed
+    /// state keep their bits.
+    static let decodeLayerStride = QwenTensorParallelLaunch.decodeLayerStride
     /// A bench or test's own stride (0: the whole forward in one evaluation).
     @TaskLocal static var layerStride: Int?
     /// A prompt frame is submitted to the GPU every this many decoder layers

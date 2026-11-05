@@ -6,12 +6,14 @@ import MLX
 /// Developer bench (`darkbloom-cluster-tp-check qwen-decode`): the batch
 /// driver's plain decode on this rank, through the real driver, native
 /// executor and the rank's group (two ranks of one Mac over the loopback
-/// ring, sealed or not). Each run decodes `width` requests together, with the
+/// ring, or a pair over JACCL, sealed or not), at the product's decode layer
+/// stride or a `layerStride` of the caller's. Each run decodes `width` requests together, with the
 /// next step's control exchanged a step or folded into the selection sum;
 /// the owner answers each token after `answerDelayMicroseconds`. Logs each
 /// run's decode step time and a digest of every request's retired tokens;
 /// returns whether every run retired the same tokens. Loopback timings show
-/// a step's host work and synchronization, never a pair's.
+/// a step's host work and synchronization, never a pair's; JACCL timings are
+/// the pair's.
 public enum QwenTensorParallelDecodeBench {
     struct Reserved: QwenTensorParallelBatchReservation {
         let request: QwenLayerStageGenerationRequest
@@ -45,8 +47,19 @@ public enum QwenTensorParallelDecodeBench {
 
     public static func pair(model: QwenTensorParallelModel, configuration: Data, group: any QwenTensorParallelReduction,
                             width: Int, promptTokens: Int, outputTokens: Int, sampled: Bool, folds: [Bool],
-                            repeats: Int, answerDelayMicroseconds: Int, buildsAhead: [Bool] = [false],
+                            repeats: Int, answerDelayMicroseconds: Int, layerStride: Int? = nil, buildsAhead: [Bool] = [false],
                             log: (String) -> Void) throws -> Bool {
+        // A stride to compare against the product's (`QwenTensorParallelBatchSession.decodeLayerStride`).
+        try QwenTensorParallelBatchSession.$layerStride.withValue(layerStride ?? QwenTensorParallelBatchSession.layerStride) {
+            try run(model: model, configuration: configuration, group: group, width: width, promptTokens: promptTokens,
+                outputTokens: outputTokens, sampled: sampled, folds: folds, repeats: repeats,
+                answerDelayMicroseconds: answerDelayMicroseconds, buildsAhead: buildsAhead, log: log)
+        }
+    }
+
+    static func run(model: QwenTensorParallelModel, configuration: Data, group: any QwenTensorParallelReduction,
+                    width: Int, promptTokens: Int, outputTokens: Int, sampled: Bool, folds: [Bool],
+                    repeats: Int, answerDelayMicroseconds: Int, buildsAhead: [Bool], log: (String) -> Void) throws -> Bool {
         // Request IDs carry the run's index in one byte.
         guard case .shard(let rank, _) = model.role, (1...8).contains(width), promptTokens > 0, outputTokens > 1,
               (1...255).contains(repeats), !buildsAhead.isEmpty, (1...255).contains(folds.count * buildsAhead.count * repeats),

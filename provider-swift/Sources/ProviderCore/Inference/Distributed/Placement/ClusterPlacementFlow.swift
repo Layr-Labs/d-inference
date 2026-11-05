@@ -173,7 +173,10 @@ public enum ClusterPlacementFlow {
         let pairServed = served.filter { $0.setup.modelID == description.publicModelID && ($0.setup.ranks.map { Set($0) == members } ?? false) }
         let builds = Dictionary(description.members.map { ($0.id, $0.runtimeBinarySHA256) }, uniquingKeysWith: { first, _ in first })
         let scoped = ClusterServedSpeedRecords.servedBy(builds, pairServed)
-        let ours = scoped.current
+        // Speeds count only for the way this plan serves: through Darkbloom (`coordinator`) or locally, and in tensor
+        // parallel with Qwen's tensor assistant exactly when this plan has one (`Setup.servedAs`).
+        let ours = ClusterServedSpeedRecords.servedAs(coordinator ? .darkbloom : .local,
+            tensorAssistant: tensorAssistantQuote?.assistant != nil, scoped.current)
         // The request this pair's served requests look like (decode-heavy or prompt-heavy) is the one the
         // planner chooses tensor parallel or a pipeline for, unless the caller named one. Prompt and answer lengths
         // are what the pair's clients sent, not a speed, so every build's requests count here: after an update the
@@ -346,7 +349,8 @@ public enum ClusterPlacementFlow {
                 + "Those exact shapes are not planned; every other placement is, on any Macs.")
         }
         // Public traffic in one line (owner serving never waits for it): the coordinator's parity qualification decides,
-        // and a setup that decodes with Qwen's speculative assistant is never offered to it.
+        // and a setup that decodes with Qwen's speculative assistant is offered to it only where this build declares
+        // that assistant public (`ClusterPublicModels.tensorAssistant`).
         let assistant = (batchScope?.tensorParallelQuote ?? tensorAssistantQuote)?.assistant
         let publicLine = ClusterPairServingGrants.publicTrafficLine(runtimeModelID: capability.runtimeModelID,
             artifactSHA256: capability.artifactSHA256, mode: result.chosen?.mode,

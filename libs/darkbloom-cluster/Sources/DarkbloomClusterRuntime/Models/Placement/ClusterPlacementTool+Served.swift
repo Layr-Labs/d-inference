@@ -41,6 +41,9 @@ extension ClusterPlacementTool {
             let concurrentRequests: Int?
             /// The worker build of each rank (`ClusterPairRequestTelemetry.rankBuildSHA256`); nil before builds were recorded.
             let rankBuildSHA256: [String]?
+            /// `ClusterPairRequestTelemetry.serving` and `tensorAssistant`; nil before they were recorded.
+            let serving: ClusterServedScope?
+            let tensorAssistant: Bool?
         }
         let schema: String
         let records: [Record]
@@ -60,7 +63,8 @@ extension ClusterPlacementTool {
                 result += records.entries.map { entry in
                     guard let ranks, entry.setup.ranks == nil else { return entry }
                     return .init(setup: .init(modelID: entry.setup.modelID, mode: entry.setup.mode, cut: entry.setup.cut, ranks: ranks,
-                                              rankBuildSHA256: entry.setup.rankBuildSHA256),
+                                              rankBuildSHA256: entry.setup.rankBuildSHA256, serving: entry.setup.serving,
+                                              tensorAssistant: entry.setup.tensorAssistant),
                                  sample: entry.sample)
                 }
                 continue
@@ -75,7 +79,8 @@ extension ClusterPlacementTool {
                           firstTokenMilliseconds: record.firstTokenMilliseconds, decodeTokensPerSecond: record.decodeTokensPerSecond,
                           outcome: record.outcome, finishedAt: record.finishedAt) else { continue }
                 result.append(.init(setup: .init(modelID: record.modelID, mode: record.mode, cut: record.cut, ranks: record.ranks ?? ranks,
-                                                 rankBuildSHA256: record.rankBuildSHA256),
+                                                 rankBuildSHA256: record.rankBuildSHA256, serving: record.serving,
+                                                 tensorAssistant: record.tensorAssistant),
                                    sample: sample))
             }
         }

@@ -1,3 +1,4 @@
+import DarkbloomClusterPlacement
 import DarkbloomClusterProtocol
 import DarkbloomClusterRemote
 import Foundation
@@ -76,18 +77,21 @@ struct ClusterObservabilityTests {
         let builds = [String(repeating: "c", count: 64), String(repeating: "d", count: 64)]
         let context = DistributedPairTelemetryContext(modelID: "fabricated-qwen-9b", mode: "phase_split_mtp_v1",
                                                       cut: "0-16|16-32", log: log, ranks: ["leader", "follower"],
-                                                      rankBuildSHA256: builds)
+                                                      rankBuildSHA256: builds, serving: .darkbloom, tensorAssistant: false)
         #expect(context.record(capture.values[0]) == nil)          // only retired requests become records
         let made = context.record(retired, now: { 1_000 })
         let record = try #require(made)
         log.record(record)
         #expect(record.ranks == ["leader", "follower"] && record.rankBuildSHA256 == builds)
+        // The way the session serves rides on every record (`Setup.servedAs`).
+        #expect(record.serving == .darkbloom && record.tensorAssistant == false)
         // A context that knows no build writes a record as an earlier build did: the planner counts it as another build's.
         let unbuilt = DistributedPairTelemetryContext(modelID: "fabricated-qwen-9b", mode: "phase_split_mtp_v1",
                                                       cut: "0-16|16-32", log: log)
         let unbuiltMade = unbuilt.record(retired, now: { 1_000 })
         let unbuiltRecord = try #require(unbuiltMade)
         #expect(unbuiltRecord.rankBuildSHA256 == nil && unbuiltRecord.ranks == nil)
+        #expect(unbuiltRecord.serving == nil && unbuiltRecord.tensorAssistant == nil)
         #expect(record.mode == "phase_split_mtp_v1" && record.cut == "0-16|16-32" && record.outcome == "length")
         #expect(record.promptTokens == 3 && record.cachedTokens == 2 && record.completionTokens == 3)
         #expect(record.firstTokenMilliseconds == 400 && record.decodeTokensPerSecond == 10)
@@ -150,6 +154,54 @@ struct ClusterObservabilityTests {
         try JSONSerialization.data(withJSONObject: json).write(to: file)
         let entries = ClusterServedSpeedHistory.entries(homeDirectory: home)
         #expect(entries.map(\.sample.outputTokens) == [128])
+    }
+
+    /// A speed record names how the request reached the pair and whether Qwen's tensor assistant decoded it, and a
+    /// plan takes only the records served its own way. Pair-2's Qwen served tensor parallel at 34-36 tok/s locally
+    /// with the assistant and at 14-20 through Darkbloom without it: under one key, the served race (read at the
+    /// fast end of a setup's samples) would have given the Darkbloom plan the local assistant's figure.
+    @Test func speedRecordsNameTheWayTheyWereServedAndPlansKeepTheirOwn() throws {
+        let builds = [String(repeating: "a", count: 64), String(repeating: "b", count: 64)]
+        func record(_ id: String, decode: Double, serving: ClusterServedScope?, assistant: Bool?) -> ClusterPairRequestTelemetry {
+            .init(requestID: id, finishedAt: Date().timeIntervalSince1970, modelID: "fixture-qwen", mode: "tensor_parallel_v1",
+                cut: "0-64|0-64", promptTokens: 200, cachedTokens: 0, completionTokens: 256, firstTokenMilliseconds: 500,
+                decodeTokensPerSecond: decode, handoffMilliseconds: nil, handoffBytes: nil, mtpDrafted: nil, mtpAccepted: nil,
+                outcome: "length", ranks: ["studio", "max"], concurrentRequests: 0, rankBuildSHA256: builds,
+                serving: serving, tensorAssistant: assistant)
+        }
+        // The leader's history keeps each way's records apart: one way's 32 newest do not push out the other's.
+        var kept: [ClusterPairRequestTelemetry] = []
+        for index in 0..<40 { kept = ClusterServedSpeedFile.adding(record("l\(index)", decode: 35, serving: .local, assistant: true), to: kept) }
+        for index in 0..<3 { kept = ClusterServedSpeedFile.adding(record("d\(index)", decode: 15, serving: .darkbloom, assistant: false), to: kept) }
+        #expect(kept.count == ClusterServedSpeedFile.keptPerRoute + 3)
+
+        let home = try temporaryHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let file = ClusterServedSpeedFile.defaultFile(homeDirectory: home)
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let json: [String: Any] = ["schema": ClusterServedSpeedFile.schemaName, "updatedAt": 1,
+            "records": try JSONSerialization.jsonObject(with: JSONEncoder().encode(kept))]
+        try JSONSerialization.data(withJSONObject: json).write(to: file)
+        let entries = ClusterServedSpeedHistory.entries(homeDirectory: home)
+        #expect(Set(entries.map(\.setup.serving)) == [.local, .darkbloom])
+        func figure(_ serving: ClusterServedScope, assistant: Bool) -> Double? {
+            ClusterServedModes.figures(ClusterServedSpeedRecords.servedAs(serving, tensorAssistant: assistant, entries),
+                                       promptTokens: 200, outputTokens: 256).first?.decodeTokensPerSecond
+        }
+        #expect(ClusterServedModes.figures(entries, promptTokens: 200, outputTokens: 256).first?.decodeTokensPerSecond == 35,
+                "unscoped, the fastest setup wins")
+        #expect(figure(.darkbloom, assistant: false) == 15)
+        #expect(figure(.darkbloom, assistant: true) == nil, "no Darkbloom request has run with the assistant yet")
+        #expect(figure(.local, assistant: true) == 35)
+        #expect(figure(.local, assistant: false) == nil)
+
+        // A record from before the fields existed is read as before (`servedBy` leaves such a build out anyway).
+        let legacy = ClusterServedSpeedRecords.Setup(modelID: "fixture-qwen", mode: "tensor_parallel_v1", cut: "0-64|0-64")
+        #expect(legacy.servedAs(.darkbloom, tensorAssistant: false) && legacy.servedAs(.local, tensorAssistant: true))
+        // Outside tensor parallel the assistant never runs, so only the way of serving separates records.
+        let pipeline = ClusterServedSpeedRecords.Setup(modelID: "fixture-qwen", mode: "pipeline_v1", cut: "0-32|32-64",
+                                                       serving: .darkbloom, tensorAssistant: false)
+        #expect(pipeline.servedAs(.darkbloom, tensorAssistant: true) && !pipeline.servedAs(.local, tensorAssistant: false))
     }
 
     /// A request whose end was lost (an overflowing sink drops observations) stops counting against later ones.

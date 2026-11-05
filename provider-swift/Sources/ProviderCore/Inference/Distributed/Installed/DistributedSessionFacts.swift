@@ -24,14 +24,25 @@ public struct DistributedSessionFacts: Sendable, Equatable {
     public let peerUsers: [String]
     /// The members' setup IDs in rank order: speed records name which Mac held which range.
     public let ranks: [String]?
+    /// Through Darkbloom (a setup saved for coordinator pairing) or the leader's local API: speed records name it.
+    public let serving: ClusterServedScope?
+    /// Whether the setup decodes with Qwen's resident tensor assistant: speed records name it.
+    public let tensorAssistant: Bool?
 
     public init(clusterID: String, memberID: String, modelID: String, mode: String, cut: String,
                 membershipEpoch: String?, diagnostics: [String], terminations: [String],
-                peerHosts: [String], peerUsers: [String], ranks: [String]? = nil) {
+                peerHosts: [String], peerUsers: [String], ranks: [String]? = nil,
+                serving: ClusterServedScope? = nil, tensorAssistant: Bool? = nil) {
         self.clusterID = clusterID; self.memberID = memberID; self.modelID = modelID; self.mode = mode
         self.cut = cut; self.membershipEpoch = membershipEpoch; self.diagnostics = diagnostics
         self.terminations = terminations; self.peerHosts = peerHosts; self.peerUsers = peerUsers
-        self.ranks = ranks
+        self.ranks = ranks; self.serving = serving; self.tensorAssistant = tensorAssistant
+    }
+
+    /// How a saved setup serves, as speed records name it: a setup saved for coordinator pairing serves through
+    /// Darkbloom, any other on the leader's local API.
+    static func serving(_ configuration: ClusterConfiguration) -> ClusterServedScope {
+        configuration.nativeMember == nil ? .local : .darkbloom
     }
 
     /// `0-16|16-32` from a partition's stages.

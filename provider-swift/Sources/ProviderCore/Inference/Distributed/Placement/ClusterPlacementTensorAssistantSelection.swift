@@ -38,13 +38,14 @@ enum ClusterPlacementTensorAssistantSelection {
     static let automaticDepth = 3
 
     /// The `backend.mtp_mode` discovery runs under for a plan whose setup serves through the coordinator
-    /// (`coordinator`) or on a local cluster. The assistant's speculative decoding has no parity qualification, so a
-    /// setup saved for coordinator pairing carries none (`ClusterConfiguration.tensorAssistantServesLocally`): under
-    /// `auto` such a plan quotes the ordinary target only. `on` is the operator's explicit choice and is kept; the
-    /// plan then says it is not offered for public traffic, and the leader refuses the coordinator's approval before
-    /// any part stops.
-    static func discoveryMode(_ configured: MTPMode, coordinator: Bool) -> MTPMode {
-        coordinator && configured == .auto ? .off : configured
+    /// (`coordinator`) or on a local cluster. A setup saved for coordinator pairing carries only the assistant this
+    /// build declares public for the artifact (`declared`, `ClusterPublicModels.tensorAssistant`;
+    /// `ClusterConfiguration.tensorAssistantServesLocally`): under `auto` such a plan quotes the declared assistant,
+    /// or the ordinary target only when none is declared. `on` is the operator's explicit choice and is kept; without
+    /// a declaration the plan then says it is not offered for public traffic, and the leader refuses the
+    /// coordinator's approval before any part stops.
+    static func discoveryMode(_ configured: MTPMode, coordinator: Bool, declared: Bool = false) -> MTPMode {
+        coordinator && configured == .auto && !declared ? .off : configured
     }
 
     static func automaticCandidate(mode: MTPMode, runtimeModelID: String,
@@ -69,24 +70,30 @@ enum ClusterPlacementTensorAssistantSelection {
         }
     }
 
+    /// `declared`: the public assistant a coordinator-paired setup plans (its depth and verification); nil
+    /// plans a local cluster's automatic assistant (`automaticDepth`, admitted target cohorts).
     static func discoveryArguments(modelDirectory: String, promptTokens: Int, outputTokens: Int,
-                                   chunkTokens: Int, assistant: Bool = true, lanes: Int = 1) throws -> [String] {
+                                   chunkTokens: Int, assistant: Bool = true, lanes: Int = 1,
+                                   declared: ClusterQwenTensorAssistantPolicy? = nil) throws -> [String] {
         guard promptTokens > 0, outputTokens > 0, (1...512).contains(chunkTokens),
               lanes == 1 || ClusterPlacementBatchScope.tensorParallelWidths.contains(lanes) else {
             throw ClusterConfigurationError.invalid("Invalid automatic tensor assistant quotation scope")
         }
+        let planned = declared.map { ["--mtp-depth", String($0.depth)] + $0.verificationArguments }
+            ?? ["--mtp-depth", String(automaticDepth), ClusterQwenTensorAssistantPolicy.verificationArgument,
+                ClusterQwenTensorAssistantPolicy.Verification.admittedCohort.rawValue]
         return ["tensor-batch-scope", "--model-dir", modelDirectory,
             "--prompt-tokens", String(promptTokens), "--output-tokens", String(outputTokens),
-            "--batch-lanes", String(lanes), "--chunk-size", String(chunkTokens)] + (assistant ? ["--mtp-depth", String(automaticDepth),
-            ClusterQwenTensorAssistantPolicy.verificationArgument,
-            ClusterQwenTensorAssistantPolicy.Verification.admittedCohort.rawValue] : [])
+            "--batch-lanes", String(lanes), "--chunk-size", String(chunkTokens)] + (assistant ? planned : [])
     }
 
     /// The quote prices the memory plan's whole request (`ClusterWorkerProfile.memoryScope`):
-    /// the profile's, or the standard request for a row that serves its native context.
+    /// the profile's, or the standard request for a row that serves its native context. A `declared` public
+    /// assistant must come back exactly as declared: the native helper's inventory of the installed head is the
+    /// one the owner's evidence ran.
     static func requireDiscoveredQuote(_ quote: ClusterPlacementTensorBatchQuote,
                                        capability: ClusterRuntimeCapability, chunkTokens: Int, assistant: Bool = true,
-                                       lanes: Int = 1) throws {
+                                       lanes: Int = 1, declared: ClusterQwenTensorAssistantPolicy? = nil) throws {
         try quote.validate()
         let memory = capability.profile.memoryScope
         try quote.requireRequest(promptTokens: memory.maximumPromptTokens,
@@ -100,8 +107,13 @@ enum ClusterPlacementTensorAssistantSelection {
             throw ClusterConfigurationError.invalid("Native discovery changed the tensor owner's artifact or complete request scope")
         }
         if assistant {
-            guard let policy = quote.assistant?.policy, policy.depth == automaticDepth,
-                  policy.verification == .admittedCohort else {
+            guard let policy = quote.assistant?.policy else {
+                throw ClusterConfigurationError.invalid("Native discovery changed the embedded assistant's verification policy")
+            }
+            if let declared, policy != declared {
+                throw ClusterConfigurationError.invalid("The embedded assistant differs from this build's public declaration")
+            }
+            if declared == nil, policy.depth != automaticDepth || policy.verification != .admittedCohort {
                 throw ClusterConfigurationError.invalid("Native discovery changed the embedded assistant's verification policy")
             }
         } else { try quote.requireAssistant(nil) }
@@ -109,22 +121,29 @@ enum ClusterPlacementTensorAssistantSelection {
 
     /// Every Qwen TP row's request-owned owner reserves its quote at LOAD,
     /// so each row is quoted (its target alone where it has no assistant).
+    /// `coordinator`: the setup serves through the coordinator, so only the
+    /// assistant this build declares public for the artifact is planned, with
+    /// its declared depth and verification (`discoveryMode`).
     static func readAutomatic(tool: URL, modelDirectory: URL, publicModelID: String,
                               capability: ClusterRuntimeCapability, mode: MTPMode,
-                              chunkTokens: Int, deadline: UInt64, lanes: Int = 1,
+                              chunkTokens: Int, deadline: UInt64, lanes: Int = 1, coordinator: Bool = false,
                               environment: [String: String] = ProcessInfo.processInfo.environment) throws -> ClusterPlacementTensorBatchQuote? {
         guard ClusterPlacementTensorBatchQuote.runtimeModelIDs.contains(capability.runtimeModelID),
               capability.supportedGenerationModes.contains(.tensorParallel),
               !capability.hasPrivateImages else { return nil }
-        let assistant = try automaticCandidate(mode: mode, runtimeModelID: capability.runtimeModelID,
+        let declared = coordinator ? ClusterPublicModels.tensorAssistant(for: capability)?.policy : nil
+        let assistant = try automaticCandidate(mode: discoveryMode(mode, coordinator: coordinator, declared: declared != nil),
+            runtimeModelID: capability.runtimeModelID,
             modelDirectory: modelDirectory, publicModelID: publicModelID, artifactSHA256: capability.artifactSHA256,
             manifestSHA256: capability.manifestSHA256, environment: environment)
         let memory = capability.profile.memoryScope
         let quote = try ClusterPlacementTensorBatchQuote.decode(DistributedCapabilityProbe.run(executable: tool,
             arguments: discoveryArguments(modelDirectory: modelDirectory.path,
                 promptTokens: memory.maximumPromptTokens, outputTokens: memory.maximumOutputTokens,
-                chunkTokens: chunkTokens, assistant: assistant, lanes: lanes), deadline: deadline, maximumOutputBytes: ClusterPlacementTensorBatchQuote.maximumEncodedBytes))
-        try requireDiscoveredQuote(quote, capability: capability, chunkTokens: chunkTokens, assistant: assistant, lanes: lanes)
+                chunkTokens: chunkTokens, assistant: assistant, lanes: lanes, declared: declared), deadline: deadline,
+            maximumOutputBytes: ClusterPlacementTensorBatchQuote.maximumEncodedBytes))
+        try requireDiscoveredQuote(quote, capability: capability, chunkTokens: chunkTokens, assistant: assistant, lanes: lanes,
+            declared: declared)
         return quote
     }
 

@@ -1030,6 +1030,42 @@ final class DistributedAutomaticBatchPlannerTests {
                 "\(publicSection(assisted.explanation) ?? "")")
     }
 
+    /// Through Darkbloom a refused assistant quote (a helper error or timeout, or an inventory other than the declared
+    /// one) leaves the Qwen pair its plain tensor parallel, which it served before the assistant was declared, and the
+    /// plan says why in one line. On a local cluster the refusal still stands.
+    @Test func throughDarkbloomARefusedAssistantQuoteFallsBackToPlainTensorParallel() throws {
+        let home = try home(); record(home)
+        let artifact = try #require(ClusterPublicModels.declared.first {
+            $0.runtimeModelID == ClusterQwenTensorAssistantPolicy.runtimeModelID }).artifactSHA256
+        let (pair, cap, layout, _) = try fixture(artifact: artifact)
+        let data = try ClusterRuntimeCapabilityCodec.encode(cap), digest = ClusterConfigurationCodec.sha256(data)
+        let model = ClusterSetupLocalModel(folder: "Qwen3.8-27B-4bit-mtp-fixture", modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            version: "fixture", artifactSHA256: artifact, totalBytes: 16_320_415_757)
+        let link = try #require(ClusterLinkProbeHistory.costs(homeDirectory: home, members: ["a", "b"]))
+        let local = try profile(), peer = try profile()
+        let refusal = ClusterSetupFailure("The embedded assistant differs from this build's public declaration")
+        let reading = ClusterSetupPlanning.ModelReading(model: model, layout: .success(layout), capability: .success((cap, data, digest)),
+            tokenizerFiles: pair.tokenizerFiles, tensorAssistantQuote: .failure(refusal),
+            targetFallbackQuote: .success(try assistantQuote(1, artifact: artifact, assistant: false)))
+        func decide(coordinator: Bool) throws -> ClusterSetupPlanning.Decision {
+            try #require(onLargeStack {
+                ClusterSetupPlanning.decide(readings: [reading], description: pair, localMemberID: "a", localProfile: local,
+                    peerProfile: peer, peerModels: [model], measurements: [], link: link, coordinator: coordinator)
+            }.first)
+        }
+        let darkbloom = try decide(coordinator: true)
+        let plan = try #require(darkbloom.option.plan, "not offered: \(darkbloom.option.blocker ?? "")")
+        let bytes = try #require(darkbloom.setup?.configurations["a"])
+        let setup = try ClusterConfigurationCodec.decode(bytes, capability: cap, capabilitySHA256: digest)
+        #expect(setup.selectedGenerationMode == .tensorParallel && setup.tensorAssistant == nil)
+        #expect(plan.speculationNote == ClusterSetupPlanning.assistantRefusedLine(refusal))
+        #expect(plan.speculationNote?.hasPrefix("Qwen's speculative assistant could not be planned (The embedded assistant differs") == true)
+        #expect(plan.explanation.first == plan.speculationNote)
+        #expect(plan.publicTraffic?.hasPrefix("qualified for public traffic in tensor parallel mode") == true, "\(plan.publicTraffic ?? "")")
+        let localCluster = try decide(coordinator: false)
+        #expect(localCluster.option.plan == nil && localCluster.option.blocker != nil)
+    }
+
     /// The guided setup's plan for Qwen3.8 27B on two unequal Macs, whose layout offers unequal tensor-parallel shares:
     /// a local cluster gives the faster Mac the larger share of every layer, while a cluster served through the
     /// coordinator is planned with equal shares, the only split its members' registration can name

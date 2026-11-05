@@ -194,6 +194,9 @@ public struct ClusterOnboardingLeadership: Codable, Sendable, Equatable {
     public var modelName: String?
     /// How the chosen model is served, in one line from the adopted plan ("Serving … across both Macs: pipeline, …").
     public var deployment: String?
+    /// Why the adopted plan serves without the model's speculative assistant, in one line from that plan
+    /// (`ClusterSetupPlanSummary.speculationNote`); nil when it has the assistant or none was offered.
+    public var speculationNote: String?
     /// How the cluster serves (`ClusterServingScope`), kept until the person changes it: true after
     /// `darkbloom cluster local`, with the local API's address in `localBind` (nil: every interface). Nil or false:
     /// through the coordinator, as before. A member records the leader's choice from its start command.

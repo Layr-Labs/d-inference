@@ -106,7 +106,7 @@ public enum ClusterPublicModels {
         policy: try! ClusterQwenTensorAssistantPolicy(depth: 3,
             inventorySHA256: "6bf428caf645e41cfda642108fc9a21d199ca999e80907be7476e87026afb014", verification: .admittedCohort),
         evidenceDocument: qwen27AssistantEvidenceDocument,
-        evidenceSHA256: "bab931aeeb0023a4a79c16b24f8979c8af89b8a746411290d0a29f2f9cc94c0c",
+        evidenceSHA256: "31b3e3fe147ad9b68d66e4bec02287d752b5cbfd9d0b5e77fb792e822b424ade",
         qualifiedAt: "2026-11-05T17:00:00Z")
 
     /// Owner ruling, 2026-10-31: "It should be tensor or pipeline obviously but that shouldn't matter for the coordinator".

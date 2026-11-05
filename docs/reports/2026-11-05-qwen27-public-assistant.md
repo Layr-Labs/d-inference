@@ -5,7 +5,8 @@
 This record is the evidence document of the provider's public declaration of Qwen3.8-27B's resident speculative
 assistant on tensor-parallel pairs (`ClusterPublicTensorAssistant` on the Qwen3.8-27B entry of
 `ClusterPublicModels.declared`). The declaration's `evidenceSHA256` is the SHA-256 of this file. A release's cluster
-runtime facts give the model's tensor-parallel parity qualifications this digest and instant. It records the owner's
+runtime facts give the model's serial-schedule tensor-parallel parity qualification this digest and instant (the
+assistant needs serial prefill, so one-chunk-lookahead pairs decode plain and keep the model's evidence). It records the owner's
 decision and the checks it rests on. It contains no endpoint, credential, machine identifier or personal workspace
 location. It is not a hosted-provider certification or a production deployment approval.
 
@@ -70,9 +71,13 @@ Over the leader's local API, the same build, the same hour (256-token answers):
 | Setup | One request | Four at once (total) | First token | Prefill, 2K / 8K prompt |
 |---|---:|---:|---:|---|
 | Plain tensor parallel (equal shares) | 17.4 | 41.2 | 0.38 s | 516 / 558 tok/s |
-| With the assistant (2:3 shares) | 39.7 (2.3×) | 47.6 | 0.38 s | 506 / 501 tok/s |
+| With the assistant (2:3 shares) | 39.7 | 47.6 | 0.38 s | 506 / 501 tok/s |
 
 Decode at the 2K and 8K prompts: 16.6 and 16.4 tok/s plain, against 42.3 and 46.7 with the assistant.
+
+The two rows are not like for like: the plain plan split the layers equally and the assisted one 2:3. The ratio
+(2.3×) mixes the assistant's speed-up with the split's. The first DevNet build with this declaration measures both
+through Darkbloom on equal shares.
 
 On build `0.10.7-dev.branch.93`, with the 2:3 split: 25.3 with the assistant (four at once: 34.1).
 The Apple M5 Max alone (single-Mac product path, MTP on) decoded 69.3–73.6 on build `0.10.7-dev.branch.92`.
@@ -96,5 +101,5 @@ declaration:
 - the guided setup plans it under `mtp_mode = "auto"` (`ClusterPlacementTensorAssistantSelection.readAutomatic`);
 - a release's cluster runtime facts, the coordinator's approval and every committed start carry it in the model's
   resource policy (`DistributedInstalledNativeStart.resourcePolicySHA256`);
-- the model's tensor-parallel parity qualifications carry this file's digest
+- the model's serial-schedule tensor-parallel parity qualification carries this file's digest
   (`ClusterRuntimeApprovalFacts.parityQualifications`).

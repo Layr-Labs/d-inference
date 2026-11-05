@@ -75,8 +75,9 @@ struct ClusterPublicTensorAssistantTests {
         }
     }
 
-    /// A release's facts: the model's tensor-parallel qualifications rest on the declared assistant's report and
-    /// instant, its pipeline ones on the model declaration's; without an assistant every one rests on the latter.
+    /// A release's facts: the model's serial-schedule tensor-parallel qualification rests on the declared assistant's
+    /// report and instant; its one-chunk-lookahead one (the assistant needs serial prefill, so those pairs decode plain)
+    /// and its pipeline ones on the model declaration's; without an assistant every one rests on the latter.
     @Test func theTensorParallelQualificationsRestOnTheAssistantsEvidence() throws {
         func qualifications(_ assistant: ClusterQwenTensorAssistantPolicy?) throws -> [ClusterRuntimeApprovalFacts.ParityQualification] {
             ClusterRuntimeApprovalFacts.parityQualifications(try Self.declaration(assistant)[0], metallibSHA256: ClusterApprovalMacs.hash("9"),
@@ -85,7 +86,7 @@ struct ClusterPublicTensorAssistantTests {
         let assisted = try qualifications(try Self.policy(verification: .admittedCohort)), plain = try qualifications(nil)
         #expect(assisted.map(\.mode) == [.pipeline, .pipeline, .tensorParallel, .tensorParallel])
         for (with, without) in zip(assisted, plain) {
-            if with.mode == .tensorParallel {
+            if with.mode == .tensorParallel && with.schedule == 1 {
                 #expect(with.evidenceSHA256 == ClusterApprovalMacs.hash("d") && with.qualifiedAt == Self.qualifiedAt)
             } else {
                 #expect(with == without)
@@ -131,7 +132,8 @@ struct ClusterPublicTensorAssistantTests {
         let model = try #require(ClusterPublicModels.declared.first { $0.runtimeModelID == ClusterQwenTensorAssistantPolicy.runtimeModelID })
         let qualifications = ClusterRuntimeApprovalFacts.parityQualifications(model, metallibSHA256: ClusterApprovalMacs.hash("9"),
             inputModalities: ["text", "image"], layers: 64, servesMedia: { $0 == .tensorParallel })
-        #expect(qualifications.filter { $0.mode == .tensorParallel }.map(\.evidenceSHA256) == [declared.evidenceSHA256, declared.evidenceSHA256])
+        #expect(qualifications.filter { $0.mode == .tensorParallel }.map(\.evidenceSHA256)
+                == [declared.evidenceSHA256, ClusterPublicModels.evidenceSHA256], "serial: the assistant's; one-chunk lookahead: plain")
         #expect(qualifications.filter { $0.mode == .pipeline }.allSatisfy { $0.evidenceSHA256 == ClusterPublicModels.evidenceSHA256 })
         // The envelope is the plain tensor-parallel one: logprobs, penalties, bias and media rows decode on the target path.
         #expect(qualifications.filter { $0.mode == .tensorParallel }.allSatisfy { $0.requestEnvelope.sampling && $0.requestEnvelope.tools

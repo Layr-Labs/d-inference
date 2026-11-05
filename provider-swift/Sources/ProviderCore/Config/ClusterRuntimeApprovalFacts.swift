@@ -316,6 +316,9 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
         }
     }
 
+    /// The prefill schedule a resident tensor assistant runs under: serial (`ClusterPrefillSchedule.serial`).
+    static let assistantSchedule: UInt8 = 1
+
     /// The parity qualifications of a declared model: one per declared family
     /// (byte order: `pipeline`, `pipeline_speculative`, then `tensor_parallel`)
     /// and schedule (ascending), so each approval's first is the pipeline and
@@ -325,8 +328,10 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
     /// admitting media only when its mode `servesMedia` for this model
     /// (`ClusterModelFeaturePolicy.mediaContract`). A model declared with a
     /// resident assistant (`ClusterPublicModel.tensorAssistant`) has its
-    /// tensor-parallel qualifications rest on the assistant's evidence: a pair
-    /// of that build decodes with it.
+    /// serial-schedule (1) tensor-parallel qualification rest on the
+    /// assistant's evidence: a pair of that build decodes with it. The
+    /// assistant requires serial prefill (`ClusterConfiguration.validate`), so a
+    /// one-chunk-lookahead (2) pair decodes plain and keeps the model's evidence.
     static func parityQualifications(_ declared: ClusterPublicModel, metallibSHA256: String, inputModalities: [String],
                                      layers: Int?, servesMedia: (ClusterGenerationMode) -> Bool) -> [ParityQualification] {
         let classes = numericsClasses(declared.ranks, metallibSHA256: metallibSHA256)
@@ -335,9 +340,9 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
                 return [ParityQualification]()
             }
             let envelope = ClusterPublicModels.requestEnvelope(inputModalities: inputModalities, servesMedia: servesMedia(placement.mode))
-            let assistant = family == .tensorParallel ? declared.tensorAssistant : nil
             return declared.schedules.sorted().map { schedule in
-                ParityQualification(schedule: schedule, numericsClasses: classes, cuts: placement.cuts, mode: placement.mode,
+                let assistant = family == .tensorParallel && schedule == Self.assistantSchedule ? declared.tensorAssistant : nil
+                return ParityQualification(schedule: schedule, numericsClasses: classes, cuts: placement.cuts, mode: placement.mode,
                     promotable: true, diverged: false, evidenceSHA256: assistant?.evidenceSHA256 ?? ClusterPublicModels.evidenceSHA256,
                     qualifiedAt: assistant?.qualifiedAt ?? ClusterPublicModels.qualifiedAt, requestEnvelope: envelope)
             }

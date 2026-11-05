@@ -181,7 +181,9 @@ final class SandboxOutputTail: @unchecked Sendable {
     func append(_ chunk: Data) {
         lock.withLock {
             data.append(chunk)
-            if data.count > limit { data.removeFirst(data.count - limit) }
+            // A copy, not `removeFirst`: that slices, and a slice keeps every
+            // byte before it in its storage.
+            if data.count > limit { data = Data(data.suffix(limit)) }
         }
     }
 

@@ -7,8 +7,9 @@ import Testing
 /// The child-output readers keep only their bounded tail resident while a
 /// child runs. Each reader is one Dispatch block for the child's whole life,
 /// and a block drains no autorelease pool before it returns: without a pool
-/// per read, every byte the child wrote stays resident until it exits. Real
-/// child processes only.
+/// per read, every byte the child wrote stays resident until it exits. A tail
+/// kept as a slice of its buffer keeps every byte too. Real child processes
+/// only.
 @Suite("Child output read memory")
 struct ChildOutputReadMemoryTests {
   private static let outputBytes = 256 << 20

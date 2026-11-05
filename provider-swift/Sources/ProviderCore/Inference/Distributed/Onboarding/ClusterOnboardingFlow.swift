@@ -1155,6 +1155,13 @@ public struct ClusterOnboardingFailure: Error, Sendable, Equatable {
     public var lines: [String]
     /// The two Macs run different versions (`ClusterOnboardingVersionSplit`): no Retry until the older Mac updates.
     public var versionSplit: ClusterOnboardingVersionSplit?
+    /// The pair was stopped from anywhere while the screen waited (`ClusterOnboardingStopped`): the wait just ends.
+    public var stopped = false
+    public static var stopped: ClusterOnboardingFailure {
+        var failure = ClusterOnboardingFailure([ClusterOnboardingStopped.line])
+        failure.stopped = true
+        return failure
+    }
     /// Single-Mac serving that blocks the pair (`ClusterOnboardingSoloServing`): a cause that never clears by itself, so
     /// the start offers to stop it instead of a Retry. Empty for any other failure.
     public var soloServing: [ClusterOnboardingSoloServing] = []
@@ -2133,6 +2140,10 @@ public enum ClusterOnboardingDriver {
         // waited at Pair). Start over asks first: silence is not a broken pairing (`otherMacSilentLine`).
         if let ended = untilOtherMacAnswers(answered ?? otherMacAnswers(operations, console), other: resume.leaderName ?? resume.peerName,
                                             operations, console, request: request) { return ended }
+        // The leading Mac runs a start (a model or mode change, or a Retry): this Mac follows it as on first setup.
+        if request.scope == nil, request.model == nil, leaderStarting(operations) {
+            return followStart(leader: resume.leaderName ?? resume.peerName, operations, console)
+        }
         showStatus(operations, console)
         console.say("  " + memberRunsByItselfLine)
         console.say("")
@@ -2143,6 +2154,13 @@ public enum ClusterOnboardingDriver {
         console.say(memberLeaderLine(resume.leaderName ?? resume.peerName))
         guard console.choose(["Close", startOverItem], selected: 0) == 1 else { return 0 }
         return startOver(operations, console, request: request)
+    }
+
+    /// Whether the leading Mac publishes a start in progress (`ClusterOnboardingStartProgress`; R5-8, DevNet 2026-11-05:
+    /// the joining Mac showed "This Mac runs its part by itself … Close" through the leader's model change).
+    static func leaderStarting(_ operations: ClusterOnboardingOperations) -> Bool {
+        guard let start = operations.leaderStatus?().start else { return false }
+        return start.phase != .unknown
     }
 
     /// The pair's status: the outcome block when it says Serving or why not (`showOutcome`), else its lines (Stopped, …).
@@ -2746,6 +2764,10 @@ public enum ClusterOnboardingDriver {
         case soloServing([ClusterOnboardingSoloServing])
         /// The two Macs run different versions (`ClusterOnboardingVersionSplit`): no Retry until the older Mac updates.
         case versionSplit(ClusterOnboardingVersionSplit)
+        /// The pair was stopped from anywhere while the screen waited: said, nothing more (`ClusterOnboardingStopped`).
+        case stopped
+        /// The person left the coordinator's wait (q or Esc); the pair keeps trying by itself.
+        case leftPairWait
     }
 
     /// After the start. Serving and Done are said only once the model is loaded on both Macs and a request answered
@@ -2765,7 +2787,10 @@ public enum ClusterOnboardingDriver {
         while true {
             let outcome = startOutcome(title: title, scope: scope, mayRegister: &mayRegister, operations, console)
             // The start's steps are over (left: they go on by themselves, and the published figures age out).
-            if case .left = outcome {} else { operations.publishStart(nil) }
+            switch outcome {
+            case .left, .leftPairWait: break
+            default: operations.publishStart(nil)
+            }
             switch outcome {
             case .served(let served, let lines, let ready):
                 // 2026-11-03 call: "it should show whether it is success or not VERY clearly"; then the pair's card.
@@ -2779,6 +2804,14 @@ public enum ClusterOnboardingDriver {
             case .testFailed:
                 console.say("")
                 console.say("Setup saved, but the test failed. To test again, run `darkbloom cluster` and choose \(title): it sends one test request.")
+                return 1
+            case .stopped:
+                console.settle()
+                console.say(ClusterOnboardingCommand.named(ClusterOnboardingStopped.line))
+                return 1
+            case .leftPairWait:
+                console.settle()
+                console.say(ClusterOnboardingCommand.named(ClusterOnboardingStopped.leftPairWaitLine))
                 return 1
             case .versionSplit(let split):
                 guard clearVersionSplit(split, operations, console),
@@ -2852,6 +2885,7 @@ public enum ClusterOnboardingDriver {
         let ready: ClusterOnboardingReady
         switch waitForParts(title: title, operations, console) {
         case .success(let value)?: ready = value
+        case .failure(let failure)? where failure.stopped: return .stopped
         case .failure(let failure)? where failure.versionSplit != nil: return .versionSplit(failure.versionSplit!)
         case .failure(let failure)? where !failure.soloServing.isEmpty: return .soloServing(failure.soloServing)
         case .failure(let failure)?: return .notServing(failure.lines)
@@ -2860,8 +2894,10 @@ public enum ClusterOnboardingDriver {
         let tested: String?
         if ready.offered != nil {
             switch awaitPairServing(title: title, operations, console) {
-            case .success(let test): tested = test
-            case .failure(let failure): return .notServing(failure.lines)
+            case .success(let test)?: tested = test
+            case .failure(let failure)? where failure.stopped: return .stopped
+            case .failure(let failure)?: return .notServing(failure.lines)
+            case nil: return .leftPairWait
             }
         } else {
             // The test's time is said in the outcome block; only a failure is said here.
@@ -2978,9 +3014,10 @@ public enum ClusterOnboardingDriver {
 
     /// A pair offered for pairing: waits for the coordinator to pair both Macs and both to load the model, its progress
     /// live; the pair's first request's time ("in 0.84 s"), or why it does not serve.
+    /// Nil when the person left it (q or Esc): the pair keeps trying by itself (DevNet, 2026-11-05: q did nothing here).
     static func awaitPairServing(title: String, _ operations: ClusterOnboardingOperations,
-                                 _ console: ClusterOnboardingConsole) -> Result<String?, ClusterOnboardingFailure> {
-        waitWithRows("Serving \(title) through Darkbloom", console, operations.pairServing)
+                                 _ console: ClusterOnboardingConsole) -> Result<String?, ClusterOnboardingFailure>? {
+        waitWithRows("Serving \(title) through Darkbloom", console, leaving: leaves, operations.pairServing)?
             .map { $0.first.flatMap { $0.isEmpty ? nil : $0 } }
     }
 

@@ -203,6 +203,16 @@ public enum ClusterOnboardingNotServing {
         return "The coordinator didn't accept the pair (\(shown))"
     }
 
+    /// `words(reason:mac:)` for a coordinator refusal on a pair whose Macs report their App Attest authorization:
+    /// Apple verification is named only when a Mac reports it missing (`anyUnverified`); otherwise a trust word is the
+    /// coordinator's, said as such (DevNet, 2026-11-05: `private_text` on two authorized Macs read "isn't verified").
+    public static func words(reason: String, mac: String, anyUnverified: Bool) -> String {
+        let said = words(reason: reason, mac: mac)
+        guard !anyUnverified, said.contains("isn't verified by Apple yet") else { return said }
+        let code = reason.count <= 80 && ClusterOnboardingDeployment.shownPlainly(reason) ? reason : "no reason given"
+        return "The coordinator didn't accept the pair yet (\(code)); both Macs are verified by Apple, and it retries by itself"
+    }
+
     /// What to do next, said under the reason (the choices follow it).
     public static func remedy(forReason line: String) -> String? {
         if isMissingLogin(line) { return "Run `\(ClusterOnboardingCommand.name) login` on each Mac named, then Retry; or serve locally only." }
@@ -259,4 +269,48 @@ public enum ClusterOnboardingNotServing {
     static func joined(_ macs: [String]) -> String {
         macs.count <= 1 ? (macs.first ?? ClusterOnboardingMacName.other) : macs.dropLast().joined(separator: ", ") + " and " + macs.last!
     }
+}
+
+/// The leading Mac's wait for the coordinator to pair both Macs (`OnboardingLive.pairServing`), decided look by look:
+/// a reason the Macs report now ends it (a missing login at once, any other after the settle), and at the bound the ✗
+/// says what the last look said. A reason seen earlier and gone since (a new key's App Attest authorization, which
+/// lands a minute after registering) is never the ✗'s: with both Macs registered and nothing reported, the coordinator
+/// simply didn't pair them (DevNet Gemma pair, 2026-11-05: the 15-minute ✗ blamed Apple while both Macs were authorized
+/// and the coordinator refused `serves_model`).
+public struct ClusterOnboardingPairWait: Sendable {
+    public let started: Double
+    public let bound: Double
+    public let settle: Double
+    /// What the latest look reported, nil when nothing.
+    public private(set) var current: String?
+
+    public init(started: Double, bound: Double = 900, settle: Double = 90) {
+        self.started = started; self.bound = bound; self.settle = settle
+    }
+
+    /// One look: `reason`, what the Macs report now; `holds`, a reason only a person mends (a login, a catalog refusal),
+    /// which ends the wait at once. The ✗'s reason when the wait ends now, else nil.
+    public mutating func look(reason: String?, holds: Bool, now: Double) -> String? {
+        current = reason
+        if let reason, holds || now - started >= settle { return reason }
+        if now - started >= bound { return timedOut }
+        return nil
+    }
+
+    /// The ✗'s reason at the bound: what the last look still reported, else that the coordinator didn't pair them.
+    public var timedOut: String { current ?? Self.notPaired(minutes: Int((bound / 60).rounded())) }
+
+    public static func notPaired(minutes: Int = 15) -> String {
+        "The coordinator didn't pair both Macs within \(minutes) minutes; both are registered with it, and it gave no reason"
+    }
+}
+
+/// A stop from anywhere (`darkbloom cluster stop` in another window, or on the other Mac) while a screen waits for the
+/// pair: the wait ends at once with this, on both Macs.
+public enum ClusterOnboardingStopped {
+    public static let line = "Stopped (by `darkbloom cluster stop` on one of the Macs): the pair isn't starting any more. "
+        + "Run `darkbloom cluster` on the leading Mac to start it again."
+    /// What a screen that leaves the coordinator's wait says: what keeps going, and how to check.
+    public static let leftPairWaitLine = "Left the wait: both Macs stay registered and the pair keeps trying to be paired by "
+        + "the coordinator by itself. Check with `darkbloom status`."
 }

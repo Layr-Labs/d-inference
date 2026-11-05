@@ -205,6 +205,8 @@ import Darwin
         liveLineChecks()
         // 0.10.8, 2026-11-04: one Mac of a pair updated alone; its part ended every 38 s and no screen named the versions.
         versionSplitChecks()
+        // DevNet pair-2, 2026-11-05: the coordinator's wait blamed Apple, couldn't be left, and the joining Mac didn't follow.
+        waitHonestChecks()
         // 0.10.8, 2026-11-04: single-Mac serving held the provider instance lock on both Macs of a pair; the start looped
         // "this Mac's part ended (… another update operation owns the lock (pid 9523, provider-instance)) and starts again
         // by itself", the other Mac read "no error reported", and the guidance was `darkbloom stop`, which stops the pair.

@@ -51,6 +51,10 @@ extension ClusterOnboardingDriver {
                "If it still doesn't start, run `darkbloom --version` on both Macs; if they differ, run `darkbloom update` on the one that's behind."]
     }
 
+    /// How long the leading Mac's status must stay Stopped, once its start began, before the Mac that joined takes it
+    /// as a stop from anywhere.
+    static let stoppedHoldSeconds: Double = 20
+
     /// After the version split's ✗ on the Mac that joined.
     static func versionSplitAfterLine(_ leader: String?) -> String {
         ClusterOnboardingCommand.named("Once both Macs run the same version, run `darkbloom cluster` on \(ClusterOnboardingMacName.other(named: leader)) again; this Mac follows it by itself.")
@@ -198,6 +202,7 @@ extension ClusterOnboardingDriver {
         // The two Macs' versions, read on the looks' cadence: a split never clears by itself, so the wait ends at once.
         let splits = ClusterOnboardingMailbox<ClusterOnboardingVersionSplit?>()
         var splitAsking = false, splitAsked = Date.distantPast
+        var stoppedSince: Date?
         while true {
             if !splitAsking, Date().timeIntervalSince(splitAsked) >= timing.pollSeconds {
                 (splitAsking, splitAsked) = (true, Date())
@@ -211,6 +216,15 @@ extension ClusterOnboardingDriver {
                     console.say("  " + versionSplitAfterLine(leader))
                     return 1
                 }
+            }
+            // A stop from anywhere once the start began ends the wait: the leading Mac's status stays Stopped (a start
+            // reads Stopped for a moment while it stops the old setup or restarts the parts to register, never this long).
+            let stoppedNow = (started != nil || start != nil) && start?.phase != .stopping && lastStatus?.hasPrefix("Stopped") == true
+            stoppedSince = stoppedNow ? stoppedSince ?? Date() : nil
+            if let since = stoppedSince, Date().timeIntervalSince(since) >= Self.stoppedHoldSeconds {
+                console.settle()
+                console.say(ClusterOnboardingCommand.named(ClusterOnboardingStopped.line))
+                return 1
             }
             if !asking, Date().timeIntervalSince(asked) >= timing.pollSeconds {
                 asking = true

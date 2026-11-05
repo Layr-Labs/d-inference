@@ -135,12 +135,14 @@ struct QwenTensorParallelBatchDriverTests {
             let sum = try pair.link.sum(selected.map { rank == 0 ? Float($0) : 0 } + (try control()), rank: rank)
             return Submitted(ordinal: submissions, width: lanes.count, selected: selected, summed: sum)
         }
-        /// Test hooks: corrupt the last control word this rank reads of submission N; fail submission N.
-        var corruptDecisionAt: Int?, failSubmissionAt: Int?
+        /// Test hooks: corrupt the last control word this rank reads of submission N; fail submission N,
+        /// or the read of submission N.
+        var corruptDecisionAt: Int?, failSubmissionAt: Int?, failReadAt: Int?
         /// The largest gap between the native frontier and a publication (`Host.publishToken`).
         var widestPublicationGap = 0
         func readDecode(_ submitted: Submitted, check: () throws -> Void) throws -> (tokens: [Int], control: [Float]) {
             events.append("read \(submitted.ordinal)")
+            if submitted.ordinal == failReadAt { throw ProbeError("Injected failure reading a submitted step") }
             var control = Array(submitted.summed.dropFirst(submitted.width))
             if submitted.ordinal == corruptDecisionAt, !control.isEmpty { control[control.count - 1] = 2 }
             return (submitted.summed.prefix(submitted.width).map { Int($0) }, control)
@@ -735,7 +737,8 @@ struct QwenTensorParallelBatchDriverTests {
                     #expect(retired[rank][request.requestID]?.1 == reason)
                     let session = try #require(pair.native[rank].sessions[request.requestID])
                     let extra = session.frames.count - (request.prefillFrameCount + tokens.count - 1)
-                    #expect(reason == .eos ? (0...1).contains(extra) : extra == 0, "\(reason): \(extra) forwards past the end")
+                    // The EOS is read after the next step was built: exactly one discarded forward.
+                    #expect(extra == (reason == .eos ? 1 : 0), "\(reason): \(extra) forwards past the end")
                 }
             }
             #expect(Self.builtAhead(pair.native[0].events) > 0, "width \(width): the build-ahead path ran")
@@ -882,7 +885,33 @@ struct QwenTensorParallelBatchDriverTests {
         for rank in 0...1 {
             for request in [first, second] { #expect(pair.flag("closed-\(rank)-\(request.requestID)")) }
         }
-        #expect(pair.native[0].events.last?.hasPrefix("read") == true || pair.native[0].events.contains("read 5"))
+        // Every step submitted before the failure is read exactly once (the pending one by the drain); the failed one never.
+        for rank in 0...1 {
+            let events = pair.native[rank].events
+            let submitted = events.filter { $0.hasPrefix("submit ") }.map { Int($0.dropFirst(7))! }
+            #expect(submitted.last == 6, "rank \(rank): \(events)")
+            for ordinal in submitted.dropLast() { #expect(events.filter { $0 == "read \(ordinal)" }.count == 1, "rank \(rank): \(events)") }
+            #expect(!events.contains("read 6"), "rank \(rank): \(events)")
+        }
+    }
+
+    /// A read that fails while the next step is already built ahead: the
+    /// newer step is drained exactly once, the failed step is not read again,
+    /// both ranks fail, and every lane retires.
+    @Test func aReadFailureWhileTheNextStepIsBuiltDrainsTheNewerStepOnce() throws {
+        let pair = Pair(1, ahead: true), request = try pair.request(output: 24)
+        try pair.reserve(request)
+        pair.native[0].failReadAt = 6
+        #expect(throws: ProbeError.self) { try pair.run() }
+        #expect(pair.errors.contains { $0.contains("Injected failure reading") }, "\(pair.errors)")
+        let events = pair.native[0].events
+        // The failed read happened while step 7 was built ahead.
+        let failedAt = try #require(events.firstIndex(of: "read 6"))
+        #expect(events[..<failedAt].contains("submit 7"), "\(events)")
+        for ordinal in events.filter({ $0.hasPrefix("submit ") }).map({ Int($0.dropFirst(7))! }) {
+            #expect(events.filter { $0 == "read \(ordinal)" }.count == 1, "submit \(ordinal) read once: \(events)")
+        }
+        for rank in 0...1 { #expect(pair.flag("closed-\(rank)-\(request.requestID)")) }
     }
 
     /// Build-ahead needs an executor that submits steps and folds control.

@@ -2944,8 +2944,6 @@ public enum ClusterOnboardingDriver {
 
     public static let notServingItems = ["Retry", "Change model", "Serve locally only", "Diagnostics"]
 
-    /// Why the pair does not serve in one plain line (details under it), what to do, then the choices. Diagnostics
-    /// saves the file and asks again; q leaves.
     /// The ✗ block for a start that does not serve: why, in one plain line, then the details and what to do.
     static func notServingBlock(_ lines: [String]) -> (title: String, lines: [String]) {
         let said = lines.first ?? "the cluster did not report ready"
@@ -2957,6 +2955,8 @@ public enum ClusterOnboardingDriver {
                 Array(lines.dropFirst()) + (ClusterOnboardingNotServing.remedy(forReason: reason).map { [$0] } ?? []))
     }
 
+    /// Why the pair does not serve in one plain line (details under it), what to do, then the choices. Diagnostics
+    /// saves the file and asks again; q leaves.
     static func notServing(_ lines: [String], _ operations: ClusterOnboardingOperations,
                            _ console: ClusterOnboardingConsole) -> NotServingChoice {
         let block = notServingBlock(lines)

@@ -20,10 +20,11 @@ directory as CI_RESOURCE_SAMPLES. Every INTERVAL seconds it writes one CSV row:
   with the test selection it runs under;
 - the largest resident process (`ps` RSS), to compare with earlier runs.
 
-When a process's footprint sets a new high by 2 GiB, `/usr/bin/footprint`,
-where present, writes that process's breakdown by category beside the samples
-(at most twice a job). Test runners call `mark start|end LABEL PID` around each
-selection; a process below PID belongs to LABEL.
+When the largest footprint first reaches 2 GiB, and again when it is 2 GiB
+above the last capture, `/usr/bin/footprint`, where present, writes that
+process's breakdown by category beside the samples (at most twice a job). Test
+runners call `mark start|end LABEL PID` around each selection; a process below
+PID belongs to LABEL.
 
 `report` stops the sampler. It prints the peak of each class, the three
 largest processes, the selections that ran at the peak, the busy vCPU mean,
@@ -173,21 +174,32 @@ def busy_vcpus(before, after, cpus):
     return busy / total * cpus if total else None
 
 
-def active_marks(path):
-    """{pid: label} of the selections started under pid and not yet ended, from a marks file."""
-    active = {}
+def read_marks(path):
+    """[(time, event, label, pid)] of the whole rows of a marks file; [] without one."""
     try:
         text = path.read_text()
     except OSError:
-        return active
+        return []
+    marks = []
     for row in csv.reader(text.splitlines()):
         if len(row) != 4 or not row[3].isdigit():
             continue
-        _, event, label, pid = row
+        stamp, event, label, pid = row
+        try:
+            marks.append((float(stamp), event, label, int(pid)))
+        except ValueError:
+            continue
+    return marks
+
+
+def active_marks(path):
+    """{pid: label} of the selections started under pid and not yet ended, from a marks file."""
+    active = {}
+    for _, event, label, pid in read_marks(path):
         if event == "start":
-            active[int(pid)] = label
-        elif event == "end" and active.get(int(pid)) == label:
-            del active[int(pid)]
+            active[pid] = label
+        elif event == "end" and active.get(pid) == label:
+            del active[pid]
     return active
 
 
@@ -209,7 +221,7 @@ class Sampler:
         self.directory = directory
         self.cpus = os.cpu_count() or 1
         self.ticks = self.read_ticks()
-        self.captured = 0
+        self.captured_bytes = 0
         self.captures = []
 
     def read_ticks(self):
@@ -250,10 +262,11 @@ class Sampler:
         return [row.get(field, "") for field in FIELDS]
 
     def capture(self, pid, footprint, stamp):
-        """`footprint PID` into the directory when pid's footprint is a new high by CAPTURE_STEP."""
-        if footprint < self.captured + CAPTURE_STEP or len(self.captures) >= CAPTURES or not os.access(FOOTPRINT, os.X_OK):
+        """`footprint PID` into the directory when footprint is CAPTURE_STEP above the last capture (or 0)."""
+        if (footprint < self.captured_bytes + CAPTURE_STEP or len(self.captures) >= CAPTURES
+                or not os.access(FOOTPRINT, os.X_OK)):
             return
-        self.captured = footprint
+        self.captured_bytes = footprint
         with open(self.directory / f"footprint-{stamp}-{pid}.txt", "w") as handle:
             self.captures.append((time.monotonic(), subprocess.Popen(
                 [FOOTPRINT, str(pid)], stdin=subprocess.DEVNULL, stdout=handle, stderr=subprocess.STDOUT)))
@@ -329,15 +342,9 @@ def utc(stamp):
 def selections_at(path, moment):
     """The labels of the marks file that had started and not ended at moment."""
     spans = {}
-    try:
-        rows = list(csv.reader(path.read_text().splitlines()))
-    except OSError:
-        return []
-    for row in rows:
-        if len(row) == 4:
-            stamp, event, label, pid = row
-            span = spans.setdefault((label, pid), [None, None])
-            span[0 if event == "start" else 1] = float(stamp)
+    for stamp, event, label, pid in read_marks(path):
+        span = spans.setdefault((label, pid), [None, None])
+        span[0 if event == "start" else 1] = stamp
     return sorted(label for (label, _), (began, ended) in spans.items()
                   if began is not None and began <= moment and (ended is None or ended >= moment))
 

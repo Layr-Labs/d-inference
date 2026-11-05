@@ -138,18 +138,10 @@ enum UpdateAtomicFilesystem {
     /// WeightHasher bounds its reads the same way.
     private static func hashRemainingBytes(of handle: FileHandle, into hasher: inout SHA256) throws {
         while true {
-            let chunk = try withAutoreleasePool { try handle.read(upToCount: 1024 * 1024) ?? Data() }
+            let chunk = try autoreleasepool { try handle.read(upToCount: 1024 * 1024) ?? Data() }
             if chunk.isEmpty { return }
             hasher.update(data: chunk)
         }
-    }
-
-    private static func withAutoreleasePool<T>(_ body: () throws -> T) rethrows -> T {
-        #if canImport(ObjectiveC)
-        return try autoreleasepool(invoking: body)
-        #else
-        return try body()
-        #endif
     }
 
     /// Content-address the complete backup tree. File paths, node kinds,

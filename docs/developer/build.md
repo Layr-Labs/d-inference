@@ -397,9 +397,10 @@ its checkout on. Every 5 s it records:
 
 The provider and cluster test runners mark the start and end of each test
 selection (`ci-resource-sampler.py mark`), so the report names the selection
-of each large process and the selections that ran at the peak. When a
-process's footprint grows by 2 GiB, `/usr/bin/footprint` (if present) writes
-its breakdown by category beside the samples, at most twice a job.
+of each large process and the selections that ran at the peak. When the
+largest footprint first reaches 2 GiB, and again when it is 2 GiB above the
+last capture, `/usr/bin/footprint` (if present) writes that process's breakdown
+by category beside the samples, at most twice a job.
 
 The job's last steps print the peaks, the three largest processes, the busy
 vCPUs and the sampled time scaled to 4 and 8 vCPUs to the log and the step
@@ -535,8 +536,13 @@ test shards first, then the 12x32 jobs.
 | `test-cluster-gpu` | 2 | 12x32 | Blacksmith, not asked |
 
 A run that tests every component asks for 12 macOS jobs while sizes are on,
-and 7 while they are off. The test jobs peak at 21.5 GiB, the build jobs at
-18.8 GiB, and GPU shard 2 at 32.8 GiB.
+and 7 while they are off. The sampler's report and `summary.json` give the
+peaks of each job by memory class (see [Build Once](#build-once)). In runs
+42105290034 and 42123224100 on 12x48 runners, used memory peaked at 17.4 GiB
+or less in the test jobs, 29.3 GiB in cluster runtime shard 2, 41.9 GiB in GPU
+shard 2, and 17.5 GiB or less in the build jobs. Swap stayed at 0 and pressure
+stayed normal. These figures do not include the file cache (up to 22.3 GiB),
+which the kernel can reclaim.
 
 A lane sent with a size uses a grant only when the grant's labels are its
 profile's labels with the last one qualified by the size, such as

@@ -115,9 +115,10 @@ class AttributionTests(unittest.TestCase):
             marks = Path(work) / sampler.MARKS
             self.assertEqual(sampler.active_marks(marks), {})
             marks.write_text("1.0,start,1-of-6,150\n2.0,start,2-of-6,160\n3.0,end,1-of-6,150\n"
-                             "4.0,start,parallel,150\n5.0,end,1-of-6,160\nbroken\n6.0,start,x,pid\n")
+                             "4.0,start,parallel,150\n5.0,end,1-of-6,160\nbroken\n6.0,start,x,pid\n7.0,start,y,1.5\n"
+                             "partial,start,z,170\n")
             active = sampler.active_marks(marks)
-        # An end ends only the same label under the same pid.
+        # An end ends only the same label under the same pid; a row with a bad time or pid is skipped.
         self.assertEqual(active, {150: "parallel", 160: "2-of-6"})
         parents = {300: 200, 200: 160, 160: 1, 1: 0, 7: 8, 8: 7}
         self.assertEqual(sampler.selection_of(300, parents, active), "2-of-6")
@@ -193,7 +194,8 @@ class SummaryTests(unittest.TestCase):
             ])
             (directory / sampler.MACHINE).write_text(f"12 {32 * GIB}\n")
             (directory / sampler.MARKS).write_text("101.0,start,2-of-6,150\n102.0,start,3-of-6,160\n"
-                                                   "104.0,end,3-of-6,160\n108.0,end,2-of-6,150\n")
+                                                   "104.0,end,3-of-6,160\n108.0,end,2-of-6,150\n"
+                                                   "partial,start,3-of-6,170\n")
             (directory / "footprint-105-200.txt").write_text(FOOTPRINT_TEXT)
             (directory / "footprint-110-300.txt").write_text("footprint: insufficient privileges\n")
             self.enterContext(mock.patch.object(sampler, "FOOTPRINT", str(directory / "absent")))

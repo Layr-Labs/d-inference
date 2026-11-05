@@ -170,8 +170,9 @@ for test_filter in "${isolated_filters[@]}"; do
 done
 # This assertion observes the real allocator and must own its entire process,
 # not merely run sequentially beside other tests in the same suite/process.
-mark_selection start evaluatedPagesAvoidDoubleTaxAndRetainedAliasKeepsPressure
+exclusive_filter=evaluatedPagesAvoidDoubleTaxAndRetainedAliasKeepsPressure
+mark_selection start "$exclusive_filter"
 env -u MIMO_V26_SERIAL_NATIVE_TESTS -u DARKBLOOM_ISOLATED_DEADLINE_TEST "$script_directory/run-exclusive-native-gpu-test.sh" \
-  evaluatedPagesAvoidDoubleTaxAndRetainedAliasKeepsPressure || provider_test_status=$?
-mark_selection end evaluatedPagesAvoidDoubleTaxAndRetainedAliasKeepsPressure
+  "$exclusive_filter" || provider_test_status=$?
+mark_selection end "$exclusive_filter"
 exit "$provider_test_status"

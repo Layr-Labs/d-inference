@@ -704,10 +704,89 @@ struct QwenTensorParallelBatchSessionTests {
                 #expect(actual == expected, "width=\(width)")
                 #expect(actualControl == expectedControl, "width=\(width): control words")
                 #expect(actualLogprobs == expectedLogprobs, "width=\(width): logprobs")
+                // A paged host commits a submitted step from the frontiers it holds: no device read.
+                // A contiguous host reads them (and waits): the counter is live.
+                for owner in candidate {
+                    let reads = owner.host.submittedDeviceFrontierReads
+                    #expect(owner.host.kind == .paged ? reads == 0 : reads > 0, "width=\(width): \(reads) device frontier reads")
+                }
                 for owner in reference + candidate {
                     for lane in owner.nativeLanes { try owner.executor!.retire(lane, reason: nil, selected: 7, last: nil) }
                     #expect(owner.host.isDrained)
                 }
+            }
+        }
+    }
+
+    /// A native lane whose EOS is read after its next step was built ahead
+    /// retires as a clean EOS with exactly that one decode forward discarded
+    /// (`QwenLayerStageGenerationSchedule.finish`), and its host drains.
+    @Test func aNativeLaneRetiresAfterABuiltAheadEOS() throws {
+        let base = QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 4, heads: 4, kvHeads: 2, vocabulary: 256)
+        var tensors = base.tensors.filter { !$0.0.contains(".linear_attn.") }
+        let attention = base.tensors.filter { $0.0.contains(".layers.3.self_attn.") }
+        for layer in 0..<3 { tensors += attention.map { ($0.0.replacingOccurrences(of: ".layers.3.", with: ".layers.\(layer)."), $0.1) } }
+        try Device.withDefaultDevice(device) {
+            var root = try JSONSerialization.jsonObject(with: base.configuration) as! [String: Any]
+            var text = root["text_config"] as! [String: Any]
+            text["max_position_embeddings"] = 4096; text["full_attention_interval"] = 1; root["text_config"] = text
+            let configuration = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
+            let profile = try QwenLayerStageGenerationProfile(identifier: "qwen-tp-build-ahead-eos", vocabularySize: 256,
+                hiddenSize: 256, activationDType: "bfloat16", maximumPromptTokens: 128,
+                maximumChunkTokens: 64, maximumOutputTokens: 16, maximumContextTokens: 256)
+            let prompt = (0..<7).map { ($0 * 17 + 2) % 256 }
+            func pair(stops: Set<Int>) throws -> [Owned] {
+                let wire = Rendezvous()
+                return try (0..<2).map { rank in
+                    let reduction = Rank(rank, wire)
+                    let model = try QwenTensorParallelModel.assemble(configurationData: configuration,
+                        role: .shard(rank: rank, size: 2), reduction: reduction) { _, keep in
+                        for (name, value) in tensors { try keep(name, value) }
+                    }
+                    let owned = try Owned(model, lanes: 1, kind: device == .gpu ? .paged : .contiguous)
+                    owned.executor = try .init(model: model, configuration: configuration, host: owned.host, group: reduction,
+                        prepare: { _, _ in nil }, completedDecode: { _ in }, completedPrefill: {}, releaseResources: { _ in },
+                        buildsAhead: true)
+                    let request = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(uuidString: "6f0e2a4c-0000-4000-8000-0000000000e0")!,
+                        promptTokenIDs: prompt, chunkSize: 8, outputCount: 12, stopTokenIDs: stops)
+                    owned.nativeLanes = [try owned.executor!.open(.init(request: request), check: {})]
+                    return owned
+                }
+            }
+            // The greedy tokens without a stop: the prefill's, then three decode steps'.
+            let reference = try pair(stops: [])
+            try parallel(reference) { owner in
+                let lane = owner.nativeLanes[0]
+                while let frame = lane.nextFrame, frame.phase == .prefill {
+                    if let token = try owner.executor!.prefill(lane, frame: frame, check: {}) { owner.selected = [token] }
+                }
+                for _ in 0..<3 { owner.selected.append(try owner.executor!.decode([lane], tokens: [owner.selected.last!], check: {})[0]) }
+            }
+            let tokens = reference[0].selected
+            for owner in reference { try owner.executor!.retire(owner.nativeLanes[0], reason: nil, selected: 4, last: nil) }
+            // With the third token as the stop: step 2 (on it) is built before step 1 (selecting it) is read.
+            let candidate = try pair(stops: [tokens[2]])
+            final class Chain: @unchecked Sendable { var handles: [[QwenTensorParallelNativeBatchExecutor<SelectionReservation>.Submitted]] = [[], []] }
+            let chain = Chain()
+            try parallel(candidate) { owner in
+                let lane = owner.nativeLanes[0], executor = owner.executor!, rank = executor.rank
+                while let frame = lane.nextFrame, frame.phase == .prefill {
+                    if let token = try executor.prefill(lane, frame: frame, check: {}) { owner.selected = [token] }
+                }
+                var handle = try executor.submitDecode([lane], inputs: .tokens([owner.selected[0]]), control: { [] }, check: {})
+                chain.handles[rank].append(handle)
+                for _ in 0..<2 {
+                    handle = try executor.submitDecode([lane], inputs: .after(handle, rows: [0]), control: { [] }, check: {})
+                    chain.handles[rank].append(handle)
+                    owner.selected.append(try executor.readDecode(chain.handles[rank][owner.selected.count - 1], check: {}).tokens[0])
+                }
+                // The EOS is read; the step built on it is drained and its token dropped.
+                _ = try executor.readDecode(handle, check: {})
+                try executor.retire(lane, reason: .eos, selected: 3, last: owner.selected[2])
+            }
+            for owner in candidate {
+                #expect(owner.selected == Array(tokens.prefix(3)))
+                #expect(owner.nativeLanes[0].isClosed && owner.host.isDrained)
             }
         }
     }

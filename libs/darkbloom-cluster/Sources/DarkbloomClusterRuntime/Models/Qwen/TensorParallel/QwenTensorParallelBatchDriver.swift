@@ -425,8 +425,10 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
                             }, check: laneCheck)
                         let next = Pending(step: step, slots: previous.slots, handle: handle, planWords: 0,
                                            localPlan: nil, localReport: nil, localDecision: words)
-                        try read(previous)
+                        // `next` is the step a failure must drain: it depends on `previous`, so draining it
+                        // completes both, and `previous` is never read twice.
                         pending = next
+                        try read(previous)
                         return false
                     }
                     if let previous = pending { pending = nil; try read(previous) }

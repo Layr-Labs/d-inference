@@ -848,9 +848,11 @@ extension CBv2OwnedRequestState {
             try check()
             try validateOutput(output)
             let frontiers = states.map { Int32($0.committedTokens + tokenCount) }
+            let readsDevice = host.kind != .paged
             for (index, cache) in caches.enumerated() {
+                if readsDevice || !(cache is PagedLayerCache) { host.submittedDeviceFrontierReads += 1 }
                 guard cache.rows.count == states.count, cache.positionOffsets.shape == [states.count],
-                      cache.positionOffsets.dtype == .int32, frontier(of: cache, deviceRead: host.kind != .paged) == frontiers,
+                      cache.positionOffsets.dtype == .int32, frontier(of: cache, deviceRead: readsDevice) == frontiers,
                       host.owns(cache, at: index) else {
                     throw ProbeError("CBv2 batched KV binding or host token frontiers differ")
                 }

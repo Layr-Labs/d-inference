@@ -70,6 +70,10 @@ public final class QwenTensorParallelResidentRuntime {
     /// What this rank measured of the link at load (`QwenTensorParallelLinkProbe`).
     public let linkProbe: ClusterWorkerLinkProbe?
     public let batchLanes: Int
+    /// The driver builds decode steps ahead: the load agreement's own value
+    /// (`QwenTensorParallelBatchSettings.buildsAhead`), so the gate and the
+    /// behaviour are one value.
+    let batchBuildsAhead: Bool
     var batchHost: CBv2StageKVHost?
     let batchBudget: QwenTensorParallelBatchBudget?
     let batchMTPBudget: QwenTensorParallelBatchMTPBudget?
@@ -391,7 +395,7 @@ public final class QwenTensorParallelResidentRuntime {
                 profile: profile, shares: shares,
                 allocationBaseline: allocationBaseline, shareProbe: shareProbe,
                 loadAgreement: loadAgreement, capacity: capacity, receipt: receipt, linkProbe: probe,
-                batchLanes: batch.lanes, batchHost: batchHost, batchBudget: batchBudget, batchMTPBudget: batchMTPBudget,
+                batchLanes: batch.lanes, batchBuildsAhead: batch.buildsAhead, batchHost: batchHost, batchBudget: batchBudget, batchMTPBudget: batchMTPBudget,
                 requestCharge: requestCharge, servingContextTokens: serving, batchPrefixEnabled: prefixEnabled,
                 batchPrefixBudgetBytes: prefixBudget, prefixDisk: prefixDisk,
                 mtpTerms: speculativeTerms, mtpHead: loadedMTPHead, assistantReady: assistantReady)
@@ -427,7 +431,7 @@ public final class QwenTensorParallelResidentRuntime {
                  vision: QwenStageVision?, visionInventory: QwenStageVisionInventory?, profile: QwenRegisteredDenseModelProfile, shares: [Int],
                  allocationBaseline: Int, shareProbe: ClusterWorkerShareProbe?, loadAgreement: String, capacity: Int,
                  receipt: QwenTensorParallelShardReceipt, linkProbe: ClusterWorkerLinkProbe?,
-                 batchLanes: Int, batchHost: CBv2StageKVHost?,
+                 batchLanes: Int, batchBuildsAhead: Bool, batchHost: CBv2StageKVHost?,
                  batchBudget: QwenTensorParallelBatchBudget?, batchMTPBudget: QwenTensorParallelBatchMTPBudget?,
                  requestCharge: QwenTensorParallelRequestCharge, servingContextTokens: Int?,
                  batchPrefixEnabled: Bool, batchPrefixBudgetBytes: Int, prefixDisk: QwenTensorParallelPrefixDisk?,
@@ -438,7 +442,8 @@ public final class QwenTensorParallelResidentRuntime {
         self.vision = vision; self.visionInventory = visionInventory
         self.loadAgreement = loadAgreement; self.linkProbe = linkProbe
         self.batchAllocationBaseline = allocationBaseline
-        self.batchLanes = batchLanes; self.batchHost = batchHost; self.batchBudget = batchBudget
+        self.batchLanes = batchLanes; self.batchBuildsAhead = batchBuildsAhead
+        self.batchHost = batchHost; self.batchBudget = batchBudget
         self.batchMTPBudget = batchMTPBudget
         self.requestCharge = requestCharge; self.servingContextTokens = servingContextTokens
         self.mtpTerms = mtpTerms; self.mtpHead = mtpHead

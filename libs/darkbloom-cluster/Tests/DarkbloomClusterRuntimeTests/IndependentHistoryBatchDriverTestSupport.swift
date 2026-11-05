@@ -104,6 +104,8 @@ final class HistoryBatchTestSession: IndependentHistoryBatchSession {
     var isClosed = false, isFailed = false, failCleanup = false
     /// Qwen TP driver tests: false stands for an assisted row, which never folds control.
     var plainSelection = true
+    /// Forwards a client stop may discard: one, or more under build-ahead (held tokens and steps built after the stop).
+    var aheadDiscardLimit = 1
     var nextFrame: QwenLayerStageFrame? { try? request.frame(sequence: frames.count) }
     init(_ request: QwenLayerStageGenerationRequest) { self.request = request }
     static func next(_ history: [Int]) -> Int { (history.reduce(0, +) + history.count * 7) % 64 }
@@ -134,7 +136,10 @@ final class HistoryBatchTestSession: IndependentHistoryBatchSession {
     func finishGeneration(_ reason: QwenLayerStageGenerationFinishReason, selectedTokenCount: Int, lastTokenID: Int,
                           discarded: Int) throws {
         let decoded = frames.count - request.prefillFrameCount
-        guard discarded == 0 || (reason == .clientStop && discarded == 1),
+        // A client stop drops the selection after the owner's answer; build-ahead may
+        // also have run forwards past it, or one past an EOS (`QwenTensorParallelBatchDriver`).
+        guard discarded == 0 || (reason == .clientStop && discarded <= aheadDiscardLimit)
+                || (reason == .eos && discarded == 1),
               lastTokenID == (discarded == 0 ? Self.next(history) : history[history.count - discarded]),
               selectedTokenCount == decoded + 1 - discarded else {
             throw ProbeError("Test finish differs from committed history")

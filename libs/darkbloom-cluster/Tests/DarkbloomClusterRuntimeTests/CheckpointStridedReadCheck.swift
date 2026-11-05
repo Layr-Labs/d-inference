@@ -104,7 +104,7 @@ enum CheckpointStridedReadCheck {
         return result
     }
 
-    private static func fixture(root: URL, files payloads: [String: Data]) throws -> VerifiedCheckpoint {
+    static func fixture(root: URL, files payloads: [String: Data]) throws -> VerifiedCheckpoint {
         let config = Data(#"{"arch":"strided-read-fixture"}"#.utf8)
         let files = [("config.json", config)] + payloads.map { ($0.key, $0.value) }
         var aggregate = SHA256()
@@ -123,7 +123,7 @@ enum CheckpointStridedReadCheck {
     }
 
     /// `count` bytes of a seeded sequence.
-    private static func seeded(_ count: Int, seed: UInt64) -> Data {
+    static func seeded(_ count: Int, seed: UInt64) -> Data {
         var data = Data(count: count)
         data.withUnsafeMutableBytes { raw in
             var state: UInt64 = 0x9E37_79B9_7F4A_7C15 ^ seed

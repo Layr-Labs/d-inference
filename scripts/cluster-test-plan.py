@@ -106,16 +106,26 @@ QWEN_TP_MTP_GPU_TESTS = (
     "wholeAndLayeredWindowsAreBitwise",
 )
 
+# The Gemma 4 suites: 592 of the base tests' 970 s (run 41992571131, job
+# 127128309712). They run in a process of their own, so the family still
+# shares one process; `audit` checks that every Gemma suite is listed.
+GEMMA_SUITES = (
+    "Gemma4BatchArithmeticAgreementTests", "Gemma4BatchDecodeTests", "Gemma4StagePagedSyntheticTests",
+    "Gemma4TensorParallelPrefixTests", "Gemma4TensorParallelRuntimeTests", "Gemma4TensorParallelTests",
+    "GemmaPrefillArithmeticTests", "GemmaPrefixChunkTests", "ResidentAdmissionGemma4Tests",
+)
+
 SELECTIONS = (
-    # Blocking shard 1 runs `base`, the longest selection, alone, then the
-    # share probe alone. The probe times its share against a 1.5 s budget, so
-    # it never runs on a Mac just after the concurrent GPU groups (run
-    # 41973436945 failed it there). Shard 2 runs group 1 (the CPU
-    # batch-session suite, then the GLM paged-KV, invariance and census, TF32
-    # and Gemma selections) beside group 2 (the Qwen GPU chain and
-    # glm53-prefix-ssd).
+    # Blocking shard 1 runs `base` alone, then the share probe alone. The
+    # probe times its share against a 1.5 s budget, so it never runs on a Mac
+    # just after the concurrent GPU groups (run 41973436945 failed it there).
+    # Shard 2 runs group 1 (the CPU batch-session suite, then the GLM paged-KV,
+    # invariance and census, TF32 and Gemma selections) beside group 2 (the
+    # Qwen GPU chain and glm53-prefix-ssd). Shard 3 runs the Gemma 4 base
+    # suites alone.
     Selection("base-batch-session", "blocking", 2, suites=("QwenTensorParallelBatchSessionTests",), group=1),
     Selection("base", "blocking", 1),
+    Selection("base-gemma", "blocking", 3, suites=GEMMA_SUITES),
     Selection("qwen-tp-batch-gpu", "blocking", 2, {"QWEN_TP_BATCH_GPU": "1"}, tests=(
         "bothTilesGiveTheSameBytes",
         "actualHybridShardsPreserveAttentionConvAndSSMRows",
@@ -247,7 +257,8 @@ REQUIRES_MODEL = (
     "verifyWindowRoundsByRowCount",
 )
 REQUIRES_MODEL_SUITES = ("GLM5NextServingMetadataTests", "GLM5NextTensorParallelMediaTowerTests")
-# Runners Cluster Focused Checks runs first, with its retained native build.
+# Runners the workflow runs as steps of their own: the release builds in
+# Cluster Release Build Checks, the others in shard 2 of Cluster Focused Checks.
 METADATA_JOB_RUNNERS = ("GPTOSSStageChecks", "NemotronStageChecks", "PrefillScheduleChecks", "StageMetadataChecks")
 
 
@@ -429,6 +440,15 @@ def gated_in_sources(directory=RUNTIME_TESTS):
     return functions, suites, repeated
 
 
+def gemma_suites_in_sources(directory=RUNTIME_TESTS):
+    """Top-level test types of the Gemma family: a name with `Gemma` that ends in `Tests`."""
+    names = set()
+    for path in sorted(directory.rglob("*.swift")):
+        names.update(re.findall(r"(?m)^(?:@\w+(?:\([^)]*\))?\s+)*(?:final )?(?:struct|class|enum) (\w*Gemma\w*Tests)\b",
+                                path.read_text()))
+    return names
+
+
 def audit():
     errors = []
     planned = [name for selection in SELECTIONS for name in selection.tests]
@@ -444,6 +464,9 @@ def audit():
         errors.append(f"{name} is defined more than once; its name does not select one test")
     if suites != set(REQUIRES_MODEL_SUITES):
         errors.append(f"Gated suites {sorted(suites)} differ from REQUIRES_MODEL_SUITES {sorted(REQUIRES_MODEL_SUITES)}")
+    gemma = gemma_suites_in_sources()
+    if gemma != set(GEMMA_SUITES):
+        errors.append(f"Gemma suites in the sources {sorted(gemma)} differ from GEMMA_SUITES {sorted(GEMMA_SUITES)}")
     names = [selection.name for selection in SELECTIONS]
     if len(names) != len(set(names)) or any(selection.lane not in LANES for selection in SELECTIONS):
         errors.append("Selection names must be unique and every lane known")

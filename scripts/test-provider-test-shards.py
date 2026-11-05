@@ -289,6 +289,14 @@ class CountAndAuditTests(unittest.TestCase):
                                      "ProviderCoreTests.A/a()\nProviderCoreTests/B/b(selection:)\n\n")
         self.assertEqual(listed, ["ProviderCoreTests.A/a()", "ProviderCoreTests/B/b(selection:)"])
 
+    def test_unweighted_serial_suites_are_reported(self):
+        tests = ["ProviderCoreTests.A/a()", "ProviderCoreTests/New/b()", "ProviderCoreTests.freeFunction()",
+                 "ProviderCoreFoundationTests.Pure/c()", "DarkbloomCLITests.Other/d()"]
+        weights = {"ProviderCoreTests.A": 1.0, "DarkbloomCLITests.Other": 2.0}
+        # Free functions have no suite and the parallel class has no weights to keep.
+        self.assertEqual(shards.unweighted(tests, weights), ["ProviderCoreTests.New"])
+        self.assertEqual(shards.unweighted(tests, {**weights, "ProviderCoreTests.New": 0.5}), [])
+
     def test_weights_sum_xunit_cases_per_top_level_suite(self):
         with tempfile.TemporaryDirectory(prefix="shard-weights-") as temporary:
             path = Path(temporary) / "shard-1-of-2.xml"

@@ -46,6 +46,11 @@ class ClusterTestPlanTests(unittest.TestCase):
             f"{module}.PrefixCacheContractTests/plannedFramesStartAtTheReusedPrefix()": "base",
             f"{module}.QwenBatchCancellationTests/testAcceptedStartStaysCharged": "base",
             f"{module}.QwenTensorParallelBatchSessionTestsMore/plainCase()": "base",
+            f"{module}.Gemma4TensorParallelTests/plainCase()": "base-gemma",
+            f"{module}/ResidentAdmissionGemma4Tests/Nested/plainCase()": "base-gemma",
+            f"{module}.Gemma4TensorParallelTestsMore/plainCase()": "base",
+            # A switched test of a Gemma suite runs only in its switch's selection.
+            f"{module}.Gemma4TensorParallelTests/diagnosticShardOperationsEqualWholeOperations()": "gemma-tp-diag",
         })
         for test_id, owner in cases.items():
             with self.subTest(test_id=test_id):
@@ -78,11 +83,18 @@ class ClusterTestPlanTests(unittest.TestCase):
     def test_order_dependent_selections_keep_their_process_and_order(self):
         # Some GPU and peer tests pass only after earlier work in the same
         # process or on the same Mac (PR 1745 runs 41692814231, 41700931534).
-        # Every base suite but the CPU batch-session suite runs in one process,
-        # so each model family shares a process.
+        # Each model family's base suites share one process: the CPU
+        # batch-session suite runs in its own, the Gemma family in its own and
+        # every other base suite in `base`.
         base = [selection for selection in plan.SELECTIONS if selection.base]
         self.assertEqual([(selection.name, selection.suites) for selection in base],
-                         [("base-batch-session", ("QwenTensorParallelBatchSessionTests",)), ("base", None)])
+                         [("base-batch-session", ("QwenTensorParallelBatchSessionTests",)), ("base", None),
+                          ("base-gemma", plan.GEMMA_SUITES)])
+        self.assertTrue(all("Gemma" in suite for suite in plan.GEMMA_SUITES))
+        gemma = next(selection for selection in base if selection.name == "base-gemma")
+        self.assertIsNone(gemma.group)
+        self.assertEqual([selection.name for selection in plan.SELECTIONS
+                          if (selection.lane, selection.shard) == ("blocking", gemma.shard)], ["base-gemma"])
         # `base`, the longest selection, and then the share probe have shard 1
         # and its Mac to themselves, one process at a time. The probe times
         # its share against a 1.5 s budget: it never shares a shard with the
@@ -188,33 +200,45 @@ class ClusterTestPlanTests(unittest.TestCase):
                     self.assertEqual(own, selection.environment)
 
     def test_jobs_run_every_shard_of_their_lane(self):
-        jobs = {"test-cluster": "blocking", "test-cluster-gpu": "nonblocking"}
-        for job_id, lane in jobs.items():
+        jobs = {"test-cluster": ("blocking", "Run cluster runtime tests"),
+                "test-cluster-gpu": ("nonblocking", "Run non-blocking cluster GPU tests")}
+        for job_id, (lane, name) in jobs.items():
             with self.subTest(job=job_id):
                 job = self.jobs[job_id]
                 matrix = re.search(r"(?m)^        shard: \[([0-9, ]+)\]$", job).group(1)
                 self.assertEqual([int(shard) for shard in matrix.split(",")], plan.shards(lane))
+                # The blocking shards each read a Darkbloom lane; the GPU
+                # shards need more memory than the routed size and stay on Blacksmith.
                 for shard in plan.shards(lane):
-                    self.assertIn(f"        {job_id}-{shard} macos_arm64 ", self.jobs["route"])
-                steps = workflow.step_blocks(job)
-                build = next(step for step in steps if workflow.field(step, "uses") == workflow.BUILD_ACTION)
-                self.assertEqual(workflow.field(build, "lane", indent=10), "cluster")
-                run = steps[-1]
+                    routed = f"        {job_id}-{shard} macos_arm64 " in self.jobs["route"]
+                    self.assertEqual(routed, lane == "blocking")
+                if lane == "nonblocking":
+                    self.assertIn(f"    runs-on: {workflow.BLACKSMITH_MAC}\n", job)
+                steps = {workflow.field(step, "name", indent=6): step for step in workflow.step_blocks(job)}
+                products = steps["Download cluster test products"]
+                self.assertEqual(workflow.field(products, "uses"), workflow.PRODUCTS_ACTION)
+                self.assertEqual(workflow.field(products, "lane", indent=10), "cluster")
+                run = steps[name]
                 self.assertEqual(workflow.run_command(run), f'python3 scripts/cluster-test-plan.py run {lane} "$SHARD"')
                 self.assertEqual(workflow.field(run, "SHARD", indent=10), "${{ matrix.shard }}")
                 self.assertEqual(workflow.field(run, "if"), workflow.READY)
         self.assertEqual(plan.shards("focused"), [1])
-        focused = workflow.step_blocks(self.jobs["test-cluster-focused"])
-        self.assertEqual(workflow.run_command(focused[-1]), "python3 scripts/cluster-test-plan.py run focused 1")
-        self.assertIn("        test-cluster-focused macos_arm64 ", self.jobs["route"])
+        focused = {workflow.field(step, "name", indent=6): step
+                   for step in workflow.step_blocks(self.jobs["test-cluster-focused"])}
+        self.assertEqual(workflow.run_command(focused["Run cluster focused checks"]),
+                         "python3 scripts/cluster-test-plan.py run focused 1")
+        self.assertIn("matrix.shard == 1 && ", workflow.field(focused["Run cluster focused checks"], "if"))
+        self.assertIn("        test-cluster-focused-1 macos_arm64 ", self.jobs["route"])
 
     def test_only_the_gpu_job_continues_after_a_failure_and_the_gate_requires_the_others(self):
-        self.assertIn("continue-on-error: true", workflow.step_blocks(self.jobs["test-cluster-gpu"])[-1])
+        # Besides the report-only resource samples.
+        self.assertEqual(workflow.continues_on_error(self.jobs["test-cluster-gpu"]),
+                         ["Run non-blocking cluster GPU tests", workflow.SAMPLER_STEPS[-1]])
         gate = workflow.field(self.jobs["provider-test-gate"], "needs", indent=4)
         needs = [name.strip() for name in gate.strip("[]").split(",")]
-        for job_id in ("test-cluster", "test-cluster-focused"):
+        for job_id in ("test-cluster", "test-cluster-focused", "cluster-release-checks"):
             with self.subTest(job=job_id):
-                self.assertNotIn("continue-on-error:", self.jobs[job_id])
+                self.assertEqual(workflow.continues_on_error(self.jobs[job_id]), [workflow.SAMPLER_STEPS[-1]])
                 self.assertIn(job_id, needs)
         self.assertNotIn("test-cluster-gpu", self.jobs["provider-test-gate"])
 

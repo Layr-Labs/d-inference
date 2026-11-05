@@ -171,12 +171,25 @@ the only candidate. When it selects another Xcode than the image's, it exports
 | Mode | Used by | SDK | Apple Swift |
 |---|---|---|---|
 | `release` | `release-provider.yml`, `provider-signing-validation.yml`, master and dispatched SDK 27 release preparation | 27.2 (Xcode 27.2) | 6.4.2 |
-| `qualification` (default) | `ci.yml`, pull-request SDK 27 release preparation, the Darkbloom Sandbox macOS CI base check | 27.2, or 27.0 (Xcode 27.1) | 6.4 or 6.4.x |
+| `qualification` (default) | Provider CI (`provider-tests.yml`, called by `ci-dev.yml` and `ci-master.yml`), pull-request SDK 27 release preparation, the Darkbloom Sandbox macOS CI base check | 27.2, or 27.0 (Xcode 27.1) | 6.4 or 6.4.x |
 
 SDK 27.0 stays accepted in `qualification` only while the Darkbloom Sandbox
 production macOS CI base is on Xcode 27.1. Remove it when that base is on
 Xcode 27.2. Darkbloom Sandbox's `images/macos/pins.env` mirrors the
 `qualification` values.
+
+SDK 27.2 declares Foundation's `Date.>=` and `Date.<=` as back-deployed before
+macOS 27.2. Swift 6.4.2 compiles each `Date >= Date` and `Date <= Date` into a
+call through a weak import, behind an OS version check. Pre-release macOS 27.2
+builds (for example 26B5091g) pass that check but do not export the symbols, so
+the call jumps to address 0. Do not compare Dates with `>=` or `<=`. Write
+`a.timeIntervalSince(b) >= 0` for `a >= b` and `a.timeIntervalSince(b) <= 0`
+for `a <= b`; `<`, `>` and `==` are safe. Two checks keep the pattern out:
+
+| Check | Where it runs | What it reads |
+|---|---|---|
+| `scripts/check-date-comparisons.py` | The `Provider Tests` gate of `provider-tests.yml` (every CI run, dev included) and Release Integrity (`ci-master.yml`) | Shipped Swift source. It finds Dates by syntax, by the declaration in scope and by declared names. It refuses `>=` or `<=` passed as a function. It has no types, so it can miss a comparison |
+| `scripts/check-provider-weak-imports.py` | The release lane of `.github/actions/provider-release-build`, after the products and cluster helpers are built | The built binaries (`nm -m`). It fails on any import of the two symbols and names the calling functions (`otool -tV`) |
 
 The `scripts/provider-release-swift.sh` wrapper keeps native SwiftPM
 compilation and linking on the selected SDK. Ordinary development retains the

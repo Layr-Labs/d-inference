@@ -1070,6 +1070,20 @@ against the full suite list. Signing requires `qualify-sdk` and optimized
 compilation. GPU suites retain serial execution and exclusive-process isolation.
 A cache hit never skips a test.
 
+The SDK 27.2 Date checks run without a Mac. The `Provider Tests` gate and
+Release Integrity run, from the repository root:
+
+```bash
+python3 scripts/test-check-date-comparisons.py
+python3 scripts/test-check-provider-weak-imports.py
+python3 scripts/check-date-comparisons.py
+```
+
+The binary tests use `nm -m` and `otool -tV` lines from DevNet build
+`0.10.6-dev.branch.87`, which crashed on macOS 27.2 26B5091g. The release lane
+runs `scripts/check-provider-weak-imports.py` on the built binaries
+([build guide](build.md#sdk-27-release-builds-and-caches)).
+
 `Qwen4StandaloneAdmissionTests` uses scripted memory through the real standalone
 server to cover low-headroom refusal before loading, pending-load cleanup and
 same-server retry. Physical allocator tests still require actual measurements.

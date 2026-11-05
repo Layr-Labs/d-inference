@@ -56,13 +56,16 @@ struct QwenLayerStageGenerationSchedule {
     }
 
     /// `discardedDecodeForwards` counts decode frames this stage ran alone
-    /// whose tokens the request owner never published. Only a client stop can
-    /// leave any: the stage decodes a batch before it learns the decision.
+    /// whose tokens the request owner never published. A client stop can
+    /// leave any (the stage decodes a batch before it learns the decision),
+    /// and an EOS under tensor-parallel build-ahead leaves exactly one (the
+    /// next step is built before the EOS is read; `QwenTensorParallelBatchDriver`). A
+    /// length finish never does: no step is built past the output count.
     mutating func finish(_ reason: QwenLayerStageGenerationFinishReason,
                          selectedTokenCount: Int, lastTokenID: Int,
                          discardedDecodeForwards: Int = 0) throws {
         guard !complete, committedPromptTokens == request.promptCount,
-              discardedDecodeForwards >= 0, discardedDecodeForwards == 0 || reason == .clientStop,
+              discardedDecodeForwards >= 0, discardedDecodeForwards == 0 || reason == .clientStop || (reason == .eos && discardedDecodeForwards == 1),
               selectedTokenCount == decodeForwardCount + 1 - discardedDecodeForwards,
               (1...request.outputCount).contains(selectedTokenCount),
               (0..<request.profile.vocabularySize).contains(lastTokenID) else {

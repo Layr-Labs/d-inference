@@ -13,6 +13,7 @@ import MLX
 //   darkbloom-cluster-tp-check gemma run --mode full|split-sum|simulated|shard|tp --model-dir DIR --request FILE --report FILE
 //       [--record-top K] [--backend ring|socket|jaccl] [--reduction native|sealed-bench] [--shard-rank R]
 //       [--pack yes|no] [--path legacy|paged] [--prefix none|repeat] [--deadline-seconds S]
+//       [--layer-stride N (paged path, full/shard/tp: decode submitted every N layers, 0 = whole step; default the product's)]
 //   darkbloom-cluster-tp-check gemma compare --reference FILE --candidate FILE [--bitwise yes|no] [--near-tie-ulps U]
 //   darkbloom-cluster-tp-check gemma allsum [--backend ring|socket|jaccl] [--count N]
 //   darkbloom-cluster-tp-check gemma lanes --mode simulated|tp --model-dir DIR --report FILE [--lanes N] [--outputs N]
@@ -164,7 +165,8 @@ enum GemmaCheck {
               ["yes", "no"].contains(fields["--pack"] ?? "yes"),
               ["legacy", "paged"].contains(fields["--path"] ?? "legacy"),
               ["none", "repeat"].contains(fields["--prefix"] ?? "none"),
-              let mtpDepth = Int(fields["--mtp-depth"] ?? "0"), (0 ... Gemma4TensorParallelAssistant.maximumDepth).contains(mtpDepth) else {
+              let mtpDepth = Int(fields["--mtp-depth"] ?? "0"), (0 ... Gemma4TensorParallelAssistant.maximumDepth).contains(mtpDepth),
+              fields["--layer-stride"].map({ Int($0).map { (0 ... 64).contains($0) } ?? false }) ?? true else {
             throw Failure("gemma run needs --mode full|split-sum|simulated|shard|tp, --model-dir, --request, a new --report and bounded options")
         }
         let paged = (fields["--path"] ?? "legacy") == "paged"
@@ -180,6 +182,10 @@ enum GemmaCheck {
         guard (mtpDepth == 0) == (assistantDirectory == nil),
               mtpDepth == 0 || (paged && !repeatPrefix && recordTop == 0 && ["full", "simulated", "tp"].contains(mode)) else {
             throw Failure("--mtp-depth N takes --assistant-dir, the paged path, --record-top 0 and full, simulated or tp")
+        }
+        let layerStride = fields["--layer-stride"].flatMap { Int($0) }
+        guard layerStride == nil || (paged && Gemma4TensorParallelModel.benchLayerStrideApplies(mode: mode)) else {
+            throw Failure("--layer-stride applies to the paged path of a full, shard or tp rank (simulated ranks run on their own threads)")
         }
         try ProcessForcedExit.routeTerminationSignals()
         ProcessNativeMemoryRelease.installForForcedExit()
@@ -220,7 +226,7 @@ enum GemmaCheck {
             reduction = g
             note("rank \(g.rank) of \(g.size) over \(backend.rawValue)\(backend.correctnessOnly ? " (correctness only, not a pair timing)" : "")")
             // Everything that changes the collectives is agreed before loading.
-            let workload = "\(configurationSHA)|\(request.promptTokenIDsSHA256)|\(request.outputCount)|\(request.chunkSize)|top=\(recordTop)|pack=\(pack)|sealed=\(sealed)|paged=\(paged)|prefix=\(repeatPrefix)|mtp=\(mtpDepth)|\(Gemma4TensorParallelPlan.arithmeticAgreementFields.joined(separator: ","))"
+            let workload = "\(configurationSHA)|\(request.promptTokenIDsSHA256)|\(request.outputCount)|\(request.chunkSize)|top=\(recordTop)|pack=\(pack)|sealed=\(sealed)|paged=\(paged)|prefix=\(repeatPrefix)|mtp=\(mtpDepth)|stride=\(layerStride.map(String.init) ?? "product")|\(Gemma4TensorParallelPlan.arithmeticAgreementFields.joined(separator: ","))"
             guard try g.digestsEqual(fnv(workload)) else {
                 throw Failure("the ranks disagree on the workload, the model configuration or the arithmetic contract")
             }
@@ -238,7 +244,7 @@ enum GemmaCheck {
                                                        packFeedForward: pack)
         note("loaded in \(String(format: "%.2f", model.loadSeconds)) s, \(model.loadedParameterBytes) parameter bytes")
         if let group { guard try group.agree([7]) else { throw Failure("load barrier failed") } }
-        let generation: Gemma4TensorParallelModel.Generation
+        var generation: Gemma4TensorParallelModel.Generation!
         var pairAgrees: Bool?
         var prefixOutcome: (reused: Int, equalsCold: Bool)?
         var roundsReport: Gemma4TensorParallelModel.RoundsReport?
@@ -248,69 +254,76 @@ enum GemmaCheck {
                 && bits(a.topLogprobs) == bits(b.topLogprobs)
                 && a.finalLogits.map { $0.map(\.bitPattern) } == b.finalLogits.map { $0.map(\.bitPattern) }
         }
-        if let assistantDirectory {
-            let prompt = request.promptTokenIDs, count = request.outputCount, chunk = request.chunkSize
-            note("speculative rounds: depth \(mtpDepth), assistant \(assistantDirectory.lastPathComponent)")
-            if let pair {
+        try Gemma4TensorParallelModel.withLayerStride(layerStride) {
+            if let assistantDirectory {
+                let prompt = request.promptTokenIDs, count = request.outputCount, chunk = request.chunkSize
+                note("speculative rounds: depth \(mtpDepth), assistant \(assistantDirectory.lastPathComponent)")
+                if let pair {
+                    let ranks = Ranks([model, try Gemma4TensorParallelModel.load(modelDirectory: modelDirectory,
+                        role: .shard(rank: 1), reduction: pair.reduction(rank: 1), packFeedForward: pack)])
+                    let assistants = try (0 ..< 2).map { _ in try Gemma4AssistantCheckpoint.load(directory: assistantDirectory) }
+                    let drafters = Assistants(assistants)
+                    let both = try Gemma4TensorParallelLocalPair.run(device: Device.defaultDevice()) { rank in
+                        try ranks.models[rank].generateRounds(prompt: prompt, outputCount: count, chunk: chunk,
+                            assistant: drafters.models[rank], depth: mtpDepth)
+                    }
+                    pairAgrees = both[0].generation.tokenIDs == both[1].generation.tokenIDs
+                    generation = both[0].generation; roundsReport = both[0].rounds
+                } else {
+                    let assistant = try Gemma4AssistantCheckpoint.load(directory: assistantDirectory)
+                    let value = try model.generateRounds(prompt: prompt, outputCount: count, chunk: chunk,
+                        assistant: assistant, depth: mtpDepth)
+                    generation = value.generation; roundsReport = value.rounds
+                }
+                if let roundsReport {
+                    note("rounds \(roundsReport.rounds) (plain \(roundsReport.plainRounds)), accepted \(roundsReport.accepted) of \(roundsReport.proposed)"
+                        + " by position \(roundsReport.acceptedByPosition) of \(roundsReport.proposedByPosition)")
+                }
+            } else if repeatPrefix {
+                let prompt = request.promptTokenIDs, count = request.outputCount, chunk = request.chunkSize
+                let runs: [(cold: Gemma4TensorParallelModel.Generation, restored: Gemma4TensorParallelModel.Generation, reused: Int)]
+                if let pair {
+                    let ranks = Ranks([model, try Gemma4TensorParallelModel.load(modelDirectory: modelDirectory,
+                        role: .shard(rank: 1), reduction: pair.reduction(rank: 1), packFeedForward: pack)])
+                    runs = try Gemma4TensorParallelLocalPair.run(device: Device.defaultDevice()) { rank in
+                        let value = try ranks.models[rank].generatePagedRepeatingPrefix(prompt: prompt, outputCount: count,
+                            chunk: chunk, recordTop: recordTop)
+                        return (value.cold, value.restored, value.reusedPromptTokens)
+                    }
+                    pairAgrees = bitsEqual(runs[0].restored, runs[1].restored)
+                } else {
+                    let value = try model.generatePagedRepeatingPrefix(prompt: prompt, outputCount: count, chunk: chunk,
+                        recordTop: recordTop)
+                    runs = [(value.cold, value.restored, value.reusedPromptTokens)]
+                }
+                generation = runs[0].restored
+                prefixOutcome = (runs[0].reused, runs.allSatisfy { $0.reused > 0 && bitsEqual($0.restored, $0.cold) })
+                note("prefix repeat: reused \(runs[0].reused) prompt tokens; restored equals cold bit for bit: \(prefixOutcome!.equalsCold)")
+            } else if let pair {
                 let ranks = Ranks([model, try Gemma4TensorParallelModel.load(modelDirectory: modelDirectory,
                     role: .shard(rank: 1), reduction: pair.reduction(rank: 1), packFeedForward: pack)])
-                let assistants = try (0 ..< 2).map { _ in try Gemma4AssistantCheckpoint.load(directory: assistantDirectory) }
-                let drafters = Assistants(assistants)
+                let prompt = request.promptTokenIDs, count = request.outputCount, chunk = request.chunkSize
                 let both = try Gemma4TensorParallelLocalPair.run(device: Device.defaultDevice()) { rank in
-                    try ranks.models[rank].generateRounds(prompt: prompt, outputCount: count, chunk: chunk,
-                        assistant: drafters.models[rank], depth: mtpDepth)
+                    paged ? try ranks.models[rank].generatePaged(prompt: prompt, outputCount: count, chunk: chunk, recordTop: recordTop)
+                        : try ranks.models[rank].generate(prompt: prompt, outputCount: count, chunk: chunk, recordTop: recordTop)
                 }
-                pairAgrees = both[0].generation.tokenIDs == both[1].generation.tokenIDs
-                generation = both[0].generation; roundsReport = both[0].rounds
+                func bits(_ rows: [[Float]]) -> [[UInt32]] { rows.map { $0.map(\.bitPattern) } }
+                pairAgrees = both[0].tokenIDs == both[1].tokenIDs && bits(both[0].topLogits) == bits(both[1].topLogits)
+                    && bits(both[0].topLogprobs) == bits(both[1].topLogprobs)
+                    && both[0].finalLogits.map { $0.map(\.bitPattern) } == both[1].finalLogits.map { $0.map(\.bitPattern) }
+                generation = both[0]
             } else {
-                let assistant = try Gemma4AssistantCheckpoint.load(directory: assistantDirectory)
-                let value = try model.generateRounds(prompt: prompt, outputCount: count, chunk: chunk,
-                    assistant: assistant, depth: mtpDepth)
-                generation = value.generation; roundsReport = value.rounds
+                generation = paged
+                    ? try model.generatePaged(prompt: request.promptTokenIDs, outputCount: request.outputCount,
+                                              chunk: request.chunkSize, recordTop: recordTop)
+                    : try model.generate(prompt: request.promptTokenIDs, outputCount: request.outputCount,
+                                         chunk: request.chunkSize, recordTop: recordTop)
             }
-            if let roundsReport {
-                note("rounds \(roundsReport.rounds) (plain \(roundsReport.plainRounds)), accepted \(roundsReport.accepted) of \(roundsReport.proposed)"
-                    + " by position \(roundsReport.acceptedByPosition) of \(roundsReport.proposedByPosition)")
-            }
-        } else if repeatPrefix {
-            let prompt = request.promptTokenIDs, count = request.outputCount, chunk = request.chunkSize
-            let runs: [(cold: Gemma4TensorParallelModel.Generation, restored: Gemma4TensorParallelModel.Generation, reused: Int)]
-            if let pair {
-                let ranks = Ranks([model, try Gemma4TensorParallelModel.load(modelDirectory: modelDirectory,
-                    role: .shard(rank: 1), reduction: pair.reduction(rank: 1), packFeedForward: pack)])
-                runs = try Gemma4TensorParallelLocalPair.run(device: Device.defaultDevice()) { rank in
-                    let value = try ranks.models[rank].generatePagedRepeatingPrefix(prompt: prompt, outputCount: count,
-                        chunk: chunk, recordTop: recordTop)
-                    return (value.cold, value.restored, value.reusedPromptTokens)
-                }
-                pairAgrees = bitsEqual(runs[0].restored, runs[1].restored)
-            } else {
-                let value = try model.generatePagedRepeatingPrefix(prompt: prompt, outputCount: count, chunk: chunk,
-                    recordTop: recordTop)
-                runs = [(value.cold, value.restored, value.reusedPromptTokens)]
-            }
-            generation = runs[0].restored
-            prefixOutcome = (runs[0].reused, runs.allSatisfy { $0.reused > 0 && bitsEqual($0.restored, $0.cold) })
-            note("prefix repeat: reused \(runs[0].reused) prompt tokens; restored equals cold bit for bit: \(prefixOutcome!.equalsCold)")
-        } else if let pair {
-            let ranks = Ranks([model, try Gemma4TensorParallelModel.load(modelDirectory: modelDirectory,
-                role: .shard(rank: 1), reduction: pair.reduction(rank: 1), packFeedForward: pack)])
-            let prompt = request.promptTokenIDs, count = request.outputCount, chunk = request.chunkSize
-            let both = try Gemma4TensorParallelLocalPair.run(device: Device.defaultDevice()) { rank in
-                paged ? try ranks.models[rank].generatePaged(prompt: prompt, outputCount: count, chunk: chunk, recordTop: recordTop)
-                    : try ranks.models[rank].generate(prompt: prompt, outputCount: count, chunk: chunk, recordTop: recordTop)
-            }
-            func bits(_ rows: [[Float]]) -> [[UInt32]] { rows.map { $0.map(\.bitPattern) } }
-            pairAgrees = both[0].tokenIDs == both[1].tokenIDs && bits(both[0].topLogits) == bits(both[1].topLogits)
-                && bits(both[0].topLogprobs) == bits(both[1].topLogprobs)
-                && both[0].finalLogits.map { $0.map(\.bitPattern) } == both[1].finalLogits.map { $0.map(\.bitPattern) }
-            generation = both[0]
-        } else {
-            generation = paged
-                ? try model.generatePaged(prompt: request.promptTokenIDs, outputCount: request.outputCount,
-                                          chunk: request.chunkSize, recordTop: recordTop)
-                : try model.generate(prompt: request.promptTokenIDs, outputCount: request.outputCount,
-                                     chunk: request.chunkSize, recordTop: recordTop)
+        }
+        if !generation.stepSeconds.isEmpty {
+            let steps = generation.stepSeconds.sorted()
+            note(String(format: "decode stride=%@ step_ms_p50=%.3f step_ms_min=%.3f steps=%d", layerStride.map(String.init) ?? "product",
+                        steps[steps.count / 2] * 1000, steps[0] * 1000, steps.count))
         }
         var report = Report(mode: mode, role: mode == "simulated" ? "simulated-tp2" : role.label,
             rank: group?.rank ?? (mode == "shard" ? shardRank : 0),

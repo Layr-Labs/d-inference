@@ -98,7 +98,7 @@ struct ClusterOnboardingPeerLabelTests {
         // Two M5 Ultras, nothing measured yet: the planner's predictions, then the requests at once.
         let advice = OnboardingLive.modeAdvice(modes, listed: plan(tp, fitsNow: true, decode: 92),
                                                families: [plan(pp, fitsNow: true, decode: 38)], throughDarkbloom: true, serving: false)
-        #expect(advice == ClusterOnboardingModeAdvice(mode: tp, reason: "faster here (about 92 against 38 tokens/s, predicted) and serves up to 8 requests at once"))
+        #expect(advice == ClusterOnboardingModeAdvice(mode: tp, reason: "faster here and serves up to 8 requests at once"))
         // A memory-tight pair: the pipeline's own plan fits now, tensor parallel's doesn't.
         let tight = OnboardingLive.modeAdvice(modes, listed: plan(pp, fitsNow: true, decode: 20),
                                               families: [plan(tp, fitsNow: false, decode: 30)], throughDarkbloom: true, serving: false)

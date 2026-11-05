@@ -106,16 +106,26 @@ QWEN_TP_MTP_GPU_TESTS = (
     "wholeAndLayeredWindowsAreBitwise",
 )
 
+# The Gemma 4 suites: 592 of the base tests' 970 s (run 41992571131, job
+# 127128309712). They run in a process of their own, so the family still
+# shares one process; `audit` checks that every Gemma suite is listed.
+GEMMA_SUITES = (
+    "Gemma4BatchArithmeticAgreementTests", "Gemma4BatchDecodeTests", "Gemma4StagePagedSyntheticTests",
+    "Gemma4TensorParallelPrefixTests", "Gemma4TensorParallelRuntimeTests", "Gemma4TensorParallelTests",
+    "GemmaPrefillArithmeticTests", "GemmaPrefixChunkTests", "ResidentAdmissionGemma4Tests",
+)
+
 SELECTIONS = (
-    # Blocking shard 1 runs `base`, the longest selection, alone, then the
-    # share probe alone. The probe times its share against a 1.5 s budget, so
-    # it never runs on a Mac just after the concurrent GPU groups (run
-    # 41973436945 failed it there). Shard 2 runs group 1 (the CPU
-    # batch-session suite, then the GLM paged-KV, invariance and census, TF32
-    # and Gemma selections) beside group 2 (the Qwen GPU chain and
-    # glm53-prefix-ssd).
+    # Blocking shard 1 runs `base` alone, then the share probe alone. The
+    # probe times its share against a 1.5 s budget, so it never runs on a Mac
+    # just after the concurrent GPU groups (run 41973436945 failed it there).
+    # Shard 2 runs group 1 (the CPU batch-session suite, then the GLM paged-KV,
+    # invariance and census, TF32 and Gemma selections) beside group 2 (the
+    # Qwen GPU chain and glm53-prefix-ssd). Shard 3 runs the Gemma 4 base
+    # suites alone.
     Selection("base-batch-session", "blocking", 2, suites=("QwenTensorParallelBatchSessionTests",), group=1),
     Selection("base", "blocking", 1),
+    Selection("base-gemma", "blocking", 3, suites=GEMMA_SUITES),
     Selection("qwen-tp-batch-gpu", "blocking", 2, {"QWEN_TP_BATCH_GPU": "1"}, tests=(
         "bothTilesGiveTheSameBytes",
         "actualHybridShardsPreserveAttentionConvAndSSMRows",
@@ -247,7 +257,8 @@ REQUIRES_MODEL = (
     "verifyWindowRoundsByRowCount",
 )
 REQUIRES_MODEL_SUITES = ("GLM5NextServingMetadataTests", "GLM5NextTensorParallelMediaTowerTests")
-# Runners Cluster Focused Checks runs first, with its retained native build.
+# Runners the workflow runs as steps of their own: the release builds in
+# Cluster Release Build Checks, the others in shard 2 of Cluster Focused Checks.
 METADATA_JOB_RUNNERS = ("GPTOSSStageChecks", "NemotronStageChecks", "PrefillScheduleChecks", "StageMetadataChecks")
 
 
@@ -305,12 +316,29 @@ def shards(lane):
     return sorted({selection.shard for selection in SELECTIONS if selection.lane == lane})
 
 
-def lock_retry():
-    """scripts/swift_test_lock_retry.py, loaded by path (scripts/ is not a package)."""
-    spec = importlib.util.spec_from_file_location("swift_test_lock_retry", ROOT / "scripts/swift_test_lock_retry.py")
+def script(name):
+    """scripts/<name>.py (dashes as underscores in the module name), loaded by path (scripts/ is not a package)."""
+    spec = importlib.util.spec_from_file_location(name.replace("-", "_"), ROOT / f"scripts/{name}.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def lock_retry():
+    """scripts/swift_test_lock_retry.py."""
+    return script("swift_test_lock_retry")
+
+
+def mark(event, selection, pid):
+    """Report-only: tell scripts/ci-resource-sampler.py, in a sampled job, that
+    `selection` starts or ends under pid, so its report names the selection of
+    each large process."""
+    if not os.environ.get("CI_RESOURCE_SAMPLES"):
+        return
+    try:
+        script("ci-resource-sampler").mark(event, selection.name, pid)
+    except Exception as error:  # Report-only: never fail a selection.
+        print(f"::warning title=Resource sampler::{type(error).__name__}: {error}", flush=True)
 
 
 def execute(selection, output, log=None, temporary=None):
@@ -329,8 +357,17 @@ def execute(selection, output, log=None, temporary=None):
         env["TMPDIR"] = str(temporary)
     started = time.monotonic()
     for attempt in (1, 2):
-        status = subprocess.run(argv, cwd=cwd, env=env, stdout=log,
-                                stderr=subprocess.STDOUT if log is not None else None).returncode
+        # subprocess.run, with the child's pid marked for the resource sampler.
+        with subprocess.Popen(argv, cwd=cwd, env=env, stdout=log,
+                              stderr=subprocess.STDOUT if log is not None else None) as child:
+            mark("start", selection, child.pid)
+            try:
+                status = child.wait()
+            except BaseException:
+                child.kill()
+                raise
+            finally:
+                mark("end", selection, child.pid)
         if status == 0 or log is None or attempt == 2:
             break
         log.flush()
@@ -344,8 +381,25 @@ def execute(selection, output, log=None, temporary=None):
     return status, time.monotonic() - started
 
 
-def run_group(number, selections, output):
-    """Run one group's selections in plan order, each logging to its own file."""
+def start_gap():
+    """Seconds between the starts of a shard's groups (CLUSTER_TEST_START_GAP, default 15).
+
+    Processes that start together on one build meet on SwiftPM's build
+    database at startup: shard 2's two groups found it locked in every run of
+    runs 42041608780 to 42065297991. Each later group starts this long after
+    the one before, as the provider shards' processes do
+    (PROVIDER_TEST_START_GAP); the lock-retry guard stays the backstop.
+    """
+    value = os.environ.get("CLUSTER_TEST_START_GAP") or "15"
+    if not re.fullmatch(r"[0-9]+(\.[0-9]+)?", value):
+        raise ValueError(f"CLUSTER_TEST_START_GAP must be seconds, got {value!r}")
+    return float(value)
+
+
+def run_group(number, selections, output, delay=0.0):
+    """Run one group's selections in plan order, each logging to its own file,
+    after `delay` seconds."""
+    time.sleep(delay)
     temporary = output / f"group-{number}-tmp"
     temporary.mkdir()
     results = []
@@ -369,8 +423,10 @@ def run(lane, shard):
     results = {}
     if groups:
         # The groups run at the same time; their logs print afterwards, whole.
+        gap = start_gap()
         with ThreadPoolExecutor(max_workers=len(groups)) as pool:
-            futures = [pool.submit(run_group, number, members, output) for number, members in sorted(groups.items())]
+            futures = [pool.submit(run_group, number, members, output, index * gap)
+                       for index, (number, members) in enumerate(sorted(groups.items()))]
             finished = [result for future in futures for result in future.result()]
         for selection, status, seconds, path in finished:
             print(f"::group::{selection.name} (group {selection.group})", flush=True)
@@ -429,6 +485,15 @@ def gated_in_sources(directory=RUNTIME_TESTS):
     return functions, suites, repeated
 
 
+def gemma_suites_in_sources(directory=RUNTIME_TESTS):
+    """Top-level test types of the Gemma family: a name with `Gemma` that ends in `Tests`."""
+    names = set()
+    for path in sorted(directory.rglob("*.swift")):
+        names.update(re.findall(r"(?m)^(?:@\w+(?:\([^)]*\))?\s+)*(?:final )?(?:struct|class|enum) (\w*Gemma\w*Tests)\b",
+                                path.read_text()))
+    return names
+
+
 def audit():
     errors = []
     planned = [name for selection in SELECTIONS for name in selection.tests]
@@ -444,6 +509,9 @@ def audit():
         errors.append(f"{name} is defined more than once; its name does not select one test")
     if suites != set(REQUIRES_MODEL_SUITES):
         errors.append(f"Gated suites {sorted(suites)} differ from REQUIRES_MODEL_SUITES {sorted(REQUIRES_MODEL_SUITES)}")
+    gemma = gemma_suites_in_sources()
+    if gemma != set(GEMMA_SUITES):
+        errors.append(f"Gemma suites in the sources {sorted(gemma)} differ from GEMMA_SUITES {sorted(GEMMA_SUITES)}")
     names = [selection.name for selection in SELECTIONS]
     if len(names) != len(set(names)) or any(selection.lane not in LANES for selection in SELECTIONS):
         errors.append("Selection names must be unique and every lane known")

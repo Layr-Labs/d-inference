@@ -71,6 +71,9 @@ class ComponentPathsTests(unittest.TestCase):
             "libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh": {"provider", "cluster"},
             "fixtures/prompt-contract/v1/corpus.json": {"provider"},
             ".github/actions/provider-ci-build/action.yml": {"provider", "cluster"},
+            ".github/actions/provider-ci-products/action.yml": {"provider", "cluster"},
+            "scripts/ci-test-products.py": {"provider", "cluster"},
+            "scripts/ci-resource-sampler.py": {"provider", "cluster"},
             ".github/workflows/provider-tests.yml": {"provider", "cluster", "mimo_audio"},
             ".github/workflows/ci-dev.yml": {"provider", "cluster", "mimo_audio"},
             ".github/workflows/provider-plan.yml": {"provider", "cluster", "mimo_audio"},
@@ -352,22 +355,29 @@ class WorkflowRoutingTests(unittest.TestCase):
         self.assertIn("          SELECTED: provider=${{ needs.changes.outputs.provider }},"
                       "cluster=${{ needs.changes.outputs.cluster }},"
                       "mimo_audio=${{ needs.changes.outputs.mimo_audio }}\n", plan["tested"])
-        self.assertIn("    needs: [components, tested]\n", plan["route"])
+        self.assertIn("    needs: [tested, components]\n", plan["route"])
         for name in routing.COMPONENTS:
             self.assertIn(f"      {name}: ${{{{ steps.choose.outputs.{name} }}}}\n", plan["components"])
         ci = workflow.job_blocks((ROOT / ".github/workflows/provider-tests.yml").read_text().split("\njobs:\n", 1)[1])
-        lanes = {"test-provider": "provider", "test-cluster": "cluster", "test-cluster-focused": "cluster",
-                 "test-cluster-gpu": "cluster"}
-        for lane, component in lanes.items():
+        # Each test job needs only its lane's build job, which runs when the
+        # component is selected.
+        lanes = {"test-provider": ("provider", "build-provider"), "test-cluster": ("cluster", "build-cluster"),
+                 "test-cluster-focused": ("cluster", None), "test-cluster-gpu": ("cluster", "build-cluster"),
+                 "cluster-release-checks": ("cluster", None)}
+        for lane, (component, build) in lanes.items():
             with self.subTest(job=lane):
-                self.assertNotRegex(ci[lane], r"(?m)^    needs:")
+                if build:
+                    self.assertIn(f"    needs: {build}\n", ci[lane])
+                    self.assertIn(f"    if: ${{{{ inputs.{component} == 'true' ||", ci[build])
+                else:
+                    self.assertNotRegex(ci[lane], r"(?m)^    needs:")
                 self.assertIn("    if: ${{ inputs." + component + " == 'true' }}\n", ci[lane])
                 if lane != "test-cluster-gpu":
-                    self.assertNotIn("continue-on-error:", ci[lane])
+                    self.assertEqual(workflow.continues_on_error(ci[lane]), [workflow.SAMPLER_STEPS[-1]])
         # Pull requests and pushes run the same jobs: only cache saving and the
-        # push-only refresh of a tested tree read the event.
+        # build jobs' refresh of a tested tree on a push read the event.
         for name, job in ci.items():
-            if name != "refresh-caches":
+            if name not in workflow.BUILD_JOBS:
                 self.assertNotIn("github.event_name", job, name)
         self.assertNotIn("github.event_name", "".join(plan[name] for name in ("changes", "components")))
         # The lookup reads the event only to bind a record to its change.
@@ -408,7 +418,7 @@ class WorkflowRoutingTests(unittest.TestCase):
     def test_provider_aggregate_exhaustive_truth_table(self):
         jobs = workflow.job_blocks((ROOT / ".github/workflows/provider-tests.yml").read_text())
         gate = jobs["provider-test-gate"]
-        self.assertIn("needs: [test-provider, test-cluster, test-cluster-focused]", gate)
+        self.assertIn("needs: [test-provider, test-cluster, test-cluster-focused, cluster-release-checks]", gate)
         self.assertNotIn("test-provider-sdk", gate)
         self.assertIn("if: ${{ always() }}", gate)
         self.assertNotIn("continue-on-error:", gate)
@@ -419,13 +429,14 @@ class WorkflowRoutingTests(unittest.TestCase):
             "UNIT_RESULT": "needs.test-provider.result",
             "CLUSTER_RESULT": "needs.test-cluster.result",
             "CLUSTER_FOCUSED_RESULT": "needs.test-cluster-focused.result",
+            "CLUSTER_RELEASE_RESULT": "needs.cluster-release-checks.result",
         }.items():
             self.assertIn(name + ": ${{ " + expression + " }}", step)
         command = workflow.run_command(step)
         results = ("success", "skipped", "failure", "cancelled")
         # Prompt Parity runs in a provider shard, so UNIT_RESULT carries it.
         self.assertNotIn("PARITY_RESULT", step)
-        names = ("UNIT_RESULT", "CLUSTER_RESULT", "CLUSTER_FOCUSED_RESULT")
+        names = ("UNIT_RESULT", "CLUSTER_RESULT", "CLUSTER_FOCUSED_RESULT", "CLUSTER_RELEASE_RESULT")
         selections = ("true", "false", "")
 
         def passes(selected, lanes):

@@ -3,13 +3,41 @@
 import hashlib
 import importlib.util
 from pathlib import Path
+import ssl
 import tempfile
 import unittest
 from unittest.mock import patch
+import urllib.error
 
 SPEC = importlib.util.spec_from_file_location("fixture_setup", Path(__file__).with_name("prepare-mimo-prompt-fixtures.py"))
 SETUP = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SETUP)
+
+
+class Response:
+    """A Hub response whose body may end early or fail as a cut TLS stream does."""
+
+    def __init__(self, body, declared=None, url="https://huggingface.co/x", error=None):
+        self.body, self.url, self.error = body, url, error
+        self.headers = {} if declared is None else {"Content-Length": str(declared)}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def geturl(self):
+        return self.url
+
+    def read(self, size):
+        if self.error is not None:
+            raise self.error
+        return self.body[:size]
+
+
+def ssl_eof():
+    return ssl.SSLEOFError(8, "[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol")
 
 
 class FixtureSetupTests(unittest.TestCase):
@@ -102,6 +130,57 @@ class FixtureSetupTests(unittest.TestCase):
         with patch.object(SETUP.urllib.request, "urlopen", side_effect=AssertionError("network")):
             with self.assertRaises(ValueError):
                 SETUP.public_metadata("model.safetensors")
+
+    def network(self, *outcomes):
+        return patch.object(SETUP.urllib.request, "urlopen", side_effect=list(outcomes))
+
+    def test_cut_transfers_are_retried_with_backoff(self):
+        name = next(iter(self.payloads))
+        data = self.payloads[name]
+        cases = {
+            "short read": Response(data[:-1], len(data)),
+            "TLS EOF mid-body": Response(b"", len(data), error=ssl_eof()),
+            "TLS EOF on open": urllib.error.URLError(ssl_eof()),
+            "connection reset": ConnectionResetError(54, "Connection reset by peer"),
+            "socket timeout": TimeoutError("timed out"),
+            "incomplete chunked body": SETUP.http.client.IncompleteRead(data[:4]),
+            "HTTP 503": urllib.error.HTTPError("https://huggingface.co/x", 503, "Service Unavailable", {}, None),
+        }
+        for case, failure in cases.items():
+            with self.subTest(case=case), self.network(failure, Response(data, len(data))) as urlopen, \
+                    patch.object(SETUP.time, "sleep") as sleep:
+                self.assertEqual(SETUP.public_metadata(name), data)
+                self.assertEqual(urlopen.call_count, 2)
+                sleep.assert_called_once_with(1)
+
+    def test_three_short_reads_fail_after_three_attempts(self):
+        name = next(iter(self.payloads))
+        data = self.payloads[name]
+        short = [Response(data[:-1], len(data)) for _ in range(3)]
+        with self.network(*short, Response(data, len(data))) as urlopen, patch.object(SETUP.time, "sleep") as sleep:
+            with self.assertRaisesRegex(SETUP.TransientTransfer, "ended before its Content-Length"):
+                SETUP.public_metadata(name)
+        self.assertEqual(urlopen.call_count, 3)
+        self.assertEqual([call.args for call in sleep.call_args_list], [(1,), (3,)])
+
+    def test_integrity_size_redirect_and_client_failures_are_not_retried(self):
+        name = next(iter(self.payloads))
+        data = self.payloads[name]
+        # The oversize case declares more than the bound, so the short body is not a cut transfer.
+        cases = {
+            "full-size wrong digest": (Response(b"x" * len(data), len(data)), SETUP.MAXIMUM),
+            "oversize body": (Response(b"x" * 9, 20), 8),
+            "insecure redirect": (Response(data, len(data), url="http://huggingface.co/x"), SETUP.MAXIMUM),
+            "HTTP 404": (urllib.error.HTTPError("https://huggingface.co/x", 404, "Not Found", {}, None),
+                         SETUP.MAXIMUM),
+        }
+        for case, (failure, maximum) in cases.items():
+            with self.subTest(case=case), self.network(failure, Response(data, len(data))) as urlopen, \
+                    patch.object(SETUP, "MAXIMUM", maximum), patch.object(SETUP.time, "sleep") as sleep:
+                with self.assertRaises((ValueError, urllib.error.HTTPError)):
+                    SETUP.prepare(self.root / case.replace(" ", "-"), self.corpus, SETUP.public_metadata)
+                self.assertEqual(urlopen.call_count, 1)
+                sleep.assert_not_called()
 
 
 if __name__ == "__main__":

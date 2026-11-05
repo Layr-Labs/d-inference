@@ -51,8 +51,11 @@ struct QwenTensorParallelBatchDriverTests {
         var native: [Executor] = [], hosts: [Host] = []
         var errors: [String] = [], flags = Set<String>()
         var clock: UInt64 = 1
-        init(_ capacity: Int) {
+        /// Each rank's driver builds steps ahead (`QwenTensorParallelBatchDriver.serveAhead`).
+        let ahead: [Bool]
+        init(_ capacity: Int, ahead: Bool = false, aheadByRank: [Bool]? = nil) {
             self.capacity = capacity
+            self.ahead = aheadByRank ?? [ahead, ahead]
             native = (0...1).map { Executor(pair: self, rank: $0) }
             hosts = (0...1).map { Host(pair: self, rank: $0) }
         }
@@ -80,7 +83,7 @@ struct QwenTensorParallelBatchDriverTests {
                     defer { group.leave() }
                     do {
                         let driver = try QwenTensorParallelBatchDriver(executor: self.native[rank], book: self.books[rank],
-                            capacity: self.capacity, vocabulary: 64, now: self.now)
+                            capacity: self.capacity, vocabulary: 64, buildsAhead: self.ahead[rank], now: self.now)
                         try driver.serve(host: self.hosts[rank], check: {})
                     } catch {
                         self.lock.withLock { self.errors.append(String(describing: error)) }; self.link.fail(error)
@@ -102,7 +105,48 @@ struct QwenTensorParallelBatchDriverTests {
         var afterDecode: ([UUID]) throws -> Void = { _ in }
         var preparing: (UUID) throws -> Void = { _ in }
         var carriesSelectionControl = true
+        /// Build-ahead: what each rank submitted and read, in order (`submit N` / `read N`, N the rectangle's ordinal).
+        var events: [String] = []
+        private var submissions = 0
+        var buildsAhead: Bool { pair.ahead[rank] }
+        final class Submitted {
+            let ordinal: Int, width: Int, selected: [Int], summed: [Float]
+            init(ordinal: Int, width: Int, selected: [Int], summed: [Float]) {
+                self.ordinal = ordinal; self.width = width; self.selected = selected; self.summed = summed
+            }
+        }
         init(pair: Pair, rank: Int) { self.pair = pair; self.rank = rank }
+        /// Submits a rectangle at once (the fake selects eagerly) and keeps its sum for `readDecode`; both ranks
+        /// submit in the same order, so the selection sum pairs up as the lazy one does.
+        func submitDecode(_ lanes: [HistoryBatchTestSession], inputs: QwenBatchDecodeInputs<Submitted>, control: () throws -> [Float],
+                          check: () throws -> Void) throws -> Submitted {
+            let tokens: [Int]
+            switch inputs {
+            case .tokens(let values): tokens = values
+            case .after(let previous, let rows): tokens = rows.map { previous.selected[$0] }
+            }
+            for (lane, token) in zip(lanes, tokens) { try lane.advance([token]) }
+            maximumWidth = max(maximumWidth, lanes.count)
+            try afterDecode(lanes.map { $0.request.requestID })
+            let selected = lanes.map { HistoryBatchTestSession.next($0.history) }
+            folded.append(lanes.map { $0.request.requestID })
+            submissions += 1; events.append("submit \(submissions)")
+            if submissions == failSubmissionAt { throw ProbeError("Injected failure while a step is submitted") }
+            let sum = try pair.link.sum(selected.map { rank == 0 ? Float($0) : 0 } + (try control()), rank: rank)
+            return Submitted(ordinal: submissions, width: lanes.count, selected: selected, summed: sum)
+        }
+        /// Test hooks: corrupt the last control word this rank reads of submission N; fail submission N,
+        /// or the read of submission N.
+        var corruptDecisionAt: Int?, failSubmissionAt: Int?, failReadAt: Int?
+        /// The largest gap between the native frontier and a publication (`Host.publishToken`).
+        var widestPublicationGap = 0
+        func readDecode(_ submitted: Submitted, check: () throws -> Void) throws -> (tokens: [Int], control: [Float]) {
+            events.append("read \(submitted.ordinal)")
+            if submitted.ordinal == failReadAt { throw ProbeError("Injected failure reading a submitted step") }
+            var control = Array(submitted.summed.dropFirst(submitted.width))
+            if submitted.ordinal == corruptDecisionAt, !control.isEmpty { control[control.count - 1] = 2 }
+            return (submitted.summed.prefix(submitted.width).map { Int($0) }, control)
+        }
         func exchange(_ words: [Float], check: () throws -> Void) throws -> [Float] { try check(); return try pair.link.sum(words, rank: rank) }
         func discard(_ reservation: Reservation) throws {
             pair.set("closed-\(rank)-\(reservation.request.requestID)")
@@ -114,6 +158,7 @@ struct QwenTensorParallelBatchDriverTests {
             let session = HistoryBatchTestSession(reservation.request)
             session.failCleanup = failCleanup.contains(reservation.request.requestID)
             session.plainSelection = !assisted.contains(reservation.request.requestID)
+            session.aheadDiscardLimit = pair.ahead[rank] ? QwenTensorParallelBatchDriver<Executor>.aheadHeldLimit : 1
             sessions[reservation.request.requestID] = session; return session
         }
         func prefill(_ lane: HistoryBatchTestSession, frame: QwenLayerStageFrame, check: () throws -> Void) throws -> Int? {
@@ -164,8 +209,13 @@ struct QwenTensorParallelBatchDriverTests {
         func pollDecision(_ id: UUID) throws -> Bool? { answer(id) }
         func awaitDecisions(_ ids: [UUID]) throws -> [UUID: Bool] { throw ProbeError("TP driver blocked on all credits") }
         func publishToken(requestID: UUID, ordinal: Int, tokenID: Int, committedTokens: Int) throws {
+            // Read-then-build publishes at the native frontier. Build-ahead may run ahead of it by the held
+            // tokens after the one published (at most `aheadHeldLimit` - 1) and two unread steps.
+            let native = pair.native[rank].sessions[requestID]?.committedTokens ?? -1
+            let ahead = pair.ahead[rank] ? QwenTensorParallelBatchDriver<Executor>.aheadHeldLimit + 1 : 0
+            pair.native[rank].widestPublicationGap = max(pair.native[rank].widestPublicationGap, native - committedTokens)
             guard ordinal == tokens[requestID, default: []].count,
-                  pair.native[rank].sessions[requestID]?.committedTokens == committedTokens else {
+                  (committedTokens...(committedTokens + ahead)).contains(native) else {
                 throw ProbeError("TP publication differs from native frontier")
             }
             tokens[requestID, default: []].append(tokenID); try onToken(requestID, ordinal)
@@ -408,7 +458,7 @@ struct QwenTensorParallelBatchDriverTests {
                 defer { group.leave() }
                 do {
                     let driver = try QwenTensorParallelBatchDriver(executor: pair.native[rank], book: pair.books[rank],
-                        capacity: pair.capacity, vocabulary: 64, now: pair.now)
+                        capacity: pair.capacity, vocabulary: 64, buildsAhead: pair.ahead[rank], now: pair.now)
                     try driver.serve(host: pair.hosts[rank], retiredSelection: { id, tokens, reason in
                         retired.lock.withLock { retired.byRank[rank][id] = (tokens, reason) }
                     }, check: {})
@@ -615,5 +665,283 @@ struct QwenTensorParallelBatchDriverTests {
             var corrupt = sum; corrupt[4] = bad
             #expect(throws: ProbeError.self) { try QwenTensorParallelBatchWire.read(corrupt, step: 17, lanes: 2) }
         }
+    }
+
+    // MARK: - Build-ahead (`QwenTensorParallelBatchDriver.serveAhead`)
+
+    /// Submitted rectangles built before the one before them was read.
+    private static func builtAhead(_ events: [String]) -> Int {
+        var read = Set<Int>(), count = 0
+        for event in events {
+            let parts = event.split(separator: " "), ordinal = Int(parts[1])!
+            if parts[0] == "submit" { if ordinal > 1 && !read.contains(ordinal - 1) { count += 1 } } else { read.insert(ordinal) }
+        }
+        return count
+    }
+
+    /// Steady decode builds each step before reading the one before it, on
+    /// both ranks in the same order, and every request takes the
+    /// read-then-build tokens, finish and forwards (none past its length).
+    @Test func steadyDecodeBuildsAheadAndTakesTheReadThenBuildTokens() throws {
+        for width in [1, 2, 4] {
+            let pair = Pair(width, ahead: true)
+            let requests = try (0..<width).map { try pair.request(length: $0 + 2, output: 24) }
+            for request in requests { try pair.reserve(request) }
+            try pair.run()
+            for request in requests {
+                let tokens = HistoryBatchTestSession.oracle(request)
+                #expect(pair.hosts[0].tokens[request.requestID] == tokens)
+                for rank in 0...1 {
+                    #expect(pair.hosts[rank].finished[request.requestID] == .length)
+                    let session = try #require(pair.native[rank].sessions[request.requestID])
+                    #expect(session.frames.count == request.prefillFrameCount + tokens.count - 1)
+                }
+            }
+            #expect(pair.native[0].events == pair.native[1].events)
+            #expect(Self.builtAhead(pair.native[0].events) >= 10, "width \(width): \(pair.native[0].events)")
+            #expect(pair.books.allSatisfy { $0.isEmpty })
+        }
+    }
+
+    /// The read-then-build driver never builds ahead (the order the check above requires).
+    @Test func readThenBuildNeverBuildsAhead() throws {
+        let pair = Pair(2)
+        for executor in pair.native { executor.events = [] }
+        let request = try pair.request(output: 12)
+        try pair.reserve(request)
+        try pair.run()
+        #expect(pair.native[0].events.isEmpty, "the read-then-build path submits nothing ahead")
+        #expect(pair.hosts[0].tokens[request.requestID] == HistoryBatchTestSession.oracle(request))
+    }
+
+    /// An EOS read after the next step was built: that step's forward is
+    /// discarded on both ranks (at most one), its token never published, and
+    /// the request retires as EOS with the oracle's tokens.
+    @Test func anEOSReadAfterTheNextStepWasBuiltDiscardsThatForwardOnly() throws {
+        for width in [1, 3] {
+            let pair = Pair(width, ahead: true)
+            let oracle = HistoryBatchTestSession.oracle(try pair.request(length: 3, output: 24))
+            let at = try #require(oracle.indices.last { !oracle.prefix($0).contains(oracle[$0]) })
+            let stopping = try pair.request(length: 3, output: 24, stops: [oracle[at]])
+            var expected: [(QwenLayerStageGenerationRequest, QwenLayerStageGenerationFinishReason)] = [(stopping, .eos)]
+            if width > 1 {
+                expected += [(try pair.request(length: 2, output: 9), .length), (try pair.request(length: 4, output: 16), .length)]
+            }
+            for (request, _) in expected { try pair.reserve(request) }
+            let retired = try runRetiring(pair)
+            for (request, reason) in expected {
+                let tokens = HistoryBatchTestSession.oracle(request)
+                #expect(pair.hosts[0].tokens[request.requestID] == tokens)
+                for rank in 0...1 {
+                    #expect(retired[rank][request.requestID]?.0 == tokens)
+                    #expect(retired[rank][request.requestID]?.1 == reason)
+                    let session = try #require(pair.native[rank].sessions[request.requestID])
+                    let extra = session.frames.count - (request.prefillFrameCount + tokens.count - 1)
+                    // The EOS is read after the next step was built: exactly one discarded forward.
+                    #expect(extra == (reason == .eos ? 1 : 0), "\(reason): \(extra) forwards past the end")
+                }
+            }
+            #expect(Self.builtAhead(pair.native[0].events) > 0, "width \(width): the build-ahead path ran")
+        }
+    }
+
+    /// The owner's stop under build-ahead: nothing past the tokens the owner
+    /// saw is published, whether each answer comes at once or a poll late
+    /// (tokens held unpublished meanwhile), and both ranks retire them as a
+    /// clean client stop.
+    @Test func aHostStopUnderBuildAheadPublishesOnlyWhatTheOwnerSaw() throws {
+        for (stopAfter, late) in [(2, false), (6, false), (2, true), (5, true)] {
+            let pair = Pair(1, ahead: true), stopped = try pair.request(output: 24)
+            try pair.reserve(stopped)
+            var polls = 0
+            pair.hosts[0].onToken = { _, _ in polls = 0 }
+            pair.hosts[0].answer = { id in
+                polls += 1
+                if late && polls < 2 { return nil }
+                return pair.hosts[0].tokens[id]?.count != stopAfter
+            }
+            let retired = try runRetiring(pair)
+            let seen = Array(HistoryBatchTestSession.oracle(stopped).prefix(stopAfter))
+            #expect(pair.hosts[0].tokens[stopped.requestID] == seen, "stop after \(stopAfter) late \(late): published \(pair.hosts[0].tokens[stopped.requestID] ?? []), retired \(retired[0][stopped.requestID].map { "\($0)" } ?? "-")")
+            for rank in 0...1 {
+                #expect(retired[rank][stopped.requestID]?.0 == seen)
+                #expect(retired[rank][stopped.requestID]?.1 == .clientStop)
+                #expect(pair.hosts[rank].finished[stopped.requestID] == .clientStop)
+            }
+            #expect(Self.builtAhead(pair.native[0].events) > 0, "stop after \(stopAfter): the build-ahead path ran")
+        }
+    }
+
+    /// A slow owner (each answer a poll late) under build-ahead: tokens are
+    /// held and published in order, one per answer, and the request ends with
+    /// the oracle's tokens.
+    @Test func lateCreditsUnderBuildAheadPublishInOrder() throws {
+        let pair = Pair(2, ahead: true), first = try pair.request(output: 16), second = try pair.request(length: 5, output: 16)
+        try pair.reserve(first); try pair.reserve(second)
+        var polls: [UUID: Int] = [:]
+        pair.hosts[0].onToken = { id, _ in polls[id] = 0 }
+        pair.hosts[0].answer = { id in polls[id, default: 0] += 1; return polls[id]! < 2 ? nil : true }
+        try pair.run()
+        for request in [first, second] {
+            #expect(pair.hosts[0].tokens[request.requestID] == HistoryBatchTestSession.oracle(request))
+            for rank in 0...1 { #expect(pair.hosts[rank].finished[request.requestID] == .length) }
+        }
+        #expect(Self.builtAhead(pair.native[0].events) > 0, "the build-ahead path ran")
+    }
+
+    /// Joins, prompts and a cancellation while steps are built ahead: barriers
+    /// drain every submitted step before the plan that changes the lanes.
+    @Test func joinsPromptsAndCancellationInterleaveWithBuildAhead() throws {
+        let pair = Pair(4, ahead: true), first = try pair.request(output: 20), cancelled = try pair.request(length: 4, output: 20)
+        let late = try pair.request(length: 40, output: 8)
+        try pair.reserve(first); try pair.reserve(cancelled)
+        pair.hosts[0].onToken = { id, ordinal in
+            if id == first.requestID && ordinal == 3 && !pair.flag("late") {
+                pair.set("late"); try pair.reserve(late, rank: 0)
+            }
+            if id == cancelled.requestID && ordinal == 5 { pair.books[0].cancel(cancelled.requestID) }
+        }
+        pair.hosts[1].onControl = {
+            if pair.flag("late") && !pair.flag("late-1") { pair.set("late-1"); try pair.reserve(late, rank: 1) }
+        }
+        try pair.run()
+        for request in [first, late] {
+            #expect(pair.hosts[0].tokens[request.requestID] == HistoryBatchTestSession.oracle(request))
+            for rank in 0...1 { #expect(pair.hosts[rank].finished[request.requestID] == .length) }
+        }
+        let shown = pair.hosts[0].tokens[cancelled.requestID] ?? []
+        #expect(shown.count >= 6 && shown == Array(HistoryBatchTestSession.oracle(cancelled).prefix(shown.count)))
+        for rank in 0...1 {
+            #expect(pair.hosts[rank].left.contains(cancelled.requestID))
+            #expect(pair.books[rank].isEmpty)
+        }
+        #expect(pair.native[0].events == pair.native[1].events)
+        #expect(Self.builtAhead(pair.native[0].events) > 0)
+    }
+
+    /// A pair whose ranks disagree on build-ahead fails on both ranks at the
+    /// first folded step (its selection sums differ in shape) instead of
+    /// running out of step. The product never starts such a pair: build-ahead
+    /// is in the load agreement (`QwenTensorParallelBatchSettings.agreementFields`).
+    @Test func ranksThatDisagreeOnBuildAheadFailClosed() throws {
+        for ahead in [[true, false], [false, true]] {
+            let pair = Pair(1, aheadByRank: ahead)
+            let request = try pair.request(output: 12)
+            try pair.reserve(request)
+            #expect(throws: ProbeError.self) { try pair.run() }
+            // Both ranks fail, at the first folded step: nothing past the prompt's token is published.
+            #expect(pair.errors.count == 2, "\(ahead): \(pair.errors)")
+            #expect((pair.hosts[0].tokens[request.requestID] ?? []).count <= 1, "\(ahead)")
+        }
+    }
+
+    /// A decision word that changed in transit fails both ranks.
+    @Test func aCorruptedDecisionWordFailsBothRanks() throws {
+        let pair = Pair(1, ahead: true)
+        pair.native[1].corruptDecisionAt = 3
+        try pair.reserve(try pair.request(output: 16))
+        #expect(throws: ProbeError.self) { try pair.run() }
+        #expect(pair.errors.count == 2 && pair.errors.contains { $0.contains("decision changed in transit") }, "\(pair.errors)")
+    }
+
+    /// A slow owner lets tokens pile up held: build-ahead stops at the bound
+    /// (a barrier once more than `aheadHeldLimit` would be held) and resumes
+    /// as answers arrive; every token is the oracle's, published in order.
+    @Test func heldTokensStopBuildingAheadAtTheBound() throws {
+        let pair = Pair(1, ahead: true), request = try pair.request(output: 24)
+        try pair.reserve(request)
+        var polls = 0
+        pair.hosts[0].onToken = { _, _ in polls = 0 }
+        pair.hosts[0].answer = { _ in polls += 1; return polls < 12 ? nil : true }
+        try pair.run()
+        #expect(pair.hosts[0].tokens[request.requestID] == HistoryBatchTestSession.oracle(request))
+        let gap = pair.native[0].widestPublicationGap
+        #expect(gap >= 3 && gap <= QwenTensorParallelBatchDriver<Executor>.aheadHeldLimit + 1, "frontier ran \(gap) ahead")
+        #expect(Self.builtAhead(pair.native[0].events) > 0)
+    }
+
+    /// An assisted row beside plain rows: no step is built ahead while it is
+    /// held (it never folds), and every request takes the oracle's tokens.
+    @Test func anAssistedRowBesidePlainRowsKeepsReadThenBuild() throws {
+        let pair = Pair(2, ahead: true), assisted = try pair.request(output: 10), plain = try pair.request(length: 5, output: 20)
+        for executor in pair.native { executor.assisted.insert(assisted.requestID) }
+        try pair.reserve(assisted); try pair.reserve(plain)
+        try pair.run()
+        for request in [assisted, plain] {
+            #expect(pair.hosts[0].tokens[request.requestID] == HistoryBatchTestSession.oracle(request))
+            for rank in 0...1 { #expect(pair.hosts[rank].finished[request.requestID] == .length) }
+        }
+        #expect(pair.native[0].folded.allSatisfy { !$0.contains(assisted.requestID) })
+    }
+
+    /// A failure while a step is submitted and unread: both ranks fail, the
+    /// pending step is drained, and every lane retires on both ranks.
+    @Test func aFailureWhileAStepIsPendingRetiresEveryLane() throws {
+        let pair = Pair(2, ahead: true), first = try pair.request(output: 20), second = try pair.request(length: 4, output: 20)
+        pair.native[0].failSubmissionAt = 6
+        try pair.reserve(first); try pair.reserve(second)
+        #expect(throws: ProbeError.self) { try pair.run() }
+        #expect(pair.errors.count == 2 && pair.errors.contains { $0.contains("Injected failure") }, "\(pair.errors)")
+        for rank in 0...1 {
+            for request in [first, second] { #expect(pair.flag("closed-\(rank)-\(request.requestID)")) }
+        }
+        // Every step submitted before the failure is read exactly once (the pending one by the drain); the failed one never.
+        for rank in 0...1 {
+            let events = pair.native[rank].events
+            let submitted = events.filter { $0.hasPrefix("submit ") }.map { Int($0.dropFirst(7))! }
+            #expect(submitted.last == 6, "rank \(rank): \(events)")
+            for ordinal in submitted.dropLast() { #expect(events.filter { $0 == "read \(ordinal)" }.count == 1, "rank \(rank): \(events)") }
+            #expect(!events.contains("read 6"), "rank \(rank): \(events)")
+        }
+    }
+
+    /// A read that fails while the next step is already built ahead: the
+    /// newer step is drained exactly once, the failed step is not read again,
+    /// both ranks fail, and every lane retires.
+    @Test func aReadFailureWhileTheNextStepIsBuiltDrainsTheNewerStepOnce() throws {
+        let pair = Pair(1, ahead: true), request = try pair.request(output: 24)
+        try pair.reserve(request)
+        pair.native[0].failReadAt = 6
+        #expect(throws: ProbeError.self) { try pair.run() }
+        #expect(pair.errors.contains { $0.contains("Injected failure reading") }, "\(pair.errors)")
+        let events = pair.native[0].events
+        // The failed read happened while step 7 was built ahead.
+        let failedAt = try #require(events.firstIndex(of: "read 6"))
+        #expect(events[..<failedAt].contains("submit 7"), "\(events)")
+        for ordinal in events.filter({ $0.hasPrefix("submit ") }).map({ Int($0.dropFirst(7))! }) {
+            #expect(events.filter { $0 == "read \(ordinal)" }.count == 1, "submit \(ordinal) read once: \(events)")
+        }
+        for rank in 0...1 { #expect(pair.flag("closed-\(rank)-\(request.requestID)")) }
+    }
+
+    /// Build-ahead needs an executor that submits steps and folds control.
+    @Test func buildAheadNeedsAnExecutorThatSubmitsAndFolds() throws {
+        let pair = Pair(1)
+        #expect(throws: ProbeError.self) {
+            _ = try QwenTensorParallelBatchDriver(executor: pair.native[0], book: pair.books[0], capacity: 1, vocabulary: 64,
+                                                  buildsAhead: true)
+        }
+        #expect(throws: ProbeError.self) {
+            _ = try QwenTensorParallelBatchDriver(executor: pair.native[0], book: pair.books[0], capacity: 1, vocabulary: 64,
+                                                  foldsControl: false, buildsAhead: true)
+        }
+    }
+
+    /// The schedule takes an EOS with the forward built ahead past it declared;
+    /// a length finish still declares none, and an undeclared extra forward is refused.
+    @Test func theScheduleAcceptsAnEOSWithTheForwardBuiltPastIt() throws {
+        let pair = Pair(1)
+        let request = try pair.request(length: 3, output: 8, stops: [5])
+        var schedule = try QwenLayerStageGenerationSchedule(request: request, adoptedCommittedTokens: request.promptCount)
+        for _ in 0..<3 { try schedule.commit(try request.frame(sequence: schedule.nextSequence)) }
+        // Three decode forwards: three tokens selected, the third an EOS, then one forward on it built ahead.
+        var undeclared = schedule
+        #expect(throws: ProbeError.self) { try undeclared.finish(.eos, selectedTokenCount: 3, lastTokenID: 5) }
+        var length = schedule
+        #expect(throws: ProbeError.self) { try length.finish(.length, selectedTokenCount: 3, lastTokenID: 6, discardedDecodeForwards: 1) }
+        var notStop = schedule
+        #expect(throws: ProbeError.self) { try notStop.finish(.eos, selectedTokenCount: 3, lastTokenID: 6, discardedDecodeForwards: 1) }
+        try schedule.finish(.eos, selectedTokenCount: 3, lastTokenID: 5, discardedDecodeForwards: 1)
+        #expect(schedule.complete)
     }
 }

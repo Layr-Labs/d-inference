@@ -3,8 +3,11 @@
 
 import argparse
 import hashlib
+import http.client
 from pathlib import Path
 import stat
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -20,6 +23,12 @@ PINS = {
 }
 CORPUS_SHA256 = "66e6a49a23509fbc99e5389fa4687f2b6175f96d05d7a8be0f323bf4986049bb"
 MAXIMUM = 128 * 1024 * 1024
+DOWNLOAD_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = (1, 3)
+
+
+class TransientTransfer(ValueError):
+    """A transfer that the network cut or the server failed; another attempt may succeed."""
 
 
 def checked_bytes(data, expected, maximum):
@@ -28,16 +37,42 @@ def checked_bytes(data, expected, maximum):
     return data
 
 
+def retryable(error):
+    # Retry only a failed or cut transfer: a TLS, socket or connection error,
+    # a timeout, an incomplete body, a short body or an HTTP 5xx. A wrong
+    # digest, an oversize body, an insecure redirect or a 4xx stays final.
+    # HTTPError is an OSError subclass: test it first.
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code >= 500
+    return isinstance(error, (OSError, http.client.IncompleteRead, TransientTransfer))
+
+
+def fetch_once(url):
+    request = urllib.request.Request(url, headers={"User-Agent": "darkbloom-fixture-check/1"})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        if urllib.parse.urlsplit(response.geturl()).scheme != "https":
+            raise ValueError("insecure fixture redirect")
+        declared = response.headers.get("Content-Length")
+        data = response.read(MAXIMUM + 1)
+    # http.client returns a short body without error when the connection ends
+    # early. An oversize declaration is left to checked_bytes, which refuses it.
+    if declared is not None and declared.isdecimal() and len(data) < int(declared) <= MAXIMUM:
+        raise TransientTransfer("fixture body ended before its Content-Length")
+    return data
+
+
 def public_metadata(name):
     # Fixed allowlist and immutable commit; no Hub login or token lookup.
     if name not in PINS:
         raise ValueError("not an approved metadata fixture")
     url = f"https://huggingface.co/{REPOSITORY}/resolve/{REVISION}/{name}"
-    request = urllib.request.Request(url, headers={"User-Agent": "darkbloom-fixture-check/1"})
-    with urllib.request.urlopen(request, timeout=60) as response:
-        if urllib.parse.urlsplit(response.geturl()).scheme != "https":
-            raise ValueError("insecure fixture redirect")
-        return response.read(MAXIMUM + 1)
+    for attempt in range(DOWNLOAD_ATTEMPTS):
+        try:
+            return fetch_once(url)
+        except Exception as error:
+            if not retryable(error) or attempt + 1 == DOWNLOAD_ATTEMPTS:
+                raise
+            time.sleep(RETRY_BACKOFF_SECONDS[attempt])
 
 
 def prepare(output, corpus, download=public_metadata):

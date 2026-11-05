@@ -4843,6 +4843,18 @@ stops, cancellations and retirements.
   that could not grow) ends both after the same step
   (`Gemma4TensorParallelRequestLoop`). A rank that stopped commits nothing
   more, but still ends at a stop token its peer commits.
+  A greedy request's steps are built one ahead, in GLM tensor parallel's step
+  order (`TensorParallelOneTokenLoop`): step k+1 is built on step k's lazy
+  agreed token and submitted (`Gemma4TensorParallelPagedSession.submitDecode`,
+  `CBv2OwnedRequestState.submit`, which commits the step on host-held
+  frontiers and leaves native errors to the evaluation that reads it) before
+  the host reads step k, answers the owner and commits, so the GPU and the
+  collectives run while the host works. On two M5 Ultras GLM's pipelined step
+  took 12.0 ms against 13.4 ms read-then-build; Gemma's pair has not been
+  measured. The tokens are the read-then-build path's. A rank's own stop and a
+  refused page growth (which keeps the margin's rows) ride one step later, as
+  in GLM's loop. Sampled requests, and greedy ones asking for logprobs (a
+  collective of their own), are built after each token is read.
 - Prompt prefixes. Each rank keeps its own heads' state at a prompt's chunk
   boundaries as the Gemma pipeline keeps a stage's, in the pipeline's memory
   tier and the owner's encrypted SSD tier (`Gemma4TensorParallelPrefix`). A

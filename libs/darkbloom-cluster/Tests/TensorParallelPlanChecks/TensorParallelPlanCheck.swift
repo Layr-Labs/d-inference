@@ -747,6 +747,7 @@ func checkpointTensors(_ directory: URL) throws -> [Tensor] {
         checkLaunchAgreement()
         checkSealCodec()
         checkSealPieces()
+        checkOneTokenLoop()
 
         for path in CommandLine.arguments.dropFirst() {
             let directory = URL(fileURLWithPath: path)

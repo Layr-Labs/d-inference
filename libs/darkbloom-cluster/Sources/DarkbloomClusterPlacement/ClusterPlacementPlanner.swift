@@ -1307,14 +1307,16 @@ public enum ClusterPlacementPlanner {
         /// Macs) at about 170 tok/s against 107 in tensor parallel, where 60
         /// and 105 were served.
         func wholeStepSeconds(_ device: ClusterPlacementDevice, _ regime: ClusterPlacementPolicy.Regime) -> Double {
-            let rate = rates(device, regime).0, estimated = 1 / rate.decodeTokensPerSecond
-            guard device.speed.wholeModelEstimated == true else { return estimated }
-            var shares = (rate.tensorShareRates ?? []).map { (Double($0.sharePerMille) / 1000, 1 / $0.decodeTokensPerSecond) }
-            if let half = rate.tensorShardDecodeTokensPerSecond { shares.append((0.5, 1 / half)) }
-            let rest = (ClusterHardwarePrior.weightSeconds(profile: device.profile, layout: layout) ?? 0)
+            let rate = rates(device, regime).0, whole = 1 / rate.decodeTokensPerSecond
+            guard device.speed.wholeModelEstimated == true else { return whole }
+            var shares = (rate.tensorShareRates ?? []).map {
+                ClusterMeasuredStep(fraction: Double($0.sharePerMille) / 1000, seconds: 1 / $0.decodeTokensPerSecond) }
+            if let half = rate.tensorShardDecodeTokensPerSecond { shares.append(.init(fraction: 0.5, seconds: 1 / half)) }
+            let divided = (ClusterHardwarePrior.weightSeconds(profile: device.profile, layout: layout) ?? 0)
                 * ClusterHardwarePrior.dividedDecodeFraction(layout)
-            let fromShares = shares.filter { $0.0 > 0 && $0.0 <= 1 && $0.1.isFinite }.map { $0.1 + rest * (1 - $0.0) }.max() ?? 0
-            return max(estimated, fromShares)
+            let fromShares = shares.filter { $0.fraction > 0 && $0.fraction <= 1 && $0.seconds.isFinite }
+                .map { $0.seconds + divided * (1 - $0.fraction) }.max() ?? 0
+            return max(whole, fromShares)
         }
 
         /// One device's decode split in this regime: its shard probes, else its

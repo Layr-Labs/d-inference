@@ -51,6 +51,11 @@ extension ClusterOnboardingDriver {
                "If it still doesn't start, run `darkbloom --version` on both Macs; if they differ, run `darkbloom update` on the one that's behind."]
     }
 
+    /// After the version split's ✗ on the Mac that joined.
+    static func versionSplitAfterLine(_ leader: String?) -> String {
+        ClusterOnboardingCommand.named("Once both Macs run the same version, run `darkbloom cluster` on \(ClusterOnboardingMacName.other(named: leader)) again; this Mac follows it by itself.")
+    }
+
     /// After that block: nothing stops here.
     public static let notStartedAfterLine = "When it starts, this Mac runs its part by itself; run `darkbloom cluster` here to see it."
 
@@ -158,6 +163,8 @@ extension ClusterOnboardingDriver {
         let timing = operations.followTiming
         console.say("  " + waitingForStartLine(leader))
         let looks = ClusterOnboardingMailbox<ClusterOnboardingLeaderStatus>()
+        // The two Macs' versions, read with each look: a split never clears by itself, so the wait ends at once on it.
+        let splits = ClusterOnboardingMailbox<ClusterOnboardingVersionSplit>()
         var asking = false, asked = Date.distantPast
         var begun = Date()
         var started: Date?, latest: String?, stage = 0, step: ClusterOnboardingLeaderStep?, lastStatus: String?
@@ -178,7 +185,16 @@ extension ClusterOnboardingDriver {
             if !asking, Date().timeIntervalSince(asked) >= timing.pollSeconds {
                 asking = true
                 asked = Date()
-                Thread.detachNewThread { looks.post(operations.leaderStatus?() ?? .init(lines: operations.status(), step: nil)) }
+                Thread.detachNewThread {
+                    if let split = operations.versionSplit() { splits.post(split) }
+                    looks.post(operations.leaderStatus?() ?? .init(lines: operations.status(), step: nil))
+                }
+            }
+            if let split = splits.take().last {
+                console.settle()
+                console.result(false, split.title + ".", split.remedies)
+                console.say("  " + versionSplitAfterLine(leader))
+                return 1
             }
             if let look = looks.take().last {
                 asking = false

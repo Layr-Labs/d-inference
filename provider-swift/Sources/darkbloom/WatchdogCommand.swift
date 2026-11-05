@@ -43,6 +43,13 @@ struct Watchdog: AsyncParsableCommand {
         !providerActive && !jobIsClusterMember && pairServes
     }
 
+    /// The watchdog installs releases only for single-Mac serving: never for a cluster member's job, and never while the
+    /// pair actually runs here (`ClusterService.pairServesHere`), whose cluster service updates both Macs together; an
+    /// install by the watchdog then would leave the pair on two versions. A Mac whose pair is gone simply updates.
+    static func updates(autoUpdate: Bool, jobIsClusterMember: Bool, pairServes: Bool) -> Bool {
+        autoUpdate && !jobIsClusterMember && !pairServes
+    }
+
     static func runTick(configPath: String?) async {
         let now = Date().timeIntervalSince1970
         let tickDeadline = ContinuousClock.now
@@ -51,7 +58,9 @@ struct Watchdog: AsyncParsableCommand {
         // A cluster member's supervisor owns its update (both members drain
         // and update together at the cluster's slot, S18); a watchdog that
         // updated one member alone would leave the pair on mixed code.
-        let autoUpdate = settings.autoUpdate && !LaunchAgent.installedJobIsClusterMember()
+        let pairServes = ClusterService.pairServesHere()
+        let autoUpdate = Self.updates(autoUpdate: settings.autoUpdate, jobIsClusterMember: LaunchAgent.installedJobIsClusterMember(),
+                                      pairServes: pairServes)
         let liveness = WatchdogProbe.probeProvider(now: now)
         let daemonState = DaemonStateFile.read()
         let providerActive = WatchdogProbe.providerActive(
@@ -75,7 +84,7 @@ struct Watchdog: AsyncParsableCommand {
         // A single-Mac provider job left loaded on a Mac whose pair is started is not revived: it would take the serving
         // lock the pair's part needs the moment that part lets it go (`ClusterService.pairServesHere`).
         let pairOwnsServing = Self.pairOwnsServing(providerActive: providerActive, jobIsClusterMember: LaunchAgent.installedJobIsClusterMember(),
-                                                   pairServes: ClusterService.pairServesHere())
+                                                   pairServes: pairServes)
         let decision = WatchdogPolicy.decide(
             autoRestartEnabled: settings.autoRestart,
             providerLoaded: liveness.loaded && !pairOwnsServing,

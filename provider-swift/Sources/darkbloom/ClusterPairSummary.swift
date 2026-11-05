@@ -407,6 +407,7 @@ extension ClusterPairSummary {
         guard let reason else { return true }
         return ClusterOnboardingNotServing.isMissingLogin(reason) || reason.contains("The clock of")
             || reason.contains("doesn't let") || reason.contains("run different Darkbloom builds")
+            || reason.contains(ClusterOnboardingVersionSplit.reasonMarker)
             || ClusterOnboardingReady.isNotOffered(reason)
     }
 
@@ -453,6 +454,9 @@ extension ClusterPairSummary {
         case .notServing:
             if let words = localNetworkWords { return words.next }
             let reason = reason ?? ""
+            // Different versions: the Mac to update, named for this window, before anything else.
+            if let split = ClusterOnboardingVersionSplit.next(reason: reason, thisVersion: ProviderCore.version,
+                                                              other: otherMac, cli: Self.cli) { return split }
             if ClusterOnboardingNotServing.isMissingLogin(reason) {
                 return "Run `\(Self.cli) login` on each Mac named, then `\(Self.cli) cluster` on \(leadingMac). Or serve "
                     + "locally only: `\(Self.cli) cluster local` on \(leadingMac)."

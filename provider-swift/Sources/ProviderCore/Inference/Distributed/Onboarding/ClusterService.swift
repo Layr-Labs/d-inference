@@ -113,6 +113,11 @@ public final class ClusterService: @unchecked Sendable {
     private var updateWaitLine: String?
     /// The member's line while its saved setup pins an earlier build than it runs (said once per wait).
     private var memberSetupWaitLine: String?
+    /// The other Mac's version as its service last published it (`pairUpdate.running`), for the wait lines, and when it
+    /// may be asked again (`otherMacVersion`).
+    private var otherVersion: String?
+    private var otherVersionAsked = Date.distantPast
+    private var otherVersionAsking = false
     // The cluster approval is asked for once per run of this service on the control leader, and again every minute
     // while the pair is offered or serves locally with its approval set aside (`checkApproval`).
     private var approvalChecked = false
@@ -1063,6 +1068,26 @@ public final class ClusterService: @unchecked Sendable {
     /// adopted, synced to the member and served, as `m` with the same model would, with nobody running a command.
     /// Checked every `ClusterOnboardingUpdate.checkEverySeconds` on a thread of its own; holds the command lock so a
     /// person's command and this never run at once.
+    /// The other Mac's version for the wait lines: asked over the cable at most every 30 s, off the caller's thread unless
+    /// `refresh` (already a background thread); the last answer meanwhile, nil before the first.
+    private func otherMacVersion(refresh: Bool = false) -> String? {
+        let ask: Bool = lock.withLock {
+            guard !otherVersionAsking, Date().timeIntervalSince(otherVersionAsked) >= 30 else { return false }
+            otherVersionAsking = true
+            otherVersionAsked = Date()
+            return true
+        }
+        if ask {
+            let read: @Sendable () -> Void = { [weak self] in
+                var version: String?
+                if case .reported(let progress) = ClusterPairUpdateCycle.livePartner(.init()) { version = progress.running }
+                self?.lock.withLock { self?.otherVersion = version ?? self?.otherVersion; self?.otherVersionAsking = false }
+            }
+            if refresh { read() } else { Thread.detachNewThread(read) }
+        }
+        return lock.withLock { otherVersion }
+    }
+
     private func checkForUpdate(say: @escaping @Sendable (String) -> Void) {
         guard let leadership = (try? store.readRecord())?.leadership, leadership.serving, let model = leadership.modelName,
               lock.withLock({ control?.leads == true }) else { return }
@@ -1087,7 +1112,8 @@ public final class ClusterService: @unchecked Sendable {
             let macs = changed.count == 1 && changed[0] == local.id ? "this Mac" : changed.count == 1 ? "the other Mac" : "both Macs"
             // The two Macs restart into an update seconds apart, or one was updated alone: plan once both run one build.
             guard ClusterOnboardingUpdate.oneBuild(pinned: pinned, current: current) else {
-                let line = "Darkbloom changed on \(macs): waiting until both Macs answer with the same build to set the cluster up again for \(model)"
+                let line = ClusterOnboardingUpdate.leaderWaitLine(macs: macs, model: model, thisVersion: ProviderCore.version,
+                                                                  otherVersion: self.otherMacVersion(refresh: true))
                 if self.lock.withLock({ self.updateWaitLine != line }) {
                     self.lock.withLock { self.updateWaitLine = line }
                     say(line)
@@ -1769,7 +1795,7 @@ public final class ClusterService: @unchecked Sendable {
                 let local = configuration.peers[configuration.localRank]
                 if ClusterOnboardingUpdate.memberWaitsForLeaderSetup(pinned: local.runtimeBinarySHA256,
                                                                      installed: try? context.workerSHA256(local.workerExecutable)) {
-                    let line = ClusterOnboardingUpdate.memberWaitLine(version: ProviderCore.version)
+                    let line = ClusterOnboardingUpdate.memberWaitLine(version: ProviderCore.version, otherVersion: otherMacVersion())
                     if lock.withLock({ memberSetupWaitLine != line }) {
                         lock.withLock { memberSetupWaitLine = line }
                         say(line)

@@ -87,6 +87,17 @@ public enum ClusterPairUpdate {
         }
     }
 
+    /// A single-Mac updater (the provider's background updater) installed a release on a Mac whose pair runs here
+    /// (`ClusterService.pairServesHere`, the actual state, not the saved start): this Mac's cluster service supervisor is
+    /// asked to restart into it together with the other Mac, as `darkbloom update` asks, and the other Mac's follow check
+    /// sees this Mac updating and follows (`ClusterPairUpdateCycle.ahead`). A Mac whose pair doesn't run here (it serves
+    /// alone, its pair gone) simply updates. True when asked.
+    @discardableResult
+    public static func askPairToFollow(pairServes: Bool, requestPath: URL?, now: Double) -> Bool {
+        guard pairServes, let requestPath else { return false }
+        return writeRequest(Request(createdAt: now), to: requestPath)
+    }
+
     /// `darkbloom update` on a cluster Mac: restart into the release it installed, together with the other Mac.
     public struct Request: Codable, Equatable, Sendable {
         public var id: String

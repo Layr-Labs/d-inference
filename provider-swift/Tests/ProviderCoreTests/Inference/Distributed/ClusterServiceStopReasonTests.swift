@@ -76,12 +76,12 @@ struct ClusterServiceStopReasonTests {
         let behindThere = OnboardingLive.errorLines(here: "This Mac", there: there, own: own, other: other, otherUnreachable: nil,
                                                     thisVersion: "0.10.8", otherVersion: "0.10.7")
         #expect(behindThere.first == "The two Macs run different Darkbloom versions: The other Mac (Apple M4 Max, 128 GB) runs 0.10.7, this Mac runs 0.10.8.")
-        #expect(behindThere.dropFirst().first == "On the other Mac (Apple M4 Max, 128 GB), run `darkbloom update`; the pair starts once both Macs run 0.10.8.")
+        #expect(behindThere.dropFirst().first == "On the other Mac (Apple M4 Max, 128 GB), run `\(ClusterOnboardingCommand.name) update`; the pair starts once both Macs run 0.10.8.")
         #expect(!behindThere.contains { $0.contains("doesn't report its worker restarting") }, "no guess at the cause: \(behindThere)")
 
         let behindHere = OnboardingLive.errorLines(here: "This Mac", there: there, own: own, other: other, otherUnreachable: nil,
                                                    thisVersion: "0.10.8", otherVersion: "0.10.9")
-        #expect(behindHere.dropFirst().first == "On this Mac, run `darkbloom update`; the pair starts once both Macs run 0.10.9.")
+        #expect(behindHere.dropFirst().first == "On this Mac, run `\(ClusterOnboardingCommand.name) update`; the pair starts once both Macs run 0.10.9.")
 
         let same = OnboardingLive.errorLines(here: "This Mac", there: there, own: own, other: other, otherUnreachable: nil,
                                              thisVersion: "0.10.9", otherVersion: "0.10.9")

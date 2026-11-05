@@ -199,6 +199,8 @@ import Darwin
         followWaitChecks()
         // A 0.10.8 user's leader screen: its loading line repeated end to end in a narrow window.
         liveLineChecks()
+        // 0.10.8, 2026-11-04: one Mac of a pair updated alone; its part ended every 38 s and no screen named the versions.
+        versionSplitChecks()
         // 0.10.8, 2026-11-04: single-Mac serving held the provider instance lock on both Macs of a pair; the start looped
         // "this Mac's part ended (… another update operation owns the lock (pid 9523, provider-instance)) and starts again
         // by itself", the other Mac read "no error reported", and the guidance was `darkbloom stop`, which stops the pair.

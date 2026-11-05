@@ -576,6 +576,14 @@ struct ClusterPairUpdateTests {
             let outcome = await behind.cycle(partner: ahead, log: log).followRollback { restarts.record("behind", $0) }
             #expect(outcome == .nothingToFollow, "the other Mac on v\(running)")
         }
+        // The other Mac is updating to a newer release (a single-Mac updater there asked its pair to follow): followed
+        // while its progress is fresh, not once it went stale.
+        let now = Date().timeIntervalSince1970
+        ClusterPairUpdate.writeProgress(.init(phase: .staged, target: "2.0.0", running: "1.0.0", writtenAt: now), to: ahead.progressPath)
+        #expect(await behind.cycle(partner: ahead, log: log).followRollback { restarts.record("behind", $0) } == .otherMacNewer("2.0.0"))
+        ClusterPairUpdate.writeProgress(.init(phase: .staged, target: "2.0.0", running: "1.0.0",
+                                              writtenAt: now - ClusterPairUpdate.progressStaleSeconds - 5), to: ahead.progressPath)
+        #expect(await behind.cycle(partner: ahead, log: log).followRollback { restarts.record("behind", $0) } == .nothingToFollow)
         publish("2.0.0")
         let outcome = await behind.cycle(partner: ahead, log: log).followRollback { restarts.record("behind", $0) }
         #expect(outcome == .otherMacNewer("2.0.0"))

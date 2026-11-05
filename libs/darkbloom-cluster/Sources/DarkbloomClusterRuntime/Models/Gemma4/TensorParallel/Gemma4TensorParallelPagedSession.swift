@@ -169,6 +169,36 @@ final class Gemma4TensorParallelPagedSession {
         return (logits, output)
     }
 
+    /// One decode step on the agreed token of the previous step's lazy
+    /// selection (`Gemma4TensorParallelChoice.build`, greedy: the token is its
+    /// first element), submitted and committed before that selection is read
+    /// (`CBv2OwnedRequestState.submit`), so the GPU and the collectives run
+    /// this step while the host reads the last one. The same graph as
+    /// `decode` on the read token: every value and token is unchanged.
+    func submitDecode(after selected: MLXArray, check: () throws -> Void,
+                      select: (MLXArray) -> MLXArray) throws -> (logits: MLXArray, selected: MLXArray) {
+        guard !retired, state.committedTokens >= promptCount, selected.ndim == 1, selected.dim(0) >= 1,
+              pagesCover(writing: 1) || reservePages(writing: 1) else {
+            throw ProbeError("Gemma tensor-parallel decode step differs from its request or pages")
+        }
+        let input = selected[0 ..< 1].asType(.int32).reshaped([1, 1])
+        let text = model.textModel
+        var logits: MLXArray?
+        let stride = Gemma4TensorParallelModel.layerStride ?? Gemma4TensorParallelModel.decodeLayerStride
+        let output = try state.submit(tokenCount: 1, check: check, forward: { caches, _ in
+            let row = Gemma4LayerSubmission.$stride.withValue(stride) {
+                Gemma4BatchDecodeScope.withDecodeFrame(tokens: input, enabled: true) {
+                    text(input, cache: caches.map { $0 as! any KVCache })[0..., -1, 0...]
+                }
+            }
+            logits = row
+            return select(row)
+        })
+        guard let logits else { throw ProbeError("Gemma tensor-parallel decode produced no logits") }
+        try Self.validate(logits, rows: 1, model: model)
+        return (logits, output)
+    }
+
     /// One decode step of each of `sessions` (distinct requests on one model's
     /// host), a row each, in one forward under the explicit batch decode scope
     /// (`Gemma4BatchDecodeScope`: every row keeps each projection's singleton

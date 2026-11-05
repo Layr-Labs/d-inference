@@ -475,6 +475,22 @@ struct Gemma4TensorParallelRuntimeTests {
         #expect(race[0].clientStopped && race[0].published == Array(drawn.prefix(raceAt)))
     }
 
+    /// A greedy request's steps are built one ahead (`TensorParallelOneTokenLoop`,
+    /// GLM's order; its two-rank order and endings are the model-free
+    /// TensorParallelPlanChecks'); a request whose sampler draws, or asks for
+    /// logprobs (a collective of their own), is built after each token is read.
+    /// The tokens are the read-then-build oracle's
+    /// (`theRequestLoopEndsBothRanksAfterTheSameStep`).
+    @Test func greedyRequestsBuildTheirStepsAhead() throws {
+        let selection = Gemma4TensorParallelSelection(vocabularyRange: 0 ..< 512, vocabularySize: 512, reduction: nil)
+        #expect(Gemma4TensorParallelRequestLoop.pipelines(.init(selection: selection, sampler: nil, rank: 0)))
+        for temperature: Float in [0, 1] {
+            let choice = Gemma4TensorParallelChoice(selection: selection,
+                sampler: try Self.sampler(temperature: temperature, topLogprobs: 2), rank: 0)
+            #expect(!Gemma4TensorParallelRequestLoop.pipelines(choice))
+        }
+    }
+
     // MARK: - The step's choice
 
     /// Runs `body` on two rank threads over each rank's half of `logits`.

@@ -305,6 +305,48 @@ final class CBv2OwnedRequestState {
         }
     }
 
+    /// `run`'s step, submitted (`asyncEval`) instead of evaluated, for a caller
+    /// that builds its next step before it reads this one (a greedy one-token
+    /// loop, `TensorParallelOneTokenLoop`): the next step's input may be this
+    /// step's lazy output. The step commits on what the host holds: a paged
+    /// host's frontiers and bindings, the recurrent generation, every layer's
+    /// state shape. Native errors and the output's values surface when the
+    /// caller evaluates or reads it, under the same `MLX.withError`, and fail
+    /// the request there. Packed storage is refused: its step writes are
+    /// checked on the device before the step completes (`checkStepWrites`).
+    func submit(tokenCount: Int, check: () throws -> Void,
+                forward: ([any CBv2AttendingLayerCache], CBv2RecurrentStateEvaluation) throws -> MLXArray) throws -> MLXArray {
+        do {
+            guard pagedHost, !packedStorage else {
+                throw ProbeError("A submitted CBv2 step needs a paged host with native storage")
+            }
+            try requireOpen()
+            guard tokenCount > 0, tokenCount <= maximumTokens - committedTokens,
+                  tokenCount <= reservedTokens - committedTokens else {
+                throw ProbeError("CBv2 state advance exceeds the admitted capacity or its reserved pages")
+            }
+            let caches = bank.layerCaches(rowStates: [rows])
+            evaluation = try recurrent.bind(); evaluationWasStaged = false
+            let output = try forward(caches, evaluation!)
+            let recurrentRoots = try evaluation!.evaluate(); evaluationWasStaged = true
+            let cacheRoots = caches.flatMap { ($0 as! any KVCache).innerState() }
+            asyncEval([output] + recurrentRoots + cacheRoots)
+            try check()
+            try validateState(after: committedTokens + tokenCount, storageViews: false)
+            try evaluation!.commit()
+            evaluation = nil; evaluationWasStaged = false
+            committedTokens += tokenCount
+            guard Set(recurrent.confirmedStateSnapshot()?.keys.map { $0 } ?? [])
+                == Set(geometry.recurrent.modelLayerIndices) else {
+                throw ProbeError("CBv2 recurrent generation did not commit every local layer")
+            }
+            return output
+        } catch {
+            isFailed = true
+            throw error
+        }
+    }
+
     /// A speculative window: `tokenCount` tokens run through the stage with
     /// every recurrent layer capturing its state per position, and nothing is
     /// committed. Used only by a decoding rank that verifies drafted tokens.

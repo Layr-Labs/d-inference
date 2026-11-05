@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-04
+> Last updated: 2026-11-05
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -693,8 +693,9 @@ darkbloom cluster gpu-limit [--undo]
 | `--undo` | flag | `false` | Remove the job that keeps the limit raised and return `iogpu.wired_limit_mb` to the macOS default |
 
 Lets this Mac's GPU keep its memory less 16 GiB resident, so GLM-5.3-Flash runs
-on two 128 GB Macs with room for long requests (M5 Macs of 128 or 256 GB only;
-exit 2 elsewhere). It prints the current and the new limit, asks once (`y`), and
+on two 128 GB Macs with room for long requests (Apple silicon Macs with 128 GB
+or more only; exit 2 elsewhere, with the reason, and where the Mac does not
+report the limits). It prints the current and the new limit, asks once (`y`), and
 then macOS asks an administrator to approve. Where the limits are already met,
 it installs the boot job that keeps them if that job is missing or differs, and
 changes nothing if it is in place. It needs a terminal; without one it prints

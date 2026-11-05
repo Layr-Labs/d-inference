@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-11-04
+> Last updated: 2026-11-05
 
 Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -1376,7 +1376,7 @@ limits for a GLM-5.3-Flash pair rank
 (`provider-swift/Sources/darkbloom/ClusterGPULimitCommand.swift`,
 `GLM5NextWiredLimit.pairRankRecommendation`).
 
-| Setting | Value on a 128 GB M5 | Value on a 256 GB M5 | Source |
+| Setting | Value on a 128 GB Mac | Value on a 256 GB Mac | Source |
 |---|---|---|---|
 | `iogpu.wired_limit_mb` | `114688` (memory less 16 GiB) | `245760` | `Recommendation.gpuWiredLimitMB` |
 | `vm.global_user_wire_limit`, `vm.user_wire_limit` | `130567005798` (95% of memory) | `261134011596` | `Recommendation.userWireLimitBytes` |
@@ -1390,7 +1390,8 @@ both the plan and each rank's LOAD read.
 | The live limits are below the values | Raises them and installs the boot job, after one confirmation and the administrator prompt | `GLM5NextGPULimitFlow.plan` |
 | The limits are met, the boot job is missing or differs from the one it writes | Installs the boot job, behind the same confirmation and prompt | `GLM5NextWiredLimitBootJob` |
 | The limits are met and the boot job is the one it writes | Reports nothing to change; asks nothing | `GLM5NextGPULimitFlow.plan` |
-| Not an M5 Mac with 128 or 256 GB | Exits 2; asks nothing | `GLM5NextGPULimitEligibility` |
+| Not an Apple silicon Mac, or under 128 GB | Exits 2 with the reason; asks nothing | `GLM5NextGPULimitEligibility.refusal` |
+| The Mac does not report `iogpu.wired_limit_mb` or a wire limit | Exits 2 with the setting it cannot read; asks nothing, changes nothing | `GLM5NextGPULimitFlow.run` |
 | macOS reports the change as made | Reads the Mac back: after a raise, every limit at least its value and the boot job the one it writes; after `--undo`, `iogpu.wired_limit_mb` 0 and no job. Prints ✓ only when it matches; otherwise ✗, each setting that is off, the command to run again and the administrator's commands, and exits 1 | `GLM5NextGPULimitFlow.raisedMismatches`, `undoneMismatches` |
 
 The plan's GPU memory limit advice uses the same rule
@@ -1409,9 +1410,10 @@ of the model needs there and the most the limit can be, and no command.
   `GLM5NextWiredLimitApproval`) and never uses `sudo` or sees a password. No
   privileged helper is added or extended.
 - **Value bounds:** every value comes from this Mac's own memory size. Only
-  M5 Macs of 128 or 256 GB get values, read from the chip's own name, so a
-  virtual machine gets none. The GPU limit never exceeds memory less 16 GiB,
-  which macOS keeps. `GLM5NextWiredLimitRequest` refuses any other values,
+  Apple silicon Macs (any M generation) with 128 GB or more get values, read
+  from the chip's own name, so an Intel Mac or a virtual machine gets none
+  (owner, 2026-11-05: "yes widen, why wouldn't we"). The GPU limit never exceeds
+  memory less 16 GiB (a sixteenth from 512 GB), which macOS keeps. `GLM5NextWiredLimitRequest` refuses any other values,
   and no operator or peer text enters a command.
 - **Persistence:** the boot job is built key by key with `plutil`, owned by
   root:wheel with mode 644; no prepared file is copied into place. It runs

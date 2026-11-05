@@ -942,8 +942,8 @@ trust_boundaries:
       commands for an administrator instead) and asks y/N. Its values come only from
       this Mac's physical memory and the chip's own name
       (GLM5NextWiredLimit.pairRankRecommendation, GLM5NextGPULimitEligibility, the
-      rule the plan's advice also uses): M5 Macs of 128 or 256 GiB,
-      iogpu.wired_limit_mb at physical memory less 16 GiB, vm.global_user_wire_limit
+      rule the plan's advice also uses): Apple silicon Macs with 128 GiB or more,
+      iogpu.wired_limit_mb at physical memory less 16 GiB (a sixteenth from 512 GiB), vm.global_user_wire_limit
       and vm.user_wire_limit at 95% of it; other Macs exit 2 with no prompt. It
       reads the job file (a regular file of at most 64 KiB) and asks nothing when
       the limits are met and the job is the one it writes.

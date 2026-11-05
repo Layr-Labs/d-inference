@@ -88,11 +88,17 @@ public enum GLM5NextGPULimitFlow {
     /// question and is nil without a terminal; `say` prints one line. The exit
     /// status: 0 done, declined at the question or nothing to change; 1 the
     /// approval or a step failed, or the Mac did not read back as asked; 2 no
-    /// terminal to confirm in.
+    /// terminal to confirm in, or a limit this Mac does not report.
     public static func run(undo: Bool, recommendation: GLM5NextWiredLimit.Recommendation, runner: GLM5NextGPULimitRunner,
                            confirm: ((String) -> Bool)?, say: (String) -> Void) -> Int32 {
         let gib = { (bytes: UInt64) in String(format: "%.2f GiB", Double(bytes) / Double(1 << 30)) }
         let limits = runner.limits(), raised = gib(recommendation.gpuWiredLimitBytes)
+        // A limit this Mac does not report is never changed: there is nothing to read back, so no guess is made.
+        for (name, value) in [("iogpu.wired_limit_mb", limits.gpuWiredLimitMB), ("vm.global_user_wire_limit", limits.globalUserWireLimitBytes),
+                              ("vm.user_wire_limit", limits.userWireLimitBytes)] where value == nil {
+            say("This Mac does not report \(name), so Darkbloom does not change it. Nothing was changed.")
+            return 2
+        }
         say("This Mac's GPU keeps \(gib(limits.gpuLimitBytes)) resident now"
             + (limits.gpuWiredLimitMB.map { $0 > 0 ? " (iogpu.wired_limit_mb=\($0))." : " (the macOS default)." } ?? "."))
         let decided = Self.plan(undo: undo, recommendation: recommendation, limits: limits,
@@ -103,7 +109,8 @@ public enum GLM5NextGPULimitFlow {
             say(met + ", and the boot job keeps it after restarts. Nothing to change.")
             return 0
         case .remove: say("This returns the GPU limit to the macOS default and removes the job that keeps it raised.")
-        case .raise(.limitsBelow): say("This lets the GPU keep up to \(raised) resident (macOS keeps 16 GiB), now and after every restart.")
+        case .raise(.limitsBelow): say("This lets the GPU keep up to \(raised) resident (macOS keeps the rest of its "
+            + "\(recommendation.memoryGiB) GB), now and after every restart.")
         case .raise(.bootJobMissing): say(met + ", but no boot job keeps it after a restart. This installs that job.")
         case .raise(.bootJobDiffers): say(met + ", but the boot job that keeps it after a restart is not the one this command writes. This replaces it.")
         }

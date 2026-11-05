@@ -47,32 +47,24 @@ struct ClusterSetupGLMPairOfferTests {
     static let names = ["m4": "Apple M4 Max, 128 GB", "m5": "Apple M5 Max, 128 GB"]
     static let defaultLimit = 115_448_725_504
 
-    @Test("an M4 Max that keeps 101 GiB beside an M5 Max: nothing fits now, and the row names gpu-limit on the M5 Max alone")
-    func gpuLimitStepOnTheM5Max() throws {
-        let m4 = try Self.mac(chip: "Apple M4 Max", gpuBytes: 101 * Self.gib), m5 = try Self.mac(chip: "Apple M5 Max", gpuBytes: Self.defaultLimit)
-        #expect(try Self.plan([("m4", m4), ("m5", m5)]).chosen == nil)
-        let raised = try #require(try m5.withGPUMemoryLimitRaised())
-        #expect(try m4.withGPUMemoryLimitRaised() == nil)
-        let after = try #require(try Self.plan([("m4", m4), ("m5", raised)]).chosen)
-        #expect(after.possible && after.mode == .pipeline)
-        let steps = try #require(ClusterSetupPlanning.gpuLimitSteps(after, profiles: ["m4": m4, "m5": m5], names: Self.names))
-        #expect(steps.hasPrefix("Needs `darkbloom cluster gpu-limit` first: on Apple M5 Max, 128 GB its part needs "))
-        #expect(steps.contains("GB of GPU memory, and macOS allows 107 GB; `darkbloom cluster gpu-limit` raises it to 112 GB."))
-        #expect(steps.hasSuffix("Run it on that Mac (it asks once, then macOS asks an administrator), then `darkbloom cluster` again."))
-        #expect(!steps.contains("M4 Max"))
+    @Test("an M4 Max that keeps 101 or 96 GiB beside an M5 Max: nothing fits now, and the row names gpu-limit on the M4 Max")
+    func gpuLimitStepOnTheM4Max() throws {
+        for keeps in [101, 96] {
+            let m4 = try Self.mac(chip: "Apple M4 Max", gpuBytes: keeps * Self.gib), m5 = try Self.mac(chip: "Apple M5 Max", gpuBytes: Self.defaultLimit)
+            #expect(try Self.plan([("m4", m4), ("m5", m5)]).chosen == nil)
+            let raised = try #require(try m4.withGPUMemoryLimitRaised())
+            let after = try #require(try Self.plan([("m4", raised), ("m5", m5)]).chosen)
+            #expect(after.possible && after.mode == .pipeline)
+            let steps = try #require(ClusterSetupPlanning.gpuLimitSteps(after, profiles: ["m4": m4, "m5": m5], names: Self.names))
+            #expect(steps.hasPrefix("Needs `darkbloom cluster gpu-limit` first: on Apple M4 Max, 128 GB its part needs "))
+            #expect(steps.contains("GB of GPU memory, and macOS allows \(keeps) GB; `darkbloom cluster gpu-limit` raises it to 112 GB."))
+            #expect(steps.hasSuffix("Run it on that Mac (it asks once, then macOS asks an administrator), then `darkbloom cluster` again."))
+        }
     }
 
-    @Test("an M4 Max that keeps 96 GiB: no split fits even with gpu-limit on the M5 Max, and the row says needs more memory, naming the GPU limit")
-    func needsMoreMemoryOnTheGPULimit() throws {
-        let m4 = try Self.mac(chip: "Apple M4 Max", gpuBytes: 96 * Self.gib)
-        let m5 = try Self.mac(chip: "Apple M5 Max", gpuBytes: Self.defaultLimit)
-        let raised = try #require(try m5.withGPUMemoryLimitRaised())
-        #expect(try Self.plan([("m4", m4), ("m5", raised)]).chosen == nil)
-        let words = ClusterSetupPlanning.refusalWords(try Self.plan([("m4", m4), ("m5", m5)]), localMemberID: "m4", names: Self.names,
-            profiles: ["m4": m4, "m5": m5])
-        #expect(words.hasPrefix("Needs more memory: no split of it fits these Macs' GPU memory limits, even with `darkbloom cluster gpu-limit` where it runs ("))
-        #expect(words.contains("Apple M4 Max, 128 GB allows 96 GB"))
-        #expect(words.hasSuffix("Darkbloom raises that limit only on M5 Macs with 128 or 256 GB."))
+    @Test("the words for a GPU limit no raise helps name Apple silicon Macs with 128 GB or more")
+    func needsMoreMemoryNamesTheRule() {
+        #expect(GLM5NextGPULimitEligibility.macs == "Apple silicon Macs with 128 GB or more")
     }
 
     @Test("two 64 GB Macs: needs more memory, by the model's size, not a GPU step")

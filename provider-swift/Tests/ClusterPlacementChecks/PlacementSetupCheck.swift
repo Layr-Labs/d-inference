@@ -668,8 +668,8 @@ import Foundation
             refused.setup == nil && advice.first == "GPU memory limit"
                 && advice.dropFirst().first.map { $0.contains("darkbloom cluster gpu-limit") && $0.contains("112.00 GiB") } == true)
 
-        // The command runs only where `GLM5NextGPULimitEligibility` says (M5 Macs with 128 or 256 GB): an M4 Max pair is told
-        // macOS's limit and the figures, never a command that would refuse, and a mixed pair is told each Mac's own.
+        // The command runs where `GLM5NextGPULimitEligibility` says (Apple silicon Macs with 128 GB or more): an M4 Max
+        // pair is told the command on each Mac, and so is a mixed pair, by the command's own eligibility.
         func adviceLines(_ local: ClusterDeviceProfile, _ peer: ClusterDeviceProfile) throws -> [String] {
             let value = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "max-a",
                 localProfile: local, peerProfile: peer, layout: layout, environment: [:], benchDebugBuild: false)
@@ -677,16 +677,15 @@ import Foundation
         }
         let m4 = try max128(gpuBytes: 100 * gib, chip: "Apple M4 Max")
         let m4Advice = try adviceLines(m4, m4)
-        require("glm pair, 2x M4 Max 128 GB with a 100 GiB GPU limit: each Mac is told macOS's limit and the figures, and no command that would refuse",
-            m4Advice.count == 2 && m4Advice.allSatisfy { $0.contains("(`iogpu.wired_limit_mb`)") && $0.contains("(112.00 GiB)")
-                && $0.contains("only on M5 Macs with 128 or 256 GB") && !$0.contains("darkbloom cluster gpu-limit") })
+        require("glm pair, 2x M4 Max 128 GB with a 100 GiB GPU limit: each Mac is told `darkbloom cluster gpu-limit` and the 112 GiB it sets",
+            m4Advice.count == 2 && m4Advice.allSatisfy { $0.contains("darkbloom cluster gpu-limit") && $0.contains("112.00 GiB") })
         let mixed = try adviceLines(low, m4)
-        require("glm pair, M5 Max + M4 Max with a 100 GiB GPU limit: the command is named on the M5 Max alone, by the command's own eligibility",
+        require("glm pair, M5 Max + M4 Max with a 100 GiB GPU limit: the command is named on both Macs, by the command's own eligibility",
             mixed.count == 2 && mixed.allSatisfy { line in
                 let profile = line.hasPrefix("  max-a:") ? low : m4
                 return line.contains("darkbloom cluster gpu-limit")
                     == GLM5NextGPULimitEligibility.applies(chipName: profile.chip, physicalMemoryBytes: UInt64(profile.physicalMemoryBytes))
-            } && mixed.contains { $0.hasPrefix("  max-a:") && $0.contains("darkbloom cluster gpu-limit") })
+            } && mixed.allSatisfy { $0.contains("darkbloom cluster gpu-limit") })
     }
 
     /// The universal rule of qualification records (`ClusterPairQualificationRecords`, chip-agnostic since

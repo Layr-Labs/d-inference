@@ -938,7 +938,7 @@ half on what loading needs, and each request is checked against the memory free
 when it arrives (a longer request than fits then gets a retryable "busy" answer,
 never an out-of-memory crash). Its plan fits two M5 Max 128 GB at the default
 limit too. When a GPU limit is what stops a GLM plan, the plan says so and, on
-an M5 Mac with 128 or 256 GB, names the one command that changes it:
+an Apple silicon Mac with 128 GB or more, names the one command that changes it:
 `darkbloom cluster gpu-limit`. Run it on that Mac yourself: it asks once, then
 macOS asks an administrator, and it raises the limit to the Mac's memory less
 16 GiB (112 GiB of 128 GB), also after restarts. `darkbloom cluster gpu-limit
@@ -946,17 +946,17 @@ macOS asks an administrator, and it raises the limit to the Mac's memory less
 
 Only modes that load on the pair are offered. On two 128 GB Macs that is the
 pipeline: tensor parallel needs more than either Mac has. On an M4 Max with an
-M5 Max, the M4 Max keeps the GPU limit macOS gives it (107.52 GiB on macOS 26;
-Darkbloom raises the limit only on M5 Macs with 128 or 256 GB), and the
-planner sizes each Mac's part by its own limit. When nothing fits as the Macs
+M5 Max, each Mac's part is sized by its own GPU limit (107.52 GiB on macOS 26),
+and `darkbloom cluster gpu-limit` runs on both (any Apple silicon Mac with
+128 GB or more), so the plan counts a raise on either. When nothing fits as the Macs
 are, the model's row says which of two things holds:
 
 - **"Needs `darkbloom cluster gpu-limit` first"**, naming the Mac, its part's
   GPU need and the limit: a split fits once that Mac's limit is raised. Run the
   command there, then `darkbloom cluster` again. Nothing loads before.
 - **"Needs more memory"**, with the reason: no split fits even with the limits
-  Darkbloom can raise (for example, an M4 Max whose macOS keeps 96 GiB for the
-  GPU), or the Macs together cannot hold the model.
+  Darkbloom can raise, or the Macs together cannot hold the model. Intel Macs
+  and Macs under 128 GB are never raised.
 
 These rules (`ClusterGPUMemoryLimit.raisedByDarkbloom`,
 `ClusterSetupPlanning.gpuLimitSteps`, `refusalWords`) are checked pair by pair
@@ -1275,7 +1275,7 @@ of the leading Mac's start, and where to choose Retry when a part keeps ending.
   model on each Mac. If the plan names `darkbloom cluster gpu-limit` for a Mac
   whose GPU keeps too little resident, run it on that Mac (it asks once, then
   macOS asks an administrator), then `darkbloom cluster` again. The plan names
-  it only on the Macs it runs on, M5 Macs with 128 or 256 GB. Running it on
+  it only on the Macs it runs on, Apple silicon Macs with 128 GB or more. Running it on
   both Macs leaves room for long requests. `darkbloom cluster gpu-limit --undo`
   takes it back. A request longer than what fits at that moment is refused, not
   run out of memory ([figures](../architecture/hardware-support.md#glm-53-flash-pairs-on-128-gb-macs)).

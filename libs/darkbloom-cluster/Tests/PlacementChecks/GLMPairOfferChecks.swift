@@ -5,9 +5,9 @@ import Foundation
 /// GLM-5.3 Flash's modes on each pair the product meets, as the mode question offers them: the planner's sharded
 /// options that run (`ClusterShardOption.Verdict` chosen, slower or faster on the prior only, with a placement), one
 /// per family. Each offered placement must fit every Mac's GPU limit and its memory at rest, so it loads. When none
-/// fits, the memory verdict raises only the GPU limits Darkbloom raises (`darkbloom cluster gpu-limit`: M5 Macs with
-/// 128 or 256 GB), so "needs gpu-limit" is said only where running it makes the model fit, and "needs more memory"
-/// otherwise. Recorded M5 Max, M3 Ultra and M5 Ultra hardware; the M4 Max is that 128 GB hardware under its own chip
+/// fits, the memory verdict raises only the GPU limits Darkbloom raises (`darkbloom cluster gpu-limit`: Apple silicon
+/// Macs with 128 GB or more), so "needs gpu-limit" is said only where running it makes the model fit, and "needs more
+/// memory" otherwise. Recorded M5 Max, M3 Ultra and M5 Ultra hardware; the M4 Max is that 128 GB hardware under its own chip
 /// name, at the GPU limit macOS 26.2 reports for it (107.52 GiB) and at lower defaults. No model, no GPU.
 func checkGLMPairOffer(golden: URL, _ checks: PlacementChecks) throws {
     let layout = try ClusterModelLayout.decode(Data(contentsOf: golden.appendingPathComponent("layouts/GLM-5.3-Flash-MLX-NVFP4-mtp.json")))
@@ -73,36 +73,39 @@ func checkGLMPairOffer(golden: URL, _ checks: PlacementChecks) throws {
         checks.require("glm offer, \(name): the memory verdict is fits", try verdict(devices) == .fits)
     }
 
-    // An M4 Max whose macOS default keeps less (75 % of 128 GiB on earlier macOS; 101 GiB): Darkbloom cannot raise
-    // its limit, so the M4 Max side is held to it.
+    // An M4 Max whose macOS default keeps less than 107.52 GiB (101 GiB; 96 GiB, 75 % of 128 GiB on earlier macOS). Its
+    // limit is one `darkbloom cluster gpu-limit` raises (Apple silicon, 128 GB or more), so the verdict counts it: nothing
+    // is offered as the Macs are, and the step names the Macs whose raise makes a pipeline fit; that placement loads.
     let m4At = { (gib: Int) in try mac("m4max", m5max, chip: "Apple M4 Max", defaultGPU: gib << 30) }
-    // 101 GiB: no split fits as the Macs are, and one fits once the M5 Max's limit is raised (the M5 Max takes the
-    // larger GPU part): the M5 Max alone needs `gpu-limit`, and that placement loads.
-    let tight = try [m4At(101), mac("m5max", m5max)]
-    checks.require("glm offer, M4 Max (101 GiB GPU) + M5 Max 128: nothing is offered as the Macs are", try offered(plan(tight), tight).isEmpty)
-    if case .needsGPULimitRaise(let raises) = try verdict(tight) {
-        let after = try plan([tight[0], mac("m5max", m5max, raised: true)])
-        checks.require("glm offer, M4 Max (101 GiB GPU) + M5 Max 128: it needs gpu-limit on the M5 Max alone (got \(raises.map(\.device)))",
-            raises.map(\.device) == ["m5max"])
-        let m5Part = after.chosen?.ranks.first { $0.device == "m5max" }?.gpuResidentBytes ?? 0
-        checks.require("glm offer, M4 Max (101 GiB GPU) + M5 Max 128: after gpu-limit on the M5 Max a pipeline loads, its M5 Max part above that Mac's default limit",
-            loads(after.chosen, [tight[0], try mac("m5max", m5max, raised: true)]) && after.chosen?.mode == .pipeline
-                && m5Part > m5max.gpuRecommendedWorkingSetBytes)
-    } else {
-        checks.require("glm offer, M4 Max (101 GiB GPU) + M5 Max 128: it needs gpu-limit on the M5 Max (got \(try verdict(tight)))", false)
-    }
-    // 96 GiB: even with the M5 Max raised no split fits, and the M4 Max's limit is one Darkbloom never raises.
-    for (name, devices) in try [("M4 Max (96 GiB GPU) + M5 Max 128", [m4At(96), mac("m5max", m5max)]),
-                                ("M4 Max (96 GiB GPU) + M5 Max 128 after gpu-limit", [m4At(96), mac("m5max", m5max, raised: true)]),
+    for (name, devices) in try [("M4 Max (101 GiB GPU) + M5 Max 128", [m4At(101), mac("m5max", m5max)]),
+                                ("M4 Max (96 GiB GPU) + M5 Max 128", [m4At(96), mac("m5max", m5max)]),
+                                ("M4 Max (96 GiB GPU) + M5 Max 128 after gpu-limit on the M5 Max", [m4At(96), mac("m5max", m5max, raised: true)]),
                                 ("2 x M4 Max (101 GiB GPU)", [m4At(101), mac("m4-b", m5max, chip: "Apple M4 Max", defaultGPU: 101 << 30)])] {
-        checks.require("glm offer, \(name): nothing is offered, and the verdict is does not fit, not a raise Darkbloom cannot make (got \(try verdict(devices)))",
-            try offered(plan(devices), devices).isEmpty && verdict(devices) == .doesNotFit)
+        checks.require("glm offer, \(name): nothing is offered as the Macs are", try offered(plan(devices), devices).isEmpty)
+        let assessed = try ClusterPlacementMemoryVerdict.assess(devices: devices, plan: plan)
+        guard case .needsGPULimitRaise(let raises) = assessed.verdict else {
+            checks.require("glm offer, \(name): it needs gpu-limit (got \(assessed.verdict))", false)
+            continue
+        }
+        let raised = try devices.map { device in
+            raises.contains { $0.device == device.label }
+                ? ClusterPlacementDevice(label: device.label, profile: try device.profile.withGPUMemoryLimitRaised()!, speed: device.speed)
+                : device
+        }
+        let after = try plan(raised)
+        checks.require("glm offer, \(name): it needs gpu-limit on the M4 Max (got \(raises.map(\.device).sorted()))",
+            raises.contains { $0.device == "m4max" } && raises.allSatisfy { $0.gpuNeedBytes > $0.currentLimitBytes && $0.raiseToMegabytes == 114_688 })
+        checks.require("glm offer, \(name): after gpu-limit on those Macs exactly the pipeline is offered, and it loads",
+            Set(try offered(after, raised).keys) == [pipeline] && loads(after.chosen, raised))
     }
-    checks.require("glm offer: Darkbloom raises the GPU limit only on M5 Macs with 128 or 256 GB, read from the chip's own name",
-        [("Apple M5 Max", 128), ("Apple M5 Ultra", 256), ("Apple M5", 128), ("Apple M5 Pro", 128)].allSatisfy {
+    checks.require("glm offer: Darkbloom raises the GPU limit on every Apple silicon Mac with 128 GB or more, of any M generation",
+        [("Apple M1 Ultra", 128), ("Apple M2 Ultra", 192), ("Apple M3 Max", 128), ("Apple M4 Max", 128), ("Apple M5 Max", 128),
+         ("Apple M3 Ultra", 256), ("Apple M5 Ultra", 512), ("Apple M7 Max", 128), ("Apple M12", 128)].allSatisfy {
             ClusterGPUMemoryLimit.raisedByDarkbloom(chipName: $0.0, physicalMemoryBytes: $0.1 << 30)
-        } && ![("Apple M4 Max", 128), ("Apple M3 Ultra", 256), ("Apple M5 Max", 64), ("Apple M5 Ultra", 512),
-               ("Apple M5 (Virtual)", 128), ("Apple M55 Max", 128), ("", 128)].contains {
+        })
+    checks.require("glm offer: never on a Mac under 128 GB, an Intel Mac, a virtual machine or a name that is not an Apple chip",
+        ![("Apple M4 Pro", 64), ("Apple M5 Max", 96), ("Apple M2 Ultra", 127), ("Intel(R) Core(TM) i9-9980HK CPU @ 2.40GHz", 128),
+          ("Apple M5 (Virtual)", 128), ("Apple M", 128), ("Apple Mx Max", 128), ("", 128)].contains {
             ClusterGPUMemoryLimit.raisedByDarkbloom(chipName: $0.0, physicalMemoryBytes: $0.1 << 30)
         })
 }

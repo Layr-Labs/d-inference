@@ -53,6 +53,8 @@ struct Clock {
     func notes() -> String { "Date() >= deadline" } // Date() <= now
     /* a block comment: Date() >= deadline */
     func seconds(now: Double, writtenAt: Double) -> Bool { now - writtenAt <= 2 }
+    func waited(started: Date, bound: Double) -> Bool { let waited = Date().timeIntervalSince(started); return waited >= bound }
+    func age(bound: Double) -> Bool { let age = Date.now.timeIntervalSince1970; return age <= bound }
 }
 """
 

@@ -4858,8 +4858,38 @@ buffers, so several layers' temporaries are alive at once. Only requests
 shorter than 30 tokens, prompt and output together, pay more (at most about
 6.2 MB a rank); the LOAD quote is unchanged. The prefix memory tier lives in
 measured free room and is not charged. A lane is gated with every held lane's
-charge, the new one and the rank's reserve. Speculative decoding, media and a
-measured activation floor are not built yet.
+charge, the new one and the rank's reserve. Media and a measured activation
+floor are not built yet; speculative rounds are built but not served
+(below).
+
+### Gemma tensor-parallel speculative rounds
+
+The runtime can decode a Gemma 4 request in speculative rounds with Google's
+assistant drafter, the checkpoint one Mac loads for `gemma-4-26b-qat-4bit`
+(`Gemma4TensorParallelRounds`, `Gemma4TensorParallelRequestLoop.runRounds`).
+Nothing serves it yet: the worker, provider and qualification wiring is a
+separate change.
+
+- **Draft.** Every rank holds the assistant whole and runs the product's
+  `Gemma4CBv2MTPDrafter` over a mirror of every KV head of the assistant's two
+  source layers (the last sliding and the last full layer). A rank's own heads
+  come from its window; the peer's ride the round's agreement, and the prompt's
+  arrive in one exchange after it (`Gemma4TensorParallelDraftMirror`).
+- **Verify.** `[last, d1 … dk]` runs through every layer in one forward
+  (`Gemma4VerifyWindow`). Each row is byte-equal to the plain decode step of the
+  same position: single-row projections (the registered prompt policy's
+  broadcast product), per-token experts, one-query attention on the paged host
+  and a single-row head. A round pays the layer sums once for all its rows.
+- **Agree and keep.** One collective carries each column's target (greedy:
+  the plain step's argmax rule; sampled: rank 0's keyed draw at each output
+  index), both stop flags, both ranks' proposals and both ranks' new KV rows.
+  Proposals count while both ranks proposed the same token and each equals the
+  target before it; the rest of the window rolls back.
+
+Greedy output is the plain tensor-parallel path's, token for token; sampled
+output is its draws. `darkbloom-cluster-tp-check gemma run --mtp-depth N
+--assistant-dir DIR` runs it on real weights (`Gemma4TensorParallelSpeculationTests`
+on synthetic ones).
 
 ### Gemma tensor-parallel placement
 

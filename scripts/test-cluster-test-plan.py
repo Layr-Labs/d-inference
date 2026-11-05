@@ -29,7 +29,8 @@ def selected(selection, test_id):
 
 class ClusterTestPlanTests(unittest.TestCase):
     def setUp(self):
-        self.jobs = workflow.job_blocks(plan.WORKFLOW.read_text())
+        self.jobs = {**workflow.job_blocks(plan.WORKFLOW.read_text()),
+                     **workflow.job_blocks(workflow.PLAN_WORKFLOW.read_text().split("\njobs:\n", 1)[1])}
 
     def test_plan_names_every_gated_test_and_runner(self):
         self.assertEqual(plan.audit(), [])

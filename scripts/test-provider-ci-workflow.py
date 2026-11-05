@@ -23,6 +23,8 @@ _SPEC.loader.exec_module(shards)
 # Docs Lint are CI (master)'s own jobs. CI (dev) runs only the test jobs.
 WORKFLOW = ROOT / ".github/workflows/provider-tests.yml"
 MASTER_WORKFLOW = ROOT / ".github/workflows/ci-master.yml"
+# The plan the callers share: the classifier, the tree lookup and the route.
+PLAN_WORKFLOW = ROOT / ".github/workflows/provider-plan.yml"
 DEV_WORKFLOW = ROOT / ".github/workflows/ci-dev.yml"
 
 
@@ -152,7 +154,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
     def setUp(self):
         self.workflow = workflow_text()
         self.jobs = {**job_blocks(WORKFLOW.read_text().split("\njobs:\n", 1)[1]),
-                     **job_blocks(MASTER_WORKFLOW.read_text().split("\njobs:\n", 1)[1])}
+                     **job_blocks(MASTER_WORKFLOW.read_text().split("\njobs:\n", 1)[1]),
+                     **job_blocks(PLAN_WORKFLOW.read_text().split("\njobs:\n", 1)[1])}
 
     def test_nested_wrapper_preserves_long_filters_and_failure_gates(self):
         selector = "NativeSuite/" + "VeryLongTestName" * 30 + "|OtherSuite/testCase"
@@ -206,15 +209,16 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                     lane_key = f"'{job_id}'"
                 # A Darkbloom macOS sandbox when granted, otherwise the same
                 # dedicated Blacksmith runner; requested only when the job runs.
-                self.assertIn("    runs-on: ${{ fromJSON(needs.route.outputs.routes)[%s] }}\n" % lane_key, job)
-                condition = "needs.changes.outputs.provider == 'true'"
-                requested = f"({condition})" if "||" in condition else condition
+                self.assertIn("    runs-on: ${{ fromJSON(inputs.routes)[%s] }}\n" % lane_key, job)
+                # The plan's components are the classifier's, or none for a
+                # tree that already passed (provider-plan.yml).
                 for route_lane in route_lanes:
                     self.assertIn("        %s macos_arm64 blacksmith-12vcpu-macos-27 "
-                                  "${{ %s && 1 || 0 }}\n" % (route_lane, requested), self.jobs["route"])
+                                  "${{ needs.components.outputs.provider == 'true' && 1 || 0 }}\n" % route_lane,
+                                  self.jobs["route"])
                 self.assertIn("    timeout-minutes: 60\n", job)
-                self.assertIn("    needs: [changes, route]\n", job)
-                self.assertIn("    if: ${{ %s }}\n" % condition, job)
+                self.assertNotRegex(job, r"(?m)^    needs:")
+                self.assertIn("    if: ${{ inputs.provider == 'true' }}\n", job)
                 self.assertNotIn("continue-on-error:", job)
                 self.assertNotIn("DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST:", job)
         self.assertIn("    name: Provider Unit Tests (shard ${{ matrix.shard }})\n", self.jobs["test-provider"])
@@ -230,8 +234,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
     def test_existing_required_check_requires_every_lane_even_after_failures(self):
         job = self.jobs["provider-test-gate"]
         self.assertIn("    name: Provider Tests\n", job)
-        self.assertIn("    needs: [changes, test-provider, test-provider-summary, test-cluster, test-cluster-focused]\n", job)
-        # Provider SDK Tests notifies after merge and never blocks this gate.
+        self.assertIn("    needs: [test-provider, test-cluster, test-cluster-focused]\n", job)
         self.assertNotIn("test-provider-sdk", job)
         self.assertIn("    if: ${{ always() }}\n", job)
         self.assertNotIn("continue-on-error:", job)
@@ -239,7 +242,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         command = run_command(step)
         # Prompt Parity is a step of a provider shard: its failure is UNIT_RESULT's.
         self.assertNotIn("test-provider-parity", job)
-        lanes = ("UNIT_RESULT", "SUMMARY_RESULT", "CLUSTER_RESULT", "CLUSTER_FOCUSED_RESULT")
+        lanes = ("UNIT_RESULT", "CLUSTER_RESULT", "CLUSTER_FOCUSED_RESULT")
         for failed in (None, *lanes):
             for outcome in ("failure", "skipped", "cancelled"):
                 results = {lane: outcome if lane == failed else "success" for lane in lanes}
@@ -291,7 +294,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn('echo "LLVM_PROFILE_FILE=$profiles/%p-%m.profraw" >> "$GITHUB_ENV"', steps[collect])
         self.assertIn('echo "PROVIDER_COVERAGE_DIR=$profiles" >> "$GITHUB_ENV"', steps[collect])
         self.assertGreater(merge, max(tests))
-        self.assertEqual(shard_upload, merge + 1)
+        self.assertGreater(shard_upload, merge)
         skipped_tests = "${{ !cancelled() && steps.provider-unit-tests.outcome != 'skipped' }}"
         self.assertEqual(field(steps[merge], "if"), skipped_tests)
         self.assertEqual(field(steps[shard_upload], "if"), skipped_tests)
@@ -301,39 +304,31 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("if-no-files-found: error", steps[shard_upload])
         for step in (steps[merge], steps[shard_upload]):
             self.assertNotIn("continue-on-error:", step)
-        # The summary merges every shard's profile against a build of the same
-        # commit (the shards' own on master pushes) and writes the report; the
-        # gate requires it.
-        summary = self.jobs["test-provider-summary"]
-        self.assertIn("    name: Provider Unit Tests Summary\n", summary)
-        self.assertIn("    needs: [changes, route, test-provider]\n", summary)
-        self.assertIn("    if: ${{ !cancelled() && needs.changes.outputs.provider == 'true' }}\n", summary)
-        self.assertIn("    runs-on: ${{ fromJSON(needs.route.outputs.routes)['test-provider-summary'] }}\n", summary)
-        self.assertIn("        test-provider-summary macos_arm64 blacksmith-12vcpu-macos-27 "
-                      "${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}\n", self.jobs["route"])
-        self.assertNotIn("continue-on-error:", summary)
-        summary_steps = step_blocks(summary)
-        summary_names = [field(step, "name", indent=6) for step in summary_steps]
-        summary_build = next(index for index, step in enumerate(summary_steps)
-                             if field(step, "uses") == BUILD_ACTION)
-        self.assertEqual(field(summary_steps[summary_build], "lane", indent=10), "provider")
-        download = summary_names.index("Download shard reports")
-        audit = summary_names.index("Check that the shards executed the full provider suite")
-        report = summary_names.index("Report provider coverage")
-        upload = summary_names.index("Upload provider coverage report")
-        self.assertLess(summary_build, download)
-        self.assertLess(download, audit)
+        # Each shard audits its own selections against `swift test list` of
+        # its own build (the last shard also checks that the plans cover the
+        # list once) and writes its own coverage report; no Mac job exists only
+        # to audit (David, 2026-11-04).
+        self.assertNotIn("test-provider-summary", self.jobs)
+        swift_tests = names.index("Run Swift tests")
+        audit = names.index("Check this shard's selections against the suite list")
+        report = names.index("Report provider coverage")
+        upload = names.index("Upload provider coverage report")
+        self.assertLess(swift_tests, audit)
+        self.assertLess(merge, report)
         self.assertLess(audit, report)
         self.assertEqual(upload, report + 1)
-        self.assertIn("pattern: provider-unit-shard-*", summary_steps[download])
-        self.assertEqual(field(summary_steps[report], "if"), READY)
-        self.assertEqual(field(summary_steps[audit], "if"), READY)
-        self.assertIn('profiles=("$RUNNER_TEMP"/provider-unit-shards/*/provider.profdata)', summary_steps[report])
-        self.assertIn("xcrun llvm-profdata merge", summary_steps[report])
-        self.assertIn("name: provider-coverage", summary_steps[upload])
+        self.assertLess(upload, shard_upload)
+        for index in (audit, report):
+            self.assertEqual(field(steps[index], "if"), skipped_tests)
+            self.assertNotIn("continue-on-error:", steps[index])
+        self.assertIn("swift test list --skip-build", steps[audit])
+        self.assertIn('provider-test-shards.py audit-job "$RUNNER_TEMP/provider-tests.txt"', steps[audit])
+        self.assertEqual(field(steps[audit], "SHARD", indent=10), "${{ matrix.shard }}/${{ strategy.job-total }}")
+        self.assertEqual(field(steps[audit], "PROVIDER_TEST_PROCESSES", indent=10), f"'{PROVIDER_PROCESSES}'")
+        self.assertIn('cp "$RUNNER_TEMP/provider-unit-shard/provider.profdata" "$out/provider.profdata"', steps[report])
+        self.assertIn("name: provider-coverage-${{ matrix.shard }}", steps[upload])
         test_step = next(step for step in steps if run_command(step) == PROVIDER_TEST_COMMAND)
         self.assertEqual(field(test_step, "id"), "provider-unit-tests")
-        self.assertNotIn("LLVM_PROFILE_FILE", summary)
         build_step = next(step for step in step_blocks(ACTION.read_text(), indent=4)
                           if field(step, "id", indent=6) == "provider-build")
         self.assertEqual(textwrap.dedent(build_step.split("run: |\n", 1)[1]).strip(),
@@ -415,7 +410,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertNotIn("continue-on-error:", self.jobs["test-provider"])
 
     def test_coverage_summary_preserves_weighted_rows_and_failure_checks(self):
-        report = next(step for step in step_blocks(self.jobs["test-provider-summary"])
+        report = next(step for step in step_blocks(self.jobs["test-provider"])
                       if field(step, "id") == "provider-coverage")
         summary_script = run_command(report).split("<<'PY'\n", 1)[1].split("\nPY", 1)[0]
         source_root = "/fixture/provider-swift/Sources"
@@ -569,7 +564,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("prepare-mimo-audio-fixtures.py", run_command(fixture))
         # The 1.87 GB codec is fetched only when the gate's inputs changed;
         # the gate needs the fixture, so it skips with it.
-        audio_ready = LAST_SHARD_READY.replace(" }}", " && needs.changes.outputs.mimo_audio == 'true' }}")
+        audio_ready = LAST_SHARD_READY.replace(" }}", " && inputs.mimo_audio == 'true' }}")
         self.assertEqual(field(fixture, "if"), audio_ready)
         restore = next(s for s in steps if field(s, "id") == "mimo-audio-cache")
         self.assertEqual(field(restore, "if"), audio_ready)
@@ -582,13 +577,16 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertNotIn("continue-on-error:", gate)
 
     def test_cluster_metadata_runners_run_every_runner_and_fail_on_any(self):
-        job = self.jobs["test-cluster-checks"]
-        self.assertIn("    name: Cluster Metadata Checks\n", job)
-        self.assertIn("    needs: [changes, route]\n", job)
-        self.assertIn("    if: ${{ needs.changes.outputs.cluster == 'true' }}\n", job)
-        self.assertIn("    runs-on: ${{ fromJSON(needs.route.outputs.routes)['test-cluster-checks'] }}\n", job)
-        self.assertIn("        test-cluster-checks macos_arm64 blacksmith-12vcpu-macos-27 "
-                      "${{ needs.changes.outputs.cluster == 'true' && 1 || 0 }}\n", self.jobs["route"])
+        # The metadata runners run in Cluster Focused Checks, before the other
+        # focused runners: no Mac job runs only these (David, 2026-11-04).
+        self.assertNotIn("test-cluster-checks", self.jobs)
+        self.assertNotIn("test-cluster-checks", self.jobs["route"])
+        job = self.jobs["test-cluster-focused"]
+        self.assertIn("    name: Cluster Focused Checks\n", job)
+        self.assertIn("    if: ${{ inputs.cluster == 'true' }}\n", job)
+        self.assertIn("    runs-on: ${{ fromJSON(inputs.routes)['test-cluster-focused'] }}\n", job)
+        self.assertIn("        test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 "
+                      "${{ needs.components.outputs.cluster == 'true' && 1 || 0 }}\n", self.jobs["route"])
         for forbidden in ("continue-on-error:", "secrets.", "DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST:"):
             self.assertNotIn(forbidden, job)
         steps = step_blocks(job)
@@ -706,15 +704,19 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             with self.subTest(step=name):
                 self.assertIn(SAVE_INPUT + " && ", condition)
         calls = [step for job in self.jobs.values() for step in step_blocks(job) if field(step, "uses") == BUILD_ACTION]
-        self.assertEqual(len(calls), 4)
+        # The provider shards, the two cluster runtime jobs and the push-only
+        # cache refresh, which builds the provider and the cluster lanes.
+        self.assertEqual(len(calls), 5)
         for call in calls:
             self.assertEqual(field(call, "save-caches", indent=10), "${{ env.SAVE_CACHES }}")
 
     def test_every_checkout_reuses_master_git_and_falls_back_to_a_cold_checkout(self):
-        checkouts = {job_id: job for job_id, job in self.jobs.items() if "actions/checkout@" in job}
-        self.assertEqual(set(checkouts), {"release-integrity", "docs", *LANES, "test-provider-summary",
-                                          "test-cluster-checks", "test-cluster", "test-cluster-gpu",
-                                          "test-cluster-focused"})
+        # The tree lookup checks out only its script, without the .git cache.
+        self.assertIn("sparse-checkout: scripts/ci-tested-tree.py", self.jobs["tested"])
+        checkouts = {job_id: job for job_id, job in self.jobs.items()
+                     if "actions/checkout@" in job and job_id != "tested"}
+        self.assertEqual(set(checkouts), {"release-integrity", "docs", *LANES, "test-cluster", "test-cluster-gpu",
+                                          "test-cluster-focused", "refresh-caches"})
         for job_id, job in checkouts.items():
             with self.subTest(job=job_id):
                 steps = step_blocks(job)
@@ -790,7 +792,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 env = path.read_text().split("\njobs:\n", 1)[0]
                 self.assertIn("  CHECKOUT_SPARSE: |\n" + "".join(f"    {pattern}\n" for pattern in SPARSE_PATTERNS),
                               env)
-        self.assertEqual(self.workflow.count("sparse-checkout: ${{ env.CHECKOUT_SPARSE }}"), 7)
+        self.assertEqual(self.workflow.count("sparse-checkout: ${{ env.CHECKOUT_SPARSE }}"), 6)
         docs_impact = (ROOT / ".github/workflows/docs-impact.yml").read_text()
         self.assertIn("          filter: blob:none\n          sparse-checkout: |\n"
                       + "".join(f"            {pattern}\n" for pattern in SPARSE_PATTERNS)

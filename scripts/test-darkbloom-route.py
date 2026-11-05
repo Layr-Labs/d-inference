@@ -39,21 +39,10 @@ FALLBACKS = {"release-integrity": LINUX_FALLBACK, "test-provider": MACOS_FALLBAC
              "warm": MACOS_FALLBACK, "docs": LINUX_FALLBACK}
 GRANTED = {"release-integrity": LINUX, "test-provider": MACOS,
            "warm": MACOS, "docs": LINUX_FALLBACK}
-PROVIDER = "${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}"
-CLUSTER = "${{ needs.changes.outputs.cluster == 'true' && 1 || 0 }}"
-CLUSTER_PUSH = "${{ github.event_name == 'push' && needs.changes.outputs.cluster == 'true' && 1 || 0 }}"
 PULL_REQUEST_WARM = "${{ github.event_name == 'pull_request' && 2 || 0 }}"
 # Every routed job: (profile, fallback label, count expression or None for 1)
 # of each lane it reads.
 ROUTED = {
-    "provider-tests.yml": {
-        "test-provider": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
-        "test-provider-summary": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
-        "test-cluster-checks": ("macos_arm64", MACOS_FALLBACK, CLUSTER),
-        "test-cluster": ("macos_arm64", MACOS_FALLBACK, CLUSTER),
-        "test-cluster-gpu": ("macos_arm64", MACOS_FALLBACK, CLUSTER_PUSH),
-        "test-cluster-focused": ("macos_arm64", MACOS_FALLBACK, CLUSTER),
-    },
     "docs-impact.yml": {
         "commit-signatures": ("linux_arm64", LINUX_FALLBACK, None),
         "docs-impact": ("linux_arm64", LINUX_FALLBACK, None),
@@ -63,10 +52,32 @@ ROUTED = {
     "nightly-linear-package.yml": {"test": ("linux_arm64", LINUX_FALLBACK, None)},
     "provider-release-cache.yml": {"warm": ("macos_arm64", MACOS_FALLBACK, PULL_REQUEST_WARM)},
 }
-# CI's callers of provider-tests.yml. They hold the run's only route request in
-# their `tests` job (the plane routes a run attempt once), so their own jobs,
-# Release Integrity and Docs Lint in CI (master), keep literal runners.
+# CI: the callers run provider-plan.yml, whose route job is the run's only
+# route request (the plane routes a run attempt once), with the caller's own
+# Linux lanes. The test jobs (provider-tests.yml) read `inputs.routes`; CI
+# (master)'s Release Integrity and Docs Lint read the plan's output.
 CALLERS = ("ci-dev.yml", "ci-master.yml")
+PLAN = "provider-plan.yml"
+COMPONENT = "${{{{ needs.components.outputs.{} == 'true' && 1 || 0 }}}}"
+REFRESH = ("${{ github.event_name == 'push' && needs.tested.outputs.skip == 'true' && "
+           "(needs.components.outputs.changed_provider == 'true' || needs.components.outputs.changed_cluster == 'true') "
+           "&& 1 || 0 }}")
+PLAN_LANES = {
+    "test-cluster-1": COMPONENT.format("cluster"), "test-provider-1": COMPONENT.format("provider"),
+    "test-provider-2": COMPONENT.format("provider"), "test-cluster-2": COMPONENT.format("cluster"),
+    "test-cluster-focused": COMPONENT.format("cluster"), "test-cluster-gpu-1": COMPONENT.format("cluster"),
+    "test-cluster-gpu-2": COMPONENT.format("cluster"), "refresh-caches": REFRESH,
+}
+MASTER_LINUX_LANES = (f"release-integrity linux_arm64 {LINUX_FALLBACK}", f"docs linux_arm64 {LINUX_FALLBACK}")
+# (workflow, job): the expression its runs-on reads.
+CI_ROUTED = {
+    ("provider-tests.yml", "test-provider"): "inputs.routes", ("provider-tests.yml", "test-cluster"): "inputs.routes",
+    ("provider-tests.yml", "test-cluster-gpu"): "inputs.routes",
+    ("provider-tests.yml", "test-cluster-focused"): "inputs.routes",
+    ("provider-tests.yml", "refresh-caches"): "inputs.routes",
+    ("ci-master.yml", "release-integrity"): "needs.plan.outputs.routes",
+    ("ci-master.yml", "docs"): "needs.plan.outputs.routes",
+}
 # Credentialed, release, review or publication workflows keep literal runners.
 UNROUTED = ("release-swift.yml", "release-provider.yml", "release-dev-branch.yml",
             "release-desktop.yml", "provider-signing-validation.yml", "register-model.yml",
@@ -154,8 +165,12 @@ def lane_lines(route_job):
 
 def route_lanes(route_job):
     """Parse the caller's `lanes` lines into {lane: (profile, fallback, count)}."""
+    return route_lanes_text(lane_lines(route_job))
+
+
+def route_lanes_text(lines):
     lanes = {}
-    for line in lane_lines(route_job):
+    for line in lines:
         lane, profile, fallback, *count = line.split(maxsplit=3)
         lanes[lane] = (profile, fallback, count[0] if count else None)
     return lanes
@@ -489,7 +504,7 @@ class RouteWorkflowTests(unittest.TestCase):
 
     def test_every_workflow_is_classified(self):
         self.assertEqual(set(self.texts), set(ROUTED) | set(UNROUTED) | set(CALLERS) |
-                         {"darkbloom-route.yml", "component-changes.yml"})
+                         {"darkbloom-route.yml", "component-changes.yml", PLAN, "provider-tests.yml"})
 
     def test_router_is_isolated_and_defaults_to_the_sandbox_plane(self):
         text = self.texts["darkbloom-route.yml"]
@@ -597,19 +612,74 @@ class RouteWorkflowTests(unittest.TestCase):
                     self.assertEqual(routes, [{lane: fallback for lane, (_, fallback, _)
                                                in requested_lanes(workflow, ROUTED[filename]).items()}])
 
-    def test_ci_callers_run_the_shared_tests_and_keep_literal_runners(self):
+    def test_ci_routes_every_job_that_runs_code_through_one_plan(self):
+        plan = jobs(self.texts[PLAN])
+        route = plan["route"]
+        self.assertIn("    uses: ./.github/workflows/darkbloom-route.yml\n", route)
+        self.assertEqual(job_field(route, "permissions"), "{}")
+        self.assertEqual(lane_lines(route)[0], "${{ inputs.linux_lanes }}")
+        planned = {lane: (profile, fallback, count) for lane, (profile, fallback, count)
+                   in route_lanes_text(lane_lines(route)[1:]).items()}
+        self.assertEqual({lane: count for lane, (_, _, count) in planned.items()}, PLAN_LANES)
+        self.assertEqual(list(planned), list(PLAN_LANES))
+        self.assertTrue(all(profile == "macos_arm64" and fallback == MACOS_FALLBACK
+                            for profile, fallback, _ in planned.values()))
+        # The callers: CI (dev) adds no lane; CI (master) adds its Linux lanes.
         for filename in CALLERS:
-            text = self.texts[filename]
+            workflow = jobs(self.texts[filename])
             with self.subTest(workflow=filename):
-                workflow = jobs(text)
+                self.assertEqual(job_field(workflow["plan"], "uses"), f"./.github/workflows/{PLAN}")
                 self.assertEqual(job_field(workflow["tests"], "uses"), "./.github/workflows/provider-tests.yml")
-                self.assertNotIn("darkbloom-route.yml", text)
-                self.assertNotIn("needs.route", text)
-                for name, job in workflow.items():
-                    if name != "tests":
-                        self.assertEqual(job_field(job, "runs-on"), LINUX_FALLBACK)
-        self.assertEqual(set(jobs(self.texts["ci-dev.yml"])), {"tests"})
-        self.assertEqual(set(jobs(self.texts["ci-master.yml"])), {"tests", "release-integrity", "docs"})
+                self.assertEqual(needs(workflow["tests"]), ["plan"])
+                self.assertNotIn("darkbloom-route.yml", self.texts[filename])
+        self.assertEqual(set(jobs(self.texts["ci-dev.yml"])), {"plan", "tests"})
+        self.assertNotIn("linux_lanes", self.texts["ci-dev.yml"])
+        self.assertEqual(set(jobs(self.texts["ci-master.yml"])), {"plan", "tests", "release-integrity", "docs"})
+        self.assertEqual(literal_block(jobs(self.texts["ci-master.yml"])["plan"], "linux_lanes", 6).splitlines(),
+                         list(MASTER_LINUX_LANES))
+        # Every routed job reads its own lane (each shard its own), and every
+        # lane is read: no job hard-codes a Blacksmith label.
+        read = set()
+        for (filename, name), source in CI_ROUTED.items():
+            job = jobs(self.texts[filename])[name]
+            with self.subTest(workflow=filename, job=name):
+                if name in SHARDED:
+                    lane = f"format('{name}-{{0}}', matrix.shard)"
+                    read |= {f"{name}-{shard}" for shard in matrix_shards(job)}
+                else:
+                    lane = f"'{name}'"
+                    read.add(name)
+                self.assertEqual(job_field(job, "runs-on"), f"${{{{ fromJSON({source})[{lane}] }}}}")
+                # A lane is requested exactly when its job runs.
+                condition = job_field(job, "if")
+                if name.startswith("test-"):
+                    component = re.fullmatch(r"\$\{\{ inputs\.(\w+) == 'true' \}\}", condition).group(1)
+                    for each in ([f"{name}-{shard}" for shard in matrix_shards(job)] if name in SHARDED else [name]):
+                        self.assertEqual(PLAN_LANES[each], COMPONENT.format(component))
+        self.assertEqual(read, set(PLAN_LANES) | {line.split()[0] for line in MASTER_LINUX_LANES})
+        # The router accepts both callers' lane sets, with every count either way.
+        script = route_step()
+        for linux in ("", "\n".join(MASTER_LINUX_LANES)):
+            text = "\n".join([linux, *lane_lines(route)[1:]]) + "\n"
+            for outcome in ("1", "0"):
+                lanes = re.sub(r"\$\{\{ .+? && (\d+) \|\| 0 \}\}",
+                               lambda match: match.group(1) if outcome == "1" else "0", text)
+                with self.subTest(linux=bool(linux), requested=outcome), tempfile.TemporaryDirectory() as work:
+                    result, routes, _ = run_route_step(
+                        script, Path(work), LANES=lanes, ROUTING="", PLANE_URL="", EVENT_NAME="push",
+                        HEAD_REPOSITORY="", REPOSITORY="Layr-Labs/d-inference", RUN_ID="1", RUN_ATTEMPT="1")
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    expected = {lane: MACOS_FALLBACK for lane in PLAN_LANES}
+                    expected.update({line.split()[0]: LINUX_FALLBACK for line in linux.splitlines()})
+                    self.assertEqual(routes, [expected])
+        for filename in ("provider-tests.yml", "ci-dev.yml", "ci-master.yml", PLAN):
+            for name, job in jobs(self.texts[filename]).items():
+                runner = job_field(job, "runs-on")
+                if runner and "fromJSON(" not in runner:
+                    with self.subTest(workflow=filename, job=name):
+                        # Only bookkeeping without tests stays GitHub-hosted.
+                        self.assertEqual(runner, "ubuntu-24.04")
+                        self.assertIn(name, ("tested", "components", "provider-test-gate"))
 
     def test_release_and_credentialed_workflows_keep_literal_runners(self):
         for filename in UNROUTED:
@@ -633,8 +703,9 @@ class RouteWorkflowTests(unittest.TestCase):
 
     def test_classifier_gate_and_route_need_no_routed_runner(self):
         ci = jobs(self.texts["provider-tests.yml"])
-        self.assertEqual(needs(ci["route"]), ["changes"])
-        self.assertEqual(job_field(ci["route"], "if"), "${{ !cancelled() }}")
+        plan = jobs(self.texts[PLAN])
+        self.assertEqual(needs(plan["route"]), ["components", "tested"])
+        self.assertEqual(job_field(plan["route"], "if"), "${{ !cancelled() }}")
         self.assertEqual(job_field(ci["provider-test-gate"], "runs-on"), "ubuntu-24.04")
         self.assertNotIn("route", needs(ci["provider-test-gate"]))
         changes = jobs(self.texts["component-changes.yml"])["changes"]

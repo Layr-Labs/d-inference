@@ -966,10 +966,11 @@ jobs:
     # runner scripts under libs/darkbloom-cluster/Tests
     # (scripts/cluster-test-plan.py focused lane); shard 2 runs the stage
     # metadata, provisioning and onboarding runners. They need no test
-    # products.
+    # products. Both shards read the one lane test-cluster-focused, which the
+    # route requests for 2 jobs (provider-plan.yml).
     name: Cluster Focused Checks (shard ${{ matrix.shard }})
     if: ${{ inputs.cluster == 'true' }}
-    runs-on: ${{ fromJSON(inputs.routes)[format('test-cluster-focused-{0}', matrix.shard)] }}
+    runs-on: ${{ fromJSON(inputs.routes)['test-cluster-focused'] }}
     timeout-minutes: 60
     strategy:
       fail-fast: false

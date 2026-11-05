@@ -58,14 +58,22 @@ ROUTED = {
 # (master)'s Release Integrity and Docs Lint read the plan's output.
 CALLERS = ("ci-dev.yml", "ci-master.yml")
 PLAN = "provider-plan.yml"
-COMPONENT = "${{{{ needs.components.outputs.{} == 'true' && 1 || 0 }}}}"
-# The 7 blocking test lanes, critical path first; the approval gives each one
-# small macOS size. The build jobs and the GPU lanes stay on Blacksmith.
+COMPONENT = "${{{{ needs.components.outputs.{} == 'true' && {} || 0 }}}}"
+
+
+def requested(component, jobs=1):
+    """A plan lane's count: its jobs when the component's tests run, else none."""
+    return COMPONENT.format(component, jobs)
+
+
+# The 7 blocking test jobs, critical path first; the approval gives each one
+# small macOS size. The two focused shards share the lane the approval names.
+# The build jobs and the GPU lanes stay on Blacksmith.
 PLAN_LANES = {
-    "test-cluster-2": COMPONENT.format("cluster"), "test-cluster-3": COMPONENT.format("cluster"),
-    "test-cluster-focused-1": COMPONENT.format("cluster"), "test-cluster-focused-2": COMPONENT.format("cluster"),
-    "test-provider-2": COMPONENT.format("provider"), "test-cluster-1": COMPONENT.format("cluster"),
-    "test-provider-1": COMPONENT.format("provider"),
+    "test-cluster-2": requested("cluster"), "test-cluster-3": requested("cluster"),
+    "test-cluster-focused": requested("cluster", 2),
+    "test-provider-2": requested("provider"), "test-cluster-1": requested("cluster"),
+    "test-provider-1": requested("provider"),
 }
 # CI jobs on a literal Blacksmith macOS runner: they need more than the routed size.
 BLACKSMITH_CI = {"build-cluster", "build-provider", "cluster-release-checks", "test-cluster-gpu"}
@@ -86,7 +94,7 @@ UNROUTED = ("release-swift.yml", "release-provider.yml", "release-dev-branch.yml
             "threat-model-review.yml", "bedrock-smoke.yml", "claude.yml", "codex.yml")
 # The plane grants a lane whole, so each shard of these jobs reads a lane of its
 # own, `<job>-<shard>`, and gets a free sandbox even when the others fall back.
-SHARDED = {"test-provider", "test-cluster", "test-cluster-focused"}
+SHARDED = {"test-provider", "test-cluster"}
 # Master and dispatched warming feed release builds, so only PRs read the route.
 RUNS_ON = {"warm": "${{ github.event_name == 'pull_request' && "
                    "fromJSON(needs.route.outputs.routes)['warm'] || 'blacksmith-12vcpu-macos-27' }}"}
@@ -656,8 +664,10 @@ class RouteWorkflowTests(unittest.TestCase):
                 condition = job_field(job, "if")
                 if name.startswith("test-"):
                     component = re.fullmatch(r"\$\{\{ inputs\.(\w+) == 'true' \}\}", condition).group(1)
+                    # A shared lane is requested for every job of its matrix.
+                    jobs_requested = 1 if name in SHARDED else len(matrix_shards(job)) or 1
                     for each in ([f"{name}-{shard}" for shard in matrix_shards(job)] if name in SHARDED else [name]):
-                        self.assertEqual(PLAN_LANES[each], COMPONENT.format(component))
+                        self.assertEqual(PLAN_LANES[each], requested(component, jobs_requested))
         self.assertEqual(read, set(PLAN_LANES) | {line.split()[0] for line in MASTER_LINUX_LANES})
         # The router accepts both callers' lane sets, with every count either way.
         script = route_step()
@@ -692,7 +702,8 @@ class RouteWorkflowTests(unittest.TestCase):
         ci = jobs(self.texts["provider-tests.yml"])
         self.assertEqual({name for name, job in ci.items() if job_field(job, "runs-on") == MACOS_FALLBACK},
                          BLACKSMITH_CI)
-        self.assertEqual(len(PLAN_LANES), 7)
+        # 7 macOS jobs ask, within the per-run cap of 8.
+        self.assertEqual(sum(int(re.search(r"&& (\d+) \|\|", count).group(1)) for count in PLAN_LANES.values()), 7)
 
     def test_release_and_credentialed_workflows_keep_literal_runners(self):
         for filename in UNROUTED:

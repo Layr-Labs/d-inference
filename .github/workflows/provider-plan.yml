@@ -139,9 +139,11 @@ jobs:
 
   # Chooses a Darkbloom Sandbox or the Blacksmith fallback for each blocking
   # test lane. A lane is granted whole or falls back whole, so each job (each
-  # shard) has a lane of its own and falls back alone. The approval gives
-  # every routed lane one small macOS size (4 vCPU, 16 GiB), so only these 7
-  # lanes ask: the build jobs and the Cluster GPU Tests stay on Blacksmith
+  # shard) has a lane of its own and falls back alone, except the two
+  # Cluster Focused Checks shards: they share the lane the approval names,
+  # test-cluster-focused, with a count of 2. The approval gives every routed
+  # lane one small macOS size (4 vCPU, 16 GiB), so only these 7 jobs ask: the
+  # build jobs and the Cluster GPU Tests stay on Blacksmith
   # (provider-tests.yml). The lanes are listed in the order the
   # DARKBLOOM_MACOS_LANES cap keeps them: the critical-path shards first.
   route:
@@ -154,8 +156,7 @@ jobs:
         ${{ inputs.linux_lanes }}
         test-cluster-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }}
         test-cluster-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }}
-        test-cluster-focused-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }}
-        test-cluster-focused-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }}
+        test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }}
         test-provider-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }}
         test-cluster-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }}
         test-provider-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }}

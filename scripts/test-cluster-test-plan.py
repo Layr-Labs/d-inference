@@ -228,7 +228,7 @@ class ClusterTestPlanTests(unittest.TestCase):
         self.assertEqual(workflow.run_command(focused["Run cluster focused checks"]),
                          "python3 scripts/cluster-test-plan.py run focused 1")
         self.assertIn("matrix.shard == 1 && ", workflow.field(focused["Run cluster focused checks"], "if"))
-        self.assertIn("        test-cluster-focused-1 macos_arm64 ", self.jobs["route"])
+        self.assertIn("        test-cluster-focused macos_arm64 ", self.jobs["route"])
 
     def test_only_the_gpu_job_continues_after_a_failure_and_the_gate_requires_the_others(self):
         # Besides the report-only resource samples.

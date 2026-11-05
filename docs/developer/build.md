@@ -393,7 +393,7 @@ lane, `format('<job>-{0}', matrix.shard)`.
 
 | Workflow | Routed jobs | Fallback |
 |---|---|---|
-| `provider-tests.yml` (lanes requested by `provider-plan.yml`) | `test-provider` (lanes `test-provider-1` and `test-provider-2`, one per shard), `test-cluster` (lanes `test-cluster-1` to `test-cluster-3`), `test-cluster-focused` (lanes `test-cluster-focused-1` and `test-cluster-focused-2`) | `blacksmith-12vcpu-macos-27` |
+| `provider-tests.yml` (lanes requested by `provider-plan.yml`) | `test-provider` (lanes `test-provider-1` and `test-provider-2`, one per shard), `test-cluster` (lanes `test-cluster-1` to `test-cluster-3`), `test-cluster-focused` (one lane, `test-cluster-focused`, requested for both shards) | `blacksmith-12vcpu-macos-27` |
 | `ci-master.yml` (lanes requested by `provider-plan.yml`) | `release-integrity`, `docs` | `blacksmith-4vcpu-ubuntu-2404` |
 | `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
 | `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
@@ -418,9 +418,11 @@ Routing is off unless the repository variable `DARKBLOOM_ROUTING` is exactly
 from 0 to 99, caps the macOS jobs one run asks for: the route keeps the lanes
 in the caller's order while they fit, and the others keep their fallback
 without asking (any other value asks for no macOS lane). `provider-plan.yml`
-asks for the 7 blocking test lanes only, critical path first: `test-cluster-2`
-(the concurrent groups), `test-cluster-3` (the Gemma 4 base suites), the
-focused shards, then the provider shards and `test-cluster-1`. While it is off, and for pull requests from forks, every job keeps its
+asks for the blocking test jobs only, critical path first: `test-cluster-2`
+(the concurrent groups), `test-cluster-3` (the Gemma 4 base suites),
+`test-cluster-focused` (count 2), then the provider shards and
+`test-cluster-1`: 7 jobs. A lane gets the jobs of its whole matrix, so the two
+focused shards share the lane name the approval lists. While it is off, and for pull requests from forks, every job keeps its
 fallback and the plane is not contacted. When it is on, the route job sends one
 `POST /v1/ci/routes` to `DARKBLOOM_SANDBOX_URL` (default
 `https://api-sandbox.darkbloom.dev`) for the jobs that will run, retrying at

@@ -638,12 +638,11 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         focused, release = self.jobs["test-cluster-focused"], self.jobs["cluster-release-checks"]
         self.assertIn("    name: Cluster Focused Checks (shard ${{ matrix.shard }})\n", focused)
         self.assertIn("    name: Cluster Release Build Checks\n", release)
-        self.assertIn("    runs-on: ${{ fromJSON(inputs.routes)[format('test-cluster-focused-{0}', matrix.shard)] }}\n",
-                      focused)
+        # Both shards read the lane the approval names, requested for 2 jobs.
+        self.assertIn("    runs-on: ${{ fromJSON(inputs.routes)['test-cluster-focused'] }}\n", focused)
         self.assertIn("      matrix:\n        shard: [1, 2]\n", focused)
-        for shard in (1, 2):
-            self.assertIn(f"        test-cluster-focused-{shard} macos_arm64 blacksmith-12vcpu-macos-27 "
-                          "${{ needs.components.outputs.cluster == 'true' && 1 || 0 }}\n", self.jobs["route"])
+        self.assertIn("        test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 "
+                      "${{ needs.components.outputs.cluster == 'true' && 2 || 0 }}\n", self.jobs["route"])
         self.assertIn(f"    runs-on: {BLACKSMITH_MAC}\n", release)
         for job in (focused, release):
             self.assertIn("    if: ${{ inputs.cluster == 'true' }}\n", job)

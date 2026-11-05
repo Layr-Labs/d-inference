@@ -326,13 +326,14 @@ On the leader, the pair's model list follows, like `darkbloom start`'s picker:
 A model that runs more than one way here asks how both Macs split it. The
 question's first line names the model and recommends a mode for these two Macs,
 with why: "Recommended for Gemma 4 26B on these two Macs: Tensor parallel,
-faster here (about 106 against 41 tokens/s, measured) and serves up to 8
-requests at once." In a colour terminal the mode is in bold. In a narrow window
-the reason is shortened ("faster, up to 8 at once"), then left out; the model's
-and the mode's names never are. That mode's line ends "· recommended for these
-Macs", and Enter takes it (`ClusterOnboardingModeAdvice.advise`). The leading
-Mac makes the recommendation from its plans, so both Macs' screens show the
-same words:
+faster here and serves up to 8 requests at once." The speeds rank the modes but
+the question never quotes them: neither the recommendation nor a mode's line
+shows tokens per second. In a colour terminal the mode is in bold. In a narrow
+window the reason is shortened ("faster, up to 8 at once"), then left out; the
+model's and the mode's names never are. That mode's line ends "· recommended
+for these Macs", and Enter takes it (`ClusterOnboardingModeAdvice.advise`). The
+leading Mac makes the recommendation from its plans, so both Macs' screens show
+the same words:
 
 - Only modes whose own plan fits both Macs' free memory now count (while a
   model serves, its memory is freed first, so fitting now doesn't decide). One
@@ -342,6 +343,11 @@ same words:
   wins, because Darkbloom turns away what a busy pair can't take; serving
   locally only, the mode clearly faster on this pair wins (measured, else the
   planner's prediction; within 5 % counts as the same speed).
+- A measurement outranks a prediction: while some modes have served on this
+  pair and others haven't, the fastest measured one is recommended ("the only
+  one measured on these Macs so far"), because the planner's figure for a mode
+  that hasn't served can be far off (two M5 Ultras, Gemma: a pipeline predicted
+  at 152 tokens/s served 64, beside tensor parallel measured at 111).
 - Nothing fits, or there is no measured or predicted speed and no difference
   in requests at once: "No recommendation for <model> on these two Macs:
   <why>.", nothing is

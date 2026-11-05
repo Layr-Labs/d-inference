@@ -59,7 +59,10 @@ extension DistributedCBv2Engine {
         do {
             capacity = try onQueue { try prepareReservation(held) }
         } catch {
-            onQueue { releaseLane(held.request.id) }
+            onQueue {
+                releaseLane(held.request.id)
+                publishCapacity()
+            }
             throw error
         }
         let admissionStartedAt = clock.now()
@@ -95,10 +98,11 @@ extension DistributedCBv2Engine {
     }
 
     /// On queue: the lane is no longer held for an admission. True when a
-    /// cancel named the request meanwhile.
+    /// cancel named the request meanwhile. The caller publishes the capacity
+    /// once the request is in `actives` or refused, so that no snapshot shows
+    /// its lane free in between.
     @discardableResult
     private func releaseLane(_ id: CBv2RequestID) -> Bool {
-        defer { publishCapacity() }
         let cancelled = cancelledWhileAdmitting.contains(id)
         let count = admitting[id] ?? 0
         admitting[id] = count > 1 ? count - 1 : nil
@@ -111,8 +115,8 @@ extension DistributedCBv2Engine {
         _ held: Admitting, lease reserved: Result<any DistributedResidentRequestLease, Error>,
         capacity: Int, admissionStartedAt: ContinuousClock.Instant
     ) throws -> Admission {
-        let cancelledMeanwhile = releaseLane(held.request.id)
         defer { publishCapacity() }
+        let cancelledMeanwhile = releaseLane(held.request.id)
         let lease = try reserved.get()
         let request = held.request, deadlineContext = held.deadlineContext, cancellation = held.cancellation
         let deadline = deadlineContext.firstTokenDeadline

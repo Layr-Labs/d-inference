@@ -5,7 +5,9 @@ import Foundation
 /// pair installed (`ClusterPairUpdateCycle`, or `darkbloom update`) stays a candidate until its cluster service has
 /// beaten with the new version, continuously, for the stabilization window; the third start that ends before that
 /// restores the verified predecessor and quarantines the release (`UpdateRecoveryState.rollbackThreshold`).
-/// Every transition holds the cross-process update lease, as the watchdog's do.
+/// Every transition holds the cross-process update lease, as the watchdog's do. Before a start is noted or an end
+/// counted, the record is reconciled with the installed app (`reconcile`), so an install outside the updater never
+/// leaves a release pending that is not installed, or a rollback copy recorded as another release than it holds.
 ///
 /// The supervisor restarts into a release by replacing itself (`execv`), so a release whose binary cannot start
 /// at all would leave no supervisor to count its failed starts. The start check (`startCheckFailure`) runs that
@@ -40,10 +42,11 @@ public struct ClusterCandidateRecovery: Sendable {
         self.stabilizationSeconds = stabilizationSeconds
     }
 
-    /// Before the supervisor starts its cluster service: a pending candidate gets a launch attempt (the one the
-    /// restart prepared, or a new one after a failed start), so an end before promotion is counted exactly once.
-    public func noteLaunch(now: Double) -> Launch {
-        transition(operation: "cluster-candidate-launch") { state in
+    /// Before the supervisor starts its cluster service: the record is reconciled with the installed app (`reconcile`;
+    /// `log` gets its one line), then a pending candidate gets a launch attempt (the one the restart prepared, or a new
+    /// one after a failed start), so an end before promotion is counted exactly once.
+    public func noteLaunch(now: Double, log: (String) -> Void = { _ in }) -> Launch {
+        transition(operation: "cluster-candidate-launch", reconcilingAt: now, log: log) { state in
             Self.issueLaunch(&state, now: now)
             guard let current = state.candidate, current.pendingAttemptID != nil else { return Launch.notCandidate }
             return Launch.candidate(version: current.release.version, failedStarts: current.failureCount)
@@ -61,12 +64,14 @@ public struct ClusterCandidateRecovery: Sendable {
         } ?? .stabilizing
     }
 
-    /// After the service ended without being asked to.
-    public func recordFailedStart(now: Double) -> Failure {
+    /// After the service ended without being asked to. Reconciled first (`reconcile`): an end of a release that is not
+    /// the pending one is never counted toward rolling the pending one back.
+    public func recordFailedStart(now: Double, log: (String) -> Void = { _ in }) -> Failure {
         guard let session = try? updater.beginUpdateSession(operation: "cluster-candidate-failure", timeout: 1) else { return .notCandidate }
         defer { session.release() }
         do {
             try session.recover(now: now)
+            try reconcile(session, now: now, log: log)
             var state = try session.readState()
             guard let failures = state.recordPendingAttemptFailure(now: now), let candidate = state.candidate else { return .notCandidate }
             try session.writeState(state)
@@ -148,11 +153,49 @@ public struct ClusterCandidateRecovery: Sendable {
         }
     }
 
-    private func transition<Value>(operation: String, _ body: (inout UpdateRecoveryState) -> Value) -> Value? {
+    /// Under the session's lease, before anything acts on the pending release: the record must name the installed app
+    /// (`UpdateRecoveryStore.reconcileWithInstalledApp`, as the release this process runs when the app names none). An
+    /// install outside the updater left it naming releases that are not installed, and acting on them would restart
+    /// into, count failed starts of and roll back a release that does not run. An installed app that cannot be read
+    /// changes nothing, so a damaged release is still rolled back. A record that cannot be checked throws: nothing is
+    /// counted or rolled back then.
+    private func reconcile(_ session: SelfUpdater.UpdateSession, now: Double, log: (String) -> Void) throws {
+        do {
+            if let change = try session.reconcileWithInstalledApp(runningVersion: updater.currentVersion, now: now) {
+                log(Self.line(change))
+            }
+        } catch {
+            log("the update record could not be checked against the installed app (\(error)); no start is counted toward a rollback")
+            throw error
+        }
+    }
+
+    /// One plain line for the supervisor's log.
+    static func line(_ change: UpdateRecoveryReconciliation) -> String {
+        switch change {
+        case .installedOutsideTheUpdater(let installed, let recorded, let pending, let removedCopy):
+            let said = (recorded.map { "v\($0)" } ?? "no release") + (pending.map { " with v\($0) pending" } ?? "")
+            let changes = ["it now records v\(installed)"] + (pending.map { ["v\($0) is no longer pending"] } ?? [])
+                + (removedCopy.map { ["the rollback copy (recorded as v\($0)) is removed"] } ?? [])
+            return "v\(installed) is installed, but the update record said \(said) (installed outside the updater): "
+                + changes.dropLast().joined(separator: ", ") + (changes.count > 1 ? " and " : "") + (changes.last ?? "")
+                + "; nothing is rolled back until an update keeps a copy of v\(installed)"
+        case .rollbackCopyRelabelled(let recordedAs, let signed):
+            return "the rollback copy recorded as v\(recordedAs) is a v\(signed) app: it is now recorded as v\(signed) and "
+                + "kept for rollback"
+        case .unverifiedRollbackCopyRemoved(let recordedAs):
+            return "the rollback copy recorded as v\(recordedAs) could not be verified as the release its app is signed as, "
+                + "so it is removed; nothing is rolled back until an update keeps a copy of the installed release"
+        }
+    }
+
+    private func transition<Value>(operation: String, reconcilingAt now: Double? = nil, log: (String) -> Void = { _ in },
+                                   _ body: (inout UpdateRecoveryState) -> Value) -> Value? {
         guard let session = try? updater.beginUpdateSession(operation: operation, timeout: 1) else { return nil }
         defer { session.release() }
         do {
             try session.recover()
+            if let now { try reconcile(session, now: now, log: log) }
             var state = try session.readState()
             let before = state
             let value = body(&state)

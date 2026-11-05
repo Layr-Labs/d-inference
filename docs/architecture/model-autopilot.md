@@ -1,6 +1,6 @@
 # Provider Autopilot
 
-> Last updated: 2026-11-02
+> Last updated: 2026-11-04
 
 Provider Autopilot offers an external controller the models of a Mac whose
 operator saved Autopilot consent: the saved selection plus every verified
@@ -16,6 +16,11 @@ earnings or relaxed memory limits.
 owns consent and the persisted selection. Ordinary startup selection remains
 separate. The provider publishes typed snapshots, validates control leases and
 rechecks actual work, pins, inventory and memory before changing residency.
+`darkbloom autopilot enable` and `autopilot models` enroll through that startup
+selector by running `darkbloom start --autopilot` inside themselves
+(`Autopilot/AutopilotEnrollmentCommands.swift`), with a plain look
+(`DarkbloomCommandLook.runNested`): in a terminal, that inner `start` draws no
+Darkbloom mark of its own.
 
 | Responsibility | Provider source |
 |---|---|

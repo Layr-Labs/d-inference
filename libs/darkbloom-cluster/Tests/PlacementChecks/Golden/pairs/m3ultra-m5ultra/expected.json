@@ -43,9 +43,9 @@
  },
  "gemma-4-26b": {
   "cut": 15,
-  "handOffPlanSHA256": "57930f35562dfaac891a4ba9471c4803c39e7bac48a163e843cb9879a4364765",
+  "handOffPlanSHA256": "a0e0f45159a5d8b09ea8df8af731afd7edd268546ff8d65390bed8698ea58d1e",
   "mode": "pipeline_v1",
-  "planSHA256": "0571fc6da882ade88e0c598043b8fc99094a511f1faf4b84649d94e0f38d3100",
+  "planSHA256": "d1b82de240feef8f3fe2e0ce0008248299e4d93dc1b1334fb588be902abe77fd",
   "ranks": [
    {
     "device": "mac-a",
@@ -64,9 +64,9 @@
  },
  "gemma-4-26b-8bit": {
   "cut": 15,
-  "handOffPlanSHA256": "ded7170d34e566b27792e236894e65f999fea763ee5edc2b8de767c64d7aab8d",
+  "handOffPlanSHA256": "9f21568e2e84e630d57851d8387f9e2cff2734bc8c5239e8bc923bd71d7429bc",
   "mode": "pipeline_v1",
-  "planSHA256": "7368cac20477ef08c6d43323a036296ebe12a84d1e2d99c2691f2713e3123494",
+  "planSHA256": "0cc5b144346eff3115660c53cd56ed9bde564fd7f604cf73a6faeb4f1ad7e10f",
   "ranks": [
    {
     "device": "mac-a",
@@ -85,9 +85,9 @@
  },
  "gemma-4-26b-qat-4bit": {
   "cut": 15,
-  "handOffPlanSHA256": "e13211be5685ae2b81e437164faa0d22236e96854dc58a20b2374ac721651c7d",
+  "handOffPlanSHA256": "33219eba761a0334f81165d922736d5dcaf30f4faabffc7dd0871753d60f7829",
   "mode": "pipeline_v1",
-  "planSHA256": "e601b0e536ebe8467e83e8355b8686be4055152d5709e701d872acf8ad12c36e",
+  "planSHA256": "7ae987f4a36f130ae833fb84fac2f63a721ce403a0858b9170e8abfd62ca7a84",
   "ranks": [
    {
     "device": "mac-a",
@@ -106,9 +106,9 @@
  },
  "gpt-oss-20b-2026-05-25-r1": {
   "cut": 12,
-  "handOffPlanSHA256": "52905c2be56158f3be3773725dff3d1c2c89848f3007972144b8f983cdc25842",
+  "handOffPlanSHA256": "e7f31b303ff0fa022bcb485f22fd77e3dfe9156f230f20c7d8eb4f476d4590c1",
   "mode": "pipeline_v1",
-  "planSHA256": "c81238fe9bd14312ec00e146e2ff89d548718d2356296ee49c3baf76b4d963eb",
+  "planSHA256": "23ba61423d18edb9813a7744506668d1223704d66851fab2b42c8c2d85a73a77",
   "ranks": [
    {
     "device": "mac-a",
@@ -127,9 +127,9 @@
  },
  "mimo-v2.6-flash-mopd-2026-09-28-r1": {
   "cut": 24,
-  "handOffPlanSHA256": "86682aa37034a080f7bdd5c84d55a92e1ac496f83d10385a24679351fa79c8e0",
+  "handOffPlanSHA256": "320e599c4880aa6c9d1e4b32e42d1d7fc0624f51409f928c44d88317e42b65e3",
   "mode": "pipeline_v1",
-  "planSHA256": "f2bf3c85adb620f0ee784885ced83a65b9153b8b3adf05a26b6ca92f80b8e5a9",
+  "planSHA256": "3e8af1813d6c241e46fbc0de43eb5cfde9b509eed8d62989316912492b1ccd5f",
   "ranks": [
    {
     "device": "mac-a",
@@ -171,7 +171,7 @@
   "cut": 20,
   "handOffPlanSHA256": "120bc7ab1bba29c38e0f02d4a32d4aa7019f7322c1b3d8323d7fec79c04ef026",
   "mode": "pipeline_v1",
-  "planSHA256": "39db130b02f8ad5ab35101608e4e9b29a7f5f74a587202a8c5de2bb7252c9d41",
+  "planSHA256": "50a34855072b04ab8d183f78aa10592e9f1b493afd7a075728aa7fdb30dbea6e",
   "ranks": [
    {
     "device": "mac-a",
@@ -192,7 +192,7 @@
   "cut": 20,
   "handOffPlanSHA256": "60e819c6840ddd52292ae812f733986a4875819fded380d86f04b0698864056d",
   "mode": "pipeline_v1",
-  "planSHA256": "50ef1194af166702416c2a61e1aadb007eafb6d6f1e5303e26158376d831c136",
+  "planSHA256": "98a5e463afe20d45fcdf27509add7da94acd511d8f1b7b2fe7cdd7ec1bda0116",
   "ranks": [
    {
     "device": "mac-a",
@@ -211,9 +211,9 @@
  },
  "ternary-bonsai-2-27b-2026-09-17-r1": {
   "cut": 32,
-  "handOffPlanSHA256": "4f02b306ca30e123966788565dddf47fa1cfff946be6fc94cce0a87c28152de6",
+  "handOffPlanSHA256": "f5abd19a8b3d70164126700d320aaf17a97fba966f82be6ed2efc4b200b1e199",
   "mode": "pipeline_v1",
-  "planSHA256": "90702dc1209997a5d606b1906eab55f364f80d5d2a5beabdb7ad965d08f707ae",
+  "planSHA256": "82d2e55b2aa7e46ba6d7770cb90035035443e87df03c7cadd78d4263fcf0904e",
   "ranks": [
    {
     "device": "mac-a",

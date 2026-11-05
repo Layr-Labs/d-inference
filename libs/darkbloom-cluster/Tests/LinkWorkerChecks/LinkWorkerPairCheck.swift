@@ -111,6 +111,46 @@ final class LinkHarness: @unchecked Sendable {
     func followerJournalBytes() -> UInt64 { journalBytes(followerDirectory) }
 }
 
+/// The leader's side of one follower session, in this process: every wire
+/// the follower sends, decoded.
+final class CapturingLinkTransport: ClusterLinkWorkerTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var sent: [ClusterLinkWorkerWire] = []
+    func send(_ bytes: Data) throws {
+        let wire = try ClusterLinkWorkerWire.decode(bytes)
+        lock.withLock { sent.append(wire) }
+    }
+    /// The worker events the follower relayed.
+    var events: [ClusterWorkerEventFrame] {
+        lock.withLock { sent }.filter { $0.kind == .event }.compactMap { $0.worker.flatMap { try? ClusterWorkerCodec.decodeEvent($0) } }
+    }
+    var refusals: [ClusterLinkWorkerWire] { lock.withLock { sent }.filter { $0.kind == .commandRefused } }
+}
+
+/// A follower server's reports, as the follower process prints them.
+final class ReportLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [ClusterLinkWorkerServer.Report] = []
+    func add(_ report: ClusterLinkWorkerServer.Report) { lock.withLock { values.append(report) } }
+    var lines: [String] {
+        lock.withLock { values }.map { report in
+            switch report {
+            case .opened: "opened"
+            case .refused(let reason): "refused \(reason)"
+            case .fenced(_, let reason): "fenced \(reason)"
+            case .cleanup: "cleanup"
+            case .released(_, let cleanly): "released \(cleanly)"
+            }
+        }
+    }
+    var fenced: Bool { lines.contains { $0.hasPrefix("fenced") } }
+}
+
+extension ClusterWorkerEvent {
+    var isReady: Bool { if case .ready = self { return true }; return false }
+    var isAdmission: Bool { if case .admitted = self { return true }; return false }
+}
+
 func localEndpoint(_ owner: URL, _ worker: String, _ dir: URL, behavior: String, relay: ClusterOwnerBootstrapRelay?,
                    lifetimeNanoseconds: UInt64 = 15_000_000_000) throws -> ClusterRemoteWorkerEndpoint {
     try .init(transport: .init(executable: owner, arguments: [worker, dir.path, "0", behavior], environment: [:]),
@@ -140,6 +180,8 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
         let worker = CommandLine.arguments[3]
         var passed = 0
         try codec(); passed += 1; print("PASS codec: no host uptime crosses, a sampled reservation keeps its sampling and a routed one its route, closed fields")
+        try admissionDeadlineEndsThatRequestAlone(follower, owner, worker); passed += 1
+        try expiredRelayedReservationIsThatRequestsRefusal(owner, worker); passed += 1
         try served(follower, owner, worker, profile: "prelude"); passed += 1
         try served(follower, owner, worker, profile: "mesh2"); passed += 1
         try served(follower, owner, worker, profile: "none"); passed += 1
@@ -154,6 +196,103 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
         try followerOwnerEndNamed(follower, owner, worker); passed += 1
         try followerWorkerEndedBeforeReadyNamed(follower, owner, worker); passed += 1
         print("link-worker: \(passed) groups passed (two processes over loopback; not a hardware pass)")
+    }
+
+    /// Production, 2026-11-03 23:07–23:19Z (six drops of the GLM pair) and
+    /// 2026-11-01 03:37Z: a request arrived with little of its first-content
+    /// budget left and rank 0 answered its reservation at its next step
+    /// boundary, after that admission deadline. The leader ended the pair: it
+    /// fenced rank 1, never asked ("leader fenced: the request was cancelled
+    /// before it started"), and rank 0's own owner fenced rank 0 when the
+    /// reservation's delivery deadline (the same budget) passed unanswered.
+    /// Through both real owners and the link, that request alone now ends:
+    /// rank 0 gives back its late admission, nothing is fenced, and the same
+    /// pair serves the next request.
+    static func admissionDeadlineEndsThatRequestAlone(_ follower: URL, _ owner: URL, _ worker: String) throws {
+        let harness = try LinkHarness(follower: follower, owner: owner, worker: worker, profile: "none", behavior: "normal")
+        let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        // Rank 0 answers each reservation 0.3 s after it is asked.
+        let first = try localEndpoint(owner, worker, dir, behavior: "slow-admit", relay: nil)
+        let second = try harness.linkEndpoint(relay: nil)
+        let pair = try ClusterWorkerPair(workers: [first, second], startupDeadline: now() + 10_000_000_000)
+        var outcome: Error?
+        do {
+            _ = try pair.reserve(requestID: UUID(), reservation: .init(profileID: fixtureProfile.id,
+                promptTokenIDs: [1, 2], stopTokenIDs: [], outputCount: 2, chunkSize: 1,
+                deadlineUptimeNanoseconds: now() + 8_000_000_000, capacityLimitBytes: 1800, sampling: nil, prefixCache: nil),
+                admissionDeadline: now() + 100_000_000)
+        } catch { outcome = error }
+        try require((outcome as? ClusterWorkerOwnerError) == .deadline, "The request did not end with its deadline: \(String(describing: outcome))")
+        // A fence on its way reaches the follower well within this.
+        _ = harness.sawReport("fenced", seconds: pair.readiness == nil ? 5 : 1)
+        try require(pair.readiness != nil && pair.admissionState.isValid,
+            "One request's admission deadline ended the pair: \(pair.lastRequestFailure ?? "no failure noted"); follower: \(harness.reports)")
+        try require(!harness.reports.contains { $0.hasPrefix("fenced") }, "The follower was fenced: \(harness.reports)")
+        try require(!first.nativeCleanupObserved && !second.nativeCleanupObserved,
+            "A rank's worker ended: rank 0 \(first.nativeCleanupObserved), rank 1 \(second.nativeCleanupObserved)")
+        try runRequest(pair)
+        try shutdown(pair, seconds: 8, "rank0 cleanup \(first.nativeCleanupObserved) rank1 cleanup \(second.nativeCleanupObserved) follower \(harness.reports)")
+        try require(first.nativeCleanupObserved && second.nativeCleanupObserved, "Missing cleanup proof")
+        try require(second.waitForOwnerReleased(deadline: now() + 10_000_000_000), "Follower's release proof missing: \(harness.reports)")
+        try require(first.waitForOwnerReleased(deadline: now() + 10_000_000_000), "Leader's local owner release missing")
+        let status = try harness.finish()
+        try require(status == 0 && harness.reports.contains("released true") && !harness.reports.contains(where: { $0.hasPrefix("fenced") }),
+            "Follower reports differ: \(harness.reports)")
+        print("PASS an admission deadline ends that request alone over the link: rank 0 gave back its late admission, nothing fenced, the pair served the next request")
+    }
+
+    /// Production, 2026-11-03 23:10:25Z: rank 1's reservation reached the
+    /// follower past its delivery deadline, its own owner refused to queue it,
+    /// and the follower fenced its session ("command refused"), which ended
+    /// the pair. That request alone is now refused (`commandRefused`,
+    /// `deadline`): the follower's session, its real owner and worker serve on.
+    static func expiredRelayedReservationIsThatRequestsRefusal(_ owner: URL, _ worker: String) throws {
+        let transport = CapturingLinkTransport(), reports = ReportLog()
+        let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let server = ClusterLinkWorkerServer(transport: transport, clusterID: "cpu-test", rank: 1, bootstrapProfile: nil,
+            admit: { open in
+                .init(identity: fixtureIdentity, profile: fixtureProfile) { relay in
+                    try ClusterRemoteWorkerEndpoint(transport: .init(executable: owner, arguments: [worker, dir.path, "1", "normal"], environment: [:]),
+                        clusterID: "cpu-test", expectedIdentity: fixtureIdentity, profile: fixtureProfile, rank: 1,
+                        executionPlanSHA256: fixturePlan, lifetimeDeadlineUptimeNanoseconds: open.lifetimeDeadlineUptimeNanoseconds,
+                        bootstrapRelay: relay)
+                }
+            }, report: { reports.add($0) })
+        let epoch = fixtureIdentity.membershipEpoch, session = UUID()
+        var open = ClusterLinkWorkerWire(kind: .open, epoch: epoch, session: session, sequence: 0)
+        open.clusterID = "cpu-test"; open.rank = 1; open.planSHA256 = fixturePlan; open.remainingNanoseconds = 20_000_000_000
+        server.deliver(try open.encoded())
+        try require(wait(seconds: 10) { transport.events.contains { $0.event.isReady } }, "The follower's worker was not ready: \(reports.lines)")
+        func reservation() -> ClusterWorkerCommand {
+            .reserve(.init(profileID: fixtureProfile.id, promptTokenIDs: [1, 2], stopTokenIDs: [], outputCount: 2, chunkSize: 1,
+                deadlineUptimeNanoseconds: now() + 8_000_000_000, capacityLimitBytes: 900, sampling: nil, prefixCache: nil))
+        }
+        // The leader's next command on this session, with `deliveryNanoseconds` to reach the worker.
+        func relay(_ command: ClusterWorkerCommand, for requestID: UUID, sequence: UInt64, deliveryNanoseconds: UInt64) throws {
+            let at = now()
+            server.deliver(try ClusterLinkWorkerWire.command(command, requestID: requestID, epoch: epoch, session: session,
+                sequence: sequence, now: at, deliveryDeadline: at + deliveryNanoseconds).encoded())
+        }
+        let expired = UUID(), next = UUID()
+        // One nanosecond of delivery time left: past it before this Mac's owner can queue it.
+        try relay(reservation(), for: expired, sequence: 1, deliveryNanoseconds: 1)
+        try require(wait(seconds: 5) { transport.refusals.contains { $0.requestID == expired } || reports.fenced },
+            "Nothing came back for the expired reservation: \(reports.lines)")
+        try require(!reports.fenced, "The follower fenced its session for one request's delivery deadline: \(reports.lines)")
+        try require(transport.refusals.first { $0.requestID == expired }?.detail == ClusterWorkerRefusal.deadline.rawValue,
+            "The refusal does not name the deadline: \(transport.refusals)")
+        // The session serves on: the next reservation reaches the worker, which admits it and gives it back.
+        try relay(reservation(), for: next, sequence: 2, deliveryNanoseconds: 5_000_000_000)
+        try require(wait(seconds: 5) { transport.events.contains { $0.requestID == next && $0.event.isAdmission } },
+            "The next reservation was not admitted: \(reports.lines)")
+        try relay(.cancel(.callerCancelled), for: next, sequence: 3, deliveryNanoseconds: 5_000_000_000)
+        try require(wait(seconds: 5) { transport.events.contains { $0.requestID == next && $0.event == .retired(.cancelled) } },
+            "The next reservation was not given back: \(reports.lines)")
+        try require(!reports.fenced && server.busy, "The follower's session did not serve on: \(reports.lines)")
+        server.stop()
+        try require(server.waitUntilIdle(deadline: now() + 40_000_000_000), "The follower's session did not end: \(reports.lines)")
+        try require(reports.lines.contains("released true"), "The follower's owner did not release: \(reports.lines)")
+        print("PASS a relayed reservation past its delivery deadline is that request's refusal (deadline); the follower's session served on")
     }
 
     /// A fence names its cause (S24): the follower's report, and so its

@@ -109,8 +109,10 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
     /// `auto` (`ClusterPlacementTensorAssistantSelection.discoveryMode`). The leader's check of a coordinator's
     /// approval runs this rule before any part stops (`ClusterApprovalAttachment.attachment`). Short enough to reach
     /// the leader whole through the other Mac's refusal (`ClusterSetupFailure` keeps 240 characters).
-    static let tensorAssistantServesLocally = "Qwen's speculative assistant serves local clusters only (not qualified for "
-        + "public traffic); with mtp_mode \"auto\", press m in `darkbloom cluster` to plan without it"
+    static var tensorAssistantServesLocally: String {
+        ClusterOnboardingCommand.named("Qwen's speculative assistant serves local clusters only (not qualified for "
+            + "public traffic); with mtp_mode \"auto\", press m in `darkbloom cluster` to plan without it")
+    }
 
     func validate(capability: ClusterRuntimeCapability, rawCapabilitySHA256: String) throws {
         func require(_ value: Bool, _ message: String) throws {

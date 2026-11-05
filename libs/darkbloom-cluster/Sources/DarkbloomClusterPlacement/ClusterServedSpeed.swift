@@ -557,26 +557,51 @@ public enum ClusterServedCalibration {
                         m.rested.speculativeDecodeTokensPerSecond ?? m.rested.decodeTokensPerSecond)
                 }.joined(separator: "; ")))
         }
+        var uncredited: [String] = []
         for (device, factor) in speculativeFactors where factor.isFinite && factor > 0 {
             let plainProbe = "served_\(ClusterGenerationMode.pipeline.rawValue)_v1"
             let same = { (m: ClusterSpeedMeasurement) in m.key.chip == device.profile.chip && m.key.osBuild == device.profile.osBuild }
             if let index = measurements.lastIndex(where: { same($0) && $0.key.probe == plainProbe }) {
-                let m = measurements[index]
-                guard let credited = try? ClusterSpeedMeasurement(key: m.key, promptTokens: m.promptTokens, chunkTokens: m.chunkTokens,
-                    probedLayers: m.probedLayers, layerCount: m.layerCount,
-                    rested: .init(prefillTokensPerSecond: m.rested.prefillTokensPerSecond,
-                        decodeTokensPerSecond: m.rested.decodeTokensPerSecond,
-                        speculativeDecodeTokensPerSecond: m.rested.speculativeDecodeTokensPerSecond,
-                        pipelineSpeculativeFactor: factor),
-                    sustained: m.sustained, hashBytesPerSecond: m.hashBytesPerSecond,
-                    materializeBytesPerSecond: m.materializeBytesPerSecond, measuredUTC: m.measuredUTC,
-                    provenance: m.provenance + String(format: "; pipeline speculative rounds served %.2fx this placement's plain decode", factor))
-                else { continue }
+                // A credit that cannot be recorded is said, never the plan's failure.
+                guard let credited = crediting(measurements[index], pipelineSpeculativeFactor: factor) else {
+                    uncredited.append(device.label)
+                    continue
+                }
                 measurements[index] = credited
             }
         }
-        if let line = skippedLine(skipped) { lines.append(line) }
+        if let line = skippedLine(skipped, coveredTokens: layout.tensorParallel?.family.requestAllowance?.maximumContextTokens) {
+            lines.append(line)
+        }
+        if let line = uncreditedLine(uncredited) { lines.append(line) }
         return (measurements, lines)
+    }
+
+    /// `measurement` (a placement's plain pipeline decode, as served) with the
+    /// speed-up its speculative rounds served (`factor`) credited; nil when the
+    /// credited record would not be a valid one (its provenance and the note
+    /// over 1,024 bytes, say).
+    public static func crediting(_ measurement: ClusterSpeedMeasurement, pipelineSpeculativeFactor factor: Double) -> ClusterSpeedMeasurement? {
+        let m = measurement
+        return try? ClusterSpeedMeasurement(key: m.key, promptTokens: m.promptTokens, chunkTokens: m.chunkTokens,
+            probedLayers: m.probedLayers, layerCount: m.layerCount,
+            rested: .init(prefillTokensPerSecond: m.rested.prefillTokensPerSecond,
+                decodeTokensPerSecond: m.rested.decodeTokensPerSecond,
+                speculativeDecodeTokensPerSecond: m.rested.speculativeDecodeTokensPerSecond,
+                pipelineSpeculativeFactor: factor),
+            sustained: m.sustained, hashBytesPerSecond: m.hashBytesPerSecond,
+            materializeBytesPerSecond: m.materializeBytesPerSecond, measuredUTC: m.measuredUTC,
+            provenance: m.provenance + String(format: "; pipeline speculative rounds served %.2fx this placement's plain decode", factor))
+    }
+
+    /// The plan's one line for the Macs whose served speculative speed-up could
+    /// not be credited (`crediting`); nil when there were none. Without it the
+    /// plan predicts the speculative pipeline at its plain decode on that Mac,
+    /// so it can choose another mode though the speculative pipeline served faster.
+    public static func uncreditedLine(_ labels: [String]) -> String? {
+        guard !labels.isEmpty else { return nil }
+        return "  The speculative pipeline's served speed-up on \(labels.joined(separator: ", ")) is not credited (its speed record could not be updated): "
+            + "the plan predicts that pipeline at its plain decode there, so it may choose another mode even where the speculative pipeline served faster"
     }
 
     /// Whether the planner can evaluate `sample`'s request on `placement`, as
@@ -591,11 +616,27 @@ public enum ClusterServedCalibration {
             tensorShares: placement.tensorShares)) != nil
     }
 
-    /// The plan's one line for the records it skipped (`measurements`); nil when there were none.
-    public static func skippedLine(_ skipped: [ClusterServedSample]) -> String? {
+    /// The plan's one line for the records it skipped (`measurements`); nil when there were none. `coveredTokens`: the
+    /// longest request (prompt and answer) planning covers for this model, when it has one (its tensor-parallel allowance).
+    public static func skippedLine(_ skipped: [ClusterServedSample], coveredTokens: Int? = nil) -> String? {
         guard !skipped.isEmpty else { return nil }
-        let longest = skipped.map { $0.promptTokens + $0.outputTokens }.max() ?? 0
-        return "  \(skipped.count) record(s) skipped: requests outside this model's limits, or otherwise ones the plan cannot evaluate "
-            + "(the longest \(longest) prompt and answer tokens); the other records still count"
+        let lengths = skipped.map { $0.promptTokens + $0.outputTokens }
+        let longest = grouped(lengths.max() ?? 0), records = skipped.count == 1 ? "1 speed record" : "\(skipped.count) speed records"
+        if let coveredTokens, lengths.allSatisfy({ $0 > coveredTokens }) {
+            return "  Skipped \(records) longer than the \(grouped(coveredTokens)) tokens planning covers (the longest was \(longest)); "
+                + "the other records still count"
+        }
+        return "  Skipped \(records) the plan could not evaluate on this model (the longest was \(longest) tokens); the other records still count"
+    }
+
+    /// 94522 as "94,522".
+    static func grouped(_ value: Int) -> String {
+        let digits = String(value.magnitude)
+        var out = ""
+        for (index, digit) in digits.enumerated() {
+            if index > 0, (digits.count - index) % 3 == 0 { out.append(",") }
+            out.append(digit)
+        }
+        return (value < 0 ? "-" : "") + out
     }
 }

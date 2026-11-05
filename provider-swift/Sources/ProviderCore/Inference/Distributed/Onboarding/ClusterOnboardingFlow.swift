@@ -2609,8 +2609,8 @@ public enum ClusterOnboardingDriver {
             // A model the owner approved for clusters that cannot run here is never hidden silently (2026-11-05: Qwen
             // 3.8 27B left a pair's list without a word when its plan failed): one line each, with its reason, above the
             // list. An older leader, which does not say whether a model is approved, keeps its list as it came.
-            for index in choices.indices where choices[index].validated == true && choices[index].blocker != nil {
-                console.say("  \(choices[index].title): not offered on these two Macs: \(choices[index].blocker!)")
+            for choice in choices where choice.validated == true {
+                if let blocker = choice.blocker { console.say("  \(choice.title): not offered on these two Macs: \(blocker)") }
             }
             operations.publishStep(.init(.modelList))
             guard let picked = console.choose(lines + actions, selected: current.flatMap { open.firstIndex(of: $0) } ?? 0) else {

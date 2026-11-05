@@ -611,7 +611,7 @@ After `build-provider` and `qualify-sdk` succeed, `build-and-release` consumes
 the source-bound unsigned artifact on `blacksmith-12vcpu-macos-27`. It does not
 wait for an environment approval. `qualify-sdk` passes only when all five
 `qualify-sdk-shard` jobs pass and together executed the full provider suite.
-Release SDK selection is SDK 27.0 / Apple Swift 6.4, with `SDKROOT` covering
+Release SDK selection is SDK 27.2 / Apple Swift 6.4.2 (Xcode 27.2), with `SDKROOT` covering
 compilation and linking; the final recorded SDK must match. The
 checksum-pinned GitHub CLI is installed by
 `scripts/install-macos-github-cli.sh` before downloads. Missing `gh` in an old

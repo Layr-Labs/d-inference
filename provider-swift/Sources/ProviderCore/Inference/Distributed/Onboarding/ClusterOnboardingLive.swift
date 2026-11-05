@@ -2187,20 +2187,21 @@ final class OnboardingLive: @unchecked Sendable {
     /// A pair offered for pairing: waits until the coordinator paired both Macs, both loaded the model and the pair
     /// answered its first request (rank 0's part says so), or a reason the Macs know held (`pairLook`).
     func pairServing(_ progress: @escaping @Sendable (String) -> Void) -> Result<[String], ClusterOnboardingFailure> {
-        let started = Date()
-        var said: String?, last: String?
-        while Date().timeIntervalSince(started) < Self.pairServingSeconds {
+        var wait = ClusterOnboardingPairWait(started: Date().timeIntervalSince1970, bound: Self.pairServingSeconds,
+                                             settle: Self.pairReasonSettleSeconds)
+        var said: String?
+        while true {
+            // A stop from anywhere (`cluster stop` in another window, or on the other Mac) ends the wait at once.
+            if pairStopped() { return .failure(.stopped) }
             let look = pairLook()
             if look.serving { return .success([look.test ?? ""]) }
-            if let reason = look.reason {
-                last = reason
-                let settle = ClusterOnboardingNotServing.isMissingLogin(reason) ? 0 : Self.pairReasonSettleSeconds
-                if Date().timeIntervalSince(started) >= settle { return .failure(.init(reason)) }
+            let holds = look.reason.map(ClusterOnboardingNotServing.isMissingLogin) ?? false
+            if let reason = wait.look(reason: look.reason, holds: holds, now: Date().timeIntervalSince1970) {
+                return .failure(.init(reason))
             }
             if look.progress != said { progress(look.progress); said = look.progress }
             sleep(2)
         }
-        return .failure(.init(last ?? "The coordinator has not paired both Macs within 15 minutes"))
     }
 
     /// One look at a pair offered for pairing, from both Macs' reports: whether it serves (rank 0's part runs the pair's
@@ -2231,10 +2232,15 @@ final class OnboardingLive: @unchecked Sendable {
                     ClusterOnboardingNotServing.notVerified(mac, retryAt: child?.appAttestRetryAt.map { Date(timeIntervalSince1970: $0) }))
         }
         if case .stopped(let why)? = rankZero {
-            return (false, nil, progress, ClusterOnboardingNotServing.words(reason: why, mac: "one of the Macs"))
+            // Apple verification is named only when a Mac reports it missing (none does here: that returned above).
+            return (false, nil, progress, ClusterOnboardingNotServing.words(reason: why, mac: "one of the Macs", anyUnverified: false))
         }
         return (false, nil, progress, nil)
     }
+
+    /// The pair was stopped while a screen waits for it: this Mac's saved start is off (`cluster stop` here, or the
+    /// leading Mac's stop that reached it).
+    func pairStopped() -> Bool { leadership.map { !$0.serving } ?? false }
 
     /// The Macs without a Darkbloom login, as this screen names them.
     func missingLogins() -> [String] {

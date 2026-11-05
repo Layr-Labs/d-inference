@@ -70,7 +70,7 @@ enum ClusterPlacementTensorAssistantSelection {
         }
     }
 
-    /// `declared`: the public assistant a coordinator-paired setup plans (its depth, singleton verification); nil
+    /// `declared`: the public assistant a coordinator-paired setup plans (its depth and verification); nil
     /// plans a local cluster's automatic assistant (`automaticDepth`, admitted target cohorts).
     static func discoveryArguments(modelDirectory: String, promptTokens: Int, outputTokens: Int,
                                    chunkTokens: Int, assistant: Bool = true, lanes: Int = 1,
@@ -110,14 +110,11 @@ enum ClusterPlacementTensorAssistantSelection {
             guard let policy = quote.assistant?.policy else {
                 throw ClusterConfigurationError.invalid("Native discovery changed the embedded assistant's verification policy")
             }
-            if let declared {
-                guard policy == declared else {
-                    throw ClusterConfigurationError.invalid("The embedded assistant differs from this build's public declaration")
-                }
-            } else {
-                guard policy.depth == automaticDepth, policy.verification == .admittedCohort else {
-                    throw ClusterConfigurationError.invalid("Native discovery changed the embedded assistant's verification policy")
-                }
+            if let declared, policy != declared {
+                throw ClusterConfigurationError.invalid("The embedded assistant differs from this build's public declaration")
+            }
+            if declared == nil, policy.depth != automaticDepth || policy.verification != .admittedCohort {
+                throw ClusterConfigurationError.invalid("Native discovery changed the embedded assistant's verification policy")
             }
         } else { try quote.requireAssistant(nil) }
     }
@@ -126,7 +123,7 @@ enum ClusterPlacementTensorAssistantSelection {
     /// so each row is quoted (its target alone where it has no assistant).
     /// `coordinator`: the setup serves through the coordinator, so only the
     /// assistant this build declares public for the artifact is planned, with
-    /// its declared depth and singleton verification (`discoveryMode`).
+    /// its declared depth and verification (`discoveryMode`).
     static func readAutomatic(tool: URL, modelDirectory: URL, publicModelID: String,
                               capability: ClusterRuntimeCapability, mode: MTPMode,
                               chunkTokens: Int, deadline: UInt64, lanes: Int = 1, coordinator: Bool = false,

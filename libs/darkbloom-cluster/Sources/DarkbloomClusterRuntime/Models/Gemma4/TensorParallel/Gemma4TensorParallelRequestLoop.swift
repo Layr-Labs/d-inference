@@ -1,6 +1,7 @@
 import DarkbloomClusterProtocol
 import Foundation
 import MLX
+import MLXLMCommon
 
 /// One request on one rank of a Gemma 4 tensor-parallel pair, as the resident
 /// runtime serves it alone: the prompt in chunks of the request's own size
@@ -9,11 +10,14 @@ import MLX
 /// parallel's step order). Each step's token and both ranks' stop flags
 /// are agreed in the step's own evaluation (`Gemma4TensorParallelChoice`);
 /// both ranks submit the same collectives in the same order whatever either
-/// decides, and end after the same step. A greedy request's step is built
-/// one ahead, on the previous step's lazy agreed token
+/// decides, and end after the same step. Each step is built one ahead, on
+/// the previous step's lazy agreed token
 /// (`Gemma4TensorParallelPagedSession.submitDecode`), so the GPU and the
-/// collectives run it while the host reads the previous one; a step built
-/// after the request ended is evaluated and never committed or published.
+/// collectives run it while the host reads the previous one: greedy and
+/// sampled requests (rank 0's keyed draw is the one made at its output index
+/// with the history up to it), but not a greedy request asking for logprobs
+/// (`pipelines`). A step built after the request ended is evaluated; its
+/// token is never committed or published.
 ///
 /// Rank 0 publishes each token at once and reads the owner's answer to it
 /// after the next step ran; a stop answer is acted on one step later (the
@@ -42,19 +46,45 @@ struct Gemma4TensorParallelRequestLoop {
         var pagesRefused: Bool
     }
 
-    /// Whether `choice`'s steps are built one ahead: greedy requests without
-    /// logprobs (as GLM's `pipelined: sampler == nil`).
-    static func pipelines(_ choice: Gemma4TensorParallelChoice) -> Bool { choice.sampler == nil }
+    /// One built step: its logits, its agreement (`Gemma4TensorParallelChoice.build`)
+    /// and, on rank 0 of a sampled request asking for them, its draw's
+    /// logprobs as graph nodes (kept with the step, as the next step's draw
+    /// may be built before this one is read).
+    struct Step {
+        let logits: MLXArray
+        let selected: MLXArray
+        let logprobs: CBv2StepLogprobs?
+    }
+
+    /// Whether `choice`'s steps are built one ahead: greedy and sampled
+    /// requests alike (each draw is keyed on its output index and its
+    /// history on the device, `QwenStageTokenSampler.sample`). A greedy
+    /// request asking for logprobs reads each step before building the next:
+    /// its logprobs come from a vocabulary-split top-k gather, a collective
+    /// evaluated on the host after the step's token is agreed, which would
+    /// wait for the step built ahead and gain nothing.
+    static func pipelines(_ choice: Gemma4TensorParallelChoice) -> Bool {
+        if let buildsAhead { return buildsAhead }
+        return choice.gathersRow || choice.sampler?.wire.capturedLogprobs == nil
+    }
+    /// Tests only: a test's own order (nil: `pipelines`'s). The product never sets it.
+    @TaskLocal static var buildsAhead: Bool?
 
     func run(channel: ClusterCommittedTokenChannel, check: () throws -> Void) throws -> Outcome {
         let rank = choice.rank, prompt = request.promptTokenIDs
         let sampler = choice.sampler
         // A restored prefix ends on the chunk grid: the rest runs the chunks a cold request runs there.
         var offset = session.committedTokens
-        var current: (logits: MLXArray, selected: MLXArray)?
+        /// A built step, with rank 0's sampled draw's logprobs taken now.
+        func built(_ step: (logits: MLXArray, selected: MLXArray)) -> Step {
+            let logprobs = rank == 0 && choice.gathersRow ? sampler?.takePendingStepLogprobs() : nil
+            return Step(logits: step.logits, selected: step.selected, logprobs: logprobs)
+        }
+        var current: Step?
         while offset < prompt.count {
             let end = min(prompt.count, offset + request.chunkSize)
-            current = try session.prefill(prompt, range: offset ..< end, check: check) { choice.build($0, stop: 0) } ?? current
+            current = try session.prefill(prompt, range: offset ..< end, check: check) { choice.build($0, stop: 0) }
+                .map(built) ?? current
             offset = end
         }
         guard let step = current else { throw ProbeError("Gemma tensor-parallel prompt produced no logits") }
@@ -87,18 +117,15 @@ struct Gemma4TensorParallelRequestLoop {
             }
         }
         try withoutActuallyEscaping(check) { check in
-            // Greedy steps are built one ahead (`TensorParallelOneTokenLoop`, GLM's step order): the next step is
-            // submitted on this step's lazy agreed token before the host reads it. A sampled step, and a greedy one
-            // whose logprobs come from a collective of their own, is built after its token is read.
-            let steps = TensorParallelOneTokenLoop<(logits: MLXArray, selected: MLXArray)>(
-                outputCount: request.outputCount, stopTokenIDs: request.stopTokenIDs, pipelined: Self.pipelines(choice),
+            // Steps are built one ahead (`TensorParallelOneTokenLoop`, GLM's step order): the next step is submitted
+            // on this step's lazy agreed token before the host reads it (`pipelines`).
+            let pipelined = Self.pipelines(choice)
+            let steps = TensorParallelOneTokenLoop<Step>(
+                outputCount: request.outputCount, stopTokenIDs: request.stopTokenIDs, pipelined: pipelined,
                 step: { current, stop in
-                    if Self.pipelines(choice) {
-                        return try session.submitDecode(after: current.selected, check: check) { choice.build($0, stop: stop) }
-                    }
-                    return try session.decode(try choice.read(current.selected).token, check: check) {
-                        choice.build($0, stop: stop)
-                    }
+                    let select: (MLXArray) -> MLXArray = { choice.build($0, stop: stop) }
+                    return try built(pipelined ? session.submitDecode(after: current.selected, check: check, select: select)
+                        : session.decode(choice.read(current.selected).token, check: check, select: select))
                 },
                 read: { current in
                     let agreed = try choice.read(current.selected)
@@ -121,10 +148,10 @@ struct Gemma4TensorParallelRequestLoop {
                     guard let count = logprobCount else { return }
                     if choice.gathersRow {
                         if rank == 0, stopKeep == 0 {
-                            guard let drawn = sampler?.takePendingLogprobs() else {
+                            guard let drawn = current.logprobs else {
                                 throw ProbeError("Gemma tensor-parallel token has no logprobs")
                             }
-                            stepLogprobs = drawn
+                            stepLogprobs = QwenStageTokenSampler.tokenLogprobs(drawn)
                         }
                     } else {
                         let maximum = try choice.read(current.selected).maximum

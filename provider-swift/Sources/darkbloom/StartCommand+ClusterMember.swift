@@ -120,6 +120,8 @@ extension Start {
             // The cluster service reads its part's latest notice line (unbuffered stderr): this part is offered.
             if offered {
                 printError(ClusterLocalServing.offeredLogLine)
+                // Owner-only by the coordinator's rule: the screens and status show it instead of ✓ once it serves.
+                if let reason = prepared.ownerOnlyReason() { printError(ClusterLocalServing.logPrefix + reason) }
                 let url = coordinatorURL ?? (try? ConfigManager.load(from: path))?.coordinator.url
                 if let url { Self.sayCatalogRefusal(modelID: prepared.model.id, coordinatorURL: url) }
             }

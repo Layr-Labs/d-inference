@@ -170,7 +170,10 @@ extension ClusterPairSummary {
         if let control = own?.control, otherMacAwayModes.contains(control.mode) { return (.otherMacAway, control.line) }
         if let text = own?.child.pair, let pair = ClusterOnboardingPairReport.state(text) {
             switch pair {
-            case .serving: return (.serving, nil)
+            case .serving:
+                // Paired and answering, but the coordinator sends this pair no public request.
+                if let reason = ClusterPublicServingCheck.ownerOnly(notice: own?.child.notice) { return (.notServing, reason) }
+                return (.serving, nil)
             case .starting: return (.loading, nil)
             case .stopped(let why): return (.notServing, ClusterOnboardingNotServing.words(reason: why, mac: "one of the Macs"))
             }

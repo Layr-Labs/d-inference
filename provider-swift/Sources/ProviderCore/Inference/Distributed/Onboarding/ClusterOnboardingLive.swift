@@ -2182,9 +2182,9 @@ final class OnboardingLive: @unchecked Sendable {
             if look.serving { return .success([look.test ?? ""]) }
             if let reason = look.reason {
                 last = reason
-                // A login missing, or a model the coordinator's catalog does not list, holds until a person acts.
+                // A login missing, a model the coordinator's catalog does not list, or an owner-only pair holds until a person acts.
                 let settle = ClusterOnboardingNotServing.isMissingLogin(reason) || ClusterLocalServing.pairRefusal(notice: reason) != nil
-                    ? 0 : Self.pairReasonSettleSeconds
+                    || ClusterPublicServingCheck.ownerOnly(notice: reason) != nil ? 0 : Self.pairReasonSettleSeconds
                 if Date().timeIntervalSince(started) >= settle { return .failure(.init(reason)) }
             }
             if look.progress != said { progress(look.progress); said = look.progress }
@@ -2202,7 +2202,13 @@ final class OnboardingLive: @unchecked Sendable {
         let peer = try? JSONDecoder().decode(ClusterServiceStatus.self, from: command(.init(op: .status), seconds: 10))
         let localRankZero = context.savedConfiguration().configuration?.localRank == 0
         let rankZero = (localRankZero ? own : peer)?.child.pair.flatMap(ClusterOnboardingPairReport.state)
-        if case .serving(let test)? = rankZero { return (true, test, "serving", nil) }
+        if case .serving(let test)? = rankZero {
+            // Paired and answering, but the coordinator sends this pair no public request: not ✓.
+            for child in [own?.child, peer?.child] {
+                if let reason = ClusterPublicServingCheck.ownerOnly(notice: child?.notice) { return (false, nil, "serving", reason) }
+            }
+            return (true, test, "serving", nil)
+        }
         // The wait, then one row per Mac (`ClusterOnboardingLoadRows`): registered, then loading once the coordinator
         // committed the start (rank 0's part says so for both).
         func row(_ mac: String, _ child: ClusterServiceStatus.Child?) -> String {

@@ -184,6 +184,14 @@ struct ClusterPairHabitCommandsTests {
         #expect(ClusterPairSummary.ownState(started: true, own: refused) == (.notServing, refusal))
         refused.child.notice = ClusterLocalServing.offeredNotice
         #expect(ClusterPairSummary.ownState(started: true, own: refused) == (.loading, nil))
+        // Paired and serving, but under an approval the coordinator serves the owner only from: not ✓ (DevNet Gemma
+        // pair, 2026-11-05, 429 `cluster_not_public … (unqualified)`).
+        let ownerOnly = "Not serving publicly: the coordinator paired both Macs but doesn't send public requests to this pair "
+            + "(it runs under the model approval devnet/gemma-4-26b-qat-4bit/s1, which serves only this account's own requests)"
+        var served = own
+        served.child.pair = "serving (first request in 0.84 s)"
+        served.child.notice = ownerOnly
+        #expect(ClusterPairSummary.ownState(started: true, own: served) == (.notServing, ownerOnly))
         own.control = .init(leaderID: "a", leaderName: "Apple M3 Ultra, 256 GB", term: 1, reason: "", leads: true,
                             line: "The other Mac (Apple M5 Max, 128 GB) is gone; …", mode: "waiting")
         #expect(ClusterPairSummary.ownState(started: true, own: own) == (.otherMacAway, "The other Mac (Apple M5 Max, 128 GB) is gone; …"))

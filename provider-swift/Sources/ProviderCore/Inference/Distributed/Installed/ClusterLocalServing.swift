@@ -61,7 +61,7 @@ public enum ClusterLocalServing {
 
     /// Whether a part's notice says it registered offered for pairing (refused by the catalog or not).
     public static func registeredOffered(notice: String?) -> Bool {
-        notice == offeredNotice || pairRefusal(notice: notice) != nil
+        notice == offeredNotice || pairRefusal(notice: notice) != nil || ClusterPublicServingCheck.ownerOnly(notice: notice) != nil
     }
 
     /// The leader part's start option that skips the coordinator entirely (`darkbloom start --distributed`).
@@ -83,7 +83,9 @@ public enum ClusterLocalServing {
         case logLine: return notice
         case localOnlyLogLine: return localOnlyNotice
         case offeredLogLine: return offeredNotice
-        case let line: return pairRefusal(notice: String(line.dropFirst(logPrefix.count)))
+        case let line:
+            let text = String(line.dropFirst(logPrefix.count))
+            return pairRefusal(notice: text) ?? ClusterPublicServingCheck.ownerOnly(notice: text)
         }
     }
 

@@ -146,6 +146,12 @@ follows the start from the cluster's status the two Macs exchange over the cable
    registers, and both screens and `darkbloom cluster status` end with "✗ Not
    serving: The coordinator does not pair Macs for <model>: its model catalog
    does not list it" (`ClusterLocalServing.catalogRefusal`) instead of waiting.
+   A pair Darkbloom pairs under an approval that serves only this account's own
+   requests (a model approval such as `devnet/<model>/s1`, a pair approval saved
+   by hand, a model a release doesn't approve for public pairs, or a mode it
+   doesn't approve) ends with "✗ Not serving publicly: the coordinator paired
+   both Macs but doesn't send public requests to this pair (<why>)." and what to
+   do, never ✓ (`ClusterPublicServingCheck`).
    Every start the leader's screen makes publishes its test's outcome,
    and this Mac ends with it, without a test of its own: a pass with the leader's
    response time ("Test response in 0.61 s (the leading Mac's test)"), a failure

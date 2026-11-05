@@ -5003,6 +5003,22 @@ this build served in tensor parallel)." A plan that chooses tensor parallel on
 measured steps adds ", on its own step as measured on both Macs". The setup's
 model list says `tensor parallel: not measured yet`.
 
+**A pipeline's step on an estimated whole model.** A pipeline decodes one whole
+step across its Macs, each Mac its layers at its whole-model rate. Where that
+rate is an estimate (`ClusterDeviceSpeed.wholeModelEstimated`: the device
+index's, which is the weights' read time with no per-token floor, or the one a
+tensor-parallel served record carries beside its measured shard rates) and a
+share of this model was measured on the Mac, the planner takes the whole step as
+at least that share's measured step plus the rest of the divided weights at the
+index's rate (`wholeStepSeconds`): a larger share never steps faster. A
+whole-model measurement is used as it is. On two M5 Ultras 256 GB the index put
+Gemma 4 26B's whole step at 5.5 ms beside a measured half step of about 7 ms, so
+the pipeline was predicted at about 170-183 tok/s against 107 in tensor parallel,
+and the question recommended it; 59.9 and 105.1 tok/s were served. With the
+measured half step the pipeline is predicted at about 95-100 tok/s, below tensor
+parallel. The remaining gap to 60 is the pipeline's per-step cost between the
+Macs, which the plan still prices as two small link records [INFERENCE].
+
 The rule changes nothing else:
 
 1. A tensor-parallel placement in a better hardware group (it loads now, no
@@ -5153,7 +5169,12 @@ tensor parallel's executor contract and one lane:
   artifact file is hashed against the registered manifest, and then only this
   rank's byte runs are read (`MiMoTensorParallelVerifiedLoad`: the plan disposes
   of each indexed name; the runs equal the SDK shard's `byteRuns`; any difference
-  refuses). Both ranks compare what they loaded before either is ready.
+  refuses). Runs less than a page apart are read together, up to one 8 MiB
+  scratch read, and copied out exactly (`CheckpointAlignedReader.read(…stride:count:)`):
+  the expert `down_proj`, divided on its inner axis, is about a million runs of
+  512 or 32 bytes per tensor, which one uncached read each took over an hour per
+  rank to load, past the pair's startup deadline. Both ranks compare what they
+  loaded before either is ready.
 - Requests (`MiMoTensorParallelDecoding`). Request-owned 64-token paged
   histories at the rank's geometry (full layers: 2 KV heads at widths 192/128;
   sliding layers: window 128 and the rank's 32 sink biases). Decode runs under

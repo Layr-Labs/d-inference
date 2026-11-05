@@ -3,8 +3,9 @@
 # (stage metadata, manifest schema, verified checkpoint, aligned reader) with
 # Swift 6 and warnings as errors, then runs real-file checks: manifest
 # agreement/refusal, descriptor pinning, tamper detection, aligned reads,
-# EINTR retry, short-read refusal, and the weight files' cached pages dropped
-# before uncached payload reads. No model, no GPU, no MLX, no network.
+# EINTR retry, short-read refusal, the weight files' cached pages dropped
+# before uncached payload reads, and runs that share pages read together.
+# No model, no GPU, no MLX, no network.
 set -euo pipefail
 task_root="$(cd "$(dirname "$0")/../.." && pwd)"
 task_build="$(mktemp -d "${TMPDIR:-/tmp}/cluster-checkpoint.XXXXXX")"
@@ -52,5 +53,6 @@ xcrun swiftc -swift-version 6 -warnings-as-errors -parse-as-library -target "$ta
   -I "$task_build" -L "$task_build" -lDarkbloomClusterRuntimeChecks -lDarkbloomClusterProtocol \
   -Xlinker -rpath -Xlinker "$task_build" \
   "$task_root/Tests/CheckpointChecks/main.swift" \
-  "$task_root/Tests/DarkbloomClusterRuntimeTests/CheckpointPayloadCacheCheck.swift" -o "$task_build/check"
+  "$task_root/Tests/DarkbloomClusterRuntimeTests/CheckpointPayloadCacheCheck.swift" \
+  "$task_root/Tests/DarkbloomClusterRuntimeTests/CheckpointStridedReadCheck.swift" -o "$task_build/check"
 "$task_build/check"

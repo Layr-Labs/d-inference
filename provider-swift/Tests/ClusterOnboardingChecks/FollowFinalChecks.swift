@@ -53,7 +53,7 @@ extension OnboardingChecks {
     /// with what it publishes of its start (`start`, by look; nil: an older leader). The joining Mac's own wait for the
     /// pair (`pairServing`) says what f2's said: it must never decide.
     static func followingTheUltra(_ recorder: Recorder, status: [[String]], start: [ClusterOnboardingStartProgress?] = [],
-                                  followSeconds: Double = 900) -> ClusterOnboardingOperations {
+                                  followSeconds: Double = 900, step: ClusterOnboardingLeaderStep? = .init(.starting)) -> ClusterOnboardingOperations {
         var made = operations(recorder, pairEvents: memberEvents, pairResult: .paired(role: .member, peerName: ultraName),
                               pairServingResults: [.failure(.init([appleReason + ".", "Then choose Retry, or serve locally only now."]))],
                               followSeconds: followSeconds)
@@ -61,7 +61,7 @@ extension OnboardingChecks {
         made.leaderStatus = {
             looks.note("look")
             let seen = looks.all.count
-            return .init(lines: status[min(seen, status.count) - 1], step: .init(.starting),
+            return .init(lines: status[min(seen, status.count) - 1], step: step,
                          start: start.isEmpty ? nil : start[min(seen, start.count) - 1])
         }
         return made

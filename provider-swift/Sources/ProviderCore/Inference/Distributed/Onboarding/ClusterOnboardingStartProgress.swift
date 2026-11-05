@@ -106,11 +106,12 @@ public struct ClusterOnboardingStartProgress: Codable, Sendable, Equatable {
     static let leaderToken = (upper: "\u{1}L", lower: "\u{1}l")
 
     /// The leading Mac's words with each Mac as a token: "the other Mac" with or without its name is the Mac that
-    /// joined, "this Mac" with or without its name the leading Mac.
+    /// joined, "this Mac" with or without its name the leading Mac. A name starts with a capital ("(Apple M3 Ultra, …)",
+    /// "(Studio A)"); other words in parentheses after it stay ("on this Mac (no Darkbloom traffic)", R7-1).
     static func byPart(_ text: String) -> String {
         var text = text
-        for (pattern, upper, lower) in [(#"([Tt])he other Mac( \([^)]*\))?"#, joinedToken.upper, joinedToken.lower),
-                                        (#"([Tt])his Mac( \([^)]*\))?"#, leaderToken.upper, leaderToken.lower)] {
+        for (pattern, upper, lower) in [(#"([Tt])he other Mac( \([A-Z][^)]*\))?"#, joinedToken.upper, joinedToken.lower),
+                                        (#"([Tt])his Mac( \([A-Z][^)]*\))?"#, leaderToken.upper, leaderToken.lower)] {
             guard let expression = try? NSRegularExpression(pattern: pattern) else { continue }
             for match in expression.matches(in: text, range: NSRange(text.startIndex..., in: text)).reversed() {
                 guard let range = Range(match.range, in: text), let first = Range(match.range(at: 1), in: text) else { continue }

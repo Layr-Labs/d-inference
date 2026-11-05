@@ -63,7 +63,8 @@ public struct ClusterPairRequestTelemetry: Codable, Sendable, Equatable {
     /// builds were recorded: such a record counts as another build's.
     public let rankBuildSHA256: [String]?
     /// Whether the request came through Darkbloom or the leader's local API. Nil in a record written before it was
-    /// recorded: a plan then uses the record for neither way (`ClusterServedSpeedRecords.Setup.servedAs`).
+    /// recorded: `ClusterServedSpeedRecords.Setup.servedAs` reads it as served either way, and `servedBy` already
+    /// leaves it out of every plan of a build that records it (its worker build is an earlier one).
     public let serving: ClusterServedScope?
     /// Whether the setup decoded with Qwen's resident tensor assistant, the one speculative decoder that neither the
     /// generation mode nor the model fixes (`ClusterQwenTensorAssistantPolicy`). Nil in an older record.

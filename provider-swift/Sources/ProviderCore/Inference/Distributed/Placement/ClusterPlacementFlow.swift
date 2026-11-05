@@ -349,7 +349,8 @@ public enum ClusterPlacementFlow {
                 + "Those exact shapes are not planned; every other placement is, on any Macs.")
         }
         // Public traffic in one line (owner serving never waits for it): the coordinator's parity qualification decides,
-        // and a setup that decodes with Qwen's speculative assistant is never offered to it.
+        // and a setup that decodes with Qwen's speculative assistant is offered to it only where this build declares
+        // that assistant public (`ClusterPublicModels.tensorAssistant`).
         let assistant = (batchScope?.tensorParallelQuote ?? tensorAssistantQuote)?.assistant
         let publicLine = ClusterPairServingGrants.publicTrafficLine(runtimeModelID: capability.runtimeModelID,
             artifactSHA256: capability.artifactSHA256, mode: result.chosen?.mode,

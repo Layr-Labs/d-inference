@@ -8,7 +8,7 @@ import DarkbloomClusterSecurity
 /// Qwen3.8 27B's resident assistant on a coordinator-formed pair, once a build declares it public
 /// (`ClusterPublicModels.tensorAssistant`): the declaration, the setup's own checks beside a cluster approval, the
 /// resource policy that release facts, the approval and each committed start carry, and the guided setup's planning
-/// under `auto`. This build declares no assistant; each test declares one for the fixture's artifact
+/// under `auto`. This build declares Qwen3.8-27B's; each test declares one for the fixture's artifact
 /// (`ClusterPublicModels.declarationOverride`), never a product path.
 @Suite("Public Qwen tensor assistant", .serialized)
 struct ClusterPublicTensorAssistantTests {
@@ -97,7 +97,7 @@ struct ClusterPublicTensorAssistantTests {
     }
 
     /// The lookup a setup's checks, its planning and every resource policy use: the declared model's artifact, in
-    /// tensor parallel, else nothing. This build declares none.
+    /// tensor parallel, else nothing. This build declares only Qwen3.8-27B's.
     @Test func theDeclaredAssistantBelongsToItsArtifactAndTensorParallel() throws {
         let declared = try Self.declaration(try Self.policy())
         let model = ClusterQwenTensorAssistantPolicy.runtimeModelID

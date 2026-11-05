@@ -3,11 +3,11 @@ import MLXLMCommon
 import Testing
 @testable import ProviderCore
 
-/// A pair's reservation waits on the engine queue until both ranks answer at
-/// their next step boundary, up to the lane admission wait (30 s). A capacity
-/// read and a cancel never wait behind it; the cancel takes effect, in queue
-/// order, once the reservation returns, including the cancel of the request
-/// whose reservation it is. Fabricated owners only: no model, GPU or peer.
+/// A pair's reservation waits until both ranks answer at their next step
+/// boundary, up to the lane admission wait (30 s). A capacity read and a cancel
+/// never wait behind it; a cancel of another request takes effect at once, and
+/// the cancel of the request whose reservation it is once that returns.
+/// Fabricated owners only: no model, GPU or peer.
 @Suite(.timeLimit(.minutes(1)))
 struct DistributedCBv2StalledReservationTests {
     /// Holds the owner's reservations, as ranks in the middle of a prefill step.
@@ -92,11 +92,13 @@ struct DistributedCBv2StalledReservationTests {
         await finish(owner, engine, [first, try #require(second.value)])
     }
 
-    @Test func aCancelReturnsAtOnceAndLandsWhenTheReservationReturns() async throws {
+    @Test func aCancelReturnsAndLandsAtOnceWhileAnotherRequestReserves() async throws {
         let (owner, engine, step, first, second) = try await stalledPair()
         // A lane still in its prompt: P2-9's lane cancel, not a clean stop.
         #expect(await returnsPromptly { engine.cancel(.init(1)) }, "the cancel waited for the ranks' step")
-        #expect(owner.lease(0).cancelCount == 0, "nothing is applied while the queue is held")
+        // The reservation waits off the engine queue, so the cancel needs no turn behind it.
+        await until { owner.lease(0).cancelCount == 1 }
+        #expect(owner.lease(0).cancelCount == 1, "the cancel waited for another request's reservation")
         step.finish()
         await until { second.value != nil }
         engine.onQueue {}

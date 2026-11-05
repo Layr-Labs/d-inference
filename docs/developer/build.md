@@ -495,11 +495,12 @@ every macOS job but Cluster GPU Tests reads its lane of the plan's one route
 request (the plane routes a run attempt once); the plan's own bookkeeping (the
 tree lookup, the component choice) and the `Provider Tests` gate run on
 `ubuntu-24.04`. Cluster GPU Tests run on `blacksmith-12vcpu-macos-27` and are
-not routed ([Job sizes](#job-sizes)). A lane without a size gets the machine
-shape of its profile from the repository's approval: one macOS shape and one
-Linux shape. The macOS shape is small (4 vCPU, 16 GiB). The build jobs and
-Cluster Release Build Checks ran on Blacksmith before sizes, so they ask only
-with their size ([Job sizes](#job-sizes)).
+not routed ([Job sizes](#job-sizes)). A lane without a size gets the
+approval's pinned image size for its profile (one for macOS, one for Linux).
+The macOS one measured 12 vCPU / 32 GiB on 2026-11-05 (run 42105290034,
+attempt 1); it is not a fixed default. The build jobs and Cluster Release
+Build Checks ran on Blacksmith before sizes, so they ask only with their size
+([Job sizes](#job-sizes)).
 
 Jobs on Darkbloom Sandboxes use GitHub's Actions cache, not Blacksmith's
 colocated cache, so their first runs start without cached build products.
@@ -546,7 +547,7 @@ and memory pressure stayed normal.
 | `test-provider-1` | 1 | 4x16 | 11.03 | asks without a size |
 | `build-cluster` | 1 | 8x16 | 10.91; a cold build takes 5 to 10% longer on 8 vCPUs | Blacksmith, not asked |
 | `build-provider` | 1 | 12x32 | 17.50; 8x24 is not signed, and a cold build takes 20% longer on 8 vCPUs | Blacksmith, not asked |
-| `cluster-release-checks` | 1 | 4x16 | 9.65 | Blacksmith, not asked |
+| `cluster-release-checks` | 1 | 8x16 | 9.65 with a reused build; a cold release compile (run 42041608780: 11.33 GiB, 11.4 busy vCPUs at p95 of 12) takes 26% longer on 4 vCPUs and 5.5% on 8 | Blacksmith, not asked |
 
 A run that tests every component asks for 10 macOS jobs while sizes are on,
 and 7 while they are off. The two Cluster GPU Tests shards are not routed:

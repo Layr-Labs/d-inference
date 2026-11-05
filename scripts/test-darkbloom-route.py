@@ -105,7 +105,7 @@ PLAN_LANES = {
     "test-provider-1": (requested("provider"), "4x16", False),
     "build-cluster": (built("cluster"), "8x16", True),
     "build-provider": (built("provider"), "12x32", True),
-    "cluster-release-checks": (requested("cluster"), "4x16", True),
+    "cluster-release-checks": (requested("cluster"), "8x16", True),
 }
 # The request CI sent before sizes, with every lane's jobs running: the request
 # must stay byte for byte this one while sizes are off.

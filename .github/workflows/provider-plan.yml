@@ -153,10 +153,11 @@ jobs:
   # scripts/ci-resource-sampler.py) times 1.25 and makes the job at most 5%
   # slower than on 12 vCPUs, except: Cluster runtime shard 2 uses 29.3 GiB
   # (the Metal memory of the GLM-5.3 paged KV tests), so 12x32 holds it with
-  # less margin; Build cluster test products builds cold 5 to 10% slower on
-  # 8 vCPUs; Build provider test products uses 17.5 GiB, but 8x24 is not
-  # signed and it builds cold 20% slower on 8 vCPUs, so it asks for 12x32. The
-  # 7 blocking test jobs ask without a size while sizes are off, as before.
+  # less margin; Build cluster test products and Cluster Release Build
+  # Checks (12 parallel compile jobs) build cold 5 to 10% slower on 8 vCPUs;
+  # Build provider test products uses 17.5 GiB, but 8x24 is not signed and it
+  # builds cold 20% slower on 8 vCPUs, so it asks for 12x32. The 7 blocking
+  # test jobs ask without a size while sizes are off, as before.
   # The build jobs and Cluster Release Build Checks are `required`: while
   # sizes are off they keep Blacksmith without asking. The lanes are in the
   # order the DARKBLOOM_MACOS_LANES cap keeps them: the critical-path test
@@ -177,4 +178,4 @@ jobs:
         test-provider-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 4x16
         build-cluster macos_arm64 blacksmith-12vcpu-macos-27 ${{ (needs.components.outputs.cluster == 'true' || (github.event_name == 'push' && needs.tested.outputs.skip == 'true' && needs.components.outputs.changed_cluster == 'true')) && 1 || 0 }} 8x16 required
         build-provider macos_arm64 blacksmith-12vcpu-macos-27 ${{ (needs.components.outputs.provider == 'true' || (github.event_name == 'push' && needs.tested.outputs.skip == 'true' && needs.components.outputs.changed_provider == 'true')) && 1 || 0 }} 12x32 required
-        cluster-release-checks macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 4x16 required
+        cluster-release-checks macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 8x16 required

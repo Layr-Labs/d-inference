@@ -89,7 +89,8 @@ final class QwenStageTokenSampler {
     }
 
     /// The last `sample`'s logprobs as graph nodes, once: a caller that draws
-    /// the next step before it reads this one (`TensorParallelOneTokenLoop`)
+    /// the next step before it reads this one (`TensorParallelOneTokenLoop`,
+    /// Qwen's build-ahead decode)
     /// keeps each step's gather with its step and reads it with
     /// `tokenLogprobs` after the step's token was agreed. Nil when the
     /// request asks for none.

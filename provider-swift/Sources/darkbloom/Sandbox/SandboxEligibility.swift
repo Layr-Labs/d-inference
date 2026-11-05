@@ -244,7 +244,22 @@ extension SandboxSizingPlan {
             .init(level: level("disk"), name: "Disk",
                   detail: "\(gibDown(freeBytes)) GiB free; \(gibDown(floorBytes)) GiB stays free for you; "
                       + disk("Linux", linux) + "; " + disk("macOS", macOS)),
-        ]
+        ] + diskChecks
+    }
+
+    /// One line per disk when the plan uses a work disk (an external drive,
+    /// or more than one disk): its room and the jobs placed on it.
+    private var diskChecks: [SandboxEligibility.Check] {
+        guard disks.count > 1 || disks.contains(where: { !$0.rootVolume }) else { return [] }
+        return disks.map { disk in
+            let jobs = [("Linux", disk.linuxSlots), ("macOS", disk.macOSSlots)].compactMap { name, count -> String? in
+                count > 0 ? Self.jobCount(count, name) : nil
+            }
+            return .init(level: .info, name: "Work disk",
+                         detail: "\(disk.path)\(disk.rootVolume ? " (internal)" : ""): "
+                             + "\(gibDown(disk.freeBytes)) GiB free; \(gibDown(disk.floorBytes)) GiB stays free; "
+                             + (jobs.isEmpty ? "no jobs" : jobs.joined(separator: ", ")))
+        }
     }
 
     /// The verdict, then what this Mac can run at a time or what it lacks.
@@ -294,10 +309,14 @@ extension SandboxSizingPlan {
     }
 
     private static func slotLine(_ name: String, _ platform: Platform) -> String {
-        let jobs = platform.slots == 0 ? "no \(name) jobs"
-            : "\(platform.slots) \(name) job" + (platform.slots == 1 ? "" : "s")
+        let jobs = platform.slots == 0 ? "no \(name) jobs" : jobCount(platform.slots, name)
         guard platform.automatic else { return "\(jobs) (your choice)" }
         return platform.limit.map { "\(jobs) (limited by \($0))" } ?? jobs
+    }
+
+    /// `1 Linux job`, `2 macOS jobs`.
+    private static func jobCount(_ count: Int, _ name: String) -> String {
+        "\(count) \(name) job" + (count == 1 ? "" : "s")
     }
 }
 

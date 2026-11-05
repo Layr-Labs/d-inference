@@ -12,6 +12,33 @@ extension OnboardingChecks {
         anOlderLeaderEndsInAnHonestCross()
         theLeadersFinalCrossIsTheJoiningMacsCross()
         theLeaderPublishesItsFinalCrossForTheJoiningMac()
+        anEarlierStartsCrossIsNeverThisStartsOutcome()
+    }
+
+    /// The leading Mac's ✗ counts for 30 minutes after its screen ends, and a pairing keeps its record: until the leading
+    /// Mac's new screen publishes its first step, its status still carries the earlier start's ✗. The joining Mac takes a
+    /// ✗ as this start's outcome only once it saw that screen publish a step.
+    static func anEarlierStartsCrossIsNeverThisStartsOutcome() {
+        typealias P = ClusterOnboardingStartProgress
+        let stale = P.failed(title: ClusterOnboardingNotServing.title(reason: "The other Mac isn't verified by Apple yet"), lines: [], retry: true)
+        let recorder = Recorder()
+        var made = followingTheUltra(recorder, status: [])
+        let looks = Recorder()
+        made.leaderStatus = {
+            looks.note("look")
+            switch looks.all.count {
+            case ...3: return .init(lines: ["Stopped."], step: nil, start: stale)
+            case 4: return .init(lines: ["Stopped."], step: .init(.reading), start: nil)
+            case 5: return .init(lines: ["Starting Qwen 3.8 27B."], step: .init(.starting), start: nil)
+            default: return .init(lines: pairServedStatus, step: .init(.starting), start: nil)
+            }
+        }
+        let run = TerminalRun(made, environment: ["NO_COLOR": "1"])
+        defer { run.release() }
+        expect(run.waitFor(codeQuestion), "earlier ✗: the code"); run.type("y")
+        expect(run.finish(seconds: 30) == 0, "earlier ✗: ends with this start's ✓, exit 0: \(run.text)")
+        let text = run.text
+        expect(!text.contains("\u{2717}") && !text.contains("Choose Retry"), "earlier ✗: never shown as this start's outcome: \(text)")
     }
 
     static let ultraName = "Apple M3 Ultra, 256 GB"

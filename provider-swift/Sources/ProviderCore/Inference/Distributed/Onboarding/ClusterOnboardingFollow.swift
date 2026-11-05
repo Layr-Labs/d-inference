@@ -181,6 +181,9 @@ extension ClusterOnboardingDriver {
         // Offered to Darkbloom and not serving yet: why, as the leading Mac's status says it. Every such reason may clear
         // by itself (Apple's verification, the coordinator's pairing), so this Mac waits for the leading Mac's outcome.
         var offeredWait: String?, saidOffered = false
+        // A ✗ the leading Mac published counts for 30 minutes and outlives a pairing; its new screen's first step clears
+        // it. Until this Mac saw a step of that screen, a ✗ is an earlier start's, never this one's outcome.
+        var screenSeen = false
         // The start's progress as the leading Mac publishes it (`ClusterOnboardingStartProgress`): its own heading, then
         // its step, a bar of the real bytes and each Mac's part as the live rows; each step done said once. Its time
         // counts from when this Mac first saw the step (the two Macs' clocks may differ).
@@ -235,7 +238,9 @@ extension ClusterOnboardingDriver {
                 asking = false
                 let status = look.lines
                 step = look.step
-                if let published = look.start, published.phase != .unknown {
+                if step != nil { screenSeen = true }
+                let current = look.start.flatMap { $0.phase == .failed && !screenSeen ? nil : $0 }
+                if let published = current, published.phase != .unknown {
                     if !startHeading {
                         startHeading = true
                         console.settle()
@@ -252,7 +257,7 @@ extension ClusterOnboardingDriver {
                 }
                 if let first = status.first { lastStatus = first.hasSuffix(".") ? String(first.dropLast()) : first }
                 // The leading Mac's start ended with ✗ on its screen: the same ✗, in its words, and where its choices are.
-                if let ended = look.start, ended.phase == .failed {
+                if let ended = current, ended.phase == .failed {
                     console.settle()
                     return followFailed(ended.viewed(leader: leader), leader: leader, console)
                 }

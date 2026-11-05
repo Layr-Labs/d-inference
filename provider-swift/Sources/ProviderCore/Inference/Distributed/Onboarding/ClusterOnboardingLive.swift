@@ -2164,7 +2164,7 @@ final class OnboardingLive: @unchecked Sendable {
     func offeredReadiness(_ offered: String, own: ClusterServiceStatus.Child?) -> (ready: ClusterOnboardingReady?, line: String) {
         let peer = (try? JSONDecoder().decode(ClusterServiceStatus.self, from: command(.init(op: .status), seconds: 10)))?.child
         func registered(_ child: ClusterServiceStatus.Child?) -> Bool {
-            child?.running == true && child?.notice == ClusterLocalServing.offeredNotice
+            child?.running == true && ClusterLocalServing.registeredOffered(notice: child?.notice)
         }
         if registered(own), registered(peer) {
             return (.init(servedBy: here, port: 0, deployment: savedDeployment(perspective: true) ?? leadership?.deployment,
@@ -2196,7 +2196,9 @@ final class OnboardingLive: @unchecked Sendable {
             if look.serving { return .success([look.test ?? ""]) }
             if let reason = look.reason {
                 last = reason
-                let settle = ClusterOnboardingNotServing.isMissingLogin(reason) ? 0 : Self.pairReasonSettleSeconds
+                // A login missing, a model the coordinator's catalog does not list, or an owner-only pair holds until a person acts.
+                let settle = ClusterOnboardingNotServing.isMissingLogin(reason) || ClusterLocalServing.pairRefusal(notice: reason) != nil
+                    || ClusterPublicServingCheck.ownerOnly(notice: reason) != nil ? 0 : Self.pairReasonSettleSeconds
                 if Date().timeIntervalSince(started) >= settle { return .failure(.init(reason)) }
             }
             if look.progress != said { progress(look.progress); said = look.progress }
@@ -2214,11 +2216,17 @@ final class OnboardingLive: @unchecked Sendable {
         let peer = try? JSONDecoder().decode(ClusterServiceStatus.self, from: command(.init(op: .status), seconds: 10))
         let localRankZero = context.savedConfiguration().configuration?.localRank == 0
         let rankZero = (localRankZero ? own : peer)?.child.pair.flatMap(ClusterOnboardingPairReport.state)
-        if case .serving(let test)? = rankZero { return (true, test, "serving", nil) }
+        if case .serving(let test)? = rankZero {
+            // Paired and answering, but the coordinator sends this pair no public request: not ✓.
+            for child in [own?.child, peer?.child] {
+                if let reason = ClusterPublicServingCheck.ownerOnly(notice: child?.notice) { return (false, nil, "serving", reason) }
+            }
+            return (true, test, "serving", nil)
+        }
         // The wait, then one row per Mac (`ClusterOnboardingLoadRows`): registered, then loading once the coordinator
         // committed the start (rank 0's part says so for both).
         func row(_ mac: String, _ child: ClusterServiceStatus.Child?) -> String {
-            let registered = child?.running == true && child?.notice == ClusterLocalServing.offeredNotice
+            let registered = child?.running == true && ClusterLocalServing.registeredOffered(notice: child?.notice)
             let state = rankZero == .starting ? "loading its share"
                 : registered ? "registered; waiting for the coordinator" : "registering with the coordinator"
             return ClusterOnboardingMacName.sentence(mac) + ": " + state
@@ -2234,6 +2242,10 @@ final class OnboardingLive: @unchecked Sendable {
         }
         if case .stopped(let why)? = rankZero {
             return (false, nil, progress, ClusterOnboardingNotServing.words(reason: why, mac: "one of the Macs"))
+        }
+        // The coordinator refuses every pair for a model its catalog does not list, and tells neither Mac.
+        for child in [own?.child, peer?.child] {
+            if let refusal = ClusterLocalServing.pairRefusal(notice: child?.notice) { return (false, nil, progress, refusal) }
         }
         return (false, nil, progress, nil)
     }

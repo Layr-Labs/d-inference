@@ -34,6 +34,29 @@ struct ClusterLocalServingTests {
         #expect(ClusterLocalServing.notice(inLog: "Error: The coordinator could not be reached\n") == nil)
     }
 
+    /// DevNet 2026-11-05 (0.10.6-dev.branch.81): a Gemma pair offered under `devnet/gemma-4-26b-qat-4bit/s1` waited
+    /// 11 minutes on "waiting for the coordinator to pair both Macs". The coordinator refused it on every pass
+    /// (`serves_model`): its model catalog had no row for the model. A part offered for a model the catalog does not
+    /// list says so, and that notice replaces the offered one as the current run's.
+    @Test func aPartOfferedForAModelTheCoordinatorsCatalogDoesNotListSaysSo() {
+        let model = "gemma-4-26b-qat-4bit"
+        #expect(ClusterLocalServing.catalogRefusal(modelID: model, catalogIDs: ["Qwen3.5-9B", "glm-5.3-flash"])
+            == "The coordinator does not pair Macs for gemma-4-26b-qat-4bit: its model catalog does not list it")
+        #expect(ClusterLocalServing.catalogRefusal(modelID: model, catalogIDs: [model, "glm-5.3-flash"]) == nil)
+        // An unread catalog is no evidence: nothing is said.
+        #expect(ClusterLocalServing.catalogRefusal(modelID: model, catalogIDs: []) == nil)
+        let refusal = ClusterLocalServing.catalogRefusal(modelID: model, catalogIDs: ["glm-5.3-flash"])!
+        let log = "\(ClusterLocalServing.offeredLogLine)\n\(ClusterLocalServing.logPrefix)\(refusal)\n"
+        #expect(ClusterLocalServing.notice(inLog: log) == refusal)
+        #expect(ClusterLocalServing.pairRefusal(notice: refusal) == refusal)
+        #expect(ClusterLocalServing.pairRefusal(notice: ClusterLocalServing.offeredNotice) == nil)
+        #expect(ClusterLocalServing.pairRefusal(notice: nil) == nil)
+        // A later run that registered without the refusal reads as offered again.
+        #expect(ClusterLocalServing.notice(inLog: log + ClusterLocalServing.offeredLogLine + "\n") == ClusterLocalServing.offeredNotice)
+        // Only the part's own wording is taken from its log.
+        #expect(ClusterLocalServing.notice(inLog: "\(ClusterLocalServing.logPrefix)The coordinator does not pair Macs for \u{1B}[2J: x\n") == nil)
+    }
+
     @Test func theReadyScreenAddsTheNoticeAfterTheAPILine() {
         let ready = ClusterOnboardingReady(servedBy: "this Mac", port: 8000, deployment: "Serving M across both Macs: pipeline",
                                            notice: ClusterLocalServing.notice)

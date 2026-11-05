@@ -122,6 +122,7 @@ class CacheIdentityTests(unittest.TestCase):
             with self.subTest(lane=lane):
                 before = self.keys(lane)
                 self.assertTrue(before["swift-prefix"].startswith(before["swift-loose-prefix"]))
+                self.assertTrue(before["swift-loose-prefix"].startswith(before["swift-mlx-prefix"]))
                 self.assertTrue(before["swift-loose-prefix"].startswith(
                     f"provider-ci-swift-{cache.SWIFT_CACHE_VERSION}-{cache.LANE_PURPOSES[lane]}-"))
                 # A recipe edit keeps the loose tier and changes the strict one.
@@ -139,14 +140,19 @@ class CacheIdentityTests(unittest.TestCase):
                 original = manifest.read_text()
                 manifest.write_text(original + "changed\n")
                 with patch.object(cache.tracked, "inventory", return_value=sources):
-                    self.assertNotEqual(before["swift-loose-prefix"], self.keys(lane)["swift-loose-prefix"])
+                    after = self.keys(lane)
+                self.assertNotEqual(before["swift-loose-prefix"], after["swift-loose-prefix"])
+                # ... but keeps the MLX tier, whose objects do not depend on it.
+                self.assertEqual(before["swift-mlx-prefix"], after["swift-mlx-prefix"])
                 manifest.write_text(original)
                 metadata = deepcopy(self.metadata)
                 metadata["swift"]["version"] += "changed"
                 self.assertNotEqual(before["swift-loose-prefix"], self.keys(lane, metadata=metadata)["swift-loose-prefix"])
+                self.assertNotEqual(before["swift-mlx-prefix"], self.keys(lane, metadata=metadata)["swift-mlx-prefix"])
         other = self.temporary / "loose other checkout"
         shutil.copytree(self.root, other)
         self.assertNotEqual(self.keys()["swift-loose-prefix"], self.keys(root=other)["swift-loose-prefix"])
+        self.assertNotEqual(self.keys()["swift-mlx-prefix"], self.keys(root=other)["swift-mlx-prefix"])
         # The metallib key keeps its own version.
         self.assertTrue(self.keys()["metallib-key"].startswith(f"provider-ci-metallib-{cache.CACHE_VERSION}-"))
 
@@ -295,6 +301,8 @@ class CacheIdentityTests(unittest.TestCase):
             commit(self.root)
             after = self.keys()
             self.assertNotEqual(before["swift-prefix"], after["swift-prefix"])
+            # An MLX pin, top level or nested, also splits the MLX tier.
+            self.assertNotEqual(before["swift-mlx-prefix"], after["swift-mlx-prefix"])
             if relative == cache.MLX_SOURCE:
                 self.assertNotEqual(before["metallib-key"], after["metallib-key"])
                 self.assertEqual(after["mlx-sha"], git(module, "rev-parse", "HEAD"))

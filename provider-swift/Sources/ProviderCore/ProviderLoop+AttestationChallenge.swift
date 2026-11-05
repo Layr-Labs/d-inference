@@ -14,11 +14,15 @@ import MLXVLM
 extension ProviderLoop {
     // MARK: - Attestation Challenge
 
+    /// Synchronous on this actor, so the connection reader answers a challenge
+    /// as it reads it (`ProviderLoop+Serve.swift`): the coordinator allows 30 s,
+    /// and work queued ahead of it may wait on a pair's rank reservation that
+    /// long.
     internal func handleAttestationChallenge(
         nonce: String,
         timestamp: String,
         send: SendHandle
-    ) async {
+    ) {
         logger.info(.attestationChallengeReceived)
 
         guard let builder = attestationBuilder else {

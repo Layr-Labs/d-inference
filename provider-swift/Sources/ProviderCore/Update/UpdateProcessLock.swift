@@ -46,10 +46,8 @@ public final class UpdateProcessLock: @unchecked Sendable {
         public var description: String {
             switch self {
             case .busy(let owner):
-                if let owner {
-                    return "another update operation owns the lock (pid \(owner.pid), \(owner.operation))"
-                }
-                return "another update operation owns the lock"
+                guard let owner else { return "another Darkbloom process holds this Mac's lock" }
+                return UpdateProcessLock.busyDescription(owner)
             case .openFailed(let reason):
                 return "could not open update lock: \(reason)"
             case .lockFailed(let reason):
@@ -57,6 +55,31 @@ public final class UpdateProcessLock: @unchecked Sendable {
             }
         }
     }
+
+    /// The lock's owner in words, by what it is: a single-Mac provider serving (its `provider-instance` lock, with what
+    /// stops it), this Mac's part of a pair, an update, a rollback, a stop or restart; never "an update" for a provider
+    /// that serves (0.10.8: a pair's start said "another update operation owns the lock (pid 9523, provider-instance)"
+    /// for the single-Mac provider that blocked it). `kind` tells a provider's kind from its process.
+    static func busyDescription(_ owner: Owner, cli: String = BuildEnvironment.current.cliName,
+                                kind: (Int32) -> ProviderInstanceHolder.Kind = UpdateProcessLock.liveKind) -> String {
+        let operation = owner.operation, process = "process \(owner.pid)"
+        if operation == ProviderInstanceHolder.operation {
+            let holder = ProviderInstanceHolder.Holder(pid: owner.pid, kind: kind(owner.pid))
+            let clause = ProviderInstanceHolder.clause(holder)
+            return holder.kind == .singleMac ? clause + "; `\(cli) stop --solo` stops it" : clause
+        }
+        let lower = operation.lowercased()
+        if lower.contains("rollback") { return "a rollback (\(process)) is in progress on this Mac" }
+        if ["provider-lifecycle", "provider_drain", "desktop-local-stop", "provider-model-switch"].contains(operation) {
+            return "a stop or restart of the provider (\(process)) is in progress on this Mac"
+        }
+        if ["update", "install", "candidate", "startup", "watchdog"].contains(where: { lower.contains($0) }) {
+            return "an update (\(process), \(operation)) is in progress on this Mac"
+        }
+        return "another Darkbloom operation (\(process), \(operation)) holds this Mac's lock"
+    }
+
+    static func liveKind(_ pid: Int32) -> ProviderInstanceHolder.Kind { ProviderInstanceHolder.kind(of: pid) }
 
     private let descriptor: Int32
     public let path: URL

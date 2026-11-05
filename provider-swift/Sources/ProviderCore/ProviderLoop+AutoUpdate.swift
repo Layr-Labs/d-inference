@@ -85,7 +85,8 @@ extension ProviderLoop {
         coordinatorURL: String,
         updater injectedUpdater: SelfUpdater? = nil,
         launchSnapshot: @escaping @Sendable () -> ProviderLaunchSnapshot? = { LaunchAgent.launchSnapshot() },
-        restart: @escaping @Sendable () throws -> Void = { try ProcessLifecycle.restartAfterUpdate() }
+        restart: @escaping @Sendable () throws -> Void = { try ProcessLifecycle.restartAfterUpdate() },
+        pairFollows: @escaping @Sendable () -> Bool = { ProviderLoop.askPairToFollowSingleMacUpdate() }
     ) async -> AutoUpdateController.Outcome {
         let updater = injectedUpdater ?? SelfUpdater(coordinatorBaseURL: coordinatorURL)
         let me = self
@@ -134,7 +135,11 @@ extension ProviderLoop {
                 return await me.prepareInstalledCandidateRestart(
                     updater: updater, baseline: launchSnapshot)
             },
-            restart: { try await me.restartAfterAutoUpdate(restart) },
+            restart: {
+                // On a Mac whose pair runs here, the pair follows this install instead of staying split.
+                if pairFollows() { logger.info("Auto-update: this Mac's pair runs here; asked its cluster service to restart into the release with the other Mac") }
+                try await me.restartAfterAutoUpdate(restart)
+            },
             restartDidFail: {
                 try? updater.cancelPendingCandidateAttempt(
                     operation: "background-restart-failure")
@@ -167,6 +172,13 @@ extension ProviderLoop {
             logger.warning("Auto-update: restart failed: \(reason)")
         }
         return outcome
+    }
+
+    /// `ClusterPairUpdate.askPairToFollow` with this Mac's actual pair state and its cluster service's request path.
+    static func askPairToFollowSingleMacUpdate() -> Bool {
+        guard let directory = try? ClusterService.paths().lock.deletingLastPathComponent() else { return false }
+        return ClusterPairUpdate.askPairToFollow(pairServes: ClusterService.pairServesHere(),
+            requestPath: ClusterServiceAgent.updateRequestPath(serviceDirectory: directory), now: Date().timeIntervalSince1970)
     }
 
     // MARK: - Auto-Update Phase Transitions

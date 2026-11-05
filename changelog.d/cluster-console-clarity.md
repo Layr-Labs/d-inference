@@ -26,8 +26,8 @@
   response time, or the same ✗ and reason ("Choose Retry on the other Mac" after ✗). Both windows tell the same story,
   serving locally only or through Darkbloom, also when the leading Mac's test request fails or when it checks with
   Darkbloom before it offers the pair (until then, neither Mac's status shows ✓). q leaves and the pair keeps going.
-- Once the pair is registered, the screen says "Offered to Darkbloom as a pair for <model>; waiting for Darkbloom to
-  accept this pair…" instead of "Registered with the coordinator as a cluster member" and the approval's ID, which read
+- Once the pair is registered, the screen says `Offered to Darkbloom as a pair for <model>; waiting for Darkbloom to
+  accept this pair…` instead of "Registered with the coordinator as a cluster member" and the approval's ID, which read
   as if Darkbloom had already accepted the pair.
 - When the other Mac isn't found within about 25 s at "2/4 Pair", the screen says what to check (the other Mac on this
   screen, macOS's firewall, or pairing directly with `darkbloom cluster pair --listen` and `--connect <address>`) and

@@ -96,6 +96,10 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
     private var followNotice: String?
     /// A deferred follow is tried again only at the pair's next update slot, as a deferred update is (under `lock`).
     private var followDeferredUntil: Double = 0
+    /// The newer release the other Mac runs, which the next tick updates to without waiting for the slot, and the one
+    /// already tried that way (under `lock`): one immediate cycle per release, then the slots as usual.
+    private var forwardDue: String?
+    private var forwardTried: String?
     // The candidate this run's service is (main loop only), until it is promoted.
     private var candidate: String?
     private var updatedServiceServes = false
@@ -488,8 +492,12 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         } else if !configuration.autoUpdate {
             restAsDisabled(pair, now: now)
             return startFollowCheckIfDue(pair, pid: pid, now: now)
-        } else if !slotDue {
+        } else if !slotDue, lock.withLock({ forwardDue }) == nil {
             return startFollowCheckIfDue(pair, pid: pid, now: now)
+        }
+        lock.withLock {
+            if let due = forwardDue { forwardTried = due }
+            forwardDue = nil
         }
         // A cycle at or after the slot is that slot's.
         if slotDue { pairSlot = pair.clusterID().map { ClusterMemberUpdateSlot.nextSlot(after: now, clusterID: $0) } }
@@ -525,6 +533,7 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
             switch outcome {
             case .cannotFollow(let reason): notice = "not following the other Mac's rollback: " + reason
             case .otherMacStillRuns(let reason): notice = reason
+            case .otherMacNewer(let version): notice = self.followForward(version)
             default: notice = nil
             }
             // From the deferral, not the check's start: a follow that ran past a slot waits for the next.
@@ -542,6 +551,20 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
                 return notice == self.followNotice ? nil : notice
             }
             if let say { self.log("cluster update: \(say)") }
+        }
+    }
+
+    /// The other Mac runs `version`, newer than this Mac's: with automatic updates on, the next tick runs the pair's cycle
+    /// at once (once per release; after that, the slots), which finds the other Mac ready. The line says what happens.
+    private func followForward(_ version: String) -> String {
+        let here = "the other Mac runs v\(version), newer than this Mac's v\(ProviderCore.version)"
+        guard configuration.autoUpdate else {
+            return here + ", and automatic updates are off on this Mac: run `\(BuildEnvironment.current.cliName) update` on this Mac"
+        }
+        return lock.withLock {
+            guard forwardTried != version else { return here + ": this Mac tries again at the pair's next update slot" }
+            forwardDue = version
+            return here + ": updating this Mac now, without waiting for the pair's update slot"
         }
     }
 

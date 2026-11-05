@@ -40,6 +40,30 @@ public enum ClusterLocalServing {
     /// a control-only member writes.
     public static var offeredLogLine: String { logPrefix + offeredNotice + " with an installed cluster approval" }
 
+    /// What an offered part writes after its registration when the coordinator's model catalog does not list its model.
+    /// The coordinator's pair check (`serves_model`) needs a catalog row for every member's model, so it refuses such a
+    /// pair on every pass and tells neither Mac (DevNet Gemma pair, 2026-11-05).
+    static let catalogRefusalPrefix = "The coordinator does not pair Macs for "
+
+    /// The refusal for `modelID`, nil when `catalogIDs` lists it or is empty (a catalog that wasn't read says nothing).
+    public static func catalogRefusal(modelID: String, catalogIDs: Set<String>) -> String? {
+        guard !catalogIDs.isEmpty, !catalogIDs.contains(modelID) else { return nil }
+        return catalogRefusalPrefix + modelID + ": its model catalog does not list it"
+    }
+
+    /// `notice` when it is a part's catalog refusal in plain text, else nil.
+    public static func pairRefusal(notice: String?) -> String? {
+        guard let notice, notice.hasPrefix(catalogRefusalPrefix), notice.count <= 300,
+              !notice.unicodeScalars.contains(where: { $0.value < 0x20 || (0x7F...0x9F).contains($0.value) })
+        else { return nil }
+        return notice
+    }
+
+    /// Whether a part's notice says it registered offered for pairing (refused by the catalog or not).
+    public static func registeredOffered(notice: String?) -> Bool {
+        notice == offeredNotice || pairRefusal(notice: notice) != nil || ClusterPublicServingCheck.ownerOnly(notice: notice) != nil
+    }
+
     /// The leader part's start option that skips the coordinator entirely (`darkbloom start --distributed`).
     public static let noCoordinatorFlag = "--no-coordinator"
 
@@ -59,7 +83,9 @@ public enum ClusterLocalServing {
         case logLine: return notice
         case localOnlyLogLine: return localOnlyNotice
         case offeredLogLine: return offeredNotice
-        default: return nil
+        case let line:
+            let text = String(line.dropFirst(logPrefix.count))
+            return pairRefusal(notice: text) ?? ClusterPublicServingCheck.ownerOnly(notice: text)
         }
     }
 

@@ -355,6 +355,7 @@ use it:
 sudo darkbloom fan uninstall   # fan control: restores macOS automatic control
 darkbloom sandbox uninstall    # Darkbloom Sandbox
 darkbloom unenroll             # a legacy MDM profile
+darkbloom cluster gpu-limit --undo  # only if you raised the GPU limit with it; asks for approval
 ```
 
 Then remove the `# Darkbloom` `PATH` line from your rc file by hand. On a
@@ -363,6 +364,12 @@ cluster` on it to pair it with another Mac. `darkbloom stop --uninstall` still
 removes only the provider, watchdog and desktop API agents and keeps every file.
 Every flag, step and path rule is in the
 [CLI reference](./cli-reference.md#darkbloom-uninstall).
+
+`darkbloom cluster gpu-limit --undo` (`provider-swift/Sources/darkbloom/ClusterGPULimitCommand.swift`)
+removes the root boot job `com.layrlabs.glm53-wired-limits` and returns the GPU
+limit to the macOS default
+([GPU memory limit for a GLM pair](../reference/configuration.md#gpu-memory-limit-for-a-glm-pair)).
+Neither `darkbloom uninstall` nor `darkbloom stop --uninstall` removes that job.
 
 ## Related
 

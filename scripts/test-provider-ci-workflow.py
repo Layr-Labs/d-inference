@@ -861,9 +861,10 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         swift_cache = by_id["swift-cache"]
         self.assertIn("key: ${{ steps.build-key.outputs.key }}", swift_cache)
         # This recipe's entries first, then any recipe's with the same toolchain,
-        # dependencies and checkout path.
+        # dependencies and checkout path, then any with the same MLX pins.
         self.assertIn("restore-keys: |\n          ${{ steps.keys.outputs.swift-prefix }}\n"
-                      "          ${{ steps.keys.outputs.swift-loose-prefix }}\n", swift_cache)
+                      "          ${{ steps.keys.outputs.swift-loose-prefix }}\n"
+                      "          ${{ steps.keys.outputs.swift-mlx-prefix }}\n", swift_cache)
         save = next(step for step in steps if field(step, "name", indent=4) == "Save lane-specific Swift test build")
         self.assertIn("key: ${{ steps.build-key.outputs.key }}", save)
         # Every build step builds once more from nothing only through the retry

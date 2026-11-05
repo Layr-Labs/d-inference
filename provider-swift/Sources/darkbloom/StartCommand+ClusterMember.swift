@@ -118,7 +118,13 @@ extension Start {
             try await loop.waitForClusterMemberRegistration(until: .now.advanced(by: wait))
             print("darkbloom \(ProviderCore.version) (registered cluster member; solo inference disabled)")
             // The cluster service reads its part's latest notice line (unbuffered stderr): this part is offered.
-            if offered { printError(ClusterLocalServing.offeredLogLine) }
+            if offered {
+                printError(ClusterLocalServing.offeredLogLine)
+                // Owner-only by the coordinator's rule: the screens and status show it instead of ✓ once it serves.
+                if let reason = prepared.ownerOnlyReason() { printError(ClusterLocalServing.logPrefix + reason) }
+                let url = coordinatorURL ?? (try? ConfigManager.load(from: path))?.coordinator.url
+                if let url { Self.sayCatalogRefusal(modelID: prepared.model.id, coordinatorURL: url) }
+            }
             try await withTaskCancellationHandler { try await task.value }
                 onCancel: { task.cancel() }
         } catch {
@@ -128,6 +134,20 @@ extension Start {
             // finding 3); the process exits and its supervisor decides.
             await Self.awaitFinished(task, atMostSeconds: 30)
             throw error
+        }
+    }
+
+    /// Reads the coordinator's public model catalog once, without holding up the part, and writes the refusal notice
+    /// when it does not list `modelID` (`ClusterLocalServing.catalogRefusal`). A catalog that can't be read says nothing.
+    static func sayCatalogRefusal(modelID: String, coordinatorURL: String) {
+        Task.detached {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.timeoutIntervalForRequest = 20
+            let client = ModelCatalogClient(coordinatorURL: coordinatorURL, urlSession: URLSession(configuration: configuration))
+            guard let catalog = try? await client.fetchCatalog(),
+                  let refusal = ClusterLocalServing.catalogRefusal(modelID: modelID, catalogIDs: Set(catalog.map(\.id)))
+            else { return }
+            printError(ClusterLocalServing.logPrefix + refusal)
         }
     }
 

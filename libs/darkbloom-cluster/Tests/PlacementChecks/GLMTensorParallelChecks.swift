@@ -23,6 +23,52 @@ func checkGLMTensorParallel(golden: URL, _ checks: PlacementChecks) throws {
     try checkGLMNextN(layout, priced: priced, golden: golden, checks)
     try checkGLMTensorParallelFirst(priced, golden: golden, checks)
     try checkGLMPipelineHop(layout, golden: golden, checks)
+    try checkGLMFirstOfferSplit(layout, golden: golden, checks)
+}
+
+/// The first offer right after the other pair stopped (two M5 Ultras 256 GB, GLM not yet served on them, keyed link
+/// measured): each Mac's speed is its own device index, and the index sampled on a Mac whose GPU was still busy read
+/// slower. A pipeline's time is each Mac's layers at its own rate, so 0.1% moved the whole cut: "this Mac 1 layer /
+/// the other Mac 44 layers" was offered, and 24 / 21 loaded once the pair had served (speeds keyed by the hardware).
+/// Two Macs of the same hardware are planned at the same rate, whichever sampled slower and by how much.
+private func checkGLMFirstOfferSplit(_ layout: ClusterModelLayout, golden: URL, _ checks: PlacementChecks) throws {
+    let base = try m5Ultra(golden)
+    let link = ClusterLinkCosts(probe: measuredProbe(), measuredUTC: "2026-10-14T18:00:00Z")!
+    func pipeline(_ a: ClusterDeviceProfile, _ b: ClusterDeviceProfile) throws -> (split: String, speeds: [Double]) {
+        let profiles = [("mac-a", a), ("mac-b", b)]
+        let speeds = ClusterSpeedEstimator.estimate(devices: profiles.map { .init(chip: $0.1.chip, osBuild: $0.1.osBuild) },
+            artifactSHA256: layout.artifactSHA256, measurements: [], indices: profiles.compactMap { $0.1.speedIndex })
+        let devices = ClusterHardwarePrior.absolute(zip(profiles, speeds).map { ClusterPlacementDevice(label: $0.0.0, profile: $0.0.1, speed: $0.1) },
+            layout: layout, link: link)
+        var policy = ClusterPlacementPolicy(); policy.forcedMode = .pipeline
+        let chosen = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy, link: link).chosen
+        let split = chosen.map { c in c.ranks.enumerated().map { "\($1.device) \(($0 == 0 ? c.cut : layout.layerCount) - ($0 == 0 ? 0 : c.cut))" }
+            .sorted().joined(separator: " / ") } ?? "none"
+        return (split, devices.map(\.speed.rested.decodeTokensPerSecond))
+    }
+    func slowed(_ profile: ClusterDeviceProfile, _ factor: Double, cores: Int? = nil) throws -> ClusterDeviceProfile {
+        var slow = profile
+        if let cores, var object = try JSONSerialization.jsonObject(with: profile.encoded()) as? [String: Any] {
+            object["gpuCores"] = cores
+            slow = try ClusterDeviceProfile.decode(JSONSerialization.data(withJSONObject: object))
+        }
+        slow.speedIndex = .init(chip: profile.chip, osBuild: profile.osBuild, benchmark: "qmm_h4096_b4_g64_x16_v1",
+                                prefillIndex: 2_337_768 * factor, decodeIndex: 46_409 * factor)
+        return slow
+    }
+    let settled = try pipeline(base, base)
+    checks.require("glm first offer: two M5 Ultras with the same index, GLM pipeline: 24 layers / 21 (what loaded): \(settled.split)",
+        settled.split == "mac-a 24 / mac-b 21")
+    for (name, a, b) in [("this Mac's index 0.1% lower", try slowed(base, 0.999), base), ("this Mac's 3% lower", try slowed(base, 0.97), base),
+                         ("the other Mac's 0.1% lower", base, try slowed(base, 0.999)), ("the other Mac's 10% lower", base, try slowed(base, 0.9))] {
+        let offered = try pipeline(a, b)
+        checks.require("glm first offer, \(name): the same split as when settled, never 1 / 44: \(offered.split)", offered.split == settled.split)
+        checks.require("glm first offer, \(name): both Macs planned at the same rate", Set(offered.speeds).count == 1)
+    }
+    // Other hardware keeps its own index: an M5 Ultra with fewer GPU cores is slower, and planned so.
+    let binned = try pipeline(base, try slowed(base, 0.75, cores: (base.gpuCores ?? 80) - 20))
+    checks.require("glm first offer: a Mac with other hardware (fewer GPU cores) keeps its own, slower rate",
+        binned.speeds.count == 2 && binned.speeds[1] < binned.speeds[0])
 }
 
 /// A GLM pipeline's prefill: each 2,048-token chunk's residual (the 4 x 4,096

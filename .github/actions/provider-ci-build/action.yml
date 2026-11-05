@@ -65,9 +65,10 @@ runs:
           darkbloom-*) echo "key=${PREFIX}day-$(date -u +%F)" >> "$GITHUB_OUTPUT" ;;
           *) echo "key=$COMMIT_KEY" >> "$GITHUB_OUTPUT" ;;
         esac
-    # Restore tiers: this recipe's newest entry, then the newest entry of any
-    # recipe with the same toolchain, dependencies and checkout path. The build
-    # steps build once more from nothing if a loose-tier entry fails to build.
+    # Restore tiers: this recipe's newest entry; then any recipe's with the
+    # same toolchain, dependencies and checkout path; then any entry with the
+    # same toolchain, checkout path and MLX pins, whose MLX objects stay valid.
+    # The build steps build once more from nothing if a looser entry fails.
     - name: Restore lane-specific Swift test build
       id: swift-cache
       uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
@@ -79,6 +80,7 @@ runs:
         restore-keys: |
           ${{ steps.keys.outputs.swift-prefix }}
           ${{ steps.keys.outputs.swift-loose-prefix }}
+          ${{ steps.keys.outputs.swift-mlx-prefix }}
     - name: Revalidate source timestamps and discard cached runtime resources
       shell: bash
       run: |

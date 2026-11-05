@@ -368,17 +368,20 @@ the caches of the runners it ran on.
 | Git objects | `.git` | `git-v1-<os>-<YYYY-MM-DD>`; `git-v1-<os>-<YYYY-MM>-`, then `git-v1-<os>-` | every job that checks out |
 | Full-history Git objects | `.git` | the same under `git-full-v1-`, so shallow jobs never restore it | `docs` |
 | SwiftPM repositories | `~/Library/Caches/org.swift.swiftpm/repositories` | `spm-repos-v1-<os>-<layout>-<lane>-<Package.resolved hash>`; `spm-repos-v1-<os>-<layout>-<lane>-` | each build lane |
-| Swift test build | each lane's `.build` directory | `swift-key` (`swift-prefix` and the commit), or on a Darkbloom host `swift-prefix` and `day-<YYYY-MM-DD>`; `swift-prefix`, then `swift-loose-prefix`, from `scripts/provider-ci-cache.py` | each build lane |
+| Swift test build | each lane's `.build` directory | `swift-key` (`swift-prefix` and the commit), or on a Darkbloom host `swift-prefix` and `day-<YYYY-MM-DD>`; `swift-prefix`, then `swift-loose-prefix`, then `swift-mlx-prefix`, from `scripts/provider-ci-cache.py` | each build lane |
 | Metal library | `$RUNNER_TEMP/metallib-cache` | `metallib-key`, exact only | each build lane |
 | MiMo metadata downloads | `$RUNNER_TEMP/mimo-metadata-cache`, one file per pinned SHA-256 | `mimo-metadata-v1-<hash of the pin scripts>`, exact only | each provider shard |
 | MiMo audio codec | `$RUNNER_TEMP/mimo-audio-source` | `mimo-audio-source-v2-<sha256>`, exact only; fetched only when the audio gate runs ([test guide](test.md)) | the last provider shard |
 | Cluster metadata build | `$RUNNER_TEMP/cluster-native-metadata` | toolchain, submodule pins, manifests and paths, then the commit | `test-cluster-checks` |
 
-The Swift test build has two restore tiers. `swift-prefix` binds the toolchain,
-the dependency manifests and pins, the checkout path and the CI recipe (the
-workflows and scripts in `RECIPE_PATHS`). `swift-loose-prefix` leaves out the
-recipe, which changes often and rarely changes an object, so an edit to a
-workflow or a CI script no longer makes every build cold. Source timestamps are
+The Swift test build has three nested restore tiers. `swift-prefix` binds the
+toolchain, the dependency manifests and pins, the checkout path and the CI
+recipe (the workflows and scripts in `RECIPE_PATHS`). `swift-loose-prefix`
+leaves out the recipe, which changes often and rarely changes an object, so an
+edit to a workflow or a CI script no longer makes every build cold.
+`swift-mlx-prefix` keeps only the toolchain, the checkout path and the MLX
+gitlinks (`libs/mlx`, `libs/mlx-swift`, `libs/mlx-swift-lm`), so a change to
+`Package.swift` or another pin still restores the compiled MLX. Source timestamps are
 restored only for unchanged files, so SwiftPM rebuilds what changed. If a build
 restored from the loose tier fails, `scripts/provider-ci-cold-retry.sh` deletes
 the restored builds and the step builds once more from nothing; a failure over

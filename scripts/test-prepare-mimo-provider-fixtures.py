@@ -121,7 +121,7 @@ class ProviderFixtureTests(unittest.TestCase):
             step = step.split("      - name:", 1)[0]
             self.assertIn("!cancelled()", step)
             self.assertIn("steps.mimo-fixtures.outcome == 'success'", step)
-            self.assertIn("steps.provider-ci-build.outcome == 'success'", step)
+            self.assertIn("steps.test-products.outcome == 'success'", step)
             self.assertIn("../scripts/run-nested-suite.sh", step)
             self.assertIn("--no-parallel", step)
             self.assertNotIn("continue-on-error", step)

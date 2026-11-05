@@ -58,23 +58,30 @@ ROUTED = {
 # (master)'s Release Integrity and Docs Lint read the plan's output.
 CALLERS = ("ci-dev.yml", "ci-master.yml")
 PLAN = "provider-plan.yml"
-COMPONENT = "${{{{ needs.components.outputs.{} == 'true' && 1 || 0 }}}}"
-REFRESH = ("${{ github.event_name == 'push' && needs.tested.outputs.skip == 'true' && "
-           "(needs.components.outputs.changed_provider == 'true' || needs.components.outputs.changed_cluster == 'true') "
-           "&& 1 || 0 }}")
+COMPONENT = "${{{{ needs.components.outputs.{} == 'true' && {} || 0 }}}}"
+
+
+def requested(component, jobs=1):
+    """A plan lane's count: its jobs when the component's tests run, else none."""
+    return COMPONENT.format(component, jobs)
+
+
+# The 7 blocking test jobs, critical path first; the approval gives each one
+# small macOS size. The two focused shards share the lane the approval names.
+# The build jobs and the GPU lanes stay on Blacksmith.
 PLAN_LANES = {
-    "test-cluster-1": COMPONENT.format("cluster"), "test-provider-1": COMPONENT.format("provider"),
-    "test-provider-2": COMPONENT.format("provider"), "test-cluster-2": COMPONENT.format("cluster"),
-    "test-cluster-focused": COMPONENT.format("cluster"), "test-cluster-gpu-1": COMPONENT.format("cluster"),
-    "test-cluster-gpu-2": COMPONENT.format("cluster"), "refresh-caches": REFRESH,
+    "test-cluster-2": requested("cluster"), "test-cluster-3": requested("cluster"),
+    "test-cluster-focused": requested("cluster", 2),
+    "test-provider-2": requested("provider"), "test-cluster-1": requested("cluster"),
+    "test-provider-1": requested("provider"),
 }
+# CI jobs on a literal Blacksmith macOS runner: they need more than the routed size.
+BLACKSMITH_CI = {"build-cluster", "build-provider", "cluster-release-checks", "test-cluster-gpu"}
 MASTER_LINUX_LANES = (f"release-integrity linux_arm64 {LINUX_FALLBACK}", f"docs linux_arm64 {LINUX_FALLBACK}")
 # (workflow, job): the expression its runs-on reads.
 CI_ROUTED = {
     ("provider-tests.yml", "test-provider"): "inputs.routes", ("provider-tests.yml", "test-cluster"): "inputs.routes",
-    ("provider-tests.yml", "test-cluster-gpu"): "inputs.routes",
     ("provider-tests.yml", "test-cluster-focused"): "inputs.routes",
-    ("provider-tests.yml", "refresh-caches"): "inputs.routes",
     ("ci-master.yml", "release-integrity"): "needs.plan.outputs.routes",
     ("ci-master.yml", "docs"): "needs.plan.outputs.routes",
 }
@@ -87,7 +94,7 @@ UNROUTED = ("release-swift.yml", "release-provider.yml", "release-dev-branch.yml
             "threat-model-review.yml", "bedrock-smoke.yml", "claude.yml", "codex.yml")
 # The plane grants a lane whole, so each shard of these jobs reads a lane of its
 # own, `<job>-<shard>`, and gets a free sandbox even when the others fall back.
-SHARDED = {"test-provider", "test-cluster", "test-cluster-gpu"}
+SHARDED = {"test-provider", "test-cluster"}
 # Master and dispatched warming feed release builds, so only PRs read the route.
 RUNS_ON = {"warm": "${{ github.event_name == 'pull_request' && "
                    "fromJSON(needs.route.outputs.routes)['warm'] || 'blacksmith-12vcpu-macos-27' }}"}
@@ -657,8 +664,10 @@ class RouteWorkflowTests(unittest.TestCase):
                 condition = job_field(job, "if")
                 if name.startswith("test-"):
                     component = re.fullmatch(r"\$\{\{ inputs\.(\w+) == 'true' \}\}", condition).group(1)
+                    # A shared lane is requested for every job of its matrix.
+                    jobs_requested = 1 if name in SHARDED else len(matrix_shards(job)) or 1
                     for each in ([f"{name}-{shard}" for shard in matrix_shards(job)] if name in SHARDED else [name]):
-                        self.assertEqual(PLAN_LANES[each], COMPONENT.format(component))
+                        self.assertEqual(PLAN_LANES[each], requested(component, jobs_requested))
         self.assertEqual(read, set(PLAN_LANES) | {line.split()[0] for line in MASTER_LINUX_LANES})
         # The router accepts both callers' lane sets, with every count either way.
         script = route_step()
@@ -680,9 +689,21 @@ class RouteWorkflowTests(unittest.TestCase):
                 runner = job_field(job, "runs-on")
                 if runner and "fromJSON(" not in runner:
                     with self.subTest(workflow=filename, job=name):
-                        # Only bookkeeping without tests stays GitHub-hosted.
-                        self.assertEqual(runner, "ubuntu-24.04")
-                        self.assertIn(name, ("tested", "components", "provider-test-gate"))
+                        # Only bookkeeping without tests stays GitHub-hosted;
+                        # only the build jobs and the jobs that need more than
+                        # the routed size keep a literal Blacksmith Mac.
+                        if name in BLACKSMITH_CI:
+                            self.assertEqual((filename, runner), ("provider-tests.yml", MACOS_FALLBACK))
+                        else:
+                            self.assertEqual(runner, "ubuntu-24.04")
+                            self.assertIn(name, ("tested", "components", "provider-test-gate"))
+
+    def test_ci_keeps_only_its_build_and_large_jobs_on_blacksmith(self):
+        ci = jobs(self.texts["provider-tests.yml"])
+        self.assertEqual({name for name, job in ci.items() if job_field(job, "runs-on") == MACOS_FALLBACK},
+                         BLACKSMITH_CI)
+        # 7 macOS jobs ask, within the per-run cap of 8.
+        self.assertEqual(sum(int(re.search(r"&& (\d+) \|\|", count).group(1)) for count in PLAN_LANES.values()), 7)
 
     def test_release_and_credentialed_workflows_keep_literal_runners(self):
         for filename in UNROUTED:
@@ -736,7 +757,7 @@ class RouteWorkflowTests(unittest.TestCase):
     def test_classifier_gate_and_route_need_no_routed_runner(self):
         ci = jobs(self.texts["provider-tests.yml"])
         plan = jobs(self.texts[PLAN])
-        self.assertEqual(needs(plan["route"]), ["components", "tested"])
+        self.assertEqual(needs(plan["route"]), ["components"])
         self.assertEqual(job_field(plan["route"], "if"), "${{ !cancelled() }}")
         self.assertEqual(job_field(ci["provider-test-gate"], "runs-on"), "ubuntu-24.04")
         self.assertNotIn("route", needs(ci["provider-test-gate"]))

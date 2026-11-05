@@ -3,11 +3,12 @@
 
 Processes that share one build (`swift test --skip-build --ignore-lock`) can
 start together. SwiftPM in one of them can then find the build database
-locked by another's startup; it prints
+locked by another's startup; it prints one of
 
-    error: unable to attach DB: ... database is locked ...
+    error: unable to attach DB: error: accessing build database "...": database is locked ...
+    error: error: accessing build database "...": database is locked ...
 
-runs the tests anyway, and exits 1. Such a run may run once more, but only
+(the second in run 42057277814), runs the tests anyway, and exits 1. Such a run may run once more, but only
 when its log proves that every test it ran passed, so the exit status can
 have no other cause:
 
@@ -25,7 +26,7 @@ from pathlib import Path
 import re
 import sys
 
-LOCKED = re.compile(r"unable to attach DB: .*database is locked")
+LOCKED = re.compile(r"(?:unable to attach DB|accessing build database)\b.*database is locked")
 SWIFT_TESTING_PASSED = re.compile(r"Test run with \d+ tests?(?: in \d+ suites?)? passed after")
 FAILED = re.compile(r"✘|Test run with .* failed|Test Case .* failed|^::error::", re.MULTILINE)
 XCTEST_SUMMARY = re.compile(r"Executed \d+ tests?, with (?:\d+ tests? skipped and )?(\d+) failures? \((\d+) unexpected\)")

@@ -212,11 +212,25 @@ previewed without credit for 10 minutes for that setup
 (`DistributedAutomaticBatchCreditRefusals`), so steady demand cannot cycle
 release and restore.
 
+A replacement is proposed only when it serves the running generation's
+endpoint contract: the local server swaps in only a session with the same
+profile (`DistributedLocalSessionBinding.permitsPlacementChange`), and the mode
+decides whether committed-token logprobs are captured
+(`ClusterModelFeaturePolicy.capturesLogprobs`). Gemma 4 has no tensor-parallel
+batch quote, so its batch scope prices only the pipeline; a tensor-parallel
+Gemma pair is therefore never offered a pipeline replacement, which would fail
+after the drain (`DistributedAutomaticBatchPlanner.keepsEndpointFeatures`).
+A replacement that fails after release (the host restores the previous setup)
+is remembered for that setup and width: it is not proposed again until a hold
+passes, 2 minutes doubling on each repeat up to 30 minutes, while a different
+setup is tried at once (`DistributedAutomaticBatchFailures`).
+
 Every refused width logs one line, `cluster.batch_replan refused lanes=N`, in
 the preview and in the post-release recheck
 (`DistributedAutomaticBatchPlanner.refusalFields`). Its fields are `phase`
 (`preview` or `post_release`), `reason` (`not_now`, `not_possible`,
-`outside_gpu_working_set`, `not_accepted`, `no_setup` or `no_placement`),
+`outside_gpu_working_set`, `not_accepted`, `no_setup`, `no_placement` or
+`endpoint_features`, which also names `running_mode`),
 `requested_lanes`, `previous_lanes`, `require_now`, `credits_incumbent_weights`,
 `mode`, `tensor_shares` and, for each rank N, `rankN_need_bytes`,
 `rankN_load_need_bytes`, `rankN_request_need_bytes`,
@@ -6153,7 +6167,7 @@ Placement may change only for the same model artifact, tokenizer/model contract,
 
 A temporarily unavailable recommendation may be retried after 30 seconds even when queued demand remains unchanged. Increased demand may trigger an earlier attempt; no retry restarts a ticket deadline. This prevents a planner cooldown from permanently stranding a sustained burst at its earlier width.
 
-After successful native start and capacity validation, the host logs `cluster.batch_replan activated` (or `restored` after a fresh rollback) with requested/effective lane counts, generation, process incarnation and installed setup digest/mode. These content-free diagnostics do not establish native kernel width or numerical equivalence.
+After successful native start and capacity validation, the host logs `cluster.batch_replan activated` (or `restored` after a fresh rollback, which `cluster.batch_replan failed lanes=N` precedes when the factory remembers the failure) with requested/effective lane counts, generation, process incarnation and installed setup digest/mode. These content-free diagnostics do not establish native kernel width or numerical equivalence.
 
 ### GPT-OSS native batch width observations
 

@@ -54,12 +54,6 @@ PARITY_SHARD = 2
 FIRST_SHARD_EXTRA_SECONDS = 31.0
 PARITY_SHARD_EXTRA_SECONDS = 65.0
 LAST_SHARD_EXTRA_SECONDS = 190.0
-# Suites that must not share a serial process, in either order. A process that
-# ran NemotronSuperManagedSlotTests and then Qwen4PagingPrefixIntegrationTests
-# crashed with SIGBUS in release qualification; each passes alone. Remove the
-# pair when the Nemotron fixture cleanup fix merges.
-KEPT_APART = (("ProviderCoreTests.NemotronSuperManagedSlotTests",
-               "ProviderCoreTests.Qwen4PagingPrefixIntegrationTests"),)
 # A test identifier starts with its module and its top-level suite or function.
 SUITE = re.compile(r"^([^./]+)[./]([^./]+)")
 
@@ -89,14 +83,8 @@ def assignment(shards, weights):
     assigned = [[] for _ in range(shards)]
     serial = {key: seconds for key, seconds in weights.items()
               if key.split(".", 1)[0] not in PARALLEL_MODULES}
-    partners = defaultdict(set)
-    for first, second in KEPT_APART:
-        partners[first].add(second)
-        partners[second].add(first)
     for key in sorted(serial, key=lambda key: (-serial[key], key)):
-        allowed = [index for index in range(shards)
-                   if not partners[key] & set(assigned[index])] or list(range(shards))
-        index = min(allowed, key=lambda index: (loads[index], index))
+        index = min(range(shards), key=lambda index: (loads[index], index))
         loads[index] += serial[key]
         assigned[index].append(key)
     return assigned, loads

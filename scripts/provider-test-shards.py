@@ -283,8 +283,13 @@ def audit_parity(test_ids, reports):
 
 
 def measured_weights(paths, base=None):
+    """Seconds per suite from xUnit reports. A retried selection's first
+    attempt (attempt-1-shard-*.xml, run-provider-tests.sh) is not counted: its
+    second attempt's report measures the same suites."""
     seconds = defaultdict(float)
     for path in paths:
+        if Path(path).name.startswith("attempt-1-"):
+            continue
         for case in ElementTree.parse(path).getroot().iter("testcase"):
             key = suite_key(case.get("classname", ""))
             if key:

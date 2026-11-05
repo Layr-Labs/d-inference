@@ -147,7 +147,7 @@ that the plans of all selections list every test once. With every shard
 required to pass, that is the full-suite audit; no Mac job exists only for it.
 Each shard reports the coverage of its own processes. When the shards drift
 apart, download the `provider-unit-shard-*` artifacts and run
-`python3 scripts/provider-test-shards.py weights <their shard-*.xml>` to
+`python3 scripts/provider-test-shards.py weights <their shard-*.xml>` (it ignores a retried selection's `attempt-1-shard-*.xml`) to
 refresh the weights file. A
 suite moves from the parallel class to the serial class when it fails or flakes
 in parallel; when in doubt, a suite stays serial.
@@ -1276,12 +1276,12 @@ provider's macOS CI runners (see [CI runner routing](build.md#ci-runner-routing)
 in selections that `scripts/cluster-test-plan.py` defines. Each selection runs
 in a process of its own through `scripts/run-nested-suite.sh`, which fails when
 the selection runs no test or skips a test. Runtime shard 1 runs `base`, the
-longest selection, alone. Shard 2 runs two groups at the same time, each in
+longest selection, alone, then the share probe alone. The probe times each
+rank's share against a 1.5 s budget, so it never runs on a Mac right after
+the concurrent GPU groups. Shard 2 runs two groups at the same time, each in
 plan order with its own `TMPDIR` (the CPU batch-session suite with the GLM
 paged-KV, invariance and census, TF32 and Gemma selections; the Qwen GPU chain
-with `glm53-prefix-ssd`), then the share probe alone,
-whose 1.5 s budget includes the first use of the Qwen TP kernels on the Mac. A
-grouped selection that finds SwiftPM's build database locked, and whose log
+with `glm53-prefix-ssd`). A grouped selection that finds SwiftPM's build database locked, and whose log
 proves every test passed, runs once more, as in the provider shards; the job
 log prints both attempts' logs. Every process starts with
 `MLX_QMV_BATCH_INVARIANT=1`, as every cluster process does.

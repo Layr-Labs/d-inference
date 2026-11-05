@@ -107,12 +107,13 @@ QWEN_TP_MTP_GPU_TESTS = (
 )
 
 SELECTIONS = (
-    # Blocking shard 1 runs `base`, the longest selection, alone. Shard 2 runs
-    # group 1 (the CPU batch-session suite, then the GLM paged-KV, invariance
-    # and census, TF32 and Gemma selections) beside group 2 (the Qwen GPU
-    # chain and glm53-prefix-ssd), then the share probe alone: its 1.5 s
-    # budget includes the first use of the Qwen TP kernels on the Mac, after
-    # qwen-tp-batch-gpu, with no other process beside it.
+    # Blocking shard 1 runs `base`, the longest selection, alone, then the
+    # share probe alone. The probe times its share against a 1.5 s budget, so
+    # it never runs on a Mac just after the concurrent GPU groups (run
+    # 41973436945 failed it there). Shard 2 runs group 1 (the CPU
+    # batch-session suite, then the GLM paged-KV, invariance and census, TF32
+    # and Gemma selections) beside group 2 (the Qwen GPU chain and
+    # glm53-prefix-ssd).
     Selection("base-batch-session", "blocking", 2, suites=("QwenTensorParallelBatchSessionTests",), group=1),
     Selection("base", "blocking", 1),
     Selection("qwen-tp-batch-gpu", "blocking", 2, {"QWEN_TP_BATCH_GPU": "1"}, tests=(
@@ -151,7 +152,7 @@ SELECTIONS = (
         "packedSharedExpertCollectiveIsBitIdenticalOnTwoGPURanks",
         "packedRunsRepeatAndShortPromptsOnTwoGPURanks",
     ), group=2),
-    Selection("qwen-tp-share-probe-gpu", "blocking", 2, {"QWEN_TP_SHARE_PROBE_GPU": "1"}, tests=(
+    Selection("qwen-tp-share-probe-gpu", "blocking", 1, {"QWEN_TP_SHARE_PROBE_GPU": "1"}, tests=(
         "eachRankTimesItsShareAloneAndReleasesItsRequest",
         "aRefusalOrAFailureGivesNoProbeAndKeepsNothing",
     )),

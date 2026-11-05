@@ -298,6 +298,10 @@ class CountAndAuditTests(unittest.TestCase):
                             '<testcase classname="ProviderCoreTests" name="free()" time="9"/>'
                             '</testsuite></testsuites>')
             self.assertEqual(shards.measured_weights([path]), {"ProviderCoreTests.A": 2.0})
+            # A retried selection's first attempt never counts twice.
+            first = Path(temporary) / "attempt-1-shard-1-of-2.xml"
+            first.write_text(path.read_text())
+            self.assertEqual(shards.measured_weights([path, first]), {"ProviderCoreTests.A": 2.0})
             # XCTest classes have no serial xUnit report; they keep their old seconds.
             base = {"ProviderCoreTests.A": 7.0, "ProviderCoreTests.XCTestClass": 3.0}
             self.assertEqual(shards.measured_weights([path], base),

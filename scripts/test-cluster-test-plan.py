@@ -83,22 +83,22 @@ class ClusterTestPlanTests(unittest.TestCase):
         base = [selection for selection in plan.SELECTIONS if selection.base]
         self.assertEqual([(selection.name, selection.suites) for selection in base],
                          [("base-batch-session", ("QwenTensorParallelBatchSessionTests",)), ("base", None)])
-        # The share probe's 1.5 s budget includes the first use of the Qwen TP
-        # kernels on the Mac: it runs in the shard of qwen-tp-batch-gpu, after it.
+        # `base`, the longest selection, and then the share probe have shard 1
+        # and its Mac to themselves, one process at a time. The probe times
+        # its share against a 1.5 s budget: it never shares a shard with the
+        # concurrent GPU groups (run 41973436945 failed it right after them).
         order = [selection.name for selection in plan.SELECTIONS]
         probe = next(selection for selection in plan.SELECTIONS if selection.name == "qwen-tp-share-probe-gpu")
-        batch = next(selection for selection in plan.SELECTIONS if selection.name == "qwen-tp-batch-gpu")
-        self.assertEqual((probe.lane, probe.shard), (batch.lane, batch.shard))
-        self.assertGreater(order.index(probe.name), order.index(batch.name))
-        # It also runs alone: after the shard's groups (batch-gpu's among them)
-        # finish, with no other process beside it.
-        self.assertIsNone(probe.group)
-        self.assertIsNotNone(batch.group)
-        # `base`, the longest selection, has its shard and the Mac to itself.
         base_selection = next(selection for selection in plan.SELECTIONS if selection.name == "base")
         self.assertIsNone(base_selection.group)
+        self.assertIsNone(probe.group)
         self.assertEqual([selection.name for selection in plan.SELECTIONS
-                          if (selection.lane, selection.shard) == ("blocking", base_selection.shard)], ["base"])
+                          if (selection.lane, selection.shard) == ("blocking", base_selection.shard)],
+                         ["base", "qwen-tp-share-probe-gpu"])
+        self.assertGreater(order.index(probe.name), order.index(base_selection.name))
+        grouped_shards = {(selection.lane, selection.shard) for selection in plan.SELECTIONS
+                          if selection.group is not None}
+        self.assertNotIn((probe.lane, probe.shard), grouped_shards)
         # Groups exist only where the plan puts them: the focused and GPU lanes
         # still run one selection at a time.
         self.assertEqual({selection.lane for selection in plan.SELECTIONS if selection.group is not None},

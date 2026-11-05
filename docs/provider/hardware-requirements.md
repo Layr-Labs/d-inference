@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-11-04
+> Last updated: 2026-11-05
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -65,6 +65,13 @@ figure. A rank of a GLM pair, which on a 128 GB M5 Max holds about half the
 model, uses the same derivation for 128 and 256 GB, applied with
 [`darkbloom cluster gpu-limit`](../reference/configuration.md#gpu-memory-limit-for-a-glm-pair)
 (`GLM5NextWiredLimit.pairRankRecommendation`).
+
+A GLM pair of 128 GB Macs serves as a pipeline only. An M4 Max can be one of
+them: its part is sized to the GPU limit its macOS reports (107.52 GiB on
+macOS 26), which Darkbloom never raises, so an M4 Max whose macOS keeps less
+(96 GiB on earlier releases) may leave no split that fits; the setup then says
+"needs more memory" rather than offering it
+([two-Mac cluster](two-mac-cluster.md)).
 
 Current backend behavior is owned by the
 [platform's latest default branch](https://github.com/Layr-Labs/darkbloom-platform/tree/master).

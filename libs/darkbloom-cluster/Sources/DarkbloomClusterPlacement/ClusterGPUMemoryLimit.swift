@@ -25,6 +25,19 @@ public enum ClusterGPUMemoryLimit {
     public static func ceilingBytes(physicalMemoryBytes: Int) -> Int {
         ceilingMegabytes(physicalMemoryBytes: physicalMemoryBytes) << 20
     }
+
+    /// The memory sizes, in GiB, of the Macs Darkbloom raises the limit on.
+    public static let raisableMemoryGiB = [128, 256]
+
+    /// Whether Darkbloom raises this Mac's limit (`darkbloom cluster gpu-limit`, with its owner's consent): M5 Macs
+    /// with 128 or 256 GiB, read from the chip's own name ("Apple M5", then at most one of Pro, Max or Ultra), so a
+    /// virtual machine is not one. On any other Mac the limit is what macOS keeps, and a plan is held to it.
+    public static func raisedByDarkbloom(chipName: String, physicalMemoryBytes: Int) -> Bool {
+        let words = chipName.lowercased().split(separator: " ").map(String.init)
+        guard (2...3).contains(words.count), words[0] == "apple", words[1] == "m5",
+              words.count == 2 || ["pro", "max", "ultra"].contains(words[2]) else { return false }
+        return raisableMemoryGiB.contains(physicalMemoryBytes >> 30)
+    }
 }
 
 extension ClusterDeviceProfile {
@@ -32,10 +45,12 @@ extension ClusterDeviceProfile {
     public var gpuMemoryLimitCeilingBytes: Int { ClusterGPUMemoryLimit.ceilingBytes(physicalMemoryBytes: physicalMemoryBytes) }
 
     /// This profile as it reads once its GPU limit is raised to the ceiling; nil when the limit is already there or
-    /// above, so raising it would change nothing.
+    /// above, so raising it would change nothing, or when Darkbloom does not raise this Mac's limit
+    /// (`ClusterGPUMemoryLimit.raisedByDarkbloom`), so no raise is offered that nothing would make.
     public func withGPUMemoryLimitRaised() throws -> ClusterDeviceProfile? {
         let ceiling = gpuMemoryLimitCeilingBytes
-        guard ceiling > residentCapacityBytes else { return nil }
+        guard ClusterGPUMemoryLimit.raisedByDarkbloom(chipName: chip, physicalMemoryBytes: physicalMemoryBytes),
+              ceiling > residentCapacityBytes else { return nil }
         var raised = try ClusterDeviceProfile(chip: chip, performanceCores: performanceCores, efficiencyCores: efficiencyCores,
             gpuCores: gpuCores, osVersion: osVersion, osBuild: osBuild, physicalMemoryBytes: physicalMemoryBytes,
             gpuRecommendedWorkingSetBytes: gpuRecommendedWorkingSetBytes, gpuMaximumBufferBytes: gpuMaximumBufferBytes,

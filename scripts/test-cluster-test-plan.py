@@ -152,15 +152,19 @@ class ClusterTestPlanTests(unittest.TestCase):
     def test_a_grouped_selection_that_finds_the_build_database_locked_runs_once_more(self):
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         # The first run of "locked-once" finds build.db locked, as SwiftPM
-        # reports it, passes its tests and exits 1; "locked" always does;
-        # "locked-failing" finds it locked and a test fails; "failing" fails.
+        # reports it, passes its tests and exits 1; "locked-other-wording"
+        # does the same with SwiftPM's other wording (run 42057277814);
+        # "locked" always does; "locked-failing" finds it locked and a test
+        # fails; "failing" fails.
         script = ("import os, sys; name, root = sys.argv[1], sys.argv[2]\n"
                   "runs = os.path.join(root, name)\n"
                   "count = len(open(runs).read()) if os.path.exists(runs) else 0\n"
                   "open(runs, 'a').write('x')\n"
-                  "locked = name in ('locked', 'locked-failing') or (name == 'locked-once' and count == 0)\n"
-                  "if locked: print('error: unable to attach DB: error: accessing build database '\n"
-                  "                 '\"/x/.build/build.db\": database is locked', flush=True)\n"
+                  "locked = name in ('locked', 'locked-failing') or (name.startswith('locked-o') and count == 0)\n"
+                  "if locked and name == 'locked-other-wording':\n"
+                  "    print('error: error: accessing build database \"/x/.build/build.db\": database is locked', flush=True)\n"
+                  "elif locked: print('error: unable to attach DB: error: accessing build database '\n"
+                  "                   '\"/x/.build/build.db\": database is locked', flush=True)\n"
                   "print(f'run {count + 1}', flush=True)\n"
                   "if name == 'locked-failing': print('\u2718 Test run with 2 tests failed after 0.1 seconds.')\n"
                   "else: print('\u2714 Test run with 2 tests passed after 0.1 seconds.')\n"
@@ -168,7 +172,8 @@ class ClusterTestPlanTests(unittest.TestCase):
         selections = (plan.Selection("locked-once", "blocking", 1, group=1),
                       plan.Selection("locked", "blocking", 1, group=2),
                       plan.Selection("failing", "blocking", 1, group=3),
-                      plan.Selection("locked-failing", "blocking", 1, group=4))
+                      plan.Selection("locked-failing", "blocking", 1, group=4),
+                      plan.Selection("locked-other-wording", "blocking", 1, group=5))
         command = lambda selection, output: (ROOT, [sys.executable, "-c", script, selection.name, str(root)])
         with mock.patch.object(plan, "SELECTIONS", selections), mock.patch.object(plan, "command", command), \
                 mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": ""}), \
@@ -176,7 +181,8 @@ class ClusterTestPlanTests(unittest.TestCase):
             self.assertEqual(plan.run("blocking", 1), 1)
             printed = stdout.buffer.getvalue().decode()
         runs = {selection.name: len((root / selection.name).read_text()) for selection in selections}
-        self.assertEqual(runs, {"locked-once": 2, "locked": 2, "failing": 1, "locked-failing": 1})
+        self.assertEqual(runs, {"locked-once": 2, "locked": 2, "failing": 1, "locked-failing": 1,
+                                "locked-other-wording": 2})
         # The first attempt's log prints before the second's.
         once = printed.split("::group::locked-once (group 1)", 1)[1].split("::endgroup::", 1)[0]
         self.assertLess(once.index("Attempt 1's log"), once.index("run 1"))

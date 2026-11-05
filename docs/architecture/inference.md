@@ -481,7 +481,7 @@ pin). A Mac that is away never leads, so failover is unchanged.
 
 macOS's permissions are asked at stated moments
 (`ClusterOnboardingDriver.allowLocalNetwork`), and Connect's first line asks for
-both ("Allow macOS's password and Local Network prompts.",
+both ("Allow macOS permissions.",
 `ClusterOnboardingDriver.approvalsLine`). The command probes Local Network
 access in the Connect step (`ClusterLocalNetworkAccess.probe`: one datagram to
 the cable's subnet broadcast, refused with `EHOSTUNREACH` until allowed). macOS

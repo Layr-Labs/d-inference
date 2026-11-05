@@ -906,6 +906,7 @@ import Darwin
         expect(code == 0, "leader: exit 0, got \(String(describing: code))")
         let text = run.text
         for line in [
+            "  Allow macOS permissions.",
             "  \(prompt(2))Yes",
             "  " + ClusterOnboardingPairing.otherMacAnswerLine,
             "  \u{2713} Paired. This Mac leads.",
@@ -1052,6 +1053,7 @@ import Darwin
         expect(code == 0, "member: exit 0")
         let text = run.text
         expect(text.contains("  \u{2713} Paired. The other Mac leads.\n"), "member: who leads, word for word")
+        expect(text.contains("  Allow macOS permissions.\n"), "member: the approvals, word for word")
         // It follows the start (O8): what it waits for, the outcome, and whether the window may close, last.
         expect(text.contains("  " + ClusterOnboardingDriver.waitingForStartLine("Apple M5 Ultra, 256 GB") + "\n")
             && text.hasSuffix("  Test response in 0.61 s\n" + ClusterOnboardingDriver.resultRule + "\n" + ClusterOnboardingDriver.closeWindowLine + "\n"),
@@ -2164,7 +2166,8 @@ import Darwin
         let run = TerminalRun(operations(Recorder(), pairEvents: [], pairResult: .failed([]), localNetwork: refusedThenAllowed(2), remote: true,
             commandApp: "sshd-keygen-wrapper"))
         expect(run.waitFor(prompt(2)), "SSH: asked first whether to go on here"); run.type("2\r")
-        expect(run.waitFor("  " + ClusterOnboardingDriver.approvalsLine(remote: true) + "\n"), "SSH: the approvals, where each is answered")
+        expect(run.waitFor("  Allow macOS permissions here and on this Mac's screen (Screen Sharing if headless).\n"),
+               "SSH: the approvals, where each is answered")
         expect(run.waitFor("  Click Allow on the Local Network prompt for sshd-keygen-wrapper on this Mac's screen (Screen Sharing if headless).\n"),
                "SSH: the prompt is on the Mac's screen, and the program macOS names")
         expect(run.waitFor("for sshd-keygen-wrapper on this Mac's screen (Screen Sharing if headless).\n  \u{2713} Allowed\n"), "SSH: allowed")

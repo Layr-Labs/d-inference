@@ -88,7 +88,8 @@ extension QwenTensorParallelLaunch {
     /// at stride 1 and 20.2-20.3 ms at 8-16 (25.1 against 19.9-20.4 ms with
     /// the host loaded), 35.4 against 29.5-29.9 ms for four requests, and
     /// 21.2 ms again at 32, where the GPU waits for the host's first batch of
-    /// layers. 8 is inside that flat band and divides the 9B's 32 and the
+    /// layers. Re-measured on a quieter pair (2026-11-05 19:58Z): 23.2 → 19.7
+    /// ms (−15 %) for one request and 32.1 → 27.8 ms (−13 %) for four. 8 is inside that flat band and divides the 9B's 32 and the
     /// 27B's 64 layers. Not a launch option: evaluation
     /// order only, so each rank's logits and committed state keep their bits
     /// at any stride and two ranks need not agree on it.

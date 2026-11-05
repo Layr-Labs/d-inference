@@ -84,7 +84,7 @@ struct ClusterPairHabitCommandsTests {
     func stopDecision() {
         #expect(Stop.pairedStop(pair(), solo: false, uninstall: false) == .stopPair)
         #expect(Stop.pairedStop(pair(role: .member), solo: false, uninstall: false) == .stopPair)
-        #expect(Stop.pairedStop(pair(started: false), solo: false, uninstall: false) == .stopPair)
+        #expect(Stop.pairedStop(pair(started: false), solo: false, uninstall: false) == .stopHere)
         #expect(Stop.pairedStop(pair(), solo: true, uninstall: false) == .stopSingleMac)
         #expect(Stop.pairedStop(pair(), solo: false, uninstall: true) == .stopSingleMac)
         #expect(Stop.pairedStop(.notPaired, solo: false, uninstall: false) == .stopSingleMac)
@@ -110,11 +110,14 @@ struct ClusterPairHabitCommandsTests {
     @Test("start on a Mac in a cluster starts the pair: the cluster's screen in a terminal, the saved model otherwise")
     func startDecision() throws {
         #expect(Start.pairStart(pair(), solo: false, terminal: true) == .openScreen)
-        #expect(Start.pairStart(pair(role: .member, started: false, serviceRunning: false), solo: false, terminal: false) == .startPair)
+        #expect(Start.pairStart(pair(role: .member), solo: false, terminal: false) == .startPair)
+        // A stopped pair doesn't run here: a script serves this Mac alone (`UnpairedMacServesNormallyTests`).
+        #expect(Start.pairStart(pair(role: .member, started: false, serviceRunning: false), solo: false, terminal: false)
+            == .serveAlone(note: "This Mac is in a two-Mac cluster with \(otherMac), which is stopped: serving this Mac alone "
+                + "(`darkbloom cluster` starts the pair again)."))
         #expect(Start.pairStart(pair(), solo: true, terminal: true) == .refuse(soloBesideServingRefusal))
-        #expect(Start.pairStart(pair(started: false), solo: true, terminal: false) == .single(note: "This Mac is in a "
-            + "two-Mac cluster with \(otherMac), which is stopped. Stop single-Mac serving (`darkbloom stop --solo`) before "
-            + "you start the pair again (`darkbloom start`)."))
+        #expect(Start.pairStart(pair(started: false), solo: true, terminal: false) == .serveAlone(note: "This Mac is in a "
+            + "two-Mac cluster with \(otherMac), which is stopped: serving this Mac alone (`darkbloom cluster` starts the pair again)."))
         #expect(Start.pairStart(.notPaired, solo: false, terminal: true) == .single(note: nil))
         // The cluster's own starts and launchd's child are never asked.
         #expect(try Start.parse([]).startsSingleMacServing)
@@ -614,6 +617,15 @@ private func observed(_ line: String, role: ClusterPairSummary.Role = .leader) -
     return summary
 }
 
+/// A Mac whose saved start is left from a pair whose other Mac stopped taking part (0.10.8: online, no traffic).
+private func stalePair() -> ClusterPairSummary {
+    var summary = pair()
+    summary.pairRunning = false
+    summary.pairNotRunning = "The other Mac (Apple M5 Max, 128 GB) hasn't answered for 15 min; this Mac's part stopped. Run "
+        + "`darkbloom start` to serve this Mac alone, or `darkbloom cluster` to start the pair again."
+    return summary
+}
+
 private func pairActionCalls(_ stderr: String) -> [String] {
     stderr.split(separator: "\n").filter { $0.hasPrefix("pair action: ") }.map { String($0.dropFirst("pair action: ".count)) }
 }
@@ -681,6 +693,56 @@ struct ClusterPairControlTests {
         #expect(pairActionCalls(text(result?.standardErrorContent)) == ["stop"])
     }
 
+    @Test("`darkbloom start --solo` on a Mac whose pair doesn't run: frees the leftover part, then single-Mac serving starts")
+    func startSoloOnAStalePair() async {
+        let result = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent, \.standardErrorContent]) {
+            try await exitWithPair(stalePair(), actions: pairActions()) { _ in
+                try await Start.$releaseForTesting.withValue({ FileHandle.standardError.write(Data("released\n".utf8)); return true }) {
+                    try await runCLICommand(Start.self, ["start", "--solo", "--model", "acme/Alpha-4bit"])
+                }
+            }
+        }
+        let out = lines(result?.standardOutputContent)
+        #expect(out.first == "This Mac is in a two-Mac cluster with \(otherMac), which isn't running here (\(otherMac) isn't "
+            + "answering): serving this Mac alone, and its saved start is cleared (`darkbloom cluster` starts the pair again).")
+        // The single-Mac start went ahead (it ends at this sandbox's missing model, never at a refusal).
+        #expect(out.contains("By starting the provider, you agree to the Darkbloom Terms of Service:"), "\(out)")
+        let stderr = text(result?.standardErrorContent)
+        #expect(stderr.contains("released"))
+        #expect(pairActionCalls(stderr).isEmpty)
+    }
+
+    @Test("a leftover part that doesn't stop: nothing starts beside it, and the one step that always works is named")
+    func startSoloWhenTheLeftoverWontStop() async {
+        let result = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            try await exitWithPair(stalePair(), actions: pairActions()) { _ in
+                try await Start.$releaseForTesting.withValue({ false }) {
+                    try await runCLICommand(Start.self, ["start", "--model", "acme/Alpha-4bit"])
+                }
+            }
+        }
+        #expect(Array(lines(result?.standardOutputContent).suffix(3)) == [
+            "This Mac's part of the pair didn't stop in time, so single-Mac serving can't start yet.",
+            "To leave the pair on this Mac: `darkbloom cluster pair --status`, then `darkbloom cluster pair --forget <pin>`, then "
+                + "`darkbloom start`.", ""])
+    }
+
+    @Test("`darkbloom stop` on a Mac whose pair doesn't run stops what runs here and never asks the other Mac")
+    func stopOnAStalePair() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent, \.standardErrorContent]) {
+            try await exitWithPair(stalePair(), actions: pairActions()) { _ in
+                try await Start.$releaseForTesting.withValue({ FileHandle.standardError.write(Data("released\n".utf8)); return true }) {
+                    try await runCLICommand(Stop.self, ["stop"])
+                }
+            }
+        }
+        #expect(lines(result?.standardOutputContent).first == "This Mac is in a two-Mac cluster with \(otherMac), which isn't "
+            + "running here: stopping this Mac's leftover part and clearing its saved start (`darkbloom cluster` starts the pair again).")
+        let stderr = text(result?.standardErrorContent)
+        #expect(stderr.contains("released"))
+        #expect(pairActionCalls(stderr).isEmpty, "\(pairActionCalls(stderr))")
+    }
+
     @Test("`darkbloom stop --solo` never touches the pair")
     func stopSolo() async {
         let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent, \.standardErrorContent]) {
@@ -738,9 +800,9 @@ struct ClusterPairControlTests {
         ]
         #expect(Start.pairStart(pair(), solo: false, terminal: true, singleMacOptions: ["--model"]) == .refuseOptions(refusal))
         #expect(Start.pairStart(pair(), solo: false, terminal: false, singleMacOptions: ["--model"]) == .refuseOptions(refusal))
-        #expect(Start.pairStart(pair(started: false), solo: true, terminal: false, singleMacOptions: ["--model"]) == .single(note:
-            "This Mac is in a two-Mac cluster with \(otherMac), which is stopped. Stop single-Mac serving (`darkbloom stop "
-                + "--solo`) before you start the pair again (`darkbloom start`)."))
+        #expect(Start.pairStart(pair(started: false), solo: true, terminal: false, singleMacOptions: ["--model"]) == .serveAlone(note:
+            "This Mac is in a two-Mac cluster with \(otherMac), which is stopped: serving this Mac alone (`darkbloom cluster` "
+                + "starts the pair again)."))
         #expect(Start.pairStart(.notPaired, solo: false, terminal: false, singleMacOptions: ["--model"]) == .single(note: nil))
         #expect(pair().singleMacOptionsRefusal(["--local", "--port", "--bind"]) == [
             "This Mac is in a two-Mac cluster with \(otherMac): `--local`, `--port` and `--bind` are for single-Mac serving, so "
@@ -764,16 +826,15 @@ struct ClusterPairControlTests {
         #expect(calls.isEmpty, "\(calls)")
     }
 
-    @Test("`darkbloom start` without a terminal and no model ever chosen says how to choose one; exit 1")
+    @Test("`darkbloom start` without a terminal on a pair that never chose a model serves this Mac alone; the pair is untouched")
     func startWithoutAModel() async {
         let result = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent, \.standardErrorContent]) {
             try await exitWithPair(pair(started: false, model: false), actions: pairActions(serving: false)) { _ in
                 try await runCLICommand(Start.self, ["start"])
             }
         }
-        #expect(lines(result?.standardOutputContent) == [
-            "This Mac is in a two-Mac cluster with \(otherMac): starting the pair.",
-            "No model was chosen for the pair yet: run `darkbloom start` in a terminal to choose one.", ""])
+        #expect(lines(result?.standardOutputContent).first == "This Mac is in a two-Mac cluster with \(otherMac), which is "
+            + "stopped: serving this Mac alone (`darkbloom cluster` starts the pair again).")
         let calls = pairActionCalls(text(result?.standardErrorContent))
         #expect(calls.isEmpty, "\(calls)")
     }
@@ -1000,9 +1061,8 @@ struct ClusterPairValidatorFindingsTests {
     @Test("--solo can't start beside this Mac's serving part of the pair: refused, and said why")
     func soloRefusedWhileThisMacsPartServes() {
         #expect(Start.pairStart(pair(), solo: true, terminal: false) == .refuse(soloBesideServingRefusal))
-        #expect(Start.pairStart(pair(started: false), solo: true, terminal: false) == .single(note: "This Mac is in a two-Mac "
-            + "cluster with \(otherMac), which is stopped. Stop single-Mac serving (`darkbloom stop --solo`) before you start the "
-            + "pair again (`darkbloom start`)."))
+        #expect(Start.pairStart(pair(started: false), solo: true, terminal: false) == .serveAlone(note: "This Mac is in a two-Mac "
+            + "cluster with \(otherMac), which is stopped: serving this Mac alone (`darkbloom cluster` starts the pair again)."))
     }
 
     @Test("the app's local mode on a paired Mac refuses plainly instead of reporting a start")

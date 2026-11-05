@@ -144,27 +144,31 @@ struct Update: AsyncParsableCommand {
 
         case .updated(let from, let to):
             print("Updated: v\(from) -> v\(to)")
-            if Self.soloJobBesidePair() {
+            switch Self.restartChoice() {
+            case .pair:
                 for line in Self.soloJobLeftLines { print(line) }
                 try await restartClusterService(into: to, look: look)
-            } else if LaunchAgent.isLoaded() {
+            case .singleMac(let releaseLeftover):
+                try await releaseLeftoverPart(releaseLeftover)
                 try await restartInstalledProvider(updater, operation: "manual-update-restart", look: look)
-            } else if ClusterService.running() {
+            case .clusterService:
                 try await restartClusterService(into: to, look: look)
-            } else {
+            case .nothing:
                 print("Restart the provider for the new version to take effect.")
             }
 
         case .restartRequired(let from, let to):
             print("v\(to) is already installed (current process: v\(from)).")
-            if Self.soloJobBesidePair() {
+            switch Self.restartChoice() {
+            case .pair:
                 for line in Self.soloJobLeftLines { print(line) }
                 try await restartClusterService(into: to, look: look)
-            } else if LaunchAgent.isLoaded() {
+            case .singleMac(let releaseLeftover):
+                try await releaseLeftoverPart(releaseLeftover)
                 try await restartInstalledProvider(updater, operation: "manual-candidate-restart", look: look)
-            } else if ClusterService.running() {
+            case .clusterService:
                 try await restartClusterService(into: to, look: look)
-            } else {
+            case .nothing:
                 print("Restart the provider for v\(to) to take effect.")
             }
 
@@ -204,6 +208,42 @@ struct Update: AsyncParsableCommand {
     static func soloJobBesidePair(soloJobLoaded: Bool = LaunchAgent.isLoaded() && !LaunchAgent.installedJobIsClusterMember(),
                                   pairServes: Bool = ClusterService.pairServesHere()) -> Bool {
         soloJobLoaded && pairServes
+    }
+
+    /// What an update restarts.
+    enum RestartChoice: Equatable {
+        /// The pair, which runs here; a single-Mac job beside it is left as it is (`soloJobLeftLines`).
+        case pair
+        /// Single-Mac serving, which this Mac has; `releaseLeftover`: a pair that doesn't run here first gives back the
+        /// serving lock its leftover part holds (`Start.releaseLeftoverPart`).
+        case singleMac(releaseLeftover: Bool)
+        case clusterService
+        case nothing
+    }
+
+    /// The pair decides only while it runs here (`ClusterService.pairServesHere`), not by its saved start: a Mac whose
+    /// other Mac stopped taking part gets its single-Mac serving back from an update.
+    static func restartChoice(soloJobLoaded: Bool = LaunchAgent.isLoaded(),
+                              soloJobIsMember: Bool = LaunchAgent.installedJobIsClusterMember(),
+                              pairServes: Bool = ClusterService.pairServesHere(),
+                              leftoverPart: Bool = leftoverPartHere(ClusterPairSummary.local()),
+                              clusterServiceRunning: Bool = ClusterService.running()) -> RestartChoice {
+        if soloJobBesidePair(soloJobLoaded: soloJobLoaded && !soloJobIsMember, pairServes: pairServes) { return .pair }
+        if soloJobLoaded { return .singleMac(releaseLeftover: leftoverPart && !soloJobIsMember) }
+        return clusterServiceRunning ? .clusterService : .nothing
+    }
+
+    /// A pair that doesn't run here while its saved start and cluster service are left on this Mac.
+    static func leftoverPartHere(_ pair: ClusterPairSummary) -> Bool { pair.pairIdle && pair.started && pair.serviceRunning }
+
+    private func releaseLeftoverPart(_ release: Bool) async throws {
+        guard release else { return }
+        let pair = ClusterPairSummary.local()
+        print(pair.servingAloneLine)
+        guard await Start.releaseLeftoverPart() else {
+            for line in pair.releaseFailedLines { print(line) }
+            throw ExitCode.failure
+        }
     }
 
     static var soloJobLeftLines: [String] {

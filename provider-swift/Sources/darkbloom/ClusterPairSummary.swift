@@ -47,6 +47,14 @@ struct ClusterPairSummary: Sendable, Equatable {
     /// The leader asked the cluster to serve (kept across restarts; `darkbloom cluster` → Stop clears it).
     var started: Bool = false
     var serviceRunning: Bool = false
+    /// Whether the pair actually runs on this Mac, as its cluster service decided (`ClusterPairWatch`): the start above
+    /// may be left from a pair whose other Mac stopped taking part. Nil when no service said (one from before 0.10.9):
+    /// `started` decides then.
+    var pairRunning: Bool?
+    /// Why the started pair doesn't run here, with the command to serve this Mac alone (`ClusterPairWatch.line`).
+    var pairNotRunning: String?
+    /// The other Mac answered this Mac's cluster service lately (its control isn't waiting for it).
+    var otherMacReachable: Bool = false
     var startsAtLogin: Bool = false
     /// Which Mac's link follower macOS keeps off the local network, when that keeps the pair from serving.
     var localNetworkRefused: ClusterLocalNetworkAccess.Refused?
@@ -237,7 +245,50 @@ struct ClusterPairSummary: Sendable, Equatable {
 
     /// This Mac's part serves: single-Mac serving can't run beside it (both take this Mac's one serving lock,
     /// `provider.pid.lock`).
-    var partServes: Bool { started && serviceRunning && !pairingUnreadable }
+    var partServes: Bool { (pairRunning ?? started) && serviceRunning && !pairingUnreadable }
+
+    /// The pair doesn't run on this Mac (stopped, or started but not running: `pairNotRunning`): `darkbloom start`
+    /// serves this Mac alone, after `servingAloneLine`.
+    var pairIdle: Bool { paired && !pairingUnreadable && !partServes }
+
+    /// `darkbloom start` (`--solo`, `--model`, the app's Go Online, a script) on a Mac whose pair doesn't run: one line.
+    var servingAloneLine: String {
+        if started {
+            return "This Mac is in a two-Mac cluster with \(otherMac), which isn't running here"
+                + (otherMacReachable ? "" : " (\(otherMac) isn't answering)")
+                + ": serving this Mac alone, and its saved start is cleared (`\(Self.cli) cluster` starts the pair again)."
+                + (role == .member ? followerRestartNote : "")
+        }
+        return "This Mac is in a two-Mac cluster with \(otherMac), which is stopped: serving this Mac alone "
+            + "(`\(Self.cli) cluster` starts the pair again)."
+    }
+
+    /// A following Mac records its leader's start from the leader's next accepted lease, so a start cleared here comes
+    /// back while the leader keeps the pair started; its part then waits for single-Mac serving to stop here.
+    private var followerRestartNote: String {
+        " While \(otherMac) leads with the pair started, it may start this Mac's part again once single-Mac serving stops "
+            + "here: `\(Self.cli) stop` on \(otherMac) stops the pair."
+    }
+
+    /// `darkbloom stop` on a Mac whose pair doesn't run, before its leftover part stops.
+    var leftoverStopLine: String {
+        "This Mac is in a two-Mac cluster with \(otherMac), which isn't running here: stopping this Mac's leftover part "
+            + "and clearing its saved start (`\(Self.cli) cluster` starts the pair again)."
+    }
+
+    /// `darkbloom restart` on a Mac whose pair doesn't run and that has no single-Mac serving.
+    var idleRestartRefusal: [String] {
+        [pairNotRunning ?? pairSentence,
+         "Nothing serves on this Mac, so nothing was restarted: `\(Self.cli) start` serves this Mac alone; "
+            + "`\(Self.cli) cluster` starts the pair."]
+    }
+
+    /// The pair's part couldn't be stopped for single-Mac serving: why, and the one step that always works.
+    var releaseFailedLines: [String] {
+        ["This Mac's part of the pair didn't stop in time, so single-Mac serving can't start yet.",
+         "To leave the pair on this Mac: `\(Self.cli) cluster pair --status`, then `\(Self.cli) cluster pair --forget <pin>`, "
+            + "then `\(Self.cli) start`."]
+    }
 
     /// `darkbloom start --solo` while this Mac's part of the pair serves.
     var soloBesideServingRefusal: [String] {
@@ -292,6 +343,7 @@ struct ClusterPairSummary: Sendable, Equatable {
             return "Cluster: this Mac's pairing record couldn't be read" + (reason.map { " (\($0))" } ?? "")
                 + " · run `\(Self.cli) cluster` to check it (details: `\(Self.cli) cluster status`)"
         }
+        if let idle = startedButNotRunningLine { return "Cluster: " + idle }
         var parts = [role.map { $0 == .leader ? "this Mac leads" : "this Mac follows" } ?? "this Mac is paired", otherMac]
         if let model { parts.append("\(model) \(servesWords)") }
         let now: String
@@ -476,9 +528,20 @@ extension ClusterPairSummary {
         }
         var out = ["Cluster: " + rolesWords, "Model: " + modelWords]
         out.append("Serves: " + servesWords + (localOnly ? " (API key: `\(Self.cli) local` on the Mac that serves it)" : ""))
+        if let idle = startedButNotRunningLine {
+            out.append(idle)
+            out.append("Next: `\(Self.cli) start` serves this Mac alone; `\(Self.cli) cluster` starts the pair again.")
+            return out
+        }
         out.append(contentsOf: stateLines)
         if let next { out.append("Next: " + next) }
         return out
+    }
+
+    /// The pair is started but doesn't run here (its cluster service said why): the one line `status` gives.
+    var startedButNotRunningLine: String? {
+        guard paired, !pairingUnreadable, started, pairRunning == false else { return nil }
+        return pairNotRunning ?? "The pair isn't running on this Mac (\(otherMac) isn't taking part)."
     }
 
     /// "this Mac (Mac Studio) leads · the other Mac (Apple M5 Max, 128 GB) follows"

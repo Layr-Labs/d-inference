@@ -261,9 +261,27 @@ This Mac is in a two-Mac cluster with the other Mac (Apple M5 Max, 128 GB): star
 ```
 
 `--solo` starts single-Mac serving on this Mac instead, after one line, while
-the pair is stopped: single-Mac serving and this Mac's part of the pair take
-the same serving lock, so `start --solo` while the part serves is refused
-(stop the pair first). The
+the pair doesn't run here: single-Mac serving and this Mac's part of the pair take
+the same serving lock, so `start --solo` while the pair runs here is refused
+(stop the pair first).
+
+While the pair doesn't run here (`ClusterPairWatch`: stopped, or its other Mac
+hasn't answered for 15 minutes, or it never served in its first 15 minutes),
+`darkbloom start` serves this Mac alone (`Start.PairStart.serveAlone`): with
+`--solo`, with single-Mac options such as `--model` (the app's Go Online,
+`autopilot enable`), and from a script. In a terminal it asks **Serve on this
+Mac alone** (the default when the other Mac isn't answering) or **Start the pair
+(`darkbloom cluster`)**. It first stops a part of the pair still running here and
+clears the pair's saved start on this Mac (`ClusterService.releaseForSingleMac`,
+up to 5 minutes), then says one line: ``This Mac is in a two-Mac cluster with the
+other Mac (…), which isn't running here: serving this Mac alone, and its saved
+start is cleared (`darkbloom cluster` starts the pair again).`` A part that
+doesn't stop in time starts nothing (exit 1) and names `darkbloom cluster pair
+--status`, then `darkbloom cluster pair --forget <pin>`, then `darkbloom start`.
+While the other Mac answers but the pair hasn't served yet (it may still be
+loading), only `--solo` and the terminal's choice serve this Mac alone; the
+other forms act on the pair as while it runs.
+See [going back to serving on one Mac](two-mac-cluster.md#going-back-to-serving-on-one-mac). The
 cluster's own starts (`--cluster-member`, `--distributed`, the cluster
 service's solo part) and launchd's `--foreground` child are never redirected,
 and a replacement drains only the provider service's process, never the
@@ -282,7 +300,7 @@ Options on a paired Mac (`Start.singleMacOptions`, `ClusterPairSummary.singleMac
 | Options | Without `--solo` on a paired Mac |
 |---|---|
 | `--config` | Applies to the pair (its cluster service settings) |
-| `--model`, `--all`, `--idle-timeout`, `--schedule`, `--autopilot`/`--no-autopilot`, `--coordinator-url`, `--timeout`, `--force`, `--local-endpoint`, `--port`, `--bind`, `--no-auth` | Refused by name, nothing starts, exit 64: ``This Mac is in a two-Mac cluster with the other Mac (…): `--model` is for single-Mac serving, so nothing was started.`` then ``To choose the pair's model, run `darkbloom start` in a terminal; to serve this Mac alone with it, add --solo.`` |
+| `--model`, `--all`, `--idle-timeout`, `--schedule`, `--autopilot`/`--no-autopilot`, `--coordinator-url`, `--timeout`, `--force`, `--local-endpoint`, `--port`, `--bind`, `--no-auth` | While the pair doesn't run here: single-Mac serving with them, as above. While it runs here: refused by name, nothing starts, exit 64: ``This Mac is in a two-Mac cluster with the other Mac (…): `--model` is for single-Mac serving, so nothing was started.`` then ``To choose the pair's model, run `darkbloom start` in a terminal; to serve this Mac alone with it, add --solo.`` |
 | `--local` | Refused the same way, plus ``To serve the pair on the leading Mac's own API only: `darkbloom cluster local`.`` (also said for `--local-endpoint`) |
 | `--cluster-member`, `--distributed`, `--foreground` | The cluster's own starts and launchd's child: never redirected to the pair |
 | `--always-on`, `--supervise`, `--no-coordinator` | Valid only with `--cluster-member` or `--distributed` (refused at parse otherwise) |
@@ -1570,6 +1588,12 @@ Mac's cluster service anyway (`Cluster.Stop.refusal`). After
 never touches the pair; a daemon state the cluster's part wrote is never drained
 (`ServiceDrain.soloProviderState`).
 
+While the pair doesn't run here (`Stop.PairedStop.stopHere`), plain `stop` stops
+what runs on this Mac: a leftover part of the pair (its saved start on this Mac
+is cleared) and single-Mac serving. It never asks the other Mac. While the
+other Mac answers but the pair hasn't served yet, plain `stop` stops the pair
+on both Macs, as while it runs.
+
 Code: `provider-swift/Sources/darkbloom/ServiceDrain.swift` (`DrainOptions`,
 `ServiceDrain.prepare`) and `provider-swift/Sources/darkbloom/StopCommand.swift`
 (`Stop`). See [graceful lifecycle behavior](#graceful-stop-and-restart) for signal
@@ -1749,7 +1773,10 @@ On a Mac in a two-Mac cluster, `restart` restarts the pair: it stops serving on
 both Macs, starts the current model again, waits until it serves, and ends with
 the same result block and exit status as `start` without a terminal
 (`Restart.pairRestart`, `ClusterPairCommands.restart`). `--solo` restarts
-single-Mac serving on this Mac only.
+single-Mac serving on this Mac only. While the pair doesn't run here, plain
+`restart` restarts single-Mac serving (after stopping a leftover part of the
+pair), or, with none set up, restarts nothing and says `darkbloom start` serves
+this Mac alone.
 
 A drain timeout returns non-success and leaves the old process draining with
 automatic restart disabled; repeat the command with a new deadline or explicitly

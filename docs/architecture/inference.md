@@ -5003,6 +5003,22 @@ this build served in tensor parallel)." A plan that chooses tensor parallel on
 measured steps adds ", on its own step as measured on both Macs". The setup's
 model list says `tensor parallel: not measured yet`.
 
+**A pipeline's step on an estimated whole model.** A pipeline decodes one whole
+step across its Macs, each Mac its layers at its whole-model rate. Where that
+rate is an estimate (`ClusterDeviceSpeed.wholeModelEstimated`: the device
+index's, which is the weights' read time with no per-token floor, or the one a
+tensor-parallel served record carries beside its measured shard rates) and a
+share of this model was measured on the Mac, the planner takes the whole step as
+at least that share's measured step plus the rest of the divided weights at the
+index's rate (`wholeStepSeconds`): a larger share never steps faster. A
+whole-model measurement is used as it is. On two M5 Ultras 256 GB the index put
+Gemma 4 26B's whole step at 5.5 ms beside a measured half step of about 7 ms, so
+the pipeline was predicted at about 170-183 tok/s against 107 in tensor parallel,
+and the question recommended it; 59.9 and 105.1 tok/s were served. With the
+measured half step the pipeline is predicted at about 95-100 tok/s, below tensor
+parallel. The remaining gap to 60 is the pipeline's per-step cost between the
+Macs, which the plan still prices as two small link records [INFERENCE].
+
 The rule changes nothing else:
 
 1. A tensor-parallel placement in a better hardware group (it loads now, no

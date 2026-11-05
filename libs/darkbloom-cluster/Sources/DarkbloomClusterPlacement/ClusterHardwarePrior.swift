@@ -106,7 +106,7 @@ public enum ClusterHardwarePrior {
             result.append(.init(label: device.label, profile: device.profile,
                 speed: .init(source: .transferredByDeviceIndex, absolute: true, rested: rates, sustained: nil,
                     explanation: "estimate from this Mac's own device index (\(index.benchmark)): the model's weight bytes per token "
-                        + "at the bytes per second the index moved; this model's own speed is unknown")))
+                        + "at the bytes per second the index moved; this model's own speed is unknown", wholeModelEstimated: true)))
         }
         return result
     }

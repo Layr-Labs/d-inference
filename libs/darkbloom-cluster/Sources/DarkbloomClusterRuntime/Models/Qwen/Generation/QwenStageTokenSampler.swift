@@ -82,6 +82,15 @@ final class QwenStageTokenSampler {
         return pendingLogprobs.map(Self.tokenLogprobs)
     }
 
+    /// The last `sample`'s logprobs as graph nodes, once: a caller that draws
+    /// the next step before it reads this one keeps each step's gather with
+    /// its step and reads it with `tokenLogprobs` after the step's token was
+    /// agreed. Nil when the request asks for none.
+    func takePendingStepLogprobs() -> CBv2StepLogprobs? {
+        defer { pendingLogprobs = nil }
+        return pendingLogprobs
+    }
+
     /// The current round's verify window (`verifyRound`), kept for its
     /// logprobs when the request asks for them.
     private var verifiedWindow: MLXArray?

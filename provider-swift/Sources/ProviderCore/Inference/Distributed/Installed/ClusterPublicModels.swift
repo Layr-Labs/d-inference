@@ -19,8 +19,8 @@ public struct ClusterPublicModel: Sendable, Equatable {
     /// The ranks of the evidence placement.
     public let ranks: Ranks
     /// The resident assistant the owner declared public for this artifact's
-    /// tensor-parallel placement; nil (every model today) keeps a setup saved
-    /// for coordinator pairing without one.
+    /// tensor-parallel placement; nil keeps a setup saved for coordinator
+    /// pairing without one.
     public var tensorAssistant: ClusterPublicTensorAssistant? = nil
 
     /// The evidence placement's ranks: how many, each on one GPU architecture
@@ -97,6 +97,18 @@ public enum ClusterPublicModels {
     /// cut (owner, 2026-11-03: "universal for hardware not hardwired to 2x m5 ultras").
     static let twoM5Ultras = ClusterPublicModel.Ranks(count: 2, gpuArchitecture: "applegpu_g17d", macOSMajor: 27, macOSMinor: 0)
 
+    /// Qwen3.8-27B's resident assistant on tensor-parallel pairs (owner, 2026-11-05: "spec decode should be on and
+    /// working for all"): the policy local clusters plan by themselves (depth 3, admitted cohorts) with the inline
+    /// head's inventory the native metadata helper returns for the registered artifact. Its evidence: same-request
+    /// speculative and plain decodes on one pair were identical (`qwen27AssistantEvidenceDocument`).
+    static let qwen27AssistantEvidenceDocument = "docs/reports/2026-11-05-qwen27-public-assistant.md"
+    static let qwen27TensorAssistant = try! ClusterPublicTensorAssistant(
+        policy: try! ClusterQwenTensorAssistantPolicy(depth: 3,
+            inventorySHA256: "6bf428caf645e41cfda642108fc9a21d199ca999e80907be7476e87026afb014", verification: .admittedCohort),
+        evidenceDocument: qwen27AssistantEvidenceDocument,
+        evidenceSHA256: "bab931aeeb0023a4a79c16b24f8979c8af89b8a746411290d0a29f2f9cc94c0c",
+        qualifiedAt: "2026-11-05T17:00:00Z")
+
     /// Owner ruling, 2026-10-31: "It should be tensor or pipeline obviously but that shouldn't matter for the coordinator".
     /// MiMo-V2.6-Flash and Gemma 4 26B QAT (2026-11-03) take the same two families: their pipeline rests on the bundled
     /// records, their tensor parallel on the owner's decision (its code lands with #1706 and #1707). MiMo also keeps
@@ -108,7 +120,8 @@ public enum ClusterPublicModels {
               families: [.pipeline, .tensorParallel], schedules: [1, 2], ranks: twoM5Ultras),
         .init(runtimeModelID: "registered_qwen38_27b", catalogModelID: "EigenLabs/Qwen3.8-27B-4bit-mtp",
               artifactSHA256: "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
-              families: [.pipeline, .tensorParallel], schedules: [1, 2], ranks: twoM5Ultras),
+              families: [.pipeline, .tensorParallel], schedules: [1, 2], ranks: twoM5Ultras,
+              tensorAssistant: qwen27TensorAssistant),
         .init(runtimeModelID: "registered_mimo_v26_flash_mopd", catalogModelID: "mimo-v2.6-flash-mopd",
               artifactSHA256: "2334547d8acc9898ad4a74570ce44d2b12390bbac8d4bc52c092eb5ad5cfe034",
               families: [.pipeline, .pipelineSpeculative, .tensorParallel], schedules: [1, 2], ranks: twoM5Ultras),

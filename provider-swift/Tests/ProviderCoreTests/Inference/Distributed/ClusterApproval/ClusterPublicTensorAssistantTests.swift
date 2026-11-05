@@ -111,8 +111,31 @@ struct ClusterPublicTensorAssistantTests {
             artifactSHA256: ClusterApprovalMacs.hash("b"), families: [.pipeline], schedules: [1, 2], ranks: ClusterPublicModels.twoM5Ultras,
             tensorAssistant: declared[0].tensorAssistant)
         #expect(ClusterPublicModels.tensorAssistant(runtimeModelID: model, artifactSHA256: ClusterApprovalMacs.hash("b"), in: pipelineOnly) == nil)
-        #expect(ClusterPublicModels.declared.allSatisfy { $0.tensorAssistant == nil }, "the owner declares an assistant with its evidence")
+        #expect(ClusterPublicModels.declared.filter { $0.tensorAssistant != nil }.map(\.runtimeModelID) == [model],
+                "only Qwen3.8-27B declares an assistant, with its evidence")
         #expect(ClusterPublicModels.current == ClusterPublicModels.declared)
+    }
+
+    /// This build serves Qwen3.8-27B's assistant on pairs served through Darkbloom: the exact policy local clusters
+    /// plan by themselves, with the registered artifact's head inventory, planned under `auto`, and its report is the
+    /// evidence of the model's tensor-parallel parity qualifications. Before the declaration, a cluster served through
+    /// Darkbloom planned no assistant and refused one.
+    @Test func thisBuildDeclaresQwensAssistantForPairsServedThroughDarkbloom() throws {
+        let artifact = "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463"
+        let declared = try #require(ClusterPublicModels.tensorAssistant(runtimeModelID: ClusterQwenTensorAssistantPolicy.runtimeModelID,
+                                                                         artifactSHA256: artifact, in: ClusterPublicModels.declared))
+        #expect(declared.policy == (try ClusterQwenTensorAssistantPolicy(depth: ClusterPlacementTensorAssistantSelection.automaticDepth,
+            inventorySHA256: "6bf428caf645e41cfda642108fc9a21d199ca999e80907be7476e87026afb014", verification: .admittedCohort)))
+        #expect(declared.evidenceDocument == "docs/reports/2026-11-05-qwen27-public-assistant.md")
+        #expect(ClusterPlacementTensorAssistantSelection.discoveryMode(.auto, coordinator: true, declared: true) == .auto)
+        let model = try #require(ClusterPublicModels.declared.first { $0.runtimeModelID == ClusterQwenTensorAssistantPolicy.runtimeModelID })
+        let qualifications = ClusterRuntimeApprovalFacts.parityQualifications(model, metallibSHA256: ClusterApprovalMacs.hash("9"),
+            inputModalities: ["text", "image"], layers: 64, servesMedia: { $0 == .tensorParallel })
+        #expect(qualifications.filter { $0.mode == .tensorParallel }.map(\.evidenceSHA256) == [declared.evidenceSHA256, declared.evidenceSHA256])
+        #expect(qualifications.filter { $0.mode == .pipeline }.allSatisfy { $0.evidenceSHA256 == ClusterPublicModels.evidenceSHA256 })
+        // The envelope is the plain tensor-parallel one: logprobs, penalties, bias and media rows decode on the target path.
+        #expect(qualifications.filter { $0.mode == .tensorParallel }.allSatisfy { $0.requestEnvelope.sampling && $0.requestEnvelope.tools
+            && $0.requestEnvelope.vision })
     }
 
     /// The plan's public-traffic line: a tensor-parallel placement that decodes with the assistant is offered only

@@ -982,9 +982,9 @@ final class DistributedAutomaticBatchPlannerTests {
 
     /// The onboarding's public-traffic line (`ClusterSetupPlanning.decide`, `publicTraffic`) for Qwen3.8 27B, whose
     /// owner declared tensor parallel public (`ClusterPublicModels`): a plan without the speculative assistant is
-    /// qualified; a plan that decodes with it is not said to be, since a setup saved for coordinator pairing carries
-    /// no assistant (`ClusterConfiguration.validate`).
-    @Test func onlyAPlanWithoutTheAssistantSaysItIsQualifiedForPublicTraffic() throws {
+    /// qualified, and so is one that decodes with it while the build declares the assistant; without a declaration
+    /// it is not, since a setup saved for coordinator pairing then carries none (`ClusterConfiguration.validate`).
+    @Test func aPlanWithTheAssistantIsQualifiedForPublicTrafficOnlyWhereDeclared() throws {
         let home = try home(); record(home)
         let artifact = try #require(ClusterPublicModels.declared.first {
             $0.runtimeModelID == ClusterQwenTensorAssistantPolicy.runtimeModelID }).artifactSHA256
@@ -1009,7 +1009,16 @@ final class DistributedAutomaticBatchPlannerTests {
         let target = try plan(try assistantQuote(1, artifact: artifact, assistant: false))
         #expect(target.setup.selectedGenerationMode == .tensorParallel && target.setup.tensorAssistant == nil)
         #expect(target.line?.hasPrefix("qualified for public traffic in tensor parallel mode") == true, "\(target.line ?? "")")
-        let assisted = try plan(try assistantQuote(1, verification: .admittedCohort, artifact: artifact))
+        // This build declares the 27B's assistant: a plan that decodes with it is qualified too.
+        let declared = try plan(try assistantQuote(1, verification: .admittedCohort, artifact: artifact))
+        #expect(declared.setup.tensorAssistant != nil)
+        #expect(declared.line == target.line, "\(declared.line ?? "")")
+        // A build that declares none says the assisted plan is not offered.
+        var undeclared = ClusterPublicModels.declared
+        undeclared.indices.forEach { undeclared[$0].tensorAssistant = nil }
+        let assisted = try ClusterPublicModels.$declarationOverride.withValue(undeclared) {
+            try plan(try assistantQuote(1, verification: .admittedCohort, artifact: artifact))
+        }
         #expect(assisted.setup.tensorAssistant != nil)
         #expect(assisted.line?.hasPrefix("qualified for public traffic") == false, "\(assisted.line ?? "")")
         #expect(assisted.line?.hasPrefix("not offered for public traffic") == true, "\(assisted.line ?? "")")
@@ -1175,7 +1184,9 @@ final class DistributedAutomaticBatchPlannerTests {
 /// build.
 private func onLargeStack<T: Sendable>(_ body: @escaping @Sendable () -> T) -> T {
     let result = LargeStackResult<T>(), done = DispatchSemaphore(value: 0)
-    let thread = Thread { result.value = body(); done.signal() }
+    // A thread inherits no task-local value: the test's public-model declaration is bound again there.
+    let declaration = ClusterPublicModels.declarationOverride
+    let thread = Thread { result.value = ClusterPublicModels.$declarationOverride.withValue(declaration) { body() }; done.signal() }
     thread.stackSize = 16 << 20
     thread.start()
     done.wait()

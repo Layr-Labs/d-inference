@@ -1,21 +1,20 @@
-### Qwen3.8-27B pairs can keep their speculative assistant on public traffic once a build declares it
+### Qwen3.8-27B pairs decode with their speculative assistant through Darkbloom
 
-- Nothing changes in serving until a build declares the assistant public. This
-  build declares none: coordinator-paired Qwen3.8-27B setups still carry no
-  speculative assistant, and every release fact, approval and committed start
-  keeps its resource policy digest. The owner declares one only after the
-  real-pair evidence.
-- A declaration names the exact depth, head inventory and singleton
-  verification, with the SHA-256 of its evidence report, beside the public
-  model declaration. Once a build carries one:
-  - the guided setup plans a cluster served through Darkbloom with that
-    assistant under `mtp_mode = "auto"`;
-  - each Mac admits a cluster approval beside exactly that assistant, and any
-    other is refused before any part stops;
-  - the release's cluster runtime facts, the coordinator's approval and every
-    committed start name it in their resource policy digest;
-  - the pair's slot posture shows MTP as configured, with the counts its
-    runtime reports.
-- The only change visible now is the wording of one refusal: an assistant
-  beside a cluster approval is refused as serving local clusters only "unless
-  this build declares it public".
+- Two-Mac pairs that serve Qwen3.8-27B in tensor parallel through Darkbloom
+  now decode with the model's speculative assistant (depth 3), as local
+  clusters and single Macs already do. The guided setup plans it under the
+  default `mtp_mode = "auto"`. `mtp_mode = "off"` still plans the pair
+  without it.
+- On one pair, the same requests decoded with the assistant and without it
+  gave identical greedy, sampled and tool answers. Requests that ask for
+  logprobs, use penalties or a logit bias, or carry images decode one token a
+  step, as before. The evidence is in
+  `docs/reports/2026-11-05-qwen27-public-assistant.md`.
+- The release's cluster runtime facts name the assistant: the model's
+  tensor-parallel qualifications rest on that report, and its resource policy
+  digest carries the assistant's exact settings. A pair whose Macs run another
+  assistant is refused before any part stops.
+- Speed records from served requests now say whether the request came through
+  Darkbloom or the local API and whether the assistant decoded it. A plan uses
+  only the records served the way it will serve, so a local pair's assisted
+  speed no longer stands for the same pair through Darkbloom.

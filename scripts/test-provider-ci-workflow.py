@@ -296,6 +296,11 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         dates = steps["Refuse back-deployed Date comparisons in provider source"]
         self.assertEqual(field(dates, "if"), "${{ !cancelled() }}")
         self.assertIn("python3 scripts/check-date-comparisons.py", run_command(dates).splitlines())
+        # The prompt fixture downloaders' self-tests need no Mac; dev runs them here.
+        fixtures = steps["Test the prompt fixture downloaders offline"]
+        self.assertEqual(field(fixtures, "if"), "${{ !cancelled() }}")
+        self.assertEqual(run_command(fixtures).splitlines(), ["python3 scripts/test-prepare-prompt-fixtures.py",
+                                                              "python3 scripts/test-prepare-mimo-prompt-fixtures.py"])
         # The record names its change through the lookup's own code, and only
         # a run that tested something records.
         record = steps["Name the record of the change these tests passed"]

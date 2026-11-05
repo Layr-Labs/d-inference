@@ -104,6 +104,10 @@ public final class ClusterService: @unchecked Sendable {
     var responder: ClusterSetupLinkExchange.Responder?
     var stopping = false
     private var syncing = false
+    /// On the leader: why the other Mac's part can't start now, as its status last said (`ClusterService.heldBack(of:)`);
+    /// this Mac's part waits for it instead of starting and ending again. Nil when it says none or didn't answer.
+    private var peerHeldBack: String?
+    private var peerHeldBackSaid: String?
     private var nextSync = Date.distantPast
     // Setting the cluster up again after a Darkbloom update (`checkForUpdate`).
     private var updateInFlight = false
@@ -677,6 +681,8 @@ public final class ClusterService: @unchecked Sendable {
                 return try? JSONDecoder().decode(ClusterServiceStatus.self, from: reply)
             }
             let member = send(.init(op: .status), seconds: 10)
+            // A Mac that doesn't answer holds nothing back: the control leadership handles its absence.
+            self?.lock.withLock { self?.peerHeldBack = member.flatMap(ClusterService.heldBack(of:)) }
             // The leader's cache choices first, so a member it starts runs with them.
             if let member, let cache = ClusterMemberCacheControl.settingsToSend(
                 leader: ClusterCacheSettingsSync.leaderChoices(cacheSettings: (try? ClusterPrefixCacheSettings.savedCacheSettings(
@@ -1009,6 +1015,12 @@ public final class ClusterService: @unchecked Sendable {
                 ranks: max(live.members.count, configuration?.peers.count ?? 2), port: live.port, detail: live.detail ?? live.sessionPhase,
                 readyRankList: live.members.filter(\.ready).map(\.rank))
         }
+        // Single-Mac serving on this Mac, read now whether or not a part is wanted yet: the other Mac's start reads it before
+        // it starts anything (0.10.9 DevNet f1: it was reported only once this Mac wanted to start its part, so the leading
+        // Mac started first and its part kept ending). Never while this Mac's own part holds the lock.
+        let ownPartRuns = lock.withLock { child?.isRunning == true } || oldPart != nil
+        let soloNow = ownPartRuns ? nil
+            : ProviderInstanceHolder.current(lockFile: providerInstanceLock).flatMap { $0.kind == .singleMac ? $0 : nil }
         return lock.withLock {
             let reference = try? saved.reference.get()
             let wait = nextStart.timeIntervalSinceNow
@@ -1018,7 +1030,7 @@ public final class ClusterService: @unchecked Sendable {
                 child: .init(running: child?.isRunning == true || oldPart != nil, starts: starts, lastEnd: lastEnd,
                     restartInSeconds: child == nil && oldPart == nil && wait > 0 ? Int(wait.rounded(.up)) : nil,
                     // A running part says only a refusal its follower got (it keeps retrying, P2-1); an ended one its error.
-                    lastError: child?.isRunning != true && soloServing != nil ? Self.soloServingError(soloServing!)
+                    lastError: soloNow != nil ? Self.soloServingError(soloNow!)
                         : child?.isRunning == true
                         ? Self.runningPartRefusal(linkFollower: childIsLinkFollower, in: serviceFiles.rankLog, from: childLogOffset,
                                                   remembered: &followerRefusalRead)
@@ -1047,7 +1059,8 @@ public final class ClusterService: @unchecked Sendable {
                 value.child.appAttest = Self.memberAppAttest(pid: child?.processIdentifier, state: state)
                 value.child.appAttestRetryAt = Self.memberAppAttestRetryAt(pid: child?.processIdentifier, state: state)
             }
-            value.soloServing = soloServing.map { .init(pid: $0.pid) }
+            value.soloServing = soloNow.map { .init(pid: $0.pid) }
+            value.heldBack = soloNow.map(Self.soloServingError)
             value.pairRunning = value.serving && pairVerdict.running
             value.pairNotRunning = value.serving ? ClusterPairWatch.line(pairVerdict, otherMac: otherMacNameLocked(),
                                                                          cli: BuildEnvironment.current.cliName) : nil
@@ -1577,6 +1590,14 @@ public final class ClusterService: @unchecked Sendable {
         return .success(())
     }
 
+    /// Why the other Mac's part can't start now, from its status: its own held-back reason (`heldBack`, from 0.10.9), or the
+    /// single-Mac provider it reports. Nil when it reports none.
+    static func heldBack(of status: ClusterServiceStatus) -> String? {
+        status.heldBack ?? status.soloServing.map { solo in
+            "a single-Mac Darkbloom provider (" + (solo.pid.map { "process \($0)" } ?? "a process it doesn't name") + ") is serving there"
+        }
+    }
+
     /// This Mac's part's error while single-Mac serving holds it back, in the words the other Mac's screen shows too.
     static func soloServingError(_ holder: ProviderInstanceHolder.Holder) -> String {
         ProviderInstanceHolder.clause(holder) + ", so this Mac's part can't start: `\(BuildEnvironment.current.cliName) stop --solo` stops it"
@@ -1748,6 +1769,17 @@ public final class ClusterService: @unchecked Sendable {
         // in a loop on both Macs). Nothing starts until it stops; the status names it meanwhile.
         if running == nil, key != nil, holdsBackForSoloServing(say: say) { return }
         if key == nil { lock.withLock { soloServing = nil } }
+        // The other Mac said its part can't start for a reason that doesn't clear by itself: this Mac's part waits for that
+        // to change instead of starting, waiting for its missing follower and ending every 38 s (0.10.9 DevNet f1).
+        if running == nil, let key {
+            let reason = ClusterControlPartChoice.waitsForOtherMac(key: key, otherMacHeldBack: lock.withLock { peerHeldBack })
+            let before = lock.withLock { () -> String? in defer { peerHeldBackSaid = reason }; return peerHeldBackSaid }
+            if let reason {
+                if before != reason { say("the other Mac's part can't start (\(reason)): this Mac's part waits for that to change") }
+                return
+            }
+            if before != nil { say("the other Mac's part can start again: starting this Mac's part") }
+        }
         // The restart backoff holds back only the part that ended: serving alone after the grace starts at once.
         guard running == nil, let key, lock.withLock({ !stopping && ClusterControlPartChoice.mayStart(key: key, endedKey: endedKey,
                                                                                                   backoffElapsed: Date() >= nextStart) })

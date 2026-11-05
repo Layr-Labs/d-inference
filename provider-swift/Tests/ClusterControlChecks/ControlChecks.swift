@@ -782,6 +782,12 @@ import Darwin
         expect(P.mayStart(key: "solo:m", endedKey: "cluster:abc", backoffElapsed: false), "another part: at once")
         expect(!P.mayStart(key: "cluster:abc", endedKey: "cluster:abc", backoffElapsed: false), "the part that ended: after its backoff")
         expect(P.mayStart(key: "cluster:abc", endedKey: "cluster:abc", backoffElapsed: true), "backoff elapsed")
+        // 0.10.9 DevNet f1: the leader's part ended every 38 s while the other Mac's single-Mac provider held its part back.
+        let held = "a single-Mac Darkbloom provider (process 68099) is serving there"
+        expect(P.waitsForOtherMac(key: "cluster:abc", otherMacHeldBack: held) == held, "held back there: this Mac's part waits")
+        expect(P.waitsForOtherMac(key: "cluster:abc:local-only@127.0.0.1", otherMacHeldBack: held) == held, "local only: waits too")
+        expect(P.waitsForOtherMac(key: "solo:m", otherMacHeldBack: held) == nil, "serving alone never waits for the other Mac")
+        expect(P.waitsForOtherMac(key: "cluster:abc", otherMacHeldBack: nil) == nil, "nothing held back: it starts")
         expect(!P.mayStart(key: "solo:m", endedKey: "solo:m", backoffElapsed: false), "a crashing solo server backs off too")
         expect(P.mayStart(key: "cluster:abc", endedKey: nil, backoffElapsed: false), "nothing ended: at once")
     }

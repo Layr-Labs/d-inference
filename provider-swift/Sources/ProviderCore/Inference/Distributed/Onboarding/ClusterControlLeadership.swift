@@ -585,6 +585,14 @@ public enum ClusterControlPartChoice: Sendable, Equatable {
         backoffElapsed || key != endedKey
     }
 
+    /// Why this Mac's part of the pair (`key` "cluster:…") waits instead of starting: the other Mac reports its own part
+    /// can't start for a reason that doesn't clear by itself (`otherMacHeldBack`; single-Mac serving there). A part started
+    /// anyway only waits for its missing follower and ends again (every 38 s on pair-2). Never for serving alone ("solo:").
+    public static func waitsForOtherMac(key: String, otherMacHeldBack: String?) -> String? {
+        guard key.hasPrefix("cluster:"), let reason = otherMacHeldBack, !reason.isEmpty else { return nil }
+        return reason
+    }
+
     /// Whether the leader's lease tells its members that the cluster runs (they run their parts only then): while it
     /// runs as planned, and while it waits inside the absence grace for a member to return.
     public static func leaseSaysRunning(mode: ClusterControlNode.Mode, serving: Bool) -> Bool {

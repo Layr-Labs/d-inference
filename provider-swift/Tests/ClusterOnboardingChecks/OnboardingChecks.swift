@@ -206,6 +206,10 @@ import Darwin
         soloServingIsLeftWithNothingStarted()
         soloServingFoundWhileWaitingIsNeverRetried()
         soloServingNamesTheDevNetCommand()
+        // 0.10.9 DevNet, pair-2 (f1): the leader showed the block, the joining Mac said "registering with the coordinator"
+        // for minutes while its own part waited for its single-Mac provider (process 68099).
+        soloServingOnTheJoiningMacIsSaidOnBothScreens()
+        theJoiningMacFollowsTheStartOnceSingleMacServingStops()
         print("onboarding checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -2941,6 +2945,66 @@ import Darwin
                 : .failure(.init("The other Mac did not answer over the cable."))
         }
         return made
+    }
+
+    static let p2Max = ClusterOnboardingSoloServing(mac: "the other Mac (Apple M5 Max, 128 GB)", pid: 68099)
+    /// The leading Mac's status line while the joining Mac's single-Mac provider blocks the pair (its `localStatus`).
+    static let leaderBlockedStatus = [ClusterOnboardingNotServing.statusLine(model: "Qwen 3.8 27B", reason: ClusterOnboardingSoloServing.title([p2Max]))]
+        + ClusterOnboardingSoloServing.remedies([p2Max])
+    static let joiningBlockTitle = "\u{2717} The pair can't start: a single-Mac Darkbloom provider (process 68099) is serving on this Mac, "
+        + "and the pair can't share a Mac with it."
+
+    /// The joining Mac, its single-Mac provider seen by its own probe for `blockedLooks` looks (all of them when nil).
+    static func joiningSolo(_ recorder: Recorder, statusSequence: [[String]], blockedLooks: Int? = nil) -> TerminalRun {
+        var made = operations(recorder, pairEvents: memberEvents, pairResult: .paired(role: .member, peerName: leaderName),
+                              pairServingResults: [.failure(.init("Waiting for the coordinator to pair both Macs."))],
+                              statusSequence: statusSequence, followSeconds: 900)
+        let looks = Recorder()
+        made.soloServing = {
+            looks.note("look")
+            let seen = looks.all.count
+            return blockedLooks.map { seen > $0 } == true ? [] : [.init(mac: "this Mac", pid: 68099)]
+        }
+        return TerminalRun(made)
+    }
+
+    static func soloServingOnTheJoiningMacIsSaidOnBothScreens() {
+        // The leading Mac: the block, named for the other Mac, with the stop offered.
+        let leading = TerminalRun(soloOperations(Recorder(), serving: [p2Max]))
+        expect(leading.waitFor(prompt(2)), "f1 leader: choice"); leading.type("\r")
+        expect(leading.waitFor("  2) Leave\n"), "f1 leader: the offer: \(leading.text)"); leading.type("2")
+        expect(leading.finish() == 1, "f1 leader: exit 1")
+        expect(leading.text.contains("\u{2717} The pair can't start: a single-Mac Darkbloom provider (process 68099) is serving on the other "
+               + "Mac (Apple M5 Max, 128 GB), and the pair can't share a Mac with it.\n"), "f1 leader: the ✗: \(leading.text)")
+        // The joining Mac: the same ✗, naming its own provider, never a wait for the coordinator.
+        let recorder = Recorder()
+        let run = joiningSolo(recorder, statusSequence: [["Stopped."], ["Starting Qwen 3.8 27B."], leaderBlockedStatus])
+        expect(run.waitFor(codeQuestion), "f1 joining: the code"); run.type("y")
+        expect(run.waitFor(ClusterOnboardingSoloServing.leaderOffersLine(leaderName)), "f1 joining: the block: \(run.text)")
+        usleep(400_000)
+        run.type("q")
+        expect(run.finish(seconds: 20) == 0, "f1 joining: q leaves")
+        let text = run.text
+        expect(text.contains(joiningBlockTitle + "\n"), "f1 joining: the ✗ names this Mac's provider: \(text)")
+        expect(text.contains("On this Mac: run `darkbloom stop --solo` to stop single-Mac serving there."), "f1 joining: the command")
+        expect(text.contains("Or choose \"Stop single-Mac serving … and start the pair\" on the other Mac (Apple M5 Ultra, 256 GB)"),
+               "f1 joining: the leader offers the stop")
+        expect(!text.contains("Offered to Darkbloom") && !text.contains("registering with the coordinator")
+               && !recorder.all.contains("pairServing"), "f1 joining: never a wait for the coordinator: \(recorder.all)")
+        expect(text.components(separatedBy: joiningBlockTitle).count == 2, "f1 joining: said once")
+        expect(ClusterOnboardingDriver.followed(leaderBlockedStatus) == .soloBlocked, "f1: the leader's block line is the block, not an offer")
+        transcript("member-solo-block", text, keys: run.keys)
+    }
+
+    static func theJoiningMacFollowsTheStartOnceSingleMacServingStops() {
+        let recorder = Recorder()
+        let run = joiningSolo(recorder, statusSequence: [["Stopped."]] + Array(repeating: leaderBlockedStatus, count: 3)
+                                  + [["Loading Qwen 3.8 27B: 1 of 2 parts ready."], [localServingLine, leadersTestLine]], blockedLooks: 3)
+        expect(run.waitFor(codeQuestion), "f1 cleared: the code"); run.type("y")
+        expect(run.finish(seconds: 30) == 0, "f1 cleared: served once it stopped: \(run.text)")
+        let text = run.text
+        expect(text.contains(joiningBlockTitle) && text.contains("  " + ClusterOnboardingSoloServing.followClearedLine + "\n")
+               && text.contains("\u{2713} Serving Qwen 3.8 27B"), "f1 cleared: the block, then the start, then ✓: \(text)")
     }
 
     static func soloServingOnBothMacsIsSaidBeforeAnythingStarts() {

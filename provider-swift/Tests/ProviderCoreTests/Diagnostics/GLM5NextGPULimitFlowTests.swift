@@ -215,6 +215,21 @@ struct GLM5NextGPULimitFlowTests {
         #expect(!notWritten.lines.contains { $0.hasPrefix("✓") })
     }
 
+    @Test("a limit the Mac does not report is never changed: refused with the reason, before any question")
+    func unreadableLimitIsRefused() {
+        for undo in [false, true] {
+            let mac = FakeMac(limits: .init(gpuWiredLimitMB: nil, globalUserWireLimitBytes: 0, userWireLimitBytes: 0,
+                metalWorkingSetBytes: 115_448_725_504), job: nil)
+            #expect(mac.run(undo: undo) == 2)
+            #expect(mac.requests.isEmpty && mac.questions.isEmpty)
+            #expect(mac.lines.last == "This Mac does not report iogpu.wired_limit_mb, so Darkbloom does not change it. Nothing was changed.")
+        }
+        let wire = FakeMac(limits: .init(gpuWiredLimitMB: 0, globalUserWireLimitBytes: nil, userWireLimitBytes: 0,
+            metalWorkingSetBytes: 115_448_725_504), job: nil)
+        #expect(wire.run() == 2 && wire.requests.isEmpty)
+        #expect(wire.lines.last == "This Mac does not report vm.global_user_wire_limit, so Darkbloom does not change it. Nothing was changed.")
+    }
+
     @Test("--undo removes the job and the raised limit, whatever is in place")
     func undo() throws {
         let mac = FakeMac(limits: Self.metLimits, job: try Self.written(by: Self.raise))

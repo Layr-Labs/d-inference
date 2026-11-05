@@ -1,6 +1,6 @@
 # Local control channels
 
-> Last updated: 2026-11-04
+> Last updated: 2026-11-05
 
 Two local channels can take a provider out of serving without the coordinator:
 the add-on hold socket and the lifecycle mailbox behind `darkbloom addon`. This
@@ -98,7 +98,7 @@ through `/usr/bin/osascript` (`ClusterLinkApproval`); Darkbloom never uses
 | Command | What it changes | Values | Undo |
 |---|---|---|---|
 | `darkbloom cluster link --fix` | A link-local address on the cluster's Thunderbolt port, and its keeper job | Generated from the port; no operator text (`ClusterLinkPrivilegedRequest`) | `--remove` |
-| `darkbloom cluster gpu-limit` | The GPU and user wire limits, and a boot job that reapplies them | From this Mac's own memory: the GPU keeps at most its memory less 16 GiB; M5 Macs of 128 or 256 GB only (`GLM5NextWiredLimitRequest`) | `--undo` |
+| `darkbloom cluster gpu-limit` | The GPU and user wire limits, and a boot job that reapplies them | From this Mac's own memory: the GPU keeps at most its memory less 16 GiB (a sixteenth from 512 GB); Apple silicon Macs with 128 GB or more only, and never where the limits cannot be read (`GLM5NextWiredLimitRequest`) | `--undo` |
 
 `gpu-limit` also requires a terminal and one confirmation before the prompt. A
 raised GPU limit removes no admission check: the host memory gate still decides

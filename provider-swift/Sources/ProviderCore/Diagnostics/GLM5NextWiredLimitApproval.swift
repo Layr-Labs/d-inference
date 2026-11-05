@@ -69,7 +69,7 @@ public struct GLM5NextWiredLimitRequest: Equatable, Sendable {
         switch purpose {
         case .raise(let value):
             return "Darkbloom wants to let this Mac's GPU keep up to \(value.gpuWiredLimitMB >> 10) GB of its "
-                + "\(value.memoryGiB) GB resident, leaving macOS 16 GB, and keep that after restarts, so GLM-5.3-Flash "
+                + "\(value.memoryGiB) GB resident, leaving macOS \(value.memoryGiB - (value.gpuWiredLimitMB >> 10)) GB, and keep that after restarts, so GLM-5.3-Flash "
                 + "can run on two Macs."
         case .remove:
             return "Darkbloom wants to return this Mac's GPU memory limit to the macOS default and remove the job that kept it raised."

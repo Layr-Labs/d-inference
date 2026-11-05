@@ -6,7 +6,7 @@ import Testing
 
 /// The GPU wired-memory limits a GLM pair rank's owner may apply with
 /// `darkbloom cluster gpu-limit`: bounded by this Mac's memory (macOS keeps
-/// 16 GiB), only for validated chips and sizes, and run as fixed commands
+/// 16 GiB, a sixteenth from 512 GB), only on Apple silicon with 128 GB or more, and run as fixed commands
 /// behind macOS's own administrator prompt. Nothing here runs a command.
 @Suite("GLM pair-rank GPU limit approval")
 struct GLM5NextWiredLimitApprovalTests {
@@ -34,19 +34,29 @@ struct GLM5NextWiredLimitApprovalTests {
         }
     }
 
-    @Test("the command and the plan's advice share one rule: M5 Macs with 128 or 256 GB, read from the chip's own name")
-    func eligibility() {
-        for (chip, memory) in [("Apple M5 Max", UInt64(128)), ("Apple M5 Ultra", 256), ("Apple M5", 128), ("Apple M5 Pro", 128)] {
+    @Test("the command and the plan's advice share one rule: any Apple silicon Mac with 128 GB or more, any M generation")
+    func eligibility() throws {
+        // Each eligible Mac gets its memory less what macOS keeps (16 GiB, a sixteenth from 512 GB): the planner's ceiling.
+        for (chip, memory) in [("Apple M1 Ultra", UInt64(128)), ("Apple M2 Ultra", 192), ("Apple M3 Max", 128), ("Apple M4 Max", 128),
+                               ("Apple M5 Max", 128), ("Apple M3 Ultra", 256), ("Apple M5 Ultra", 256), ("Apple M5 Ultra", 512)] {
             #expect(GLM5NextGPULimitEligibility.applies(chipName: chip, physicalMemoryBytes: memory * Self.gib))
-            #expect(GLM5NextWiredLimit.pairRankRecommendation(chipName: chip, physicalMemoryBytes: memory * Self.gib) != nil)
+            let value = try #require(GLM5NextWiredLimit.pairRankRecommendation(chipName: chip, physicalMemoryBytes: memory * Self.gib))
+            #expect(Int(value.gpuWiredLimitMB) == ClusterGPUMemoryLimit.ceilingMegabytes(physicalMemoryBytes: Int(memory * Self.gib)))
+            #expect(value.userWireLimitBytes == memory * Self.gib * 95 / 100)
+            #expect(GLM5NextWiredLimitRequest(.raise(value)) != nil)
         }
-        // Other chips, other sizes, a virtual machine and names no chip class reads.
-        for (chip, memory) in [("Apple M4 Max", UInt64(128)), ("Apple M3 Ultra", 256), ("Apple M6 Max", 128), ("Apple M5 Max", 64),
-                               ("Apple M5 Max", 96), ("Apple M5 Ultra", 512), ("Apple M5 (Virtual)", 128), ("Apple M55 Max", 128), ("", 128)] {
+        #expect(GLM5NextWiredLimit.pairRankRecommendation(chipName: "Apple M2 Ultra", physicalMemoryBytes: 192 * Self.gib)?.gpuWiredLimitMB == 180_224)
+        // Under 128 GB, an Intel Mac, a virtual machine and names no Apple chip reads: refused, each with its reason.
+        for (chip, memory, reason) in [("Apple M4 Pro", UInt64(64), "it has 64 GB of memory; the command needs 128 GB or more"),
+                                       ("Apple M5 Max", 96, "it has 96 GB of memory; the command needs 128 GB or more"),
+                                       ("Intel(R) Core(TM) i9-9980HK CPU @ 2.40GHz", 128, "it is not an Apple silicon Mac"),
+                                       ("Apple M5 (Virtual)", 128, "it is not an Apple silicon Mac"), ("", 128, "it is not an Apple silicon Mac")] {
             #expect(!GLM5NextGPULimitEligibility.applies(chipName: chip, physicalMemoryBytes: memory * Self.gib))
             #expect(GLM5NextWiredLimit.pairRankRecommendation(chipName: chip, physicalMemoryBytes: memory * Self.gib) == nil)
+            #expect(GLM5NextGPULimitEligibility.refusal(chipName: chip, physicalMemoryBytes: memory * Self.gib) == reason)
         }
-        #expect(GLM5NextGPULimitEligibility.macs == "M5 Macs with 128 or 256 GB")
+        #expect(GLM5NextGPULimitEligibility.refusal(chipName: "Apple M4 Max", physicalMemoryBytes: 128 * Self.gib) == nil)
+        #expect(GLM5NextGPULimitEligibility.macs == "Apple silicon Macs with 128 GB or more")
     }
 
     @Test("raising runs the sysctl now and installs the boot job key by key, behind one administrator prompt")

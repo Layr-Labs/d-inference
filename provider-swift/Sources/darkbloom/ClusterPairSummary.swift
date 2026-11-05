@@ -351,7 +351,7 @@ struct ClusterPairSummary: Sendable, Equatable {
         let now: String
         switch state {
         case .serving: now = "serving"
-        case .loading: now = "loading"
+        case .loading: now = "loading" + (reason.map { ": " + $0 } ?? "")
         case .notServing: now = "not serving" + (reason.map { ": " + $0 } ?? "")
         case .stopped: now = "stopped"
         case .otherMacAway: now = reason ?? "the other Mac isn't answering"
@@ -427,7 +427,7 @@ extension ClusterPairSummary {
         if first.hasPrefix("Stopped") { return (.stopped, nil) }
         if first.hasPrefix("Loading ") || first.hasPrefix("Starting ") || first == ClusterOnboardingUpdate.statusLine
             || first.contains("registering both Macs with the coordinator") {
-            return (.loading, nil)
+            return (.loading, partEnded(inLoadingLine: first))
         }
         // A stopped pair reads stopped whatever the other Mac's presence: a stop it asked for before it left.
         if let leaderMode, otherMacAwayModes.contains(leaderMode) {
@@ -438,6 +438,16 @@ extension ClusterPairSummary {
         return (started ? .unknown : .stopped, nil)
     }
 
+    /// A loading line's part that keeps ending ("this Mac's part ended (exit 1: deadline) and starts again by itself",
+    /// `OnboardingLive.endedClause`), as the reason; nil while no part has ended.
+    static func partEnded(inLoadingLine line: String) -> String? {
+        guard let marker = line.range(of: "'s part ended ("),
+              let start = line[..<marker.lowerBound].range(of: "; ", options: .backwards) else { return nil }
+        var reason = String(line[start.upperBound...])
+        if reason.hasSuffix(".") { reason.removeLast() }
+        return reason
+    }
+
     /// What to do next, in commands.
     var next: String? {
         switch state {
@@ -445,7 +455,9 @@ extension ClusterPairSummary {
             return (leftoverService ? "To remove it: `\(Self.cli) cluster stop --service`. " : "")
                 + "To set up a cluster: `\(Self.cli) cluster` on each Mac."
         case .serving: return "To stop or change it: `\(Self.cli) cluster` on \(leadingMac)."
-        case .loading: return "Loading takes a few minutes for a large model; check again with `\(Self.cli) cluster status`."
+        case .loading:
+            if reason != nil { return "Both Macs keep trying by themselves; `\(Self.cli) cluster` on \(leadingMac) shows more." }
+            return "Loading takes a few minutes for a large model; check again with `\(Self.cli) cluster status`."
         case .stopped:
             return "`\(Self.cli) start` on either Mac starts the pair again."
                 + (serviceRunning ? "" : " This Mac's cluster service is off; `\(Self.cli) start` here turns it back on.")

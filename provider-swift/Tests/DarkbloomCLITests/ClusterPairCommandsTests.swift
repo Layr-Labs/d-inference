@@ -291,6 +291,32 @@ struct ClusterStatusPlainTests {
         #expect(S.state(ofStatus: [], started: false, leaderMode: nil) == (.stopped, nil))
     }
 
+    /// R7-4 (0.10.9 DevNet, MiMo tensor parallel): for 12 minutes the leading Mac's part ended "exit 1: deadline" and
+    /// started again while `cluster status --json` said `loading` with `reason: null` on both Macs.
+    @Test("a load whose part keeps ending gives that end as the reason, in the start screen's words")
+    func loadingThatKeepsEndingGivesTheEnd() throws {
+        let ended = try JSONDecoder().decode(ClusterServiceStatus.Child.self,
+            from: Data(#"{"running":false,"starts":2,"lastEnd":"exit 1","lastError":"deadline"}"#.utf8))
+        let clause = try #require(OnboardingLive.endedClause(mac: "this Mac", child: ended))
+        let words = "this Mac's part ended (exit 1: deadline) and starts again by itself"
+        #expect(clause == "; " + words)
+        let running = try JSONDecoder().decode(ClusterServiceStatus.Child.self, from: Data(#"{"running":true,"starts":2,"lastEnd":"exit 1"}"#.utf8))
+        #expect(OnboardingLive.endedClause(mac: "this Mac", child: running) == nil)
+
+        typealias S = ClusterPairSummary
+        #expect(S.state(ofStatus: ["Starting Xiaomi: MiMo-V2.6-Flash" + clause + "."], started: true, leaderMode: "cluster") == (.loading, words))
+        #expect(S.state(ofStatus: ["Loading Xiaomi: MiMo-V2.6-Flash: 1 of 2 parts ready (rank 1 loading)" + clause + "."], started: true,
+                        leaderMode: nil) == (.loading, words))
+        #expect(S.state(ofStatus: ["Starting Xiaomi: MiMo-V2.6-Flash."], started: true, leaderMode: "cluster") == (.loading, nil))
+
+        var summary = pair()
+        summary.read(status: ["Starting Qwen 3.8 27B" + clause + "."], leaderMode: "cluster")
+        #expect(summary.state == .loading && summary.exitCode == 3)
+        #expect(summary.json.reason == words)
+        #expect(summary.statusLine.contains("loading: " + words))
+        #expect(summary.next == "Both Macs keep trying by themselves; `\(BuildEnvironment.current.cliName) cluster` on this Mac shows more.")
+    }
+
     @Test("the exit status: 0 serving, 3 not serving yet, 4 stopped, 5 the other Mac isn't answering, 6 not in a cluster")
     func exitCodes() {
         var summary = pair()

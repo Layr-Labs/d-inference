@@ -46,18 +46,54 @@ final class QwenTensorParallelSwitchableReduction: QwenTensorParallelReduction {
 /// and the planner balances the shares by them.
 ///
 /// It never fails or holds up a load: memory the gate does not admit, a load
-/// deadline too close, or any error gives no probe, and the timed rounds stop
-/// at `budgetNanoseconds`. Only a throwaway state that cannot be retired
-/// fails the load, since its native work may still be running.
+/// deadline too close, or any error gives no probe. Each phase's timed rounds
+/// stop at `budgetNanoseconds` from its first timed round, so the prefill and
+/// warm-up rounds, where the kernels are compiled on first use in the worker
+/// process, take nothing from them; the whole probe stops at
+/// `limitNanoseconds`. Only a throwaway state that cannot be retired fails the
+/// load, since its native work may still be running.
 enum QwenTensorParallelShareProbe {
     static let promptTokens = 64
     static let warmupRounds = 2
     static let timedRounds = 7
     /// Fewest timed rounds a figure is given from.
     static let minimumRounds = 3
+    /// How long one phase's timed rounds run, from its first timed round.
     static let budgetNanoseconds: UInt64 = 1_500_000_000
+    /// How long the whole probe runs, from before its admission: prefill,
+    /// warm-up and timed rounds. Less than `deadlineMarginNanoseconds`, so a
+    /// probe ends before the load deadline it started with.
+    static let limitNanoseconds: UInt64 = 8_000_000_000
     /// No probe when the load's deadline is nearer than this.
     static let deadlineMarginNanoseconds: UInt64 = 10_000_000_000
+
+    /// The probe reached `limitNanoseconds` before its prefill.
+    struct LimitReached: Error {}
+
+    static func limitReached(started: UInt64, clock: () -> UInt64) -> Bool {
+        clock() - started >= limitNanoseconds
+    }
+
+    /// One phase of a probe that started at `started`: `warmupRounds` rounds,
+    /// then up to `timedRounds` timed ones while `budgetNanoseconds` from the
+    /// first timed round holds. No round starts once the probe reached
+    /// `limitNanoseconds`. The timed rounds' times.
+    static func rounds(started: UInt64, clock: () -> UInt64, _ round: () throws -> Void) rethrows -> [UInt64] {
+        var times: [UInt64] = []
+        var timedStarted: UInt64?
+        for index in 0..<(warmupRounds + timedRounds) {
+            let roundStarted = clock()
+            if roundStarted - started >= limitNanoseconds { break }
+            if index >= warmupRounds {
+                let first = timedStarted ?? roundStarted
+                if roundStarted - first >= budgetNanoseconds { break }
+                timedStarted = first
+            }
+            try round()
+            if index >= warmupRounds { times.append(clock() - roundStarted) }
+        }
+        return times
+    }
 
     /// This rank's share in per mille of every divided part; nil outside 1...999.
     static func sharePerMille(shares: [Int], rank: Int) -> Int? {
@@ -126,26 +162,24 @@ enum QwenTensorParallelShareProbe {
                     let value = try QwenTensorParallelBatchSession(model: model, configuration: configuration,
                         host: host, request: request)
                     session = value
-                    while value.schedule.committedPromptTokens < request.promptCount { _ = try value.prefill(check: checked) }
+                    while value.schedule.committedPromptTokens < request.promptCount {
+                        guard !limitReached(started: started, clock: clock) else { throw LimitReached() }
+                        _ = try value.prefill(check: checked)
+                    }
                     // Any token will do: the outputs are not a tensor-parallel result.
                     var token = 1
                     func next() -> Int { token = (token * 37 + 11) % profile.vocabularySize; return token }
                     func timed(_ round: () throws -> Void) throws -> [UInt64] {
-                        var times: [UInt64] = []
-                        for index in 0..<(warmupRounds + timedRounds) {
-                            if index >= warmupRounds, clock() - started >= budgetNanoseconds { break }
-                            let roundStarted = clock()
-                            // Encoded as the native executor encodes a decode round (`decodeCommandBuffers`).
+                        // Encoded as the native executor encodes a decode round (`decodeCommandBuffers`).
+                        try rounds(started: started, clock: clock) {
                             try GPU.withCommandBufferLimits(QwenTensorParallelBatchSession.decodeCommandBuffers) { try round() }
-                            if index >= warmupRounds { times.append(clock() - roundStarted) }
                         }
-                        return times
                     }
                     let plain = try timed {
                         _ = try QwenTensorParallelBatchSession.decode([value], tokens: [next()], check: checked)
                     }
                     var window: [UInt64] = []
-                    if let columns = windowColumns, plain.count >= minimumRounds, clock() - started < budgetNanoseconds {
+                    if let columns = windowColumns, plain.count >= minimumRounds {
                         window = try timed {
                             let tokens = MLXArray((0..<columns).map { _ in Int32(next()) }).reshaped([1, columns])
                             let built = try QwenTensorParallelBatchSession.beginWindows([value], tokens: tokens)
@@ -161,7 +195,9 @@ enum QwenTensorParallelShareProbe {
                 }
             }
             func median(_ values: [UInt64]) -> Int { max(1, Int(values.sorted()[values.count / 2] / 1000)) }
-            guard times.plain.count >= minimumRounds else { return skipped("budget") }
+            guard times.plain.count >= minimumRounds else {
+                return skipped(limitReached(started: started, clock: clock) ? "limit" : "budget")
+            }
             let windowed = times.window.count >= minimumRounds
             let probe = ClusterWorkerShareProbe(sharePerMille: share, plainStepMicroseconds: median(times.plain),
                 windowColumns: windowed ? windowColumns : nil, windowStepMicroseconds: windowed ? median(times.window) : nil,
@@ -174,7 +210,7 @@ enum QwenTensorParallelShareProbe {
                     throw ProbeError("Tensor-parallel share probe could not retire its request (\(error))")
                 }
             }
-            return skipped("error_" + qwenPrefixLogWord(error))
+            return skipped(error is LimitReached ? "limit" : "error_" + qwenPrefixLogWord(error))
         }
     }
 

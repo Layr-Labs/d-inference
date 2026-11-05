@@ -76,6 +76,36 @@ struct QwenTensorParallelShareProbeTests {
         #expect(plain.prompt == 64 && plain.outputs == 1 + rounds && speculative.outputs == 1 + 6 * rounds)
     }
 
+    /// One phase's rounds on a constructed clock (CI, 2026-11-04: a cold
+    /// first probe gave `skipped=budget` when the budget also counted the
+    /// prefill and warm-up). Slow setup and warm-up rounds, where the kernels
+    /// are compiled on first use, leave every timed round; slow timed rounds
+    /// stop at the budget, fewer than a figure needs; the limit stops every round.
+    @Test func timedRoundsKeepTheirBudgetAfterASlowWarmUp() {
+        typealias Probe = QwenTensorParallelShareProbe
+        final class Time { var now: UInt64 = 1_000_000_000 }
+        let ms: UInt64 = 1_000_000
+        func phase(setup: UInt64, warmup: UInt64, timed: UInt64) -> [UInt64] {
+            let time = Time()
+            let started = time.now
+            time.now += setup
+            var index = 0
+            return Probe.rounds(started: started, clock: { time.now }) {
+                time.now += index < Probe.warmupRounds ? warmup : timed
+                index += 1
+            }
+        }
+        #expect(phase(setup: 5_000 * ms, warmup: 1_000 * ms, timed: 20 * ms)
+            == Array(repeating: 20 * ms, count: Probe.timedRounds))
+        #expect(phase(setup: 0, warmup: 10 * ms, timed: 1_000 * ms) == [1_000 * ms, 1_000 * ms])
+        #expect(phase(setup: Probe.limitNanoseconds, warmup: 10 * ms, timed: 10 * ms).isEmpty)
+        #expect(phase(setup: 1_000 * ms, warmup: 4_000 * ms, timed: 10 * ms).isEmpty)
+        #expect(phase(setup: Probe.limitNanoseconds - 1_100 * ms, warmup: 0, timed: 300 * ms).count == 4)
+        #expect(Probe.limitReached(started: 0, clock: { Probe.limitNanoseconds })
+            && !Probe.limitReached(started: 0, clock: { Probe.limitNanoseconds - 1 }))
+        #expect(Probe.minimumRounds > 2 && Probe.limitNanoseconds < Probe.deadlineMarginNanoseconds)
+    }
+
     @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_SHARE_PROBE_GPU"] == "1"))
     func eachRankTimesItsShareAloneAndReleasesItsRequest() throws {
         try Device.withDefaultDevice(.gpu) {
@@ -116,15 +146,28 @@ struct QwenTensorParallelShareProbeTests {
             #expect(try measure(shard, admit: { _, _ in throw Refused() }) == nil)
             #expect(try measure(shard, deadline: DispatchTime.now().uptimeNanoseconds + 1_000_000_000) == nil)
             #expect(try measure(shard, windowColumns: 7) == nil)
-            // Every round after the warm-up starts past the budget: no figure.
+            // The clock moves a whole budget between every two readings: no figure.
             var tick: UInt64 = 0
             #expect(try measure(shard, clock: { tick += QwenTensorParallelShareProbe.budgetNanoseconds; return tick }) == nil)
+            // The probe is past its limit before its prefill: no figure.
+            var readings = 0
+            #expect(try measure(shard, clock: {
+                readings += 1
+                return DispatchTime.now().uptimeNanoseconds + (readings > 1 ? QwenTensorParallelShareProbe.limitNanoseconds : 0)
+            }) == nil)
             // The load is cancelled midway (its check throws): the request is retired, nothing is kept.
             var calls = 0
             #expect(try measure(shard, check: { calls += 1; if calls == 6 { throw Refused() } }) == nil)
             #expect(calls == 6 && released(since: before) && !shard.reduction.local && shard.peer.crossings == 0)
             // The shard still probes after all of them.
             #expect(try measure(shard)?.valid == true)
+            // A setup slower than the timed rounds' budget (kernels compiled on first use) still gives every timed round.
+            var slowReadings = 0
+            let slow = try #require(try measure(shard, clock: {
+                slowReadings += 1
+                return DispatchTime.now().uptimeNanoseconds + (slowReadings > 1 ? 2 * QwenTensorParallelShareProbe.budgetNanoseconds : 0)
+            }))
+            #expect(slow.valid && slow.rounds == QwenTensorParallelShareProbe.timedRounds && slow.windowColumns == 4)
         }
     }
 }

@@ -188,7 +188,7 @@ for `a <= b`; `<`, `>` and `==` are safe. Two checks keep the pattern out:
 
 | Check | Where it runs | What it reads |
 |---|---|---|
-| `scripts/check-date-comparisons.py` | `ci.yml` Release Integrity | Shipped Swift source. It finds Dates by syntax and by declared names, so it can miss a comparison |
+| `scripts/check-date-comparisons.py` | `ci.yml` Release Integrity | Shipped Swift source. It finds Dates by syntax, by the declaration in scope and by declared names. It refuses `>=` or `<=` passed as a function. It has no types, so it can miss a comparison |
 | `scripts/check-provider-weak-imports.py` | The release lane of `.github/actions/provider-release-build`, after the products and cluster helpers are built | The built binaries (`nm -m`). It fails on any import of the two symbols and names the calling functions (`otool -tV`) |
 
 The `scripts/provider-release-swift.sh` wrapper keeps native SwiftPM

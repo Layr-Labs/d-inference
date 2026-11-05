@@ -14,6 +14,10 @@ date_comparisons = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(date_comparisons)
 
 # The forms that DevNet build 0.10.6-dev.branch.87 compiled into weak imports.
+# `day >= since` is the one that the first version of the check missed: `day`
+# is bound from date(from:) in a scope that shadows a String `day`, and
+# `since` from a ternary. Also an initializer with nested parentheses against
+# another type's member that returns a Date, and an operator passed as a function.
 REFUSED = """\
 import Foundation
 struct Row { let at: Date }
@@ -26,6 +30,16 @@ struct Policy {
     func retry(_ at: [String: Date], key: String, now: Date) -> Bool { at[key].map({ now >= $0 }) ?? true }
     func merged(_ a: DateInterval, _ b: DateInterval) -> Bool { a.start <= b.end }
     func covered(day: Date, since: Date, calendar: Calendar) -> Bool { day >= calendar.startOfDay(for: since) }
+    func latest(_ dates: [Date]) -> [Date] { dates.sorted(by: >=) }
+    func today(_ seconds: Int64) -> Bool { Date(timeIntervalSince1970: TimeInterval(seconds)) >= Calendar.current.startOfDay(for: Date()) }
+    func complete(_ rows: [Row], start: Date, iso: ISO8601DateFormatter) -> [Bool] {
+        for row in rows { let day = String(iso.string(from: row.at).prefix(10)); print(day) }
+        let since = rows.isEmpty ? start : max(start, rows[0].at)
+        return rows.map { _ in
+            let day = iso.date(from: "2026-11-04T00:00:00Z")!
+            return day >= since
+        }
+    }
 }
 """
 ALLOWED = """\
@@ -65,6 +79,9 @@ class DateComparisonTests(unittest.TestCase):
             "now >= $0",
             "a.start <= b.end",
             "day >= calendar.startOfDay(for: since)",
+            ">= passed as a function",
+            "Date(timeIntervalSince1970: TimeInterval(seconds)) >= Calendar.current.startOfDay(for: Date())",
+            "day >= since",
         ])
 
     def test_leaves_clocks_numbers_strings_comments_and_the_replacement_alone(self):
@@ -82,6 +99,18 @@ class DateComparisonTests(unittest.TestCase):
         dates = self.write("Dates.swift", "func due(now: Date, at: Date) -> Bool { now >= at }\n")
         found = date_comparisons.findings(sorted(self.root.glob("*.swift")))
         self.assertEqual([path for path, _, _ in found], [dates])
+
+    def test_a_parameter_settles_its_name_only_in_its_function(self):
+        path = self.write("Lease.swift", """\
+            import Foundation
+            struct Lease {
+                let renewedAt: Date
+                let expiresAt: Date
+                func old(renewedAt: Double, expiresAt: Double) -> Bool { expiresAt >= renewedAt }
+                func live() -> Bool { expiresAt >= renewedAt }
+            }
+            """)
+        self.assertEqual([line for _, line, _ in date_comparisons.findings([path])], [6])
 
     def test_main_reports_each_finding_and_fails(self):
         self.write("Refused.swift", "func due(next: Date) -> Bool { Date() >= next }\n")

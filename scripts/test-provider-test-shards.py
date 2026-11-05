@@ -227,8 +227,12 @@ class CountAndAuditTests(unittest.TestCase):
             shards.counts("✔ Test run with 0 tests passed after 0.001 seconds.")
 
     def test_each_job_audits_its_own_selections_and_the_last_the_whole_plan(self):
-        weights = {"ProviderCoreTests.A": 30.0, "ProviderCoreTests.B": 20.0, "ProviderCoreTests.C": 10.0}
+        # Seconds well above the fixed extra seconds, so each of the 4
+        # selections gets a suite.
+        weights = {"ProviderCoreTests.A": 300.0, "ProviderCoreTests.B": 250.0, "ProviderCoreTests.C": 200.0,
+                   "ProviderCoreTests.D": 150.0}
         tests = ["ProviderCoreTests.A/a()", "ProviderCoreTests.B/b()", "ProviderCoreTests.C/c()",
+                 "ProviderCoreTests.D/x()",
                  "ProviderCoreTests.New/d()", "ProviderCoreTests.ProcessMemoryNativeIntegrationTests/e()",
                  "ProviderCoreFoundationTests.Pure/f()", "ProviderCoreTests.ProductionPromptParityTests/p()",
                  "ProviderCoreTests.NemotronTemplateParityLiveTests/n()"]

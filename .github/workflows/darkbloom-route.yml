@@ -158,6 +158,8 @@ jobs:
             request=$(jq -n -c --arg repository "$REPOSITORY" --argjson run_id "$RUN_ID" \
               --argjson run_attempt "$RUN_ATTEMPT" --argjson lanes "$requested" \
               '{$repository, $run_id, $run_attempt, $lanes}')
+            # The request names only the repository, the run and the lanes.
+            echo "Request: $request"
             # One attempt plus at most one retry after a transport failure,
             # timeout or transient status; each attempt is bounded to 5 seconds.
             for attempt in 1 2; do

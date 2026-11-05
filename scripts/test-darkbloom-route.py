@@ -589,6 +589,8 @@ class RouteStepTests(unittest.TestCase):
                 with self.subTest(shapes=value):
                     result, routes, summary = self.route(plane.url, lanes=lanes, JOB_SHAPES=value)
                     self.assertRoutes(result, routes, off)
+                    # The log shows the exact request body.
+                    self.assertIn("Request: " + expected.decode(), result.stdout)
                     self.assertIn("Job sizes are off: DARKBLOOM_JOB_SHAPES is not 'on'. No size was requested.",
                                   summary)
                     self.assertIn("| `test-cluster-2` | macos_arm64 | 1 | - | `self-hosted, macOS, ARM64, "

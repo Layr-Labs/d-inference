@@ -30,9 +30,10 @@ struct TensorDescriptor {
                 let innerBytes = shape.dropFirst(axis + 1).reduce(dtype.size, *)
                 let outerCount = shape.prefix(axis).reduce(1, *)
                 let sourceStride = shape[axis] * innerBytes
-                // One range (a rank's part of a divided axis): every outer index's run, read together where they
-                // share pages (`VerifiedCheckpoint.File.read(…stride:count:)`).
-                if ranges.count == 1 {
+                // A rank's part of a divided axis (one range, less than the whole axis): every outer index's run,
+                // read together where they share pages (`VerifiedCheckpoint.File.read(…stride:count:)`). Whole-axis
+                // and several-range selections keep one read per run.
+                if ranges.count == 1, ranges[0].count < shape[axis] {
                     let length = ranges[0].count * innerBytes
                     guard length * outerCount == selectedBytes else { throw ProbeError("Tensor copy byte accounting failed") }
                     try merge(try file.read(into: destination, offset: offset + ranges[0].lowerBound * innerBytes,

@@ -3192,12 +3192,15 @@ stops and by the other Mac's before it saves, because a member's registration
 names no shares (`NativePairMemberRoster`).
 
 From `libs/darkbloom-cluster`, `swift test --filter QwenTensorParallelShareProbeTests`
-checks the per-mille share and the probe request's shape on the CPU. With
+checks the per-mille share, the probe request's shape and the probe's rounds
+on the CPU: on a constructed clock, a slow prefill and warm-up leave every timed
+round, slow timed rounds stop at the budget, and the limit stops every round. With
 exclusive GPU custody and the matching Metal library, set
 `QWEN_TP_SHARE_PROBE_GPU=1`: a synthetic shard's probe must cross nothing to its
 counting peer, reduce through it again afterwards, return its request's pages
 and cache, and give no probe (keeping nothing) when memory is refused, the
-deadline is near, the budget runs out or the load is cancelled midway. These
+deadline is near, the budget or the limit runs out or the load is cancelled
+midway, and give every timed round after a setup slower than the budget. These
 fixtures time synthetic weights on one Mac; real share steps and the plan they
 lead to are paired-hardware checks.
 

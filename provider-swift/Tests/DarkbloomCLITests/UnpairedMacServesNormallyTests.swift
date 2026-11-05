@@ -93,6 +93,18 @@ struct UnpairedMacServesNormallyTests {
         #expect(Stop.pairedStop(loading, solo: false, uninstall: false) == .stopPair)
     }
 
+    @Test("on the following Mac, serving alone says the leading Mac may start its part again, and how to stop that")
+    func followerServingAloneIsTruthful() {
+        let follower = pair(running: false, reachable: true, role: .member)
+        #expect(follower.servingAloneLine == "This Mac is in a two-Mac cluster with \(otherMac), which isn't running here: "
+            + "serving this Mac alone, and its saved start is cleared (`\(cli) cluster` starts the pair again). "
+            + "While \(otherMac) leads with the pair started, it may start this Mac's part again once single-Mac serving "
+            + "stops here: `\(cli) stop` on \(otherMac) stops the pair.")
+        #expect(Start.pairStart(follower, solo: true, terminal: false) == .serveAlone(note: follower.servingAloneLine))
+        // The leading Mac's line is unchanged.
+        #expect(pair(running: false, reachable: true).servingAloneLine.hasSuffix("starts the pair again)."))
+    }
+
     @Test("in a terminal: serve alone (the default when the other Mac isn't answering) or start the pair")
     func terminalChoice() {
         #expect(Start.pairStart(pair(running: false), solo: false, terminal: true) == .choose(aloneByDefault: true))

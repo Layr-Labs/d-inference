@@ -257,9 +257,17 @@ struct ClusterPairSummary: Sendable, Equatable {
             return "This Mac is in a two-Mac cluster with \(otherMac), which isn't running here"
                 + (otherMacReachable ? "" : " (\(otherMac) isn't answering)")
                 + ": serving this Mac alone, and its saved start is cleared (`\(Self.cli) cluster` starts the pair again)."
+                + (role == .member ? followerRestartNote : "")
         }
         return "This Mac is in a two-Mac cluster with \(otherMac), which is stopped: serving this Mac alone "
             + "(`\(Self.cli) cluster` starts the pair again)."
+    }
+
+    /// A following Mac records its leader's start from the leader's next accepted lease, so a start cleared here comes
+    /// back while the leader keeps the pair started; its part then waits for single-Mac serving to stop here.
+    private var followerRestartNote: String {
+        " While \(otherMac) leads with the pair started, it may start this Mac's part again once single-Mac serving stops "
+            + "here: `\(Self.cli) stop` on \(otherMac) stops the pair."
     }
 
     /// `darkbloom stop` on a Mac whose pair doesn't run, before its leftover part stops.

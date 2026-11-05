@@ -138,6 +138,9 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
         case otherMacStillRuns(String)
         /// Another update or recovery holds the update lease; the next check tries again.
         case busy
+        /// The other Mac already runs this newer release (it updated alone). Nothing was changed: the supervisor runs
+        /// the pair's cycle at once instead of at the slot, and that cycle finds the other Mac ready.
+        case otherMacNewer(String)
         /// The cycle that followed it ended as an update cycle ends: `.restarted` once the earlier release is restored
         /// and the restart asked for.
         case followed(AutoUpdateController.Outcome)
@@ -171,6 +174,12 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
         if let mine = recorded?.quarantine?.version, progress.running == mine, progress.quarantined != mine,
            Self.installed(recorded) != mine {
             return .otherMacStillRuns("the other Mac still runs v\(mine), which is quarantined on this Mac")
+        }
+        // The other Mac updated alone and runs a newer release: this Mac follows it forward, never into one it quarantined.
+        if let running = SemanticVersion(Self.installed(recorded) ?? updater.currentVersion),
+           let theirs = SemanticVersion(progress.running), running < theirs,
+           recorded?.quarantine?.version != progress.running {
+            return .otherMacNewer(progress.running)
         }
         // A Mac that runs the release it quarantined (installed again with `--override-quarantine`) rolled nothing back.
         guard let quarantined = progress.quarantined, progress.running != quarantined,

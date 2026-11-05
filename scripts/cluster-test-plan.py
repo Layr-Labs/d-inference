@@ -355,8 +355,25 @@ def execute(selection, output, log=None, temporary=None):
     return status, time.monotonic() - started
 
 
-def run_group(number, selections, output):
-    """Run one group's selections in plan order, each logging to its own file."""
+def start_gap():
+    """Seconds between the starts of a shard's groups (CLUSTER_TEST_START_GAP, default 15).
+
+    Processes that start together on one build meet on SwiftPM's build
+    database at startup: shard 2's two groups found it locked in every run of
+    runs 42041608780 to 42065297991. Each later group starts this long after
+    the one before, as the provider shards' processes do
+    (PROVIDER_TEST_START_GAP); the lock-retry guard stays the backstop.
+    """
+    value = os.environ.get("CLUSTER_TEST_START_GAP") or "15"
+    if not re.fullmatch(r"[0-9]+(\.[0-9]+)?", value):
+        raise ValueError(f"CLUSTER_TEST_START_GAP must be seconds, got {value!r}")
+    return float(value)
+
+
+def run_group(number, selections, output, delay=0.0):
+    """Run one group's selections in plan order, each logging to its own file,
+    after `delay` seconds."""
+    time.sleep(delay)
     temporary = output / f"group-{number}-tmp"
     temporary.mkdir()
     results = []
@@ -380,8 +397,10 @@ def run(lane, shard):
     results = {}
     if groups:
         # The groups run at the same time; their logs print afterwards, whole.
+        gap = start_gap()
         with ThreadPoolExecutor(max_workers=len(groups)) as pool:
-            futures = [pool.submit(run_group, number, members, output) for number, members in sorted(groups.items())]
+            futures = [pool.submit(run_group, number, members, output, index * gap)
+                       for index, (number, members) in enumerate(sorted(groups.items()))]
             finished = [result for future in futures for result in future.result()]
         for selection, status, seconds, path in finished:
             print(f"::group::{selection.name} (group {selection.group})", flush=True)

@@ -1305,6 +1305,9 @@ budget, so it never runs on a Mac right after the concurrent GPU groups.
 Shard 2 runs two groups at the same time, each in plan order with its own
 `TMPDIR` (the CPU batch-session suite with the GLM paged-KV, invariance and
 census, TF32 and Gemma selections; the Qwen GPU chain with `glm53-prefix-ssd`).
+The second group starts `CLUSTER_TEST_START_GAP` seconds (default 15) after
+the first, as the provider shards' processes do, so their SwiftPM startups do
+not meet on the shared build database.
 Shard 3 runs `base-gemma` alone: the Gemma 4 base suites (`GEMMA_SUITES`, 592 of
 the base tests' 970 s), so each model family still shares one process. A grouped selection that finds SwiftPM's build database locked, and whose log
 proves every test passed, runs once more, as in the provider shards; the job

@@ -492,11 +492,11 @@ the caches of the runners it ran on.
 |---|---|---|---|
 | Git objects | `.git` | `git-v1-<os>-<YYYY-MM-DD>`; `git-v1-<os>-<YYYY-MM>-`, then `git-v1-<os>-` | every job that checks out |
 | Full-history Git objects | `.git` | the same under `git-full-v1-`, so shallow jobs never restore it | `docs` |
-| SwiftPM repositories | `~/Library/Caches/org.swift.swiftpm/repositories` | `spm-repos-v1-<os>-<layout>-<lane>-<Package.resolved hash>`; `spm-repos-v1-<os>-<layout>-<lane>-` | each build lane |
+| SwiftPM repositories | `/private/tmp/dinf-ci/swiftpm-repositories`, which `~/Library/Caches/org.swift.swiftpm/repositories` links to | `spm-repos-v1-<os>-<layout>-<lane>-<Package.resolved hash>`; `spm-repos-v1-<os>-<layout>-<lane>-` | each build lane |
 | Swift test build | each lane's `.build` directory | `swift-key` (`swift-prefix` and the commit), or on a Darkbloom host `swift-prefix` and `day-<YYYY-MM-DD>`; `swift-prefix`, then `swift-loose-prefix`, then `swift-mlx-prefix`, from `scripts/provider-ci-cache.py` | each build lane |
-| Metal library | `$RUNNER_TEMP/metallib-cache` | `metallib-key`, exact only | each build lane |
-| MiMo metadata downloads | `$RUNNER_TEMP/mimo-metadata-cache`, one file per pinned SHA-256 | `mimo-metadata-v1-<hash of the pin scripts>`, exact only | each provider shard |
-| MiMo audio codec | `$RUNNER_TEMP/mimo-audio-source` | `mimo-audio-source-v2-<sha256>`, exact only; fetched only when the audio gate runs ([test guide](test.md)) | the last provider shard |
+| Metal library | `/private/tmp/dinf-ci/metallib-cache` | `metallib-key`, exact only | each build lane |
+| MiMo metadata downloads | `/private/tmp/dinf-ci/mimo-metadata-cache`, one file per pinned SHA-256 | `mimo-metadata-v1-<hash of the pin scripts>`, exact only | each provider shard |
+| MiMo audio codec | `/private/tmp/dinf-ci/mimo-audio-source` | `mimo-audio-source-v2-<sha256>`, exact only; fetched only when the audio gate runs ([test guide](test.md)) | the last provider shard |
 | Cluster metadata build | `$RUNNER_TEMP/cluster-native-metadata` | toolchain, submodule pins, manifests and paths, then the commit | `cluster-release-checks` |
 
 The Swift test build has three nested restore tiers. `swift-prefix` binds the
@@ -568,7 +568,13 @@ flowchart LR
   a looser tier and rebuilds what changed, on `master` it builds cold.
 - `actions/cache` stores a path outside the workspace relative to the
   workspace, so the SwiftPM key includes `<layout>`, a hash of `$HOME` and the
-  workspace path. The cluster key reads only each submodule's state, pin and
+  workspace path. It unpacks with `tar -C <workspace>`, and in the jobs of the
+  test products the workspace is a link to `/private/tmp/dinf`
+  ([Build Once](#build-once)): there a relative path that climbs out of the
+  workspace climbs out of `/private/tmp/dinf` instead. Those jobs therefore
+  keep every cache outside the workspace in `/private/tmp/dinf-ci`, whose only
+  common ancestor with any workspace is `/`, and never under `$RUNNER_TEMP` or
+  the home directory (`scripts/test-provider-ci-workflow.py` checks it). The cluster key reads only each submodule's state, pin and
   path from `git submodule status`, because its `git describe` text depends on
   the refs a restored `.git` holds.
 - `actions/cache` compresses with zstd when `zstd` is on `PATH` and with gzip

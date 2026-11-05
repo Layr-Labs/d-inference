@@ -63,12 +63,14 @@ jobs:
       # check out to different paths. A job that builds or runs the test
       # products works at one fixed path: its workspace becomes a link to it,
       # so every step's working directory resolves there
-      # (scripts/ci-test-products.py).
+      # (scripts/ci-test-products.py). Its caches outside the workspace live
+      # in /private/tmp/dinf-ci: actions/cache unpacks each path relative to
+      # the workspace, which a runner.temp or home path cannot survive here.
       - name: Work at the fixed build path
         run: |
           cd /
-          rm -rf /private/tmp/dinf "$GITHUB_WORKSPACE"
-          mkdir -p /private/tmp/dinf
+          rm -rf /private/tmp/dinf /private/tmp/dinf-ci "$GITHUB_WORKSPACE"
+          mkdir -p /private/tmp/dinf /private/tmp/dinf-ci
           ln -s /private/tmp/dinf "$GITHUB_WORKSPACE"
       - name: Select today's .git cache
         id: git-day
@@ -146,8 +148,8 @@ jobs:
       - name: Work at the fixed build path
         run: |
           cd /
-          rm -rf /private/tmp/dinf "$GITHUB_WORKSPACE"
-          mkdir -p /private/tmp/dinf
+          rm -rf /private/tmp/dinf /private/tmp/dinf-ci "$GITHUB_WORKSPACE"
+          mkdir -p /private/tmp/dinf /private/tmp/dinf-ci
           ln -s /private/tmp/dinf "$GITHUB_WORKSPACE"
       - name: Select today's .git cache
         id: git-day
@@ -243,8 +245,8 @@ jobs:
       - name: Work at the fixed build path
         run: |
           cd /
-          rm -rf /private/tmp/dinf "$GITHUB_WORKSPACE"
-          mkdir -p /private/tmp/dinf
+          rm -rf /private/tmp/dinf /private/tmp/dinf-ci "$GITHUB_WORKSPACE"
+          mkdir -p /private/tmp/dinf /private/tmp/dinf-ci
           ln -s /private/tmp/dinf "$GITHUB_WORKSPACE"
       - name: Select today's .git cache
         id: git-day
@@ -314,20 +316,20 @@ jobs:
         if: ${{ !cancelled() && steps.test-products.outcome == 'success' }}
         uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
-          path: ${{ runner.temp }}/mimo-metadata-cache
+          path: /private/tmp/dinf-ci/mimo-metadata-cache
           key: mimo-metadata-v1-${{ hashFiles('scripts/prepare-mimo-prompt-fixtures.py', 'scripts/prepare-mimo-audio-fixtures.py') }}
       - name: Prepare pinned public MiMo metadata and original corpus
         id: mimo-prompt-fixtures
         if: ${{ !cancelled() && steps.test-products.outcome == 'success' }}
         run: |
           python3 scripts/test-prepare-mimo-image-http-fixtures.py
-          python3 scripts/prepare-mimo-prompt-fixtures.py --output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV" --cache "$RUNNER_TEMP/mimo-metadata-cache"
-          python3 scripts/prepare-mimo-image-http-fixtures.py --output "$RUNNER_TEMP/mimo-image-http-fixtures" --github-env "$GITHUB_ENV" --cache "$RUNNER_TEMP/mimo-metadata-cache"
+          python3 scripts/prepare-mimo-prompt-fixtures.py --output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV" --cache /private/tmp/dinf-ci/mimo-metadata-cache
+          python3 scripts/prepare-mimo-image-http-fixtures.py --output "$RUNNER_TEMP/mimo-image-http-fixtures" --github-env "$GITHUB_ENV" --cache /private/tmp/dinf-ci/mimo-metadata-cache
       - name: Save verified MiMo metadata downloads
         if: ${{ !cancelled() && env.SAVE_CACHES == 'true' && steps.mimo-prompt-fixtures.outcome == 'success' && steps.mimo-metadata-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
-          path: ${{ runner.temp }}/mimo-metadata-cache
+          path: /private/tmp/dinf-ci/mimo-metadata-cache
           key: ${{ steps.mimo-metadata-cache.outputs.cache-primary-key }}
       - name: Prepare bounded synthetic MiMo provider fixtures offline
         id: mimo-fixtures
@@ -451,17 +453,17 @@ jobs:
         uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57
         id: mimo-audio-cache
         with:
-          path: ${{ runner.temp }}/mimo-audio-source
+          path: /private/tmp/dinf-ci/mimo-audio-source
           key: mimo-audio-source-v2-077033345d80eef3a315e8d394e0589667e80e4cdaba9bc5a7488410c6657265
       - name: Prepare selected MiMo audio fixture
         id: mimo-audio-fixtures
         if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.test-products.outcome == 'success' && inputs.mimo_audio == 'true' }}
-        run: python3 scripts/prepare-mimo-audio-fixtures.py --cache "$RUNNER_TEMP/mimo-audio-source" --output "$RUNNER_TEMP/mimo-audio-fixtures" --github-env "$GITHUB_ENV"
+        run: python3 scripts/prepare-mimo-audio-fixtures.py --cache /private/tmp/dinf-ci/mimo-audio-source --output "$RUNNER_TEMP/mimo-audio-fixtures" --github-env "$GITHUB_ENV"
       - name: Cache verified MiMo audio codec
         if: ${{ !cancelled() && env.SAVE_CACHES == 'true' && matrix.shard == strategy.job-total && steps.mimo-audio-fixtures.outcome == 'success' && steps.mimo-audio-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57
         with:
-          path: ${{ runner.temp }}/mimo-audio-source
+          path: /private/tmp/dinf-ci/mimo-audio-source
           key: mimo-audio-source-v2-077033345d80eef3a315e8d394e0589667e80e4cdaba9bc5a7488410c6657265
       - name: Run isolated native MiMo audio gate
         if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.test-products.outcome == 'success' && steps.mimo-audio-fixtures.outcome == 'success' }}
@@ -661,8 +663,8 @@ jobs:
       - name: Work at the fixed build path
         run: |
           cd /
-          rm -rf /private/tmp/dinf "$GITHUB_WORKSPACE"
-          mkdir -p /private/tmp/dinf
+          rm -rf /private/tmp/dinf /private/tmp/dinf-ci "$GITHUB_WORKSPACE"
+          mkdir -p /private/tmp/dinf /private/tmp/dinf-ci
           ln -s /private/tmp/dinf "$GITHUB_WORKSPACE"
       - name: Select today's .git cache
         id: git-day
@@ -747,8 +749,8 @@ jobs:
       - name: Work at the fixed build path
         run: |
           cd /
-          rm -rf /private/tmp/dinf "$GITHUB_WORKSPACE"
-          mkdir -p /private/tmp/dinf
+          rm -rf /private/tmp/dinf /private/tmp/dinf-ci "$GITHUB_WORKSPACE"
+          mkdir -p /private/tmp/dinf /private/tmp/dinf-ci
           ln -s /private/tmp/dinf "$GITHUB_WORKSPACE"
       - name: Select today's .git cache
         id: git-day

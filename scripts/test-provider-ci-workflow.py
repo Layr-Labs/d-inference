@@ -3,6 +3,7 @@
 
 from collections import Counter
 import importlib.util
+import itertools
 import json
 import os
 from pathlib import Path
@@ -42,8 +43,10 @@ BUILD_JOBS = {"build-provider": "provider", "build-cluster": "cluster"}
 PRODUCT_JOBS = {"test-provider": "build-provider", "test-cluster": "build-cluster",
                 "test-cluster-gpu": "build-cluster"}
 FIXED_PATH_STEP = "Work at the fixed build path"
-FIXED_PATH = "\n".join(('cd /', 'rm -rf /private/tmp/dinf "$GITHUB_WORKSPACE"', 'mkdir -p /private/tmp/dinf',
-                        'ln -s /private/tmp/dinf "$GITHUB_WORKSPACE"'))
+FIXED_PATH = "\n".join(('cd /', 'rm -rf /private/tmp/dinf /private/tmp/dinf-ci "$GITHUB_WORKSPACE"',
+                        'mkdir -p /private/tmp/dinf /private/tmp/dinf-ci', 'ln -s /private/tmp/dinf "$GITHUB_WORKSPACE"'))
+# Where those jobs keep every cache outside the workspace (FIXED_PATH's comment).
+CI_CACHE_ROOT = "/private/tmp/dinf-ci"
 SAMPLER_STEPS = ("Start the resource sampler", "Report the resource samples", "Upload the resource samples")
 # Every macOS job: the build jobs, the test jobs and the release build checks.
 MAC_JOBS = (*BUILD_JOBS, *PRODUCT_JOBS, "cluster-release-checks", "test-cluster-focused")
@@ -59,7 +62,7 @@ LAST_SHARD = "matrix.shard == strategy.job-total"
 LAST_SHARD_READY = READY.replace("!cancelled() && ", f"!cancelled() && {LAST_SHARD} && ")
 LAST_SHARD_MIMO_READY = MIMO_READY.replace("!cancelled() && ", f"!cancelled() && {LAST_SHARD} && ")
 PROVIDER_MIMO_READY = "${{ !cancelled() && steps.test-products.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}"
-MIMO_METADATA_CACHE = '--cache "$RUNNER_TEMP/mimo-metadata-cache"'
+MIMO_METADATA_CACHE = '--cache /private/tmp/dinf-ci/mimo-metadata-cache'
 MIMO_PREPARE = ('python3 scripts/prepare-mimo-prompt-fixtures.py '
                 '--output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV" ' + MIMO_METADATA_CACHE)
 MIMO_HTTP_PREPARE = ('python3 scripts/test-prepare-mimo-image-http-fixtures.py\n'
@@ -399,7 +402,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             PROVIDER_TEST_COMMAND,
             "python3 scripts/test-desktop-api.py provider-swift/.build/debug/darkbloom",
             *MIMO_NATIVE_COMMANDS.values(),
-            'python3 scripts/prepare-mimo-audio-fixtures.py --cache "$RUNNER_TEMP/mimo-audio-source" --output "$RUNNER_TEMP/mimo-audio-fixtures" --github-env "$GITHUB_ENV"',
+            'python3 scripts/prepare-mimo-audio-fixtures.py --cache /private/tmp/dinf-ci/mimo-audio-source --output "$RUNNER_TEMP/mimo-audio-fixtures" --github-env "$GITHUB_ENV"',
             "../scripts/run-nested-suite.sh testNativeAudioRelease --no-parallel",
             "./scripts/test-install-atomic.sh",
         )
@@ -1090,6 +1093,37 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 self.assertEqual([Path(work, build).exists() for build in builds], [not retries] * len(builds))
                 self.assertEqual("::warning title=Build cache::" in result.stdout, retries)
 
+    def test_caches_of_the_fixed_path_jobs_survive_the_workspace_link(self):
+        # actions/cache stores a path relative to the workspace and unpacks it
+        # with `tar -C <workspace>`; under the link to /private/tmp/dinf, a
+        # path sharing more than `/` with the workspace (runner.temp, the home
+        # directory) lands elsewhere (run 42065297991: "../../_temp: Cannot
+        # mkdir"). Their caches are in the workspace or in CI_CACHE_ROOT.
+        blocks = [(job_id, step, 8) for job_id in (*BUILD_JOBS, *PRODUCT_JOBS) for step in step_blocks(self.jobs[job_id])]
+        blocks += [(ACTION.name, step, 6) for step in step_blocks(ACTION.read_text(), indent=4)]
+        paths = []
+        for owner, step, indent in blocks:
+            if "actions/cache/" not in step:
+                continue
+            lines = step.split(f"{' ' * indent}  path:", 1)[1].splitlines()
+            value = lines[0].strip()
+            entries = [value]
+            if value == "|":
+                block = itertools.takewhile(lambda line: line.startswith(" " * (indent + 4)), lines[1:])
+                entries = [line.strip() for line in block]
+            paths += [(owner, entry) for entry in entries]
+        self.assertTrue(paths)
+        for owner, path in paths:
+            with self.subTest(owner=owner, path=path):
+                self.assertNotRegex(path, r"runner\.temp|RUNNER_TEMP|^~|HOME|^\$\{\{")
+                self.assertTrue(not path.startswith("/") or path.startswith(CI_CACHE_ROOT + "/"), path)
+        # Each moved cache: the metallib, SwiftPM's repositories, the MiMo
+        # downloads and codec, restored and saved at one path.
+        self.assertEqual(sorted({path for _, path in paths if path.startswith(CI_CACHE_ROOT)}),
+                         [CI_CACHE_ROOT + "/" + name for name in
+                          ("metallib-cache", "mimo-audio-source", "mimo-metadata-cache", "swiftpm-repositories")])
+        self.assertIn("METALLIB_CACHE_DIR: " + CI_CACHE_ROOT + "/metallib-cache", ACTION.read_text())
+
     def test_composite_restores_swiftpm_repositories_per_lane_and_runner_layout(self):
         steps = step_blocks(ACTION.read_text(), indent=4)
         by_id = {field(step, "id", indent=6): step for step in steps if field(step, "id", indent=6)}
@@ -1103,7 +1137,14 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("command -v zstd >/dev/null && echo zstd || echo gzip", by_id["keys"])
         prefix = "spm-repos-v1-${{ runner.os }}-${{ steps.keys.outputs.home-layout }}-${{ inputs.lane }}-"
         for step in (restore, save):
-            self.assertEqual(field(step, "path", indent=8), "~/Library/Caches/org.swift.swiftpm/repositories")
+            self.assertEqual(field(step, "path", indent=8), CI_CACHE_ROOT + "/swiftpm-repositories")
+        # SwiftPM reads its repositories from the home directory, through a
+        # link made before the restore and before either build.
+        link = next(step for step in steps
+                    if field(step, "name", indent=4) == "Link SwiftPM's repository cache into the CI cache directory")
+        self.assertIn('ln -s /private/tmp/dinf-ci/swiftpm-repositories "$HOME/Library/Caches/org.swift.swiftpm/repositories"',
+                      link)
+        self.assertLess(steps.index(link), steps.index(restore))
         self.assertEqual(field(restore, "uses", indent=6), CACHE_RESTORE)
         self.assertEqual(field(restore, "key", indent=8),
                          prefix + "${{ hashFiles('**/Package.resolved', '!**/.build/**') }}")

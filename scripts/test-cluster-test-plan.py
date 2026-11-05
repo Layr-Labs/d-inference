@@ -129,8 +129,10 @@ class ClusterTestPlanTests(unittest.TestCase):
             plan.Selection("alone", "blocking", 1), plan.Selection("other-shard", "blocking", 2),
         )
         command = lambda selection, output: (ROOT, [sys.executable, "-c", script, selection.name, str(marks)])
+        # Group 2 starts 0.2 s after group 1 (CLUSTER_TEST_START_GAP), while
+        # group 1's first selection (0.4 s) still runs.
         with mock.patch.object(plan, "SELECTIONS", selections), mock.patch.object(plan, "command", command), \
-                mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": ""}):
+                mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": "", "CLUSTER_TEST_START_GAP": "0.2"}):
             self.assertEqual(plan.run("blocking", 1), 1)
         events = {}
         for line in marks.read_text().splitlines():
@@ -140,10 +142,12 @@ class ClusterTestPlanTests(unittest.TestCase):
                 events[("tmp", name)] = rest[0] if rest else None
         names = ("a1", "a2", "b1", "b2", "alone")
         self.assertEqual({name for kind, name in events if kind == "start"}, set(names))
-        # Each group keeps its order; the two groups overlap.
+        # Each group keeps its order; the two groups overlap, and the second
+        # starts one gap after the first, so their SwiftPM startups do not meet.
         self.assertLessEqual(events[("end", "a1")], events[("start", "a2")])
         self.assertLessEqual(events[("end", "b1")], events[("start", "b2")])
         self.assertLess(events[("start", "b1")], events[("end", "a1")])
+        self.assertGreaterEqual(events[("start", "b1")] - events[("start", "a1")], 0.2)
         # Each group has its own TMPDIR; the alone selection starts after all of them.
         self.assertEqual(events[("tmp", "a1")], events[("tmp", "a2")])
         self.assertNotEqual(events[("tmp", "a1")], events[("tmp", "b1")])
@@ -176,7 +180,7 @@ class ClusterTestPlanTests(unittest.TestCase):
                       plan.Selection("locked-other-wording", "blocking", 1, group=5))
         command = lambda selection, output: (ROOT, [sys.executable, "-c", script, selection.name, str(root)])
         with mock.patch.object(plan, "SELECTIONS", selections), mock.patch.object(plan, "command", command), \
-                mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": ""}), \
+                mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": "", "CLUSTER_TEST_START_GAP": "0"}), \
                 mock.patch.object(sys, "stdout", io.TextIOWrapper(io.BytesIO(), write_through=True)) as stdout:
             self.assertEqual(plan.run("blocking", 1), 1)
             printed = stdout.buffer.getvalue().decode()
@@ -192,6 +196,18 @@ class ClusterTestPlanTests(unittest.TestCase):
         with mock.patch.object(plan, "command", command):
             status, _ = plan.execute(plan.Selection("locked", "blocking", 1), root)
         self.assertEqual((status, len((root / "locked").read_text())), (1, 3))
+
+    def test_the_group_start_gap_defaults_to_the_provider_shards_and_refuses_text(self):
+        with mock.patch.dict(os.environ, {"CLUSTER_TEST_START_GAP": ""}):
+            self.assertEqual(plan.start_gap(), 15.0)
+        with mock.patch.dict(os.environ, {"CLUSTER_TEST_START_GAP": "2.5"}):
+            self.assertEqual(plan.start_gap(), 2.5)
+        for value in ("-1", "fifteen", "1e3"):
+            with self.subTest(value=value), mock.patch.dict(os.environ, {"CLUSTER_TEST_START_GAP": value}), \
+                    self.assertRaises(ValueError):
+                plan.start_gap()
+        # The workflow sets no gap, so shard 2 staggers by the default.
+        self.assertNotIn("CLUSTER_TEST_START_GAP", plan.WORKFLOW.read_text())
 
     def test_each_process_has_only_its_own_switches(self):
         switches = {name: "1" for selection in plan.SELECTIONS for name in selection.environment}

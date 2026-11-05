@@ -45,13 +45,26 @@ runs:
         # workspace, so SwiftPM's cache is shared only between equal layouts.
         echo "home-layout=$(printf '%s\n' "$HOME" "$GITHUB_WORKSPACE" | shasum -a 256 | cut -c1-12)" >> "$GITHUB_OUTPUT"
         echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
+    # The jobs of the test products run in a workspace linked to
+    # /private/tmp/dinf. actions/cache stores each path relative to the
+    # workspace, so a path that shares more than `/` with the workspace
+    # (runner.temp, the home directory) would be unpacked under the link's
+    # target instead; every cache outside the workspace lives in
+    # /private/tmp/dinf-ci. SwiftPM reads its repositories from the home
+    # directory, through this link.
+    - name: Link SwiftPM's repository cache into the CI cache directory
+      shell: bash
+      run: |
+        mkdir -p /private/tmp/dinf-ci/swiftpm-repositories "$HOME/Library/Caches/org.swift.swiftpm"
+        rm -rf "$HOME/Library/Caches/org.swift.swiftpm/repositories"
+        ln -s /private/tmp/dinf-ci/swiftpm-repositories "$HOME/Library/Caches/org.swift.swiftpm/repositories"
     # Dependency clones for a cold build; the lane's own build cache already
     # holds them when it is restored.
     - name: Restore SwiftPM repositories
       id: spm-repos
       uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
       with:
-        path: ~/Library/Caches/org.swift.swiftpm/repositories
+        path: /private/tmp/dinf-ci/swiftpm-repositories
         key: spm-repos-v1-${{ runner.os }}-${{ steps.keys.outputs.home-layout }}-${{ inputs.lane }}-${{ hashFiles('**/Package.resolved', '!**/.build/**') }}
         restore-keys: spm-repos-v1-${{ runner.os }}-${{ steps.keys.outputs.home-layout }}-${{ inputs.lane }}-
     # A Darkbloom host keeps the entries it saved, 10 GiB per repository, so a
@@ -139,20 +152,20 @@ runs:
       if: ${{ !cancelled() && inputs.save-caches == 'true' && steps.timestamps.outcome == 'success' && steps.spm-repos.outputs.cache-hit != 'true' }}
       uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
       with:
-        path: ~/Library/Caches/org.swift.swiftpm/repositories
+        path: /private/tmp/dinf-ci/swiftpm-repositories
         key: ${{ steps.spm-repos.outputs.cache-primary-key }}
     - name: Restore source-matched Metal cache
       id: metallib-cache
       uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
       with:
-        path: ${{ runner.temp }}/metallib-cache
+        path: /private/tmp/dinf-ci/metallib-cache
         key: ${{ steps.keys.outputs.metallib-key }}
     - name: Validate and stage matched Metal for the actual test products
       id: metallib
       shell: bash
       env:
         LANE: ${{ inputs.lane }}
-        METALLIB_CACHE_DIR: ${{ runner.temp }}/metallib-cache
+        METALLIB_CACHE_DIR: /private/tmp/dinf-ci/metallib-cache
       run: |
         cmake --version
         case "$LANE" in
@@ -165,5 +178,5 @@ runs:
       if: ${{ !cancelled() && inputs.save-caches == 'true' && steps.metallib.outcome == 'success' && steps.metallib-cache.outputs.cache-hit != 'true' }}
       uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
       with:
-        path: ${{ runner.temp }}/metallib-cache
+        path: /private/tmp/dinf-ci/metallib-cache
         key: ${{ steps.keys.outputs.metallib-key }}

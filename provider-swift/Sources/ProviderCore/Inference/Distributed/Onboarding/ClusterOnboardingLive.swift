@@ -2042,9 +2042,7 @@ final class OnboardingLive: @unchecked Sendable {
             line = "starting"
         }
         // This Mac's own part, when it is the one that keeps ending.
-        if let own = ClusterService.published()?.child, !own.running, let end = own.lastEnd, Self.endShown(own) {
-            line += "; \(hereShort)'s part ended (\(end)\(own.lastError.map { ": " + $0 } ?? "")) and starts again by itself"
-        }
+        line += Self.endedClause(mac: hereShort, child: ClusterService.published()?.child) ?? ""
         // Members are asked for their own part only when rank 0 is here.
         let member = now.local ? try? JSONDecoder().decode(ClusterServiceStatus.self, from: try command(.init(op: .status), seconds: 10)) : nil
         // macOS keeps the other Mac's follower off the local network: nothing changes until someone allows it (P2-1).
@@ -2052,9 +2050,7 @@ final class OnboardingLive: @unchecked Sendable {
            Self.refusalIsCurrent(own: ClusterService.published()?.child, now: Date().timeIntervalSince1970) {
             return (nil, Self.localNetworkLine(forwarded: answering), nil)
         }
-        if let member, !member.child.running, let end = member.child.lastEnd, Self.endShown(member.child) {
-            line += "; \(thereShort)'s part ended (\(end)\(member.child.lastError.map { ": " + $0 } ?? "")) and starts again by itself"
-        }
+        line += Self.endedClause(mac: thereShort, child: member?.child) ?? ""
         let parts = now.session.flatMap { session -> [ClusterOnboardingStartProgress.Part]? in
             guard session.observed, let ready = session.readyRankList else { return nil }
             let localRank = context.savedConfiguration().configuration?.localRank
@@ -2146,6 +2142,13 @@ final class OnboardingLive: @unchecked Sendable {
     /// Whether a part's end is said in the live rows (`readinessOnce`, `offeredReadiness`) as an end that starts again by
     /// itself, on either Mac: not a clean stop ("stopped", or exit 0 with no reason), which a planned switch makes on both
     /// Macs (the DevNet run, A-10, B18); an exit 0 that says why (a refused dial, A-3) is still said.
+    /// "; <mac>'s part ended (<end>: <last error>) and starts again by itself" while that part keeps ending: what the
+    /// start's screen adds to its loading line (`readinessOnce`) and `cluster status` gives as its reason (`status`).
+    static func endedClause(mac: String, child: ClusterServiceStatus.Child?) -> String? {
+        guard let child, !child.running, let end = child.lastEnd, endShown(child) else { return nil }
+        return "; \(mac)'s part ended (\(end)\(child.lastError.map { ": " + $0 } ?? "")) and starts again by itself"
+    }
+
     static func endShown(_ child: ClusterServiceStatus.Child) -> Bool {
         guard let end = child.lastEnd else { return false }
         return !(end == "stopped" || (end == "exit 0" && child.lastError == nil))
@@ -2422,14 +2425,24 @@ final class OnboardingLive: @unchecked Sendable {
                 lines += outcome.first != serving || local ? outcome
                     : Self.notOfferedLines(model: model, ready: ready, note: record?.approvalNote, outcome: outcome)
             } else {
-                lines.append("Loading \(model): \(session.readyRanks) of \(session.ranks) parts ready" + (session.detail.map { " (\($0))" } ?? "") + ".")
+                lines.append("Loading \(model): \(session.readyRanks) of \(session.ranks) parts ready" + (session.detail.map { " (\($0))" } ?? "")
+                    + partsEnded(local: now.local) + ".")
             }
         } else if let error = now.error {
             lines.append("\(Self.sentence(thereShort)) doesn't answer over the cable (\(error)); it rejoins by itself.")
         } else {
-            lines.append("Starting \(model).")
+            // A load that keeps ending says how (R7-4: "Starting …" alone read as loading with no reason for 12 minutes).
+            lines.append("Starting \(model)" + partsEnded(local: now.local) + ".")
         }
         return lines
+    }
+
+    /// Each Mac's part that keeps ending while the parts load (`endedClause`): this Mac's, and the other Mac's when rank 0
+    /// is here (the other Mac is asked for its part only then, as `readinessOnce` asks it).
+    private func partsEnded(local: Bool) -> String {
+        let member = local ? try? JSONDecoder().decode(ClusterServiceStatus.self, from: try command(.init(op: .status), seconds: 10)) : nil
+        return (Self.endedClause(mac: hereShort, child: ClusterService.published()?.child) ?? "")
+            + (Self.endedClause(mac: thereShort, child: member?.child) ?? "")
     }
 
     func stop() -> Result<[String], ClusterOnboardingFailure> {

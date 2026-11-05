@@ -27,9 +27,10 @@ struct MiMoTensorParallelShardReceipt: Equatable, Sendable {
 /// be a text tensor of the plan with the plan's stored shape and a stored
 /// dtype of the artifact, and only this rank's byte runs are read (one run
 /// per index of the dimensions before the cut axis: the SDK's
-/// `MiMoV26TensorShard.byteRuns`, read as aligned uncached pieces through
-/// the pinned descriptor). Any difference refuses the load; nothing of a
-/// divided tensor outside this rank's half is read.
+/// `MiMoV26TensorShard.byteRuns`, read uncached through the pinned
+/// descriptor, runs that share pages in one aligned read). Any difference
+/// refuses the load; nothing of a divided tensor outside this rank's half is
+/// kept.
 enum MiMoTensorParallelVerifiedLoad {
     static let storedDTypes: Set<DType> = [.uint32, .uint8, .bfloat16, .float32]
 

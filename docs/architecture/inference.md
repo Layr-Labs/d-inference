@@ -4785,7 +4785,10 @@ Oracles run on synthetic checkpoints with the 26B's structure scaled down:
   prefill width rounds some rows unlike its 512-row half.
 
 `tp-check gemma run --path paged` runs `full`, `simulated` and `tp` through the
-resident runtime's own request path instead of the SDK's legacy caches.
+resident runtime's own request path instead of the SDK's legacy caches;
+`--layer-stride N` submits each decode step every N layers instead of the
+product's `decodeLayerStride` (1), so a pair can measure the stride before the
+product's changes (Qwen's measured choice is 8, `QwenTensorParallelLaunch`).
 `tp-check gemma lanes` serves several requests together through the batch
 driver and checks each against itself alone.
 

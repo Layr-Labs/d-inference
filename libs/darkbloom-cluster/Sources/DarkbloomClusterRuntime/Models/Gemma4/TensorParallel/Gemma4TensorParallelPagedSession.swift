@@ -234,6 +234,12 @@ extension Gemma4TensorParallelModel {
     static let decodeLayerStride = 1
     /// A bench or test's own stride (0: the whole step in one evaluation).
     @TaskLocal static var layerStride: Int?
+    /// Runs `body` with a bench's own decode layer stride (`layerStride`; nil:
+    /// the product's `decodeLayerStride`), to compare strides on a pair
+    /// (`darkbloom-cluster-tp-check gemma run --layer-stride`).
+    public static func withLayerStride<R>(_ stride: Int?, _ body: () throws -> R) rethrows -> R {
+        try $layerStride.withValue(stride, operation: body)
+    }
 
     /// Greedy generation as `generate`, on this model's paged KV through the
     /// resident runtime's own request path (`Gemma4TensorParallelPagedSession`,

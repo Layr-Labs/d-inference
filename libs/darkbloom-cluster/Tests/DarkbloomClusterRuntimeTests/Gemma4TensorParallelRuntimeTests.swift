@@ -104,15 +104,24 @@ struct Gemma4TensorParallelRuntimeTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let model = try Gemma4TensorParallelModel.load(modelDirectory: directory, role: .full, reduction: nil)
         func run(_ stride: Int) throws -> Gemma4TensorParallelModel.Generation {
-            try Gemma4TensorParallelModel.$layerStride.withValue(stride) {
+            try Gemma4TensorParallelModel.withLayerStride(stride) {
                 try model.generatePaged(prompt: Self.prompt, outputCount: 6, chunk: 16, recordTop: 4)
             }
         }
-        let whole = try run(0), layered = try run(1), pairs = try run(2)
-        for other in [layered, pairs] {
+        // Strides a bench compares (`tp-check gemma run --layer-stride`), on the synthetic model's 10 layers.
+        let whole = try run(0)
+        for other in try [1, 2, 5, 8].map(run) {
             #expect(other.tokenIDs == whole.tokenIDs && Self.bits(other.topLogits) == Self.bits(whole.topLogits))
             #expect(other.finalLogits.map { $0.map(\.bitPattern) } == whole.finalLogits.map { $0.map(\.bitPattern) })
         }
+    }
+
+    /// A bench's own decode layer stride holds for its body only.
+    @Test func aBenchsLayerStrideHoldsForItsBodyOnly() {
+        #expect(Gemma4TensorParallelModel.layerStride == nil)
+        Gemma4TensorParallelModel.withLayerStride(8) { #expect(Gemma4TensorParallelModel.layerStride == 8) }
+        Gemma4TensorParallelModel.withLayerStride(nil) { #expect(Gemma4TensorParallelModel.layerStride == nil) }
+        #expect(Gemma4TensorParallelModel.layerStride == nil)
     }
 
     /// Batch lanes: three requests of different lengths decode together on

@@ -147,7 +147,13 @@ and fail at its own first-token deadline. The cancel ends only that lane, at
 both ranks' next step boundary, and the next request is served at once. The
 pair's own shutdown (`ClusterWorkerPair.shutdown`) likewise cancels such a lane
 without waiting for a clean stop. A pair without such lanes keeps the clean
-stop, since a cancel there ends the pair. Before, a client that closed its
+stop, since a cancel there ends the pair. So on a one-lane pair (a pipeline that
+serves one request at a time, and a tensor-parallel setup whose batch width is
+not priced: Gemma 4 today, which has no tensor-parallel batch quote, so its
+saved setup keeps `DistributedInstalledPlan.defaultBatchLanes`) a cancel during
+the prompt keeps the lane until the whole prompt is read: about 68 s for a
+15.8K-token prompt on an M3 Ultra + M5 Max Gemma pair (2026-11-05). This is a
+known limitation, the same as on a GLM-5.3-Flash pipeline. Before, a client that closed its
 connection 15 s into a 60K-token prompt on a Qwen 3.8 27B tensor-parallel pair
 kept both Macs prefilling it for about 4 minutes, and every other request
 failed meanwhile. Sources:

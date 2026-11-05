@@ -309,14 +309,12 @@ class WorkflowRoutingTests(unittest.TestCase):
                                "pull_request": {"branches-ignore": "[master, main]"}})
         self.assertEqual(master, {"push": {"branches": "[master, main]"},
                                   "pull_request": {"branches": "[master, main]"}})
-        dev = (ROOT / ".github/workflows/ci-dev.yml").read_text()
-        master = (ROOT / ".github/workflows/ci-master.yml").read_text()
-        # Both run the same plan and tests, whatever the base.
-        for text in (dev, master):
-            self.assertNotIn("github.base_ref", text)
+        # Both run the same plan and tests, whatever the base (Release
+        # Integrity alone reads the base, for the branch's build default).
         for filename in ("ci-dev.yml", "ci-master.yml"):
             jobs = workflow.job_blocks((ROOT / ".github/workflows" / filename).read_text().split("\njobs:\n", 1)[1])
             with self.subTest(workflow=filename):
+                self.assertNotIn("github.base_ref", jobs["plan"] + jobs["tests"])
                 self.assertIn("    uses: ./.github/workflows/provider-plan.yml\n", jobs["plan"])
                 self.assertIn("    uses: ./.github/workflows/provider-tests.yml\n", jobs["tests"])
                 self.assertIn("    needs: plan\n    if: ${{ !cancelled() }}\n", jobs["tests"])

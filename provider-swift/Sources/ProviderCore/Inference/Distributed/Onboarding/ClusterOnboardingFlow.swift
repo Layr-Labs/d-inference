@@ -2686,6 +2686,9 @@ public enum ClusterOnboardingDriver {
                 }
                 continue
             case .notServing(let lines):
+                // The start's outcome, published so the Mac that joined ends with the same ✗ and points to Retry here.
+                let block = notServingBlock(lines)
+                operations.publishStart(.failed(title: block.title, lines: block.lines, retry: true))
                 switch notServing(lines, operations, console) {
                 case .retry:
                     // A pair stopped meanwhile (`cluster stop --service` on a Mac): Retry starts it again and says so, instead
@@ -2811,15 +2814,21 @@ public enum ClusterOnboardingDriver {
 
     /// Why the pair does not serve in one plain line (details under it), what to do, then the choices. Diagnostics
     /// saves the file and asks again; q leaves.
-    static func notServing(_ lines: [String], _ operations: ClusterOnboardingOperations,
-                           _ console: ClusterOnboardingConsole) -> NotServingChoice {
+    /// The ✗ block for a start that does not serve: why, in one plain line, then the details and what to do.
+    static func notServingBlock(_ lines: [String]) -> (title: String, lines: [String]) {
         let said = lines.first ?? "the cluster did not report ready"
         // A line that is already the title ("Not serving: …", a test's failure from the leading Mac) is said once.
         let prefix = String(ClusterOnboardingNotServing.title(reason: "").dropLast())
         let first = said.hasPrefix(prefix) ? String(said.dropFirst(prefix.count)) : said
         let reason = first.hasSuffix(".") ? String(first.dropLast()) : first
-        console.result(false, ClusterOnboardingNotServing.title(reason: reason),
-                       Array(lines.dropFirst()) + (ClusterOnboardingNotServing.remedy(forReason: reason).map { [$0] } ?? []))
+        return (ClusterOnboardingNotServing.title(reason: reason),
+                Array(lines.dropFirst()) + (ClusterOnboardingNotServing.remedy(forReason: reason).map { [$0] } ?? []))
+    }
+
+    static func notServing(_ lines: [String], _ operations: ClusterOnboardingOperations,
+                           _ console: ClusterOnboardingConsole) -> NotServingChoice {
+        let block = notServingBlock(lines)
+        console.result(false, block.title, block.lines)
         while true {
             switch console.choose(notServingItems, selected: 0) {
             case 0: return .retry

@@ -5153,7 +5153,12 @@ tensor parallel's executor contract and one lane:
   artifact file is hashed against the registered manifest, and then only this
   rank's byte runs are read (`MiMoTensorParallelVerifiedLoad`: the plan disposes
   of each indexed name; the runs equal the SDK shard's `byteRuns`; any difference
-  refuses). Both ranks compare what they loaded before either is ready.
+  refuses). Runs less than a page apart are read together, up to one 8 MiB
+  scratch read, and copied out exactly (`CheckpointAlignedReader.read(…stride:count:)`):
+  the expert `down_proj`, divided on its inner axis, is about a million runs of
+  512 or 32 bytes per tensor, which one uncached read each took over an hour per
+  rank to load, past the pair's startup deadline. Both ranks compare what they
+  loaded before either is ready.
 - Requests (`MiMoTensorParallelDecoding`). Request-owned 64-token paged
   histories at the rank's geometry (full layers: 2 KV heads at widths 192/128;
   sliding layers: window 128 and the rank's 32 sink biases). Decode runs under

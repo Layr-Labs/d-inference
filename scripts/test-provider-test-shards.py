@@ -307,7 +307,7 @@ class CountAndAuditTests(unittest.TestCase):
 class RunnerTests(unittest.TestCase):
     """run-provider-tests.sh with a recording `swift` in place of the toolchain."""
 
-    def run_tests(self, shard=None, processes=None, status=0):
+    def run_tests(self, shard=None, processes=None, status=0, **stub):
         temporary = tempfile.TemporaryDirectory(prefix="provider-shard-runner-")
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -322,11 +322,26 @@ class RunnerTests(unittest.TestCase):
                 environments.write(json.dumps({name: os.environ.get(name) for name in (
                     "TMPDIR", "DARKBLOOM_STATE_FILE", "DARKBLOOM_LOADED_MODELS_FILE",
                     "DARKBLOOM_VERIFIED_WEIGHTS_FILE")}) + "\\n")
+            # STUB_LOCKED=once: the first run of each selection finds the build
+            # database locked, as SwiftPM reports it, runs and exits 1.
+            # STUB_LOCKED=always: every run does.
+            mode = os.environ.get("STUB_LOCKED")
+            report = sys.argv[sys.argv.index("--xunit-output") + 1] if "--xunit-output" in sys.argv else ""
+            seen = report + ".seen"
+            locked = mode == "always" or (mode == "once" and report and not os.path.exists(seen))
+            if report:
+                open(seen, "a").close()
+            if locked:
+                print('error: unable to attach DB: error: accessing build database "/x/.build/build.db": '
+                      'database is locked Possibly there are two concurrent builds running in the same '
+                      'filesystem location.')
             print("Test run with 2 tests in 1 suite passed after 0.1 seconds.")
+            sys.exit(1 if locked else 0)
             """))
         swift.chmod(0o755)
         environment = {**os.environ, "PATH": f"{root}{os.pathsep}{os.environ['PATH']}",
-                       "STUB_CALLS": str(calls), "STUB_ENVIRONMENTS": str(environments), "TMPDIR": str(root)}
+                       "STUB_CALLS": str(calls), "STUB_ENVIRONMENTS": str(environments), "TMPDIR": str(root),
+                       "PROVIDER_TEST_START_GAP": "0", **stub}
         environment.pop("PROVIDER_TEST_SHARD", None)
         environment.pop("PROVIDER_TEST_PROCESSES", None)
         if shard:
@@ -411,6 +426,17 @@ class RunnerTests(unittest.TestCase):
         for call in calls[3:]:
             self.assertNotIn("--ignore-lock", call)
         self.assertEqual(len({environment["TMPDIR"] for environment in self.environments[3:]}), 1)
+
+    def test_a_selection_that_finds_the_build_database_locked_runs_once_more(self):
+        # Beside other processes, SwiftPM's startup can find build.db locked;
+        # it runs the tests and exits 1. The selection runs once more.
+        calls, _ = self.run_tests("1/2", processes="3", STUB_LOCKED="once")
+        self.assertEqual(sorted(self.selection_of(call) for call in calls),
+                         sorted(["1-of-6", "2-of-6", "3-of-6", "parallel"] * 2))
+        # Only once: a second lock fails the job.
+        self.run_tests("1/2", processes="3", STUB_LOCKED="always", status=1)
+        # One process has no other process to meet: no retry.
+        self.run_tests("2/4", processes="1", STUB_LOCKED="once", status=1)
 
     def test_invalid_job_or_process_count_refuses_before_any_test(self):
         for shard, processes in (("3/2", "3"), ("0/2", "3"), ("1/2", "0"), ("1/2", "10"), ("1/2", "x"), ("x", "1")):

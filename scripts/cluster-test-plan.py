@@ -303,15 +303,33 @@ def shards(lane):
     return sorted({selection.shard for selection in SELECTIONS if selection.lane == lane})
 
 
+# SwiftPM's message when another process's startup holds the build database.
+LOCKED_BUILD_DATABASE = re.compile(rb"unable to attach DB: .*database is locked")
+
+
 def execute(selection, output, log=None, temporary=None):
-    """Run one selection in its own process; return (exit status, seconds)."""
+    """Run one selection in its own process; return (exit status, seconds).
+
+    A grouped selection (log given) runs beside another group's process. Its
+    SwiftPM can find the build database locked by that process's startup; it
+    then runs the tests and exits 1. Such a selection runs once more.
+    """
     cwd, argv = command(selection, output)
     env = environment(selection)
     if temporary is not None:
         env["TMPDIR"] = str(temporary)
     started = time.monotonic()
-    status = subprocess.run(argv, cwd=cwd, env=env, stdout=log,
-                            stderr=subprocess.STDOUT if log is not None else None).returncode
+    for attempt in (1, 2):
+        if log is not None:
+            log.seek(0)
+            log.truncate()
+        status = subprocess.run(argv, cwd=cwd, env=env, stdout=log,
+                                stderr=subprocess.STDOUT if log is not None else None).returncode
+        if status == 0 or log is None or attempt == 2 or not LOCKED_BUILD_DATABASE.search(
+                Path(log.name).read_bytes()):
+            break
+        print(f"{selection.name}: SwiftPM's build database was locked; running the selection once more",
+              flush=True)
     return status, time.monotonic() - started
 
 

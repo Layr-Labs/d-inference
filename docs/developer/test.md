@@ -118,6 +118,10 @@ time. `PROVIDER_TEST_SHARD=K/N` and `PROVIDER_TEST_PROCESSES=P` make
 `scripts/run-provider-tests.sh` run selections `(K-1)*P+1` to `K*P` of `N*P`,
 each in its own `--no-parallel` process with its own `TMPDIR` and provider
 state files; `scripts/provider-test-shards.py` chooses each selection's suites.
+The processes start `PROVIDER_TEST_START_GAP` seconds apart (default 15). A
+selection whose SwiftPM found the build database locked by another process's
+startup (`unable to attach DB: ... database is locked`, exit 1 after the tests
+ran) runs once more.
 Without `PROVIDER_TEST_PROCESSES` (the release qualification lane), a shard
 runs one selection, as before:
 
@@ -1272,7 +1276,9 @@ longest selection, alone. Shard 2 runs two groups at the same time, each in
 plan order with its own `TMPDIR` (the CPU batch-session suite with the GLM
 paged-KV, invariance and census, TF32 and Gemma selections; the Qwen GPU chain
 with `glm53-prefix-ssd`), then the share probe alone,
-whose 1.5 s budget includes the first use of the Qwen TP kernels on the Mac. Every process starts with
+whose 1.5 s budget includes the first use of the Qwen TP kernels on the Mac. A
+grouped selection that finds SwiftPM's build database locked runs once more,
+as in the provider shards. Every process starts with
 `MLX_QMV_BATCH_INVARIANT=1`, as every cluster process does.
 
 | Selection | Job | Tests |

@@ -93,4 +93,32 @@ import DarkbloomClusterProtocol
         #expect(!held.contains(8))
         #expect(held == all.filter { $0 != 8 })
     }
+
+    /// Gemma's tensor-parallel batch width is not priced (it has no tensor-parallel batch quote), so a Gemma TP setup
+    /// serves one request at a time, and the mode question says so: never "up to 8".
+    @Test func anUnpricedTensorParallelWidthServesAndSaysOneRequestAtATime() {
+        #expect(!ClusterPlacementTensorBatchQuote.runtimeModelIDs.contains("registered_gemma4_26b"))
+        #expect(DistributedInstalledPlan.defaultBatchLanes(adapter: .gemma4LayerStage, mode: .tensorParallel,
+            hasPrivateImages: false, runtimeModelID: "registered_gemma4_26b", prefillSchedule: .serial) == 1)
+        let advice = ClusterOnboardingModeAdvice.advise([
+            .init(mode: ClusterGenerationMode.tensorParallel.rawValue, planned: true, fitsNow: true,
+                  predictedTokensPerSecond: 50, concurrentRequests: 1),
+            .init(mode: ClusterGenerationMode.pipeline.rawValue, planned: true, fitsNow: true,
+                  predictedTokensPerSecond: 30, concurrentRequests: 4),
+        ], throughDarkbloom: false, serving: false)
+        #expect(advice?.reason.contains("up to 8") == false)
+        let mode = ClusterOnboardingMode(mode: ClusterGenerationMode.tensorParallel.rawValue, split: nil,
+            measuredTokensPerSecond: nil, concurrentRequests: 1)
+        #expect(mode.requestsWords == "serves one request at a time")
+    }
+
+    /// At one lane a cancel during the prompt is a clean stop at the first token, so the lane is held until the prompt
+    /// is read (the documented limitation, as R4-14 on a GLM pipeline); only a pair whose lanes retire alone (2-8
+    /// lanes) ends it at the next step.
+    @Test func aSingleLaneTensorParallelPairKeepsTheCleanStop() {
+        #expect(!DistributedInstalledPlan.lanesRetireAlone(adapter: .gemma4LayerStage, mode: .tensorParallel,
+            hasPrivateImages: false, lanes: 1, runtimeModelID: "registered_gemma4_26b"))
+        #expect(DistributedInstalledPlan.lanesRetireAlone(adapter: .gemma4LayerStage, mode: .tensorParallel,
+            hasPrivateImages: false, lanes: 4, runtimeModelID: "registered_gemma4_26b"))
+    }
 }

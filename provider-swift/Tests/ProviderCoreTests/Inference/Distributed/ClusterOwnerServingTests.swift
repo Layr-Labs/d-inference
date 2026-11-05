@@ -108,10 +108,10 @@ import DarkbloomClusterProcess
             == ClusterPairOwnerServing.notYetQualified)
     }
 
-    /// A placement that decodes with Qwen's speculative assistant is never said to be qualified for public traffic:
-    /// the assistant serves local clusters only, so its setup is never offered to the coordinator. Without it, the
+    /// A placement that decodes with Qwen's speculative assistant is qualified for public traffic only where the build
+    /// declares the assistant (this build: Qwen3.8-27B's); an undeclared one serves local clusters only. Without it, the
     /// same model and mode are qualified as before; a model or mode that is not qualified says so either way.
-    @Test func aPlacementThatDecodesWithTheAssistantIsNotOfferedForPublicTraffic() {
+    @Test func aPlacementThatDecodesWithTheAssistantIsOfferedOnlyWhereDeclared() {
         let q27 = ClusterPublicModels.declared.first { $0.runtimeModelID == "registered_qwen38_27b" }!
         let none = ClusterPairServingDecisions(records: [])
         func line(_ mode: ClusterGenerationMode, assistant: Bool, model: String = q27.runtimeModelID) -> String {
@@ -119,7 +119,11 @@ import DarkbloomClusterProcess
                                                        mode: mode, tensorAssistant: assistant, decisions: none)
         }
         #expect(line(.tensorParallel, assistant: false).hasPrefix("qualified for public traffic in tensor parallel mode"))
-        #expect(line(.tensorParallel, assistant: true) == ClusterPairOwnerServing.tensorAssistantNotOffered)
+        #expect(line(.tensorParallel, assistant: true) == line(.tensorParallel, assistant: false))
+        var undeclared = ClusterPublicModels.declared
+        undeclared.indices.forEach { undeclared[$0].tensorAssistant = nil }
+        #expect(ClusterPairServingGrants.publicTrafficLine(runtimeModelID: q27.runtimeModelID, artifactSHA256: q27.artifactSHA256,
+            mode: .tensorParallel, tensorAssistant: true, decisions: none, publicModels: undeclared) == ClusterPairOwnerServing.tensorAssistantNotOffered)
         #expect(ClusterPairOwnerServing.tensorAssistantNotOffered.hasPrefix("not offered for public traffic"))
         #expect(line(.pipelineMTP, assistant: true) == ClusterPairOwnerServing.notYetQualified)
         #expect(line(.tensorParallel, assistant: true, model: "registered_qwen35_9b") == ClusterPairOwnerServing.notYetQualified)

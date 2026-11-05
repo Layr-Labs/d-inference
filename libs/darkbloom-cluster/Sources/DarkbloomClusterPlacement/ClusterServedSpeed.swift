@@ -67,8 +67,28 @@ public struct ClusterServedSpeedRecords: Codable, Equatable, Sendable {
         /// its own builds served (`servedBy`). Nil in a record written before
         /// builds were recorded, which counts as another build's.
         public let rankBuildSHA256: [String]?
-        public init(modelID: String, mode: String, cut: String, ranks: [String]? = nil, rankBuildSHA256: [String]? = nil) {
+        /// Through Darkbloom or the leader's local API (`ClusterPairRequestTelemetry.serving`); nil in a record
+        /// written before it was recorded.
+        public let serving: ClusterServedScope?
+        /// Whether the setup decoded with Qwen's resident tensor assistant; nil in an older record.
+        public let tensorAssistant: Bool?
+        public init(modelID: String, mode: String, cut: String, ranks: [String]? = nil, rankBuildSHA256: [String]? = nil,
+                    serving: ClusterServedScope? = nil, tensorAssistant: Bool? = nil) {
             self.modelID = modelID; self.mode = mode; self.cut = cut; self.ranks = ranks; self.rankBuildSHA256 = rankBuildSHA256
+            self.serving = serving; self.tensorAssistant = tensorAssistant
+        }
+
+        /// Whether a plan that will serve `serving`, with Qwen's tensor assistant in tensor parallel when
+        /// `tensorAssistant`, may take this setup's speeds: it was served the same way, and a tensor-parallel setup
+        /// decoded with the assistant exactly when the plan will. A speed served locally with the assistant (pair-2's
+        /// Qwen: 34-36 tok/s) says nothing of tensor parallel through Darkbloom without it (14-20), and the
+        /// served race reads each mode at its fastest setup (`ClusterServedModes.figures`). A record written
+        /// before these were recorded is read as before: it is an earlier build's, which `servedBy` already leaves
+        /// out of every plan of a build that records them.
+        public func servedAs(_ serving: ClusterServedScope, tensorAssistant: Bool) -> Bool {
+            guard self.serving.map({ $0 == serving }) ?? true else { return false }
+            guard mode == ClusterGenerationMode.tensorParallel.rawValue, let assisted = self.tensorAssistant else { return true }
+            return assisted == tensorAssistant
         }
 
         /// Whether every rank of this setup ran the worker build `builds` names
@@ -220,6 +240,12 @@ public struct ClusterServedSpeedRecords: Codable, Equatable, Sendable {
     public static func servedBy(_ builds: [String: String], _ entries: [Entry]) -> (current: [Entry], otherBuilds: Int) {
         let current = entries.filter { $0.setup.servedBy(builds) }
         return (current, entries.count - current.count)
+    }
+
+    /// The entries a plan that will serve `serving` (with Qwen's tensor assistant when `tensorAssistant`) may use
+    /// (`Setup.servedAs`).
+    public static func servedAs(_ serving: ClusterServedScope, tensorAssistant: Bool, _ entries: [Entry]) -> [Entry] {
+        entries.filter { $0.setup.servedAs(serving, tensorAssistant: tensorAssistant) }
     }
 
     /// The plan's one line for `count` records left out because another worker
@@ -496,6 +522,11 @@ public enum ClusterServedCalibration {
         var setups: [ClusterServedSpeedRecords.Setup] = []
         for entry in entries where !setups.contains(entry.setup) { setups.append(entry.setup) }
         for setup in setups {
+            // Device rates are one-token rates; nothing here knows the speed-up of Qwen's tensor assistant.
+            guard setup.tensorAssistant != true else {
+                lines.append("  \(setup.mode) cut \(setup.cut): skipped (decoded with Qwen's tensor assistant, not one token a step)")
+                continue
+            }
             guard let ranks = setup.ranks, let mode = ClusterGenerationMode(rawValue: setup.mode),
                   let cuts = ClusterServedSpeedRecords.Setup.cuts(setup.cut, layerCount: layout.layerCount, mode: mode, ranks: ranks.count),
                   cuts.count == mode.layerCutCount(ranks: ranks.count) else {
@@ -512,7 +543,8 @@ public enum ClusterServedCalibration {
             // record per device).
             if mode.usesSpeculativeHead, !mode.isPhaseSplit, let decoder = ordered.last {
                 let plainSetup = ClusterServedSpeedRecords.Setup(modelID: setup.modelID, mode: ClusterGenerationMode.pipeline.rawValue,
-                    cut: setup.cut, ranks: setup.ranks, rankBuildSHA256: setup.rankBuildSHA256)
+                    cut: setup.cut, ranks: setup.ranks, rankBuildSHA256: setup.rankBuildSHA256, serving: setup.serving,
+                    tensorAssistant: setup.tensorAssistant)
                 if let plain = median(entries.filter { $0.setup == plainSetup && $0.sample.route == .pair }.compactMap(\.sample.decodeTokensPerSecond)),
                    let rounds = median(samples.filter { $0.route == .pair }.compactMap(\.decodeTokensPerSecond)) {
                     speculativeFactors.append((decoder, rounds / plain))

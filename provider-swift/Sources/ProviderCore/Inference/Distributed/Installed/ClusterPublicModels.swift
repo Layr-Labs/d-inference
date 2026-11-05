@@ -18,6 +18,10 @@ public struct ClusterPublicModel: Sendable, Equatable {
     public let schedules: [UInt8]
     /// The ranks of the evidence placement.
     public let ranks: Ranks
+    /// The resident assistant the owner declared public for this artifact's
+    /// tensor-parallel placement; nil keeps a setup saved for coordinator
+    /// pairing without one.
+    public var tensorAssistant: ClusterPublicTensorAssistant? = nil
 
     /// The evidence placement's ranks: how many, each on one GPU architecture
     /// and macOS version.
@@ -27,6 +31,42 @@ public struct ClusterPublicModel: Sendable, Equatable {
         public let gpuArchitecture: String
         public let macOSMajor: Int
         public let macOSMinor: Int
+    }
+}
+
+/// A resident assistant the owner declared public for one model's tensor
+/// parallel placement: the exact policy a coordinator-paired setup must save
+/// (depth, the inline head's inventory, verification) and the evidence
+/// document it rests on, whose SHA-256 is `evidenceSHA256` (a test holds them
+/// equal). The evidence and `qualifiedAt` are those of the model's
+/// tensor-parallel parity qualifications in a release's facts
+/// (`ClusterRuntimeApprovalFacts.parityQualifications`), so the qualification
+/// a coordinator derives names the speculative decoding it covers.
+public struct ClusterPublicTensorAssistant: Sendable, Equatable {
+    public let policy: ClusterQwenTensorAssistantPolicy
+    public let evidenceDocument: String
+    public let evidenceSHA256: String
+    /// RFC 3339: when the evidence was recorded.
+    public let qualifiedAt: String
+
+    public init(policy: ClusterQwenTensorAssistantPolicy, evidenceDocument: String, evidenceSHA256: String,
+                qualifiedAt: String) throws {
+        try policy.validate()
+        guard ClusterConfigurationSyntax.hash(evidenceSHA256), evidenceDocument.hasPrefix("docs/reports/"),
+              evidenceDocument.hasSuffix(".md"), ClusterPairApproval.unixNanoseconds(rfc3339: qualifiedAt) != nil else {
+            throw ClusterConfigurationError.invalid("A public tensor assistant names its evidence report, its digest and when it was qualified")
+        }
+        self.policy = policy; self.evidenceDocument = evidenceDocument; self.evidenceSHA256 = evidenceSHA256
+        self.qualifiedAt = qualifiedAt
+    }
+
+    /// What the declaration adds to the resource policy a native start and a
+    /// release's facts carry (`DistributedInstalledNativeStart.resourcePolicySHA256`):
+    /// the arguments both workers are launched with.
+    var resourcePolicyFields: [String] {
+        [ClusterQwenTensorAssistantPolicy.schemaName, "depth=\(policy.depth)",
+         "\(ClusterQwenTensorAssistantPolicy.inventoryArgument)=\(policy.inventorySHA256)",
+         "verification=\(policy.verification.rawValue)", "evidence=\(evidenceSHA256)"]
     }
 }
 
@@ -57,6 +97,18 @@ public enum ClusterPublicModels {
     /// cut (owner, 2026-11-03: "universal for hardware not hardwired to 2x m5 ultras").
     static let twoM5Ultras = ClusterPublicModel.Ranks(count: 2, gpuArchitecture: "applegpu_g17d", macOSMajor: 27, macOSMinor: 0)
 
+    /// Qwen3.8-27B's resident assistant on tensor-parallel pairs (owner, 2026-11-05: "spec decode should be on and
+    /// working for all"): the policy local clusters plan by themselves (depth 3, admitted cohorts) with the inline
+    /// head's inventory the native metadata helper returns for the registered artifact. Its evidence: same-request
+    /// speculative and plain decodes on one pair were identical (`qwen27AssistantEvidenceDocument`).
+    static let qwen27AssistantEvidenceDocument = "docs/reports/2026-11-05-qwen27-public-assistant.md"
+    static let qwen27TensorAssistant = try! ClusterPublicTensorAssistant(
+        policy: try! ClusterQwenTensorAssistantPolicy(depth: 3,
+            inventorySHA256: "6bf428caf645e41cfda642108fc9a21d199ca999e80907be7476e87026afb014", verification: .admittedCohort),
+        evidenceDocument: qwen27AssistantEvidenceDocument,
+        evidenceSHA256: "31b3e3fe147ad9b68d66e4bec02287d752b5cbfd9d0b5e77fb792e822b424ade",
+        qualifiedAt: "2026-11-05T17:00:00Z")
+
     /// Owner ruling, 2026-10-31: "It should be tensor or pipeline obviously but that shouldn't matter for the coordinator".
     /// MiMo-V2.6-Flash and Gemma 4 26B QAT (2026-11-03) take the same two families: their pipeline rests on the bundled
     /// records, their tensor parallel on the owner's decision (its code lands with #1706 and #1707). MiMo also keeps
@@ -68,7 +120,8 @@ public enum ClusterPublicModels {
               families: [.pipeline, .tensorParallel], schedules: [1, 2], ranks: twoM5Ultras),
         .init(runtimeModelID: "registered_qwen38_27b", catalogModelID: "EigenLabs/Qwen3.8-27B-4bit-mtp",
               artifactSHA256: "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
-              families: [.pipeline, .tensorParallel], schedules: [1, 2], ranks: twoM5Ultras),
+              families: [.pipeline, .tensorParallel], schedules: [1, 2], ranks: twoM5Ultras,
+              tensorAssistant: qwen27TensorAssistant),
         .init(runtimeModelID: "registered_mimo_v26_flash_mopd", catalogModelID: "mimo-v2.6-flash-mopd",
               artifactSHA256: "2334547d8acc9898ad4a74570ce44d2b12390bbac8d4bc52c092eb5ad5cfe034",
               families: [.pipeline, .pipelineSpeculative, .tensorParallel], schedules: [1, 2], ranks: twoM5Ultras),
@@ -117,6 +170,31 @@ public enum ClusterPublicModels {
               artifactSHA256.map({ ClusterPairServingGrants.qualifyingArtifact(for: $0, runtimeModelID: runtimeModelID)
                   == model.artifactSHA256 }) ?? true else { return [] }
         return model.families
+    }
+
+    /// A test's own declaration (nil: `declared`). Never set by a product
+    /// path: a build's public models and assistants change only with
+    /// `declared` and their evidence reports.
+    @TaskLocal static var declarationOverride: [ClusterPublicModel]?
+    /// `declared`, or a test's own declaration.
+    public static var current: [ClusterPublicModel] { declarationOverride ?? declared }
+
+    /// The resident assistant `models` declare public for a runtime model's
+    /// installed artifact (mapped as grants map it), with tensor parallel
+    /// among its declared families; nil for any other model, artifact or a
+    /// model declared without one.
+    static func tensorAssistant(runtimeModelID: String, artifactSHA256: String,
+                                in models: [ClusterPublicModel] = current) -> ClusterPublicTensorAssistant? {
+        guard let model = models.first(where: { $0.runtimeModelID == runtimeModelID }),
+              model.families.contains(.tensorParallel),
+              ClusterPairServingGrants.qualifyingArtifact(for: artifactSHA256, runtimeModelID: runtimeModelID)
+                == model.artifactSHA256 else { return nil }
+        return model.tensorAssistant
+    }
+
+    /// `tensorAssistant` of a capability record's model and artifact.
+    static func tensorAssistant(for capability: ClusterRuntimeCapability) -> ClusterPublicTensorAssistant? {
+        tensorAssistant(runtimeModelID: capability.runtimeModelID, artifactSHA256: capability.artifactSHA256)
     }
 }
 

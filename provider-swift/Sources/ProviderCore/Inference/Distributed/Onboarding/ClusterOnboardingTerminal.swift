@@ -295,47 +295,79 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
         guard !options.isEmpty else { return nil }
         settle()
         let start = min(max(0, selected), options.count - 1)
-        return usesColor ? pick(options, start, abandon) : typedChoice(options, start, abandon)
+        return usesColor ? pick(options.map { text in { _ in text } }, start, abandon) : typedChoice(options, start, abandon)
     }
 
-    /// The list, redrawn in place on each key; once taken it folds to the chosen line (cancelled: to nothing), so
-    /// what scrolls up is what was chosen. q cancels; a number takes its line, and so does a letter only one option
-    /// starts with. Every row, the hint's too, fits the window: a wrapped row would stay behind when the list folds.
-    private func pick(_ options: [String], _ start: Int, _ abandon: () -> Bool) -> Int? {
+    /// `choose` with each option's text asked again at every redraw for the room a row has then; plain, whole lines.
+    public func chooseFitting(_ options: [(_ room: Int?) -> String], selected: Int, abandon: () -> Bool) -> Int? {
+        guard !options.isEmpty else { return nil }
+        settle()
+        let start = min(max(0, selected), options.count - 1)
+        return usesColor ? pick(options, start, abandon) : typedChoice(options.map { $0(nil) }, start, abandon)
+    }
+
+    /// The list, redrawn in place on each key and when the window's width changes; once taken it folds to the chosen
+    /// line (cancelled: to nothing), so what scrolls up is what was chosen. q cancels; a number takes its line, and so
+    /// does a letter only one option starts with. Every row, the hint's too, fits the window as it is at that draw
+    /// (wrap off while drawn), and the climb back counts the rows a narrower window shows each drawn row on.
+    private func pick(_ options: [(_ room: Int?) -> String], _ start: Int, _ abandon: () -> Bool) -> Int? {
         var cursor = start
         let marker = decorates ? "\u{25B8}" : ">"
-        let room = columns > 10 ? columns - 6 : Int.max
-        let rows = options.count + 1
-        func fit(_ text: String) -> String {
+        let whole = options.map { $0(nil) }
+        var drawnColumns = columns
+        var drawnRows = [Int]()
+        func room() -> Int { columns > 10 ? columns - 6 : Int.max }
+        func fit(_ text: String, _ room: Int) -> String {
             let text = ClusterOnboardingCommand.named(text)
-            return text.count > room ? String(text.prefix(room - 1)) + "\u{2026}" : text
+            return ClusterOnboardingBrand.textColumns(text) > room ? ClusterOnboardingBrand.cut(text, room - 1) + "\u{2026}" : text
+        }
+        /// An option's rows at `room`, each fitted.
+        func rows(_ index: Int, _ room: Int) -> [String] {
+            options[index](room == Int.max ? nil : room).components(separatedBy: "\n").map { fit($0, room) }
         }
         let hints = decorates ? ["\u{2191}\u{2193} move \u{00B7} enter select \u{00B7} q cancel", "\u{2191}\u{2193} \u{00B7} enter \u{00B7} q"]
             : ["up/down move, enter select, q cancel", "up/down, enter, q"]
-        let hint = fit(hints.first { $0.count <= room } ?? hints[hints.count - 1])
-        func draw(again: Bool) {
-            var frame = again ? "\u{1B}[\(rows)A" : ""
-            frame += "\r\u{1B}[J  \u{1B}[2m\(hint)\u{1B}[0m\n"
-            for (index, option) in options.enumerated() {
-                frame += index == cursor ? "  \u{1B}[\(brand)m\(marker)\u{1B}[0m \u{1B}[1m\(fit(option))\u{1B}[0m\n" : "    \(fit(option))\n"
+        func climb() -> String {
+            let width = max(1, columns)
+            let count = drawnRows.reduce(0) { $0 + max(1, ($1 + width - 1) / width) }
+            return count > 0 ? "\u{1B}[\(count)A" : ""
+        }
+        func draw() {
+            let room = room()
+            let hint = fit(hints.first { $0.count <= room } ?? hints[hints.count - 1], room)
+            var frame = climb() + "\r\u{1B}[J" + ClusterOnboardingBrand.noWrap + "  \u{1B}[2m\(hint)\u{1B}[0m\n"
+            var widths = [2 + ClusterOnboardingBrand.textColumns(hint)]
+            for index in options.indices {
+                for (row, text) in rows(index, room).enumerated() {
+                    if index != cursor { frame += "    \(text)\n" }
+                    else if row == 0 { frame += "  \u{1B}[\(brand)m\(marker)\u{1B}[0m \u{1B}[1m\(text)\u{1B}[0m\n" }
+                    else { frame += "    \u{1B}[1m\(text)\u{1B}[0m\n" }
+                    widths.append(4 + ClusterOnboardingBrand.textColumns(text))
+                }
             }
-            write(frame)
+            write(frame + ClusterOnboardingBrand.wrap)
+            drawnRows = widths
+            drawnColumns = columns
         }
         // The cursor is hidden while the list is up and shown again as it folds, before the chosen line, so no line
         // after a choice starts with a terminal code.
         func fold(_ chosen: Int?) -> Int? {
-            write("\u{1B}[\(rows)A\r\u{1B}[J\u{1B}[?25h")
+            write(climb() + "\r\u{1B}[J\u{1B}[?25h")
             Self.cursorHidden = false
-            if let chosen { write("  \u{1B}[\(brand)m\(marker)\u{1B}[0m \(fit(options[chosen]))\n") }
+            if let chosen {
+                let chosenRows = rows(chosen, room())
+                write("  \u{1B}[\(brand)m\(marker)\u{1B}[0m " + chosenRows.joined(separator: "\n    ") + "\n")
+            }
             return chosen
         }
         Self.cursorHidden = true
         write("\u{1B}[?25l")
-        draw(again: false)
+        draw()
         while true {
             if abandon() { return fold(nil) }
             guard let key = readKey(milliseconds: 100) else {
                 if closed { return fold(nil) }
+                if columns != drawnColumns { draw() }
                 continue
             }
             switch key {
@@ -348,12 +380,12 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
                 if character == "q" || character == "Q" { return fold(nil) }
                 if let number = character.wholeNumberValue, options.count <= 9 {
                     if options.indices.contains(number - 1) { return fold(number - 1) }
-                } else if character.isLetter, let index = ClusterOnboardingChoice.match(String(character), options: options, selected: cursor) {
+                } else if character.isLetter, let index = ClusterOnboardingChoice.match(String(character), options: whole, selected: cursor) {
                     return fold(index)
                 }
                 continue
             }
-            draw(again: true)
+            draw()
         }
     }
 

@@ -480,10 +480,18 @@ public enum ClusterServedCalibration {
     /// pass only the entries the plan's worker builds served
     /// (`ClusterServedSpeedRecords.servedBy`); a setup is one build's, so
     /// samples of two builds are never one median.
+    ///
+    /// A record never fails the plan. A request the planner cannot evaluate on
+    /// its setup (longer than the model's planned request: a pair of M5 Ultras
+    /// served the 27B prompts of 71,545 to 94,423 tokens on 2026-11-05, over the
+    /// 65,536-token context its tensor-parallel allowance covers, and every plan
+    /// of the 27B on that pair failed) is skipped; the skipped are counted in
+    /// one line, and every other record counts as before.
     public static func measurements(entries: [ClusterServedSpeedRecords.Entry], devices: [ClusterPlacementDevice],
                                     layout: ClusterModelLayout, link: ClusterLinkCosts, measuredUTC: String) throws
         -> (measurements: [ClusterSpeedMeasurement], lines: [String]) {
         var measurements: [ClusterSpeedMeasurement] = [], lines: [String] = []
+        var skipped: [ClusterServedSample] = []
         var speculativeFactors: [(device: ClusterPlacementDevice, factor: Double)] = []
         var setups: [ClusterServedSpeedRecords.Setup] = []
         for entry in entries where !setups.contains(entry.setup) { setups.append(entry.setup) }
@@ -520,35 +528,115 @@ public enum ClusterServedCalibration {
                 lines.append("  \(setup.mode) cut \(setup.cut): skipped (shares this model's plan does not offer)")
                 continue
             }
-            let derived = try Self.measurements(samples,
-                placement: .init(devices: ordered, cuts: cuts, mode: mode, schedule: schedule, layout: layout, link: link,
-                    tensorShares: shares),
-                runtimeBinarySHA256: "served", measuredUTC: measuredUTC)
+            let placement = Placement(devices: ordered, cuts: cuts, mode: mode, schedule: schedule, layout: layout, link: link,
+                tensorShares: shares)
+            var usable = samples, derived: [ClusterSpeedMeasurement]
+            do {
+                derived = try Self.measurements(usable, placement: placement, runtimeBinarySHA256: "served", measuredUTC: measuredUTC)
+            } catch {
+                // A request the planner cannot evaluate on this placement (outside the model's limits) is skipped and
+                // counted, never the whole plan; the setup's other requests count as before.
+                usable = []
+                for sample in samples {
+                    if sample.route != .pair || !sample.valid || evaluable(sample, placement: placement) { usable.append(sample) }
+                    else { skipped.append(sample) }
+                }
+                guard let again = try? Self.measurements(usable, placement: placement, runtimeBinarySHA256: "served",
+                                                         measuredUTC: measuredUTC) else {
+                    skipped += usable.filter(\.valid)
+                    continue
+                }
+                derived = again
+            }
             measurements += derived
-            let pair = samples.filter { $0.route == .pair }.count
-            lines.append("  \(setup.mode) cut \(setup.cut) (\(ranks.joined(separator: ", "))): \(pair) pair and \(samples.count - pair) alone request(s)"
+            let pair = usable.filter { $0.route == .pair }.count
+            lines.append("  \(setup.mode) cut \(setup.cut) (\(ranks.joined(separator: ", "))): \(pair) pair and \(usable.count - pair) alone request(s)"
                 + " -> " + (derived.isEmpty ? "nothing usable" : derived.map { m in
                     let label = devices.first { $0.profile.chip == m.key.chip && $0.profile.osBuild == m.key.osBuild }?.label ?? m.key.chip
                     return String(format: "%@ prefill %.0f tok/s, decode %.1f tok/s", label, m.rested.prefillTokensPerSecond,
                         m.rested.speculativeDecodeTokensPerSecond ?? m.rested.decodeTokensPerSecond)
                 }.joined(separator: "; ")))
         }
+        var uncredited: [String] = []
         for (device, factor) in speculativeFactors where factor.isFinite && factor > 0 {
             let plainProbe = "served_\(ClusterGenerationMode.pipeline.rawValue)_v1"
             let same = { (m: ClusterSpeedMeasurement) in m.key.chip == device.profile.chip && m.key.osBuild == device.profile.osBuild }
             if let index = measurements.lastIndex(where: { same($0) && $0.key.probe == plainProbe }) {
-                let m = measurements[index]
-                measurements[index] = try .init(key: m.key, promptTokens: m.promptTokens, chunkTokens: m.chunkTokens,
-                    probedLayers: m.probedLayers, layerCount: m.layerCount,
-                    rested: .init(prefillTokensPerSecond: m.rested.prefillTokensPerSecond,
-                        decodeTokensPerSecond: m.rested.decodeTokensPerSecond,
-                        speculativeDecodeTokensPerSecond: m.rested.speculativeDecodeTokensPerSecond,
-                        pipelineSpeculativeFactor: factor),
-                    sustained: m.sustained, hashBytesPerSecond: m.hashBytesPerSecond,
-                    materializeBytesPerSecond: m.materializeBytesPerSecond, measuredUTC: m.measuredUTC,
-                    provenance: m.provenance + String(format: "; pipeline speculative rounds served %.2fx this placement's plain decode", factor))
+                // A credit that cannot be recorded is said, never the plan's failure.
+                guard let credited = crediting(measurements[index], pipelineSpeculativeFactor: factor) else {
+                    uncredited.append(device.label)
+                    continue
+                }
+                measurements[index] = credited
             }
         }
+        if let line = skippedLine(skipped, coveredTokens: layout.tensorParallel?.family.requestAllowance?.maximumContextTokens) {
+            lines.append(line)
+        }
+        if let line = uncreditedLine(uncredited) { lines.append(line) }
         return (measurements, lines)
+    }
+
+    /// `measurement` (a placement's plain pipeline decode, as served) with the
+    /// speed-up its speculative rounds served (`factor`) credited; nil when the
+    /// credited record would not be a valid one (its provenance and the note
+    /// over 1,024 bytes, say).
+    public static func crediting(_ measurement: ClusterSpeedMeasurement, pipelineSpeculativeFactor factor: Double) -> ClusterSpeedMeasurement? {
+        let m = measurement
+        return try? ClusterSpeedMeasurement(key: m.key, promptTokens: m.promptTokens, chunkTokens: m.chunkTokens,
+            probedLayers: m.probedLayers, layerCount: m.layerCount,
+            rested: .init(prefillTokensPerSecond: m.rested.prefillTokensPerSecond,
+                decodeTokensPerSecond: m.rested.decodeTokensPerSecond,
+                speculativeDecodeTokensPerSecond: m.rested.speculativeDecodeTokensPerSecond,
+                pipelineSpeculativeFactor: factor),
+            sustained: m.sustained, hashBytesPerSecond: m.hashBytesPerSecond,
+            materializeBytesPerSecond: m.materializeBytesPerSecond, measuredUTC: m.measuredUTC,
+            provenance: m.provenance + String(format: "; pipeline speculative rounds served %.2fx this placement's plain decode", factor))
+    }
+
+    /// The plan's one line for the Macs whose served speculative speed-up could
+    /// not be credited (`crediting`); nil when there were none. Without it the
+    /// plan predicts the speculative pipeline at its plain decode on that Mac,
+    /// so it can choose another mode though the speculative pipeline served faster.
+    public static func uncreditedLine(_ labels: [String]) -> String? {
+        guard !labels.isEmpty else { return nil }
+        return "  The speculative pipeline's served speed-up on \(labels.joined(separator: ", ")) is not credited (its speed record could not be updated): "
+            + "the plan predicts that pipeline at its plain decode there, so it may choose another mode even where the speculative pipeline served faster"
+    }
+
+    /// Whether the planner can evaluate `sample`'s request on `placement`, as
+    /// the calibration predicts it (`measurements`): not one outside the
+    /// model's limits, such as a prompt and answer longer than the context its
+    /// tensor-parallel allowance covers.
+    static func evaluable(_ sample: ClusterServedSample, placement: Placement) -> Bool {
+        var policy = ClusterPlacementPolicy()
+        policy.promptTokens = sample.promptTokens; policy.outputTokens = max(1, sample.outputTokens)
+        return (try? ClusterPlacementPlanner.evaluate(devices: placement.devices, cuts: placement.cuts, mode: placement.mode,
+            prefillSchedule: placement.schedule, layout: placement.layout, policy: policy, link: placement.link,
+            tensorShares: placement.tensorShares)) != nil
+    }
+
+    /// The plan's one line for the records it skipped (`measurements`); nil when there were none. `coveredTokens`: the
+    /// longest request (prompt and answer) planning covers for this model, when it has one (its tensor-parallel allowance).
+    public static func skippedLine(_ skipped: [ClusterServedSample], coveredTokens: Int? = nil) -> String? {
+        guard !skipped.isEmpty else { return nil }
+        let lengths = skipped.map { $0.promptTokens + $0.outputTokens }
+        let longest = grouped(lengths.max() ?? 0), records = skipped.count == 1 ? "1 speed record" : "\(skipped.count) speed records"
+        if let coveredTokens, lengths.allSatisfy({ $0 > coveredTokens }) {
+            return "  Skipped \(records) longer than the \(grouped(coveredTokens)) tokens planning covers (the longest was \(longest)); "
+                + "the other records still count"
+        }
+        return "  Skipped \(records) the plan could not evaluate on this model (the longest was \(longest) tokens); the other records still count"
+    }
+
+    /// 94522 as "94,522".
+    static func grouped(_ value: Int) -> String {
+        let digits = String(value.magnitude)
+        var out = ""
+        for (index, digit) in digits.enumerated() {
+            if index > 0, (digits.count - index) % 3 == 0 { out.append(",") }
+            out.append(digit)
+        }
+        return (value < 0 ? "-" : "") + out
     }
 }

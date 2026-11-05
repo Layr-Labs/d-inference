@@ -4046,7 +4046,12 @@ away; mixed pairs are first-class).
 - **Measured speed:** `ClusterServedModes.figures` over this build's served
   records of this model on these Macs (`ClusterServedSpeedRecords.servedBy`), as
   the planner reads them: a figure from 3 served requests on. Never a
-  prediction; without one the screen says "not measured on these Macs yet".
+  prediction; without one the model list says "not measured on these Macs yet".
+  The mode question uses these figures (else the planner's predictions) only
+  to rank the modes: its recommendation and its mode lines quote no tokens per
+  second (owner, 2026-11-05), and a re-plan's "Planned in the mode chosen" line
+  gives the size, mode and shares without the planner's predicted speed
+  (`ClusterOnboardingModeAdvice.fasterWords`, `OnboardingLive.localPlanModels`).
 - **The current model:** on a set-up pair the list preselects the model serving
   now (or the last one used); it keeps the mode the saved setup served in when
   the plan still lists it (`keepMode`, from `ClusterOnboardingResume.servingMode`),

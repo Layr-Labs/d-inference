@@ -413,14 +413,6 @@ public struct ClusterOnboardingMode: Codable, Sendable, Equatable {
         concurrentRequests.map { $0 <= 1 ? "serves one at a time" : "serves up to \($0) at once" }
     }
 
-    /// Its speed, short: "106 tok/s", "not measured".
-    var shortSpeedWords: String { measuredTokensPerSecond.map { "\(Int($0.rounded())) tok/s" } ?? "not measured" }
-
-    /// Its speed on these Macs, measured or not.
-    var speedWords: String {
-        measuredTokensPerSecond.map { "\(Int($0.rounded())) tok/s measured" } ?? "not measured on these Macs yet"
-    }
-
     /// The list's words for a model's modes, the default first: "pipeline 46 tok/s or tensor parallel (not measured on
     /// these Macs yet)", or, none measured, "tensor parallel or pipeline · not measured on these Macs yet".
     static func listWords(_ modes: [ClusterOnboardingMode]) -> String? {
@@ -472,6 +464,10 @@ public struct ClusterOnboardingModeAdvice: Codable, Sendable, Equatable {
     /// Speeds closer than this are the same to the advice: the planner's own figures differ by about as much.
     static let sameSpeed = 0.05
 
+    /// Why the faster mode is recommended, with no figures (owner, 2026-11-05: "it should not show tok/s"): the
+    /// speeds only rank the modes, measured or predicted; the words never quote them.
+    static let fasterWords = "faster here"
+
     /// The recommendation among `options` (nil with fewer than two). `throughDarkbloom`: the pair serves through Darkbloom,
     /// where requests beyond those a mode serves at once are turned away as "at capacity". `serving`: a model serves now,
     /// so the list counts its memory as taken; the start frees it, so fitting now does not decide.
@@ -504,9 +500,6 @@ public struct ClusterOnboardingModeAdvice: Codable, Sendable, Equatable {
         let speeds: [Double]? = measured ? open.map { $0.measuredTokensPerSecond! }
             : open.allSatisfy({ $0.predictedTokensPerSecond != nil }) ? open.map { $0.predictedTokensPerSecond! } : nil
         let basis = measured ? "measured" : "predicted"
-        func speedWords(_ fast: Int, _ other: Int) -> String {
-            "faster here (about \(Int(speeds![fast].rounded())) against \(Int(speeds![other].rounded())) tokens/s, \(basis))"
-        }
         if let speeds {
             let fastest = speeds.indices.max { speeds[$0] < speeds[$1] }!
             let runnerUp = speeds.indices.filter { $0 != fastest }.max { speeds[$0] < speeds[$1] }!
@@ -516,14 +509,15 @@ public struct ClusterOnboardingModeAdvice: Codable, Sendable, Equatable {
                 let index = open.firstIndex(of: most)!
                 let other = open.indices.first { $0 != index }!
                 let slower = speeds[index] < speeds[other]
+                let faster = speeds[index] > speeds[other] * (1 + sameSpeed)
                 return .init(mode: most.mode, reason: atOnce(most) + (slower ? "; the others take fewer, and Darkbloom turns the rest away"
-                    : ", and " + speedWords(index, other)))
+                    : faster ? " and is " + Self.fasterWords : " and is as fast here"))
             }
             guard clearlyFaster else {
                 return .init(mode: nil, reason: "they are about as fast on these Macs (\(basis)) and serve as many requests at once")
             }
             let lanesNote = lanesKnown && lanes(open[fastest])! > 1 ? " and " + atOnce(open[fastest]) : ""
-            return .init(mode: open[fastest].mode, reason: speedWords(fastest, runnerUp) + lanesNote)
+            return .init(mode: open[fastest].mode, reason: Self.fasterWords + lanesNote)
         }
         if lanesDiffer, let most = mostLanes {
             return .init(mode: most.mode, reason: atOnce(most) + "; no speed is known for these Macs yet")
@@ -1654,22 +1648,22 @@ public enum ClusterOnboardingDriver {
     /// the recommendation's line does (R6-2, M5 Ultra pair: "… the other Mac 44 layers) · ser…" at 120 columns): the
     /// split, then what each Mac does, then the long words; the mode's name and how many requests it serves at once
     /// stay, on more than one row when one row cannot hold them.
+    /// No speed figure: the mode question recommends from the speeds but never quotes them (owner, 2026-11-05).
     public static func modeLine(_ mode: ClusterOnboardingMode, recommended: Bool = false, room: Int? = nil) -> String {
         let requests = mode.requestsWords.map { " · " + $0 } ?? ""
         let marker = recommended ? " · " + ClusterOnboardingModeAdvice.marker : ""
-        let full = menuLine(mode.label, mode.what + (mode.split.map { " (\($0))" } ?? "") + requests + " · " + mode.speedWords + marker)
+        let full = menuLine(mode.label, mode.what + (mode.split.map { " (\($0))" } ?? "") + requests + marker)
         guard let room else { return full }
-        let short = [mode.label, mode.shortRequestsWords, mode.shortSpeedWords, recommended ? "recommended" : nil].compactMap { $0 }
+        let short = [mode.label, mode.shortRequestsWords, recommended ? "recommended" : nil].compactMap { $0 }
+        let tail = requests + marker, shortTail = requests + (recommended ? " · recommended" : "")
         let lines = [
             full,
-            menuLine(mode.label, mode.what + requests + " · " + mode.speedWords + marker),
-            menuLine(mode.label, String((requests + " · " + mode.speedWords + marker).dropFirst(3))),
-            menuLine(mode.label, String((requests + " · " + mode.speedWords + (recommended ? " · recommended" : "")).dropFirst(3))),
-            short.joined(separator: " · "),
-            short.filter { $0 != mode.shortSpeedWords }.joined(separator: " · "),
-        ]
+            menuLine(mode.label, mode.what + tail),
+        ] + (tail.isEmpty ? [] : [menuLine(mode.label, String(tail.dropFirst(3)))])
+            + (shortTail.isEmpty ? [] : [menuLine(mode.label, String(shortTail.dropFirst(3)))])
+            + [short.joined(separator: " · ")]
         if let fits = lines.first(where: { ClusterOnboardingBrand.textColumns($0) <= room }) { return fits }
-        return rows(short.filter { $0 != mode.shortSpeedWords }, room: room)
+        return rows(short, room: room)
     }
 
     /// `parts` joined with " · " on as few rows of `room` columns as hold them, each part whole on its row unless it

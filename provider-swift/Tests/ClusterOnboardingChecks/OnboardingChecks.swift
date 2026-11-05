@@ -801,13 +801,13 @@ import Darwin
                 defer { reading.leave() }
                 var buffer = [UInt8](repeating: 0, count: 4096)
                 while true {
-                    // The end is read before the poll: a run that had ended by then wrote every byte already, so an empty
-                    // read after it is the end of the text, never a byte still on its way.
-                    let ended = lock.withLock { exitCode != nil }
+                    // The end is checked before the poll: a run that had ended by then wrote every byte already, so an
+                    // empty read after it is the end of the text, never a byte still on its way.
+                    let ended = code != nil
                     var descriptor = pollfd(fd: reader, events: Int16(POLLIN), revents: 0)
                     guard Darwin.poll(&descriptor, 1, 20) >= 0 else { return }
                     let count = Darwin.read(reader, &buffer, buffer.count)
-                    if count > 0 { lock.lock(); captured.append(contentsOf: buffer.prefix(count)); lock.unlock() }
+                    if count > 0 { lock.withLock { captured.append(contentsOf: buffer.prefix(count)) } }
                     if ended && count <= 0 { return }
                 }
             }

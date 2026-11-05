@@ -45,7 +45,6 @@ jobs:
         working-directory: desktop-app
       - run: npm run lint && npm test && npm run build
         working-directory: desktop-app
-  # Unsigned review package: no signing identity, no secrets, no release SDK.
   review-package:
     if: github.event_name == 'workflow_dispatch'
     needs: route

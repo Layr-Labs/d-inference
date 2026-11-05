@@ -258,8 +258,8 @@ lane, `format('<job>-{0}', matrix.shard)`.
 | `ci.yml` | `test-provider` (lanes `test-provider-1` to `test-provider-3`, one per shard), `test-provider-summary`, `test-provider-sdk`, `test-cluster-checks`, `test-cluster` (lanes `test-cluster-1` to `test-cluster-3`), `test-cluster-gpu` (lanes `test-cluster-gpu-1` and `test-cluster-gpu-2`), `test-cluster-focused` | `blacksmith-12vcpu-macos-27` |
 | `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
 | `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
+| `desktop.yml` | `review-package` (runs on manual dispatch only) | `blacksmith-12vcpu-macos-27` |
 | `provider-release-cache.yml` | `warm`, pull requests only | `blacksmith-12vcpu-macos-27` |
-| `desktop.yml` | `review-package`, manual dispatch only | `blacksmith-12vcpu-macos-27` |
 
 Routing is off unless the repository variable `DARKBLOOM_ROUTING` is exactly
 `on`. While it is off, and for pull requests from forks, every job keeps its

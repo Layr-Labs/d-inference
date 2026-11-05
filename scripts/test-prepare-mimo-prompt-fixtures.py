@@ -40,6 +40,33 @@ class FixtureSetupTests(unittest.TestCase):
             self.assertFalse((result / name).is_symlink())
             self.assertEqual((result / name).stat().st_mode & 0o777, 0o600)
 
+    def test_cache_serves_only_verified_bytes_and_keeps_only_verified_downloads(self):
+        cache = self.root / "cache"
+        calls = []
+        def download(name):
+            calls.append(name)
+            return self.payloads[name]
+        fetch = SETUP.cached(download, cache, SETUP.PINS.__getitem__)
+        first = SETUP.prepare(self.root / "first", self.corpus, fetch)
+        self.assertEqual(calls, list(self.payloads))
+        self.assertEqual(sorted(path.name for path in cache.iterdir()), sorted(SETUP.PINS.values()))
+        # A second run reads every file from the cache.
+        second = SETUP.prepare(self.root / "second", self.corpus, fetch)
+        self.assertEqual(calls, list(self.payloads))
+        for name in self.payloads:
+            self.assertEqual((second / name).read_bytes(), (first / name).read_bytes())
+        # A corrupted entry is fetched again and replaced.
+        name = next(iter(self.payloads))
+        (cache / SETUP.PINS[name]).write_bytes(b"corrupted")
+        SETUP.prepare(self.root / "third", self.corpus, fetch)
+        self.assertEqual(calls, [*self.payloads, name])
+        self.assertEqual((cache / SETUP.PINS[name]).read_bytes(), self.payloads[name])
+        # A download with the wrong bytes is refused and never cached.
+        empty = self.root / "empty-cache"
+        with self.assertRaises(ValueError):
+            SETUP.prepare(self.root / "fourth", self.corpus, SETUP.cached(lambda _: b"wrong", empty, SETUP.PINS.__getitem__))
+        self.assertFalse(empty.exists())
+
     def test_wrong_download_hash_is_rejected(self):
         with self.assertRaises(ValueError):
             SETUP.prepare(self.root / "metadata", self.corpus, lambda _: b"wrong")

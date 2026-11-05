@@ -1654,6 +1654,18 @@ the leading Mac drains (after 3 seconds; `cluster stop --service` too), and
 `Waiting for both Macs' parts to end (up to 1 min).` while the parts end
 (`restart`: up to 5 minutes).
 
+These waits, the 10-minute wait of `start` on a pair, and the earnings
+windows of the desktop app (7 days, 30 days and the last 24 hours) compare
+times with `timeIntervalSince(_:)`. They do not use Date `>=` or `<=`. SDK 27.2
+back-deploys those two operators as weak Foundation imports. Pre-release
+macOS 27.2 builds (for example 26B5091g) do not export them, and a call through
+one crashed the provider in a loop. The limits and results stay the same.
+`scripts/check-date-comparisons.py` refuses the pattern in source, and the
+release build refuses a binary that imports either symbol
+(`scripts/check-provider-weak-imports.py`). The
+[build guide](../developer/build.md#sdk-27-release-builds-and-caches) tells how
+to fix a hit.
+
 If a part hasn't ended by then, it says ``Asked both Macs to stop; they stay stopped after a restart, and `darkbloom start` on either Mac starts the pair again.``
 and what each Mac has left (or `Memory: not checked (…)` when the check didn't
 answer), exit 1. On the Mac that follows, the stop always goes to the leading

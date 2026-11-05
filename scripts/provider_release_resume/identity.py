@@ -79,4 +79,4 @@ def select(api, run_id, attempt):
     return {"source_sha": source, "release_tag": tag, "version": version,
             "build_run_id": str(run_id), "build_run_attempt": str(attempt),
             "unsigned_artifact": name, "unsigned_artifact_id": str(positive_integer(artifact["id"])),
-            "unsigned_artifact_digest": artifact["digest"], "build_sdk_version": "27.0"}
+            "unsigned_artifact_digest": artifact["digest"], "build_sdk_version": "27.2"}

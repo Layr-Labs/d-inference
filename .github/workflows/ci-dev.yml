@@ -1,0 +1,52 @@
+name: CI (dev)
+
+# Pull requests into any branch but master (dev, and stacked feature
+# branches) and pushes to dev run the provider and cluster tests
+# (.github/workflows/provider-tests.yml) and nothing else: Release Integrity,
+# Docs Lint and the contribution gates run only for master
+# (.github/workflows/ci-master.yml, docs-impact.yml).
+on:
+  push:
+    # Pushes to dev save the caches that pull requests into dev restore.
+    branches: [dev]
+  pull_request:
+    branches-ignore: [master, main]
+
+permissions:
+  contents: read
+
+# Only revisions of the same PR supersede each other; pushes stay independent.
+# A push whose tree a pull request run already tested runs no test job
+# (provider-plan.yml), so most push runs are a few GitHub-hosted steps.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  plan:
+    uses: ./.github/workflows/provider-plan.yml
+    permissions:
+      contents: read
+      actions: read
+
+  tests:
+    name: Tests
+    needs: plan
+    if: ${{ !cancelled() }}
+    uses: ./.github/workflows/provider-tests.yml
+    permissions:
+      contents: read
+    with:
+      provider: ${{ needs.plan.outputs.provider }}
+      cluster: ${{ needs.plan.outputs.cluster }}
+      mimo_audio: ${{ needs.plan.outputs.mimo_audio }}
+      changed_provider: ${{ needs.plan.outputs.changed_provider }}
+      changed_cluster: ${{ needs.plan.outputs.changed_cluster }}
+      changes_result: ${{ needs.plan.outputs.changes_result }}
+      skip: ${{ needs.plan.outputs.skip }}
+      tested_run: ${{ needs.plan.outputs.tested_run }}
+      tree: ${{ needs.plan.outputs.tree }}
+      base: ${{ needs.plan.outputs.base }}
+      head: ${{ needs.plan.outputs.head }}
+      routes: ${{ needs.plan.outputs.routes }}
+      strict_cache: false

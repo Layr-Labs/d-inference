@@ -4009,23 +4009,27 @@ import Darwin
                "modes: none measured, the planner's first")
         expect(M.defaultIndex([M(mode: "tensor_parallel_v1", split: nil, measuredTokensPerSecond: 88), M(mode: "pipeline_v1", split: nil, measuredTokensPerSecond: 48)]) == 0,
                "modes: the fastest measured")
-        expect(D.modeLine(gemma[1]) == D.menuLine("Pipeline", "each Mac runs its share of the layers (this Mac 6 layers / the other Mac 24 layers) · 46 tok/s measured"),
+        expect(D.modeLine(gemma[1]) == D.menuLine("Pipeline", "each Mac runs its share of the layers (this Mac 6 layers / the other Mac 24 layers)"),
                "modes: pipeline in plain words: \(D.modeLine(gemma[1]))")
-        expect(D.modeLine(gemma[0]) == D.menuLine("Tensor parallel", "both Macs work on every layer, each holding a share of it (this Mac 50% / the other Mac 50%) · not measured on these Macs yet"),
+        expect(D.modeLine(gemma[0]) == D.menuLine("Tensor parallel", "both Macs work on every layer, each holding a share of it (this Mac 50% / the other Mac 50%)"),
                "modes: tensor parallel in plain words: \(D.modeLine(gemma[0]))")
         expect(D.modeLine(M(mode: "pipeline_mtp_v1", split: "this Mac 24 layers / the other Mac 24 layers", measuredTokensPerSecond: 59))
-            == D.menuLine("Speculative pipeline", "a pipeline that drafts several tokens and checks them together (this Mac 24 layers / the other Mac 24 layers) · 59 tok/s measured"),
+            == D.menuLine("Speculative pipeline", "a pipeline that drafts several tokens and checks them together (this Mac 24 layers / the other Mac 24 layers)"),
                "modes: MiMo's speculative pipeline")
         // R4-15 (the M5 Ultra pair's DevNet run): GLM's pipeline took one request at a time and Darkbloom turned the rest
         // away at capacity, while its tensor parallel took 8 at once, 2.6x faster each. Each mode says how many it takes.
         let glmPipeline = D.modeLine(M(mode: "pipeline_v1", split: "this Mac 44 layers / the other Mac 1 layer", measuredTokensPerSecond: 41,
                                        concurrentRequests: 1))
         expect(glmPipeline == D.menuLine("Pipeline", "each Mac runs its share of the layers (this Mac 44 layers / the other Mac 1 layer) "
-                   + "· serves one request at a time · 41 tok/s measured"), "modes: a pipeline that takes one request at a time says so: \(glmPipeline)")
+                   + "· serves one request at a time"), "modes: a pipeline that takes one request at a time says so: \(glmPipeline)")
         let glmTensor = D.modeLine(M(mode: "tensor_parallel_v1", split: "this Mac 50% / the other Mac 50%", measuredTokensPerSecond: 106,
                                      concurrentRequests: 8))
         expect(glmTensor == D.menuLine("Tensor parallel", "both Macs work on every layer, each holding a share of it (this Mac 50% / the "
-                   + "other Mac 50%) · serves up to 8 requests at once · 106 tok/s measured"), "modes: how many at once: \(glmTensor)")
+                   + "other Mac 50%) · serves up to 8 requests at once"), "modes: how many at once: \(glmTensor)")
+        // The owner (2026-11-05): "it should not show tok/s". The rows never quote a speed, measured or not.
+        for line in [glmPipeline, glmTensor, D.modeLine(gemma[0]), D.modeLine(gemma[1]), D.modeLine(gemma[1], recommended: true, room: 60)] {
+            expect(!line.contains("tok/s") && !line.contains("measured"), "modes: no speed in a mode's row: \(line)")
+        }
         // The screen, on a stopped pair: another model's question offers both, the measured one by default.
         let recorder = Recorder()
         var stopped = qwenServing
@@ -4054,14 +4058,63 @@ import Darwin
         let glm = [A.Option(mode: tp, planned: true, fitsNow: true, measuredTokensPerSecond: 105.6, concurrentRequests: 8, publicTraffic: true),
                    A.Option(mode: pp, planned: true, fitsNow: true, measuredTokensPerSecond: 40.8, concurrentRequests: 1, publicTraffic: true)]
         let measured = A.advise(glm, throughDarkbloom: true, serving: false)
-        expect(measured == A(mode: tp, reason: "faster here (about 106 against 41 tokens/s, measured) and serves up to 8 requests at once"),
+        expect(measured == A(mode: tp, reason: "faster here and serves up to 8 requests at once"),
                "advice: GLM on two M5 Ultras, measured: \(String(describing: measured))")
         let fresh = glm.map { var option = $0; option.measuredTokensPerSecond = nil; return option }
         expect(A.advise(fresh, throughDarkbloom: true, serving: false)
                == A(mode: tp, reason: "serves up to 8 requests at once; no speed is known for these Macs yet"), "advice: nothing measured yet, lanes decide")
         let predicted = fresh.enumerated().map { var option = $1; option.predictedTokensPerSecond = $0 == 0 ? 92 : 38; return option }
-        expect(A.advise(predicted, throughDarkbloom: true, serving: false)?.reason == "faster here (about 92 against 38 tokens/s, predicted) and serves up to 8 requests at once",
-               "advice: the planner's prediction when nothing is measured")
+        expect(A.advise(predicted, throughDarkbloom: true, serving: false)?.reason == "faster here and serves up to 8 requests at once",
+               "advice: the planner's prediction when nothing is measured, never quoted")
+        // The owner (2026-11-05): "it should not show tok/s". Pair-2's Gemma said "faster here (about 56 against 52
+        // tokens/s, predicted)"; the speeds still rank the modes, the words never quote them.
+        let gemmaPair2 = [A.Option(mode: tp, planned: true, fitsNow: true, predictedTokensPerSecond: 52, concurrentRequests: 1, publicTraffic: true),
+                          A.Option(mode: pp, planned: true, fitsNow: true, predictedTokensPerSecond: 56, concurrentRequests: 1, publicTraffic: true)]
+        let pair2 = A.advise(gemmaPair2, throughDarkbloom: true, serving: false)
+        expect(pair2 == A(mode: pp, reason: "faster here"), "advice: no figures in the reason: \(String(describing: pair2))")
+        expect(pair2?.plainLine(model: "Gemma 4 26B") == "Recommended for Gemma 4 26B on these two Macs: Pipeline, faster here.",
+               "advice: the plain line: \(String(describing: pair2?.plainLine(model: "Gemma 4 26B")))")
+        // Through Darkbloom the mode that takes more at once, as fast: said so, with no figures.
+        let asFast = [A.Option(mode: pp, planned: true, fitsNow: true, measuredTokensPerSecond: 58, concurrentRequests: 1, publicTraffic: true),
+                      A.Option(mode: tp, planned: true, fitsNow: true, measuredTokensPerSecond: 58, concurrentRequests: 8, publicTraffic: true)]
+        let asFastAdvice = A.advise(asFast, throughDarkbloom: true, serving: false)
+        expect(asFastAdvice == A(mode: tp, reason: "serves up to 8 requests at once and is as fast here"),
+               "advice: more at once and as fast, no figures: \(String(describing: asFastAdvice))")
+        // A measurement on these Macs outranks a prediction (owner, 2026-11-05: "use measurements when present"). Two M5
+        // Ultras, build D (2026-11-05 07:24Z): Gemma tensor parallel served 111 tok/s while the pipeline had not served yet;
+        // the planner predicted that pipeline at 152 (it then served 64), so comparing predictions recommended it.
+        let gemmaM5U = [A.Option(mode: tp, planned: true, fitsNow: true, measuredTokensPerSecond: 111, predictedTokensPerSecond: 133,
+                                 concurrentRequests: 1, publicTraffic: true),
+                        A.Option(mode: pp, planned: true, fitsNow: true, predictedTokensPerSecond: 152, concurrentRequests: 1, publicTraffic: true)]
+        let gemmaM5UAdvice = A.advise(gemmaM5U, throughDarkbloom: true, serving: false)
+        expect(gemmaM5UAdvice == A(mode: tp, reason: "the only one measured on these Macs so far"),
+               "advice: a measured mode outranks a predicted one: \(String(describing: gemmaM5UAdvice))")
+        // MiMo on the same pair: tensor parallel measured 55, the speculative pipeline (one at a time too) not yet.
+        let mimoM5U = [A.Option(mode: "pipeline_mtp_v1", planned: true, fitsNow: true, predictedTokensPerSecond: 90, concurrentRequests: 1,
+                                publicTraffic: true),
+                       A.Option(mode: tp, planned: true, fitsNow: true, measuredTokensPerSecond: 55, predictedTokensPerSecond: 60,
+                                concurrentRequests: 1, publicTraffic: true)]
+        expect(A.advise(mimoM5U, throughDarkbloom: true, serving: false)?.mode == tp, "advice: MiMo's measured tensor parallel")
+        // Several measured, one not: the fastest measured, said so.
+        let three = [A.Option(mode: tp, planned: true, fitsNow: true, measuredTokensPerSecond: 40, concurrentRequests: 1, publicTraffic: true),
+                     A.Option(mode: pp, planned: true, fitsNow: true, measuredTokensPerSecond: 60, concurrentRequests: 1, publicTraffic: true),
+                     A.Option(mode: "pipeline_mtp_v1", planned: true, fitsNow: true, predictedTokensPerSecond: 200, concurrentRequests: 1,
+                              publicTraffic: true)]
+        expect(A.advise(three, throughDarkbloom: false, serving: false) == A(mode: pp, reason: "the fastest measured on these Macs so far"),
+               "advice: the fastest measured of several")
+        // Through Darkbloom a mode that serves more at once still wins without a speed (R4-15), measured or not.
+        let lanesFirst = [A.Option(mode: tp, planned: true, fitsNow: true, predictedTokensPerSecond: 90, concurrentRequests: 8, publicTraffic: true),
+                          A.Option(mode: pp, planned: true, fitsNow: true, measuredTokensPerSecond: 41, concurrentRequests: 1, publicTraffic: true)]
+        expect(A.advise(lanesFirst, throughDarkbloom: true, serving: false)
+               == A(mode: tp, reason: "serves up to 8 requests at once; the others take fewer, and Darkbloom turns the rest away"),
+               "advice: more at once still wins through Darkbloom")
+        expect(gemmaM5UAdvice?.plainLine(model: "Gemma 4 26B", width: 80) == "Recommended for Gemma 4 26B on these two Macs: Tensor parallel, measured here.",
+               "advice: the short reason: \(String(describing: gemmaM5UAdvice?.plainLine(model: "Gemma 4 26B", width: 80)))")
+        for advice in [measured, A.advise(predicted, throughDarkbloom: true, serving: false), pair2, asFastAdvice] {
+            let line = advice?.plainLine(model: "Gemma 4 26B") ?? ""
+            expect(!line.isEmpty && !line.contains("tok") && !line.contains("against") && !line.contains("(measured)") && !line.contains("predicted)"),
+                   "advice: no speed quoted: \(line)")
+        }
         // A memory-tight pair (an M3 Ultra and an M5 Max 128 GB): tensor parallel doesn't fit now.
         let tight = [A.Option(mode: tp, planned: true, fitsNow: false, concurrentRequests: 8, publicTraffic: true),
                      A.Option(mode: pp, planned: true, fitsNow: true, concurrentRequests: 1, publicTraffic: true)]
@@ -4099,10 +4152,9 @@ import Darwin
         // The first line under the question names the model, the mode apart; too wide for the window, the reason is
         // shortened, then left out, never the model's or the mode's name.
         let glmTitle = "Z.ai: GLM-5.3-Flash"
-        let full = "Recommended for Z.ai: GLM-5.3-Flash on these two Macs: Tensor parallel, faster here (about 106 against 41 tokens/s, "
-            + "measured) and serves up to 8 requests at once."
+        let full = "Recommended for Z.ai: GLM-5.3-Flash on these two Macs: Tensor parallel, faster here and serves up to 8 requests at once."
         expect(measured?.plainLine(model: glmTitle) == full, "line: the model and the mode named")
-        expect(measured?.plainLine(model: glmTitle, width: 132)
+        expect(measured?.plainLine(model: glmTitle, width: 110)
                == "Recommended for Z.ai: GLM-5.3-Flash on these two Macs: Tensor parallel, faster, up to 8 at once.", "line: a shorter reason")
         expect(measured?.plainLine(model: glmTitle, width: 40) == "Recommended for Z.ai: GLM-5.3-Flash on these two Macs: Tensor parallel.",
                "line: 40 columns: no reason, every name whole")
@@ -4164,7 +4216,7 @@ import Darwin
             .init(mode: pp, split: "this Mac 1 layer / the other Mac 44 layers", measuredTokensPerSecond: 40.8, concurrentRequests: 1)]
         let glm = ClusterOnboardingModelChoice(title: "Z.ai: GLM-5.3-Flash", lines: ["181.8 GB · tensor parallel · this Mac 50% / the other Mac 50%"],
             blocker: nil, modelID: "glm-5.3-flash", validated: true, split: "tensor parallel", modes: modes,
-            modeAdvice: ClusterOnboardingModeAdvice(mode: tp, reason: "faster here (about 106 against 41 tokens/s, measured) and serves up to 8 requests at once"))
+            modeAdvice: ClusterOnboardingModeAdvice(mode: tp, reason: "faster here and serves up to 8 requests at once"))
         var stopped = qwenServing
         stopped.serving = false
         let names = ["Tensor parallel", "Pipeline"]

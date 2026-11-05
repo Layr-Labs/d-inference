@@ -3634,6 +3634,7 @@ evidence, not a change to the normal final-row contract or the near-tie rule
 | Load refused (503), or a running load ends before it installs a slot | An [add-on hold](addon-hold.md) is active: no load takes the load gate, and one already running stops at its next check (after hashing, after the weight load or before install; the managed Super and native MiMo loads before their weights and at publication) | `provider-swift/Sources/ProviderCore/Addon/ProviderLoop+AddonHold.swift` (`addonHoldLoadRefusal`), `provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift` (`ensureModelLoaded`), `provider-swift/Sources/ProviderCore/MiMo/ProviderLoop+NativeMiMo.swift` (`requireNativeMiMoPublication`) |
 | Slot flagged wedged | No engine progress for `suspectStallSeconds = 10`; a two-Mac pair only once a request is 40 s past its own first-token allowance | `WedgeMonitor.swift` |
 | Provider exits with `Trace/BPT trap: 5`; its log shows `[metal::Device] Unable to build metal library from source` | MLX compiled a Metal kernel at runtime and the compile failed. mlx-swift builds MLX's JIT kernel path, and the release metallib holds no NAX attention kernels, so on M5 GPUs fused attention compiles on the Mac when a shape is first used; MLX throws on a failed compile and the Swift error handler stops the process. 0.10.2 failed this way for full attention with head dim 256 or 512 and at least 1,024 query tokens (`attention_nax_dsplit`), fixed in 0.10.3. Check an MLX pin change that touches `jit_kernels.cpp` or the NAX kernels on an M5 with a long Gemma 4 or Qwen prompt | `libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/jit_kernels.cpp`, `device.cpp` (`build_library_`) |
+| Provider crashes in a loop on a pre-release macOS 27.2 build (for example 26B5091g); the crash report shows a call to address 0 | The build was made with SDK 27.2 and compares Dates with `>=` or `<=`. SDK 27.2 back-deploys these two operators: Swift 6.4.2 calls them through weak Foundation imports behind an OS version check. These macOS builds pass the check but do not export the symbols. DevNet build `0.10.6-dev.branch.87` crashed this way. The cluster service's timed checks (memory replan, member sync, update and approval checks, part restart backoff, supervision wait, model manifest repair retry and deadline) compare with `timeIntervalSince(_:)` and keep the same thresholds. `scripts/check-date-comparisons.py` (the `Provider Tests` gate and Release Integrity) refuses the pattern in shipped source. To fix a hit, write `a.timeIntervalSince(b) >= 0` for `a >= b` and `a.timeIntervalSince(b) <= 0` for `a <= b`; `<`, `>` and `==` are safe. The release lane runs `scripts/check-provider-weak-imports.py` on the built binaries. A failure means a binary still imports `Date.>=` or `Date.<=`; the check names the calling functions. See the [build guide](../developer/build.md#sdk-27-release-builds-and-caches) | `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift`, `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterModelProvisioningStore.swift`; `scripts/check-date-comparisons.py`, `scripts/check-provider-weak-imports.py` |
 
 ## Code map
 
@@ -4046,7 +4047,12 @@ away; mixed pairs are first-class).
 - **Measured speed:** `ClusterServedModes.figures` over this build's served
   records of this model on these Macs (`ClusterServedSpeedRecords.servedBy`), as
   the planner reads them: a figure from 3 served requests on. Never a
-  prediction; without one the screen says "not measured on these Macs yet".
+  prediction; without one the model list says "not measured on these Macs yet".
+  The mode question uses these figures (else the planner's predictions) only
+  to rank the modes: its recommendation and its mode lines quote no tokens per
+  second (owner, 2026-11-05), and a re-plan's "Planned in the mode chosen" line
+  gives the size, mode and shares without the planner's predicted speed
+  (`ClusterOnboardingModeAdvice.fasterWords`, `OnboardingLive.localPlanModels`).
 - **The current model:** on a set-up pair the list preselects the model serving
   now (or the last one used); it keeps the mode the saved setup served in when
   the plan still lists it (`keepMode`, from `ClusterOnboardingResume.servingMode`),
@@ -4361,10 +4367,17 @@ pages freed, and the freed-buffer cache is emptied. The probe's memory is the
 load's own batch ledger for a one-lane request of its size, with the loading
 headroom, asked of the gate without a reclaim; the batch owner's allocation
 baseline is taken before it, so the widened projection constants its forward
-keeps count as a first request's would. Memory the gate does not admit, a load
-deadline nearer than 10 s, a 1.5 s budget reached before three timed rounds, or
-any error gives no probe, never a failed load; only a throwaway request that
-cannot be retired fails it.
+keeps count as a first request's would. Each phase's timed rounds stop 1.5 s
+after its first timed round. The prefill and the warm-up rounds do not count
+against that budget: the probe is the loaded model's first forward in its
+worker process, and the kernels compile on first use. No round starts 8 s after
+the probe started, prefill and warm-up included, which is less than the 10 s
+deadline margin. Memory the gate does not admit, a load deadline nearer than
+10 s, fewer than three timed rounds in the budget (`skipped=budget`), the 8 s
+limit (`skipped=limit`) or any error gives no probe, never a failed load; only
+a throwaway request that cannot be retired fails it. The Gemma probe
+(`Gemma4TensorParallelShareProbe`) uses the same rounds, budget and limit
+(`QwenTensorParallelShareProbe.rounds`).
 
 The serving leader records both ranks' probes when the pair becomes ready, next
 to the link probe, in owner-only `~/.darkbloom/cluster/share-probes.json`

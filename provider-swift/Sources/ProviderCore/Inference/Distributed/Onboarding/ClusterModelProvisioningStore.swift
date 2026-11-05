@@ -161,7 +161,7 @@ enum ClusterProductModelStore {
         guard let accepts, deadline.map({ Date() < $0 }) ?? true else { return }
         let key = folder.path
         let due: Bool = repairLock.withLock { () -> Bool in
-            guard !repairSettled.contains(key), !repairRunning.contains(key), repairRetryAt[key].map({ now >= $0 }) ?? true else { return false }
+            guard !repairSettled.contains(key), !repairRunning.contains(key), repairRetryAt[key].map({ now.timeIntervalSince($0) >= 0 }) ?? true else { return false }
             repairRunning.insert(key)
             return true
         }
@@ -190,7 +190,7 @@ enum ClusterProductModelStore {
                              deadline: deadline, accepts: accepts) {
         case .manifest(let data): exact = data
         case .otherContent: return .settled
-        case .unavailable: return deadline.map({ Date() >= $0 }) == true ? .notAttempted : .retry
+        case .unavailable: return deadline.map({ Date().timeIntervalSince($0) >= 0 }) == true ? .notAttempted : .retry
         }
         guard exact != current else { return .settled }
         guard accepts(exact) else { return .retry }
@@ -227,7 +227,7 @@ enum ClusterProductModelStore {
                                      deadline: Date? = nil, accepts: @escaping (_ manifest: Data, _ folder: URL) -> Bool) {
         let names = ((try? FileManager.default.contentsOfDirectory(atPath: store.path)) ?? []).sorted()
         for name in names.prefix(256) where !name.hasPrefix(".") {
-            if let deadline, Date() >= deadline { return }
+            if let deadline, Date().timeIntervalSince(deadline) >= 0 { return }
             let folder = store.appendingPathComponent(name)
             guard let data = ClusterModelStore.readSmall(folder.appendingPathComponent("manifest.json")),
                   let held = try? ClusterCatalogArtifact.parse(manifest: data), servable.contains(held.aggregateSHA256) else { continue }

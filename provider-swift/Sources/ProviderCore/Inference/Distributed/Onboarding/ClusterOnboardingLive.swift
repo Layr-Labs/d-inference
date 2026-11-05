@@ -912,10 +912,10 @@ final class OnboardingLive: @unchecked Sendable {
                                  validated: approved(option.model.artifactSHA256))
                 }
                 let offer = option.onOtherMac != false ? nil : copyOffer(model: option.model, peer: peer)
-                // One line: size, how it is split (the planner's choice), each Mac's share, the expected speed.
-                let speed = plan.absolute ? "about \(Int(plan.decodeTokensPerSecond.rounded())) tokens/s\(plan.measured ? "" : " (estimate)")" : nil
+                // One line: size, how it is split (the planner's choice) and each Mac's share; no predicted speed
+                // (owner, 2026-11-05: the model and mode choice never quote tok/s).
                 let line = ClusterOnboardingDeployment.choiceLine(size: gigabytes, mode: plan.mode,
-                    shares: planShares(plan.ranks, localName: localName, perspective: true), speed: speed)
+                    shares: planShares(plan.ranks, localName: localName, perspective: true), speed: nil)
                 // Recorded and carried by the start for both Macs, so each Mac is named by its hardware.
                 let deployment = ClusterOnboardingDeployment.line(model: title, mode: plan.mode, shares: planShares(plan.ranks, localName: localName))
                 keys.append((option.model.folder, ClusterSetupState.planKey(option.model, plan), modelID, plan.alone.filter(\.holds).map(\.memberID),

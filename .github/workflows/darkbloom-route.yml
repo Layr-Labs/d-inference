@@ -4,6 +4,9 @@ name: Darkbloom Route
 # plane grants one, otherwise the lane's fallback label. Callers run each job on
 # `fromJSON(needs.route.outputs.routes)['<lane>']`. Routing is off unless the
 # DARKBLOOM_ROUTING variable is exactly `on`; the plane can never fail this job.
+# DARKBLOOM_MACOS_LANES, when set, caps the macOS jobs one run asks for: lanes
+# are kept in the caller's order while they fit, and the others keep their
+# fallback without asking.
 on:
   workflow_call:
     inputs:
@@ -36,6 +39,7 @@ jobs:
         env:
           LANES: ${{ inputs.lanes }}
           ROUTING: ${{ vars.DARKBLOOM_ROUTING }}
+          MACOS_LANES: ${{ vars.DARKBLOOM_MACOS_LANES }}
           PLANE_URL: ${{ vars.DARKBLOOM_SANDBOX_URL }}
           REPOSITORY: ${{ github.repository }}
           EVENT_NAME: ${{ github.event_name }}
@@ -75,7 +79,24 @@ jobs:
               --argjson count "$count" '. + [{$lane, $profile, $fallback, $count}]' <<<"$configured")
           done <<<"${LANES:-}"
           [ "$configured" != '[]' ] || configuration_error "no lanes are configured"
-          requested=$(jq -c '[.[] | select(.count > 0) | {lane, profile, count}]' <<<"$configured")
+
+          # The macOS cap is a repository setting, not caller configuration: a
+          # value other than 0 to 99 asks for no macOS lane rather than failing.
+          macos_cap=${MACOS_LANES:-}
+          cap_note=""
+          if [ -n "$macos_cap" ] && ! [[ $macos_cap =~ ^(0|[1-9][0-9]?)$ ]]; then
+            cap_note=" DARKBLOOM_MACOS_LANES is not a number from 0 to 99, so no macOS lane was requested."
+            macos_cap=0
+          fi
+          configured=$(jq -c --arg cap "$macos_cap" '
+            reduce .[] as $entry ({used: 0, lanes: []};
+              if $cap != "" and $entry.profile == "macos_arm64" and $entry.count > 0
+                and .used + $entry.count > ($cap | tonumber)
+              then .lanes += [$entry + {capped: true}]
+              else .used += (if $entry.profile == "macos_arm64" then $entry.count else 0 end)
+                | .lanes += [$entry + {capped: false}]
+              end) | .lanes' <<<"$configured")
+          requested=$(jq -c '[.[] | select(.count > 0 and (.capped | not)) | {lane, profile, count}]' <<<"$configured")
 
           plane_url=${PLANE_URL:-https://api-sandbox.darkbloom.dev}
           body=$(mktemp)
@@ -138,6 +159,7 @@ jobs:
                 | ($plane_decisions[.lane] | if type == "object" then . else {} end) as $decision
                 | if .count == 0 then .target = "fallback" | .reason = "not requested"
                   elif $fallback_reason != "" then .target = "fallback" | .reason = $fallback_reason
+                  elif .capped then .target = "fallback" | .reason = "over the macOS lane cap (DARKBLOOM_MACOS_LANES)"
                   elif $decision.target == "darkbloom" and $decision.runs_on == $profiles[.profile]
                   then .target = "darkbloom" | .reason = "granted"
                   elif $decision.target == "fallback"
@@ -148,6 +170,7 @@ jobs:
           routes=$(jq -c 'map({key: .lane, value: .runs_on}) | from_entries' <<<"$decisions")
           echo "routes=$routes" >> "$GITHUB_OUTPUT"
 
+          note="$note$cap_note"
           echo "$note"
           jq -r '.[] | "\(.lane): \(.runs_on | if type == "array" then join(",") else . end) (\(.reason))"' <<<"$decisions"
           {

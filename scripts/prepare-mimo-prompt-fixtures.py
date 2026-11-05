@@ -8,6 +8,8 @@ import stat
 import urllib.parse
 import urllib.request
 
+from verified_download_cache import cached
+
 REPOSITORY = "XiaomiMiMo/MiMo-V2.6-Flash-RL"
 REVISION = "5711b268169967567844e1e560e8a3966da959b1"
 PINS = {
@@ -61,10 +63,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--github-env", type=Path)
+    parser.add_argument("--cache", type=Path, help="content-addressed directory of verified downloads")
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     corpus = root / "fixtures/prompt-contract/mimo-v26-additional20.json"
-    output = prepare(args.output, corpus)
+    download = public_metadata if args.cache is None else cached(public_metadata, args.cache, PINS.__getitem__)
+    output = prepare(args.output, corpus, download)
     lines = [f"MIMO_PROMPT_ARTIFACT_DIRECTORY={output}",
              f"MIMO_PROMPT_REFERENCE_VECTORS={corpus}"]
     if any("\n" in line or "\r" in line for line in lines):

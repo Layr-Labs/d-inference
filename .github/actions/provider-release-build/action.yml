@@ -351,6 +351,20 @@ runs:
         done
         cmp "$OUT/mlx.metallib" "$MATCHED_METALLIB"
         echo "cluster_helpers_dir=$OUT" >> "$GITHUB_OUTPUT"
+    - name: Refuse Foundation imports that a served macOS lacks
+      # SDK 27.2 back-deploys Date's >= and <= as weak imports. Pre-release
+      # macOS 27.2 builds lack them, and a call through one jumps to address 0.
+      if: inputs.lane == 'release'
+      shell: bash
+      env:
+        BIN_DIR: ${{ steps.products.outputs.bin_dir }}
+        CLUSTER_HELPERS: ${{ steps.cluster-helpers.outputs.cluster_helpers_dir }}
+      run: |
+        set -euo pipefail
+        echo "Built with SDK $PROVIDER_SDK_VERSION"
+        python3 scripts/check-provider-weak-imports.py \
+          "$BIN_DIR/$PRODUCT_CLI_NAME" "$BIN_DIR/$PRODUCT_ENCLAVE_NAME" "$BIN_DIR/darkbloom-fan-helper" \
+          "$CLUSTER_HELPERS/darkbloom-cluster-worker" "$CLUSTER_HELPERS/darkbloom-cluster-plan"
     - name: Retain SDK test diagnostics
       if: always() && inputs.lane == 'qualification'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

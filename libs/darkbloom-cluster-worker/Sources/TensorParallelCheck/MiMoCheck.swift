@@ -24,8 +24,8 @@ import MLX
 //       every position's routed expert sets; `compare` then reports where they first differ.
 //       `--mtp-depth D` (paged; a `--mtp yes` checkpoint) decodes in speculative rounds: D proposals a round
 //       from the replicated trained heads, or with `--mtp-script REPORT` the tokens of an earlier report
-//       (forced acceptance), every `--mtp-misses K`-th moved off so the target rejects it. A rank only: `full`
-//       with `--mtp-depth` is refused before loading (a verify window runs only on a tensor-parallel rank).
+//       (forced acceptance), every `--mtp-misses K`-th moved off so the target rejects it. Tensor-parallel
+//       ranks only (simulated, shard, tp): `full` with `--mtp-depth` is refused before loading.
 //   darkbloom-cluster-tp-check mimo compare --reference FILE --candidate FILE [--bitwise yes|no] [--near-tie-ulps U]
 //   darkbloom-cluster-tp-check mimo allsum [--backend ring|socket|jaccl] [--count N]
 //

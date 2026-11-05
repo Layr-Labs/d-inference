@@ -251,16 +251,6 @@ mtp_matrix() {
   for name in kernel tiny; do
     dir="$scratch/$name-mtp"
     synthesize "$dir" --variant "$name" --mtp yes
-    # A verify window runs only on a tensor-parallel rank: `full` with --mtp-depth is refused before loading.
-    if nice -n 19 "$tp_check" mimo run --mode full --path paged --model-dir "$dir" --request "$dir/request.json" \
-         --report "$dir/full-mtp-refused.json" --mtp-depth 2 >"$dir/full-mtp-refused.log" 2>&1; then
-      echo "mtp $name: FULL WITH --mtp-depth WAS NOT REFUSED"; failures=$((failures + 1))
-    elif grep -q "mtp-depth needs --mode simulated, shard or tp" "$dir/full-mtp-refused.log" \
-         && [[ ! -e "$dir/full-mtp-refused.json" ]] && ! grep -q "^\[tp-check\] loading" "$dir/full-mtp-refused.log"; then
-      echo "mtp $name: full with --mtp-depth refused before loading"
-    else
-      echo "mtp $name: full with --mtp-depth failed for another reason"; failures=$((failures + 1))
-    fi
     for request in request request-short request-long; do
       [[ "$name" == tiny && "$request" == request-long ]] && continue
       run() { local tag="$1"; shift
@@ -289,6 +279,16 @@ mtp_matrix() {
   # Sampled rounds (the product's keyed target sample per column over the gathered rows): every round run
   # equals the sampled one-token path bit for bit, and tp == simulated.
   dir="$scratch/kernel-mtp"
+  # A verify window runs only on a tensor-parallel rank: `full` with --mtp-depth is refused before loading.
+  if nice -n 19 "$tp_check" mimo run --mode full --path paged --model-dir "$dir" --request "$dir/request.json" \
+       --report "$dir/full-mtp-refused.json" --mtp-depth 2 >"$dir/full-mtp-refused.log" 2>&1; then
+    echo "mtp: FULL WITH --mtp-depth WAS NOT REFUSED"; failures=$((failures + 1))
+  elif grep -q "mtp-depth needs --mode simulated, shard or tp" "$dir/full-mtp-refused.log" \
+       && [[ ! -e "$dir/full-mtp-refused.json" ]] && ! grep -q "^\[tp-check\] loading" "$dir/full-mtp-refused.log"; then
+    echo "mtp: full with --mtp-depth refused before loading"
+  else
+    echo "mtp: full with --mtp-depth failed for another reason"; failures=$((failures + 1))
+  fi
   sampled() { local tag="$1"; shift
     nice -n 19 "$tp_check" mimo run --mode simulated --path paged --model-dir "$dir" --request "$dir/request.json" \
       --report "$dir/sampled-$tag-simulated.json" --temperature 0.8 --sample-seed 11 "$@" \

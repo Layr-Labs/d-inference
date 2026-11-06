@@ -98,7 +98,8 @@ struct NemotronSuperVideoDecodeTests {
     }
 
     /// A spent allowance ends the pull's wait on the decoder at once and
-    /// fails it as `decodeAllowanceSpent`; the reader stops behind the read in flight.
+    /// fails it as `decodeAllowanceSpent`; the reader stops behind the read
+    /// in flight.
     @Test(.timeLimit(.minutes(2))) func decodeAllowanceStopsTheReader() async throws {
         // 240 frames at 60 fps: 8 sampled, every frame up to 239 decodes.
         let plan = try await Decode.inspect(Clips.uri(try await Clips.movie(frames: 240, fps: 60)))

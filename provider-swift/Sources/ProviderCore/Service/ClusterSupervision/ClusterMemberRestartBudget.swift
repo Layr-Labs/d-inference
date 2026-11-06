@@ -11,14 +11,14 @@ public enum ClusterMemberRunEnd: Equatable, Sendable {
     /// tore down a wedged collective and released its memory. A self-heal,
     /// budgeted separately from startup failures.
     case guardTeardown
+    /// The member exited with `gpuHeldExitCode`: another Darkbloom build holds this Mac's GPU (its pair or a model
+    /// check), or production serves here. A wait, never a failure.
+    case gpuHeld
     /// Any other exit, including a zero exit the supervisor did not ask for:
     /// an unrequested clean exit is a crash, not an operator stop.
     case failure(exitCode: Int32)
     /// Killed by a signal the supervisor did not send.
     case signaled(Int32)
-    /// The member exited with `gpuHeldExitCode`: another Darkbloom build holds this Mac's GPU (its pair or a model
-    /// check), or production serves here. A wait, never a failure.
-    case gpuHeld
 
     /// The JACCL progress guard's teardown exit code (guard v2, mlx#33).
     public static let guardTeardownExitCode: Int32 = 75
@@ -32,9 +32,11 @@ public enum ClusterMemberRunEnd: Equatable, Sendable {
     public static func classify(stopRequested: Bool, exitCode: Int32?, signal: Int32?) -> ClusterMemberRunEnd {
         if stopRequested { return .operatorStop }
         if let signal { return .signaled(signal) }
-        let code = exitCode ?? -1
-        if code == gpuHeldExitCode { return .gpuHeld }
-        return code == guardTeardownExitCode ? .guardTeardown : .failure(exitCode: code)
+        switch exitCode ?? -1 {
+        case guardTeardownExitCode: return .guardTeardown
+        case gpuHeldExitCode: return .gpuHeld
+        case let code: return .failure(exitCode: code)
+        }
     }
 }
 
@@ -122,7 +124,7 @@ public struct ClusterMemberRestartBudget: Codable, Equatable, Sendable {
     /// accounting, then the two breakers, then the backoff.
     public mutating func record(_ end: ClusterMemberRunEnd, runSeconds: Double) -> Decision {
         if end == .operatorStop { return .stop }
-        // The member waited for another build's hold on the GPU; it did not fail.
+        // A start refused for another build's hold on the GPU is no failure: nothing counts or doubles while it waits.
         if end == .gpuHeld { return .waitForGPU }
         if runSeconds < limits.quickFailureWindowSeconds {
             if end == .guardTeardown { guardTeardowns += 1 } else { quickFailures += 1 }

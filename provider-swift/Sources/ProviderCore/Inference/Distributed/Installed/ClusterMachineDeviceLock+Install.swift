@@ -91,25 +91,27 @@ extension ClusterMachineDeviceLock {
 
     /// Production's cluster service's published status (`ClusterServiceStatus.fileName` in production's setup folder),
     /// read only: never locked or written, and opened only as a regular file. Fresh: written within
-    /// `publishedWithinSeconds` before `now` (when it was looked at). It says the pair serves while its intent is on and
-    /// the pair isn't given up on this Mac (`pairRunning`; nil from a build before 0.10.9).
-    static func productionPairStatus(home: URL, now: Date? = nil) -> ProductionPairStatus {
+    /// `publishedWithinSeconds` before it was looked at. It says the pair serves while its intent is on and the pair
+    /// isn't given up on this Mac (`pairRunning`; nil from a build before 0.10.9).
+    static func productionPairStatus(home: URL) -> ProductionPairStatus {
         guard let production = try? ClusterUserPaths(homeDirectory: home, environment: .prod) else { return .none }
         let file = production.setupDirectory.appendingPathComponent(ClusterServiceStatus.fileName)
         let shown = "~/\(BuildEnvironment.prod.installDirectoryName)/cluster-setup/\(ClusterServiceStatus.fileName)"
+        func unreadable(errno code: Int32) -> ProductionPairStatus {
+            .unreadable("\(shown): \(String(cString: strerror(code)))")
+        }
         var info = stat()
         guard lstat(file.path, &info) == 0 else {
             let code = errno
-            return code == ENOENT || code == ENOTDIR ? .none : .unreadable("\(shown): \(String(cString: strerror(code)))")
+            return code == ENOENT || code == ENOTDIR ? .none : unreadable(errno: code)
         }
         let written = Double(info.st_mtimespec.tv_sec) + Double(info.st_mtimespec.tv_nsec) / 1e9
-        guard (0..<publishedWithinSeconds).contains((now ?? Date()).timeIntervalSince1970 - written) else { return .none }
+        // The clock is read after the stat, never before: production rewrites the file every second, and a time read
+        // first could precede a write in between, which would then look dated ahead of the clock and not count.
+        guard (0..<publishedWithinSeconds).contains(Date().timeIntervalSince1970 - written) else { return .none }
         guard info.st_mode & S_IFMT == S_IFREG else { return .unreadable("\(shown) is not a file") }
         let descriptor = open(file.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
-        guard descriptor >= 0 else {
-            let code = errno
-            return .unreadable("\(shown): \(String(cString: strerror(code)))")
-        }
+        guard descriptor >= 0 else { return unreadable(errno: errno) }
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
         guard let data = try? handle.read(upToCount: 1 << 20),
               let status = try? JSONDecoder().decode(ClusterServiceStatus.self, from: data) else {

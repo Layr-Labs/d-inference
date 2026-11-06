@@ -84,6 +84,13 @@ struct ClusterApprovalServiceStartTests {
         ((try? FileManager.default.contentsOfDirectory(atPath: parts.path)) ?? []).filter { $0.hasPrefix(role + "-") && $0.hasSuffix(suffix) }.count
     }
 
+    /// The process numbers of those parts (the fixture names each record `<role>-<pid><suffix>`).
+    private func pids(_ parts: URL, _ role: String, _ suffix: String) -> [Int32] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: parts.path)) ?? [])
+            .filter { $0.hasPrefix(role + "-") && $0.hasSuffix(suffix) }
+            .compactMap { Int32($0.dropFirst(role.count + 1).dropLast(suffix.count)) }
+    }
+
     private func run(_ service: ClusterService, parts: URL, until predicate: () -> Bool) -> (Bool, [String]) {
         let stop = DispatchSemaphore(value: 0), done = DispatchSemaphore(value: 0)
         let lines = ClusterApprovalRecorder<String>()
@@ -267,8 +274,7 @@ struct ClusterApprovalServiceStartTests {
                 case 1:  // the service fences the part's GPU work and asks it to stop; the fixture then ends
                     guard count(parts, "member", ".term") >= 1 else { return false }
                     fencedBeforeTheStop = fenced.values
-                    askedToStop = ((try? FileManager.default.contentsOfDirectory(atPath: parts.path)) ?? [])
-                        .filter { $0.hasPrefix("member-") && $0.hasSuffix(".term") }.compactMap { Int32($0.dropFirst(7).dropLast(5)) }
+                    askedToStop = pids(parts, "member", ".term")
                     try? Data().write(to: parts.appendingPathComponent("release-member"))
                     servingSince = Date(); phase = 2
                 case 2:  // the part stays stopped while production serves; then production stops

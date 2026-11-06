@@ -1612,36 +1612,6 @@ public final class ClusterService: @unchecked Sendable {
     /// this Mac's part waits instead of starting, being refused and counting as failing: said once, and named in the
     /// status. It starts on the first tick after the hold ends, with its restart backoff and any approval set aside as
     /// failing cleared (`blockerCleared`).
-    /// SIGUSR1 to the worker owners the part `partPID` started: their force-cancel hook (`ClusterOwnerForceCancel`) fences
-    /// each one's worker, which cancels its requests, releases its model and exits by itself, the protocol's own drain.
-    /// Its owner journals and reports that end, so nothing of the part's own state is left behind. Returns how many
-    /// were asked.
-    static func fenceOwners(of partPID: Int32) -> Int {
-        let image: (Int32) -> String? = { ClusterProcessTable.executablePath(of: $0) }
-        let targets = fenceTargets(processes: ClusterProcessTable.running(), partPID: partPID, image: image)
-        return targets.filter { kill($0, SIGUSR1) == 0 }.count
-    }
-
-    /// The worker owners among `partPID`'s descendants that run the part's own executable (`image`), so they carry the
-    /// force-cancel hook: any other process would die of SIGUSR1, and no other build's process is ever one of them.
-    static func fenceTargets(processes: [ClusterProcessTable.Entry], partPID: Int32, image: (Int32) -> String?) -> [Int32] {
-        guard let own = image(partPID) else { return [] }
-        var lineage: Set<Int32> = [partPID]
-        var grew = true
-        while grew {
-            grew = false
-            for entry in processes where !lineage.contains(entry.processIdentifier) {
-                guard let parent = entry.parentProcessIdentifier, lineage.contains(parent) else { continue }
-                lineage.insert(entry.processIdentifier)
-                grew = true
-            }
-        }
-        return processes.filter {
-            $0.processIdentifier != partPID && lineage.contains($0.processIdentifier)
-                && ClusterOrphanReaper.role(of: $0) == .owner && image($0.processIdentifier) == own
-        }.map(\.processIdentifier).sorted()
-    }
-
     private func holdsBackForOtherApp(say: @escaping @Sendable (String) -> Void) -> Bool {
         let now = ClusterMachineDeviceLock.heldByAnotherBuild(context.paths, otherHolder: productionServes)
         let before = lock.withLock { () -> String? in defer { otherAppHolds = now }; return otherAppHolds }
@@ -1655,6 +1625,36 @@ public final class ClusterService: @unchecked Sendable {
             blockerCleared(say: say)
             return false
         }
+    }
+
+    /// SIGUSR1 to the worker owners the part `partPID` started (`fenceTargets`): their force-cancel hook
+    /// (`ClusterOwnerForceCancel`) fences each one's worker, which cancels its requests, releases its model and exits by
+    /// itself, the protocol's own drain. Its owner journals and reports that end, so nothing of the part's own state is
+    /// left behind. Returns how many were asked.
+    static func fenceOwners(of partPID: Int32) -> Int {
+        let targets = fenceTargets(processes: ClusterProcessTable.running(), partPID: partPID,
+                                   image: ClusterProcessTable.executablePath(of:))
+        return targets.filter { kill($0, SIGUSR1) == 0 }.count
+    }
+
+    /// The worker owners among `partPID`'s descendants that run the part's own executable (`image`), chosen as
+    /// `cluster cancel-all` chooses the owners it signals (`ClusterOrphanReaper.cancelTargets`): only such an owner
+    /// carries the force-cancel hook for certain, and any other process would die of SIGUSR1. No other build's process is
+    /// ever one of them, and there are none once the part's executable can't be read (it is gone).
+    static func fenceTargets(processes: [ClusterProcessTable.Entry], partPID: Int32, image: (Int32) -> String?) -> [Int32] {
+        var lineage: Set<Int32> = [partPID]
+        var grew = true
+        while grew {
+            grew = false
+            for entry in processes where !lineage.contains(entry.processIdentifier) {
+                guard let parent = entry.parentProcessIdentifier, lineage.contains(parent) else { continue }
+                lineage.insert(entry.processIdentifier)
+                grew = true
+            }
+        }
+        let tree = processes.filter { lineage.contains($0.processIdentifier) }
+        return ClusterOrphanReaper.cancelTargets(processes: tree, ownImage: image(partPID),
+                                                 protectedProcessIdentifiers: [partPID], image: image).signal
     }
 
     /// Single-Mac serving that nobody chose since the pair was last started here (`ClusterSoloChoice.stepsAside`; for

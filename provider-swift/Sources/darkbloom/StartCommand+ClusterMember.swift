@@ -97,7 +97,8 @@ extension Start {
             made = try await makeClusterMemberLoopAndPreparation(reference: factory.reference, answersUpdateDrain: true)
         } catch let error where ClusterGPUHold.refused(error) {
             // Another Darkbloom build holds this Mac's GPU, or production serves here: a wait, never a failure. The exit
-            // code of its own lets the always-on supervisor wait without spending its restart budget.
+            // code of its own lets the always-on supervisor wait without spending its restart budget. An `ExitCode`
+            // prints nothing, so the refusal's `Error:` line, which the cluster service reads (`lastError`), is said here.
             printError("Error: \(error)")
             throw ExitCode(ClusterMemberRunEnd.gpuHeldExitCode)
         }

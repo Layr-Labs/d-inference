@@ -392,9 +392,10 @@ the same words:
   alike, so nothing in a record tells the two apart. The prediction decides
   only when no such record exists (pair-2, DevNet .118: right after the update
   the question recommended Gemma's pipeline from predictions; replayed with its
-  records, the one tensor-parallel record from .110 that says how it was served
-  recommends tensor parallel, "the only one measured on these Macs so far",
-  and .92's records, written before builds said how they served, are skipped).
+  records, the tensor-parallel records from .110, which say how they were
+  served, recommend tensor parallel, "the only one measured on these Macs so
+  far", and .92's records, written before builds said how they served, are
+  skipped).
 - Nothing fits, or there is no measured or predicted speed and no difference
   in requests at once: "No recommendation for <model> on these two Macs:
   <why>.", nothing is

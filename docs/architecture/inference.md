@@ -4084,9 +4084,9 @@ away; mixed pairs are first-class).
   reads only this build's records. The list puts the recommended mode first,
   and a model named on the command line starts in it
   (`ClusterOnboardingMode.defaultIndex`), so neither contradicts the
-  recommendation; a model started again keeps the mode it served in. No screen quotes these figures (owner,
-  2026-11-05: "the model and mode choice never quote tok/s"): the model list
-  names the modes (`ClusterOnboardingMode.listWords`);
+  recommendation. No screen quotes these figures (owner, 2026-11-05: "the
+  model and mode choice never quote tok/s"): the model list names the modes
+  (`ClusterOnboardingMode.listWords`);
   the recommendation and the mode lines say why in words; a re-plan's "Planned
   in the mode chosen" line gives the size, mode and shares
   (`ClusterOnboardingDeployment.choiceLine`); and the six-step developer
@@ -4103,8 +4103,13 @@ away; mixed pairs are first-class).
   alone. A chosen tensor parallel is the family a tensor quote prices, so the
   singleton and assistant quotes accept it (`applySingleton`, the planner's
   assistant guard).
-- **Default:** the fastest measured family, else the planner's
-  (`ClusterOnboardingMode.defaultIndex`).
+- **Default:** the recommended family when it is listed, else the fastest
+  measured with this build, else the planner's
+  (`ClusterOnboardingMode.defaultIndex`). The list names it first and a model
+  named on the command line starts in it. The question's cursor starts on the
+  recommendation, else on the mode the pair serves in, else on the default; a
+  model started again the other way (local only or through Darkbloom) keeps
+  its mode.
 - **Local Network truth:** the follower the service runs is the process that
   dials the other Mac, so its last dial decides (`ClusterService.followerRefusal`:
   the refusal macOS gave it, or a link it opened since, or a dial that failed

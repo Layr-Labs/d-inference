@@ -543,14 +543,17 @@ job's used memory times 1.25, on which the job takes at most 5% longer than on
 `scripts/ci-resource-sampler.py` recorded in runs 42105290034 (both attempts)
 and 42123224100 ([Build Once](#build-once)), on 12 vCPU runners: Blacksmith
 with 48 GiB, and for three jobs of the first attempt Darkbloom with 32 GiB. The
+lanes `test-cluster-2` and `test-cluster-3` were sampled again in run
+42297089088, after the split into 5 runtime shards, on Darkbloom with 32 GiB.
+A lane that two shards share asks for the size that holds the larger. The
 time on fewer vCPUs is the sampled time scaled to 4 and 8 vCPUs. The file cache
 (up to 22.3 GiB) is not counted: the kernel can reclaim it. Swap stayed at 0
 and memory pressure stayed normal.
 
 | Lane | Jobs | Size | Used memory (GiB) | While sizes are off |
 |---|---|---|---|---|
-| `test-cluster-2` (runtime shards 2 and 3, the concurrent groups) | 2 | 12x32 | 29.29 for shard 2 in runs 42105290034 and 42123224100 (the Metal memory of the GLM-5.3 paged KV tests); 12x32 leaves a 1.09 margin | asks without a size |
-| `test-cluster-3` (runtime shards 4 and 5, the two halves of the Gemma 4 base suites) | 2 | 4x24 | 14.67 for both halves together, before the split | asks without a size |
+| `test-cluster-2` (runtime shards 2 and 3, the concurrent groups) | 2 | 12x32 | shard 2 24.72 and shard 3 12.96 in run 42297089088. Shard 2 holds the GLM-5.3 paged KV tests, whose Metal memory reached 29.29 in runs 42105290034 and 42123224100; 12x32 leaves a 1.09 margin over that. Shard 3 alone would fit 4x24 | asks without a size |
+| `test-cluster-3` (runtime shards 4 and 5, the two halves of the Gemma 4 base suites) | 2 | 4x24 | shard 4 9.27 and shard 5 14.39 in run 42297089088; shard 4 alone would fit 4x16 | asks without a size |
 | `test-cluster-focused` | 2 | 4x16 | 8.06, 7.61 | asks without a size |
 | `test-provider-2` | 1 | 4x24 | 16.17 in one sample, about 9 otherwise | asks without a size |
 | `test-cluster-1` | 1 | 4x16 | 11.97 | asks without a size |

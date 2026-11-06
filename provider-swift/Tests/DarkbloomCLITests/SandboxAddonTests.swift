@@ -114,8 +114,57 @@ struct SandboxAddonTests {
         #expect(try await SandboxChildProcess.run(URL(fileURLWithPath: "/bin/sh"), ["-c", "exit 130"]).interrupted)
         let killed = try await SandboxChildProcess.run(URL(fileURLWithPath: "/bin/sh"), ["-c", "kill -INT $$"])
         #expect(killed == .init(status: SIGINT, signal: SIGINT) && killed.interrupted)
+        // The SIGKILL of a second Ctrl-C reads as interrupted too; another SIGKILL does not.
+        #expect(SandboxChildProcess.Exit(status: SIGKILL, signal: SIGKILL, killedBySecondInterrupt: true).interrupted)
+        #expect(!SandboxChildProcess.Exit(status: SIGKILL, signal: SIGKILL).interrupted)
         await #expect(throws: (any Error).self) {
             try await SandboxChildProcess.run(URL(fileURLWithPath: "/nonexistent/tool"), [])
+        }
+    }
+
+    @Test("a captured line arrives as the child prints it, not when it exits")
+    func capturedLineArrivesAtOnce() async throws {
+        let start = ContinuousClock.now
+        let arrival = LockedValue<Duration?>(nil)
+        // The approval link, then the installer waits for approval.
+        let exit = try await SandboxChildProcess.run(
+            URL(fileURLWithPath: "/bin/sh"), ["-c", "echo 'https://example.test/approve'; sleep 3"],
+            closeStandardInput: true,
+            standardOutput: .lines { line in
+                if line == "https://example.test/approve" { arrival.set(ContinuousClock.now - start) }
+            })
+        let ended = ContinuousClock.now - start
+        let arrived = try #require(arrival.get(), "the line never arrived")
+        #expect(exit.succeeded)
+        #expect(arrived < .seconds(1), "arrived after \(arrived), the child ran \(ended)")
+        #expect(ended >= .seconds(2))
+    }
+
+    @Test("a second Ctrl-C ends a child whose own child holds its captured output")
+    func secondInterruptEndsCapturedChild() async {
+        await #expect(processExitsWith: .success) {
+            // A run that never returns ends this process with SIGALRM instead.
+            alarm(20)
+            let started = FileManager.default.temporaryDirectory.appendingPathComponent("sandbox-child-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: started) }
+            // Ctrl-C reaches only this process, as the child leads a process
+            // group of its own. The CLI's main thread takes it; this test's
+            // other threads block signals, so this thread takes them.
+            Thread.detachNewThread {
+                var interrupt = sigset_t()
+                sigemptyset(&interrupt)
+                sigaddset(&interrupt, SIGINT)
+                pthread_sigmask(SIG_UNBLOCK, &interrupt, nil)
+                while !FileManager.default.fileExists(atPath: started.path) { usleep(10_000) }
+                kill(getpid(), SIGINT)
+                usleep(300_000)
+                kill(getpid(), SIGINT)
+            }
+            // The shell and its `sleep`, which keeps the output open, ignore the first Ctrl-C.
+            let exit = try await SandboxChildProcess.run(
+                URL(fileURLWithPath: "/bin/sh"), ["-c", #"trap '' INT; sleep 30 & : > "$1"; wait"#, "sh", started.path],
+                closeStandardInput: true, standardOutput: .tail(SandboxOutputTail()), standardError: .tail(SandboxOutputTail()))
+            #expect(exit == .init(status: SIGKILL, signal: SIGKILL, killedBySecondInterrupt: true) && exit.interrupted)
         }
     }
 
@@ -312,4 +361,13 @@ final class LineCollector: @unchecked Sendable {
     private var lines: [String] = []
     func append(_ line: String) { lock.withLock { lines.append(line) } }
     var all: [String] { lock.withLock { lines } }
+}
+
+/// A value written from a reader thread and read by the test.
+private final class LockedValue<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Value
+    init(_ value: Value) { self.value = value }
+    func set(_ newValue: Value) { lock.withLock { value = newValue } }
+    func get() -> Value { lock.withLock { value } }
 }

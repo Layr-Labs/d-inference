@@ -2,20 +2,30 @@ import Darwin
 import Foundation
 
 /// Runs one child process for a sandbox command and waits for it from its
-/// termination handler, never blocking a thread. While the child runs, Ctrl-C
-/// goes to the child alone (it shares the terminal's process group) and
-/// SIGTERM sent to this process is passed on, so the command can say how the
-/// child ended. The child starts with default signal handling: a handler, not
-/// `SIG_IGN`, is installed here, and exec resets handlers.
+/// termination handler, never blocking a thread. Foundation starts the child
+/// as the leader of a process group of its own, outside the terminal's
+/// foreground job, so the terminal's Ctrl-C reaches only this process. While
+/// the child runs, this process ignores Ctrl-C and SIGTERM and passes them on,
+/// so the command can say how the child ended: Ctrl-C goes to the child's
+/// process group, as a terminal would send it, and a second Ctrl-C while the
+/// child still runs kills that group, so a child that ignores Ctrl-C cannot
+/// hold the terminal; SIGTERM goes to the child. The child starts with default
+/// signal handling: a handler, not `SIG_IGN`, is installed here, and exec
+/// resets handlers.
 enum SandboxChildProcess {
     struct Exit: Equatable, Sendable {
         let status: Int32
         /// The signal that ended the child, if one did.
         let signal: Int32?
+        /// The SIGKILL of a second Ctrl-C ended the child.
+        var killedBySecondInterrupt = false
 
         var succeeded: Bool { signal == nil && status == 0 }
-        /// Ctrl-C: killed by SIGINT, or a shell's `exit 130` after trapping it.
-        var interrupted: Bool { signal == SIGINT || (signal == nil && status == 130) }
+        /// Ctrl-C: killed by SIGINT, a shell's `exit 130` after trapping it,
+        /// or killed by a second Ctrl-C.
+        var interrupted: Bool {
+            killedBySecondInterrupt || signal == SIGINT || (signal == nil && status == 130)
+        }
     }
 
     enum Output: Sendable {
@@ -48,10 +58,15 @@ enum SandboxChildProcess {
 
         SignalHandlers.shared.retain()
         let child = ChildReference(process)
+        let interrupt = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
+        // `data` counts the signals since the last call: two quick Ctrl-Cs arrive as one call.
+        interrupt.setEventHandler { child.interrupt(times: interrupt.data) }
+        interrupt.resume()
         let terminate = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
         terminate.setEventHandler { child.terminate() }
         terminate.resume()
         defer {
+            interrupt.cancel()
             terminate.cancel()
             SignalHandlers.shared.release()
         }
@@ -66,7 +81,8 @@ enum SandboxChildProcess {
         return try await withCheckedThrowingContinuation { continuation in
             process.terminationHandler = { process in
                 let signal = process.terminationReason == .uncaughtSignal ? process.terminationStatus : nil
-                let exit = Exit(status: process.terminationStatus, signal: signal)
+                let exit = Exit(status: process.terminationStatus, signal: signal,
+                                killedBySecondInterrupt: signal == SIGKILL && child.killed)
                 readers.notify(queue: .global()) { continuation.resume(returning: exit) }
             }
             do {
@@ -90,7 +106,15 @@ enum SandboxChildProcess {
 
     private static func read(_ handle: FileHandle, into output: Output) {
         var splitter = SandboxLineSplitter()
-        while let chunk = try? handle.read(upToCount: 16 * 1024), !chunk.isEmpty {
+        var buffer = [UInt8](repeating: 0, count: 16 * 1024)
+        // read(2) returns what has arrived; `FileHandle.read(upToCount:)` waits
+        // on a pipe for the whole count or end of file, which would hold back
+        // a line such as the approval link while the installer waits.
+        while true {
+            let count = Darwin.read(handle.fileDescriptor, &buffer, buffer.count)
+            if count < 0, errno == EINTR { continue }
+            guard count > 0 else { break }
+            let chunk = Data(buffer[..<count])
             switch output {
             case .inherit: return
             case .tail(let tail): tail.append(chunk)
@@ -101,10 +125,30 @@ enum SandboxChildProcess {
         try? handle.close()
     }
 
+    /// Signals go only to a child that has not been collected, whose
+    /// identifier cannot name another process or process group yet.
     private final class ChildReference: @unchecked Sendable {
         private let process: Process
+        private let lock = NSLock()
+        private var interrupts = 0
+        private var sentKill = false
+
         init(_ process: Process) { self.process = process }
+
         func terminate() { if process.isRunning { process.terminate() } }
+
+        /// The first Ctrl-C goes to the child's process group, whose leader
+        /// the child is; any later one kills the group.
+        func interrupt(times: UInt) {
+            lock.withLock {
+                guard process.isRunning else { return }
+                interrupts += Int(times)
+                sentKill = interrupts > 1
+                _ = killpg(process.processIdentifier, sentKill ? SIGKILL : SIGINT)
+            }
+        }
+
+        var killed: Bool { lock.withLock { sentKill } }
     }
 
     /// No-op SIGINT and SIGTERM handlers while any child runs; the first run

@@ -113,7 +113,9 @@ extension Sandbox {
             let exit = try await SandboxChildProcess.run(
                 URL(fileURLWithPath: "/usr/bin/tail"),
                 Self.tailArguments(path: addon.agentLog.path, lines: lines, follow: follow))
-            if !exit.succeeded, !exit.interrupted { throw ExitCode(exit.status) }
+            // 130, as a shell reports SIGINT, and as `darkbloom logs --follow`, which execs `tail`, ends.
+            if exit.interrupted { throw ExitCode(130) }
+            if !exit.succeeded { throw ExitCode(exit.status) }
         }
 
         /// `-F` keeps following when the agent's restart recreates the file.

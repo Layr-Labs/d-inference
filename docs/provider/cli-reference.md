@@ -1355,6 +1355,20 @@ darkbloom sandbox uninstall [--yes]
 | `logs` | `-n 50` | `tail` of `~/DarkbloomSandbox/agent/agent.log`; `-f`/`--follow` runs `tail -F`; `-l` is the same as `-n`/`--lines` |
 | `uninstall` | — | Says what stops (running jobs end unpaid), asks, then runs `darkbloom-sandbox uninstall --yes` with the terminal. `--yes`/`-y` skips the question; without a terminal it is required |
 
+### Ctrl-C
+
+`logs`, `uninstall`, the plan and install steps of `setup`, and `status` for an
+add-on older than `status --json` run a command and wait for it. Foundation
+starts that command in a process group of its own, which the terminal's Ctrl-C
+does not reach, so the CLI passes Ctrl-C on: SIGINT goes to the command's
+process group, as the terminal would send it, and the CLI reports how the
+command ended (`logs -f` and `setup` exit `130`). A second Ctrl-C while
+the command still runs sends SIGKILL to that group, so a command that ignores
+Ctrl-C cannot hold the terminal; the CLI reports that as a stop by Ctrl-C too.
+SIGTERM sent to the CLI goes to the command
+(`provider-swift/Sources/darkbloom/Sandbox/SandboxChildProcess.swift`,
+`SandboxChildProcess`).
+
 ### Setup
 
 1. **Waitlist.** Setup refuses `sudo`. A first setup then asks the coordinator of `provider.toml`
@@ -1485,7 +1499,7 @@ darkbloom sandbox uninstall [--yes]
 7. **Summarize.** Reads `status --json` again: the state, the jobs at a time and
    the next commands.
 
-While the installer runs, Ctrl-C reaches the installer, not the CLI, and setup
+While the installer runs, Ctrl-C goes to the installer, not the CLI, and setup
 exits `130`; an enrollment waiting for approval goes on. With add-on 1.1.2 and
 later, whose approval and waitlist events say `background: true`, the wait
 also survives a restart and the Mac enrolls by itself, so the window can close:

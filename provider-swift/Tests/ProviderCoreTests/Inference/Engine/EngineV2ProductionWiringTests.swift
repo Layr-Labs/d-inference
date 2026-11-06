@@ -335,7 +335,19 @@ struct EngineV2SlotBuildTests {
         let qat = MTPAutomaticVerificationPolicy.draftDepthPolicy(
             usesRequestStatefulDrafter: false, modelID: "gemma-4-26b-qat-4bit")
         #expect(qat.fixed == nil)
-        #expect(qat.maximum == 1)
+        #expect(qat.maximum == 4)
+        #expect(MTPAutomaticVerificationPolicy.requestProbeDepth(
+            usesRequestStatefulDrafter: false, modelID: "gemma-4-26b-qat-4bit") == 2)
+        // The probe mode belongs to exact Gemma QAT's adaptive controller only.
+        for modelID in [nil, "gemma-4-26b-8bit", "qwen3.8-27b", "GEMMA-4-26B-QAT-4BIT"] as [String?] {
+            #expect(MTPAutomaticVerificationPolicy.requestProbeDepth(
+                usesRequestStatefulDrafter: false, modelID: modelID) == nil)
+        }
+        #expect(MTPAutomaticVerificationPolicy.requestProbeDepth(
+            usesRequestStatefulDrafter: true, modelID: "gemma-4-26b-qat-4bit") == nil)
+        #expect(MTPAutomaticVerificationPolicy.requestProbeDepth(
+            usesRequestStatefulDrafter: false, modelID: "gemma-4-26b-qat-4bit",
+            hasBenchmarkVerificationOverride: true) == nil)
         for modelID in [nil, "gemma-4-26b-8bit", "gemma-4-26b-qat-4bit-copy",
             "GEMMA-4-26B-QAT-4BIT", " gemma-4-26b-qat-4bit "] as [String?]
         {

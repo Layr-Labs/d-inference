@@ -306,7 +306,11 @@ enum EngineV2SlotFactory {
             fixedDraftTokens: draftDepth.fixed,
             verificationMode: mtpVerification.mode,
             maxAutomaticRectangularTokens: mtpVerification.automaticRectangularTokens,
-            acceptance: mtpAcceptance.acceptance)
+            acceptance: mtpAcceptance.acceptance,
+            requestProbeDepth: MTPAutomaticVerificationPolicy.requestProbeDepth(
+                usesRequestStatefulDrafter: assistantHandle?.drafter is any CBv2MTPRequestStatefulDrafter,
+                modelID: modelId,
+                hasBenchmarkVerificationOverride: assemblyOverrides.gemmaMTPVerification != nil))
         if let verification = assemblyOverrides.gemmaMTPVerification {
             mtpConfig = try verification.applying(
                 to: mtpConfig, target: servingModel, drafter: assistantHandle?.drafter)

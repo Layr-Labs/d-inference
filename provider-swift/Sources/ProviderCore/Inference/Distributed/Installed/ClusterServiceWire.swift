@@ -7,6 +7,9 @@ import Foundation
 
 /// What one Mac's cluster service reports to its leader.
 public struct ClusterServiceStatus: Codable, Sendable, Equatable {
+    /// The file each cluster service publishes its status in every tick, in its setup folder (`ClusterService`); another
+    /// build reads production's, read only (`ClusterMachineDeviceLock.productionPairServes`).
+    static let fileName = "service-status.json"
     public struct Child: Codable, Sendable, Equatable {
         public var running: Bool
         public var starts: Int
@@ -100,8 +103,9 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
     /// never ends by itself, so this Mac's part doesn't start beside it and the other Mac's start names it. Nil when
     /// none, and from an older build.
     public var soloServing: SoloServing? = nil
-    /// Why this Mac's part can't start now, for a reason that doesn't clear by itself (single-Mac serving here): the
-    /// leading Mac's part waits for it to change instead of starting and ending again. Nil when none, and from an older build.
+    /// Why this Mac's part can't start now, for a reason that doesn't clear by itself (single-Mac serving here, or the
+    /// other Darkbloom app holding this Mac's GPU): the leading Mac's part waits for it to change instead of starting and
+    /// ending again. Nil when none, and from an older build.
     public var heldBack: String? = nil
     /// Whether the pair actually runs on this Mac (`ClusterPairWatch`): `serving` is only the saved intent, which stays
     /// on for a Mac whose other Mac stopped taking part. Nil from an older build (read the intent then).

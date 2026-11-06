@@ -1,4 +1,5 @@
 import Darwin
+import DarkbloomClusterProcess
 import Foundation
 
 /// Process-only service fixture: no owner protocol, model, GPU, or sockets.
@@ -17,6 +18,21 @@ func memberFixtureServicePart(arguments: [String]) throws {
 
     // The test also owns explicit cleanup. This bounds a fixture whose test dies.
     alarm(60)
+    // The device scope a real part takes first (`ClusterDeviceExclusion`): with `gpu.lock.refusal` in the gate directory,
+    // `gpu.lock` there stands in for the Mac's GPU lock. Refused, the part writes that file's words as its error line and
+    // ends, as a real part does.
+    var scope: ClusterDeviceExclusion?
+    if let words = try? String(contentsOf: directory.appendingPathComponent("gpu.lock.refusal"), encoding: .utf8) {
+        do {
+            scope = try ClusterDeviceExclusion(directoryURL: directory.appendingPathComponent("lease-\(role)", isDirectory: true),
+                machineLock: .init(file: directory.appendingPathComponent("gpu.lock"), heldElsewhere: words))
+        } catch {
+            try? Data().write(to: directory.appendingPathComponent("\(role)-\(pid).refused"))
+            FileHandle.standardError.write(Data("Error: \(error)\n".utf8))
+            exit(1)
+        }
+    }
+    defer { withExtendedLifetime(scope) {} }
     signal(SIGTERM, SIG_IGN)
     let termination = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
     let registered = DispatchSemaphore(value: 0)

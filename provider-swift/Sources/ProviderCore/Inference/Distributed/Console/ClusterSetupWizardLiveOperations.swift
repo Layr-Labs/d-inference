@@ -146,6 +146,7 @@ final class ClusterSetupLinkPairingRunner: @unchecked Sendable {
         let chipName = (try? HardwareDetector.detect().chipName) ?? "Mac"
         let participant = ClusterPairingProvider.participant(identity: identity, chipName: chipName, interface: interface, store: store, clusterID: nil)
         var options = ClusterLinkPairing.Options(role: peer == nil ? .listener : .connector, interface: interface, peerAddress: peer)
+        options.port = ClusterCablePorts.current.pairing
         // No address: find the other Mac on the cable, or wait there for it (it finds this one).
         if peer == nil { options.discovery = .find }
         let callbacks = ClusterLinkPairing.Callbacks(progress: { progress in
@@ -156,7 +157,7 @@ final class ClusterSetupLinkPairingRunner: @unchecked Sendable {
                 let address = (try? ClusterLinkInterfaceAdmission.select(interface: name, localAddress: nil, peerAddress: nil,
                     policy: .thunderboltOnly, inspector: ClusterLinkSystemInterfaceInspector()))?.local.address.dottedDecimal
                 let other = "on the other Mac press l: it finds this Mac by itself" + (address.map { " (or press c and type \($0)"
-                    + (port == ClusterLinkPairing.defaultPort ? "" : ", port \(port)") + ")" } ?? "")
+                    + (port == ClusterCablePorts.current.pairing ? "" : ", port \(port)") + ")" } ?? "")
                 events(.waiting("Waiting on \(name) for the other Mac, up to 10 minutes: \(other)."))
             case .dialing: events(.waiting("Dialing the other Mac over the link\u{2026}"))
             case .connected: events(.waiting("Connected over the link; exchanging keys\u{2026}"))
@@ -686,7 +687,7 @@ final class LiveContext: @unchecked Sendable {
             served: ClusterServedSpeedHistory.entries(homeDirectory: home) + (peer.served ?? []),
             link: description.members.count == 2
                 ? ClusterLinkProbeHistory.costs(homeDirectory: home, members: description.members.map(\.id)) ?? .unmeasured : .unmeasured,
-            shareProbes: ClusterShareProbeHistory.read(ClusterShareProbeHistory.defaultFile(homeDirectory: home)),
+            shareProbes: ClusterShareProbeHistory.read(ClusterShareProbeHistory.defaultFile(installDirectory: BuildEnvironment.current.installDirectory(home: home))),
             peerMayReceive: settings.derivedPlacement && !settings.privateImageQualification, keeping: keeping,
             coordinator: coordinator, chosenModes: chosenModes)
         lock.withLock { decisions = Dictionary(decided.map { ($0.option.model.folder, $0) }, uniquingKeysWith: { a, _ in a }) }

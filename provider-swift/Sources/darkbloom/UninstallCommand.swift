@@ -17,8 +17,8 @@ struct Uninstall: AsyncParsableCommand {
             them, so a reinstall finds them. Choosing 1 on the screen asks once more before deleting the models. A \
             models folder you chose, and the cluster model store beside it, are never deleted, even inside \
             Darkbloom's own folder; nor are Keychain keys. Run it as yourself, not with sudo. With both the \
-            production and the DevNet app on this Mac, the pairing, cluster setup and cable port setup stay for the \
-            other one, and only this install's own cluster service is removed.
+            production and the DevNet app on this Mac, each removes only its own pairing, cluster setup and cluster \
+            service; the cable port setup stays for the other one.
             """)
 
     @Flag(help: "Remove everything: the app, settings, pairing, logs and all models.")
@@ -48,7 +48,7 @@ struct Uninstall: AsyncParsableCommand {
             throw ExitCode.validationFailure
         }
         let plan = Self.plan()
-        if case .dryRun = invocation {} else if Self.cableNeedsPromptNoOneCanSee() {
+        if case .dryRun = invocation {} else if plan.cableKeptFor == nil, Self.cableNeedsPromptNoOneCanSee() {
             // Before anything is stopped or deleted: the cable step's prompt cannot show over SSH, and the uninstall
             // would otherwise stop part way, after the services and the pairing.
             ClusterLinkApprovalSession.lines(command: "darkbloom uninstall").forEach { print($0) }
@@ -81,7 +81,7 @@ struct Uninstall: AsyncParsableCommand {
                 guard Self.confirm() else { print("Nothing changed."); return }
             }
         }
-        let report = await ProviderUninstall.run(mode, items: plan.items, pairing: plan.pairing,
+        let report = await ProviderUninstall.run(mode, items: plan.items, pairing: plan.pairing, cableKeptFor: plan.cableKeptFor,
                                                  operations: Self.operations(drain: drain)) { print("→ \($0)") }
         print("")
         ProviderUninstall.summary(report, plan: plan).forEach { print($0) }
@@ -117,7 +117,7 @@ struct Uninstall: AsyncParsableCommand {
                      services: agents.map { .init(name: $0.0, path: FileManager.default.fileExists(atPath: $0.1.path) ? $0.1.path : nil) },
                      items: ProviderUninstall.inventory(paths),
                      pairing: ProviderUninstallPairing.read(),
-                     elsewhere: elsewhere)
+                     elsewhere: elsewhere, cableKeptFor: paths.otherEnvironment)
     }
 
     /// The live steps, each through the command or function that does it today.
@@ -193,24 +193,7 @@ struct Uninstall: AsyncParsableCommand {
             },
             runningClusterService: {
                 ProviderUninstall.liveRunningClusterService(paths: ProviderUninstallPaths(home: FileManager.default.homeDirectoryForCurrentUser))
-            },
-            stopClusterService: { try ProviderUninstall.liveStopClusterService(pid: $0) },
-            stopBothMacs: { await Task.detached { Self.stopBothMacs(ClusterPairActions.live(config: nil)) }.value })
-    }
-
-    /// The pair stop `darkbloom stop` runs on either Mac: the leader stops both Macs; a serving member asks the leader.
-    /// It says what it waits for first (`ProviderUninstall.pairStopWaitLine`). nil `actions`: this Mac's cluster could
-    /// not be reached.
-    static func stopBothMacs(_ actions: ClusterPairActions?, say: ClusterPairCommands.Say = ClusterPairCommands.printLine)
-        -> ProviderUninstall.PairStopOutcome {
-        guard let actions else { return .noAnswer("this Mac's cluster service could not be asked") }
-        let resume = actions.resume()
-        guard Cluster.Stop.pairStop(role: resume.role, serving: resume.serving) != .stopHere else { return .notServing }
-        say(ProviderUninstall.pairStopWaitLine)
-        switch actions.stop() {
-        case .success: return .stopped
-        case .failure(let failure): return .noAnswer(failure.lines.joined(separator: " "))
-        }
+            })
     }
 
     /// The drain's lease, held until the services are removed, so an update cannot start the provider in between.

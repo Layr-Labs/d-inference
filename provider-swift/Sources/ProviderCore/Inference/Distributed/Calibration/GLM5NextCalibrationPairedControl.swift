@@ -6,7 +6,7 @@ import DarkbloomClusterSecurity
 /// The event queue only enqueues bounded deliveries; it performs no peer waits.
 final class GLM5NextCalibrationPairedControl: @unchecked Sendable {
     typealias W = GLM5NextCalibrationDispatchWire
-    static let port: UInt16 = 47_424
+    static let port = ClusterCablePorts.current.glmCalibration
     private let afterTerminalContextSample: (@Sendable () throws -> Void)?
     // Observation only; exposes no peer handle and accepts no status evidence.
     var transportObservationForTests: ClusterLinkControlPeerStatus? { peer?.status }

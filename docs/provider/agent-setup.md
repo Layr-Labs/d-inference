@@ -1,6 +1,6 @@
 # Set up Darkbloom with an AI agent
 
-> Last updated: 2026-11-04
+> Last updated: 2026-11-06
 
 This page is a setup prompt for an AI agent. The agent installs Darkbloom,
 logs in with the person's help, makes one Mac (or two Macs joined by one
@@ -148,19 +148,35 @@ page with these names ([dev build identity](../operations/provider-release.md#de
   with this page's release numbers; "0.10.8 or later" and
   [older builds](#older-builds) are for production builds. Both Macs need the
   same DevNet build (`darkbloom-dev update` brings the latest).
-- **Shared with the production app on the same Mac:** the pairing, the cable
-  port setup, the cluster setup and its logs (`~/.darkbloom/cluster-setup/`)
-  and the models. Each app has its own Secure Enclave key, login and settings.
-  So **Start over** on one app unpairs the Mac for both, and the production app
-  must pair again afterwards.
+- **Separate from the production app on the same Mac:** the pairing, the
+  cluster setup and its logs (`~/.darkbloom-dev/cluster-setup/`), the cluster
+  service and its login job, the Secure Enclave key, login and settings. So
+  pairing, **Start over**, `darkbloom-dev cluster stop --service` or
+  `darkbloom-dev uninstall` leave the production app's pair as it is, and the
+  reverse. **Shared:** the models and the cable port setup (one cable, one
+  network setup), and one GPU: only one app's pair runs on a Mac at a time.
+  While one app's pair (or its model check) uses the GPU, the other app's pair
+  waits, and its status says ``<app> on this Mac holds this Mac's GPU …``. It
+  starts by itself once the other app's pair stops, and a wait never counts as
+  a failing pair. A DevNet build also waits while the production app serves on
+  that Mac, whatever production's version, and its running pair stops when
+  production starts serving there. **STOP** when a DevNet build says
+  that the production Darkbloom holds the GPU or is serving: production serves
+  on that Mac, so never stop it yourself; tell the human and wait. `cluster
+  link --remove` in one app names the other app when that app still uses the
+  port and asks first; `--yes` doesn't answer for it. A DevNet app updated
+  from a build that shared the pairing shows the Mac as not paired: update both
+  Macs, then pair the DevNet app again (step 5).
 - **The DevNet installer** adds a `PATH` line to `~/.zshrc` and, where
   `/usr/local/bin` is writable, links `/usr/local/bin/darkbloom-dev`.
   `darkbloom-dev login` prints DevNet's own URL. A test request needs an API
   key from the same DevNet account.
-- **The pair's local API port is the same in both apps:** 8000, unless
-  another program holds it on either Mac; then the lowest port up to 8020 that
-  is free on both. The card says which. Only one app serves a pair on a Mac at
-  a time. `8001` is only the DevNet app's default for single-Mac local serving.
+- **The pair's local API port:** 8000 in both apps, unless another program
+  (or the other app's pair) holds it on either Mac; then the lowest port up to
+  8020 that is free on both. The card says which. The ports the two Macs of a
+  pair use on the cable are the DevNet app's own, so the two apps' pairs never
+  answer each other. `8001` is only the DevNet app's default for single-Mac
+  local serving.
 - **The DevNet app names `darkbloom-dev`** in its screens, commands and hints,
   and the Local Network lines name “Darkbloom Dev”, but tell the human to turn
   on the row macOS lists, “Darkbloom”: both apps share one bundle ID. Type
@@ -219,8 +235,9 @@ On DevNet, use the [DevNet names](#devnet-testers-only) in every command below.
    from 1.2. On a production version below 0.10.8, see [older builds](#older-builds).
 
    A newly installed app has its own Secure Enclave key, but it can take over
-   the pairing another app made on this Mac (a local build, or the production
-   app before DevNet). After installing another app on a paired Mac, run
+   the pairing another build of the same app made on this Mac (the signed
+   release over a local build, or the reverse); the DevNet and production apps
+   never share a pairing. After installing another build on a paired Mac, run
    `darkbloom cluster` on both Macs in [step 5](#5-two-macs-pair-them), and act
    on what each Mac shows. When it sees that the key changed, it says
    ``This Mac's Secure Enclave key changed after it paired (…), so the Macs
@@ -729,14 +746,11 @@ it as the logged-in user, never with `sudo`: it refuses `sudo` (exit status
 without flags, **Remove everything** asks once more before it starts.
 
 With both the production and the DevNet app on a Mac, uninstalling one
-(`darkbloom uninstall` or `darkbloom-dev uninstall`) keeps the pairing, the
-cluster setup and the cable port setup (`~/.darkbloom/cluster*`) and the shared
-models for the other, asks for no password, and leaves the other app's cluster
-service running ([details](cli-reference.md#darkbloom-uninstall)). If this
-Mac's part of a pair is serving, it first asks the pair to stop on both Macs.
-If the other Mac doesn't answer, the summary ends with ``The other Mac (…) did
-not answer, so its part may keep restarting: run `darkbloom cluster stop` on
-it.``
+(`darkbloom uninstall` or `darkbloom-dev uninstall`) removes only that app's
+own pairing, cluster setup and cluster service, as on a Mac with one app, and
+leaves the other app's pair and cluster service as they are. It keeps the cable
+port setup and the shared models for the other app, so it asks for no password
+([details](cli-reference.md#darkbloom-uninstall)).
 
 1. **STOP**: ask the human which choice they want, and show them the plan
    first. `--dry-run` changes nothing and needs no `--yes`. Add `--json` for
@@ -783,7 +797,8 @@ yet"](troubleshooting.md#a-two-mac-cluster-says-not-serving-yet) and
 | ``✗ The pair can't start: a single-Mac Darkbloom provider (process <N>) is serving on <Mac>, …``; a cluster status or log line ``a single-Mac Darkbloom provider (process <N>) is serving on this Mac, so this Mac's part can't start``; an incident `local_provider_running`. In 0.10.8 the same cause read ``another update operation owns the lock (pid <N>, provider-instance)`` and looped ``this Mac's part ended … and starts again by itself`` | Single-Mac serving runs on that Mac and holds its one serving lock, so the pair's part can't start there. It doesn't end by itself | **STOP**: ask the human whether to stop single-Mac serving on each Mac named. With their go, run `darkbloom stop --solo` on that Mac, then `darkbloom start` (on DevNet, `darkbloom-dev`). In `darkbloom cluster`, **Stop single-Mac serving on both Macs and start the pair** does both. Both Macs' `darkbloom cluster status` say the block, with `next` ``Single-Mac serving doesn't stop by itself: …`` (`state` `not_serving`, exit status 3), and the joining Mac's window shows the same ✗. Neither Mac keeps restarting its part meanwhile; don't wait for it to clear by itself. From 0.10.9, single-Mac serving that nobody chose since the pair was started steps aside by itself (`darkbloom status` says ``Single-Mac serving stepped aside for the pair …``). Only a choice the human made (`start --solo`, **Serve on this Mac alone**) keeps it. `darkbloom stop --solo` on the other Mac finds it there and asks (`--yes` for scripts) Never plain `darkbloom stop` for this: on a paired Mac it stops the pair and leaves single-Mac serving running |
 | The leader's ✗ says ``The other Mac can't reach this Mac over the cable: macOS keeps Darkbloom there off the local network.``, then ``The other Mac (…): System Settings → Privacy & Security → Local Network → turn on “Darkbloom”; if it isn't listed, click Allow when macOS asks on that Mac's screen, the next time Darkbloom dials over the cable (on a Mac with no display, through Screen Sharing). Then choose Retry here.``. On that other Mac: ``This Mac can't reach the other Mac over the cable: macOS keeps Darkbloom off the local network.`` (on DevNet, both name Darkbloom Dev, and add that macOS lists Darkbloom Dev as “Darkbloom”). `darkbloom cluster status` shows the same reason as ``✗ Not serving: <reason>.``, then ``Next: …`` (`--json`: `state` `not_serving`, exit status 3), on that Mac at once, and on the leading Mac from about 20 seconds into its part, steadily after that while that Mac stays refused | macOS keeps that Mac's cluster service off the local network, so its link to the other Mac is refused | **STOP**: the human, at that Mac's screen (Screen Sharing if it has no display), opens System Settings → Privacy & Security → Local Network and turns on “Darkbloom” (the DevNet app is listed under that name too), or, with no such row, clicks **Allow** when macOS asks on that screen. Then choose **Retry** where the ✗ offers it (usually on the leader), or run `darkbloom start` on either Mac, as `next` says. Until then, `darkbloom start` on the Mac that is kept off ends at once with the same lines and exit status 1 |
 | doctor: ``[FAIL] cluster savedConfiguration: <file> saves this Mac's cluster setup, but other users can open it (mode 644); run `chmod 600 <file>` …`` | The saved setup is in a file other users can open | **STOP**: tell the human, and run that `chmod 600` command only with their go ([step 2](#2-log-in-and-check-the-mac-every-mac)) |
-| After installing another Darkbloom app on a paired Mac (DevNet beside production, or the signed release over a local build), `darkbloom cluster` shows the old pairing as usual, or says the other Mac isn't answering, and offers no **Pair again** | The apps share the pairing, and the new app may not notice that its key differs | With the human's go, choose **Start over (unpair and set up again)** → **Yes, start over** on both Macs, then pair as in step 5. It unpairs the Mac for both apps |
+| After installing another build of the same app on a paired Mac (the signed release over a local build, or the reverse), `darkbloom cluster` shows the old pairing as usual, or says the other Mac isn't answering, and offers no **Pair again** | The builds share the app's pairing, and the new build may not notice that its key differs | With the human's go, choose **Start over (unpair and set up again)** → **Yes, start over** on both Macs, then pair as in step 5 |
+| After updating the DevNet app from a build that shared the production app's pairing, `darkbloom-dev cluster` shows the Mac as not paired | The DevNet app keeps its own pairing in `~/.darkbloom-dev` and no longer reads production's | Update the DevNet app on both Macs, then pair it again as in step 5. The production app's pairing is unchanged |
 | doctor: `[FAIL] cluster localLinkIsolation.rdma_enN: clusterSubnetInUse: The cluster port enN cannot be isolated yet (the cluster subnet 10.219/16 is already used on this Mac) …`, on a version below 0.10.8 | A known false alarm on paired Macs: macOS reaches the port's own address through a loopback route | Don't stop for it, and never run `darkbloom cluster link --remove` because of it. Verify serving instead, and update both Macs. 0.10.8 no longer reports it |
 | The same `[FAIL]` on 0.10.8 or later | Another interface or a VPN on this Mac uses 10.219/16 | **STOP**: show the human the line. They remove that address or VPN route, then run `darkbloom cluster` again |
 | `This Mac's Secure Enclave key changed after it paired …`, or one Mac waits at `2/4 Pair` while the other shows its status | An old pairing: a Mac was reinstalled, unpaired or replaced, or moved between apps | On the Mac with the old pairing, choose **Pair again** if it offers it, otherwise **Start over (unpair and set up again)** → **Yes, start over**. Then pair as in step 5 ([pairing again](two-mac-cluster.md#pairing-again)) |

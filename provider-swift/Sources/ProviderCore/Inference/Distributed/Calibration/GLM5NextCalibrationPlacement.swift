@@ -80,7 +80,7 @@ public enum GLM5NextCalibrationPlacement {
         try pair.requireUnchanged()
         let paths = try ClusterUserPaths()
         try ClusterConfigurationFiles.ensureDirectory(paths.deviceDirectory, create: true, privateMode: true)
-        let lease = try ClusterDeviceLease(directoryURL: paths.deviceDirectory)
+        let lease = try ClusterDeviceLease(directoryURL: paths.deviceDirectory, machineLock: paths.machineDeviceLock)
         // DistributedCapabilityProbe reaps its actual child before returning OR
         // throwing. Holding this lease through that call cannot orphan a scan.
         defer { withExtendedLifetime(lease) {} }

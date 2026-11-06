@@ -12,9 +12,9 @@ import DarkbloomClusterRemote
 /// exchange stay well-known: they are how two Macs find each other before
 /// anything can be agreed.
 enum ClusterSetupPorts {
-    /// The conventional ports, tried first.
-    static let conventionalCoordinator: UInt16 = 52_420
-    static var conventionalLinkControl: UInt16 { ClusterLinkControlListener.defaultPort }
+    /// The conventional ports, tried first: this install's (`ClusterCablePorts`), production's 52420 and 47420.
+    static let conventionalCoordinator = ClusterCablePorts.current.coordinator
+    static var conventionalLinkControl: UInt16 { ClusterCablePorts.current.linkControl }
 
     struct Choice: Equatable, Sendable {
         let coordinator: UInt16

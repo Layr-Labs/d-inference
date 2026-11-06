@@ -121,6 +121,51 @@ import Darwin
         }
         try require(try Data(contentsOf: insertedFile) == record, "Late journal was cleared")
         try refused { _ = try ClusterDeviceExclusion(directoryURL: inserted) }
-        print("Device exclusion: 10 actual-file/child groups passed; no native model or network")
+
+        // Two builds' device scopes, each in its own lease folder, share one machine lock: while one build holds its
+        // scope, the other's is refused with the lock's own words and lets its lease go; then the other takes both.
+        let machine = ClusterMachineDeviceLock(file: root.appendingPathComponent("shared/cluster-native-device.lock"),
+                                               heldElsewhere: "the other build's pair holds this Mac's GPU")
+        let production = root.appendingPathComponent("production/device", isDirectory: true)
+        let devnet = root.appendingPathComponent("devnet/device", isDirectory: true)
+        var first: ClusterDeviceExclusion? = try ClusterDeviceExclusion(directoryURL: production, machineLock: machine)
+        do {
+            _ = try ClusterDeviceExclusion(directoryURL: devnet, machineLock: machine)
+            throw Failure(message: "A second build's device scope started beside the first build's")
+        } catch let error as ClusterDeviceExclusionError {
+            try require(error == .invalid(machine.heldElsewhere), "The refusal is not the machine lock's words: \(error)")
+        }
+        _ = try ClusterDeviceExclusion(directoryURL: devnet) // the refused scope let its own lease go
+        first = nil
+        var second: ClusterDeviceExclusion? = try ClusterDeviceExclusion(directoryURL: devnet, machineLock: machine)
+        try refused { _ = try ClusterDeviceExclusion(directoryURL: production, machineLock: machine) }
+        var lockInformation = stat()
+        try require(lstat(machine.file.path, &lockInformation) == 0 && lockInformation.st_size == 0
+                    && lockInformation.st_mode & 0o777 == 0o600, "The machine lock is not an empty owner-only file")
+        withExtendedLifetime((first, second)) {}
+        second = nil
+
+        // A build that takes no lock (an older production) is asked for once the lock is held: its words refuse the
+        // scope, and both the lock and the lease go with the refusal.
+        let older = ClusterMachineDeviceLock(file: machine.file, heldElsewhere: machine.heldElsewhere,
+                                             otherHolder: { "an older build of the other app serves on this Mac's GPU" })
+        do {
+            _ = try ClusterDeviceExclusion(directoryURL: devnet, machineLock: older)
+            throw Failure(message: "A device scope started beside a build that takes no lock")
+        } catch let error as ClusterDeviceExclusionError {
+            try require(error == .invalid("an older build of the other app serves on this Mac's GPU"), "Not the other holder's words: \(error)")
+        }
+        var freed: ClusterDeviceExclusion? = try ClusterDeviceExclusion(directoryURL: devnet, machineLock: machine)
+        withExtendedLifetime((second, freed)) {}
+        freed = nil
+
+        // The other build's waiting service probes the lock shared for a moment: a start at that moment is not refused.
+        let probe = open(machine.file.path, O_RDONLY | O_CLOEXEC)
+        try require(probe >= 0 && flock(probe, LOCK_SH | LOCK_NB) == 0, "The probe could not hold the free machine lock")
+        let probing = Thread { usleep(30_000); _ = flock(probe, LOCK_UN); Darwin.close(probe) }
+        probing.start()
+        let afterProbe = try ClusterDeviceExclusion(directoryURL: production, machineLock: machine)
+        withExtendedLifetime((freed, afterProbe)) {}
+        print("Device exclusion: 13 actual-file/child groups passed; no native model or network")
     }
 }

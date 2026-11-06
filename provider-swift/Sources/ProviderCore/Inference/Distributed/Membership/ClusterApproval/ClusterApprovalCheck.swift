@@ -1,3 +1,4 @@
+import DarkbloomClusterProcess
 import Foundation
 
 /// Why a pair that was registered with the coordinator serves on the leader's local API instead.
@@ -150,8 +151,9 @@ enum ClusterApprovalCheck {
     static func memberQuickEnds(after count: Int, ranSeconds: Double, lastError: String?, heldBack: Bool = false) -> Int {
         if lastError?.contains(unreachableMemberEnd) == true { return 0 }
         // A part that ended because single-Mac serving holds a Mac's serving lock (this Mac's, or the other Mac's part held
-        // back) says nothing about the approval: it never counts toward serving locally.
-        if heldBack || blockedByLock(lastError) { return count }
+        // back), or because the other Darkbloom app on a Mac holds its GPU (`ClusterMachineDeviceLock`), says nothing about
+        // the approval: it never counts toward serving locally.
+        if heldBack || blockedByLock(lastError) || ClusterMachineDeviceLock.isRefusal(lastError) { return count }
         if lastError?.contains(notAcceptedMemberEnd) == true, ranSeconds < ClusterControlSoloAdmission.quickEndSeconds { return count }
         return ClusterControlSoloAdmission.quickEnds(after: count, ranSeconds: ranSeconds)
     }

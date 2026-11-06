@@ -123,7 +123,7 @@ extension Cluster.Setup {
         }
         let code = await Task.detached {
             // A colour window folds each finished step to one line; this run's whole flow goes to a log beside the
-            // setup's other files (`~/.darkbloom/cluster-setup/screens/`), its path said at the end.
+            // setup's other files (this install's `cluster-setup/screens/`), its path said at the end.
             let screens = (try? ClusterUserPaths()).map { ClusterSetupPaths(paths: $0).directory.appendingPathComponent("screens", isDirectory: true) }
             let console = ClusterOnboardingTerminal(input: STDIN_FILENO, output: STDOUT_FILENO,
                                                     logFile: screens.flatMap { ClusterOnboardingTerminal.screenLog(in: $0) })

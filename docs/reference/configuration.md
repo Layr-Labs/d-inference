@@ -775,8 +775,9 @@ These library controls apply to foreground processes and benchmark runs; they ar
 
 `provider-swift/Sources/ProviderCore/Config/ClusterConfiguration{,Files,Paths}.swift`
 holds the staged cluster configuration value types: one canonical device
-namespace per user (`~/.config/darkbloom/clusters`,
-`~/.darkbloom/cluster-device`), strict path/symlink rules, and closed
+namespace per user and install (`~/.config/darkbloom/clusters`,
+`~/.darkbloom/cluster-device`; DevNet's under `~/.config/darkbloom-dev` and
+`~/.darkbloom-dev`, `ClusterUserPaths`), strict path/symlink rules, and closed
 configuration validation. They carry saved expectations only — never a
 grant, runtime approval or serving capacity. `darkbloom cluster configure`
 (`provider-swift/Sources/darkbloom/ClusterCommand.swift`, `Cluster.Configure`)

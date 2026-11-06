@@ -1,6 +1,6 @@
 # Keep a cluster member always on
 
-> Last updated: 2026-11-04
+> Last updated: 2026-11-06
 
 `darkbloom cluster` on each Mac does all of this. Nothing below is needed: it
 explains what the onboarding sets up and how to check it.
@@ -43,8 +43,12 @@ the cluster comes back by itself, with no command run on either Mac (see
 - The label is `io.darkbloom.cluster-service.<12 hex digits>`, a digest of the
   installed app (`Darkbloom.app`, whether `darkbloom` runs from
   `Contents/MacOS`, `Contents/Helpers` or the `~/.darkbloom/bin` symlink) or of
-  the folder of a development build. One cluster service runs per user: a
-  newer install's agent replaces an older one's.
+  the folder of a development build. The DevNet app's is
+  `io.darkbloom.cluster-service.dev.<12 hex digits>`
+  (`BuildEnvironment.clusterServiceLabelPrefix`). One cluster service runs per
+  user and app: a newer install of the same app replaces the older one's
+  agent, and neither app starts, stops or removes the other's
+  (`ClusterServiceAgentPlan.isOwnAgent`).
 - The job's `AssociatedBundleIdentifiers` names the actual enclosing app from
   its `Info.plist`. macOS attributes Local Network access to that app after the
   setup terminal exits; the supervisor, service and follower use its approval.

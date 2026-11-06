@@ -318,21 +318,23 @@ public struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
     /// its start and end, its peak and the memory limit (GB); the operation
     /// limit it encoded under. A tp-check rank and a serving rank print the
     /// same line for the same frame. A serving rank also turns it on when the
-    /// file `frameTimingSwitch` exists under its home at load (read once,
-    /// `enableFrameTimingFromSwitch`; no environment needed). Never on in
+    /// file `frameTimingSwitch` exists in its install's folder at load (read
+    /// once, `enableFrameTimingFromSwitch`; no environment needed). Never on in
     /// production.
     nonisolated(unsafe) static var frameTiming =
         ProcessInfo.processInfo.environment["DARKBLOOM_GLM_PREFILL_FRAME_TIMING"] == "1"
-    static let frameTimingSwitch = ".darkbloom/cluster-setup/prefill-frame-timing"
+    /// In the setup folder of the install whose app holds this worker (`ClusterPlacementTool.installDirectory`):
+    /// production's `~/.darkbloom/cluster-setup`, DevNet's `~/.darkbloom-dev/cluster-setup`.
+    static let frameTimingSwitch = "cluster-setup/prefill-frame-timing"
     /// The worker process's view of the switch (its command decode line).
     public static var frameTimingEnabled: Bool { frameTiming }
 
-    /// Turns frame timing on when `frameTimingSwitch` exists under this
-    /// process's home; returns the source (`env`, `file` or `off`) for the
+    /// Turns frame timing on when `frameTimingSwitch` exists in this worker's
+    /// install folder; returns the source (`env`, `file` or `off`) for the
     /// load line. Call once, before the first frame.
     static func enableFrameTimingFromSwitch() -> String {
         if frameTiming { return "env" }
-        let file = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(frameTimingSwitch)
+        let file = ClusterPlacementTool.installDirectory().appendingPathComponent(frameTimingSwitch)
         guard FileManager.default.fileExists(atPath: file.path) else { return "off" }
         frameTiming = true
         return "file"

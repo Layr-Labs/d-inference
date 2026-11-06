@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-05
+> Last updated: 2026-11-06
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -542,17 +542,82 @@ lists it under Local Network or in its firewall reads `ClusterService.appName`
 (`BuildEnvironment.current.appDisplayName`): the screens (through
 `ClusterOnboardingCommand.app`, including the pairing hint's firewall line and
 the line that asks to pair again after a reinstall) and the link follower's
-refusal. Both apps serve a pair's API on port 8000,
-so one of them serves a pair on a Mac at a time. Each keeps its own cluster
-incident log, owned by `DarkbloomClusterRemote`
-(`ClusterIncidentLog.defaultFile(homeDirectory:install:)`): production's is
-`~/.darkbloom/cluster/incidents.json`, another install's its own file, such as
-`incidents.dev.json`, which a build from before installs had their own files
-never reads or rewrites; a corrupt one is kept beside it under its own name
-(`incidents.corrupt.json`, `incidents.dev.corrupt.json`). `ClusterIncidentLog.files`
-names a log's files: the log, its lock sidecar and that corrupt copy.
-`darkbloom uninstall` removes an install's own with it while the shared folder
-stays for the other install; production's shared `incidents.json` stays. Every
+refusal.
+
+Each build keeps its own cluster state, in its own folders (`ClusterUserPaths`,
+from `BuildEnvironment.installDirectory` and `configDirectory`): the pairing
+store, the setup and service folder (the service's lock, pid, status, update
+request and logs, the screens' transcripts), the device folder (lease, journal,
+link records, the prefix cache's key), the observability files and the saved
+setups. Production's stay in `~/.darkbloom` and `~/.config/darkbloom`; DevNet's
+are in `~/.darkbloom-dev` and `~/.config/darkbloom-dev`. The cluster service's
+login job carries the build's prefix (`BuildEnvironment.clusterServiceLabelPrefix`),
+and a build lists, replaces and removes only its own jobs
+(`ClusterServiceAgentPlan.isOwnAgent`: a production-shaped job an older DevNet
+build wrote is DevNet's by its program). The per-user locks are named after the
+build's CLI (`ClusterConsoleInstanceLock.lockFileName`), the pair's prefix cache
+is in the build's cache namespace (`ClusterPrefixCacheSettings.rootDirectoryName`),
+and every port on the cable adds the build's `BuildEnvironment.clusterPortOffset`
+(`ClusterCablePorts`). Two builds' pairs on the same Macs therefore never read,
+stop or answer each other. Their device leases and journals are separate, but
+every build's device scope (a pair's owner session, a member's preparation, a
+GLM calibration) also takes one lock all builds share
+(`ClusterMachineDeviceLock`: `~/Library/Application Support/io.darkbloom.cluster/native-device.lock`,
+flock only, in a folder no app or build owns; `ClusterUserPaths.machineDeviceLock`),
+after its own lease. So one build's native session never runs on the GPU beside
+another's, and the refusal names the other app. A build other than production's
+also refuses while production serves here, so production wins by default
+(`ClusterMachineDeviceLock.productionServingHere`, read only, never
+production's locks): a serving process of production's own app runs
+(`productionServing`: `darkbloom start`, `cluster link-follower`, its worker
+owner or its worker, run from production's folder, from the process table),
+which covers production before 0.10.11 (it takes no lock), or production's
+cluster service published within two minutes that its pair serves here
+(`productionPairStatus`: its `service-status.json`, `serving` and `pairRunning`),
+which covers the seconds production's part restarts (an update, a crash). A
+fresh status it can't read or decode counts as serving (fail safe, said in the
+refusal); no status, an old one, or one dated ahead of the clock doesn't. That
+build's cluster service also steps a running part aside when production starts
+serving (both start at login, say): it fences the part's GPU work at once
+(SIGUSR1 to the worker owners the part started, `ClusterService.fenceOwners`,
+whose force-cancel hook ends each worker's requests and unloads it), then stops
+the part. No model of such a build loads for single-Mac serving while
+production serves here either (`ClusterGPUHold.productionServesHere`): both
+slot owners (`ProviderLoop.ensureModelLoaded`, `StandaloneServer.ensureModelLoaded`)
+refuse a cold load at its start, before any eviction, weight hash or load
+reservation, as a transient 503, and `ModelContainerLoading.loadServingContainer`
+refuses too, for any other caller; a model already loaded keeps serving. A
+cluster member whose start is refused that way prints the refusal's `Error:`
+line (which its cluster service waits on) and exits with
+`ClusterMemberRunEnd.gpuHeldExitCode` (76, reserved for that alone: a source
+check keeps every other path off it), so the developer `--always-on` supervisor
+waits for the hold (`ClusterGPUHold.now`) instead of spending its restart
+budget. The cluster service never starts its part
+into a hold: `ClusterMachineDeviceLock.heldByAnotherBuild`
+probes the lock shared and lets it go at once (a start at that moment retries
+for up to 100 ms, `ClusterDeviceExclusion.machineLockTries`), and the part
+waits (`ClusterOtherAppHold`), named in the status's `heldBack`. A part that
+ended on the refusal never counts toward the local-only fallback
+(`ClusterApprovalCheck.memberQuickEnds`), and the part starts on the first tick
+after the hold ends, with its backoff and any approval set aside as failing
+cleared (`blockerCleared`). Each
+build's model copies stage under its own name in the store both share
+(`ClusterModelStore.stagingPrefix`: production's `.darkbloom-incoming-<digest>`,
+DevNet's `.darkbloom-incoming-dev-<digest>`), and a copy short of disk reclaims
+only its own build's abandoned staging. They share the models, and the cable
+port setup, which `darkbloom uninstall` keeps while the other build is
+installed; `cluster link --remove` names another build whose link record still
+holds the port and asks at a terminal (`ClusterLinkRepair.otherInstallsUsingCable`).
+A port the other build set up is adopted with what its link record
+says that setup changed (its bridge slot and the services it turned off), read
+from that record and never written there
+(`ClusterLinkRepair.Environment.otherInstallsIsolationEntries`), so the build
+uninstalled last can still undo it all. Each
+keeps its own cluster incident log, owned by `DarkbloomClusterRemote`
+(`ClusterIncidentLog.defaultFile(installDirectory:install:)`): production's is
+`~/.darkbloom/cluster/incidents.json`, DevNet's `~/.darkbloom-dev/cluster/incidents.dev.json`;
+a corrupt one is kept beside it under its own name (`incidents.corrupt.json`,
+`incidents.dev.corrupt.json`). Every
 reader and writer opens this build's with
 `ClusterIncidentLog.forThisInstall`. Each record also names the install that
 wrote it (`ClusterIncident.install`), and a build reads only its own, counting
@@ -1633,6 +1698,24 @@ observation in each aggregate, current-posture or workload-bucket series.
 Rate averaging and sample counts still follow receipt consumption order;
 an older receipt cannot move freshness backward or create a false evidence gap
 for the next observation. A heartbeat snapshot alone never renews evidence.
+
+A cluster's engine (`DistributedCBv2Engine`) reports the same measurements from
+the requests the cluster serves (`DistributedCBv2Engine+Timing.swift`). Each
+request's terminal usage carries its timing in the engine contract's terms. The
+prompt runs from the owner's start, after every rank reserved, to the first
+committed token. Decode runs from the first committed token to the last, in MTP
+rounds when the ranks report them. The ranks report what they restored only at
+the finish, so the bridge fixes the prompt's overlap with other work and its
+date when the first committed token arrives (`EnginePrefillReceipt.freezeAtFirstToken`,
+`EngineV2Bridge.recordFirstToken`). At a clean finish (`stop` or `length`), the
+engine then reports the prompt observation once, with the final reuse. A
+prompt that ran alone is therefore isolated even when another request joins its
+decode, and a partly restored prompt is never measured as a cold one. A failed
+request reports none, and a request with media is never a text rate. The
+cluster's warmup canary submits as `startupWarmup`, so its few tokens never
+become the slot's rates. Before 0.10.10, a cluster's slot reported no
+measurements. The coordinator's first-content forecast of a cluster therefore
+stayed `unknown`, and a feasible single Mac always displaced the cluster.
 
 Owner-bound native MiMo submissions retain target-decoder prefill observations
 in the separate `native_media_prefill` workload phase. Its timer starts at the
@@ -2842,6 +2925,22 @@ errors instead of wrapping them as a retryable 503 construction refusal.
   `maxMediaDecodedBytes` 25 MiB, `maxVideoDurationSeconds` 600,
   `maxImagesPerRequest` 16, `maxVideosPerRequest` 8,
   `maxRequestVideoFramePixels` 384 Mpx; `decodeOverheadFactor = 4`.
+- **A failed video reader decodes again once.** An `AVAssetReader` can fail on a
+  valid video. When a reader pass of the GLM 5.3, MiMo V2.6, Qwen4 or Nemotron
+  Super decoder ends in a state other than `.completed`, the decoder keeps the
+  reader status and the domain and code of its error chain (`VideoReaderFailure`)
+  and decodes again with a new reader over the same in-memory asset
+  (`VideoReaderRetry`; the Super frame reader replaces its reader once and
+  decodes from the first frame again). A second success gives the same frames.
+  A second failure with an AVFoundation or VideoToolbox decoder, hardware or
+  interruption code (`VideoReaderFailure.isTransient`) refuses as a retryable
+  503 (failure code `capacity`), so the coordinator can send the request to
+  another provider. Any other second failure is the media's `invalid_media`
+  400. Each failed pass emits a WARN `engine_health` event, operation
+  `video_reader_failed`, with `retrying`, `transient`, `reader_status` and
+  `reader_error` (codes only)
+  (`libs/mlx-swift-lm/Libraries/MLXLMCommon/VideoReaderFailure.swift`,
+  `provider-swift/Sources/ProviderCore/Inference/Vision/VideoReaderFailureReport.swift`).
 - Vision requests never stage SSD blocks and get no deadline projection; VLM
   slots require a backend that honors span masks. The current paged cache
   satisfies that structural gate; supported vision serving still requires its
@@ -3630,6 +3729,8 @@ evidence, not a change to the normal final-row contract or the near-tie rule
 | Model dropped from advertised set | Unsupported `model_type` | `EngineV2SupportedModels.swift` |
 | Model advertised, capacity quotes rejected with reason `template` | Scan-time render check failed (`template_render_ok = false`) | `TemplateRenderCheck.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift` (`reject(.template)`) |
 | Image rejected | Over `MediaIngest` caps or over the N² tower budget | `MediaIngest.swift`, `VisionTowerBudget.swift` |
+| `video_reader_failed` WARN event, `retrying: true`, and the request served | A video reader pass failed and the second pass decoded the video; `reader_error` names the reader's error codes | `libs/mlx-swift-lm/Libraries/MLXLMCommon/VideoReaderFailure.swift` (`VideoReaderRetry`), `VideoReaderFailureReport.swift` |
+| Video refused after two `video_reader_failed` events (503 `capacity` or 400 `invalid_media`) | Both reader passes failed: 503 for a transient decoder, hardware or interruption code, 400 otherwise | `EngineV2VisionPrefill.swift` (`clientFault(for:)`), `EngineV2GLM5NextMediaPrefill.swift` (`glm5NextInputError`), `MiMoV26EncodedMediaIngress.swift` (`outwardFailure`), `NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
 | `missingUserQuery` (400) | Qwen 3.5/3.6/3.8 or Bonsai 2 history with no user turn beyond `<tool_response>` wrappers | `provider-swift/Sources/ProviderCore/Inference/Prompting/Qwen35TemplateFixes.swift` (`validateUserQuery`) |
 | `Inference failure: invalid request (<reason>)` in `darkbloom logs` (400) | The sealed request, its body decode or the model's native controls refused it before the inference task, or a prompt policy or engine admission refused it while its prompt was prepared; the reason is the closed [refusal line](../provider/cli-reference.md#refusal-lines) | `provider-swift/Sources/ProviderCore/Inference/Engine/InferenceRefusalReason.swift` (`InferenceRefusalReason`, `init(promptRefusal:)`); `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift` (`nativeControlsRefusal`) |
 | Load refused: `pagedUnavailable` (503) | Explicit `engine_v2_kv_backend = paged` and the paged pool/kernels failed | `EngineV2Factory+BackendPreparation.swift` — see [`prefix-cache.md`](prefix-cache.md) |
@@ -3943,8 +4044,8 @@ part the same key with a different file (`ClusterServiceAgent.partHealthPath`,
 service's heartbeat and still waits for its registration as a supervised member.
 An empty or absent key is passed on unchanged.
 
-One cluster service runs per home: it holds an exclusive `flock` on
-`~/.darkbloom/cluster-setup/service.lock` while it runs, and `ClusterService.running`
+One cluster service runs per home and build: it holds an exclusive `flock` on
+`~/.darkbloom/cluster-setup/service.lock` (DevNet's in `~/.darkbloom-dev`) while it runs, and `ClusterService.running`
 reports whether one holds it. `darkbloom update --rollback` takes the same lock
 (`ClusterService.holdStopped`) while it swaps the installed release, so no cluster
 service starts on a release that is being replaced; a service that starts then
@@ -4050,12 +4151,29 @@ away; mixed pairs are first-class).
 - **Measured speed:** `ClusterServedModes.figures` over this build's served
   records of this model on these Macs (`ClusterServedSpeedRecords.servedBy`), as
   the planner reads them: a figure from 3 served requests on. Never a
-  prediction; without one the model list says "not measured on these Macs yet".
-  The mode question uses these figures (else the planner's predictions) only
-  to rank the modes: its recommendation and its mode lines quote no tokens per
-  second (owner, 2026-11-05), and a re-plan's "Planned in the mode chosen" line
-  gives the size, mode and shares without the planner's predicted speed
-  (`ClusterOnboardingModeAdvice.fasterWords`, `OnboardingLive.localPlanModels`).
+  prediction. Beside it, each mode carries the rate the latest other build
+  served it at (`ClusterSetupPlanning.earlierFigures`; an earlier build, or a
+  newer one after a rollback), from records that name how they were served and
+  were served the way the plan will serve (through Darkbloom or locally;
+  tensor parallel with Qwen's tensor assistant exactly when the plan decodes
+  with it). Records name it from #1819 on (provider 0.10.11, DevNet .100):
+  0.10.10's never count, so the update from 0.10.10 to 0.10.11 still ranks by
+  the planner's predictions until a mode serves with 0.10.11. No safe scope can
+  be read from a record that names none: equal tensor-parallel shares serve
+  through Darkbloom and locally alike. The mode question ranks the modes by this
+  build's figures, else, while this build has served none of them (every
+  update starts there), by the other builds', else by the planner's
+  predictions (`ClusterOnboardingModeAdvice.advise`). The planner itself still
+  reads only this build's records. The list puts the recommended mode first,
+  and a model named on the command line starts in it
+  (`ClusterOnboardingMode.defaultIndex`), so neither contradicts the
+  recommendation. No screen quotes these figures (owner, 2026-11-05: "the
+  model and mode choice never quote tok/s"): the model list names the modes
+  (`ClusterOnboardingMode.listWords`);
+  the recommendation and the mode lines say why in words; a re-plan's "Planned
+  in the mode chosen" line gives the size, mode and shares
+  (`ClusterOnboardingDeployment.choiceLine`); and the six-step developer
+  wizard's model step and check show no speed (`ClusterSetupContent`).
 - **The current model:** on a set-up pair the list preselects the model serving
   now (or the last one used); it keeps the mode the saved setup served in when
   the plan still lists it (`keepMode`, from `ClusterOnboardingResume.servingMode`),
@@ -4068,8 +4186,13 @@ away; mixed pairs are first-class).
   alone. A chosen tensor parallel is the family a tensor quote prices, so the
   singleton and assistant quotes accept it (`applySingleton`, the planner's
   assistant guard).
-- **Default:** the fastest measured family, else the planner's
-  (`ClusterOnboardingMode.defaultIndex`).
+- **Default:** the recommended family when it is listed, else the fastest
+  measured with this build, else the planner's
+  (`ClusterOnboardingMode.defaultIndex`). The list names it first and a model
+  named on the command line starts in it. The question's cursor starts on the
+  recommendation, else on the mode the pair serves in, else on the default; a
+  model started again the other way (local only or through Darkbloom) keeps
+  its mode.
 - **Local Network truth:** the follower the service runs is the process that
   dials the other Mac, so its last dial decides (`ClusterService.followerRefusal`:
   the refusal macOS gave it, or a link it opened since, or a dial that failed
@@ -4809,6 +4932,12 @@ resident runtime's own request path instead of the SDK's legacy caches;
 `--layer-stride N` submits each decode step every N layers instead of the
 product's `decodeLayerStride` (1), so a pair can measure the stride before the
 product's changes (Qwen's measured choice is 8, `QwenTensorParallelLaunch`).
+`--prompt-parts N` (shard or tp, paged) runs each prompt chunk's work after
+attention in N row parts whose sums are issued as built
+(`Gemma4TensorParallelPromptParts`; the product keeps 1): bit-identical to the
+whole chunk on the GPU for two ranks while every op after attention is per-row,
+not on the CPU backend, not exact with more than two ranks, and not enforced,
+so it stays a bench option (two M5 Ultras: 4 parts, +13 % at 9,651 tokens).
 `tp-check gemma lanes` serves several requests together through the batch
 driver and checks each against itself alone.
 
@@ -4843,7 +4972,10 @@ stops, cancellations and retirements.
 - Prompt. Each chunk runs through the product's CBv2 entry
   (`Gemma4TextModel.cbv2Prefill`, whose last layer keeps only the row it
   projects) under the registered prompt policy (`Gemma4PrefillProjectionScope`),
-  on the request's chunk grid.
+  on the request's chunk grid. A rank computes the chunk's experts in one shared
+  dispatch per projection (`SwitchGLU.expertRowsByRow`: gathers never hinted as
+  sorted, so each (token, expert) pair stays the M=1 product its own call
+  computes) before the same packed collective of all 9 rows per token.
 - Decode. One evaluation per step, with 100-operation command buffers. The
   step is submitted layer by layer as the host builds it
   (`Gemma4LayerSubmission`; evaluation order only). Lanes decode in one
@@ -7046,8 +7178,8 @@ A Qwen TP prompt frame of 512 rows used to compute, then wait for its own
 sealed FP32 sums: two per layer, each read by the next residual norm, so the
 GPU and the link took turns. On the pair at 11K tokens a 27B frame computes for
 about 165 ms and its 128 sums take about 186 ms, so prefill ran at 0.75x one Mac
-[INFERENCE: split from `qwen27-tp-speed-plan` measurements, not traced]. A plain
-text lane now prefills up to eight consecutive frames as one graph, built layer
+[INFERENCE: split from `qwen27-tp-speed-plan` measurements, not traced]. A text
+lane, assisted or not, now prefills up to eight consecutive frames as one graph, built layer
 by layer as GLM's micro-batches are (`GLM5NextTextStage.microBatchedLayer`): a
 frame's mixer through its row-parallel output projection, that sum submitted at
 once, the next frame's mixer while it crosses; then each frame's MLP the same
@@ -7068,7 +7200,8 @@ flowchart LR
 - **Planning.** The leader plans one prompt step a driver step: up to
   `QwenTensorParallelPromptWavefront.maximumFrames` (8) frames, or
   `framesBesideDecoding` (2) while another lane decodes, ending at the prompt's
-  end or at the lane's capture frontier (`QwenTensorParallelBatchSession.promptFrames`).
+  end, at the lane's capture frontier or, for an assisted lane, at its assistant's
+  capture frontier (`QwenTensorParallelBatchSession.promptFrames`).
   The plan carries the step's offset, tokens and final flag; each rank runs it
   only as a prefix of its own frames (`promptStep(tokens:)`), so both ranks run
   the same frames.
@@ -7090,8 +7223,13 @@ flowchart LR
   when the step reaches the frontier, as after a lone frame.
 
 Invariants:
-1. Every frame runs the operations it runs alone, at its own 512-row shapes;
-   only submission order changes. Logits, attention rows, conv and SSM states
+1. Every frame of a plain lane runs the operations it runs alone, at its own
+   512-row shapes; only submission order changes. A merged assisted frame runs
+   the plain lane's operations, while a lone assisted frame takes the target's
+   hidden forward with its fused residual norms; their equality rests on
+   `ResidualRMSNorm`'s byte parity with the unfused ops on its verified GPU
+   families (`Qwen35DecodeFusionParityTests.residualRMSNormEqualsTheUnfusedOps`;
+   on Mac A, family 17, the hybrid assisted test passed with the kernel on). Logits, attention rows, conv and SSM states
    and prefix captures are the per-frame bytes
    (`QwenTensorParallelPromptWavefrontTests.mergedFramesKeepEveryBit`: both
    ranks, paged with the mirror and with page gathers, contiguous, a prompt
@@ -7101,8 +7239,14 @@ Invariants:
    same order on both ranks. They stay sealed FP32 all-sums: no BF16 partial,
    no TF32 change.
 3. Only text lanes of dense models on native KV rows merge
-   (`QwenTensorParallelPromptWavefront.merges`). Assisted (MTP) lanes, media
-   lanes, packed KV and routed-expert models run one frame a step.
+   (`QwenTensorParallelPromptWavefront.merges`). Media lanes, packed KV and
+   routed-expert models run one frame a step. An assisted (MTP) lane merges too:
+   its step also ends at its assistant's capture frontier, runs the same
+   wavefront (`Qwen35PromptWavefront.prefillWithHidden` also returns each
+   frame's last-layer rows), and its assistant then takes each frame's rows in
+   order as after a lone frame (`QwenTensorParallelMTPDecoder.prefill(frames:)`;
+   `QwenTensorParallelAssistedPromptWavefrontTests`: the unassisted wavefront's
+   logits and rows, and the one-frame assistant state, bit for bit).
 4. A step's further frames in flight are charged:
    `QwenTensorParallelPromptWavefront.inFlightBytes` (per further frame, five
    frames' FP32 collective payload: two partials, two sums and the BF16
@@ -7145,13 +7289,19 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Ten
 ### Qwen27 tensor-parallel native context
 
 The registered Qwen3.8 27B row advertises the limits the single-Mac product
-serves: up to 262,143 prompt tokens and 32,768 output tokens within a 262,144-token
-context (the catalog's `max_context_length` and `max_output_length`;
-`QwenDenseRegisteredSpecification.nativeOutputTokens`,
-`QwenResidentContextLimits.Ceiling.native`). The worker profile, request
-validation on both ranks and every profile fingerprint use these limits. LOAD,
-the placement planner and every width quote still size the pair for the standard
-request, 32,768 prompt plus 32,768 output tokens
+serves: up to 262,143 prompt tokens and 65,536 output tokens within a 262,144-token
+context. These are the catalog's `max_context_length` and `max_output_length`
+(`QwenDenseRegisteredSpecification.nativeOutputTokens`,
+`QwenResidentContextLimits.Ceiling.native`). 65,536 is also the `max_tokens`
+that the coordinator gives a request that omits it. A single Mac takes any
+`max_tokens` whose sum with the prompt fits its context. Until 0.10.10 the pair
+refused every `max_tokens` above 32,768, so production's 18,774-token prompts
+that asked for 65,536 were refused. The output limit is 65,536, not the
+wire's 131,072. At the pair's measured 35 tokens a second, 65,536 output tokens
+take about 31 minutes, inside the 3,600-second request limit; 131,072 would
+not fit. The worker profile, request validation on both ranks and every profile
+fingerprint use these limits. LOAD, the placement planner and every width quote
+still size the pair for the standard request, 32,768 prompt plus 32,768 output tokens
 (`QwenResidentAdapterDefinition.memoryProfile`, `ClusterWorkerProfile.memoryScope`).
 No lane reserves KV for the native context in advance, and widths one through
 eight are planned and admitted as before. Every other Qwen row's profile is its

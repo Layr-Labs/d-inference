@@ -126,6 +126,58 @@ struct ClusterMemberSupervisorTests {
         #expect(await run.value == 0)
     }
 
+    /// #1857 review: a member start refused because the other app holds this Mac's GPU says the refusal's `Error:` line
+    /// itself (an `ExitCode` prints nothing, and the cluster service waits on that line) and ends with the reserved 76,
+    /// which the supervisor waits on. Any other failure ends the start as before.
+    @Test func aMemberStartRefusedForTheGPUSaysWhyAndEndsWith76() {
+        struct Held: Error, CustomStringConvertible {
+            var description: String {
+                "Darkbloom Dev on this Mac holds this Mac's GPU for its pair (or a model check), and two pairs don't fit one "
+                    + "Mac's memory: this pair starts by itself once Darkbloom Dev's stops, or now after `darkbloom-dev cluster stop`."
+            }
+        }
+        struct Other: Error {}
+        var said: [String] = []
+        let ending = Start.memberStartFailure(Held()) { said.append($0) }
+        #expect(said == ["Error: \(Held())"])
+        #expect((ending as? ExitCode)?.rawValue == ClusterMemberRunEnd.gpuHeldExitCode)
+        #expect(ClusterMemberRunEnd.classify(stopRequested: false, exitCode: ClusterMemberRunEnd.gpuHeldExitCode, signal: nil) == .gpuHeld)
+        said = []
+        #expect(Start.memberStartFailure(Other()) { said.append($0) } is Other)
+        #expect(said.isEmpty)
+    }
+
+    /// Final review of #1846: a member refused because another Darkbloom build holds this Mac's GPU exits with its own
+    /// code. The supervisor waits for that hold to end without spending its budget, then starts the member at once.
+    @Test func aMemberRefusedForTheGPUWaitsForTheHoldAndStartsOnceItEnds() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("s18-gpu-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let held = directory.appendingPathComponent("held").path
+        FileManager.default.createFile(atPath: held, contents: nil)
+        var settings = configuration(directory: directory,
+            script: "if [ -e '\(held)' ]; then exit \(ClusterMemberRunEnd.gpuHeldExitCode); fi; exec sleep 60")
+        settings.gpuHold = { FileManager.default.fileExists(atPath: held) ? "Darkbloom Dev on this Mac holds this Mac's GPU." : nil }
+        settings.gpuHoldPollSeconds = 0.1
+        settings.sweepsOrphans = false
+        let supervisor = ClusterMemberSupervisor(configuration: settings)
+        let run = Task { await supervisor.run() }
+        #expect(await waitUntil(seconds: 10) { state(directory)?.lastRun?.exitCode == ClusterMemberRunEnd.gpuHeldExitCode })
+        // Held: the member waits, nothing more runs and nothing counts (three quick failures would have parked it in
+        // 3 s, its backoff being 1 s then 2 s).
+        try await Task.sleep(nanoseconds: 4_000_000_000)
+        let waiting = try #require(state(directory))
+        #expect(waiting.runs == 1, "the member was started again into the held GPU")
+        #expect(waiting.phase == .backoff && waiting.detail?.contains("holds this Mac's GPU") == true,
+                "\(waiting.phase): \(String(describing: waiting.detail))")
+        #expect(waiting.budget.quickFailures == 0)
+        // The hold ends: the member starts again at once.
+        try FileManager.default.removeItem(atPath: held)
+        #expect(await waitUntil(seconds: 5) { state(directory)?.phase == .running && state(directory)?.runs == 2 })
+        supervisor.requestStop()
+        #expect(await run.value == 0)
+    }
+
     @Test func aSecondSupervisorForTheSameStateRefusesToStart() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("s18-lock-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }

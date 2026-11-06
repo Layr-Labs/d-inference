@@ -3,7 +3,7 @@ import DarkbloomClusterPlacement
 import DarkbloomClusterProtocol
 
 /// Each member's recent tensor-parallel share probes (`ClusterShareProbeHistory`,
-/// kept per model artifact and member in `~/.darkbloom/cluster/share-probes.json`)
+/// kept per model artifact and member in this install's `cluster/share-probes.json`)
 /// as this provider keeps them: owner-only, replaced under the configuration
 /// lock. The serving leader records both ranks' probes when the pair becomes
 /// ready; every plan of that pair reads them for the model it plans, so a
@@ -24,7 +24,7 @@ extension ClusterShareProbeHistory {
                               now: Double = Date().timeIntervalSince1970) -> Bool {
         let usable = probes.filter(\.probe.valid)
         guard !usable.isEmpty, usable.count <= 2, Set(usable.map(\.member)).count == usable.count else { return false }
-        let file = defaultFile(homeDirectory: homeDirectory)
+        let file = defaultFile(installDirectory: BuildEnvironment.current.installDirectory(home: homeDirectory))
         do {
             try ClusterConfigurationFiles.update(file, maximum: maximumBytes) { old in
                 let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -43,6 +43,6 @@ extension ClusterShareProbeHistory {
     /// member ID; empty when none was measured (the plan is then as before).
     public static func shareRates(homeDirectory: URL, artifactSHA256: String, members: [String],
                                   now: Double = Date().timeIntervalSince1970) -> [String: [ClusterShareRate]] {
-        read(defaultFile(homeDirectory: homeDirectory))?.shareRates(artifactSHA256: artifactSHA256, members: members, now: now) ?? [:]
+        read(defaultFile(installDirectory: BuildEnvironment.current.installDirectory(home: homeDirectory)))?.shareRates(artifactSHA256: artifactSHA256, members: members, now: now) ?? [:]
     }
 }

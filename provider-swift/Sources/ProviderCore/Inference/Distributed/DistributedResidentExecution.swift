@@ -53,24 +53,36 @@ public struct DistributedResidentExecutionProfile: Sendable {
     public let maxPromptTokens: Int
     public let maxOutputTokens: Int
     public let maxContextTokens: Int
+    /// The prompt, output and context the selected generation mode serves
+    /// within the limits above (`ClusterModelFeaturePolicy.servedProfile`):
+    /// all of them in tensor parallel, the memory plan's request in a
+    /// pipeline. A longer request is refused before any rank is asked, and
+    /// the pair's slot reports these (`SlotRequestLimits`).
+    public let served: (promptTokens: Int, outputTokens: Int, contextTokens: Int)
     public let requestTimeout: Duration
     /// Whether the selected resident runtime emits committed-token logprobs.
     /// Numeric sampling limits do not imply that the runtime captures them.
     public let supportsLogprobs: Bool
 
+    /// `served` defaults to the whole profile.
     public init(
         id: String, vocabularySize: Int, maxPromptTokens: Int, maxOutputTokens: Int,
-        maxContextTokens: Int, requestTimeout: Duration, supportsLogprobs: Bool = false
+        maxContextTokens: Int, requestTimeout: Duration, supportsLogprobs: Bool = false,
+        served: (promptTokens: Int, outputTokens: Int, contextTokens: Int)? = nil
     ) throws {
+        let served = served ?? (maxPromptTokens, maxOutputTokens, maxContextTokens)
         guard !id.isEmpty, vocabularySize > 0, maxPromptTokens > 0, maxOutputTokens > 0,
             maxContextTokens >= maxPromptTokens, requestTimeout > .zero,
-            requestTimeout <= .seconds(3600)
+            requestTimeout <= .seconds(3600),
+            (1...maxPromptTokens).contains(served.promptTokens), (1...maxOutputTokens).contains(served.outputTokens),
+            (served.promptTokens...maxContextTokens).contains(served.contextTokens)
         else { throw DistributedEngineError.invalidConfiguration("invalid bounded execution profile") }
         self.id = id
         self.vocabularySize = vocabularySize
         self.maxPromptTokens = maxPromptTokens
         self.maxOutputTokens = maxOutputTokens
         self.maxContextTokens = maxContextTokens
+        self.served = served
         self.requestTimeout = requestTimeout
         self.supportsLogprobs = supportsLogprobs
     }
@@ -82,10 +94,12 @@ public struct DistributedResidentExecutionProfile: Sendable {
     init(capability: ClusterRuntimeCapability, generationMode: ClusterGenerationMode,
          requestTimeout: Duration) throws {
         let wire = capability.profile
+        let served = ClusterModelFeaturePolicy.servedProfile(capability, mode: generationMode)
         try self.init(id: wire.id, vocabularySize: wire.vocabularySize,
             maxPromptTokens: wire.maximumPromptTokens, maxOutputTokens: wire.maximumOutputTokens,
             maxContextTokens: wire.maximumContextTokens, requestTimeout: requestTimeout,
-            supportsLogprobs: ClusterModelFeaturePolicy.capturesLogprobs(capability, mode: generationMode))
+            supportsLogprobs: ClusterModelFeaturePolicy.capturesLogprobs(capability, mode: generationMode),
+            served: (served.maximumPromptTokens, served.maximumOutputTokens, served.maximumContextTokens))
     }
 }
 
@@ -311,12 +325,12 @@ public enum DistributedRequestRefusal: String, Sendable, Equatable, CaseIterable
         switch self {
         case .emptyPrompt: return "The prompt is empty."
         case .promptTooLong:
-            return "The prompt is longer than this model's limit\(limit(profile?.maxPromptTokens)) on this cluster."
+            return "The prompt is longer than this model's limit\(limit(profile?.served.promptTokens)) on this cluster."
         case .invalidMaxTokens: return "max_tokens must be at least 1."
         case .outputTooLong:
-            return "max_tokens is above this model's output limit\(limit(profile?.maxOutputTokens)) on this cluster."
+            return "max_tokens is above this model's output limit\(limit(profile?.served.outputTokens)) on this cluster."
         case .contextTooLong:
-            return "The prompt plus max_tokens is above this model's context\(limit(profile?.maxContextTokens)) on this cluster."
+            return "The prompt plus max_tokens is above this model's context\(limit(profile?.served.contextTokens)) on this cluster."
         case .tokenOutsideVocabulary: return "A token is outside this model's vocabulary."
         case .logprobsUnsupported:
             return "top_logprobs is above this cluster's limit of \(ClusterWorkerSampling.maximumTopLogprobs)."
@@ -336,7 +350,8 @@ public enum DistributedRequestRefusal: String, Sendable, Equatable, CaseIterable
 extension DistributedResidentExecutionProfile {
     /// The first rule a request breaks on this pair, or nil when the pair can
     /// serve it. The engine refuses with it before any reservation; the owner
-    /// checks it again before anything reaches a worker.
+    /// checks it again before anything reaches a worker. Sizes are held to
+    /// what the selected mode serves (`served`).
     func refusal(for request: CBv2Request) -> DistributedRequestRefusal? {
         let p = request.sampling
         if request.multimodal != nil || request.positionState != nil { return .mediaUnsupported }
@@ -372,11 +387,11 @@ extension DistributedResidentExecutionProfile {
         if p.topLogprobs > 0, !supportsLogprobs { return .logprobCaptureUnsupported }
         if request.priority != 0 { return .priorityUnsupported }
         if request.promptTokens.isEmpty { return .emptyPrompt }
-        if request.promptTokens.count > maxPromptTokens { return .promptTooLong }
+        if request.promptTokens.count > served.promptTokens { return .promptTooLong }
         if request.maxTokens <= 0 { return .invalidMaxTokens }
-        if request.maxTokens > maxOutputTokens { return .outputTooLong }
+        if request.maxTokens > served.outputTokens { return .outputTooLong }
         let total = request.promptTokens.count.addingReportingOverflow(request.maxTokens)
-        if total.overflow || total.partialValue > maxContextTokens { return .contextTooLong }
+        if total.overflow || total.partialValue > served.contextTokens { return .contextTooLong }
         if !request.promptTokens.allSatisfy({ 0 <= $0 && $0 < vocabularySize })
             || !request.stopTokens.allSatisfy({ 0 <= $0 && $0 < vocabularySize }) {
             return .tokenOutsideVocabulary

@@ -15,7 +15,7 @@ for b in b"cluster-1":
 print(h % 1800)')
 xcrun swiftc -swift-version 6 -warnings-as-errors -target "$(uname -m)-apple-macos14.0" \
   -module-name ClusterSupervisionChecks \
-  "$sources"/Service/ClusterSupervision/*.swift \
+  "$sources"/Service/ClusterSupervision/*.swift "$provider"/Sources/ProviderBuildEnvironment/*.swift \
   "$sources/Inference/Distributed/Diagnostics/Link/ClusterLinkReadinessState.swift" \
   "$sources/Inference/Distributed/Installed/ClusterPairUpdateProgress.swift" \
   "$here/main.swift" -o "$build/checks"

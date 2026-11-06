@@ -170,7 +170,7 @@ public struct ClusterSetupPlanSummary: Codable, Sendable, Equatable {
         /// A `ClusterGenerationMode` raw value.
         public var mode: String
         public var shares: [Share]
-        /// Nil: this pair has not served it in this mode yet (never a prediction).
+        /// Nil: this pair has not served it in this mode with this build yet (never a prediction).
         public var servedDecodeTokensPerSecond: Double?
         /// Requests the pair serves at once in this mode, as its plan's setup says (1: one at a time); nil when not
         /// known, and in a summary written before it existed.
@@ -178,6 +178,10 @@ public struct ClusterSetupPlanSummary: Codable, Sendable, Equatable {
         /// Darkbloom's coordinator serves the model publicly in this mode (`ClusterPairServingGrants.publicTrafficLine`);
         /// nil when not known, and in a summary written before it existed.
         public var publicTraffic: Bool? = nil
+        /// The decode rate this pair last served it at in this mode with an earlier worker build, served the way the plan
+        /// will serve (`ClusterSetupPlanning.earlierFigures`): what the mode question ranks by until this build has served.
+        /// Nil when no earlier build did (never a prediction), and in a summary written before it existed.
+        public var earlierServedDecodeTokensPerSecond: Double? = nil
     }
 }
 

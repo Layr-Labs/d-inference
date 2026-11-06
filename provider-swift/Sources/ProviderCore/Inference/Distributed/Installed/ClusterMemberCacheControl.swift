@@ -18,7 +18,7 @@ import Foundation
 /// - **Reclaim on unpair** (oMLX `8910605b`, a deleted deployment's records
 ///   reclaimed on every rank). When the leader leaves the pair it tells the
 ///   member first; the member removes the pair's plan directories under its
-///   cluster prefix root (`<cache base>/darkbloom/cluster-prefix-v1`; only the
+///   cluster prefix root (`<cache base>/<namespace>/cluster-prefix-v1`; only the
 ///   current pair's plans are there: every rank deletes other plans'
 ///   directories at load) and forgets the leader's settings. The single-Mac
 ///   `kv3` tier is a different directory and is never touched. A plan a

@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-05
+> Last updated: 2026-11-06
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -278,9 +278,21 @@ doesn't say. On a Mac named there, `darkbloom cluster` turns its service on
 again. With a build whose cluster service lives only as long as its window, the
 card says to keep that window open instead, or both windows when neither Mac's
 starts at login.
-Darkbloom Dev, the DevNet app, serves a pair's API on the same port, 8000, so
-only one of the two apps can serve a pair on a Mac at a time; its card and
-hints name `darkbloom-dev`.
+Darkbloom Dev, the DevNet app, keeps its own pair: its own pairing, cluster
+setup, cluster service and ports on the cable, so its pair and the production
+app's never answer each other. Only one app's pair runs on a Mac at a time: both
+apps take one device lock
+(`~/Library/Application Support/io.darkbloom.cluster/native-device.lock`), so
+the second app's pair waits, and its status names the app that holds the Mac.
+It starts by itself as soon as that app's pair stops, and a wait never counts
+as a failing pair, so the production app never falls back to its local API for
+it. The production app wins: the DevNet app also waits while the production
+app serves on that Mac (even a production version from before the lock) or its
+pair is set to serve there, also while it restarts for an update, and its
+running pair releases the GPU at once and stops when production starts serving
+there. Its
+pair's API takes 8000 too, or the lowest free port up to 8020 when the
+production app's pair holds it; its card and hints name `darkbloom-dev`.
 
 Served on the local API only (asked for, or a coordinator without cluster
 support), the block says `✓ Serving <model> on this Mac's local API only`. It
@@ -340,10 +352,13 @@ On the leader, the pair's model list follows, like `darkbloom start`'s picker:
   test request; in another mode it asks first ("Switch Gemma 4 26B from tensor
   parallel to pipeline? It stops serving on both Macs while it loads again …").
   A stopped pair's last model starts again in the mode it served in.
-- Each model shows its size, where it is (copied or downloaded first), and its
-  modes with the decode speed this pair served it at (`ClusterServedModes`: at
-  least 3 served requests on these Macs with this build), or "not measured on
-  these Macs yet". Models these Macs cannot serve are not listed.
+- Each model shows its size, where it is (copied or downloaded first), and the
+  modes it runs here ("tensor parallel or pipeline"): the one the mode question
+  recommends first, else the fastest measured on this pair with this build,
+  else the planner's choice. A model named on the command line
+  (`darkbloom cluster local <model>`) starts in that same mode. The list shows
+  no speed: neither the model list nor the mode question quotes tokens per
+  second. Models these Macs cannot serve are not listed.
 - Under the models, **Switch to local only** (or **Switch to serving through
   Darkbloom**) serves the current model the other way; serving through Darkbloom
   checks both Macs' logins first, before the local API stops. **Start over
@@ -375,11 +390,30 @@ the same words:
   one measured on these Macs so far"), because the planner's figure for a mode
   that hasn't served can be far off (two M5 Ultras, Gemma: a pipeline predicted
   at 152 tokens/s served 64, beside tensor parallel measured at 111).
+- "Measured" means served at least 3 times with this Darkbloom build
+  (`ClusterServedModes`). Right after an update nothing has, so until one of
+  the modes serves with the new build, the question ranks them by what these
+  Macs served with an earlier build, the same way (through Darkbloom or
+  locally, with or without Qwen's tensor assistant). It counts only records
+  that say how they were served, which builds write from 0.10.11 on. So the
+  update from 0.10.10 to 0.10.11 still recommends from the planner's
+  prediction, until a mode has served with 0.10.11; the earlier-build ranking
+  first applies at the update after it. There is no safe way to read 0.10.10's
+  records: they name neither the way they were served nor Qwen's assistant,
+  and equal tensor-parallel shares are used through Darkbloom and locally
+  alike, so nothing in a record tells the two apart. The prediction decides
+  only when no such record exists (pair-2, DevNet .118: right after the update
+  the question recommended Gemma's pipeline from predictions; replayed with its
+  records, the tensor-parallel records from .110, which say how they were
+  served, recommend tensor parallel, "the only one measured on these Macs so
+  far", and .92's records, written before builds said how they served, are
+  skipped).
 - Nothing fits, or there is no measured or predicted speed and no difference
   in requests at once: "No recommendation for <model> on these two Macs:
   <why>.", nothing is
   marked, and the cursor starts as before: the model serving now keeps its
-  mode, any other starts on the fastest measured mode (else the planner's).
+  mode, any other starts on the fastest measured mode with this build (else the
+  planner's).
 
 The modes:
 
@@ -945,14 +979,24 @@ allowance, clamped to the model and remaining context; an explicit
 at its stop token. Requests above the output ceiling receive HTTP 400 `output_too_long`;
 requests that exceed the admitted combined context are refused before generation.
 Qwen3.8 27B on a tensor-parallel pair accepts its native context, as a single
-Mac serving it does: prompts up to 262,143 tokens and up to 32,768 output tokens,
-within 262,144 combined. The pair is still loaded and planned for the
-32,768 + 32,768-token request, at any number of lanes. A longer request is
-admitted on its own when both Macs' memory holds it at that moment. If it does
-not fit, it alone receives HTTP 503 with the context the pair serves now, and
-other requests keep running. The 27B's pipeline modes keep the 65,536-token
-ceiling. See
+Mac serving it does: prompts up to 262,143 tokens and up to 65,536 output tokens
+(the catalog's output limit, which the coordinator also gives a request that
+omits `max_tokens`), within 262,144 combined. The pair is still loaded and
+planned for the 32,768 + 32,768-token request, at any number of lanes. A longer
+request is admitted on its own when both Macs' memory holds it at that moment.
+If it does not fit, it alone receives HTTP 503 with the context the pair serves
+now, and other requests keep running. The pipeline modes of a model with a
+native context (GLM-5.3-Flash, and the 27B where its policy allows them) keep
+the 32,768 + 32,768-token request. Their leader refuses a longer request itself,
+before either rank is asked. See
 [native context](../architecture/inference.md#qwen27-tensor-parallel-native-context).
+
+The leader's heartbeat tells the coordinator these limits for its pair's slot
+(`request_limits`): the prompt, output and context limits of the mode it serves,
+and the context both Macs' memory admits now. The coordinator sends the pair
+only requests within them; it sends any other request to a single Mac. From the
+first request it serves, the pair's slot also reports its measured prefill and
+decode speeds, as a single Mac's slot does. The warmup canary is not counted.
 
 After updating, let the normal cluster setup refresh both worker capabilities
 and the derived request deadline before serving. For adapters such as GLM that
@@ -1554,9 +1598,11 @@ isn't the way back.
 
 ## Pairing again
 
-Pair the Macs again after either Mac moves between the Darkbloom and DevNet apps,
-after the official installer reinstalls Darkbloom ("Secure Enclave ✓ (P-256 key
-generated)"), or when one Mac was reset or replaced. Each app keeps its own
+Pair the Macs again after the official installer reinstalls Darkbloom ("Secure
+Enclave ✓ (P-256 key generated)"), after either Mac moves between a local build
+and the signed release, or when one Mac was reset or replaced. The DevNet app
+keeps a pairing of its own: pairing it never changes the production app's, and
+it is paired once on its own. Each app keeps its own
 Secure Enclave key, and the pair's roster names the keys the Macs paired with,
 so a pairing made with another key cannot register: every start of its part ends
 with "This Mac's Secure Enclave key is not the one it paired with; pair again."
@@ -1636,8 +1682,9 @@ reinstall `darkbloom cluster` pairs again and uses them without copying or
 downloading. **Remove everything** deletes them too, after asking once more. A
 models folder you chose, and the cluster model store beside it, stay with either
 choice. Run it as yourself, not with `sudo`. On a Mac with both the production
-Darkbloom and Darkbloom Dev, uninstalling one keeps the pairing, cluster setup and cable
-port setup the other uses.
+Darkbloom and Darkbloom Dev, uninstalling one removes only its own pairing,
+cluster setup and cluster service, and keeps the cable port setup the other may
+use.
 
 When the other Mac does not answer, this Mac stops only its own part, as
 `darkbloom cluster stop --local-only`. The other Mac keeps its own pairing, so

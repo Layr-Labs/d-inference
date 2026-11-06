@@ -166,7 +166,12 @@ import Darwin
         modeQuestionRecommendsOneForTheseMacs()
         // R6-2 (M5 Ultra pair, DevNet branch.81): each mode's line was cut at 120 columns, and a wider window never redrew it.
         modeLinesFitTheWindowAsItIsNow()
-        modelListMarksTheCurrentModelAndMeasuredSpeeds()
+        // DevNet .118, pair-2 (2026-11-06): right after the update the question said "Pipeline, faster here" for Gemma,
+        // from predictions, though these Macs had served its tensor parallel faster with every earlier build.
+        modeAdviceFollowsTheseMacsMeasurementsAfterAnUpdate()
+        theListAndTheDefaultFollowTheRecommendation()
+        // DevNet .118, pair-2 (2026-11-06): the list still quoted each mode's tok/s.
+        modelListMarksTheCurrentModelAndQuotesNoSpeed()
         firstRunSaysWhatWillBeAsked()
         stoppedPairPreselectsTheLastModel()
         switchToDarkbloomChecksLoginsFirst()
@@ -1525,8 +1530,8 @@ import Darwin
             expect(D.splitMarker(mode) == marker, "split marker: \(mode) -> \(String(describing: D.splitMarker(mode)))")
         }
         expect(D.splitMarker("something_new_v2") == nil, "split marker: an unknown mode is not marked")
-        expect(D.choiceLine(size: "6.1 GB", mode: "pipeline_v1", shares: pipeline, speed: "about 90 tokens/s")
-            == "6.1 GB · pipeline · M3 Ultra 40 layers / M5 Ultra 24 layers · about 90 tokens/s", "choice line: one line, no ranks")
+        expect(D.choiceLine(size: "6.1 GB", mode: "pipeline_v1", shares: pipeline)
+            == "6.1 GB · pipeline · M3 Ultra 40 layers / M5 Ultra 24 layers", "choice line: one line, no ranks, no speed")
     }
 
     /// The approval line is on screen while checkLink still runs (the macOS prompt is up then), not after it returns.
@@ -1931,7 +1936,7 @@ import Darwin
                   D.Share(name: "Apple M5 Ultra, 256 GB", layers: 78, weightsBytes: 91, label: N.this)]
         expect(D.line(model: "Z.ai: GLM-5.3-Flash", mode: "tensor_parallel_v1", shares: tp)
             == "Serving Z.ai: GLM-5.3-Flash across both Macs: tensor parallel, the other Mac 50% / this Mac 50%", "shares: in the screen's words")
-        expect(D.choiceLine(size: "181.8 GB", mode: "tensor_parallel_v1", shares: tp, speed: nil) == "181.8 GB · tensor parallel · the other Mac 50% / this Mac 50%",
+        expect(D.choiceLine(size: "181.8 GB", mode: "tensor_parallel_v1", shares: tp) == "181.8 GB · tensor parallel · the other Mac 50% / this Mac 50%",
             "shares: the model's line in the screen's words")
         let pipeline = [D.Share(name: "Apple M3 Ultra, 256 GB", layers: 40, label: N.this), D.Share(name: "Apple M5 Ultra, 256 GB", layers: 24, label: N.other)]
         expect(D.sharesWords(mode: "pipeline_v1", shares: pipeline) == "this Mac 40 layers / the other Mac 24 layers", "shares: pipeline in the screen's words")
@@ -3687,9 +3692,9 @@ import Darwin
     /// The status block of the harness's serving pair.
     static let servingBlock = block("\u{2713}", "Serving Qwen3.8-27B-4bit-mtp (pipeline) at http://localhost:8000 (earning through Darkbloom)", [])
 
-    /// The list as Qwen serves through Darkbloom.
-    static let qwenList = "  1) Qwen 3.8 27B · 16.3 GB · tensor parallel 41 tok/s · serving now\n"
-        + "  2) Gemma 4 26B · 15.6 GB · pipeline 46 tok/s or tensor parallel (not measured on these Macs yet)\n"
+    /// The list as Qwen serves through Darkbloom: each model's modes, the measured one first, with no speed.
+    static let qwenList = "  1) Qwen 3.8 27B · 16.3 GB · tensor parallel · serving now\n"
+        + "  2) Gemma 4 26B · 15.6 GB · pipeline or tensor parallel\n"
         + "  3) Switch to local only (this Mac's API, no Darkbloom traffic)\n  4) Start over (unpair and set up again)\n"
 
     /// The leading Mac of a set-up pair: the opening and the status, then the pair's models with the serving one marked
@@ -3822,7 +3827,7 @@ import Darwin
             let run = TerminalRun(operations(Recorder(), resume: qwenServing, pairEvents: [], pairResult: .failed([]), choices: switchChoices,
                 statusLines: lines))
             expect(run.waitFor(prompt(4)), "\(name): the list")
-            expect(run.text.contains("  1) Qwen 3.8 27B · 16.3 GB · tensor parallel 41 tok/s · last used\n")
+            expect(run.text.contains("  1) Qwen 3.8 27B · 16.3 GB · tensor parallel · last used\n")
                    && !run.text.contains("serving now") && !run.text.contains("\u{2713}"), "\(name): last used, no ✓: \(run.text)")
             run.type("q")
             _ = run.finish()
@@ -3875,7 +3880,7 @@ import Darwin
         let kept = Recorder()
         let run = TerminalRun(operations(kept, resume: piped, pairEvents: [], pairResult: .failed([]), choices: switchChoices))
         expect(run.waitFor(prompt(4)), "mode change: the list"); run.type("\r")
-        expect(run.text.contains("  1) Qwen 3.8 27B · 16.3 GB · tensor parallel 41 tok/s · serving now in pipeline\n"),
+        expect(run.text.contains("  1) Qwen 3.8 27B · 16.3 GB · tensor parallel · serving now in pipeline\n"),
                "mode change: the list names the mode it serves in: \(run.text)")
         expect(run.waitFor("  Switch Qwen 3.8 27B from pipeline to tensor parallel? It stops serving on both Macs while it loads again "
             + "(a few minutes for a large model).\n  1) Yes, switch\n  2) No\n"), "mode change: asked as one: \(run.text)")
@@ -3890,7 +3895,7 @@ import Darwin
         let picked = Recorder()
         let other = TerminalRun(operations(picked, resume: gemma, pairEvents: [], pairResult: .failed([]), choices: switchChoices))
         expect(other.waitFor(prompt(4, enter: 2)), "mode picked: the list, Gemma preselected: \(other.text)")
-        expect(other.text.contains(" · pipeline 46 tok/s or tensor parallel (not measured on these Macs yet) · serving now\n"),
+        expect(other.text.contains(" · pipeline or tensor parallel · serving now\n"),
                "mode picked: serving now, its mode listed: \(other.text)")
         other.type("\r")
         expect(other.waitFor("  " + ClusterOnboardingDriver.modeQuestion(model: "Gemma 4 26B") + "\n"), "mode picked: how to split it")
@@ -3937,7 +3942,7 @@ import Darwin
         let marked = TerminalRun(operations(Recorder(), resume: qwenServing, pairEvents: [], pairResult: .failed([]), choices: switchChoices,
             statusLines: waiting))
         expect(marked.waitFor(prompt(4)), "not serving: the list")
-        expect(marked.text.contains("  1) Qwen 3.8 27B · 16.3 GB · tensor parallel 41 tok/s · last used\n") && !marked.text.contains("serving now"),
+        expect(marked.text.contains("  1) Qwen 3.8 27B · 16.3 GB · tensor parallel · last used\n") && !marked.text.contains("serving now"),
                "not serving: last used, never serving now: \(marked.text)")
         marked.type("q")
         _ = marked.finish()
@@ -4232,6 +4237,93 @@ import Darwin
         transcript("mode-no-recommendation", run.text, keys: run.keys)
     }
 
+    /// Pair-2 (an M3 Ultra and an M5 Max) on DevNet .118 (2026-11-06, capture A at 08:57Z, Qwen serving): Gemma had served
+    /// nothing with the new build, so the question compared the planner's predictions and said "Pipeline, faster here",
+    /// though these Macs had served its tensor parallel faster with every earlier build (pipeline 57.2 tok/s on .92;
+    /// tensor parallel 61.3 on .92 and 84 on .110). Until this build has served one of the modes, what these Macs served
+    /// with an earlier build ranks them; a prediction comes only after that. No mode, model or chip is preferred.
+    static func modeAdviceFollowsTheseMacsMeasurementsAfterAnUpdate() {
+        typealias A = ClusterOnboardingModeAdvice
+        let tp = "tensor_parallel_v1", pp = "pipeline_v1"
+        // Capture A: both planned, one request at a time, served publicly; the planner predicts the pipeline faster; an
+        // earlier build served tensor parallel through Darkbloom.
+        let afterUpdate = [
+            A.Option(mode: pp, planned: true, fitsNow: true, predictedTokensPerSecond: 56, concurrentRequests: 1, publicTraffic: true),
+            A.Option(mode: tp, planned: true, fitsNow: true, earlierMeasuredTokensPerSecond: 84, predictedTokensPerSecond: 52,
+                     concurrentRequests: 1, publicTraffic: true)]
+        let advice = A.advise(afterUpdate, throughDarkbloom: true, serving: true)
+        expect(advice == A(mode: tp, reason: "the only one measured on these Macs so far"),
+               "after an update: the mode these Macs measured with an earlier build, not the predicted one: \(String(describing: advice))")
+        expect(advice?.plainLine(model: "Gemma 4 26B")
+               == "Recommended for Gemma 4 26B on these two Macs: Tensor parallel, the only one measured on these Macs so far.",
+               "after an update: the line: \(String(describing: advice?.plainLine(model: "Gemma 4 26B")))")
+        // Both served with earlier builds: the faster as these Macs measured it, whichever mode that is.
+        func earlier(_ options: [A.Option], tensorParallel: Double?, pipeline: Double?) -> [A.Option] {
+            options.map { option in
+                var option = option
+                option.earlierMeasuredTokensPerSecond = option.mode == tp ? tensorParallel : pipeline
+                return option
+            }
+        }
+        let both = A.advise(earlier(afterUpdate, tensorParallel: 84, pipeline: 57.2), throughDarkbloom: true, serving: true)
+        expect(both == A(mode: tp, reason: "faster here"), "both measured with earlier builds: the faster: \(String(describing: both))")
+        let pipelineFaster = A.advise(earlier(afterUpdate, tensorParallel: 57.2, pipeline: 84), throughDarkbloom: true, serving: true)
+        expect(pipelineFaster == A(mode: pp, reason: "faster here"), "measured the other way round: the pipeline: \(String(describing: pipelineFaster))")
+        let asFast = A.advise(earlier(afterUpdate, tensorParallel: 84, pipeline: 82), throughDarkbloom: true, serving: true)
+        expect(asFast == A(mode: nil, reason: "they are about as fast on these Macs (measured) and serve as many requests at once"),
+               "measured within 5 %: none, as for this build's measurements: \(String(describing: asFast))")
+        // Capture B (09:38Z): tensor parallel has served with this build. This build's measurements decide; an earlier
+        // build's figure, even a faster one, waits until that mode serves with this build too.
+        var servedNow = earlier(afterUpdate, tensorParallel: 84, pipeline: 120)
+        servedNow[1].measuredTokensPerSecond = 96.4
+        expect(A.advise(servedNow, throughDarkbloom: true, serving: true) == A(mode: tp, reason: "the only one measured on these Macs so far"),
+               "this build measured: its measurement decides")
+        // Nothing measured on these Macs with any build: the planner's prediction, as before.
+        let fresh = earlier(afterUpdate, tensorParallel: nil, pipeline: nil)
+        expect(A.advise(fresh, throughDarkbloom: true, serving: true) == A(mode: pp, reason: "faster here"), "nothing measured: the prediction")
+        // Through Darkbloom a mode that serves more requests at once still comes first, as with this build's measurements.
+        var lanes = afterUpdate
+        lanes[0].concurrentRequests = 8
+        expect(A.advise(lanes, throughDarkbloom: true, serving: true)
+               == A(mode: pp, reason: "serves up to 8 requests at once; the others take fewer, and Darkbloom turns the rest away"),
+               "through Darkbloom: more at once first")
+        for line in [advice, both, pipelineFaster, asFast].map({ $0?.plainLine(model: "Gemma 4 26B") ?? "" }) {
+            expect(!line.isEmpty && !line.contains("tok") && !line.contains("84") && !line.contains("57"), "after an update: no figure: \(line)")
+        }
+    }
+
+    /// The recommendation can rest on what an earlier build served while this build has measured nothing, and the
+    /// planner's first mode may be the other one (pair-2's Gemma right after an update: the pipeline first, tensor
+    /// parallel recommended). The list's order and a model named on the command line follow the recommendation too, so
+    /// the list never reads "pipeline or tensor parallel" while the question recommends tensor parallel. (A model started
+    /// again keeps the mode it served in, as before: `chooseAndServe`'s `keepMode`.)
+    static func theListAndTheDefaultFollowTheRecommendation() {
+        let tp = "tensor_parallel_v1", pp = "pipeline_v1"
+        var gemma = ClusterOnboardingModelChoice(title: "Gemma 4 26B", lines: ["15.6 GB · pipeline · this Mac 6 layers / the other Mac 24 layers"],
+            blocker: nil, modelID: "gemma-4-26b-qat-4bit", validated: true, split: "pipeline",
+            modes: [.init(mode: pp, split: "this Mac 6 layers / the other Mac 24 layers", measuredTokensPerSecond: nil, concurrentRequests: 1),
+                    .init(mode: tp, split: "this Mac 50% / the other Mac 50%", measuredTokensPerSecond: nil, concurrentRequests: 1)])
+        expect(gemma.listLine(sameTitleElsewhere: false) == "Gemma 4 26B · 15.6 GB · pipeline or tensor parallel",
+               "no recommendation: the planner's first: \(gemma.listLine(sameTitleElsewhere: false))")
+        let unrecommended = gemma
+        gemma.modeAdvice = ClusterOnboardingModeAdvice(mode: tp, reason: "the only one measured on these Macs so far")
+        expect(gemma.listLine(sameTitleElsewhere: false) == "Gemma 4 26B · 15.6 GB · tensor parallel or pipeline",
+               "the recommended mode first: \(gemma.listLine(sameTitleElsewhere: false))")
+        expect(ClusterOnboardingMode.defaultIndex(gemma.modes!, recommended: "pipeline_mtp_v1") == 0,
+               "a recommendation the list doesn't hold changes nothing")
+        // Named on the command line (`darkbloom cluster local <model>`), so no question: the recommended mode loads.
+        func named(_ choice: ClusterOnboardingModelChoice) -> [String] {
+            let recorder = Recorder()
+            let resume = ClusterOnboardingResume(role: .leader, peerName: "Apple M3 Ultra, 256 GB")
+            let run = TerminalRun(operations(recorder, resume: resume, pairEvents: [], pairResult: .failed([]), choices: [choice]),
+                request: ClusterOnboardingRequest(scope: .localOnly(bind: ClusterServingScope.localOnlyDefaultBind), model: "Gemma 4 26B"))
+            _ = run.finish()
+            return recorder.all.filter { $0.hasPrefix("useMode") }
+        }
+        expect(named(gemma) == ["useMode 0 \(tp)"], "named: the recommended mode: \(named(gemma))")
+        expect(named(unrecommended) == ["useMode 0 \(pp)"], "named, no recommendation: the planner's first, as before")
+    }
+
     /// R6-2 (M5 Ultra pair, DevNet branch.81): "… the other Mac 44 layers) · ser…" at 120 columns, and a window widened
     /// to 220 kept the cut lines. Each mode's line fits the window as it is at every draw, the list redraws when the
     /// width changes, and a line too wide loses the split, then what each Mac does, then the long words: never the
@@ -4325,17 +4417,33 @@ import Darwin
     }
 
     /// The list (team note: "Model selection should hide model that we don't allow them to be run there"): the model
-    /// serving now marked, each mode with its speed measured on these Macs or "not measured on these Macs yet"; an
-    /// approved model that cannot run is named with its reason, above the list.
-    static func modelListMarksTheCurrentModelAndMeasuredSpeeds() {
+    /// serving now marked, each model's modes by name, the measured one first; an approved model that cannot run is
+    /// named with its reason, above the list. No speed, measured or not (owner, 2026-11-05: the model and mode choice
+    /// never quote tok/s; DevNet .118, pair-2: "Gemma 4 26B · tensor parallel 96 tok/s or pipeline (not measured …)").
+    static func modelListMarksTheCurrentModelAndQuotesNoSpeed() {
         let current = switchChoices[0].listLine(sameTitleElsewhere: false)
-        expect(current == "Qwen 3.8 27B · 16.3 GB · tensor parallel 41 tok/s", "list: a model's line: \(current)")
+        expect(current == "Qwen 3.8 27B · 16.3 GB · tensor parallel", "list: a model's line: \(current)")
         let gemma = switchChoices[1].listLine(sameTitleElsewhere: false)
-        expect(gemma == "Gemma 4 26B · 15.6 GB · pipeline 46 tok/s or tensor parallel (not measured on these Macs yet)", "list: both modes: \(gemma)")
+        expect(gemma == "Gemma 4 26B · 15.6 GB · pipeline or tensor parallel", "list: both modes, the measured one first: \(gemma)")
         var unmeasured = switchChoices[1]
         unmeasured.modes = unmeasured.modes!.map { var mode = $0; mode.measuredTokensPerSecond = nil; return mode }
-        expect(unmeasured.listLine(sameTitleElsewhere: false) == "Gemma 4 26B · 15.6 GB · tensor parallel or pipeline · not measured on these Macs yet",
-               "list: none measured: \(unmeasured.listLine(sameTitleElsewhere: false))")
+        expect(unmeasured.listLine(sameTitleElsewhere: false) == "Gemma 4 26B · 15.6 GB · tensor parallel or pipeline",
+               "list: none measured, the planner's first: \(unmeasured.listLine(sameTitleElsewhere: false))")
+        // Pair-2 on DevNet .118 (09:38Z, Qwen serving): Gemma's tensor parallel had served with this build, the pipeline not.
+        var pair2 = switchChoices[1]
+        pair2.modes = [.init(mode: "pipeline_v1", split: ClusterOnboardingMode.decidedWhenItLoads, measuredTokensPerSecond: nil, concurrentRequests: 1),
+                       .init(mode: "tensor_parallel_v1", split: ClusterOnboardingMode.decidedWhenItLoads, measuredTokensPerSecond: 96.4,
+                             concurrentRequests: 1)]
+        let pair2Line = pair2.listLine(sameTitleElsewhere: false)
+        expect(pair2Line == "Gemma 4 26B · 15.6 GB · tensor parallel or pipeline", "list: pair-2's Gemma: \(pair2Line)")
+        let mimo = ClusterOnboardingModelChoice(title: "MiMo V2.6 Flash", lines: ["172.9 GB · pipeline"], blocker: nil, modelID: "mimo-v2.6-flash-mopd",
+            validated: true, modes: [.init(mode: "pipeline_mtp_v1", split: nil, measuredTokensPerSecond: 58.7),
+                                     .init(mode: "tensor_parallel_v1", split: nil, measuredTokensPerSecond: 52.2)])
+        expect(mimo.listLine(sameTitleElsewhere: false) == "MiMo V2.6 Flash · 172.9 GB · speculative pipeline or tensor parallel",
+               "list: MiMo's speculative pipeline: \(mimo.listLine(sameTitleElsewhere: false))")
+        for line in [current, gemma, unmeasured.listLine(sameTitleElsewhere: false), pair2Line, mimo.listLine(sameTitleElsewhere: false)] {
+            expect(!line.contains("tok") && !line.contains("measured"), "list: no speed in a model's line: \(line)")
+        }
         // An approved model that cannot run here is never hidden silently (2026-11-05: Qwen 3.8 27B left a pair's list
         // without a word when its plan failed): it is named with its reason in one line above the list, and cannot be
         // picked; a model not approved for clusters stays unnamed.
@@ -4483,8 +4591,8 @@ import Darwin
         let run = TerminalRun(operations(recorder, resume: gemmaStopped, pairEvents: [], pairResult: .failed([]), choices: switchChoices,
             statusLines: stoppedStatus))
         expect(run.waitFor(prompt(4, enter: 2)), "stopped: the list, the last model preselected")
-        expect(run.text.contains("  Stopped; last model Gemma 4 26B.\n\nModel\n  1) Qwen 3.8 27B · 16.3 GB · tensor parallel 41 tok/s\n"
-            + "  2) Gemma 4 26B · 15.6 GB · pipeline 46 tok/s or tensor parallel (not measured on these Macs yet) · last used\n"
+        expect(run.text.contains("  Stopped; last model Gemma 4 26B.\n\nModel\n  1) Qwen 3.8 27B · 16.3 GB · tensor parallel\n"
+            + "  2) Gemma 4 26B · 15.6 GB · pipeline or tensor parallel · last used\n"
             + "  3) Switch to local only (this Mac's API, no Darkbloom traffic)\n  4) Start over (unpair and set up again)\n"), "stopped: \(run.text)")
         run.type("\r")
         expect(run.waitFor("  " + D.modeQuestion(model: "Gemma 4 26B") + "\n  1) " + D.modeLine(switchChoices[1].modes![0]) + "\n  2) "

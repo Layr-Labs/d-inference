@@ -107,6 +107,15 @@ public final class ClusterService: @unchecked Sendable {
     /// On the leader: why the other Mac's part can't start now, as its status last said (`ClusterService.heldBack(of:)`);
     /// this Mac's part waits for it instead of starting and ending again. Nil when it says none or didn't answer.
     private var peerHeldBack: String?
+    /// Why this Mac's part waits while the other Darkbloom app holds this Mac's GPU (`holdsBackForOtherApp`); nil when
+    /// it doesn't.
+    private var otherAppHolds: String?
+    /// Production serving on this Mac, in words (`ClusterMachineDeviceLock.productionServingHere`): this build's check,
+    /// nil in production's own build; tests stand in.
+    var productionServes: (@Sendable () -> String?)?
+    /// Fences the GPU work of this Mac's part (`partPID`) at once when it steps aside for production, and says how many
+    /// worker owners it asked (`fenceOwners`); tests stand in.
+    var fenceGPUWork: @Sendable (_ partPID: Int32) -> Int = { ClusterService.fenceOwners(of: $0) }
     /// A step aside of single-Mac serving runs (`stepAsideIfUnchosen`), and the process it was for.
     private var steppingAside = false
     private var steppedAsidePID: Int32?
@@ -210,10 +219,10 @@ public final class ClusterService: @unchecked Sendable {
         self.environment = environment
         self.listening = listening
         self.powerAssertionReason = powerAssertionReason
-        pairingStore = .default(home: paths.homeDirectory)
+        pairingStore = .default(home: paths.homeDirectory, environment: paths.environment)
         // This home's provider instance lock (`ProcessLifecycle.defaultPIDFile`'s, unless DARKBLOOM_PID_FILE moves it).
         providerInstanceLock = (ProcessInfo.processInfo.environment["DARKBLOOM_PID_FILE"].map { URL(fileURLWithPath: $0) }
-            ?? BuildEnvironment.current.installDirectory(home: paths.homeDirectory).appendingPathComponent("provider.pid"))
+            ?? paths.installDirectory.appendingPathComponent("provider.pid"))
             .appendingPathExtension("lock")
         var wizard = settings.wizard
         wizard.derivedPlacement = true
@@ -223,6 +232,7 @@ public final class ClusterService: @unchecked Sendable {
         store = ClusterSetupStore(paths: .init(paths: paths))
         context = LiveContext(paths: paths, store: store, settings: wizard,
             clean: ClusterConsoleFreeText(homeDirectory: paths.homeDirectory.path))
+        productionServes = paths.machineDeviceLock.otherHolder
     }
 
     // MARK: - Files
@@ -293,7 +303,7 @@ public final class ClusterService: @unchecked Sendable {
             if running() { return true }
             var status: Int32 = 0
             if waitpid(pid, &status, WNOHANG) == pid {
-                throw ClusterOnboardingFailure("this Mac's cluster service stopped at start; its log is ~/.darkbloom/cluster-setup/service.log")
+                throw ClusterOnboardingFailure("this Mac's cluster service stopped at start; its log is \(ClusterUserPaths.serviceLogShown)")
             }
             usleep(50_000)
         }
@@ -922,7 +932,7 @@ public final class ClusterService: @unchecked Sendable {
         var owned: RecordedPart?
         repeat {
             let status = published(in: directory)
-            if status == nil, FileManager.default.fileExists(atPath: directory.appendingPathComponent("service-status.json").path) {
+            if status == nil, FileManager.default.fileExists(atPath: directory.appendingPathComponent(ClusterServiceStatus.fileName).path) {
                 return false
             }
             if let child = status?.child, child.running, child.pid == nil || child.startedAt == nil { return false }
@@ -1064,7 +1074,7 @@ public final class ClusterService: @unchecked Sendable {
             value.localOnly = record?.leadership.map { $0.scope.isLocalOnly }
             value.loggedIn = AuthTokenStore.load() != nil
             value.startsAtLogin = ClusterServiceAgent.startsAtLogin(environment: ProcessInfo.processInfo.environment,
-                                                                    installedAgents: ClusterServiceAgent.installedLabels)
+                                                                    installedAgents: { ClusterServiceAgent.installedLabels() })
             if child?.isRunning == true, childIsMember {
                 value.child.pair = Self.pairReport(in: serviceFiles.rankLog, from: childLogOffset).map(ClusterOnboardingPairReport.text)
                 let state = DaemonStateFile.read()
@@ -1072,7 +1082,7 @@ public final class ClusterService: @unchecked Sendable {
                 value.child.appAttestRetryAt = Self.memberAppAttestRetryAt(pid: child?.processIdentifier, state: state)
             }
             value.soloServing = soloNow.map { .init(pid: $0.pid) }
-            value.heldBack = soloNow.map(Self.soloServingError)
+            value.heldBack = soloNow.map(Self.soloServingError) ?? otherAppHolds
             value.pairRunning = value.serving && pairVerdict.running
             value.pairNotRunning = value.serving ? ClusterPairWatch.line(pairVerdict, otherMac: otherMacNameLocked(),
                                                                          cli: BuildEnvironment.current.cliName) : nil
@@ -1475,7 +1485,7 @@ public final class ClusterService: @unchecked Sendable {
     /// Kept beside the lock each tick, so `darkbloom cluster` on this Mac reads it without the link.
     private func publish(afterSupervision: Bool = false) {
         let value = status()
-        let file = store.paths.directory.appendingPathComponent("service-status.json")
+        let file = store.paths.directory.appendingPathComponent(ClusterServiceStatus.fileName)
         guard let data = try? JSONEncoder().encode(value) else { return }
         try? data.write(to: file, options: .atomic)
         if afterSupervision {
@@ -1520,7 +1530,7 @@ public final class ClusterService: @unchecked Sendable {
     }
 
     private static func published(in directory: URL) -> ClusterServiceStatus? {
-        let file = directory.appendingPathComponent("service-status.json")
+        let file = directory.appendingPathComponent(ClusterServiceStatus.fileName)
         guard let data = try? Data(contentsOf: file) else { return nil }
         return try? JSONDecoder().decode(ClusterServiceStatus.self, from: data)
     }
@@ -1596,6 +1606,55 @@ public final class ClusterService: @unchecked Sendable {
             blockerCleared(say: say)
         }
         return false
+    }
+
+    /// Whether the other Darkbloom app on this Mac holds its GPU now (`ClusterMachineDeviceLock.heldByAnotherBuild`), so
+    /// this Mac's part waits instead of starting, being refused and counting as failing: said once, and named in the
+    /// status. It starts on the first tick after the hold ends, with its restart backoff and any approval set aside as
+    /// failing cleared (`blockerCleared`).
+    private func holdsBackForOtherApp(say: @escaping @Sendable (String) -> Void) -> Bool {
+        let now = ClusterMachineDeviceLock.heldByAnotherBuild(context.paths, otherHolder: productionServes)
+        let before = lock.withLock { () -> String? in defer { otherAppHolds = now }; return otherAppHolds }
+        switch ClusterOtherAppHold.step(before: before, now: now) {
+        case .none: return false
+        case .waits(let reason, let first):
+            if first { say(reason + " This Mac's part waits for it.") }
+            return true
+        case .resumes:
+            say("the other Darkbloom app no longer holds this Mac's GPU: starting this Mac's part")
+            blockerCleared(say: say)
+            return false
+        }
+    }
+
+    /// SIGUSR1 to the worker owners the part `partPID` started (`fenceTargets`): their force-cancel hook
+    /// (`ClusterOwnerForceCancel`) fences each one's worker, which cancels its requests, releases its model and exits by
+    /// itself, the protocol's own drain. Its owner journals and reports that end, so nothing of the part's own state is
+    /// left behind. Returns how many were asked.
+    static func fenceOwners(of partPID: Int32) -> Int {
+        let targets = fenceTargets(processes: ClusterProcessTable.running(), partPID: partPID,
+                                   image: ClusterProcessTable.executablePath(of:))
+        return targets.filter { kill($0, SIGUSR1) == 0 }.count
+    }
+
+    /// The worker owners among `partPID`'s descendants that run the part's own executable (`image`), chosen as
+    /// `cluster cancel-all` chooses the owners it signals (`ClusterOrphanReaper.cancelTargets`): only such an owner
+    /// carries the force-cancel hook for certain, and any other process would die of SIGUSR1. No other build's process is
+    /// ever one of them, and there are none once the part's executable can't be read (it is gone).
+    static func fenceTargets(processes: [ClusterProcessTable.Entry], partPID: Int32, image: (Int32) -> String?) -> [Int32] {
+        var lineage: Set<Int32> = [partPID]
+        var grew = true
+        while grew {
+            grew = false
+            for entry in processes where !lineage.contains(entry.processIdentifier) {
+                guard let parent = entry.parentProcessIdentifier, lineage.contains(parent) else { continue }
+                lineage.insert(entry.processIdentifier)
+                grew = true
+            }
+        }
+        let tree = processes.filter { lineage.contains($0.processIdentifier) }
+        return ClusterOrphanReaper.cancelTargets(processes: tree, ownImage: image(partPID),
+                                                 protectedProcessIdentifiers: [partPID], image: image).signal
     }
 
     /// Single-Mac serving that nobody chose since the pair was last started here (`ClusterSoloChoice.stepsAside`; for
@@ -1774,13 +1833,18 @@ public final class ClusterService: @unchecked Sendable {
                 backoff = ran >= 120 ? 3 : min(backoff * 2, 30)
                 nextStart = Date().addingTimeInterval(ran >= 120 ? 3 : backoff)
             }
+            // A part refused because the other Darkbloom app holds this Mac's GPU (`ClusterMachineDeviceLock`) waits for
+            // it from the next tick (`holdsBackForOtherApp`), which starts it again as soon as the hold ends.
+            let lastError = setup?.hasPrefix("cluster:") == true
+                ? Self.lastError(in: serviceFiles.rankLog, from: lock.withLock { childLogOffset }, preferStopReason: false) : nil
+            if ClusterMachineDeviceLock.isRefusal(lastError) { lock.withLock { otherAppHolds = otherAppHolds ?? lastError } }
             // A coordinator-paired part that keeps ending right after its start makes the leader serve locally
             // (`ClusterApprovalCheck.step`); an end the coordinator decided (out of reach, or the member role not
             // accepted in time) is not counted.
             if lock.withLock({ childIsMember }) {
-                let lastError = Self.lastError(in: serviceFiles.rankLog, from: lock.withLock { childLogOffset }, preferStopReason: false)
-                // An end while either Mac's part is held back (single-Mac serving) is the blocker's, not the approval's.
-                let heldBack = lock.withLock { peerHeldBack != nil || soloServing != nil }
+                // An end while either Mac's part is held back (single-Mac serving, or the other app on a Mac holding its
+                // GPU) is the blocker's, not the approval's.
+                let heldBack = lock.withLock { peerHeldBack != nil || soloServing != nil || otherAppHolds != nil }
                 lock.withLock { memberQuickEnds = ClusterApprovalCheck.memberQuickEnds(after: memberQuickEnds, ranSeconds: ran, lastError: lastError,
                                                                                         heldBack: heldBack) }
             }
@@ -1803,6 +1867,18 @@ public final class ClusterService: @unchecked Sendable {
             if let setup, setup.hasPrefix("cluster:"), leadsSession, let model = record.leadership?.modelName {
                 noteMemoryRefusal(key: setup, since: Date().addingTimeInterval(-ran - 5), model: model, say: say)
             }
+            return
+        }
+        // Outside production's build, this Mac's part steps aside once production serves here: production before 0.10.11
+        // takes no GPU lock, so its pair started after this one (both start at login, say) would load beside it. The part's
+        // GPU work is fenced at once, not drained (`fenceGPUWork`); the part then stops, never counted as failing, and
+        // waits (`holdsBackForOtherApp`) until production stops serving here.
+        if let part = running, setup?.hasPrefix("cluster:") == true, let reason = productionServes?() {
+            lock.withLock { otherAppHolds = reason }
+            say(reason + " This Mac's part stops and waits for it.")
+            let fenced = fenceGPUWork(part.processIdentifier)
+            if fenced > 0 { say("asked this part's \(fenced == 1 ? "worker owner" : "\(fenced) worker owners") to release the GPU now") }
+            _ = stopChild(say: say, seconds: 300)
             return
         }
         // A part offered to the coordinator whose approval ended, or whose leader now serves locally only, stops
@@ -1852,6 +1928,10 @@ public final class ClusterService: @unchecked Sendable {
         // in a loop on both Macs). Nothing starts until it stops; the status names it meanwhile.
         if running == nil, key != nil, holdsBackForSoloServing(key: key, say: say) { return }
         if key == nil { lock.withLock { soloServing = nil } }
+        // The other Darkbloom app's pair (or model check) holds this Mac's GPU: this Mac's part waits for it, not counted as
+        // failing, and starts as soon as it ends (re-review of #1846: the refusals took production off Darkbloom for an hour).
+        if running == nil, let key, key.hasPrefix("cluster:"), holdsBackForOtherApp(say: say) { return }
+        if key == nil || key?.hasPrefix("cluster:") == false { lock.withLock { otherAppHolds = nil } }
         // The other Mac said its part can't start for a reason that doesn't clear by itself: this Mac's part waits for that
         // to change instead of starting, waiting for its missing follower and ending every 38 s (0.10.9 DevNet f1).
         if running == nil, let key {

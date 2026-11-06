@@ -327,9 +327,17 @@ is historical; verify current endpoints with the platform owner.
 
 A dev build installs and runs beside a production provider on the same Mac.
 The two installs do not share a path, a port, a launchd label or a keychain
-item, and each command prints its own name in its help text. The table is a
-generated copy of `provider-swift/identity/provider-identity.json`, the only
-declaration of these values:
+item, and each command prints its own name in its help text. That includes the
+two-Mac cluster: each install keeps its own pairing, cluster setup, service
+lock and observability files in its own folders (`ClusterUserPaths`), its
+cluster service's login job carries `clusterServiceLabelPrefix`, its per-user
+cluster locks are named after `cliName`, and the ports its pair uses on the
+cable add `clusterPortOffset` (`ClusterCablePorts`). Shared on purpose: the
+models, the cable port setup, the sweep of cluster processes whose parent is
+gone, and the range the pair's local API port is chosen from (8000 to 8020). The
+table is a generated copy of
+`provider-swift/identity/provider-identity.json`, the only declaration of these
+values:
 
 <!-- BEGIN provider identity: generated from provider-swift/identity/provider-identity.json by scripts/generate-provider-identity.py; do not edit -->
 
@@ -347,9 +355,11 @@ declaration of these values:
 | `legacyConfigDirectoryNames` | `.config/eigeninference` | none | none |
 | `launchAgentLabel` | `io.darkbloom.provider` | `io.darkbloom.provider.dev` | `io.darkbloom.provider.staging` |
 | `watchdogAgentLabel` | `io.darkbloom.watchdog` | `io.darkbloom.watchdog.dev` | `io.darkbloom.watchdog.staging` |
+| `clusterServiceLabelPrefix` | `io.darkbloom.cluster-service.` | `io.darkbloom.cluster-service.dev.` | `io.darkbloom.cluster-service.staging.` |
 | `logSubsystem` | `com.darkbloom.provider` | `com.darkbloom.provider.dev` | `com.darkbloom.provider.staging` |
 | `serviceLogSubsystem` | `dev.darkbloom.provider` | `dev.darkbloom.provider.dev` | `dev.darkbloom.provider.staging` |
 | `defaultLocalPort` | `8000` | `8001` | `8002` |
+| `clusterPortOffset` | `0` | `10` | `20` |
 | `keychainServicePrefix` | `io.darkbloom` | `io.darkbloom.dev` | `io.darkbloom.staging` |
 | `encryptedCacheNamespace` | `darkbloom` | `darkbloom-dev` | `darkbloom-staging` |
 | `modelRevisionRef` | `main` | `darkbloom-dev` | `darkbloom-staging` |

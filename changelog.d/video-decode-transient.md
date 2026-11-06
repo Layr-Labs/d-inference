@@ -1,0 +1,5 @@
+### A video whose decoder fails once is decoded again, not refused
+
+- When the video reader of GLM 5.3, MiMo V2.6, Qwen4 or Nemotron Super fails on a video that passed its metadata checks, the provider decodes the video once more with a new reader over the same bytes. A valid video that met one reader failure is now served with the same frames. Before, GLM refused it as `invalid_media` (400), and the coordinator did not send it to another provider.
+- When the reader fails again with a decoder, hardware or interruption fault, the provider refuses the request as a retryable 503, and the coordinator can send it to another provider. Any other second failure, such as a truncated video, is still the deterministic `invalid_media` (400). A Qwen4 video whose reader fails twice without such a fault is now `invalid_media` (400) too; before, every Qwen4 reader failure was a retryable 503.
+- Each failed reader pass logs a WARN `engine_health` event `video_reader_failed` with the reader status and the domain and code of its errors. It carries no media or prompt content.

@@ -6,7 +6,7 @@ import Foundation
 /// cache, under the product's cache settings (`ClusterPrefixCacheSettings`:
 /// the saved cache directory or this user's caches, the product's prefix
 /// cache gate, disk budget rule, daily write cap and TTL): records go under
-/// `<cache base>/darkbloom/cluster-prefix-v1` (beside the product's own
+/// `<cache base>/<namespace>/cluster-prefix-v1` (`darkbloom` in production; beside the product's own
 /// `kv3` tier, which it never touches) and are encrypted and named with this
 /// Mac's owner key, which outlives every owner process: an owner serves one
 /// session (`cluster worker-owner --stdio`), and the records exist to warm the
@@ -17,7 +17,7 @@ import Foundation
 ///    `cluster worker-owner` command installed that source and it loads; it
 ///    is never written.
 /// 2. Otherwise (a build without the keychain entitlement) a random key made
-///    once in `~/.darkbloom/cluster-device/prefix-ssd-v1.key` (owner-only,
+///    once in this install's `cluster-device/prefix-ssd-v1.key` (owner-only,
 ///    published once and never replaced), which this owner reads.
 /// 3. If neither is possible, a random key of this owner process (records
 ///    then last one session; the next rank deletes what it cannot read).

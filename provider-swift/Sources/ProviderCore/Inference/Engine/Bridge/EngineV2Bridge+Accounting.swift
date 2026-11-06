@@ -16,6 +16,7 @@ extension EngineV2Bridge {
             state.firstTokenAt = now
             state.firstEmissionTokens = max(1, emissionTokens)
             active[id] = state
+            if promptReportedAtFinish { state.prefillReceipt?.freezeAtFirstToken() }
             // Profiler `first_delta_us`: the same instant the pump stored as
             // its last-delta, so a one-token response keeps first ≤ last.
             // Clamped to `terminal_built`: on the cancel path the handler

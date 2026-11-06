@@ -36,6 +36,8 @@ import CryptoKit
         concurrentClonesNeverMix()
         commitNeverReplacesAFolder()
         abandonedStagingReclaimedForSpace()
+        // Review of #1846 (2026-11-06): failing first on 081f108031.
+        otherAppsCopyIsNeverReclaimed()
         // Finish 2026-10-13 night: failing first on c35897c36.
         renamedFilesAreNotTheArtifact()
         stagedCheckRefusesRenamedCopy()
@@ -568,6 +570,40 @@ import CryptoKit
             expect(FileManager.default.fileExists(atPath: store.appendingPathComponent(ClusterModelStore.stagingName(model.artifact)).path),
                 "a copy's own staging stays for its resume")
         } catch { expect(false, "reclaim: \(error)") }
+    }
+
+    /// Both apps on a Mac (production and DevNet) copy into the one cluster model store, each into staging of its own:
+    /// a copy short of disk reclaims only its own app's abandoned staging, never the other app's copy in progress.
+    static func otherAppsCopyIsNeverReclaimed() {
+        let model = fixture(), other = fixture(modelID: "Example/Other-Model")
+        let store = temporary("store-two-apps")
+        let devnet = ClusterModelStore.stagingPrefix(install: "dev"), production = ClusterModelStore.stagingPrefix
+        expect(production == ".darkbloom-incoming-" && devnet == ".darkbloom-incoming-dev-", "production's staging name is unchanged")
+        do {
+            // DevNet's copy of another model, under way.
+            let devnetCopy = try ClusterModelReceiver(artifact: other.artifact, store: store, folder: other.artifact.folderName,
+                expectedAggregate: nil, stagingPrefix: devnet)
+            _ = try send(try ClusterModelSender(artifact: other.artifact, directory: source(other)), to: devnetCopy,
+                from: try devnetCopy.begin().offsets, stopAfterBytes: 1 << 20)
+            let underWay = store.appendingPathComponent(ClusterModelStore.stagingName(other.artifact, prefix: devnet))
+            expect(FileManager.default.fileExists(atPath: underWay.path), "fixture: DevNet's copy under way")
+            // Production's copy, short of disk while DevNet's staging holds the space: refused, DevNet's copy untouched.
+            let need = model.artifact.totalBytes + ClusterModelProvisioning.reserveBytes
+            let productionCopy = try ClusterModelReceiver(artifact: model.artifact, store: store, folder: model.artifact.folderName,
+                expectedAggregate: nil,
+                diskSpace: { _ in ClusterDiskSpace(freeBytes: FileManager.default.fileExists(atPath: underWay.path) ? need - 1 : need) })
+            refuses("free; the copy needs") { _ = try productionCopy.begin() }
+            expect(FileManager.default.fileExists(atPath: underWay.path), "production never reclaims DevNet's copy under way")
+            // The other way round: production's staging stays, and DevNet reclaims only its own abandoned staging.
+            let productionStaging = store.appendingPathComponent(ClusterModelStore.stagingName(model.artifact))
+            expect(FileManager.default.fileExists(atPath: productionStaging.path), "fixture: production's staging")
+            let third = fixture(modelID: "Example/Third-Model")
+            let devnetAgain = try ClusterModelReceiver(artifact: third.artifact, store: store, folder: third.artifact.folderName,
+                expectedAggregate: nil, diskSpace: { _ in ClusterDiskSpace(freeBytes: 1) }, stagingPrefix: devnet)
+            refuses("free; the copy needs") { _ = try devnetAgain.begin() }
+            expect(FileManager.default.fileExists(atPath: productionStaging.path), "DevNet never reclaims production's staging")
+            expect(!FileManager.default.fileExists(atPath: underWay.path), "DevNet reclaims its own abandoned staging")
+        } catch { expect(false, "two apps' copies: \(error)") }
     }
 
     // MARK: - Finish 2026-10-13 night

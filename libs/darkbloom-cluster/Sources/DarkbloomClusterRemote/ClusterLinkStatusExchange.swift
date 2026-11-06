@@ -280,8 +280,9 @@ public struct ClusterLinkStatusBoardFile: Codable, Sendable, Equatable {
         schema = Self.schemaName; self.updatedAt = updatedAt; self.entries = entries
     }
 
-    public static func defaultFile(homeDirectory: URL) -> URL {
-        homeDirectory.appendingPathComponent(".darkbloom/cluster/follower-status.json")
+    /// In the install's data folder (`installDirectory`): production's `~/.darkbloom`.
+    public static func defaultFile(installDirectory: URL) -> URL {
+        installDirectory.appendingPathComponent("cluster/follower-status.json")
     }
 
     public func write(to file: URL) throws {

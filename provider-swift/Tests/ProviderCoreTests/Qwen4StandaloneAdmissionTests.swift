@@ -71,6 +71,33 @@ struct Qwen4StandaloneAdmissionTests {
         try await requireLoadHookAndCleanup(server, modelID: modelID)
     }
 
+    /// #1857 review: outside production's build, a cold load beside production serving on this Mac is refused first,
+    /// before any weight hash, eviction or load reservation (the loader's own refusal came after them).
+    @Test("A cold load beside production serving is refused before hashing or loading")
+    func productionServingRefusesFirst() async throws {
+        let words = "The production Darkbloom on this Mac holds this Mac's GPU: it is serving (process 4242), and two models "
+            + "don't fit one Mac's memory: no model of this build loads here until production stops serving."
+        let modelID = uniqueID()
+        let hashed = ClusterApprovalRecorder<String>()
+        let server = StandaloneServer(config: .init(mtpMode: .off), models: [info(modelID, "qwen4_exp_text")],
+            kvBudgetForTesting: ScriptedProviderMemory.budget(modelIDs: [modelID]))
+        await server.setV2TestHooksForTesting(.init(
+            beforeWeightLoad: { _ in throw ReachedWeightLoad() },
+            computeWeightHash: { _, id in hashed.append(id); return nil },
+            productionServes: { words },
+            makeEngine: { _, _ in throw UnexpectedEngineConstruction() }))
+        do {
+            try await server.ensureModelLoaded(modelID)
+            Issue.record("a cold load went ahead while production served here")
+        } catch let InferenceError.modelLoadFailed(message) {
+            #expect(message == words)
+        } catch {
+            Issue.record("not production's refusal: \(error)")
+        }
+        #expect(hashed.values.isEmpty)
+        #expect(await server.debugOutstandingKVReservationBytes() == 0)
+    }
+
     @Test("A local snapshot outside the advertised set cannot enter loading")
     func unknownModelIsRejectedDespiteLocalSnapshot() async throws {
         let modelID = uniqueID()

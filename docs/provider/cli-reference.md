@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-05
+> Last updated: 2026-11-06
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -187,7 +187,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `doctor` | Diagnostics (see [troubleshooting](./troubleshooting.md#doctor-checks)) | ✓ | `DoctorCommand.swift` (`Doctor`) |
 | `models` | `list`, `catalog`, `download`, `remove` | ✓ | `ModelsCommand.swift` (`Models`) |
 | `local` | Print the direct-mode endpoint and API key | | `LocalCommand.swift` (`Local`) |
-| `cluster` | Set up two Macs to serve one model together ([guided setup](./two-mac-cluster.md)); `cluster local` serves without a coordinator. Run again on a paired Mac it works like `darkbloom start` (which opens the same screen there): both Macs, the cable and the status, then the pair's models with the current one preselected (Enter keeps it or starts it again), each mode with the speed this pair served it at (or "not measured on these Macs yet"), a line to switch between local only and through Darkbloom, and **Start over**; another model asks once before the serving one stops, and every start ends with the outcome, the pair's card and `darkbloom stop` / `restart` / `status` ([after setup](./two-mac-cluster.md#the-steps-once)). It offers **Start over** after one question (also when the other Mac does not answer over the cable: the screen then names that Mac and what to run there), and **Pair again** without it only when the saved pairing was made with another Secure Enclave key; both take the steps of `cluster pair --forget` (`ClusterUnpairing`), then pair ([pairing again](./two-mac-cluster.md#pairing-again)) | ✓ | `ClusterCommand.swift` (`Cluster`) |
+| `cluster` | Set up two Macs to serve one model together ([guided setup](./two-mac-cluster.md)); `cluster local` serves without a coordinator. Run again on a paired Mac it works like `darkbloom start` (which opens the same screen there): both Macs, the cable and the status, then the pair's models with the current one preselected (Enter keeps it or starts it again), each with the modes it runs there, the recommended one first and no speed, a line to switch between local only and through Darkbloom, and **Start over**; another model asks once before the serving one stops, and every start ends with the outcome, the pair's card and `darkbloom stop` / `restart` / `status` ([after setup](./two-mac-cluster.md#the-steps-once)). It offers **Start over** after one question (also when the other Mac does not answer over the cable: the screen then names that Mac and what to run there), and **Pair again** without it only when the saved pairing was made with another Secure Enclave key; both take the steps of `cluster pair --forget` (`ClusterUnpairing`), then pair ([pairing again](./two-mac-cluster.md#pairing-again)) | ✓ | `ClusterCommand.swift` (`Cluster`) |
 | `waitlist` | List the waitlists the coordinator offers and where the account stands (bare), or put the account on one and show where it stands (`waitlist cluster`, `waitlist sandbox`); waitlists are per account | ✓ | `Waitlist/WaitlistCommand.swift` (`Waitlist`) |
 | `login` | Link the machine to an account (RFC 8628 device code) | ✓ | `LoginCommand.swift` (`Login`) |
 | `logout` | Stop the provider, revoke its current saved token, then remove the local credential | ✓ | `LogoutCommand.swift` (`Logout`) |
@@ -865,7 +865,7 @@ resident assistant, GLM-5.3-Flash in tensor parallel), otherwise
 | Command | On a Mac in a cluster |
 |---|---|
 | `darkbloom cluster stop` | The same as `darkbloom stop` on a paired Mac: stops the pair on both Macs, which stay stopped after a restart while both cluster services stay up, idle (`Cluster.Stop.mode`). `--service` also stops this Mac's cluster service and keeps it from starting at login, the earlier `cluster stop`: on the Mac that follows a started cluster it asks the leading Mac to stop both Macs first (`This Mac follows the other Mac (…), which leads: \`darkbloom cluster stop\` stops the cluster on both Macs.`, `Cluster.Stop.pairStop`). `--local-only` stops only this Mac's service, without asking the other Mac |
-| `darkbloom cluster link --remove` | Says first that it undoes the cable port setup that works now and that the cluster stops serving on both Macs until `darkbloom cluster` (or `link --fix`) sets it up again, then asks `Remove it? [y/N]`. `--yes` (`-y`) removes without asking; without a terminal, or with `--json`, it needs `--yes` (exit 1, nothing changed). `--dry-run` never asks (`Cluster.Link.removalGate`). Without `--device` it undoes every port Darkbloom set up under one macOS approval, naming them (`Thunderbolt ports en2, en1 and en6`); `--device` undoes that one (`ClusterLinkRepair.removeIsolation`). Each port's service goes before the port goes back in its bridge (a port's only service through `scutil --prefs`, which `networksetup` refuses to remove), and the approval stops at the first command that fails: the message then says the commands after it did not run and which ports are still to undo (`--json`: `remaining`), exit 4 |
+| `darkbloom cluster link --remove` | Says first that it undoes the cable port setup that works now and that the cluster stops serving on both Macs until `darkbloom cluster` (or `link --fix`) sets it up again, then asks `Remove it? [y/N]`. `--yes` (`-y`) removes without asking; without a terminal, or with `--json`, it needs `--yes` (exit 1, nothing changed). When the other app on this Mac (the production Darkbloom or Darkbloom Dev) still holds the port in its link record (`ClusterLinkRepair.otherInstallsUsingCable`, read only), it also says `<app> on this Mac also uses this cable port for its own pair: …` and asks at a terminal even with `--yes`; without a terminal, or with `--json`, it refuses (exit 1, nothing changed): `--yes` doesn't answer for the other app. `--dry-run` never asks (`Cluster.Link.removalGate`). Without `--device` it undoes every port Darkbloom set up under one macOS approval, naming them (`Thunderbolt ports en2, en1 and en6`); `--device` undoes that one (`ClusterLinkRepair.removeIsolation`). Each port's service goes before the port goes back in its bridge (a port's only service through `scutil --prefs`, which `networksetup` refuses to remove), and the approval stops at the first command that fails: the message then says the commands after it did not run and which ports are still to undo (`--json`: `remaining`), exit 4 |
 
 `darkbloom cluster --help` ends with these commands and what each is for
 (`Cluster.commandList`).
@@ -1881,11 +1881,11 @@ A failed step does not stop the safe steps after it.
 | # | Step | Through | Skipped when |
 |---|---|---|---|
 | 1 | Stop serving on this Mac | the [stop](#darkbloom-stop) drain (`ServiceDrain`) | the provider service was not running. When a cluster service serves here instead, the step says whose (step 2 handles it) |
-| 2 | Stop this Mac's cluster part and remove its service | **With no other install:** `darkbloom cluster stop --service`; when the other Mac does not answer, `cluster stop --local-only`. It stops a running cluster service whose command is `darkbloom cluster service`, launchd's or one a session started, wherever it runs from, even outside this install's app (`ClusterService.stopDetached`). A service under another command name is not stopped: this step fails with that stop's own message, and nothing is deleted. **Beside another install that shares the pair (below):** `Remove this install's cluster service` instead. Only this install's own agent (`ClusterServiceAgentPlan.label` of its app) goes, through `ProviderUninstall.removeOwnClusterService`; the other install's agent is not touched. A cluster service running from this install's app is stopped. If it serves the pair, the pair is asked to stop first, on both Macs, as `darkbloom stop` does (a member asks the leader over the control channel; `Uninstall.stopBothMacs`), so the other Mac does not keep restarting its part. Before it waits, the step says `Asking the pair to stop; accepted requests finish first (up to about 6 min).` (`ProviderUninstall.pairStopWaitLine`). If the other Mac does not answer, only this Mac's part stops, and the summary ends with that Mac's name and `darkbloom cluster stop` to run there. Then booting out its agent ends launchd's, and one a session started gets SIGTERM (only once its arguments show it is a cluster service), as `cluster stop --local-only` ends one. One from the other install's app is left running, and its pair is not asked to stop. Anything else holding the lock is refused, and nothing is deleted: a service from neither app, a pid that is no cluster service, or a lock or pid file that can't be read. Whose a service is follows its executable with links resolved (`ProviderUninstall.owner`) | no cluster service on this Mac (beside another install: this install has none). The dry run says what this step does to a cluster service running here (`ClusterService.running`) |
+| 2 | Stop this Mac's cluster part and remove its service | `darkbloom cluster stop --service`; when the other Mac does not answer, `cluster stop --local-only`. It stops a running cluster service whose command is `darkbloom cluster service`, launchd's or one a session started, wherever it runs from, even outside this install's app (`ClusterService.stopDetached`), and removes this install's own login agents only (`ClusterServiceAgent.installedLabels`, `ClusterServiceAgentPlan.isOwnAgent`). Each install has its own pair, service lock and agent, so another install's pair and agent are never touched. A service under another command name is not stopped: this step fails with that stop's own message, and nothing is deleted. Anything else holding the lock is refused, and nothing is deleted: a service from neither app, a pid that is no cluster service, or a lock or pid file that can't be read. Whose a service is follows its executable with links resolved (`ProviderUninstall.owner`) | no cluster service on this Mac. The dry run says what this step does to a cluster service running here (`ClusterService.running`) |
 | 3–5 | Remove the provider, watchdog and desktop API launch agents | what `stop --uninstall` runs (`LaunchAgent.uninstall`, `WatchdogAgent.uninstall`, `DesktopService.uninstall`) | not installed, or serving did not stop in step 1 |
 | 6 | Revoke this Mac's account token, best effort | what `darkbloom logout` does (`Logout.revokeSavedToken`) | no saved token, the coordinator did not confirm it, or serving did not stop. It never fails the uninstall; the token file goes with `~/.darkbloom` |
-| 7 | Forget the pairing with the other Mac | `darkbloom cluster pair --forget <pin>`, once per pairing | this Mac is not paired, or another install on this Mac uses the pairing (below) |
-| 8 | Undo the cable port setup | `darkbloom cluster link --remove` (macOS asks for an administrator's password) | nothing to undo, or another install on this Mac uses it (below) |
+| 7 | Forget the pairing with the other Mac | `darkbloom cluster pair --forget <pin>`, once per pairing of this install | this Mac is not paired |
+| 8 | Undo the cable port setup | `darkbloom cluster link --remove` (macOS asks for an administrator's password) | nothing to undo, or another install is on this Mac, which may use the same cable (below) |
 | 9 | Delete Darkbloom's folders, one step each (table below) | | already gone, refused (`not removed: <why>`), or a service did not stop in steps 1–5. Right before the first deletion, after steps 3–8, the run reads the cluster service lock again (its lock, its pid file, the process's executable and arguments): while a cluster service of this install, or one it can't tell apart, holds it, nothing is deleted, the summary says `Stop it first with darkbloom cluster stop --service, then run darkbloom uninstall again`, and the command exits 1. When step 8 did not complete, `~/.darkbloom` and the command link stay, so the command can run again |
 
 **What is deleted**, from `ProviderUninstallPaths` and `ProviderUninstall.inventory`
@@ -1898,7 +1898,7 @@ in `provider-swift/Sources/ProviderCore/Service/Uninstall/ProviderUninstallPlan.
 | Each model Darkbloom downloaded | `~/.cache/huggingface/hub/models--<org>--<name>`, only folders holding Darkbloom's receipt (`.darkbloom-manifest.json`) or its unfinished download (`.local-staging-*`), and `.artifact-writer-locks` | deleted | kept, with their `refs/` and receipts, so a reinstall's scan finds them |
 | Cluster model store | `~/.cache/huggingface/darkbloom-cluster-models` | deleted | kept |
 | The command link | `/usr/local/bin/darkbloom`, only while it links to `~/.darkbloom/bin/darkbloom` | deleted | deleted |
-| Darkbloom folder | `~/.darkbloom`: the app, `bin/`, logs, pairing, account token, cluster setup and service state. Last, since the command runs from the app in it. When a models folder you chose is inside it, everything else in it is deleted, the app last | deleted | deleted |
+| Darkbloom folder | `~/.darkbloom`: the app, `bin/`, logs, this install's pairing, account token, cluster setup and service state. Last, since the command runs from the app in it. When a models folder you chose is inside it, everything else in it is deleted, the app last | deleted | deleted |
 
 What no choice deletes (the summary lists them):
 
@@ -1924,26 +1924,29 @@ What no choice deletes (the summary lists them):
   link, and other tools' models;
 - the models and the cluster model store while another Darkbloom install
   (`~/.darkbloom-dev`, `~/.darkbloom-staging`) shares them;
-- this Mac's pairing, cluster setup and cable port setup while another install
-  is on this Mac: the production Darkbloom and Darkbloom Dev (`darkbloom-dev`) use
-  the same ones. The other install counts when its app or `bin/` command is in
-  its folder (`ProviderUninstallPaths.otherEnvironment`). Steps 7 and 8 are
-  skipped (`kept: <the other install> on this Mac also uses it`), the files
-  every install shares stay (`~/.darkbloom/cluster*` and
-  `~/.config/darkbloom/clusters`; the rest of those folders goes), and step 2
-  removes only this install's own cluster service. One exception in the shared
-  folder goes: Darkbloom Dev's own incident log, with its lock and corrupt copy
-  (`ClusterIncidentLog.defaultFile(homeDirectory:install:)`, listed as `This
-  install's incident log`), which no other install reads. Production's log there
-  is the shared `incidents.json`, which an older build of the other install still
-  writes, so it stays with the folder. The screen,
-  the dry run, `--json` and the summary list it, here for `darkbloom-dev
-  uninstall`, and the summary's first line names the install it removed
-  (`Darkbloom Dev is removed from this Mac.`):
+- this Mac's cable port setup while another install is on this Mac: the
+  production Darkbloom and Darkbloom Dev (`darkbloom-dev`) may use the same
+  cable. The other install counts when its app or `bin/` command is in its
+  folder (`ProviderUninstallPaths.otherEnvironment`). Step 8 is skipped
+  (`kept: <the other install> on this Mac may use the same cable`). Each
+  install keeps its own pairing, cluster setup and cluster service in its own
+  folders (`ClusterUserPaths`), so steps 2 and 7 and the deletions take only
+  this install's, and the other install's pair keeps serving. The screen, the
+  dry run, `--json` and the summary say it, here for `darkbloom-dev uninstall`,
+  and the summary's first line names the install it removed (`Darkbloom Dev is
+  removed from this Mac.`):
 
   ```text
-  Kept: This Mac's pairing, cluster setup and cable port setup (40 KB, ~/.darkbloom/cluster*): the production Darkbloom on this Mac also uses them. Run `darkbloom uninstall` there to remove them
+  Kept: this Mac's cable port setup: the production Darkbloom on this Mac may use the same cable. Run `darkbloom uninstall` there to undo it
   ```
+
+  The other install's uninstall undoes all of it once that install's
+  `cluster` has used the cable on this Mac: it then records a port this
+  install set up with what the setup changed, read from this install's link
+  record (`ClusterLinkRepair.Environment.otherInstallsIsolationEntries`). An
+  install that never used the cable here removes Darkbloom's network service
+  from the port; the port's other network services, and its place in Thunderbolt
+  Bridge, are then turned back on in System Settings → Network.
 
 - Keychain items (Secure Enclave and App Attest keys); a new install replaces them;
 - the fan helper (`sudo darkbloom fan uninstall`), Darkbloom Sandbox
@@ -2901,6 +2904,7 @@ qualification or performance. Sources:
 | `2`, `3`, `4`, other | `darkbloom sandbox setup` exits with a failing add-on installer's own status ([what each means](#installer-progress-events)); `sandbox logs` and `sandbox uninstall` with `tail`'s or the add-on's |
 | `3`, `4`, `5`, `6`, `7` | `darkbloom cluster status`: not serving yet, stopped, the other Mac isn't answering, not in a cluster, this Mac's pairing record couldn't be read ([`darkbloom cluster status`](#darkbloom-cluster-status)) |
 | `0`, `1`, `3`, `4`, `5`, `64` | `darkbloom start` without a terminal and `darkbloom restart` on a paired Mac: serving; not started (no model chosen, the cluster unreachable, a part still releasing); not serving yet; stopped; the other Mac isn't answering; single-Mac options without `--solo` ([`darkbloom start`](#darkbloom-start)) |
+| `75`, `76` | `darkbloom start --cluster-member`: the JACCL guard tore a wedged collective down (`75`); the other Darkbloom app holds this Mac's GPU, or (DevNet) production serves here, so the member's start is refused with that reason on its `Error:` line (`76`, reserved for that alone). The `--always-on` supervisor restarts after `75` without counting a startup failure, and waits for the hold to end after `76` without counting anything ([always-on members](./cluster-always-on.md#what-the-supervisor-does)) |
 
 ## Paths and identifiers
 

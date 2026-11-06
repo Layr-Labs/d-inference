@@ -160,7 +160,7 @@ struct ProviderLifecycleTests {
         #expect(ContinuousClock.now - started >= .milliseconds(200), "the stop gave Apple the bound")
         // Apple still has the attestation: the stop ended at the bound, not at
         // Apple's answer or at its 25 s callback deadline.
-        #expect(await !client.waitForOutstandingAttestation(atMostSeconds: 0), "past the bound the stop proceeds")
+        #expect(await !client.waitForOutstandingAttestation(atMostSeconds: 0), "the stop returned before Apple answered")
         // This process outlives the stop here, so Apple's later answer is still kept.
         apple.answerHeldAttestations()
         #expect(await waitFor { keys.load(scope: lifecycleKeyScope)?.pendingProof != nil })
@@ -432,7 +432,7 @@ private final class SlowAttestingApple: AppAttestCallbacks, @unchecked Sendable 
     private let answerAfter: Double?
     private var started = 0
     private var answered = 0
-    private var held: [@Sendable () -> Void] = []
+    private var heldAnswers: [@Sendable () -> Void] = []
     init(answerAfter: Double?) { self.answerAfter = answerAfter }
     func generateKey(_ complete: @escaping @Sendable (Result<String, Error>) -> Void) {
         complete(.success(Data(repeating: 1, count: 32).base64EncodedString()))
@@ -442,17 +442,18 @@ private final class SlowAttestingApple: AppAttestCallbacks, @unchecked Sendable 
             lock.withLock { answered += 1 }
             complete(.success(Data("attestation-\(id)".utf8)))
         }
-        guard let answerAfter else {
-            lock.withLock { started += 1; held.append(answer) }
-            return
+        lock.withLock {
+            started += 1
+            if answerAfter == nil { heldAnswers.append(answer) }
         }
-        lock.withLock { started += 1 }
-        DispatchQueue.global().asyncAfter(deadline: .now() + answerAfter, execute: answer)
+        if let answerAfter {
+            DispatchQueue.global().asyncAfter(deadline: .now() + answerAfter, execute: answer)
+        }
     }
     func answerHeldAttestations() {
         let answers = lock.withLock { () -> [@Sendable () -> Void] in
-            defer { held = [] }
-            return held
+            defer { heldAnswers = [] }
+            return heldAnswers
         }
         answers.forEach { $0() }
     }

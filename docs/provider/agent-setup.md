@@ -155,13 +155,18 @@ page with these names ([dev build identity](../operations/provider-release.md#de
   `darkbloom-dev uninstall` leave the production app's pair as it is, and the
   reverse. **Shared:** the models and the cable port setup (one cable, one
   network setup), and one GPU: only one app's pair runs on a Mac at a time.
-  While one app's pair (or its model check) uses the GPU, the other app's start
-  ends with ``<app> on this Mac is running its pair (or a model check) on this
-  Mac's GPU …`` and the command that stops it there. `cluster link --remove`
-  in one app names the other app when that app still uses the port and asks
-  first; `--yes` doesn't answer for it. A DevNet app updated from a build that
-  shared the pairing shows the Mac as not paired: update both Macs, then pair
-  the DevNet app again (step 5).
+  While one app's pair (or its model check) uses the GPU, the other app's pair
+  waits, and its status says ``<app> on this Mac holds this Mac's GPU …``. It
+  starts by itself once the other app's pair stops, and a wait never counts as
+  a failing pair. A DevNet build also waits while the production app serves on
+  that Mac, whatever production's version, and its running pair stops when
+  production starts serving there. **STOP** when a DevNet build says
+  that the production Darkbloom holds the GPU or is serving: production serves
+  on that Mac, so never stop it yourself; tell the human and wait. `cluster
+  link --remove` in one app names the other app when that app still uses the
+  port and asks first; `--yes` doesn't answer for it. A DevNet app updated
+  from a build that shared the pairing shows the Mac as not paired: update both
+  Macs, then pair the DevNet app again (step 5).
 - **The DevNet installer** adds a `PATH` line to `~/.zshrc` and, where
   `/usr/local/bin` is writable, links `/usr/local/bin/darkbloom-dev`.
   `darkbloom-dev login` prints DevNet's own URL. A test request needs an API

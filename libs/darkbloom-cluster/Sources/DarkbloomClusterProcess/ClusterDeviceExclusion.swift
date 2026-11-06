@@ -12,9 +12,15 @@ public enum ClusterDeviceExclusionError: Error, Equatable, CustomStringConvertib
 /// the file holds nothing, and it lies in no build's own folder.
 public struct ClusterMachineDeviceLock: Sendable, Equatable {
     public let file: URL
-    /// The refusal while another build holds it: which build, and how to stop its pair.
+    /// The refusal while another build holds it: which build, and what happens next.
     public let heldElsewhere: String
-    public init(file: URL, heldElsewhere: String) { self.file = file; self.heldElsewhere = heldElsewhere }
+    /// Another build that uses the GPU without taking this lock (an older production), checked once the lock is held;
+    /// its words refuse the scope as `heldElsewhere` does. Nil when there is none to check.
+    public let otherHolder: (@Sendable () -> String?)?
+    public init(file: URL, heldElsewhere: String, otherHolder: (@Sendable () -> String?)? = nil) {
+        self.file = file; self.heldElsewhere = heldElsewhere; self.otherHolder = otherHolder
+    }
+    public static func == (lhs: Self, rhs: Self) -> Bool { lhs.file == rhs.file && lhs.heldElsewhere == rhs.heldElsewhere }
 }
 
 /// One process's exclusive local device scope. Solo callers retain this object
@@ -39,6 +45,8 @@ public final class ClusterDeviceExclusion: @unchecked Sendable {
     private var resolved = false
     /// The machine lock's descriptor while this scope holds it; -1 without one.
     private var machineDescriptor: Int32 = -1
+    /// How many more times a held machine lock is tried, 5 ms apart, before the scope is refused (about 100 ms).
+    static let machineLockTries = 20
 
     /// `machineLock`: also taken, after this scope, for as long as this object lives (the product passes its Mac's);
     /// held by another process, this scope is let go and the lock's `heldElsewhere` is thrown.
@@ -100,10 +108,19 @@ public final class ClusterDeviceExclusion: @unchecked Sendable {
               value.st_mode & 0o022 == 0 else {
             Darwin.close(fd); throw ClusterDeviceExclusionError.invalid("The machine device lock is unsafe")
         }
-        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+        // Another build's waiting service probes the lock shared for a moment (a few microseconds): a probe is waited
+        // out, a hold that lasts is refused.
+        var tries = 0
+        while flock(fd, LOCK_EX | LOCK_NB) != 0 {
             let held = errno == EWOULDBLOCK
+            if held, tries < machineLockTries { tries += 1; usleep(5_000); continue }
             Darwin.close(fd)
             throw ClusterDeviceExclusionError.invalid(held ? machineLock.heldElsewhere : "The machine device lock is unavailable")
+        }
+        // Held, so no build that takes the lock starts now; one that takes none is asked for once more.
+        if let reason = machineLock.otherHolder?() {
+            Darwin.close(fd)
+            throw ClusterDeviceExclusionError.invalid(reason)
         }
         return fd
     }

@@ -255,11 +255,16 @@ Darkbloom Dev, the DevNet app, keeps its own pair: its own pairing, cluster
 setup, cluster service and ports on the cable, so its pair and the production
 app's never answer each other. Only one app's pair runs on a Mac at a time: both
 apps take one device lock
-(`~/Library/Application Support/Darkbloom/cluster-native-device.lock`), so the
-second app's pair doesn't start, and says which app holds the Mac and the
-command that stops it (`darkbloom cluster stop` or `darkbloom-dev cluster
-stop`). Its pair's API takes 8000 too, or the lowest free port up to 8020 when
-the production app's pair holds it; its card and hints name `darkbloom-dev`.
+(`~/Library/Application Support/io.darkbloom.cluster/native-device.lock`), so
+the second app's pair waits, and its status names the app that holds the Mac.
+It starts by itself as soon as that app's pair stops, and a wait never counts
+as a failing pair, so the production app never falls back to its local API for
+it. The production app wins: the DevNet app also waits while the production
+app serves on that Mac (even a production version from before the lock) or its
+pair is set to serve there, also while it restarts for an update, and its
+running pair stops within seconds when production starts serving there. Its
+pair's API takes 8000 too, or the lowest free port up to 8020 when the
+production app's pair holds it; its card and hints name `darkbloom-dev`.
 
 Served on the local API only (asked for, or a coordinator without cluster
 support), the block says `✓ Serving <model> on this Mac's local API only`. It

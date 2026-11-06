@@ -562,10 +562,29 @@ and every port on the cable adds the build's `BuildEnvironment.clusterPortOffset
 stop or answer each other. Their device leases and journals are separate, but
 every build's device scope (a pair's owner session, a member's preparation, a
 GLM calibration) also takes one lock all builds share
-(`ClusterMachineDeviceLock`: `~/Library/Application Support/Darkbloom/cluster-native-device.lock`,
-flock only, in no build's folder; `ClusterUserPaths.machineDeviceLock`), after
-its own lease. So one build's native session never runs on the GPU beside
-another's, and the refusal names the other app and its stop command. Each
+(`ClusterMachineDeviceLock`: `~/Library/Application Support/io.darkbloom.cluster/native-device.lock`,
+flock only, in a folder no app or build owns; `ClusterUserPaths.machineDeviceLock`),
+after its own lease. So one build's native session never runs on the GPU beside
+another's, and the refusal names the other app. A build other than production's
+also refuses while production serves here, so production wins by default
+(`ClusterMachineDeviceLock.productionServingHere`, read only, never
+production's locks): a serving process of production's own app runs
+(`productionServing`: `darkbloom start`, `cluster link-follower`, its worker
+owner or its worker, run from production's folder, from the process table),
+which covers production before 0.10.11 (it takes no lock), or production's
+cluster service published within two minutes that its pair serves here
+(`productionPairServes`: its `service-status.json`, `serving` and `pairRunning`),
+which covers the seconds production's part restarts (an update, a crash). That
+build's cluster service also stops its running part when production starts
+serving (both start at login, say). The cluster service never starts its part
+into a hold: `ClusterMachineDeviceLock.heldByAnotherBuild`
+probes the lock shared and lets it go at once (a start at that moment retries
+for up to 100 ms, `ClusterDeviceExclusion.machineLockTries`), and the part
+waits (`ClusterOtherAppHold`), named in the status's `heldBack`. A part that
+ended on the refusal never counts toward the local-only fallback
+(`ClusterApprovalCheck.memberQuickEnds`), and the part starts on the first tick
+after the hold ends, with its backoff and any approval set aside as failing
+cleared (`blockerCleared`). Each
 build's model copies stage under its own name in the store both share
 (`ClusterModelStore.stagingPrefix`: production's `.darkbloom-incoming-<digest>`,
 DevNet's `.darkbloom-incoming-dev-<digest>`), and a copy short of disk reclaims

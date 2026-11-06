@@ -285,27 +285,170 @@ struct ClusterInstallIsolationTests {
             try FileManager.default.createDirectory(at: paths.deviceDirectory, withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])
         }
-        let lock = home.appendingPathComponent("Library/Application Support/Darkbloom/cluster-native-device.lock")
+        let lock = home.appendingPathComponent("Library/Application Support/io.darkbloom.cluster/native-device.lock")
         #expect(production.machineDeviceLock.file == lock && devnet.machineDeviceLock.file == lock)
+        #expect(production.machineDeviceLock.otherHolder == nil, "production needs no guard: it takes the lock itself")
         var productionScope: ClusterDeviceExclusion? = try ClusterDeviceExclusion(directoryURL: production.deviceDirectory,
                                                                                    machineLock: production.machineDeviceLock)
         do {
             _ = try ClusterDeviceExclusion(directoryURL: devnet.deviceDirectory, machineLock: devnet.machineDeviceLock)
             Issue.record("DevNet's pair started on the GPU beside production's")
         } catch {
-            #expect("\(error)" == "The production Darkbloom on this Mac is running its pair (or a model check) on this Mac's GPU, "
-                + "and two pairs don't fit one Mac's memory. Run `darkbloom cluster stop` to stop it, then start this pair again.")
+            #expect("\(error)" == "The production Darkbloom on this Mac holds this Mac's GPU for its pair (or a model check), and two "
+                + "pairs don't fit one Mac's memory: this pair starts by itself once production's stops. Production serves here: ask "
+                + "its owner before stopping it.")
+            #expect(!"\(error)".contains("cluster stop"), "DevNet is never told to stop production")
         }
+        // DevNet's part, held back, sees the hold (its own lease is free) and resumes as soon as it ends.
+        #expect(ClusterMachineDeviceLock.heldByAnotherBuild(devnet) == devnet.machineDeviceLock.heldElsewhere)
+        #expect(ClusterMachineDeviceLock.heldByAnotherBuild(production) == nil, "its own scope is not another build's")
         productionScope = nil
+        #expect(ClusterMachineDeviceLock.heldByAnotherBuild(devnet) == nil)
         let devnetScope = try ClusterDeviceExclusion(directoryURL: devnet.deviceDirectory, machineLock: devnet.machineDeviceLock)
         do {
             _ = try ClusterDeviceExclusion(directoryURL: production.deviceDirectory, machineLock: production.machineDeviceLock)
             Issue.record("production's pair started on the GPU beside DevNet's")
-        } catch { #expect("\(error)".hasPrefix("Darkbloom Dev on this Mac is running its pair") && "\(error)".contains("`darkbloom-dev cluster stop`")) }
+        } catch {
+            #expect("\(error)".hasPrefix("Darkbloom Dev on this Mac holds this Mac's GPU") && "\(error)".contains("`darkbloom-dev cluster stop`"))
+        }
         withExtendedLifetime((productionScope, devnetScope)) {}
         // The lock is in neither build's folder, and holds nothing.
         for paths in [production, devnet] { #expect(!lock.path.hasPrefix(paths.installDirectory.path + "/")) }
         #expect(try Data(contentsOf: lock).isEmpty)
+    }
+
+    /// Re-review of #1846: each refusal for the GPU lock counted as a failing part, so after three production served on
+    /// its leader's local API for an hour, even once DevNet had stopped. A refusal is the other app's hold, not a failure.
+    @Test("refusals for the GPU lock never count toward serving locally")
+    func lockRefusalsNeverCountTowardTheFallback() {
+        for refusal in [ClusterMachineDeviceLock.heldElsewhere(by: [.dev]), ClusterMachineDeviceLock.heldElsewhere(by: [.prod]),
+                        ClusterMachineDeviceLock.heldElsewhere(by: [])] {
+            var count = 0
+            for _ in 0..<3 { count = ClusterApprovalCheck.memberQuickEnds(after: count, ranSeconds: 1, lastError: "Error: " + refusal) }
+            #expect(count == 0, "\(refusal)")
+        }
+        #expect(ClusterApprovalCheck.memberQuickEnds(after: 0, ranSeconds: 1, lastError: "Error: the native child crashed") == 1,
+                "a part that fails on its own still counts")
+    }
+
+    /// The service's part, held back while the other app holds the GPU, waits (said once) and starts on the first check
+    /// after the hold ends (`ClusterService.holdsBackForOtherApp`; the real lock flips in `devicesAreLockedAcrossBuilds`).
+    @Test("a part held back by the other app waits without failing, and starts as soon as the hold ends")
+    func heldBackPartResumesWhenTheHoldEnds() {
+        let hold = ClusterMachineDeviceLock.heldElsewhere(by: [.dev])
+        #expect(ClusterOtherAppHold.step(before: nil, now: hold) == .waits(hold, say: true))
+        #expect(ClusterOtherAppHold.step(before: hold, now: hold) == .waits(hold, say: false))
+        #expect(ClusterOtherAppHold.step(before: "Error: " + hold, now: hold) == .waits(hold, say: true))
+        #expect(ClusterOtherAppHold.step(before: hold, now: nil) == .resumes)
+        #expect(ClusterOtherAppHold.step(before: nil, now: nil) == .none)
+    }
+
+    /// Re-review of #1846: production 0.10.9 and 0.10.10 take no GPU lock. A DevNet build beside them sees production's
+    /// serving processes (read only) and refuses the GPU the same way; production itself needs no such guard.
+    @Test("a DevNet build refuses the GPU while production serves here without the lock")
+    func devnetRefusesBesideAnOlderProductionsWorker() throws {
+        let home = try NativePairMemberFixture.privateRoot()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let production = try ClusterUserPaths(homeDirectory: home, environment: .prod)
+        let devnet = try ClusterUserPaths(homeDirectory: home, environment: .dev)
+        for paths in [production, devnet] {
+            try FileManager.default.createDirectory(at: paths.deviceDirectory, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+        }
+        // An older production's pair worker, run from production's app (the CPU fixture helper, which only waits).
+        let helpers = production.installDirectory.appendingPathComponent("Darkbloom.app/Contents/Helpers", isDirectory: true)
+        try FileManager.default.createDirectory(at: helpers, withIntermediateDirectories: true)
+        let worker = helpers.appendingPathComponent("darkbloom-cluster-worker")
+        try NativePairMemberFixture.helper().write(to: worker)
+        #expect(chmod(worker.path, 0o755) == 0)
+        let gate = home.appendingPathComponent("worker-gate", isDirectory: true)
+        try FileManager.default.createDirectory(at: gate, withIntermediateDirectories: true)
+        let running = Process()
+        running.executableURL = worker
+        running.arguments = ["--service-part-fixture", gate.path, "member"]
+        try running.run()
+        defer { try? Data().write(to: gate.appendingPathComponent("release-member")); running.terminate(); running.waitUntilExit() }
+        let ready = gate.appendingPathComponent("member-\(running.processIdentifier).ready")
+        for _ in 0..<200 where !FileManager.default.fileExists(atPath: ready.path) { usleep(10_000) }
+        try #require(FileManager.default.fileExists(atPath: ready.path))
+        do {
+            let scope = try ClusterDeviceExclusion(directoryURL: devnet.deviceDirectory, machineLock: devnet.machineDeviceLock)
+            withExtendedLifetime(scope) {}
+            Issue.record("DevNet took the GPU while production's pair worker ran here")
+        } catch {
+            #expect("\(error)".hasPrefix("The production Darkbloom on this Mac"), "\(error)")
+            #expect("\(error)".contains("process \(running.processIdentifier)"), "\(error)")
+        }
+        // Production takes its own scope beside its own worker: it wins by default, and the lock covers it from 0.10.11.
+        let productionScope = try ClusterDeviceExclusion(directoryURL: production.deviceDirectory, machineLock: production.machineDeviceLock)
+        withExtendedLifetime(productionScope) {}
+    }
+
+    /// What counts as production serving: its `darkbloom start …` (single-Mac serving, or a pair's part), a pair's link
+    /// follower, its worker owner and its worker, each run from production's own folder. DevNet's processes, a production
+    /// command that serves nothing and a `darkbloom` run from elsewhere don't.
+    @Test("only production's own serving processes hold a DevNet build back")
+    func productionServingIsReadFromProductionsOwnProcesses() throws {
+        let home = try NativePairMemberFixture.privateRoot()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let production = BuildEnvironment.prod.installDirectory(home: home), devnet = BuildEnvironment.dev.installDirectory(home: home)
+        try FileManager.default.createDirectory(at: production, withIntermediateDirectories: true)
+        let cli = production.appendingPathComponent("Darkbloom.app/Contents/MacOS/darkbloom").path
+        let worker = production.appendingPathComponent("Darkbloom.app/Contents/Helpers/darkbloom-cluster-worker").path
+        let devnetCLI = devnet.appendingPathComponent("\(BuildEnvironment.dev.appBundleName)/Contents/MacOS/\(BuildEnvironment.dev.cliName)").path
+        let devnetWorker = devnet.appendingPathComponent("\(BuildEnvironment.dev.appBundleName)/Contents/Helpers/darkbloom-cluster-worker").path
+        let processes: [Int32: (String, [String])] = [
+            101: (cli, [cli, "status"]), 102: (cli, [cli, "cluster", "service"]), 103: (cli, [cli, "cluster", "stop"]),
+            104: (devnetCLI, [devnetCLI, "start", "--foreground", "--cluster-member"]), 105: (devnetWorker, [devnetWorker]),
+            106: ("/opt/elsewhere/darkbloom", ["/opt/elsewhere/darkbloom", "start"]),
+            201: (cli, [cli, "start", "--local", "--distributed"]), 202: (cli, [cli, "start", "--foreground", "--cluster-member"]),
+            203: (cli, [cli, "cluster", "link-follower"]), 204: (cli, [cli, "cluster", "worker-owner", "--stdio"]),
+            205: (worker, [worker, "--membership-epoch", UUID().uuidString]),
+        ]
+        func serving(_ identifiers: [Int32]) -> Int32? {
+            ClusterMachineDeviceLock.productionServing(home: home, identifiers: identifiers, executablePath: { processes[$0]?.0 },
+                                                       arguments: { processes[$0]?.1 })
+        }
+        let none: [Int32] = [101, 102, 103, 104, 105, 106]
+        #expect(serving(none) == nil)
+        for pid: Int32 in [201, 202, 203, 204, 205] { #expect(serving(none + [pid]) == pid, "process \(pid)") }
+    }
+
+    /// Production's cluster service publishes its status every second. A DevNet build reads it (read only) and waits
+    /// while it says production's pair serves here, also in the seconds production's part restarts (an update, a crash),
+    /// so a waiting DevNet pair never takes the GPU from production then. A status that is old, says the pair is off,
+    /// or says the pair was given up on this Mac doesn't hold DevNet back.
+    @Test("a DevNet build waits while production's cluster service says its pair serves here")
+    func productionsPublishedPairIntentHoldsDevnetBack() throws {
+        let home = try NativePairMemberFixture.privateRoot()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let production = try ClusterUserPaths(homeDirectory: home, environment: .prod)
+        let devnet = try ClusterUserPaths(homeDirectory: home, environment: .dev)
+        let directory = production.setupDirectory
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent(ClusterServiceStatus.fileName)
+        // Production's own wire format: the fields every build since 0.10.9 writes (`pairRunning` nil from older ones).
+        func publish(serving: Bool, pairRunning: Bool?, secondsAgo: Double = 0) throws {
+            var json = "{\"serving\":\(serving),\"sessionLeader\":false,\"child\":{\"running\":false,\"starts\":3},\"servicePID\":4321"
+            if let pairRunning { json += ",\"pairRunning\":\(pairRunning)" }
+            try Data((json + "}").utf8).write(to: file)
+            try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-secondsAgo)], ofItemAtPath: file.path)
+        }
+        #expect(ClusterMachineDeviceLock.productionServingHere(home: home) == nil, "no production here")
+        try publish(serving: true, pairRunning: true)
+        let words = try #require(ClusterMachineDeviceLock.productionServingHere(home: home))
+        #expect(words.contains("its pair is set to serve here (its cluster service, process 4321)"), "\(words)")
+        #expect(ClusterMachineDeviceLock.isRefusal(words) && !words.contains("cluster stop"))
+        #expect(devnet.machineDeviceLock.otherHolder?() == words, "a DevNet build's lock says it in the same words")
+        #expect(production.machineDeviceLock.otherHolder == nil, "production's own build reads nothing of the kind")
+        try publish(serving: true, pairRunning: nil)
+        #expect(ClusterMachineDeviceLock.productionPairServes(home: home) != nil, "a build before 0.10.9: its intent decides")
+        try publish(serving: false, pairRunning: false)
+        #expect(ClusterMachineDeviceLock.productionPairServes(home: home) == nil, "production's pair is stopped")
+        try publish(serving: true, pairRunning: false)
+        #expect(ClusterMachineDeviceLock.productionPairServes(home: home) == nil, "production gave its pair up on this Mac")
+        try publish(serving: true, pairRunning: true, secondsAgo: ClusterMachineDeviceLock.publishedWithinSeconds + 60)
+        #expect(ClusterMachineDeviceLock.productionPairServes(home: home) == nil, "no service has written it for minutes")
     }
 
     /// Review of #1846: `darkbloom-dev cluster link --remove` took away a port production's pair still uses.

@@ -179,7 +179,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `schedule` | Edit, show or disable saved weekly availability and startup loading; never start/stop the service | ✓ | `Scheduling/ScheduleCommand.swift` (`AvailabilitySchedule`) |
 | `switch` | Gracefully replace hosted models in the running coordinator-connected provider, without restart or reconnect | | `SwitchCommand.swift` (`Switch`) |
 | `addon` | Debug add-on holds on the running provider: `status` (default), `hold`, `release` | | `AddonCommand.swift` (`Addon`) |
-| `sandbox` | Set up and manage [Darkbloom Sandbox](./sandboxes.md) CI jobs through its add-on: status (bare), `setup`, `pause`, `resume`, `logs`, `uninstall` | | `Sandbox/SandboxCommand.swift` (`Sandbox`) |
+| `sandbox` | Set up and manage [Darkbloom Sandbox](./sandboxes.md) CI jobs through its add-on: status (bare), `setup`, `pause`, `resume`, `logs`, `uninstall`; `setup` requires an approval from the [Darkbloom Sandbox waitlist](#darkbloom-waitlist) | | `Sandbox/SandboxCommand.swift` (`Sandbox`) |
 | `stop` | Drain accepted requests, then stop the LaunchAgent; `--uninstall` removes the provider, watchdog and desktop API agents and keeps every file | | `StopCommand.swift` (`Stop`) |
 | `uninstall` | Take Darkbloom off this Mac: remove everything, or everything but the models ([below](#darkbloom-uninstall)) | | `UninstallCommand.swift` (`Uninstall`) |
 | `restart` | Drain, restart with recorded configuration, and confirm fresh authorization | ✓ | `RestartCommand.swift` (`Restart`) |
@@ -188,6 +188,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `models` | `list`, `catalog`, `download`, `remove` | ✓ | `ModelsCommand.swift` (`Models`) |
 | `local` | Print the direct-mode endpoint and API key | | `LocalCommand.swift` (`Local`) |
 | `cluster` | Set up two Macs to serve one model together ([guided setup](./two-mac-cluster.md)); `cluster local` serves without a coordinator. Run again on a paired Mac it works like `darkbloom start` (which opens the same screen there): both Macs, the cable and the status, then the pair's models with the current one preselected (Enter keeps it or starts it again), each mode with the speed this pair served it at (or "not measured on these Macs yet"), a line to switch between local only and through Darkbloom, and **Start over**; another model asks once before the serving one stops, and every start ends with the outcome, the pair's card and `darkbloom stop` / `restart` / `status` ([after setup](./two-mac-cluster.md#the-steps-once)). It offers **Start over** after one question (also when the other Mac does not answer over the cable: the screen then names that Mac and what to run there), and **Pair again** without it only when the saved pairing was made with another Secure Enclave key; both take the steps of `cluster pair --forget` (`ClusterUnpairing`), then pair ([pairing again](./two-mac-cluster.md#pairing-again)) | ✓ | `ClusterCommand.swift` (`Cluster`) |
+| `waitlist` | List the waitlists the coordinator offers and where the account stands (bare), or put the account on one and show where it stands (`waitlist cluster`, `waitlist sandbox`); waitlists are per account | ✓ | `Waitlist/WaitlistCommand.swift` (`Waitlist`) |
 | `login` | Link the machine to an account (RFC 8628 device code) | ✓ | `LoginCommand.swift` (`Login`) |
 | `logout` | Stop the provider, revoke its current saved token, then remove the local credential | ✓ | `LogoutCommand.swift` (`Logout`) |
 | `benchmark` | Inference benchmarks and harnesses | ✓ | `BenchmarkCommand.swift` (`Benchmark`) |
@@ -1332,7 +1333,7 @@ service, to download the add-on's installer. Code:
 
 ```bash
 darkbloom sandbox [status [--json]]
-darkbloom sandbox setup [--yes] [--no-browser] [--linux-slots <n>] [--macos-slots <n>] [--wait-ready] [--server <url>]
+darkbloom sandbox setup [--yes] [--no-browser] [--linux-slots <n>] [--macos-slots <n>] [--disk <volume>]... [--wait-ready] [--server <url>]
 darkbloom sandbox pause | resume
 darkbloom sandbox logs [-f] [-n <lines>]
 darkbloom sandbox uninstall [--yes]
@@ -1346,6 +1347,7 @@ darkbloom sandbox uninstall [--yes]
 | `setup --yes`, `-y` | `false` | Skip the confirmation |
 | `setup --no-browser` | `false` | The installer does not open the approval page; open the printed link |
 | `setup --linux-slots <n>`, `--macos-slots <n>` | what fits the Mac | Jobs at a time: Linux `0`–`16`, macOS `0`–`2`; both `0` is refused. The plan and the install take a chosen count as it is; setup shows it as `(your choice)` |
+| `setup --disk <volume>` | none: the internal disk | Repeatable. A work disk for the VM images and jobs, such as `/Volumes/FastSSD`; `~` keeps the internal disk as well. Setup makes each path absolute, checks it (see [Setup](#setup)) and passes it on in order. Needs an add-on release with work disks (1.2.0 or later). The add-on, its settings and logs stay in `~/DarkbloomSandbox` |
 | `setup --wait-ready` | `false` | The installer waits until the images are downloaded and the Mac takes jobs |
 | `setup --server <url>` | `https://api-sandbox.darkbloom.dev` | Where `install.sh` comes from: an `https` URL without credentials, query or fragment |
 | `pause` | — | `darkbloom-sandbox pause`: running jobs finish, no new jobs; then prints how many still run |
@@ -1355,21 +1357,74 @@ darkbloom sandbox uninstall [--yes]
 
 ### Setup
 
-1. **Check.** Refuses `sudo`, then prints chip, macOS, desktop session,
-   network, power and sleep in the `doctor` style (`[PASS]`, `[WARN]` with a
-   `↳ fix:` line, `[FAIL]`). A refusal (table below) prints `Not eligible` and
-   stops before anything is downloaded
+1. **Waitlist.** Setup refuses `sudo`. A first setup then asks the coordinator of `provider.toml`
+   whether Darkbloom approved this account from the `sandbox` waitlist
+   (`GET /v1/waitlists/sandbox` with the `darkbloom login` token) before it
+   checks or installs anything. Approved, or a coordinator without that
+   waitlist (it answers `404`, as one without waitlists does): setup goes on.
+   Not on the waitlist: setup offers to join it (`--yes` joins without asking)
+   as [`darkbloom waitlist sandbox`](#darkbloom-waitlist) does, with the body
+   `{}`, and then treats the join's answer the same way; declined, or without
+   a terminal and without `--yes`, it prints the join command and stops.
+   Waitlisted or revoked: setup shows the status and stops. Not logged in
+   (`401`) or refused (`403`): setup says to run `darkbloom login` and stops.
+   No usable answer (unreachable, a 10-second timeout, or any other answer):
+   setup says why, says to check the network and run it again, and stops. A
+   `404` prints `<coordinator> has no Darkbloom Sandbox waitlist; going on.`
+   first. Its lines name the waitlist by the coordinator's `title`, and
+   `Darkbloom Sandbox` when there is no answer. Each stop exits `1`; a setup
+   that continues, repairs or updates an installed add-on does not ask
+   (`provider-swift/Sources/darkbloom/Sandbox/SandboxSetupCommand.swift`,
+   `SandboxSetupFlow.requireApproval`; the outcomes are
+   `provider-swift/Sources/darkbloom/Waitlist/FeatureWaitlistGate.swift`,
+   `FeatureWaitlistGate`, which [`darkbloom cluster`](#the-cluster-waitlist-gate)
+   shares).
+2. **Check.** Prints chip, macOS, desktop session, network, power and sleep
+   in the `doctor` style (`[PASS]`, `[WARN]` with a `↳ fix:` line, `[FAIL]`). A
+   refusal (table below) prints `Not eligible` and stops before anything is
+   downloaded
    (`provider-swift/Sources/darkbloom/Sandbox/SandboxEligibility.swift`,
    `SandboxEligibility`; measurements in `SandboxHostProbe`).
-2. **Download.** Downloads `<server>/install.sh` over HTTPS: a redirect is
+   With `--disk`, one `Work disk` line follows per disk, from `statfs` on the
+   path (or its nearest existing parent). A path under `/Volumes/<name>` must be
+   on the volume mounted there, and the volume must be APFS with ownership on.
+   A disk that fails stops setup before anything is downloaded, with the fix:
+   for ownership off, the exact command, such as
+   `sudo diskutil enableOwnership /Volumes/FastSSD`. At a prompt and without
+   `--yes`, setup then asks `Turn ownership on for /Volumes/FastSSD now?`
+   (default no). On yes it runs that command in the terminal's foreground
+   process group, so sudo asks for the password itself; the CLI never reads it.
+   Then setup checks the disk again. If the command fails, setup prints
+   `Ownership is still off on …` and stops. With `--yes` or without a terminal,
+   setup prints the command and stops. Setup never formats a drive. The
+   installer checks each disk again by the add-on's own rules (local, writable,
+   not a disk image)
+   (`provider-swift/Sources/darkbloom/Sandbox/SandboxWorkDisk.swift`,
+   `SandboxWorkDisk`).
+3. **Download.** Downloads `<server>/install.sh` over HTTPS: a redirect is
    followed only to another `https` URL, and the response must be HTTP 200 over
    `https`, at most 1 MiB, with a `#!` first line naming a shell. The script is
    written as a `0600` file in a new `0700` directory, run with `/bin/sh` for
    the plan and the install, and removed afterwards. The installer verifies the
    add-on release before it installs it; the CLI does not verify the script
    beyond TLS (`provider-swift/Sources/darkbloom/Sandbox/SandboxInstaller.swift`,
-   `SandboxInstaller`).
-3. **Plan.** A script that names `--plan` (add-on 1.1.1 and later) runs with
+   `SandboxInstaller`). With `--disk`, a script that does not name `--disk`
+   comes from a release without work disks: setup says that work disks need
+   add-on 1.2.0 or later and stops, changing nothing.
+   **Drive choice.** On a first setup without `--disk`, at a prompt and
+   without `--yes`, a script that names `--disk` makes setup list the drives
+   that can take the VM images and jobs, under `Where the VM images and jobs
+   go`: `1) This Mac's internal disk`, then one line per drive with its free
+   space, and a note when its ownership is off. A drive is listed when it is
+   mounted at its own `/Volumes/<name>`, shows in Finder, is local, writable
+   and APFS, and has room for its floor (a tenth of the drive, 50 to 100 GiB)
+   plus a Linux job and its images (34 GiB). Setup asks `Choose 1-N [1]:`;
+   Enter or the end of input keeps the internal disk, and any other answer
+   that is not a listed number asks again. A chosen drive gets the `Work disk`
+   check above (with the ownership offer) and goes to the plan and the install
+   as one `--disk`. The plan's lines then follow under `The add-on's plan for
+   this Mac`.
+4. **Plan.** A script that names `--plan` (add-on 1.1.1 and later) runs with
    `--plan --json-progress` and the owner's slot options, without `--yes` and
    with stdin closed. It verifies the release, runs the add-on's own checks and
    sizing, installs nothing and prints one
@@ -1417,17 +1472,17 @@ darkbloom sandbox uninstall [--yes]
    planned, a lone macOS job would fit above the floor, but beside the Linux
    jobs it needs about 70 GB more. When no job fits, N equals the verdict's GiB
    for one macOS job. The fallback estimate gets no such line.
-4. **Confirm.** Explains that inference pauses while a job runs, that each job
+5. **Confirm.** Explains that inference pauses while a job runs, that each job
    pays its price minus a 10% fee into the Darkbloom balance, the VM images and
    the one browser approval, then asks `[y/N]`. `--yes` skips it; without a
    terminal and without `--yes`, setup stops before installing.
-5. **Install.** A script that names `--json-progress` runs with
+6. **Install.** A script that names `--json-progress` runs with
    `--json-progress --yes` and the owner's `--no-browser`, `--wait-ready` and
-   slot options, with stdin closed, and its stages render as
+   slot options and each `--disk <path>`, with stdin closed, and its stages render as
    [progress events](#installer-progress-events). Any other script is an older
    installer: it runs with the terminal and only the slot options, and the CLI
    says so.
-6. **Summarize.** Reads `status --json` again: the state, the jobs at a time and
+7. **Summarize.** Reads `status --json` again: the state, the jobs at a time and
    the next commands.
 
 While the installer runs, Ctrl-C reaches the installer, not the CLI, and setup
@@ -1449,7 +1504,7 @@ Rerunning `setup` decides from the add-on's answer
 | No add-on, or `not_installed` | A first setup: check, plan, explain, confirm, install |
 | `waiting_for_approval`, `waitlisted`, `enrolling` | Runs the installer again to continue, without the check or the question |
 | `stopped`, `error`, no answer within 10 s, a failed status, an add-on older than `status --json` | Runs the installer again to repair or update the add-on |
-| `ready`, `running`, `paused`, `downloading_images`, `updating`, an unknown state | Reports the state, then checks the plan again (below); with `--linux-slots` or `--macos-slots` it runs the installer to apply them, without the plan |
+| `ready`, `running`, `paused`, `downloading_images`, `updating`, an unknown state | Reports the state, then checks the plan again (below); with `--linux-slots`, `--macos-slots` or `--disk` it runs the installer to apply them, without the plan, after the `Work disk` lines. The report offers `--disk` only when the add-on's `status --json` has a `disks` member |
 
 On a Mac that is set up, after the report, setup downloads the installer and
 runs its plan as for a first setup, which changes nothing, and compares the
@@ -1485,8 +1540,16 @@ With `--plan --json-progress` (add-on 1.1.1) the installer exits 0 after one
 `macos_limit`, `free_bytes`, `floor_bytes`, `linux_images_bytes`,
 `macos_images_bytes`, `linux_slot_bytes`, `macos_slot_bytes`, `cores`,
 `cores_kept`, `memory_bytes`, `memory_kept_bytes` and `provider_memory_bytes`
-(`SandboxSizingPlan`). It ignores `root`, `volume_bytes` and unknown members. A
-line with another schema or without one of the numbers is not a plan.
+(`SandboxSizingPlan`), and from `disks` (releases with work disks) each
+entry's `path`, `root_volume`, `free_bytes`, `floor_bytes`, `linux_slots` and
+`macos_slots`. When the plan uses an external disk or more than one disk, an
+`[INFO] Work disk` line per disk follows the `Disk` line, such as
+`/Volumes/FastSSD: 900 GiB free; 93 GiB stays free; 2 Linux jobs, 1 macOS job`.
+It ignores `root`, `volume_bytes` and unknown members. A line with another
+schema or without one of the numbers is not a plan. With `--disk`, a failed plan
+(exit `2` when the installer refuses a disk) stops setup with the installer's
+last stderr lines and its exit status, since the CLI's estimate knows no work
+disks; without `--disk`, setup falls back to the estimate as before.
 
 | `status` | Meaning | The CLI |
 |---|---|---|
@@ -1563,11 +1626,105 @@ add-ons still render (`provider-swift/Sources/darkbloom/Sandbox/SandboxAddon.swi
 | `accepting` | bool | A ready Mac with `false` shows the add-on's `detail` |
 | `last_update_check` | Unix seconds or null (milliseconds and ISO 8601 are read too) | `Updates` line |
 | `console_url` | string | `Console` line and the setup summary |
+| `disks` | `[{"path", "root_volume", "state", "detail", "free_bytes", "slots": {"linux": {"total"}, "macos": {"total"}}, …}]` (add-on releases with work disks) | The member's presence means the add-on takes `--disk`. When it lists an external drive or more than one disk, one `Work disk` line per disk follows `Images`, such as `/Volumes/FastSSD: online, 812 GiB free; slots: Linux 2, macOS 1`. A disk that is not `online` adds its `detail` in parentheses. An entry without `path` or `state` is skipped |
 
 An add-on that answers with exit status `64` or its usage on stderr predates
 the option or action: `status` then shows the add-on's own `status` output,
 `pause` and `resume` say to update it with `setup`, and `darkbloom status` says
 it is installed.
+
+## `darkbloom waitlist`
+
+Darkbloom opens some features, such as clusters and Darkbloom Sandbox, to the
+accounts it approves from a waitlist per feature. A waitlist is per account:
+the account joins it and Darkbloom approves the account, not a Mac, so a join
+sends nothing about this Mac. The coordinator's catalog is the only list of
+waitlists: the CLI asks it which waitlists exist and takes each one's title and
+start command from its answer. Bare `darkbloom waitlist` lists every waitlist
+and where the account stands; `darkbloom waitlist <name>`, such as
+`darkbloom waitlist cluster` or `darkbloom waitlist sandbox`, puts the account
+on one and shows where it stands. Admins approve accounts on the coordinator.
+Code:
+`provider-swift/Sources/darkbloom/Waitlist/WaitlistCommand.swift`
+(`Waitlist`, `FeatureWaitlistCommand`, `FeatureWaitlistAccess`),
+`provider-swift/Sources/darkbloom/Waitlist/FeatureWaitlist.swift`
+(`FeatureWaitlistClient`, `FeatureWaitlists`, `FeatureWaitlistPlace`) and
+`provider-swift/Sources/darkbloom/Waitlist/FeatureWaitlistView.swift` (`FeatureWaitlistView`).
+
+```bash
+darkbloom waitlist [--json] [--config <path>]
+darkbloom waitlist <name> [--json] [--config <path>]
+```
+
+| Argument / flag | Default | Effect |
+|---|---|---|
+| no `<name>` | — | Every waitlist in the coordinator's order: its title and id, its summary and where the account stands (`not joined`, `#<n> in line`, `approved since <day>` with the start command, `not approved`), then `Join one: darkbloom waitlist <name>` while one is not joined |
+| `<name>` | — | Puts the account on that waitlist, then shows where it stands: its place in line, or the approval with the waitlist's start command. Joining again keeps the place, and an approved or revoked account stays as it is; a revoked account's join exits `1`. The name is a waitlist's id ignoring case, or that id with a plural `s` or `es` (`clusters`, `sandboxes`); an exact id wins over another id's plural, and a plural that two ids share names neither. An unknown name prints the waitlists there are and exits `1` without joining |
+| `--json` | `false` | The coordinator's answer as JSON, times in ISO 8601: `{"data": [...]}` without a name, else the waitlist's entry the join answered |
+| `--config`, `-c` | the default `provider.toml` | Which coordinator to ask (`[coordinator] url`) |
+
+```text
+Clusters (cluster): not joined
+  Serve one model with two to four of your Macs.
+
+Darkbloom Sandbox (sandbox): #3 in line (joined Oct 29, 2026)
+  Run Darkbloom Sandbox CI jobs on your Mac.
+
+Join one: darkbloom waitlist <name>
+```
+
+| Status | Shown |
+|---|---|
+| `none` | Not on the waitlist, and the command that joins it |
+| `waitlisted` | `#<n> in line` and the day it joined; Darkbloom reviews accounts in the order they joined |
+| `approved` | Approved since the day of the decision, and the waitlist's `start_command` when it has one; a leading `darkbloom` becomes the installed command, such as `darkbloom-dev` |
+| `revoked` | Revoked on the day of the decision; joining again does not restore it |
+
+A waitlist's entry is
+`{feature, title, summary?, start_command?, status, position?, requested_at?, decided_at?}`;
+other fields are ignored, and `--json` leaves them out.
+Every sentence names the waitlist by its `title`; an entry without one is
+unreadable. A control, format or line-separator character in the
+coordinator's text (a title, summary, start command or refusal message, such
+as an escape sequence or a bidirectional override) prints as `�`, and
+`--json` writes it as a `\u` escape, so that text cannot drive the terminal.
+The list makes one `GET /v1/waitlists` call; `darkbloom waitlist <name>` reads
+the list to find the waitlist, then sends `POST /v1/waitlists/{feature}` with
+the body `{}`: no chip, memory or Mac count.
+The requests go to the coordinator of `provider.toml` with the token of
+`darkbloom login` as a Bearer credential. Only an `https` coordinator, or plain
+`http` to this Mac's loopback, is asked; no redirect is followed, a call ends
+after 10 seconds and an answer over 64 KiB is refused. When the coordinator
+answers `401` (no token, or one it does not take), the command says to run
+`darkbloom login` and exits `1`; a `403` says the coordinator refused the
+account and to run `darkbloom login` again, and exits `1`. A coordinator without waitlists answers `404`,
+with or without a token: the command says there is nothing to join there and
+exits `1`. Another status exits `1` with that status and its message; an
+unreadable answer, or none at all, exits `1` with the reason.
+[Darkbloom Sandbox setup](#setup) requires an approved `sandbox` entry, and a
+new pair of [`darkbloom cluster`](#the-cluster-waitlist-gate) an approved
+`cluster` entry.
+
+### The cluster waitlist gate
+
+`darkbloom cluster` on a Mac that holds no pairing asks the coordinator of `provider.toml` whether Darkbloom approved this
+account from the `cluster` waitlist (`GET /v1/waitlists/cluster` with the
+`darkbloom login` token) before the setup screen opens, with the outcomes of the
+[sandbox setup gate](#setup): approved goes on; a coordinator without the
+waitlist (`404`) prints `<coordinator> has no Clusters waitlist; going on.` and
+goes on; not on the waitlist asks `Join the Clusters waitlist now? [y/N]` (no
+prints `Join it: darkbloom waitlist cluster`); waitlisted, revoked, `401`,
+`403` and no usable answer say why and exit `1` with nothing set up; every
+such stop ends with `Serving on your own Macs only needs no approval:
+darkbloom cluster local`. The waitlist gates clustering through Darkbloom only:
+`darkbloom cluster local` serves on the owner's own Macs, is never asked and
+makes no waitlist call, so it works offline. A Mac that
+holds a pairing, or one whose pairing can't be read, is never asked and makes no
+waitlist call: a pair set up before the waitlist, or serving now, keeps working
+across updates and restarts, and `darkbloom start`, `stop`, `restart`,
+`status`, the cluster service, **Start over** and **Pair again** are unchanged
+(`provider-swift/Sources/darkbloom/ClusterSetupWizardCommand.swift`,
+`Cluster.Setup.requireNewPairApproval`).
 
 ## `darkbloom stop`
 

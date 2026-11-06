@@ -47,6 +47,33 @@ still answered on the Mac's own screen). `darkbloom cluster link --fix` and
 `darkbloom uninstall` over SSH stops before it changes anything when a cable
 port setup is left to undo.
 
+## The cluster waitlist
+
+Darkbloom approves accounts for clusters from a waitlist. The waitlist is for
+your account, not for each Mac: join it once, from either Mac linked to your
+account with `darkbloom login`:
+
+```bash
+darkbloom waitlist cluster
+```
+
+It puts your account on the waitlist, sending nothing about your Macs, and
+prints your place in line; Darkbloom reviews accounts in the order they joined
+and approves them by hand. Run it again to see where you stand: it keeps your
+place, and once you are approved it says so and names the command that starts
+a cluster. `darkbloom waitlist` alone lists every waitlist and where you stand
+on each.
+
+A new pair that serves through Darkbloom needs that approval: on a Mac that is
+not paired yet, `darkbloom cluster` checks the waitlist before it starts.
+Serving on your own Macs only (`darkbloom cluster local`) needs no approval and
+no connection to Darkbloom. Not on it, it offers
+to join; waitlisted, it shows your place and sets nothing up ("Nothing was set
+up. Run `darkbloom cluster` again once Darkbloom approves your account.").
+Macs that are already paired are never asked: a pair you set up before the
+waitlist keeps working as it did, through updates and restarts. Details:
+[CLI reference: waitlists](./cli-reference.md#darkbloom-waitlist).
+
 ## The steps, once
 
 Run `darkbloom cluster` on each Mac, pick a model, done. The Mac you start on

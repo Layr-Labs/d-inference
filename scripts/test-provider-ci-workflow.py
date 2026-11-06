@@ -51,6 +51,9 @@ SAMPLER_STEPS = ("Start the resource sampler", "Report the resource samples", "U
 # Every macOS job: the build jobs, the test jobs and the release build checks.
 MAC_JOBS = (*BUILD_JOBS, *PRODUCT_JOBS, "cluster-release-checks", "test-cluster-focused")
 BLACKSMITH_MAC = "blacksmith-12vcpu-macos-27"
+# The size at the end of a route lane line; scripts/test-darkbloom-route.py
+# pins each lane's size.
+LANE_SIZE = r"[1-9][0-9]*x[1-9][0-9]*"
 PROVIDER_TEST_COMMAND = ('python3 ../scripts/run-provider-test-watchdog.py \\\n'
                          '  --output-dir "$RUNNER_TEMP/provider-test-diagnostics" \\\n'
                          '  --diagnostic-after-seconds 900 --timeout-seconds 1800 \\\n'
@@ -234,14 +237,15 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                     lane_key = f"'{job_id}'"
                 # A Darkbloom macOS sandbox when granted, otherwise the same
                 # dedicated Blacksmith runner; requested only when the job runs,
-                # at 4x24 while job sizes are on.
+                # at its size while job sizes are on (scripts/test-darkbloom-route.py
+                # pins each lane's size).
                 self.assertIn("    runs-on: ${{ fromJSON(inputs.routes)[%s] }}\n" % lane_key, job)
                 # The plan's components are the classifier's, or none for a
                 # tree that already passed (provider-plan.yml).
                 for route_lane in route_lanes:
-                    self.assertIn("        %s macos_arm64 blacksmith-12vcpu-macos-27 "
-                                  "${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 4x24\n" % route_lane,
-                                  self.jobs["route"])
+                    self.assertRegex(self.jobs["route"], re.escape(
+                        "        %s macos_arm64 blacksmith-12vcpu-macos-27 "
+                        "${{ needs.components.outputs.provider == 'true' && 1 || 0 }} " % route_lane) + LANE_SIZE + r"\n")
                 self.assertIn("    timeout-minutes: 60\n", job)
                 self.assertIn("    needs: build-provider\n", job)
                 self.assertIn("    if: ${{ inputs.provider == 'true' }}\n", job)
@@ -648,16 +652,17 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("    name: Cluster Focused Checks (shard ${{ matrix.shard }})\n", focused)
         self.assertIn("    name: Cluster Release Build Checks\n", release)
         # Both shards read the lane the approval names, requested for 2 jobs.
-        # The release build checks need a large Mac: 12x32, only while job
-        # sizes are on.
+        # The release build checks ask only with their size, while job sizes
+        # are on.
         self.assertIn("    runs-on: ${{ fromJSON(inputs.routes)['test-cluster-focused'] }}\n", focused)
         self.assertIn("      matrix:\n        shard: [1, 2]\n", focused)
-        self.assertIn("        test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 "
-                      "${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} 4x24\n", self.jobs["route"])
+        self.assertRegex(self.jobs["route"], re.escape(
+            "        test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 "
+            "${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} ") + LANE_SIZE + r"\n")
         self.assertIn("    runs-on: ${{ fromJSON(inputs.routes)['cluster-release-checks'] }}\n", release)
-        self.assertIn(f"        cluster-release-checks macos_arm64 {BLACKSMITH_MAC} "
-                      "${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 12x32 required\n",
-                      self.jobs["route"])
+        self.assertRegex(self.jobs["route"], re.escape(
+            f"        cluster-release-checks macos_arm64 {BLACKSMITH_MAC} "
+            "${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} ") + LANE_SIZE + r" required\n")
         for job in (focused, release):
             self.assertIn("    if: ${{ inputs.cluster == 'true' }}\n", job)
             self.assertNotRegex(job, r"(?m)^    needs:")
@@ -734,8 +739,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn('--jobs "$task_jobs"', support)
 
     def test_each_lane_builds_once_and_its_test_jobs_run_its_products(self):
-        # Each lane builds once, on a large runner (its lane asks for 12x32
-        # only while job sizes are on), and uploads its products only when its
+        # Each lane builds once, on a large runner (its lane asks only with its
+        # size, while job sizes are on), and uploads its products only when its
         # tests run; a push of a tested tree builds the components it changed
         # only to refresh the caches (David, 2026-11-05).
         self.assertNotIn("refresh-caches", self.jobs)
@@ -747,10 +752,11 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                               f"inputs.skip == 'true' && inputs.changed_{lane} == 'true') }}}}\n", job)
                 # Requested exactly when the job runs: the plan's components
                 # and the tree lookup's skip (provider-plan.yml).
-                self.assertIn(f"        {job_id} macos_arm64 {BLACKSMITH_MAC} "
-                              f"${{{{ (needs.components.outputs.{lane} == 'true' || (github.event_name == 'push' && "
-                              f"needs.tested.outputs.skip == 'true' && needs.components.outputs.changed_{lane} == 'true'))"
-                              " && 1 || 0 }} 12x32 required\n", self.jobs["route"])
+                self.assertRegex(self.jobs["route"], re.escape(
+                    f"        {job_id} macos_arm64 {BLACKSMITH_MAC} "
+                    f"${{{{ (needs.components.outputs.{lane} == 'true' || (github.event_name == 'push' && "
+                    f"needs.tested.outputs.skip == 'true' && needs.components.outputs.changed_{lane} == 'true'))"
+                    " && 1 || 0 }} ") + LANE_SIZE + r" required\n")
                 self.assertNotRegex(job, r"(?m)^    (needs|strategy):")
                 steps = step_blocks(job)
                 builds = [step for step in steps if field(step, "uses") == BUILD_ACTION]

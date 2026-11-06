@@ -52,7 +52,7 @@ jobs:
     # soon as their products are up. A push whose tree a pull request run
     # already tested runs no test job; the build job then builds only the
     # components the push changed, to refresh the branch's caches. The build
-    # jobs need a large Mac: their lanes ask for 12x32 and only while job
+    # jobs need a large Mac: their lanes ask only with their size, while job
     # sizes are on; otherwise they run on Blacksmith (provider-plan.yml).
     name: Build cluster test products
     if: ${{ inputs.cluster == 'true' || (github.event_name == 'push' && inputs.skip == 'true' && inputs.changed_cluster == 'true') }}
@@ -733,13 +733,13 @@ jobs:
     # The switched cluster runtime tests these runners cannot pass, the long
     # ones and the benchmarks (scripts/cluster-test-plan.py). They run and
     # report whenever the cluster jobs run; a failure does not fail the
-    # workflow. They peak at 18.5 to 32.8 GiB, so both shards share one lane,
-    # test-cluster-gpu, which asks for 12x32 only while job sizes are on;
-    # otherwise they run on Blacksmith (provider-plan.yml).
+    # workflow. Shard 2 uses 42 GiB, more than any signed Darkbloom size, so
+    # both shards run on Blacksmith without asking the route
+    # (provider-plan.yml).
     name: Cluster GPU Tests (non-blocking, shard ${{ matrix.shard }})
     needs: build-cluster
     if: ${{ inputs.cluster == 'true' }}
-    runs-on: ${{ fromJSON(inputs.routes)['test-cluster-gpu'] }}
+    runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -820,12 +820,13 @@ jobs:
   cluster-release-checks:
     # The worker capability and prefill schedule checks compile a release
     # build of the cluster runtime and MLX (each runner its own source
-    # closure; no GPU, no model load, no weights), so they run on a large
-    # runner, in a job of their own: no test job waits for them. The build is
-    # reused across runs: SwiftPM rebuilds what changed, and source
-    # timestamps are restored only for files whose contents match the cached
-    # build's (scripts/provider-release-cache.py). Its lane asks for 12x32,
-    # as the build jobs' do (provider-plan.yml).
+    # closure; no GPU, no model load, no weights), so they run in a job of
+    # their own: no test job waits for them. The build is reused across runs:
+    # SwiftPM rebuilds what changed, and source timestamps are restored only
+    # for files whose contents match the cached build's
+    # (scripts/provider-release-cache.py). Its lane asks only with its size,
+    # while job sizes are on, as the build jobs' lanes do; otherwise it runs
+    # on Blacksmith (provider-plan.yml).
     name: Cluster Release Build Checks
     if: ${{ inputs.cluster == 'true' }}
     runs-on: ${{ fromJSON(inputs.routes)['cluster-release-checks'] }}

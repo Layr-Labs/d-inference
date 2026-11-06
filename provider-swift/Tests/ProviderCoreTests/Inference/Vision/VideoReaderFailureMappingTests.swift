@@ -14,7 +14,7 @@ import Testing
 struct VideoReaderFailureMappingTests {
     private let transient = VideoReaderFailure(
         status: AVAssetReader.Status.failed.rawValue,
-        error: NSError(domain: AVFoundationErrorDomain, code: AVError.Code.operationInterrupted.rawValue))
+        error: NSError(domain: AVFoundationErrorDomain, code: AVError.Code.decoderTemporarilyUnavailable.rawValue))
     private let media = VideoReaderFailure(
         status: AVAssetReader.Status.failed.rawValue,
         error: NSError(domain: AVFoundationErrorDomain, code: AVError.Code.decodeFailed.rawValue))
@@ -78,7 +78,7 @@ struct VideoReaderFailureMappingTests {
         #expect(fields["retrying"]?.value as? Bool == true)
         #expect(fields["transient"]?.value as? Bool == true)
         #expect(fields["reader_status"]?.value as? Int == AVAssetReader.Status.failed.rawValue)
-        #expect(fields["reader_error"]?.value as? String == "video reader status 3: AVFoundationErrorDomain -11847")
+        #expect(fields["reader_error"]?.value as? String == "video reader status 3: AVFoundationErrorDomain -11839")
         #expect(VideoReaderFailureReport.event(media, retrying: false).fields?["transient"]?.value as? Bool == false)
     }
 }

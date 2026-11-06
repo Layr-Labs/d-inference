@@ -541,11 +541,12 @@ struct GLM5NextMediaRoutingTests {
         #expect(telemetry.refusalErrors.isEmpty)
     }
 
-    /// An interrupted decoder on both passes is the machine's fault: a
+    /// An unavailable decoder on both passes is the machine's fault: a
     /// retryable 503 that the coordinator sends to another provider.
     @Test func aTransientDecoderFaultOnBothPassesIsARetryableRefusal() async throws {
-        let interrupted = NSError(domain: AVFoundationErrorDomain, code: AVError.Code.operationInterrupted.rawValue)
-        let fault = try midMP4Fault(failures: .max, error: interrupted)
+        let decoderUnavailable = NSError(
+            domain: AVFoundationErrorDomain, code: AVError.Code.decoderTemporarilyUnavailable.rawValue)
+        let fault = try midMP4Fault(failures: .max, error: decoderUnavailable)
         let telemetry = TelemetryCapture()
         let run = try await readinessMP4(under: fault, telemetry: telemetry)
         #expect(run.submitted == 0)
@@ -553,7 +554,7 @@ struct GLM5NextMediaRoutingTests {
                 "\(String(describing: run.failure)); \(telemetry.readerFailures)")
         #expect(telemetry.readerFailures.map { $0.retrying } == [true, false])
         #expect(telemetry.refusalErrors.count == 1
-                && telemetry.refusalErrors.allSatisfy { $0.contains("AVFoundationErrorDomain -11847") },
+                && telemetry.refusalErrors.allSatisfy { $0.contains("AVFoundationErrorDomain -11839") },
                 "\(telemetry.refusalErrors)")
     }
 

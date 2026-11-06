@@ -70,6 +70,9 @@ extension ProviderLoop {
                         guard let self else { throw MultiModelBatchSchedulerEngineError.modelNotLoaded(request.model) }
                         return try await self.acquireNemotronSuperForLocal(request.model)
                     }, logprobs: logprobs)
+            },
+            modelLimits: { [weak self] modelId in
+                await self?.localModelLimits(modelId)
             }
         )
         let log = logger
@@ -90,6 +93,12 @@ extension ProviderLoop {
     /// Resident identity wins during a catalog/slot transition; no load occurs.
     func localModelTypeForAudioAdmission(_ modelId: String) -> String? {
         modelSlots[modelId]?.modelType ?? advertisedModels[modelId]?.modelType
+    }
+
+    /// A resident model's context as its engine admits it, for the router's `/v1/models`; nil while not loaded.
+    func localModelLimits(_ modelId: String) -> LocalModelLimits? {
+        guard let slot = modelSlots[modelId] else { return nil }
+        return LocalModelLimits(contextLength: slot.engineV2.advertisedContextTokens ?? slot.sizing.maxContextLength)
     }
 
     /// Invoked by Hummingbird once the local endpoint socket is bound and

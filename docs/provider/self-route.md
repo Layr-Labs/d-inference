@@ -1,6 +1,6 @@
 # Self-route: use your own machine through the coordinator
 
-> Last updated: 2026-10-09
+> Last updated: 2026-11-06
 
 Send your normal Darkbloom API requests to the provider your account owns —
 free, end-to-end, through the same `api.darkbloom.dev` endpoint and SDK
@@ -127,6 +127,16 @@ Exclusive self-route fails fast with the real cause instead of queueing
 | `503 model_capability_unsupported` | Machine serves the model but not this request shape (inference-enforced `tool_choice` without the tool-constraint advertisement, media on a text-only build) | `darkbloom update`; load a vision-capable build |
 | `prefer` requests are billed | Your machine could not serve at that moment, so the fleet did | Check the same causes as above; use `self` if you never want the fallback |
 | Key with `self_route_only` returns 409/503 for every request | The ceiling applies to all traffic on that key | Use a different key for public routing |
+
+## From a Mac that runs Darkbloom
+
+You don't need the header there. The Mac's local API sends a request it can't
+take on with `self` (or `self`, then `prefer`, when you chose "My Macs first")
+and your account key from its Keychain, so tools keep one local URL and the
+local key: see [the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router).
+`prefer` reserves the platform price of the request up front even when one of
+your Macs answers, so a zero balance refuses it with `402 insufficient_quota`;
+the router tries `self` first for that reason.
 
 ## Related
 

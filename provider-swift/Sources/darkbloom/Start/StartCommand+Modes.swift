@@ -119,7 +119,10 @@ extension Start {
                 mtpDrafterPath: config.backend.mtpDrafterPath,
                 mtpAcceptance: config.backend.mtpAcceptance,
                 mtpAcceptanceByModel: config.backend.mtpAcceptanceByModel,
-                coordinatorURL: config.coordinator.url
+                coordinatorURL: config.coordinator.url,
+                // `--local` never registers with the coordinator, so a `self` request can't come back to it.
+                router: .host(local: config.local, coordinatorURL: coordinatorURL ?? config.coordinator.url,
+                              takesCoordinatorWork: false)
             ),
             models: advertised
         )
@@ -340,7 +343,9 @@ extension Start {
                     throw ExitCode.failure
                 }
             }
-            localEndpointConfig = LocalInferenceHTTPConfig(host: bind, port: port, authToken: token)
+            localEndpointConfig = LocalInferenceHTTPConfig(
+                host: bind, port: port, authToken: token,
+                router: .host(local: config.local, coordinatorURL: coordinatorURL, takesCoordinatorWork: true))
             let shownURL = "http://\(bind == "0.0.0.0" ? "127.0.0.1" : bind):\(port)/v1"
             print("Local endpoint: \(shownURL)\(token != nil ? "  (API key from `\(BuildEnvironment.current.cliName) local`)" : "  (auth disabled)")")
         }

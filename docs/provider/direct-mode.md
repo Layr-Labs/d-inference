@@ -136,10 +136,92 @@ and `GET /` pass without a token; everything else needs
 so browser clients can read it. There is no rate limiting and no TLS: keep the
 default loopback bind, or put a reverse proxy in front before exposing it.
 
+## When this Mac can't take a request: the local router
+
+The local API routes your requests the way the iPhone app does: this Mac first,
+then your other Macs, then the Darkbloom network only if you chose so. The
+`[local] route` setting ([configuration](../reference/configuration.md#local-first-use-local))
+and a saved account API key decide where a request goes when this Mac can't
+take it (`LocalRouter`, `provider-swift/Sources/ProviderCore/Server/LocalRouter*.swift`):
+
+| `[local] route` | When this Mac can't take the request |
+|---|---|
+| `this-mac` (the default without an account key) | This Mac's own answer; nothing leaves the Mac |
+| `my-macs` (the default once a key is saved) | Passed to the coordinator with `X-Darkbloom-Route: self`: only your Macs answer, free |
+| `my-macs-first` | First `self`; when none of your Macs takes it (`409`, `429`, `503`), again with `X-Darkbloom-Route: prefer`: the network answers, billed to your balance |
+
+- **Save the key:** `darkbloom route key` (hidden input, or `--stdin`), from
+  the Darkbloom console. It is checked once with `GET /v1/models` and
+  `X-Darkbloom-Route: self`, then kept in this Mac's Keychain. It is never
+  printed, logged, or written to `provider.toml`, `local.json` or a tool's
+  config, and a running local API uses it from its next request: no restart.
+  `darkbloom route key --remove` keeps every request on this Mac again.
+- **What passes a request on:** only this Mac's own `404` (it doesn't serve
+  the model), `429` (its queue is full) or `503` (draining, an add-on hold, a
+  refused load, no capacity), before any byte reached the client. A client
+  error (`400`, `413`, `422`), a wrong local key (`401`), a cancel, an engine
+  failure and anything after the first streamed byte stay this Mac's answer.
+  The routed paths are chat completions, completions and responses; every
+  other route is this Mac's only.
+- **What is sent:** the request body as the client wrote it, with the account
+  key and the route header. The client's own `Authorization` and
+  `X-Darkbloom-Route` are never forwarded, so a tool can't choose a billed
+  route. A streamed answer is passed through chunk by chunk as it arrives.
+- **What comes back:** the coordinator's answer with its status, body and
+  `Retry-After` as sent, plus `X-Darkbloom-Served-By: darkbloom` and
+  `X-Darkbloom-Route-Used: self|prefer`. This Mac's own answers carry
+  `X-Darkbloom-Served-By: this-mac`. Three answers are this Mac's own words:
+  a `402` on the network hop starts its message with `No balance for the
+  network fallback:` (status, type, code and `Retry-After` unchanged); a
+  refused account key is `502` `account_key_refused` (not the client's `401`);
+  an unreachable coordinator is `502` `darkbloom_unreachable`.
+- **Never back to this Mac:** the coordinator can't leave one Mac out of a
+  `self` request, and a `self` request to a Mac that can't take work waits
+  120 s for `429 machine_busy`. So on a Mac that also serves Darkbloom
+  (`--local-endpoint`, or a pair through Darkbloom), when this Mac serves the
+  requested model (or a build of the alias it names), the router first asks
+  the coordinator's `self` view of that one model (`GET /v1/models/<id>`). With
+  no other Mac of yours serving it, `my-macs` answers this Mac's status with
+  code `this_mac_only`, and `my-macs-first` goes straight to `prefer`.
+  `--local` and `cluster local` never take coordinator work, so they never
+  ask.
+- **Timeouts:** 10 s to put a request on the wire, then up to 5 minutes
+  without a byte (`self` may queue for 120 s), with no limit on a stream's
+  length. Model lists from the coordinator wait at most 5 s.
+- **`max_completion_tokens`:** every local API serves a chat request that
+  names only `max_completion_tokens` (what newer OpenAI clients send) with
+  that value as `max_tokens`; with both, `max_tokens` wins
+  (`LocalChatRequest`, `provider-swift/Sources/ProviderCore/Server/LocalChatRequest.swift`).
+  Passed on, the body goes unchanged, as the coordinator reads all three names.
+- **Cost on this Mac's path:** none of the above runs for a request this Mac
+  serves. It stays in the process, its body is collected once (the engine
+  collects it anyway) and not parsed by the router, no Keychain read happens,
+  and the engine's response, streamed or not, is returned as it is with one
+  header added. The upstream client is made by the first request that needs
+  the coordinator (a pass-on, or a model list with a route that dials out). A
+  CPU benchmark (`LocalRouterOverheadTests`) measures a few microseconds added
+  per request.
+
+`GET /v1/models` (and `/models`) answers this Mac's models first, then, with
+an upstream route, your Macs' models (`self`), then with `my-macs-first` the
+public list, each id once:
+
+| Field | Value |
+|---|---|
+| `owned_by` | `this-mac`, `my-macs` (your other Macs, free) or `darkbloom` (the network, billed) |
+| `context_length`, `max_model_len` | This Mac's engine for its resident models; else the Darkbloom catalog (`/v1/models/catalog`), by model or by the alias's build; omitted when unknown |
+| `max_output_length` | The catalog's (a pair's: its profile's); omitted when unknown |
+| `name` | The coordinator's or the catalog's display name for your Macs' and the network's models |
+
+The coordinator's lists are cached for 30 s and the catalog for 5 minutes; a
+coordinator that can't be reached leaves this Mac's models alone in the list
+and is asked again after 10 s. With `this-mac`, the list never leaves the Mac.
+Integrations (OpenCode, Hermes) read this list.
+
 ## Routes
 
-The responder stack is auth → CORS → `/metrics` → chat-upload interception →
-the upstream `MLXLMServer` router
+The responder stack is auth → the local router → CORS → `/metrics` →
+chat-upload interception → the upstream `MLXLMServer` router
 (`provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift`,
 `makeLocalInferenceApplication`). Routes are registered in
 `libs/mlx-swift-lm/Libraries/MLXLMServer/HTTP/MLXServerApplication.swift`
@@ -148,7 +230,7 @@ the upstream `MLXLMServer` router
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/health`, `/v1/health` | Unauthenticated |
-| GET | `/models`, `/v1/models` | Advertised catalog, not just resident models |
+| GET | `/models`, `/v1/models` | Advertised catalog, not just resident models, merged by the [local router](#when-this-mac-cant-take-a-request-the-local-router) |
 | GET | `/props`, `/metrics` | `/metrics` adds per-slot MTP and serving-posture lines (`provider-swift/Sources/ProviderCore/Server/LocalMetricsResponder.swift`); see [SSD cache observations](../reference/ssd-kv-cache.md#verification) for `prefix_cache_status` |
 | POST | `/v1/chat/completions`, `/chat/completions` | Streaming and non-streaming; inline media; body capped at `localInferenceMaxUploadBytes` |
 | POST | `/v1/chat/completions/batch` | Same cap |
@@ -313,7 +395,8 @@ must retain media/KV and response ownership until native terminal retirement.
 ## Related
 
 - [Self-route](./self-route.md) — route your *fleet* requests to your own
-  provider through the coordinator instead of a local socket.
+  provider through the coordinator instead of a local socket; the local router
+  uses it when this Mac can't take a request.
 - [CLI reference](./cli-reference.md) — `start`, `local` flags and paths.
 - [Beta features](./beta-features.md) — MTP and paged KV apply to local serving too.
 - [`reference/configuration.md`](../reference/configuration.md) — media limits and engine variables.

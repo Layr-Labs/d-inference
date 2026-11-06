@@ -126,12 +126,13 @@ extension EngineV2Bridge {
     /// confirmed prompt computation. A shared interval tracker identifies
     /// both same-model and other-model contention independently of delivery.
     static func classifyPrefillSample(
-        prefilledTokens: Int, prefillSeconds: Double
+        prefilledTokens: Int, prefillSeconds: Double,
+        ceiling: Double = maxPlausiblePrefillTps
     ) -> Double? {
         guard prefilledTokens > 0 else { return nil }
         guard prefillSeconds >= minPrefillWindowSeconds else { return nil }
         let tps = Double(prefilledTokens) / prefillSeconds
-        guard tps.isFinite, tps <= maxPlausiblePrefillTps else { return nil }
+        guard tps.isFinite, tps <= ceiling else { return nil }
         return tps
     }
 

@@ -114,6 +114,34 @@ struct ModelCalibrationTests {
         await bridge.shutdown()
     }
 
+    @Test("a measured cell prefilling faster than the plausibility ceiling publishes no prefill sample",
+        arguments: [(25, 1), (26, 2)])
+    func prefillCeilingDropsFastCalibrationSample(windowMilliseconds: Int, prefillSamples: Int) async throws {
+        let gate = RecoveryStepGate()
+        defer { gate.release() }
+        // Hold the second measured request (after the warmup and the first) at its prefill.
+        let (bridge, engine, budget) = try fixture(gate: gate, gateOnRequest: 3)
+        #expect(await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false))
+        try await waitForEntry(gate)
+        let (_, receipt) = try #require(await bridge.activeCalibrationReceiptTest())
+        // A receipt keeps its first sample, so the engine's own later timing
+        // is ignored: 512 tokens in 25 ms is 20,480 TPS, in 26 ms 19,692 TPS.
+        var usage = CBv2Usage(promptTokens: 512, completionTokens: 0)
+        usage.timing.prefillFirstLaunchNanos = 1_000_000
+        usage.timing.promptComputedNanos = 1_000_000 + UInt64(windowMilliseconds) * 1_000_000
+        receipt.complete(usage)
+        gate.release()
+        await bridge.waitForCalibrationTest()
+        let measurements = try #require(await bridge.backendSlotCapacity().performanceMeasurements)
+        #expect(measurements.isolatedPrefill?.sampleCount == Int64(prefillSamples), "\(measurements)")
+        // Dropped, not reclassified: the CI failures showed no contended bucket either.
+        #expect(!measurements.workloadBuckets.contains { $0.phase == "prefill" && $0.contention == "contended" })
+        #expect(measurements.decode?.sampleCount == 2)
+        #expect(await bridge.calibrationRetryStateTest().0, "the first cell's sample completes the bootstrap")
+        #expect(engine.capacity().activeRequests == 0 && budget.serviceBudget.count == 0)
+        await bridge.shutdown()
+    }
+
     @Test("a final-cell posture change discards staged rates and permits a later bootstrap",
         arguments: [false, true])
     func finalCellPostureChangeDiscardsOnlyCalibration(servingEvidence: Bool) async throws {

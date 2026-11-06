@@ -8,9 +8,35 @@ or console deployment, feature activation, model promotion or hardware
 qualification. Sections marked historical retain the original candidate's
 qualification, opt-in and deployment limits rather than claiming activation.
 
-## v0.10.9 — candidate (unpublished)
+## v0.10.10 — candidate (unpublished)
 
-Prepared on 2026-11-05; tagging and publication are separate steps.
+Prepared on 2026-11-06; tagging and publication are separate steps.
+
+### Upgrade and rollout notes
+
+- 0.10.10 is 0.10.9 plus Darkbloom's waitlists. Nothing else changes: the serving engine, the pair setup and the models are 0.10.9's, built with the same toolchain (Xcode 27.2, macOS 27.2 SDK) and the same MLX pins.
+- **New: `darkbloom waitlist`.** It lists the waitlists Darkbloom offers (clusters and Darkbloom Sandbox) and where your account stands on each: not joined, your place in line, approved (with the command that starts the feature) or not approved. `darkbloom waitlist cluster` or `darkbloom waitlist sandbox` puts your account on that list; running it again keeps your place. A waitlist is per account, not per Mac.
+- **A new sandbox or a new pair needs an approval.** A new Darkbloom Sandbox setup (`darkbloom sandbox setup`) and a new two-Mac pair serving through Darkbloom (`darkbloom cluster` on a Mac that is not paired) now need your account to be approved from that waitlist. If you are not on it yet, setup offers to add you (for the sandbox, `--yes` adds you without asking). Waitlisted or not approved: it shows where you stand, changes nothing and exits 1. Not logged in, refused, or the coordinator can't be reached: it says why and to try again, and exits 1.
+- A pair serving only you on your own Macs (`darkbloom cluster local`) needs no approval and works offline.
+- **Existing setups keep working exactly as before:** an installed sandbox, and Macs already paired, set up or serving as a cluster, are never asked, including after this update and a restart.
+- If the coordinator does not offer waitlists yet, both new setups go on as in 0.10.9, so this release can ship before or after the coordinator change.
+- Pair owners: as with every release, both Macs of a pair must run the same version. A pair on 0.10.9 updates itself at its update slot, or at once with `darkbloom update` on each Mac; check that `darkbloom --version` prints 0.10.10 on both. To roll back, `darkbloom update --rollback` puts back 0.10.9 (on a pair: `darkbloom cluster stop --service` on one Mac first; the other Mac follows).
+- Pairs still on 0.10.8 stop serving through Darkbloom once 0.10.10 registers, until they update themselves. Production keeps at most 64 pair approvals, newest release first and each release whole: 0.10.10 and 0.10.9 hold 24 each, so 0.10.8's 24 are left out. Single Macs do not use pair approvals.
+- Known limitations are 0.10.9's, unchanged; see the v0.10.9 entry below.
+- The registration is the one 0.10.9 sent: the same fields and a `darkbloom_cluster_runtime_v2` block with the same models, grants and qualifications. MLX pins are unchanged (`libs/mlx` `72dffa2d`, `libs/mlx-swift` `c633d221`, `libs/mlx-swift-lm` `32f5c744`), and the toolchain is unchanged, so the tag build's `metallib_hash` should equal v0.10.9's `5b97893c…70ac`.
+- The 1 entry below is the pending fragment rendered verbatim.
+
+### Join Darkbloom's waitlists with `darkbloom waitlist`; new sandbox and cluster setups need an approval
+
+- `darkbloom waitlist` lists every waitlist the coordinator offers and where your account stands on each: not joined, your place in line, approved (with the command that starts the feature) or not approved. Darkbloom offers waitlists for clusters and Darkbloom Sandbox.
+- Join one with `darkbloom waitlist cluster` or `darkbloom waitlist sandbox`. A waitlist is for your account, not for a Mac: joining sends nothing about the Mac, and running it again keeps your place and shows where you stand. An unknown name lists the waitlists there are and exits 1 without joining. `--json` prints the coordinator's answer.
+- A **new** Darkbloom Sandbox setup (`darkbloom sandbox setup`) and a **new** two-Mac pair serving through Darkbloom (`darkbloom cluster` on a Mac that is not paired) now need your account to be approved from that waitlist. Not on it yet, setup offers to join (sandbox `--yes` joins); waitlisted or revoked, it shows where you stand, changes nothing and exits 1. Not logged in, refused, or the coordinator can't be reached: it says why (and to try again) and exits 1. A coordinator without waitlists lets setup go on as before.
+- Serving a cluster on your own Macs only, `darkbloom cluster local`, needs no approval and works offline.
+- **Existing setups keep working exactly as before**: an installed sandbox add-on, and Macs already paired, set up or serving as a cluster, are never asked, also after updating and restarting.
+
+## v0.10.9
+
+Published 2026-11-05 ([release](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.9)).
 
 ### Upgrade and rollout notes
 

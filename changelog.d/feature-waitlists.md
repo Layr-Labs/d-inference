@@ -1,7 +1,0 @@
-### Join Darkbloom's waitlists with `darkbloom waitlist`; new sandbox and cluster setups need an approval
-
-- `darkbloom waitlist` lists every waitlist the coordinator offers and where your account stands on each: not joined, your place in line, approved (with the command that starts the feature) or not approved. Darkbloom offers waitlists for clusters and Darkbloom Sandbox.
-- Join one with `darkbloom waitlist cluster` or `darkbloom waitlist sandbox`. A waitlist is for your account, not for a Mac: joining sends nothing about the Mac, and running it again keeps your place and shows where you stand. An unknown name lists the waitlists there are and exits 1 without joining. `--json` prints the coordinator's answer.
-- A **new** Darkbloom Sandbox setup (`darkbloom sandbox setup`) and a **new** two-Mac pair serving through Darkbloom (`darkbloom cluster` on a Mac that is not paired) now need your account to be approved from that waitlist. Not on it yet, setup offers to join (sandbox `--yes` joins); waitlisted or revoked, it shows where you stand, changes nothing and exits 1. Not logged in, refused, or the coordinator can't be reached: it says why (and to try again) and exits 1. A coordinator without waitlists lets setup go on as before.
-- Serving a cluster on your own Macs only, `darkbloom cluster local`, needs no approval and works offline.
-- **Existing setups keep working exactly as before**: an installed sandbox add-on, and Macs already paired, set up or serving as a cluster, are never asked, also after updating and restarting.

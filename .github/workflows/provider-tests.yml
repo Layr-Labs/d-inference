@@ -1094,13 +1094,14 @@ jobs:
           python3 scripts/test-check-date-comparisons.py
           python3 scripts/test-check-provider-weak-imports.py
           python3 scripts/check-date-comparisons.py
-      # The prompt fixture downloaders' retry rule, offline: no Mac, no network.
+      # The prompt fixture downloaders' retry and redirect rules, offline: no Mac, no network.
       # Master also runs the first in its provider script checks.
       - name: Test the prompt fixture downloaders offline
         if: ${{ !cancelled() }}
         run: |
           python3 scripts/test-prepare-prompt-fixtures.py
           python3 scripts/test-prepare-mimo-prompt-fixtures.py
+          python3 scripts/test-prepare-mimo-image-http-fixtures.py
 
   provider-test-gate:
     name: Provider Tests

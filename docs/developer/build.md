@@ -331,7 +331,8 @@ run, skipped or not, beside the test jobs: the cluster plan's audit
 the component classifier, the tested-change lookup, the route and the workflow
 pins. It also runs the offline self-tests of the prompt fixture downloaders
 (`scripts/test-prepare-prompt-fixtures.py`,
-`scripts/test-prepare-mimo-prompt-fixtures.py`) and the Date comparison
+`scripts/test-prepare-mimo-prompt-fixtures.py`,
+`scripts/test-prepare-mimo-image-http-fixtures.py`) and the Date comparison
 checks. It needs no Mac and no test result, so it runs from the start of the
 run, and the gate fails unless it succeeded. `dev` has no Release Integrity,
 so these run there too.

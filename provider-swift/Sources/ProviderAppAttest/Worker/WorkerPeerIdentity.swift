@@ -71,12 +71,23 @@ struct WorkerCodeIdentity: Sendable, Equatable {
               let executable = information[kSecCodeInfoMainExecutable as String] as? URL else {
             throw AppAttestWorkerError.unauthenticatedPeer
         }
+        let binaryHash = try sha256Hex(of: executable)
+        _ = try validate(code)
+        return Self(cdHash: cdHash, binaryHash: binaryHash, executable: executable)
+    }
+
+    /// Each 1 MiB read runs in its own autorelease pool: `read(upToCount:)`
+    /// returns autoreleased storage, and the calling thread may drain no pool
+    /// until the whole executable is hashed. This is `readDrained` inline:
+    /// ProviderAppAttest does not depend on ProviderCoreFoundation.
+    static func sha256Hex(of executable: URL) throws -> String {
         let file = try FileHandle(forReadingFrom: executable)
         defer { try? file.close() }
         var hasher = SHA256()
-        while let block = try file.read(upToCount: 1024 * 1024), !block.isEmpty { hasher.update(data: block) }
-        _ = try validate(code)
-        return Self(cdHash: cdHash, binaryHash: hasher.finalize().map { String(format: "%02x", $0) }.joined(), executable: executable)
+        while let block = try autoreleasepool(invoking: { try file.read(upToCount: 1024 * 1024) }), !block.isEmpty {
+            hasher.update(data: block)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     func authenticate(_ peer: WorkerAuditIdentity, expectedPID: pid_t,

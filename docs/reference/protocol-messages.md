@@ -522,7 +522,7 @@ routing on them.
 
 #### `slots[].request_limits`
 
-Optional `SlotRequestLimits` ([coordinator/protocol/slot_request_limits.go](https://github.com/Layr-Labs/darkbloom-platform/blob/master/coordinator/protocol/slot_request_limits.go),
+Optional `SlotRequestLimits` ([coordinator/protocol/slot_request_limits.go](https://github.com/Layr-Labs/darkbloom-platform/blob/e7d0a03f1cab0bf4a8b8b6a0b61f49490760bd90/coordinator/protocol/slot_request_limits.go),
 `provider-swift/Sources/ProviderCore/Protocol/SlotRequestLimits.swift`). Only the
 leader of a cluster pair sends it, on its pair's slot, in every heartbeat. Every
 value is a token count.

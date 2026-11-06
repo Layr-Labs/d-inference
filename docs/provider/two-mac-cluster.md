@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-05
+> Last updated: 2026-11-06
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -918,14 +918,24 @@ allowance, clamped to the model and remaining context; an explicit
 at its stop token. Requests above the output ceiling receive HTTP 400 `output_too_long`;
 requests that exceed the admitted combined context are refused before generation.
 Qwen3.8 27B on a tensor-parallel pair accepts its native context, as a single
-Mac serving it does: prompts up to 262,143 tokens and up to 32,768 output tokens,
-within 262,144 combined. The pair is still loaded and planned for the
-32,768 + 32,768-token request, at any number of lanes. A longer request is
-admitted on its own when both Macs' memory holds it at that moment. If it does
-not fit, it alone receives HTTP 503 with the context the pair serves now, and
-other requests keep running. The 27B's pipeline modes keep the 65,536-token
-ceiling. See
+Mac serving it does: prompts up to 262,143 tokens and up to 65,536 output tokens
+(the catalog's output limit, which the coordinator also gives a request that
+omits `max_tokens`), within 262,144 combined. The pair is still loaded and
+planned for the 32,768 + 32,768-token request, at any number of lanes. A longer
+request is admitted on its own when both Macs' memory holds it at that moment.
+If it does not fit, it alone receives HTTP 503 with the context the pair serves
+now, and other requests keep running. The pipeline modes of a model with a
+native context (GLM-5.3-Flash, and the 27B where its policy allows them) keep
+the 32,768 + 32,768-token request. Their leader refuses a longer request itself,
+before either rank is asked. See
 [native context](../architecture/inference.md#qwen27-tensor-parallel-native-context).
+
+The leader's heartbeat tells the coordinator these limits for its pair's slot
+(`request_limits`): the prompt, output and context limits of the mode it serves,
+and the context both Macs' memory admits now. The coordinator sends the pair
+only requests within them; it sends any other request to a single Mac. From the
+first request it serves, the pair's slot also reports its measured prefill and
+decode speeds, as a single Mac's slot does. The warmup canary is not counted.
 
 After updating, let the normal cluster setup refresh both worker capabilities
 and the derived request deadline before serving. For adapters such as GLM that

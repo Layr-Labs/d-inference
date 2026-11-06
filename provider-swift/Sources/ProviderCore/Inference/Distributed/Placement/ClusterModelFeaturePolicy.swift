@@ -41,6 +41,18 @@ enum ClusterModelFeaturePolicy {
             || adapter.servesQwenTensorLanes(runtimeModelID: capability.runtimeModelID)
     }
 
+    /// The requests a cluster serving `mode` takes within the capability's
+    /// profile, as its resident runtime admits them: the whole profile in
+    /// tensor parallel, which charges a request beyond the memory plan at its
+    /// own context when a rank reserves it; the memory plan's request
+    /// (`ClusterWorkerProfile.memoryScope`) in every other mode, whose LOAD
+    /// gates size it and whose ranks refuse a longer reservation
+    /// (`requireWithinMemoryProfile`, GLM's pipeline admission). The same for
+    /// every profile within the standard request.
+    static func servedProfile(_ capability: ClusterRuntimeCapability, mode: ClusterGenerationMode) -> ClusterWorkerProfile {
+        mode == .tensorParallel ? capability.profile : capability.profile.memoryScope
+    }
+
     /// What the plan says when its two sharded families keep different
     /// endpoint features and neither is required (Gemma 4 and MiMo V2.6:
     /// committed-token logprobs in tensor parallel only); nil when they keep

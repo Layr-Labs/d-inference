@@ -522,6 +522,9 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
     /// Transient routing observations; excluded from persisted numeric telemetry.
     public var performanceMeasurements: PerformanceMeasurements?
     public var deadlineWork: DeadlineWork?
+    /// The request sizes this slot serves (`SlotRequestLimits`); a cluster
+    /// leader's slot only, for the whole cluster. nil ⇒ omitted.
+    public var requestLimits: SlotRequestLimits?
 
     /// The KV-cache backend this slot's engine was actually built with:
     /// `EngineV2Bridge.kvBackendKind.rawValue` — "paged" | "contiguous",
@@ -635,6 +638,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         case promptWorkIdentity = "prompt_work_identity"
         case performanceMeasurements = "performance_measurements"
         case deadlineWork = "deadline_work"
+        case requestLimits = "request_limits"
         case kvBackend = "kv_backend"
         case kvBackendFallbackReason = "kv_backend_fallback_reason"
         case stepsExecuted = "steps_executed"
@@ -670,6 +674,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         promptWorkIdentity: PromptWorkIdentity? = nil,
         performanceMeasurements: PerformanceMeasurements? = nil,
         deadlineWork: DeadlineWork? = nil,
+        requestLimits: SlotRequestLimits? = nil,
         kvBackend: String? = nil,
         kvBackendFallbackReason: String? = nil,
         stepsExecuted: Int64 = 0,
@@ -703,6 +708,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         self.promptWorkIdentity = promptWorkIdentity
         self.performanceMeasurements = performanceMeasurements
         self.deadlineWork = deadlineWork
+        self.requestLimits = requestLimits
         self.kvBackend = kvBackend
         self.kvBackendFallbackReason = kvBackendFallbackReason
         self.stepsExecuted = stepsExecuted
@@ -739,6 +745,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         promptWorkIdentity = try container.decodeIfPresent(PromptWorkIdentity.self, forKey: .promptWorkIdentity)
         performanceMeasurements = try container.decodeIfPresent(PerformanceMeasurements.self, forKey: .performanceMeasurements)
         deadlineWork = try container.decodeIfPresent(DeadlineWork.self, forKey: .deadlineWork)
+        requestLimits = try container.decodeIfPresent(SlotRequestLimits.self, forKey: .requestLimits)
         // No `?? ""` fallback: absent must stay absent, or the coordinator
         // cannot tell a pre-0.8.0 provider from one reporting an empty kind.
         kvBackend = try container.decodeIfPresent(String.self, forKey: .kvBackend)
@@ -770,6 +777,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         try container.encodeIfPresent(promptWorkIdentity, forKey: .promptWorkIdentity)
         try container.encodeIfPresent(performanceMeasurements, forKey: .performanceMeasurements)
         try container.encodeIfPresent(deadlineWork, forKey: .deadlineWork)
+        try container.encodeIfPresent(requestLimits, forKey: .requestLimits)
         try container.encode(state, forKey: .state)
         try container.encode(numRunning, forKey: .numRunning)
         try container.encode(numWaiting, forKey: .numWaiting)

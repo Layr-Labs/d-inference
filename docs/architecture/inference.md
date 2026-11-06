@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-05
+> Last updated: 2026-11-06
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -1633,6 +1633,24 @@ observation in each aggregate, current-posture or workload-bucket series.
 Rate averaging and sample counts still follow receipt consumption order;
 an older receipt cannot move freshness backward or create a false evidence gap
 for the next observation. A heartbeat snapshot alone never renews evidence.
+
+A cluster's engine (`DistributedCBv2Engine`) reports the same measurements from
+the requests the cluster serves (`DistributedCBv2Engine+Timing.swift`). Each
+request's terminal usage carries its timing in the engine contract's terms. The
+prompt runs from the owner's start, after every rank reserved, to the first
+committed token. Decode runs from the first committed token to the last, in MTP
+rounds when the ranks report them. The ranks report what they restored only at
+the finish, so the bridge fixes the prompt's overlap with other work and its
+date when the first committed token arrives (`EnginePrefillReceipt.freezeAtFirstToken`,
+`EngineV2Bridge.recordFirstToken`). At a clean finish (`stop` or `length`), the
+engine then reports the prompt observation once, with the final reuse. A
+prompt that ran alone is therefore isolated even when another request joins its
+decode, and a partly restored prompt is never measured as a cold one. A failed
+request reports none, and a request with media is never a text rate. The
+cluster's warmup canary submits as `startupWarmup`, so its few tokens never
+become the slot's rates. Before 0.10.10, a cluster's slot reported no
+measurements. The coordinator's first-content forecast of a cluster therefore
+stayed `unknown`, and a feasible single Mac always displaced the cluster.
 
 Owner-bound native MiMo submissions retain target-decoder prefill observations
 in the separate `native_media_prefill` workload phase. Its timer starts at the
@@ -7145,13 +7163,19 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Ten
 ### Qwen27 tensor-parallel native context
 
 The registered Qwen3.8 27B row advertises the limits the single-Mac product
-serves: up to 262,143 prompt tokens and 32,768 output tokens within a 262,144-token
-context (the catalog's `max_context_length` and `max_output_length`;
-`QwenDenseRegisteredSpecification.nativeOutputTokens`,
-`QwenResidentContextLimits.Ceiling.native`). The worker profile, request
-validation on both ranks and every profile fingerprint use these limits. LOAD,
-the placement planner and every width quote still size the pair for the standard
-request, 32,768 prompt plus 32,768 output tokens
+serves: up to 262,143 prompt tokens and 65,536 output tokens within a 262,144-token
+context. These are the catalog's `max_context_length` and `max_output_length`
+(`QwenDenseRegisteredSpecification.nativeOutputTokens`,
+`QwenResidentContextLimits.Ceiling.native`). 65,536 is also the `max_tokens`
+that the coordinator gives a request that omits it. A single Mac takes any
+`max_tokens` whose sum with the prompt fits its context. Until 0.10.10 the pair
+refused every `max_tokens` above 32,768, so production's 18,774-token prompts
+that asked for 65,536 were refused. The output limit is 65,536, not the
+wire's 131,072. At the pair's measured 35 tokens a second, 65,536 output tokens
+take about 31 minutes, inside the 3,600-second request limit; 131,072 would
+not fit. The worker profile, request validation on both ranks and every profile
+fingerprint use these limits. LOAD, the placement planner and every width quote
+still size the pair for the standard request, 32,768 prompt plus 32,768 output tokens
 (`QwenResidentAdapterDefinition.memoryProfile`, `ClusterWorkerProfile.memoryScope`).
 No lane reserves KV for the native context in advance, and widths one through
 eight are planned and admitted as before. Every other Qwen row's profile is its

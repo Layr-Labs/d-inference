@@ -129,18 +129,18 @@ class ClusterTestPlanTests(unittest.TestCase):
             plan.Selection("b1", "blocking", 1, group=2), plan.Selection("b2", "blocking", 1, group=2),
             plan.Selection("alone", "blocking", 1), plan.Selection("other-shard", "blocking", 2),
         )
-        # The test marks each launch itself: plan.execute spawns the process
-        # right after calling `command`. A start mark of the child's own would
-        # add its interpreter's startup, which a loaded runner delays (runs
-        # 42179534473, 42190956483).
+        # Each launch is timed here, in the test process: plan.execute spawns
+        # the child right after calling `command`. A start mark written by the
+        # child would also time its interpreter's startup, which a loaded
+        # runner delays (runs 42179534473, 42190956483).
         launched = {}
 
         def command(selection, output):
             launched[selection.name] = time.monotonic()
             return ROOT, [sys.executable, "-c", script, selection.name, str(marks)]
 
-        # Group 2 starts 0.5 s after group 1 (CLUSTER_TEST_START_GAP), while
-        # group 1's first selection (1.5 s) still runs.
+        # CLUSTER_TEST_START_GAP: far longer than a1 takes to launch, and a
+        # second shorter than a1's 1.5 s, so group 2 launches while a1 runs.
         gap = 0.5
         with mock.patch.object(plan, "SELECTIONS", selections), mock.patch.object(plan, "command", command), \
                 mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": "", "CLUSTER_TEST_START_GAP": str(gap)}):
@@ -153,15 +153,19 @@ class ClusterTestPlanTests(unittest.TestCase):
                 temporary[name] = value
             else:
                 ended[name] = float(value)
+        # Exactly this shard's selections launch, and each child runs to its end mark.
         names = ("a1", "a2", "b1", "b2", "alone")
         self.assertEqual(set(launched), set(names))
+        self.assertEqual(set(ended), set(names))
         # Each group keeps its order: a selection launches after the one before it ends.
         self.assertLessEqual(ended["a1"], launched["a2"])
         self.assertLessEqual(ended["b1"], launched["b2"])
-        # The first group launches at once and the second one gap after the
-        # groups start, while a1 still runs: the groups overlap, and their
-        # SwiftPM startups do not meet. The gap counts from that start, which
-        # follows `started`, not from a1's launch, which can trail it.
+        # Group 1 launches at once and group 2 one gap after the groups start,
+        # while a1 still runs: the groups overlap, and their SwiftPM startups
+        # do not meet. The plan counts the gap from the groups' start, which
+        # follows `started`, so b1 cannot launch before `started + gap` when
+        # the plan works; a1's launch can trail that start, so a gap counted
+        # from it can fall short.
         self.assertLess(launched["a1"], started + gap)
         self.assertGreaterEqual(launched["b1"], started + gap)
         self.assertLess(launched["b1"], ended["a1"])

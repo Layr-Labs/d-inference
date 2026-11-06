@@ -436,11 +436,16 @@ lane, `format('<job>-{0}', matrix.shard)`.
 
 `.github/workflows/darkbloom-watchdog.yml` is darkbloom-sandbox's GitHub-side
 watchdog (`public/darkbloom-actions/.github/workflows/watchdog.yml` at
-31236c54), copied unchanged: update it by copying a newer one, never by
+d6d257c2), copied unchanged: update it by copying a newer one, never by
 editing. Every 10 minutes it finds a run of this repository whose job with a
 Darkbloom label has waited queued with no runner for
-`DARKBLOOM_WATCHDOG_MINUTES` while no Darkbloom job of the run moved, marks
-it with a `Darkbloom watchdog` check run, cancels it and re-runs its route job
+`DARKBLOOM_WATCHDOG_MINUTES`, timed from the job's own creation, while no
+Darkbloom job of the run got a runner in that time. Other Darkbloom jobs of
+the run that ran, or still run, do not hold it back: a run with one shard
+stranded is rescued too. It sees only GitHub, so a job that waits at the
+payer's concurrency or resource limit looks stranded to it; set
+`DARKBLOOM_WATCHDOG_MINUTES` above such waits. It marks the run with a
+`Darkbloom watchdog` check run, cancels it and re-runs its route job
 (`Select Runners`, here `plan / route / Select Runners`) and the jobs that
 need it; the new route keeps every fallback. A run is rescued once; stranded
 again, it is only cancelled. Its token has `actions: write` and

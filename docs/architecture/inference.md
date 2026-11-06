@@ -2356,7 +2356,11 @@ wins unless a depth beats it. A depth whose round cost was never measured on
 this engine is run for one window first. Round costs are kept across requests,
 since they belong to the Mac; acceptance is not. Ordinary decode re-probes at
 depth 2 after 128 tokens, doubling after each losing probe up to 512, and back
-to 128 after a winning one. Greedy rows equal ordinary decode at every depth.
+to 128 after a winning one. The probe, the measuring windows and the chosen
+depth stay within the plan's automatic verification envelope (depth 3 with two
+rows and depth 1 with three or four on M3-M5; depth 3 alone and depth 1 with two
+on M1/M2); a plan the envelope keeps at depth 0 decodes ordinarily and leaves the
+probe schedule as it was. Greedy rows equal ordinary decode at every depth.
 Sampled rows keep the acceptance rule `mtp_acceptance` names, and only how
 many drafts a round proposes changes
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPDepthController.swift`).

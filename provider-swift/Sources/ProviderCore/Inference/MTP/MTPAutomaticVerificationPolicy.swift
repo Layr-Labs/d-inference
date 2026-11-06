@@ -39,9 +39,9 @@ public enum MTPAutomaticVerificationPolicy {
     /// The adaptive controller's request-probe depth (`CBv2MTPConfig.requestProbeDepth`):
     /// Gemma QAT opens each request with a depth-2 window, then follows the
     /// request's own acceptance against this engine's measured cost of a round
-    /// at each depth (H1/H2: chat stays near plain, tools and code go deep).
-    /// nil keeps the incremental controller (every other model, and explicit
-    /// offline verification controls).
+    /// at each depth, so chat stays near ordinary decode while tools and code
+    /// go deep. nil keeps the incremental controller (every other model, and
+    /// explicit offline verification controls).
     static func requestProbeDepth(
         usesRequestStatefulDrafter: Bool, modelID: String?, hasBenchmarkVerificationOverride: Bool = false
     ) -> Int? {

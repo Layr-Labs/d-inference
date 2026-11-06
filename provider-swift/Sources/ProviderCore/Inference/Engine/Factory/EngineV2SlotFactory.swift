@@ -283,11 +283,16 @@ enum EngineV2SlotFactory {
         let mtpVerification = providerMTPVerificationPolicy(
             for: assistantHandle?.drafter,
             automaticRectangularTokens: automaticRectangularTokens)
+        let usesRequestStatefulDrafter = assistantHandle?.drafter is any CBv2MTPRequestStatefulDrafter
+        let hasBenchmarkVerificationOverride = assemblyOverrides.gemmaMTPVerification != nil
         let draftDepth = MTPAutomaticVerificationPolicy.draftDepthPolicy(
-            usesRequestStatefulDrafter:
-                assistantHandle?.drafter is any CBv2MTPRequestStatefulDrafter,
+            usesRequestStatefulDrafter: usesRequestStatefulDrafter,
             modelID: modelId,
-            hasBenchmarkVerificationOverride: assemblyOverrides.gemmaMTPVerification != nil)
+            hasBenchmarkVerificationOverride: hasBenchmarkVerificationOverride)
+        let requestProbeDepth = MTPAutomaticVerificationPolicy.requestProbeDepth(
+            usesRequestStatefulDrafter: usesRequestStatefulDrafter,
+            modelID: modelId,
+            hasBenchmarkVerificationOverride: hasBenchmarkVerificationOverride)
         let mtpAcceptance = MTPAcceptancePolicy.resolve(
             global: mtpAcceptanceConfig, byModel: mtpAcceptanceConfigByModel, modelID: modelId)
         if let unrecognized = mtpAcceptance.unrecognized {
@@ -307,10 +312,7 @@ enum EngineV2SlotFactory {
             verificationMode: mtpVerification.mode,
             maxAutomaticRectangularTokens: mtpVerification.automaticRectangularTokens,
             acceptance: mtpAcceptance.acceptance,
-            requestProbeDepth: MTPAutomaticVerificationPolicy.requestProbeDepth(
-                usesRequestStatefulDrafter: assistantHandle?.drafter is any CBv2MTPRequestStatefulDrafter,
-                modelID: modelId,
-                hasBenchmarkVerificationOverride: assemblyOverrides.gemmaMTPVerification != nil))
+            requestProbeDepth: requestProbeDepth)
         if let verification = assemblyOverrides.gemmaMTPVerification {
             mtpConfig = try verification.applying(
                 to: mtpConfig, target: servingModel, drafter: assistantHandle?.drafter)

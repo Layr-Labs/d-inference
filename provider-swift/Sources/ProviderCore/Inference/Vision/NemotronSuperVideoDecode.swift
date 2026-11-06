@@ -23,9 +23,12 @@ enum NemotronSuperVideoDecode {
         /// other than BGRA.
         case unsupportedRepresentation
         /// Beyond the coded frame, frame grid, source frame, control-marker
-        /// or decoded-pixel ceiling, or a decoder that outlasted its
-        /// `decodeAllowance`.
+        /// or decoded-pixel ceiling: a property of the movie.
         case limit
+        /// The wait on the decoder outlasted the plan's `decodeAllowance`.
+        /// The allowance is wall time on this machine, so a valid movie on a
+        /// slow or loaded machine can spend it; another provider may decode it.
+        case decodeAllowanceSpent
         /// Decoded frames disagree with the inspected track.
         case inconsistentFrames
     }
@@ -611,7 +614,8 @@ private final class SerialReader: @unchecked Sendable {
     var earlyEnd: any Error {
         if Task.isCancelled { return CancellationError() }
         return lock.withLock { expired }
-            ? NemotronSuperVideoDecode.Failure.limit : NemotronSuperVideoDecode.Failure.inconsistentFrames
+            ? NemotronSuperVideoDecode.Failure.decodeAllowanceSpent
+            : NemotronSuperVideoDecode.Failure.inconsistentFrames
     }
 
     /// Under the lock.

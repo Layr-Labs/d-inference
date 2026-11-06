@@ -143,15 +143,15 @@ struct NemotronSuperVideoReaderRetryTests {
     }
 
     /// A read slower than the allowance left, as on a loaded machine, ends
-    /// the decode as `limit`. The reader was stopped, not failed, so no pass
+    /// the decode as `decodeAllowanceSpent`. The reader was stopped, not failed, so no pass
     /// is reported and the reader is not replaced. With allowance to spare
     /// the same slow read is only late, and the frames match.
-    @Test func aReadThatOutlastsTheAllowanceIsALimitAndNotRetried() async throws {
+    @Test func aReadThatOutlastsTheAllowanceSpendsItAndIsNotRetried() async throws {
         let plan = try await Self.inspect(try Self.clip())
         let baseline = try await Self.frames(plan)
         let slow = SlowRead(atRead: 1, seconds: 0.5)
         let passes = FailedPasses()
-        await #expect(throws: Decode.Failure.limit) {
+        await #expect(throws: Decode.Failure.decodeAllowanceSpent) {
             try await Self.reading(through: slow.hook, observing: passes) {
                 try await Self.frames(plan, allowance: .milliseconds(100))
             }

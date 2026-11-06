@@ -98,21 +98,21 @@ struct NemotronSuperVideoDecodeTests {
     }
 
     /// A spent allowance ends the pull's wait on the decoder at once and
-    /// fails it as a limit; the reader stops behind the read in flight.
+    /// fails it as `decodeAllowanceSpent`; the reader stops behind the read in flight.
     @Test(.timeLimit(.minutes(2))) func decodeAllowanceStopsTheReader() async throws {
         // 240 frames at 60 fps: 8 sampled, every frame up to 239 decodes.
         let plan = try await Decode.inspect(Clips.uri(try await Clips.movie(frames: 240, fps: 60)))
         try #require(plan.frameIndices.count == 8 && plan.decodedFrames == 240)
         let spent = try await Decode.Frames(plan, decodeAllowance: .zero)
-        #expect(throws: Decode.Failure.limit) { try spent.next() }
+        #expect(throws: Decode.Failure.decodeAllowanceSpent) { try spent.next() }
         // A negative allowance is spent too, under a second (zero seconds,
         // negative attoseconds) as beyond it.
         for allowance in [Duration.milliseconds(-500), .seconds(-2)] {
             let negative = try await Decode.Frames(plan, decodeAllowance: allowance)
-            #expect(throws: Decode.Failure.limit) { try negative.next() }
+            #expect(throws: Decode.Failure.decodeAllowanceSpent) { try negative.next() }
         }
         let short = try await Decode.Frames(plan, decodeAllowance: .microseconds(100))
-        #expect(throws: Decode.Failure.limit) { while try short.next() != nil {} }
+        #expect(throws: Decode.Failure.decodeAllowanceSpent) { while try short.next() != nil {} }
         let planned = try await Decode.Frames(plan)
         var count = 0
         while try planned.next() != nil { count += 1 }
@@ -156,7 +156,7 @@ struct NemotronSuperVideoDecodeTests {
                 if iteration.isMultiple(of: 2) {
                     let short = try await Decode.Frames(plan,
                                                         decodeAllowance: .microseconds(10 * (iteration % 20 + 1)))
-                    #expect(throws: Decode.Failure.limit) { while try short.next() != nil {} }
+                    #expect(throws: Decode.Failure.decodeAllowanceSpent) { while try short.next() != nil {} }
                 } else {
                     try await Self.cancelMidDecode(plan, afterMicroseconds: 100 * (iteration % 10))
                 }

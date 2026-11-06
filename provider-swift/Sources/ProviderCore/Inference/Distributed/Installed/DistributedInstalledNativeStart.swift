@@ -30,14 +30,17 @@ enum DistributedInstalledNativeStart {
     /// start under it, names the declared assistant; without one the digest
     /// is unchanged.
     static func resourcePolicySHA256(_ capability: ClusterRuntimeCapability) -> Data {
-        resourcePolicySHA256(capability, assistant: ClusterPublicModels.tensorAssistant(for: capability))
+        resourcePolicySHA256(capability, assistant: ClusterPublicModels.tensorAssistant(for: capability),
+                             gemmaAssistant: ClusterPublicModels.gemmaTensorAssistant(for: capability))
     }
 
-    /// `resourcePolicySHA256` with the public assistant a given declaration names.
-    static func resourcePolicySHA256(_ capability: ClusterRuntimeCapability, assistant: ClusterPublicTensorAssistant?) -> Data {
+    /// `resourcePolicySHA256` with the public assistants a given declaration names
+    /// (a Gemma assistant adds its fields the same way; without one the digest is unchanged).
+    static func resourcePolicySHA256(_ capability: ClusterRuntimeCapability, assistant: ClusterPublicTensorAssistant?,
+                                     gemmaAssistant: ClusterPublicGemmaTensorAssistant? = nil) -> Data {
         digest(["darkbloom/installed-resource-policy/v1", capability.arithmeticPolicyID,
             capability.arithmeticPolicySHA256, capability.stateSemantics, capability.schedulingPolicy]
-            + (assistant?.resourcePolicyFields ?? []))
+            + (assistant?.resourcePolicyFields ?? []) + (gemmaAssistant?.resourcePolicyFields ?? []))
     }
 
     /// The runtime block a member registers in its plan for a model

@@ -1,0 +1,51 @@
+.fallback {
+  display: grid;
+  gap: 6px;
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--warning-line);
+  border-radius: 8px;
+  background: var(--warning-wash);
+  font-size: 12px;
+}
+
+.fallback strong {
+  font-weight: 500;
+  color: var(--warning);
+}
+
+.fallback span {
+  color: var(--text-secondary);
+}
+
+.fallback :global(.button) {
+  justify-self: start;
+  margin-top: 6px;
+}
+
+.fallback + :global(.notice) {
+  margin-top: 12px;
+}
+
+.start {
+  gap: 8px;
+}
+
+.note {
+  margin-top: 10px;
+  min-height: 17px;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+  text-wrap: pretty;
+}
+
+.more {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 22px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}

@@ -1,0 +1,85 @@
+.link {
+  margin-top: 22px;
+  padding: 16px 18px;
+  border: 1px solid color-mix(in srgb, var(--blue) 55%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--blue) 6%, transparent);
+  animation: linkIn 0.35s ease-out both;
+}
+
+.link header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.link header strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.link header small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.linkStep {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--blue);
+  color: #fff;
+  font-size: 10px;
+}
+
+.code {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 40px;
+  margin: 16px 0 14px 32px;
+}
+
+.code strong {
+  font-size: 21px;
+  font-weight: 500;
+  letter-spacing: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.codePlaceholder {
+  display: block;
+  width: 150px;
+  height: 14px;
+  border-radius: 4px;
+  background: rgba(var(--contrast-rgb), 0.08);
+}
+
+.link footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-left: 32px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.link footer [role='status'] {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+@keyframes linkIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}

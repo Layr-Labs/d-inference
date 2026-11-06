@@ -196,6 +196,11 @@ struct ToolConfigWriterTests {
         }
         #expect(plans == 2)
         #expect(try String(contentsOf: file, encoding: .utf8) == "theirs+mine")
+        // Only the attempt that went through keeps a backup: the bytes it replaced.
+        let kept = backups(directory, tool: "hermes")
+        #expect(kept.count == 1)
+        let backup = directory.file("state/integrations/backups/hermes/" + (try #require(kept.first)))
+        #expect(try String(contentsOf: backup, encoding: .utf8) == "theirs")
 
         var always = writer(directory, tool: .hermes)
         var round = 0
@@ -207,6 +212,24 @@ struct ToolConfigWriterTests {
         #expect(refused == .refused(
             file: file, .file("it changed while Darkbloom was editing it; run this again")))
         #expect(try String(contentsOf: file, encoding: .utf8) == "theirs 2")
+        #expect(backups(directory, tool: "hermes") == kept)
+    }
+
+    @Test("a re-plan that finds the file already as planned writes nothing and leaves no backup")
+    func racedIntoTheSameBytes() throws {
+        let directory = try TemporaryDirectory()
+        let file = try directory.write("base", to: "config.yaml")
+        var racing = writer(directory, tool: .hermes)
+        var plans = 0
+        racing.beforeReplace = { url in try Data("base+mine".utf8).write(to: url) }
+        let outcome = try racing.apply(to: file, newFileMode: 0o600) { existing in
+            plans += 1
+            return appending("+mine")(existing)
+        }
+        #expect(outcome == .unchanged(file: file, summary))
+        #expect(plans == 2)
+        #expect(try String(contentsOf: file, encoding: .utf8) == "base+mine")
+        #expect(backups(directory, tool: "hermes").isEmpty)
     }
 
     @Test("a dry run plans without touching anything: no file, no backup, no state folder")

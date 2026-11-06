@@ -7,13 +7,6 @@ enum IntegrationTool: String, CaseIterable, Sendable {
     case opencode
     case hermes
 
-    var displayName: String {
-        switch self {
-        case .opencode: "OpenCode"
-        case .hermes: "Hermes"
-        }
-    }
-
     /// The user config this tool reads, chosen as the tool itself chooses it.
     func configFile(in environment: ToolIntegrationEnvironment) -> URL {
         switch self {
@@ -57,8 +50,8 @@ struct IntegrationProvider: Equatable, Sendable {
     }
 }
 
-/// Where a tool sends its requests: Darkbloom's local endpoint, and the file that holds its key. The tools read the
-/// key from that file; no tool config ever holds the key itself.
+/// Where a tool sends its requests: Darkbloom's local endpoint, and the file that holds its key. It carries the key
+/// file's path, never the key, so no planner can write the key into a tool's config: the tools read it from the file.
 struct IntegrationEndpoint: Equatable, Sendable {
     /// `http://<host>:<port>/v1`, as `local.json` names the live server.
     let baseURL: String
@@ -75,10 +68,10 @@ struct IntegrationEndpoint: Equatable, Sendable {
 
 /// The home, environment variables and Darkbloom state directory an integration runs against; tests use temp ones.
 struct ToolIntegrationEnvironment: Sendable {
-    var home: URL
-    var variables: [String: String]
+    let home: URL
+    let variables: [String: String]
     /// `<install dir>/integrations`: the lock and the backups. Darkbloom never writes them into a tool's directory.
-    var stateDirectory: URL
+    let stateDirectory: URL
 
     init(home: URL, variables: [String: String], stateDirectory: URL? = nil) {
         self.home = home

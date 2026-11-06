@@ -44,11 +44,12 @@ enum HermesConfigPlan {
             }
             let change = try edit.setProvider(endpoint: endpoint, models: usable, main: main)
             try edit.setMainModel(main)
+            let text = edit.result()
             let summary = ToolConfigSummary(
                 provider: change, models: usable.map(\.id), defaultModel: main,
                 leftOut: models.filter { ($0.contextLength ?? 0) < minimumContext }.map(\.id),
-                droppedComments: edit.droppedComments)
-            guard let text = edit.result() else { return .unchanged(summary) }
+                droppedComments: text.map { edit.droppedComments(in: $0) } ?? 0)
+            guard let text else { return .unchanged(summary) }
             return .change(Data(text.utf8), summary)
         } catch {
             return .refused(.file(error.reason))
@@ -140,17 +141,24 @@ private struct HermesEdit {
     mutating func setProvider(
         endpoint: IntegrationEndpoint, models: [IntegrationModel], main: String
     ) throws(HermesRefusal) -> ToolConfigSummary.ProviderChange {
-        let comment = "# Added by `\(provider.id) start --hermes`. Run it again to refresh \(provider.name)'s models."
-        func block(_ indent: String) -> [String] { providerBlock(indent: indent, endpoint: endpoint, models: models, main: main) }
+        func block(_ indent: String) -> [String] {
+            providerBlock(indent: indent, endpoint: endpoint, models: models, main: main)
+        }
+        // A new block comes with a line saying where it came from. A replaced block keeps the lines above it, that one
+        // included, so a re-run never adds a second.
+        func newBlock(_ indent: String) -> [String] {
+            [indent + "# Added by `\(provider.id) start --hermes`. Run it again to refresh \(provider.name)'s models."]
+                + block(indent)
+        }
         guard let section = providers else {
-            appended += ["providers:", unit + comment] + block(unit)
+            appended += ["providers:"] + newBlock(unit)
             return .added
         }
         switch section.value {
         case "":
             let children = try children(of: section)
             guard let first = children.first else {
-                edits.append((section.line + 1..<section.line + 1, [unit + comment] + block(unit)))
+                edits.append((section.line + 1..<section.line + 1, newBlock(unit)))
                 return .added
             }
             let indent = String(repeating: " ", count: lines[first.line].indent)
@@ -158,13 +166,13 @@ private struct HermesEdit {
             guard mine.count < 2 else { throw HermesRefusal(reason: "it has two \"\(provider.id)\" providers") }
             guard let current = mine.first else {
                 let end = bodyEnd(of: section)
-                edits.append((end..<end, [indent + comment] + block(indent)))
+                edits.append((end..<end, newBlock(indent)))
                 return .added
             }
             return replace(current.line..<current.end, with: block(indent)) ? .updated : .unchanged
         case "{}", "~", "null", "Null", "NULL":
             try requireOneLine(section)
-            edits.append((section.line..<section.line + 1, ["providers:", unit + comment] + block(unit)))
+            edits.append((section.line..<section.line + 1, ["providers:"] + newBlock(unit)))
             return .added
         default:
             throw HermesRefusal(reason: "its \"providers\" section isn't a list of providers Darkbloom can edit")
@@ -174,8 +182,9 @@ private struct HermesEdit {
     mutating func setMainModel(_ main: String) throws(HermesRefusal) {
         let providerLine = "provider: " + Self.quoted("custom:\(provider.id)")
         let defaultLine = "default: " + Self.quoted(main)
+        let mapping = [unit + providerLine, unit + defaultLine]
         guard let section = model else {
-            appended += ["model:", unit + providerLine, unit + defaultLine]
+            appended += ["model:"] + mapping
             return
         }
         let children = section.value.isEmpty ? try children(of: section) : []
@@ -199,7 +208,7 @@ private struct HermesEdit {
         }
         if section.value.isEmpty {
             // `model:` with nothing under it: the children go below, and the line keeps its comment.
-            edits.append((section.line + 1..<section.line + 1, [unit + providerLine, unit + defaultLine]))
+            edits.append((section.line + 1..<section.line + 1, mapping))
             return
         }
         // A model ID or Hermes' fresh-install `model: ""`: the line becomes the mapping.
@@ -207,7 +216,7 @@ private struct HermesEdit {
             throw HermesRefusal(reason: "its \"model\" section isn't one Darkbloom can edit")
         }
         try requireOneLine(section)
-        edits.append((section.line..<section.line + 1, ["model:", unit + providerLine, unit + defaultLine]))
+        edits.append((section.line..<section.line + 1, ["model:"] + mapping))
     }
 
     private func providerBlock(
@@ -240,10 +249,9 @@ private struct HermesEdit {
 
     // MARK: - Result
 
-    /// Comments of the original that the edit removed (on replaced or removed lines).
-    var droppedComments: Int {
-        guard let text = result() else { return 0 }
-        return lines.compactMap(Self.comment).filter { !text.contains($0) }.count
+    /// Comments of the original that `text` no longer holds: those on the lines the edit replaced or removed.
+    func droppedComments(in text: String) -> Int {
+        lines.compactMap(Self.comment).filter { !text.contains($0) }.count
     }
 
     /// The new text, or nil when it is the same as the file's. Edits apply from the end; an insertion and a

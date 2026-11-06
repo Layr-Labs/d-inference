@@ -39,48 +39,58 @@ struct ToolConfigWriter {
     ) throws -> Outcome {
         do {
             let target = try Self.resolve(file)
-            var current = try Self.read(target)
+            let current = try Self.read(target)
             let planned = plan(current)
-            guard case .change(var bytes, var summary) = planned else { return outcome(of: planned, file) }
-            if dryRun { return .planned(file: file, contents: bytes, summary) }
+            guard case .change(let bytes, let summary) = planned, !dryRun else { return outcome(of: planned, file) }
             return try withLock {
-                var raced = 0
-                while true {
-                    let mode = current == nil ? newFileMode : try Self.mode(of: target)
-                    let backup = try current.map { try makeBackup(of: $0, named: file.lastPathComponent) }
-                    do {
-                        let expected = current
-                        try AtomicFile.write(bytes, to: target, mode: mode) {
-                            try beforeReplace(target)
-                            guard try Self.read(target) == expected else { throw ChangedDuringEdit() }
-                        }
-                    } catch is ChangedDuringEdit {
-                        if let backup { try? FileManager.default.removeItem(at: backup) }
-                        raced += 1
-                        guard raced < 2 else {
-                            return .refused(file: file, .file("it changed while Darkbloom was editing it; run this again"))
-                        }
-                        current = try Self.read(target)
-                        let replanned = plan(current)
-                        guard case .change(let newBytes, let newSummary) = replanned else {
-                            return outcome(of: replanned, file)
-                        }
-                        (bytes, summary) = (newBytes, newSummary)
-                        continue
-                    }
-                    if backup != nil { pruneBackups(named: file.lastPathComponent) }
-                    let undo = backup.map { "cp \(ToolIntegration.shellQuoted($0.path)) \(ToolIntegration.shellQuoted(file.path))" }
-                        ?? "rm \(ToolIntegration.shellQuoted(file.path))"
-                    return .written(file: file, backup: backup, undo: undo, summary)
+                if let written = try replace(file, at: target, holding: current, with: bytes, summary, newFileMode) {
+                    return written
                 }
+                // Something changed the file since it was read (the tool's own writer, or a Darkbloom run that took
+                // the lock first): plan once more against what is there now, and refuse if it changes again.
+                let theirs = try Self.read(target)
+                let replanned = plan(theirs)
+                guard case .change(let newBytes, let newSummary) = replanned else { return outcome(of: replanned, file) }
+                return try replace(file, at: target, holding: theirs, with: newBytes, newSummary, newFileMode)
+                    ?? .refused(file: file, .file("it changed while Darkbloom was editing it; run this again"))
             }
         } catch let refusal as ToolConfigRefusal {
             return .refused(file: file, refusal)
         }
     }
 
+    /// Backs up `current` and puts `bytes` in its place, unless something else changed the file since it was read:
+    /// then nil, with nothing written and the backup removed.
+    private func replace(
+        _ file: URL, at target: URL, holding current: Data?, with bytes: Data, _ summary: ToolConfigSummary,
+        _ newFileMode: mode_t
+    ) throws -> Outcome? {
+        let mode = current == nil ? newFileMode : try Self.mode(of: target)
+        let backup = try current.map { try makeBackup(of: $0, named: file.lastPathComponent) }
+        do {
+            try AtomicFile.write(bytes, to: target, mode: mode) {
+                try beforeReplace(target)
+                guard try Self.read(target) == current else { throw ChangedDuringEdit() }
+            }
+        } catch is ChangedDuringEdit {
+            if let backup { try? FileManager.default.removeItem(at: backup) }
+            return nil
+        }
+        if backup != nil { pruneBackups(named: file.lastPathComponent) }
+        return .written(file: file, backup: backup, undo: Self.undoCommand(file, backup: backup), summary)
+    }
+
+    /// The shell command that puts `file` back exactly: copy the backup (the replaced bytes, byte for byte) over it,
+    /// which keeps its mode and writes through a link as the edit did; or remove the file the edit created.
+    private static func undoCommand(_ file: URL, backup: URL?) -> String {
+        let quotedFile = ToolIntegration.shellQuoted(file.path)
+        guard let backup else { return "rm \(quotedFile)" }
+        return "cp \(ToolIntegration.shellQuoted(backup.path)) \(quotedFile)"
+    }
+
     private struct ChangedDuringEdit: Error {}
 
+    /// The outcome of a plan with nothing to write: unchanged, refused, or a dry run's bytes.
     private func outcome(of plan: ToolConfigPlan, _ file: URL) -> Outcome {
         switch plan {
         case .unchanged(let summary): .unchanged(file: file, summary)

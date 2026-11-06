@@ -8,9 +8,9 @@
 # server, which records what it was sent.
 #
 # Nothing real is read or written: HOME, every XDG_* folder, TMPDIR and Darkbloom's discovery folder
-# (DARKBLOOM_LOCAL_DIR) are inside one temp folder; OpenCode runs under `env -i` with `--standalone` (its own private server, never the
-# background service) and OPENCODE_DISABLE_PROJECT_CONFIG=1. The fake server listens on 127.0.0.1 on a port the
-# system picks; the key is a fake one made for the run.
+# (DARKBLOOM_LOCAL_DIR) are inside one temp folder; OpenCode runs only there, under `env -i`, with `--standalone`
+# (its own private server, never the background service) and OPENCODE_DISABLE_PROJECT_CONFIG=1. The fake server
+# listens on 127.0.0.1 on a port the system picks; the key is a fake one made for the run.
 #
 # Usage: scripts/integrations/opencode-smoke.sh [--skip-build] [--scratch-path DIR] [--opencode PATH] [--keep]
 #   --skip-build      use the existing test build (swift test --skip-build)
@@ -42,7 +42,8 @@ fi
 work="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/opencode-smoke.XXXXXX")" && pwd -P)"
 server_pid=""
 cleanup() {
-    [[ -n "$server_pid" ]] && kill "$server_pid" 2>/dev/null || true
+    # Reaped here, so bash doesn't print a "Terminated" line for the fake server.
+    [[ -n "$server_pid" ]] && { kill "$server_pid"; wait "$server_pid"; } 2>/dev/null || true
     if [[ $keep == 1 ]]; then echo "kept: $work"; else rm -rf "$work"; fi
 }
 trap cleanup EXIT
@@ -132,7 +133,6 @@ server_pid=$!
 for _ in $(seq 1 100); do [[ -s "$work/port" ]] && break; sleep 0.1; done
 port="$(cat "$work/port")"
 case "$port" in 8000|47420|47421|47422|47423) echo "the system gave a reserved port ($port)" >&2; exit 1 ;; esac
-echo "fake server: 127.0.0.1:$port (pid $server_pid); OpenCode: $("$opencode" --version 2>/dev/null | head -1)"
 
 # A throwaway home with Darkbloom's discovery folder: the key file and a local.json naming the fake server.
 prepare_home() {
@@ -168,6 +168,8 @@ run_opencode() {
         OPENCODE_DISABLE_AUTOUPDATE=1 TERM=dumb "$opencode" "$@")
 }
 mkdir -p "$work/project"
+# Even `--version` starts OpenCode's log and folders, so it too runs in a throwaway home.
+echo "fake server: 127.0.0.1:$port (pid $server_pid); OpenCode: $(run_opencode "$work/version-home" --version 2>/dev/null | head -1)"
 
 # 1. A new config.
 home="$work/home"

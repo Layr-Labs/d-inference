@@ -3,8 +3,9 @@ import ProviderCore
 
 /// One model as a tool lists it: what Darkbloom's endpoint serves, with the catalog's name, limits and capabilities.
 struct IntegrationModel: Equatable, Sendable {
-    /// Where requests for the model run, in the order the tools list them.
-    enum Location: Int, Comparable, Sendable {
+    /// Where requests for the model run. The cases are declared in the order the tools list them, which is the order
+    /// `Comparable` gives them.
+    enum Location: Comparable, Sendable {
         case thisMac
         case yourMacs
         /// Other Darkbloom machines: the local router lists them only when the owner opted into "My Macs first".
@@ -17,8 +18,6 @@ struct IntegrationModel: Equatable, Sendable {
             case .network: "Darkbloom network, billed"
             }
         }
-
-        static func < (lhs: Location, rhs: Location) -> Bool { lhs.rawValue < rhs.rawValue }
     }
 
     let id: String

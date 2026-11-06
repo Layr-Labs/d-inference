@@ -26,6 +26,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
          attachment: WorkerOwnerAttachment? = nil,
          generationMode: ClusterGenerationMode = .pipeline, speculativeTerms: QwenMTPTerms? = nil,
          tensorAssistantPolicy: ClusterQwenTensorAssistantPolicy? = nil,
+         gemmaAssistant: (directory: URL, aggregateSHA256: String)? = nil,
          qualification: QwenResidentQualificationSwitches = .refused,
          dataPlane: ClusterDataPlaneCredential? = nil, prefixSSDKey: Data? = nil, tensorShares: [Int] = [1, 1]) throws {
         // With the owner's attachment, the exchange it installed creates the
@@ -39,11 +40,16 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
             && Gemma4TensorParallelResidentRuntime.serves(runtimeModelID: configuration.identity.modelID):
             // Gemma 4 shares the layer-stage family; its tensor-parallel rank is its own runtime,
             // whose prompt-prefix cache keeps an SSD tier with the owner's key.
-            guard speculativeTerms == nil, tensorAssistantPolicy == nil, tensorShares == [1, 1], let dataPlane else {
-                throw WorkerFailure.invalid("Gemma tensor parallel runs equal shares over a keyed data plane without speculation")
+            // `--mtp-depth` with the pinned assistant (`ClusterGemmaTensorAssistant`) adds speculative rounds.
+            guard (speculativeTerms == nil) == (gemmaAssistant == nil), tensorAssistantPolicy == nil, tensorShares == [1, 1],
+                  let dataPlane else {
+                throw WorkerFailure.invalid("Gemma tensor parallel runs equal shares over a keyed data plane, with speculation only from its pinned assistant")
             }
             owner = .gemma4TensorParallel(try .load(configuration, qualification: qualification, dataPlane: dataPlane,
-                prefixSSDKey: prefixSSDKey))
+                prefixSSDKey: prefixSSDKey, assistant: gemmaAssistant.map {
+                    Gemma4TensorParallelAssistantLaunch(directory: $0.directory, aggregateSHA256: $0.aggregateSHA256,
+                                                        depth: speculativeTerms!.depth)
+                }))
         case .qwenDense where generationMode == .tensorParallel:
             owner = .qwenTensorParallel(try .load(configuration, shares: tensorShares, qualification: qualification,
                 dataPlane: dataPlane, prefixSSDKey: prefixSSDKey, speculativeTerms: speculativeTerms,

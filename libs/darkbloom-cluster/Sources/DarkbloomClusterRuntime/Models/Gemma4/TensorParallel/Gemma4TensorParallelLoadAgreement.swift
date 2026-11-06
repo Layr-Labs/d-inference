@@ -20,6 +20,9 @@ struct Gemma4TensorParallelLoadAgreement: Equatable {
     /// this build's `tensorParallelKeepsPromptPrefixes`, unless the diagnosis switch
     /// turns them off on a rank, which its peer then refuses.
     var prefixCache = Gemma4ResidentAdapterDefinition.tensorParallelKeepsPromptPrefixes
+    /// Speculative rounds with the pinned assistant (`Gemma4TensorParallelAssistantLaunch.agreementFields`);
+    /// empty (and absent from the fields, so a plain load's agreement is unchanged) without it.
+    var assistant: [String] = []
 
     /// The mode's terms (FP32 partials, rounded once after the sum; the
     /// sealed all-sum) and the plan's: where each layer's two sums are taken
@@ -46,6 +49,7 @@ struct Gemma4TensorParallelLoadAgreement: Equatable {
             + kv.loadAgreementFields + kvQuantization.loadAgreementFields
             + ["gemma4-tensor-parallel-prefix-v1", prefixCache ? "on" : "off"]
             + ClusterDataPlaneAgreement.loadAgreementFields
+            + assistant
     }
 
     /// The agreement both ranks compare: this rank's registered row's

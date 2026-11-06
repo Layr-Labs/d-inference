@@ -19,8 +19,14 @@ public final class Gemma4AssistantCheckpoint: @unchecked Sendable {
     static func loadModel(directory: URL) throws -> Gemma4AssistantDraftModel {
         final class Box: @unchecked Sendable { var result: Result<Gemma4AssistantDraftModel, Error>? }
         let box = Box(), done = DispatchSemaphore(value: 0)
+        // The default device is task-scoped: the detached load runs on the caller's.
+        let device = Device.defaultDevice()
         Task.detached {
-            do { box.result = .success(try await Gemma4AssistantDraftModel.load(from: directory)) }
+            do {
+                box.result = .success(try await Device.withDefaultDevice(device) {
+                    try await Gemma4AssistantDraftModel.load(from: directory)
+                })
+            }
             catch { box.result = .failure(error) }
             done.signal()
         }

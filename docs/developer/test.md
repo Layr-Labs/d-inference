@@ -1271,7 +1271,8 @@ with isolated fixture runners: each `provider-swift/Tests/Cluster*Checks/run.sh`
 exits non-zero on a failure. When the classifier selects `cluster` (see below),
 CI (`.github/workflows/provider-tests.yml`) runs them in three places. The job
 `cluster-release-checks` (Cluster Release Build Checks; its runner is in
-[Job sizes](build.md#job-sizes)) runs `libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh` and
+[Job sizes](build.md#job-sizes)) runs
+`libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh` and
 `libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh`, which compile a
 release build of the cluster runtime. Shard 2 of `test-cluster-focused`
 (Cluster Focused Checks) runs
@@ -1306,8 +1307,9 @@ selected. A provider-only change runs 3 Macs (the provider build and the 2
 provider shards). A cluster change adds 9 Macs (the cluster build, the release
 build checks, 3 runtime shards, 2 focused shards and 2 GPU shards). Every
 Mac job but the 2 GPU shards is routed; the GPU shards run on Blacksmith
-([job sizes](build.md#job-sizes)). A change whose tree a successful run of the same workflow
-already tested runs no test job at all (`scripts/ci-tested-tree.py`).
+([job sizes](build.md#job-sizes)). A change whose tree a successful run of the
+same workflow already tested runs no test job at all
+(`scripts/ci-tested-tree.py`).
 
 CI runs the runtime test target (`DarkbloomClusterRuntimeTests`) on the
 provider's macOS CI runners (see [CI runner routing](build.md#ci-runner-routing)),
@@ -1916,8 +1918,7 @@ only the labels of that size. It also covers bad sizes and the macOS cap order.
 It also pins each routed job's lanes (one per provider or cluster shard,
 matching the job's matrix), size, fallback, timeout and read-only permissions,
 and keeps release workflows and Cluster GPU Tests on literal Blacksmith
-runners. No check contacts
-the real plane.
+runners. No check contacts the real plane.
 
 Docs-impact tests retain provider, protocol, privacy, native capacity, cache,
 release/model publication and fixture mappings. Historical links need exact

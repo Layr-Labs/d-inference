@@ -51,10 +51,9 @@ SAMPLER_STEPS = ("Start the resource sampler", "Report the resource samples", "U
 # Every macOS job: the build jobs, the test jobs and the release build checks.
 MAC_JOBS = (*BUILD_JOBS, *PRODUCT_JOBS, "cluster-release-checks", "test-cluster-focused")
 BLACKSMITH_MAC = "blacksmith-12vcpu-macos-27"
-# The end of a route lane line with a size, without and with `required`; the
-# sizes themselves are pinned in scripts/test-darkbloom-route.py.
-SIZE_LINE_END = r"[1-9][0-9]*x[1-9][0-9]*\n"
-REQUIRED_SIZE_LINE_END = r"[1-9][0-9]*x[1-9][0-9]* required\n"
+# The size at the end of a route lane line; scripts/test-darkbloom-route.py
+# pins each lane's size.
+LANE_SIZE = r"[1-9][0-9]*x[1-9][0-9]*"
 PROVIDER_TEST_COMMAND = ('python3 ../scripts/run-provider-test-watchdog.py \\\n'
                          '  --output-dir "$RUNNER_TEMP/provider-test-diagnostics" \\\n'
                          '  --diagnostic-after-seconds 900 --timeout-seconds 1800 \\\n'
@@ -246,7 +245,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 for route_lane in route_lanes:
                     self.assertRegex(self.jobs["route"], re.escape(
                         "        %s macos_arm64 blacksmith-12vcpu-macos-27 "
-                        "${{ needs.components.outputs.provider == 'true' && 1 || 0 }} " % route_lane) + SIZE_LINE_END)
+                        "${{ needs.components.outputs.provider == 'true' && 1 || 0 }} " % route_lane) + LANE_SIZE + r"\n")
                 self.assertIn("    timeout-minutes: 60\n", job)
                 self.assertIn("    needs: build-provider\n", job)
                 self.assertIn("    if: ${{ inputs.provider == 'true' }}\n", job)
@@ -659,11 +658,11 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("      matrix:\n        shard: [1, 2]\n", focused)
         self.assertRegex(self.jobs["route"], re.escape(
             "        test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 "
-            "${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} ") + SIZE_LINE_END)
+            "${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} ") + LANE_SIZE + r"\n")
         self.assertIn("    runs-on: ${{ fromJSON(inputs.routes)['cluster-release-checks'] }}\n", release)
         self.assertRegex(self.jobs["route"], re.escape(
             f"        cluster-release-checks macos_arm64 {BLACKSMITH_MAC} "
-            "${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} ") + REQUIRED_SIZE_LINE_END)
+            "${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} ") + LANE_SIZE + r" required\n")
         for job in (focused, release):
             self.assertIn("    if: ${{ inputs.cluster == 'true' }}\n", job)
             self.assertNotRegex(job, r"(?m)^    needs:")
@@ -757,7 +756,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                     f"        {job_id} macos_arm64 {BLACKSMITH_MAC} "
                     f"${{{{ (needs.components.outputs.{lane} == 'true' || (github.event_name == 'push' && "
                     f"needs.tested.outputs.skip == 'true' && needs.components.outputs.changed_{lane} == 'true'))"
-                    " && 1 || 0 }} ") + REQUIRED_SIZE_LINE_END)
+                    " && 1 || 0 }} ") + LANE_SIZE + r" required\n")
                 self.assertNotRegex(job, r"(?m)^    (needs|strategy):")
                 steps = step_blocks(job)
                 builds = [step for step in steps if field(step, "uses") == BUILD_ACTION]

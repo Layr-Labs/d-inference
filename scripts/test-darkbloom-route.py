@@ -886,7 +886,7 @@ class RouteWorkflowTests(unittest.TestCase):
                         self.assertEqual(runner, "ubuntu-24.04")
                         self.assertIn(name, ("tested", "components", "provider-test-gate"))
 
-    def test_ci_sizes_every_macos_job_and_asks_for_the_test_lanes_first(self):
+    def test_ci_sizes_every_routed_macos_job_and_asks_for_the_test_lanes_first(self):
         sizes = {size for _, size, _ in PLAN_LANES.values()}
         self.assertLessEqual(sizes, VALID_SIZES)
         # 10 macOS jobs ask while sizes are on: the 7 blocking test jobs, which

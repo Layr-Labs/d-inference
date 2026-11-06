@@ -4068,12 +4068,21 @@ away; mixed pairs are first-class).
 - **Measured speed:** `ClusterServedModes.figures` over this build's served
   records of this model on these Macs (`ClusterServedSpeedRecords.servedBy`), as
   the planner reads them: a figure from 3 served requests on. Never a
-  prediction; without one the model list says "not measured on these Macs yet".
-  The mode question uses these figures (else the planner's predictions) only
-  to rank the modes: its recommendation and its mode lines quote no tokens per
-  second (owner, 2026-11-05), and a re-plan's "Planned in the mode chosen" line
-  gives the size, mode and shares without the planner's predicted speed
-  (`ClusterOnboardingModeAdvice.fasterWords`, `OnboardingLive.localPlanModels`).
+  prediction. Beside it, each mode carries the rate the latest earlier build
+  served it at (`ClusterSetupPlanning.earlierFigures`), from records that name
+  how they were served and were served the way the plan will serve (through
+  Darkbloom or locally; tensor parallel with Qwen's tensor assistant exactly
+  when the plan decodes with it). The mode question ranks the modes by this
+  build's figures, else, while this build has served none of them (every
+  update starts there), by the earlier builds', else by the planner's
+  predictions (`ClusterOnboardingModeAdvice.advise`). The planner itself still
+  reads only this build's records. No screen quotes these figures (owner,
+  2026-11-05: "the model and mode choice never quote tok/s"): the model list
+  names the modes, the fastest measured first (`ClusterOnboardingMode.listWords`);
+  the recommendation and the mode lines say why in words; a re-plan's "Planned
+  in the mode chosen" line gives the size, mode and shares
+  (`ClusterOnboardingDeployment.choiceLine`); and the six-step developer
+  wizard's model step and check show no speed (`ClusterSetupContent`).
 - **The current model:** on a set-up pair the list preselects the model serving
   now (or the last one used); it keeps the mode the saved setup served in when
   the plan still lists it (`keepMode`, from `ClusterOnboardingResume.servingMode`),

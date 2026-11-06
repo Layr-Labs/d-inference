@@ -5,8 +5,10 @@ extension ProviderLoop {
 
     /// Called before any solo subsystem can start. No model, GPU probe, cache
     /// maintenance, update/relaunch, capacity monitor or device lease is started.
+    /// Only the member that hosts its pair's slot may run a local API
+    /// (`ProviderLoop+ClusterPairLocal`).
     internal func prepareClusterMemberControl() throws {
-        guard loopConfig.localEndpoint == nil, modelSlots.isEmpty,
+        guard loopConfig.localEndpoint.map({ admitsClusterPairLocalAPI($0) }) ?? true, modelSlots.isEmpty,
               modelsLoading.isEmpty, preloadTasks.isEmpty else {
             throw ClusterMemberControlError.incompatibleConfiguration
         }

@@ -45,10 +45,16 @@ extension ProviderLoop {
             makeOwner: { _ in throw ClusterPairSlotError.notServing("these tests publish their own slots") })
     }
 
+    var clusterPairLocalWaitingCount: Int { clusterPairLocalLanes.waitingCount }
+
     /// Local requests waiting for a lane, local requests in use (waiting or
     /// holding a lane: the owner-pause hook) and local reservations.
     var clusterPairLocalCounts: (waiting: Int, inUse: Int, reserved: Int) {
-        (clusterPairLocalWaitingCount, clusterPairLocalRequestsInUse, localReservations.totalInFlight)
+        (clusterPairLocalLanes.waitingCount, clusterPairLocalLanes.inUse, localReservations.totalInFlight)
+    }
+
+    func setClusterPairLocalQueueForTesting(maximumWaiting: Int) {
+        clusterPairLocalLanes = .init(limits: .init(maximumWaiting: maximumWaiting))
     }
 }
 

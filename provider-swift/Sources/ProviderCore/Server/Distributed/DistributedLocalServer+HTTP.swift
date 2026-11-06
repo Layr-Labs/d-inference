@@ -54,7 +54,7 @@ extension DistributedLocalServer {
         // The pipeline takes as many acquisitions as the pair has lanes; further
         // requests wait in arrival order, in a bounded queue (`DistributedRequestQueue`).
         guard acceptsPendingRequests else {
-            throw MultiModelBatchSchedulerEngineError.requestRejected("Distributed session is unavailable")
+            throw MultiModelBatchSchedulerEngineError.requestRejected(DistributedRequestQueue.unavailableMessage)
         }
         if let response = DistributedHTTPResponseScope.current {
             guard responses.owns(response), !response.unavailableBeforeAdmission else {
@@ -64,7 +64,7 @@ extension DistributedLocalServer {
         let (target, id, queued) = try await waitForTurn()
         guard let entry = target.entry else {
             release(id, generation: target)
-            throw MultiModelBatchSchedulerEngineError.requestRejected("Distributed session is unavailable")
+            throw MultiModelBatchSchedulerEngineError.requestRejected(DistributedRequestQueue.unavailableMessage)
         }
         return .init(tokenizer: entry.tokenizer,
             releaseToken: OneShotRelease(release: { _ in await self.release(id, generation: target) }, modelId: modelID),
@@ -119,7 +119,7 @@ extension DistributedLocalServer {
                 throw CancellationError()
             }
             guard acceptsPendingRequests else {
-                throw MultiModelBatchSchedulerEngineError.requestRejected("Distributed session is unavailable")
+                throw MultiModelBatchSchedulerEngineError.requestRejected(DistributedRequestQueue.unavailableMessage)
             }
             // Check the original absolute ceiling before every admission,
             // including the first poll after a slow replacement load.
@@ -151,7 +151,7 @@ extension DistributedLocalServer {
             throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelID)
         }
         guard acceptsPendingRequests, let stableTokenizer else {
-            throw MultiModelBatchSchedulerEngineError.requestRejected("Distributed session is unavailable")
+            throw MultiModelBatchSchedulerEngineError.requestRejected(DistributedRequestQueue.unavailableMessage)
         }
         return stableTokenizer
     }

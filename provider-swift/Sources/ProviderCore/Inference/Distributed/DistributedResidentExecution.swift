@@ -2,7 +2,7 @@ import Foundation
 import DarkbloomClusterProtocol
 import MLXLMCommon
 
-/// Experimental identity reported by an owner after both peer loads finish.
+/// Experimental identity reported by an owner after every peer's load finished.
 /// These are backend assertions, not remote attestation or hardware qualification.
 public struct DistributedResidentIdentity: Sendable, Equatable {
     public struct Peer: Sendable, Equatable {
@@ -38,11 +38,12 @@ public struct DistributedResidentIdentity: Sendable, Equatable {
                 (48...57).contains($0) || (97...102).contains($0)
             }
         }
+        // Two ranks or more, each named once: nothing here keys on a pair of two.
         guard !modelID.isEmpty, modelID.utf8.count <= 512,
             digest(artifactSHA256), digest(configurationSHA256),
-            peers.count == 2, peers[0].id != peers[1].id,
+            peers.count >= 2, Set(peers.map(\.id)).count == peers.count,
             peers.allSatisfy({ !$0.id.isEmpty && $0.id.utf8.count <= 128 && digest($0.buildSHA256) })
-        else { throw DistributedEngineError.invalidConfiguration("invalid two-peer identity") }
+        else { throw DistributedEngineError.invalidConfiguration("invalid peer identity") }
     }
 }
 

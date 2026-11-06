@@ -6,6 +6,7 @@
 
 import CryptoKit
 import Foundation
+import NIOCore
 import MLX
 import MLXLLM
 import MLXLMCommon
@@ -57,8 +58,11 @@ extension ProviderLoop {
             // could answer). If the bind fails, runService throws below and this
             // never runs, so no stale/foreign discovery record is written.
             responseTracker: localResponseTracker,
-            onServerRunning: { [weak self] _ in
-                await self?.onLocalEndpointBound(cfg)
+            onServerRunning: { [weak self] channel in
+                // The port actually bound: the configured one, or the one the
+                // system chose for port 0.
+                let bound = channel.localAddress?.port.flatMap { UInt16(exactly: $0) }
+                await self?.onLocalEndpointBound(cfg, port: bound ?? cfg.port)
             },
             modelTypeProvider: { [weak self] modelId in
                 await self?.localModelTypeForAudioAdmission(modelId)
@@ -96,11 +100,12 @@ extension ProviderLoop {
     /// listening. Publishes the discovery record so `darkbloom local` /
     /// local-first clients find the unified endpoint — only now that the bind is
     /// CONFIRMED to be ours.
-    private func onLocalEndpointBound(_ cfg: LocalInferenceHTTPConfig) {
-        logger.info("Local OpenAI endpoint listening on \(cfg.host):\(cfg.port) (unified mode)")
+    private func onLocalEndpointBound(_ cfg: LocalInferenceHTTPConfig, port: UInt16) {
+        let mode = isClusterMember ? "the pair's leader, beside Darkbloom" : "unified mode"
+        logger.info("Local OpenAI endpoint listening on \(cfg.host):\(port) (\(mode))")
         try? LocalEndpoint.writeInfo(LocalEndpoint.Info(
             host: cfg.host,
-            port: cfg.port,
+            port: port,
             apiKey: cfg.authToken ?? "",
             version: ProviderCore.version,
             pid: ProcessInfo.processInfo.processIdentifier,
@@ -128,6 +133,8 @@ extension ProviderLoop {
             throw MultiModelBatchSchedulerEngineError.requestRejected(
                 "\(modelId) is served only through chat completions")
         }
+        // A pair's leader loads nothing: it serves its pair slot's lanes.
+        if isClusterMember { return try await acquireClusterPairForLocal(modelId) }
         // Fast-path drain/shutdown reject; an authoritative re-check follows the
         // `await` below, right before the reservation is taken (see comment there).
         try throwIfRefusingNewLocalWork(modelId: modelId)

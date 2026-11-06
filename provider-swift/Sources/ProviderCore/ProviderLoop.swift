@@ -773,6 +773,11 @@ public actor ProviderLoop {
     /// The follower member's link serving of its committed starts; retained
     /// here because the session control holds its serving host weakly.
     internal var clusterPairFollower: DistributedMemberLinkFollower?
+    /// The pair slot whose admission opened, once its warmup canary passed:
+    /// the leader's local requests wait for it (`ProviderLoop+ClusterPairLocal`).
+    internal var clusterPairAdmissionOpenSlotID: UUID?
+    /// The leader's local requests on its pair's lanes: waiting, or holding one.
+    internal var clusterPairLocalLanes = ClusterPairLocalLanes(limits: .fromEnvironment())
 
     /// Rate cap + trailing-edge coalescing for event-triggered heartbeats
     /// (routing v2, Phase 1). Driven from `updateAggregateCapacity()` — the

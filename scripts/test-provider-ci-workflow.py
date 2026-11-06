@@ -264,7 +264,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
     def test_existing_required_check_requires_every_lane_even_after_failures(self):
         job = self.jobs["provider-test-gate"]
         self.assertIn("    name: Provider Tests\n", job)
-        self.assertIn("    needs: [test-provider, test-cluster, test-cluster-focused, cluster-release-checks]\n", job)
+        self.assertIn("    needs: [test-provider, test-cluster, test-cluster-focused, cluster-release-checks, ci-plan-checks]\n",
+                      job)
         self.assertNotIn("test-provider-sdk", job)
         self.assertIn("    if: ${{ always() }}\n", job)
         self.assertNotIn("continue-on-error:", job)
@@ -281,13 +282,28 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                                              **results},
                                         capture_output=True, timeout=5)
                 self.assertEqual(result.returncode == 0, failed is None, results)
+        # The CI plan checks pass only when their job succeeded.
+        plan_checks = {field(step, "name", indent=6): step for step in step_blocks(job)}["Require the CI plan checks"]
+        self.assertEqual(field(plan_checks, "PLAN_CHECKS_RESULT", indent=10), "${{ needs.ci-plan-checks.result }}")
+        self.assertIsNone(field(plan_checks, "if"))
+        for outcome in ("success", "failure", "skipped", "cancelled", ""):
+            result = subprocess.run(["bash", "-e", "-c", run_command(plan_checks)],
+                                    env={**os.environ, "PLAN_CHECKS_RESULT": outcome}, capture_output=True, timeout=5)
+            self.assertEqual(result.returncode == 0, outcome == "success", outcome)
 
-    def test_the_gate_checks_the_ci_plans_on_every_run(self):
-        # dev has no Release Integrity: the gate audits the cluster plan and
-        # runs the plan self-tests on every run, skipped or not.
-        steps = {field(step, "name", indent=6): step for step in step_blocks(self.jobs["provider-test-gate"])}
+    def test_the_gate_requires_the_ci_plan_checks_of_every_run(self):
+        # dev has no Release Integrity: a job beside the test jobs audits the
+        # cluster plan and runs the plan self-tests on every run, skipped or
+        # not, and the gate requires it. It waits for nothing.
+        job = self.jobs["ci-plan-checks"]
+        self.assertIn("    name: Check the CI plans\n", job)
+        self.assertIn("    runs-on: ubuntu-24.04\n", job)
+        self.assertNotRegex(job, r"(?m)^    (needs|if):")
+        self.assertNotIn("continue-on-error:", job)
+        self.assertNotIn("Check the CI plans", self.jobs["provider-test-gate"])
+        steps = {field(step, "name", indent=6): step for step in step_blocks(job)}
         check = steps["Check the CI plans"]
-        # They run even when the requirement above failed; only a cancel stops them.
+        # Each runs even when an earlier one failed; only a cancel stops them.
         self.assertEqual(field(check, "if"), "${{ !cancelled() }}")
         commands = run_command(check).splitlines()
         for command in ("python3 scripts/cluster-test-plan.py audit", "python3 scripts/test-cluster-test-plan.py",
@@ -307,6 +323,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                                                               "python3 scripts/test-prepare-mimo-prompt-fixtures.py"])
         # The record names its change through the lookup's own code, and only
         # a run that tested something records.
+        steps = {field(step, "name", indent=6): step for step in step_blocks(self.jobs["provider-test-gate"])}
         record = steps["Name the record of the change these tests passed"]
         self.assertIn('python3 scripts/ci-tested-tree.py name --tree "$TREE" --base "$BASE" --head "$HEAD"', record)
         for name in ("Name the record of the change these tests passed", "Upload the record"):
@@ -898,14 +915,17 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("  strict-cache:\n", ACTION.read_text().split("\nruns:\n", 1)[0])
 
     def test_every_checkout_reuses_master_git_and_falls_back_to_a_cold_checkout(self):
-        # The tree lookup checks out only its script, and the gate the files of
-        # its CI plan checks (blobs on demand), both without the .git cache.
-        self.assertIn("sparse-checkout: scripts/ci-tested-tree.py", self.jobs["tested"])
-        gate = self.jobs["provider-test-gate"]
-        self.assertEqual(gate.count("actions/checkout@"), 1)
-        self.assertIn("          filter: blob:none\n          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}\n", gate)
+        # The tree lookup and the gate check out only the tree lookup's script,
+        # and the CI plan checks the files they read (blobs on demand), all
+        # without the .git cache.
+        for job_id in ("tested", "provider-test-gate"):
+            self.assertEqual(self.jobs[job_id].count("actions/checkout@"), 1, job_id)
+            self.assertIn("sparse-checkout: scripts/ci-tested-tree.py\n", self.jobs[job_id])
+        plan_checks = self.jobs["ci-plan-checks"]
+        self.assertEqual(plan_checks.count("actions/checkout@"), 1)
+        self.assertIn("          filter: blob:none\n          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}\n", plan_checks)
         checkouts = {job_id: job for job_id, job in self.jobs.items()
-                     if "actions/checkout@" in job and job_id not in ("tested", "provider-test-gate")}
+                     if "actions/checkout@" in job and job_id not in ("tested", "provider-test-gate", "ci-plan-checks")}
         self.assertEqual(set(checkouts), {"release-integrity", "docs", *MAC_JOBS})
         for job_id, job in checkouts.items():
             with self.subTest(job=job_id):
@@ -985,7 +1005,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 env = path.read_text().split("\njobs:\n", 1)[0]
                 self.assertIn("  CHECKOUT_SPARSE: |\n" + "".join(f"    {pattern}\n" for pattern in SPARSE_PATTERNS),
                               env)
-        # The macOS checkouts, Release Integrity's and the gate's for its CI plan checks.
+        # The macOS checkouts, Release Integrity's and the CI plan checks'.
         self.assertEqual(self.workflow.count("sparse-checkout: ${{ env.CHECKOUT_SPARSE }}"), len(MAC_JOBS) + 2)
         docs_impact = (ROOT / ".github/workflows/docs-impact.yml").read_text()
         self.assertIn("          filter: blob:none\n          sparse-checkout: |\n"

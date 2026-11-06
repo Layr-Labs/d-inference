@@ -1080,8 +1080,9 @@ against the full suite list. Signing requires `qualify-sdk` and optimized
 compilation. GPU suites retain serial execution and exclusive-process isolation.
 A cache hit never skips a test.
 
-The SDK 27.2 Date checks run without a Mac. The `Provider Tests` gate and
-Release Integrity run, from the repository root:
+The SDK 27.2 Date checks run without a Mac. The CI plan checks job of
+`provider-tests.yml` (which the `Provider Tests` gate requires) and Release
+Integrity run, from the repository root:
 
 ```bash
 python3 scripts/test-check-date-comparisons.py
@@ -1310,8 +1311,8 @@ other provider files the cluster runners compile, the cluster plan and the
 shared build recipe. The
 `Provider Tests` gate accepts a skipped cluster job only when `cluster` was not
 selected. A provider-only change runs 3 Macs (the provider build and the 2
-provider shards). A cluster change adds 9 Macs (the cluster build, the release
-build checks, 3 runtime shards, 2 focused shards and 2 GPU shards). Every
+provider shards). A cluster change adds 11 Macs (the cluster build, the release
+build checks, 5 runtime shards, 2 focused shards and 2 GPU shards). Every
 Mac job but the 2 GPU shards is routed; the GPU shards run on Blacksmith
 ([job sizes](build.md#job-sizes)). A change whose tree a successful run of the
 same workflow already tested runs no test job at all
@@ -1324,14 +1325,23 @@ in a process of its own through `scripts/run-nested-suite.sh`, which fails when
 the selection runs no test or skips a test. Runtime shard 1 runs `base` alone,
 then the share probe alone. The probe times each rank's share against a 1.5 s
 budget, so it never runs on a Mac right after the concurrent GPU groups.
-Shard 2 runs two groups at the same time, each in plan order with its own
-`TMPDIR` (the CPU batch-session suite with the GLM paged-KV, invariance and
-census, TF32 and Gemma selections; the Qwen GPU chain with `glm53-prefix-ssd`).
+Shards 2 and 3 each run two groups at the same time, each in plan order with
+its own `TMPDIR`: a Qwen GPU group beside a CPU group of the batch-session
+suite (`QwenTensorParallelBatchSessionTests`, 672 s in one process). Shard 2
+runs `qwen-tp-batch-gpu` and `qwen-tp-batch-gpu-paged`, then the GLM paged-KV,
+invariance and census, TF32 and Gemma selections, beside `base-batch-session`.
+Shard 3 runs `qwen-tp-mtp-gpu`, `qwen-tp-aqv-gpu`, `qwen-tp-moe-gpu` and
+`glm53-prefix-ssd` beside `base-batch-session-prefix-tiers`, the suite's warm
+and SSD prefix tier tests (`BATCH_SESSION_PREFIX_TIER_TESTS`, 325 of the 672 s).
+`base-batch-session` skips those tests and runs every other test of the suite,
+so a new test of the suite runs there.
 The second group starts `CLUSTER_TEST_START_GAP` seconds (default 15) after
 the first, as the provider shards' processes do, so their SwiftPM startups do
 not meet on the shared build database.
-Shard 3 runs `base-gemma` alone: the Gemma 4 base suites (`GEMMA_SUITES`, 592 of
-the base tests' 970 s), so each model family still shares one process. A grouped selection that finds SwiftPM's build database locked, and whose log
+Shards 4 and 5 each run one half of the Gemma 4 base suites (`GEMMA_SUITES`,
+610 s in one process) alone: shard 4 runs `base-gemma-tensor-parallel`
+(`Gemma4TensorParallelTests`, 296 s), shard 5 `base-gemma` (the other Gemma
+suites, 314 s). Each Gemma suite runs whole in one of the two. A grouped selection that finds SwiftPM's build database locked, and whose log
 proves every test passed, runs once more, as in the provider shards; the job
 log prints both attempts' logs. Every process starts with
 `MLX_QMV_BATCH_INVARIANT=1`, as every cluster process does.
@@ -1343,9 +1353,13 @@ log prints both attempts' logs. Every process starts with
 | Opt-in | Cluster GPU Tests (non-blocking) | The switched tests that fail on the CI runners' GPU, the long-running tests and the benchmarks. The job reports their results and does not fail the workflow |
 | Needs a model | None | The tests that need a model directory, an artifact or its metadata (`REQUIRES_MODEL`). CI has no model |
 
-`python3 scripts/test-cluster-test-plan.py` (the `Provider Tests` gate and Release Integrity) checks that the
+`python3 scripts/test-cluster-test-plan.py` (the CI plan checks job, which the `Provider Tests` gate requires, and Release Integrity) checks that the
 plan names each gated test in the sources once, each runner under
-`libs/darkbloom-cluster/Tests` once, and every Gemma suite in `GEMMA_SUITES`. When you add an environment gate to a
+`libs/darkbloom-cluster/Tests` once, and every Gemma suite in `GEMMA_SUITES`,
+each in exactly one base selection of Gemma suites. It also checks that each
+test a selection of suite functions names (`functions`) is an ungated test of
+that suite, named once, and that one other base selection runs the suite's
+other tests. When you add an environment gate to a
 runtime test, add the test to a selection or to `REQUIRES_MODEL`.
 
 Build the runtime tests once (`swift build --package-path libs/darkbloom-cluster

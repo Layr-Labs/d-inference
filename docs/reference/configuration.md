@@ -343,6 +343,47 @@ There is no saved timezone or wake-up setting: keep the Mac awake and use its
 local timezone. [Scheduling architecture](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/scheduling.md#provider-availability-windows)
 defines DST adjustment, merged windows, full-week coverage and fail-closed parsing.
 
+### Local-first use (`[local]`)
+
+`[local]` in `provider.toml` holds how this Mac serves its owner beside, or
+instead of, Darkbloom. This build parses, checks and writes the section;
+serving does not read it yet. Every key is optional, and an absent key keeps
+today's behaviour (`LocalSettings` in
+`provider-swift/Sources/ProviderCore/Config/LocalSettings.swift`).
+
+| `provider.toml` key | Accepted values | When absent (`LocalSettings` resolver) |
+|---|---|---|
+| `[local] mode` | `"local"` (only you, on this Mac), `"network"` (the Darkbloom network only), `"both"` (both, you first) | The launch flags decide, as today: plain `start` = `network`, `--local` = `local`, `--local-endpoint` = `both` (`launchMode`, `resolvedMode`) |
+| `[local] me_first` | `true` or `false` | On with `mode = "both"`, off otherwise; `false` keeps today's shared serving (`meFirstEnabled`) |
+| `[local] me_first_idle_minutes` | Whole minutes, `1`–`120` | `2` (`defaultMeFirstIdleMinutes`, `resolvedMeFirstIdleMinutes`) |
+| `[local] route` | `"this-mac"` (only this Mac), `"my-macs"` (only your Macs), `"my-macs-first"` (your Macs first, then the Darkbloom network) | `this-mac`; `my-macs` once an account key is saved (`resolvedRoute`) |
+| `[local] port` | Whole number, `1`–`65535` | The build's `defaultLocalPort` (`resolvedPort`) |
+| `[local] bind` | `localhost` or a numeric IPv4 or IPv6 address (`ClusterServingScope.isValidBind`) | `127.0.0.1` (`defaultBind`, `resolvedBind`) |
+
+```toml
+[local]
+mode = "both"
+me_first = true
+me_first_idle_minutes = 2
+route = "my-macs"
+port = 8000
+bind = "127.0.0.1"
+```
+
+- **Refusals:** a value outside these is refused when the file loads, with one
+  plain line that names the key, what it takes and what the file has, for
+  example `[local] me_first_idle_minutes must be a whole number of minutes from
+  1 to 120, not 0.` (`LocalSettingsError`). Unknown keys in `[local]` are
+  accepted and kept.
+- **Writing:** `ConfigManager.updateLocal` (CLI: `setLocalSettings` in
+  `provider-swift/Sources/darkbloom/ConfigMutation.swift`) changes only the
+  `[local]` keys it is given, under the config lock. It edits the raw TOML table,
+  so every other value, unknown keys included, keeps its value; comments and
+  layout may change. It refuses a bad value before writing, writes nothing when
+  the file already holds the change, and writes an explicit value even when it
+  equals the default. Other config writers re-encode the known keys, as for
+  every section.
+
 ### Model cache location
 
 Model-cache changes require explicit operator selection, not a beta flag.

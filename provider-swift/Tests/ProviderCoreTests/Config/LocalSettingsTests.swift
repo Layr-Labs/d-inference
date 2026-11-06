@@ -54,7 +54,7 @@ struct LocalSettingsTests {
         #expect(local.resolvedPort == BuildEnvironment.current.defaultLocalPort)
         #expect(local.resolvedBind == "127.0.0.1")
         #expect(local.resolvedRoute(accountKeySaved: false) == .thisMac)
-        #expect(local.resolvedMeFirstIdleMinutes == 10)
+        #expect(local.resolvedMeFirstIdleMinutes == 2)
 
         let saved = ConfigManager.serialize(config)
         #expect(try TOMLTable(string: saved)["local"] == nil)
@@ -112,12 +112,12 @@ struct LocalSettingsTests {
             [local]
             mode = "both"
             me_first = true
-            me_first_idle_minutes = 10
+            me_first_idle_minutes = 2
             route = "my-macs"
             port = 8000
             bind = "127.0.0.1"
             """)
-        #expect(config.local == LocalSettings(mode: .both, meFirst: true, meFirstIdleMinutes: 10, route: .myMacs,
+        #expect(config.local == LocalSettings(mode: .both, meFirst: true, meFirstIdleMinutes: 2, route: .myMacs,
                                               port: 8000, bind: "127.0.0.1"))
         for mode in LocalSettings.Mode.allCases {
             #expect(try ConfigManager.parseValidating("[local]\nmode = \"\(mode.rawValue)\"\n").local?.mode == mode)
@@ -156,6 +156,7 @@ struct LocalSettingsTests {
             ("port = -1", "[local] port must be \(Self.portRule), not -1."),
             (#"bind = "my laptop""#, #"[local] bind must be \#(Self.bindRule), not "my laptop"."#),
             (#"bind = """#, #"[local] bind must be \#(Self.bindRule), not ""."#),
+            (#"bind = "a\"b\nc""#, #"[local] bind must be \#(Self.bindRule), not "a\"b\nc"."#),
             ("bind = [\"127.0.0.1\"]", "[local] bind must be \(Self.bindRule)."),
         ]
         for (line, message) in cases {
@@ -253,7 +254,7 @@ struct LocalSettingsTests {
         let pinned = try #require(try ConfigManager.updatingLocal(original, fallbackConfig: Self.fallback) {
             $0.meFirstIdleMinutes = LocalSettings.defaultMeFirstIdleMinutes
         })
-        #expect(try TOMLTable(string: pinned)["local"]?.table?["me_first_idle_minutes"]?.int == 10)
+        #expect(try TOMLTable(string: pinned)["local"]?.table?["me_first_idle_minutes"]?.int == 2)
     }
 
     @Test("clearing every key removes the section, unless unknown keys remain in it")

@@ -541,6 +541,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
     public var schedule: ScheduleConfig?
     public var gemmaOptimizations: GemmaOptimizationSettings
     public var cache: CacheSettings
+    /// How this Mac serves its owner (`[local]`). Nil while the section is absent, which keeps today's behaviour.
     public var local: LocalSettings?
 
     public init(
@@ -586,6 +587,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         self.cache = try container.decodeIfPresent(CacheSettings.self, forKey: .cache) ?? CacheSettings()
         try self.cache.validate()
         self.cluster = try container.decodeIfPresent(ClusterConfigurationReference.self, forKey: .cluster)
+        self.local = try container.decodeIfPresent(LocalSettings.self, forKey: .local)
     }
 
     /// Generate a default config based on detected hardware.

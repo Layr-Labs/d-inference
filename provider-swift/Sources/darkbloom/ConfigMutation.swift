@@ -1,3 +1,4 @@
+import ArgumentParser
 import Foundation
 import ProviderCore
 
@@ -17,13 +18,24 @@ func withMutableConfig<Result>(
     }
 }
 
+/// Changes `[local]` (`LocalSettings`) and nothing else in the config, so keys this build does not know survive.
+/// Shaped like `setIdleUnloadMinutes`: the same config path, the config lock with a re-read inside it, a plain
+/// refusal before anything is written, and an explicit value written even when it equals the default. Returns the
+/// config path and whether the file changed.
+///
+/// Internal (not `private`) so `DarkbloomCLITests` can drive it with temp config fixtures via `configPath`.
 @discardableResult
 func setLocalSettings(
     configPath: String?,
     _ change: (inout LocalSettings) -> Void
 ) throws -> (path: URL, changed: Bool) {
     let loaded = try loadRuntimeConfiguration(configPath: configPath)
-    return (loaded.configPath, false)
+    do {
+        let changed = try ConfigManager.updateLocal(at: loaded.configPath, fallbackConfig: loaded.config, change)
+        return (loaded.configPath, changed)
+    } catch let refusal as LocalSettingsError {
+        throw ValidationError(refusal.description)
+    }
 }
 
 /// Whether TOML `content` materially sets `key` inside `[section]`.

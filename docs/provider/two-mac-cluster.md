@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-05
+> Last updated: 2026-11-06
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -251,8 +251,10 @@ doesn't say. On a Mac named there, `darkbloom cluster` turns its service on
 again. With a build whose cluster service lives only as long as its window, the
 card says to keep that window open instead, or both windows when neither Mac's
 starts at login.
-Darkbloom Dev, the DevNet app, serves a pair's API on the same port, 8000, so
-only one of the two apps can serve a pair on a Mac at a time; its card and
+Darkbloom Dev, the DevNet app, keeps its own pair: its own pairing, cluster
+setup, cluster service and ports on the cable, so its pair and the production
+app's never answer each other. Its pair's API takes 8000 too, or the lowest
+free port up to 8020 when the production app's pair holds it; its card and
 hints name `darkbloom-dev`.
 
 Served on the local API only (asked for, or a coordinator without cluster
@@ -1527,9 +1529,11 @@ isn't the way back.
 
 ## Pairing again
 
-Pair the Macs again after either Mac moves between the Darkbloom and DevNet apps,
-after the official installer reinstalls Darkbloom ("Secure Enclave ✓ (P-256 key
-generated)"), or when one Mac was reset or replaced. Each app keeps its own
+Pair the Macs again after the official installer reinstalls Darkbloom ("Secure
+Enclave ✓ (P-256 key generated)"), after either Mac moves between a local build
+and the signed release, or when one Mac was reset or replaced. The DevNet app
+keeps a pairing of its own: pairing it never changes the production app's, and
+it is paired once on its own. Each app keeps its own
 Secure Enclave key, and the pair's roster names the keys the Macs paired with,
 so a pairing made with another key cannot register: every start of its part ends
 with "This Mac's Secure Enclave key is not the one it paired with; pair again."
@@ -1609,8 +1613,9 @@ reinstall `darkbloom cluster` pairs again and uses them without copying or
 downloading. **Remove everything** deletes them too, after asking once more. A
 models folder you chose, and the cluster model store beside it, stay with either
 choice. Run it as yourself, not with `sudo`. On a Mac with both the production
-Darkbloom and Darkbloom Dev, uninstalling one keeps the pairing, cluster setup and cable
-port setup the other uses.
+Darkbloom and Darkbloom Dev, uninstalling one removes only its own pairing,
+cluster setup and cluster service, and keeps the cable port setup the other may
+use.
 
 When the other Mac does not answer, this Mac stops only its own part, as
 `darkbloom cluster stop --local-only`. The other Mac keeps its own pairing, so

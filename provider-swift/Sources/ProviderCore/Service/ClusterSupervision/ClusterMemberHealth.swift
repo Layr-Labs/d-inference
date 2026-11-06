@@ -71,28 +71,27 @@ public struct ClusterMemberHealth: Codable, Equatable, Sendable {
     }
 }
 
-/// Small owner-only JSON files under `~/.darkbloom` shared by the supervisor
-/// and its member. Atomic replace; a read of a missing or corrupt file is nil.
+/// Small owner-only JSON files in the install's own folder (`~/.darkbloom` for
+/// production, `~/.darkbloom-dev` for DevNet) shared by the supervisor and its
+/// member. Atomic replace; a read of a missing or corrupt file is nil.
 public enum ClusterSupervisionFiles {
     /// Where the supervisor tells its member to write the heartbeat.
     public static let healthPathEnvironmentKey = "DARKBLOOM_CLUSTER_MEMBER_HEALTH_FILE"
     /// Override for the supervisor's own state file (tests, a second label).
     public static let statePathEnvironmentKey = "DARKBLOOM_CLUSTER_SUPERVISOR_STATE"
 
-    public static func darkbloomDirectory(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
-        home.appendingPathComponent(".darkbloom", isDirectory: true)
-    }
-
-    public static func defaultHealthPath(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
-        darkbloomDirectory(home: home).appendingPathComponent("cluster-member-health.json")
+    public static func defaultHealthPath(home: URL = FileManager.default.homeDirectoryForCurrentUser,
+                                         install: BuildEnvironment = .current) -> URL {
+        install.installDirectory(home: home).appendingPathComponent("cluster-member-health.json")
     }
 
     public static func statePath(environment: [String: String] = ProcessInfo.processInfo.environment,
-                                 home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+                                 home: URL = FileManager.default.homeDirectoryForCurrentUser,
+                                 install: BuildEnvironment = .current) -> URL {
         if let value = environment[statePathEnvironmentKey], !value.isEmpty {
             return URL(fileURLWithPath: (value as NSString).expandingTildeInPath)
         }
-        return darkbloomDirectory(home: home).appendingPathComponent("cluster-supervisor.json")
+        return install.installDirectory(home: home).appendingPathComponent("cluster-supervisor.json")
     }
 
     public static func lockPath(forState state: URL) -> URL {

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-05
+> Last updated: 2026-11-06
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -542,17 +542,31 @@ lists it under Local Network or in its firewall reads `ClusterService.appName`
 (`BuildEnvironment.current.appDisplayName`): the screens (through
 `ClusterOnboardingCommand.app`, including the pairing hint's firewall line and
 the line that asks to pair again after a reinstall) and the link follower's
-refusal. Both apps serve a pair's API on port 8000,
-so one of them serves a pair on a Mac at a time. Each keeps its own cluster
-incident log, owned by `DarkbloomClusterRemote`
-(`ClusterIncidentLog.defaultFile(homeDirectory:install:)`): production's is
-`~/.darkbloom/cluster/incidents.json`, another install's its own file, such as
-`incidents.dev.json`, which a build from before installs had their own files
-never reads or rewrites; a corrupt one is kept beside it under its own name
-(`incidents.corrupt.json`, `incidents.dev.corrupt.json`). `ClusterIncidentLog.files`
-names a log's files: the log, its lock sidecar and that corrupt copy.
-`darkbloom uninstall` removes an install's own with it while the shared folder
-stays for the other install; production's shared `incidents.json` stays. Every
+refusal.
+
+Each build keeps its own cluster state, in its own folders (`ClusterUserPaths`,
+from `BuildEnvironment.installDirectory` and `configDirectory`): the pairing
+store, the setup and service folder (the service's lock, pid, status, update
+request and logs, the screens' transcripts), the device folder (lease, journal,
+link records, the prefix cache's key), the observability files and the saved
+setups. Production's stay in `~/.darkbloom` and `~/.config/darkbloom`; DevNet's
+are in `~/.darkbloom-dev` and `~/.config/darkbloom-dev`. The cluster service's
+login job carries the build's prefix (`BuildEnvironment.clusterServiceLabelPrefix`),
+and a build lists, replaces and removes only its own jobs
+(`ClusterServiceAgentPlan.isOwnAgent`: a production-shaped job an older DevNet
+build wrote is DevNet's by its program). The per-user locks are named after the
+build's CLI (`ClusterConsoleInstanceLock.lockFileName`), the pair's prefix cache
+is in the build's cache namespace (`ClusterPrefixCacheSettings.rootDirectoryName`),
+and every port on the cable adds the build's `BuildEnvironment.clusterPortOffset`
+(`ClusterCablePorts`). Two builds' pairs on the same Macs therefore never read,
+stop or answer each other. They share the models, and the cable port setup,
+which `darkbloom uninstall` keeps while the other build is installed. Each
+keeps its own cluster incident log, owned by `DarkbloomClusterRemote`
+(`ClusterIncidentLog.defaultFile(installDirectory:install:)`): production's is
+`~/.darkbloom/cluster/incidents.json`, DevNet's `~/.darkbloom-dev/cluster/incidents.dev.json`;
+a corrupt one is kept beside it under its own name (`incidents.corrupt.json`,
+`incidents.dev.corrupt.json`). `ClusterIncidentLog.files` names a log's files:
+the log, its lock sidecar and that corrupt copy. Every
 reader and writer opens this build's with
 `ClusterIncidentLog.forThisInstall`. Each record also names the install that
 wrote it (`ClusterIncident.install`), and a build reads only its own, counting
@@ -3943,8 +3957,8 @@ part the same key with a different file (`ClusterServiceAgent.partHealthPath`,
 service's heartbeat and still waits for its registration as a supervised member.
 An empty or absent key is passed on unchanged.
 
-One cluster service runs per home: it holds an exclusive `flock` on
-`~/.darkbloom/cluster-setup/service.lock` while it runs, and `ClusterService.running`
+One cluster service runs per home and build: it holds an exclusive `flock` on
+`~/.darkbloom/cluster-setup/service.lock` (DevNet's in `~/.darkbloom-dev`) while it runs, and `ClusterService.running`
 reports whether one holds it. `darkbloom update --rollback` takes the same lock
 (`ClusterService.holdStopped`) while it swaps the installed release, so no cluster
 service starts on a release that is being replaced; a service that starts then

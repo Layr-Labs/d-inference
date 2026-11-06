@@ -227,7 +227,8 @@ struct ClusterServiceAgentTests {
             let released = try job()
             #expect(try ClusterServiceAgent.install(released, serviceRunning: { launchd.serviceRunning }, stopUnsupervisedService: {})
                     == .installed)
-            #expect(launchd.loaded == [released.label], "one cluster service per user: the other install's job was booted out")
+            #expect(launchd.loaded == [released.label],
+                    "one cluster service per user and build: this build's development job was booted out")
             #expect(ClusterServiceAgent.installedLabels() == [released.label])
 
             let withConfig = try job(options: ["--config", "/c/provider.toml"])
@@ -282,6 +283,64 @@ struct ClusterServiceAgentTests {
             #expect(ClusterServiceAgent.installedLabels().isEmpty)
             #expect(FileManager.default.fileExists(atPath: agents.appendingPathComponent("io.darkbloom.provider.plist").path))
             #expect(try ClusterServiceAgent.uninstall().isEmpty, "removing twice is a no-op")
+        }
+    }
+
+    /// The app `build` installs in `home`, and the job its `darkbloom cluster` writes (with `label` when given).
+    private func installed(_ build: BuildEnvironment, home: URL, label: String? = nil) throws -> ClusterServiceAgent.Job {
+        let app = build.installDirectory(home: home).appendingPathComponent("\(build.appBundleName)/Contents/MacOS/\(build.cliName)").path
+        let label = label ?? ClusterServiceAgentPlan.label(executablePath: app, environment: build)
+        let arguments = ClusterServiceAgentPlan.programArguments(executablePath: app, serviceOptions: [])
+        let plist = try ClusterServiceAgentPlan.encoded(ClusterServiceAgentPlan.propertyList(label: label, programArguments: arguments,
+            logPath: "/h/service.log", environment: [:]))
+        return .init(label: label, programArguments: arguments, logPath: "/h/service.log", environment: [:], plist: plist)
+    }
+
+    /// 2026-11-05: `darkbloom-dev cluster stop --service` unloaded production's login job (R6-1), and
+    /// `darkbloom-dev cluster pair --forget` could remove it; `darkbloom-dev cluster` replaced it.
+    @Test("one build's `cluster`, `cluster stop --service`, unpairing and uninstall touch only its own job, both ways")
+    func eachBuildTouchesOnlyItsOwnJob() throws {
+        for (this, other) in [(BuildEnvironment.dev, BuildEnvironment.prod), (.prod, .dev)] {
+            let launchd = FakeLaunchd()
+            try withFakeLaunchd(launchd) { home in
+                let theirs = try installed(other, home: home), mine = try installed(this, home: home)
+                _ = try ClusterServiceAgent.install(theirs, serviceRunning: { false }, stopUnsupervisedService: {}, environment: other)
+                // `cluster` in this build installs its job and leaves the other build's loaded.
+                #expect(try ClusterServiceAgent.install(mine, serviceRunning: { false }, stopUnsupervisedService: {}, environment: this)
+                        == .installed, "\(this)")
+                #expect(launchd.loaded == [theirs.label, mine.label], "\(this)")
+                #expect(ClusterServiceAgent.installedLabels(environment: this) == [mine.label], "\(this)")
+                #expect(ClusterServiceAgent.status(environment: this).map(\.label) == [mine.label], "\(this): status reads its own")
+                // `cluster stop --service`, `cluster pair --forget` and `uninstall` remove this build's agents only.
+                #expect(try ClusterServiceAgent.uninstall(alsoLabel: mine.label, environment: this) == [mine.label], "\(this)")
+                #expect(launchd.loaded == [theirs.label], "\(this): the other build's job is still loaded")
+                #expect(FileManager.default.fileExists(atPath: home.appendingPathComponent("Library/LaunchAgents/\(theirs.label).plist").path))
+                #expect(!launchd.verbs.contains("disable"), "\(this)")
+                #expect(ClusterServiceAgent.installedLabels(environment: other) == [theirs.label], "\(this)")
+            }
+        }
+    }
+
+    @Test("the job an older DevNet left under production's label shape is DevNet's to replace, never production's")
+    func anOlderDevNetJobIsDevNetsOnly() throws {
+        let launchd = FakeLaunchd()
+        try withFakeLaunchd(launchd) { home in
+            let devApp = BuildEnvironment.dev.installDirectory(home: home).appendingPathComponent("Darkbloom Dev.app/Contents/MacOS/darkbloom-dev")
+            // What 0.10.9's DevNet wrote: production's prefix and the digest of DevNet's own app.
+            let older = try installed(.dev, home: home, label: ClusterServiceAgentPlan.label(executablePath: devApp.path, environment: .prod))
+            let agents = home.appendingPathComponent("Library/LaunchAgents")
+            try FileManager.default.createDirectory(at: agents, withIntermediateDirectories: true)
+            try older.plist.write(to: agents.appendingPathComponent("\(older.label).plist"))
+            launchd.preload(older.label)
+            let production = try installed(.prod, home: home)
+            _ = try ClusterServiceAgent.install(production, serviceRunning: { false }, stopUnsupervisedService: {}, environment: .prod)
+            #expect(launchd.loaded == [older.label, production.label], "production's `cluster` leaves DevNet's older job")
+            #expect(try ClusterServiceAgent.uninstall(environment: .prod) == [production.label], "and production's stop too")
+            #expect(launchd.loaded == [older.label])
+            let devnet = try installed(.dev, home: home)
+            #expect(try ClusterServiceAgent.install(devnet, serviceRunning: { false }, stopUnsupervisedService: {}, environment: .dev) == .installed)
+            #expect(launchd.loaded == [devnet.label], "DevNet's `cluster` replaces its own older job")
+            #expect(!FileManager.default.fileExists(atPath: agents.appendingPathComponent("\(older.label).plist").path))
         }
     }
 

@@ -6,8 +6,8 @@ import DarkbloomClusterRemote
 
 /// The device profiles of a pair's members as the last plan read them (each
 /// Mac's `darkbloom-cluster-plan device --json` with its speed index,
-/// `ClusterLocalDeviceProfile`), by member ID, in
-/// `~/.darkbloom/cluster/member-profiles.json` (owner-only). Planning writes
+/// `ClusterLocalDeviceProfile`), by member ID, in this install's
+/// `cluster/member-profiles.json` (owner-only). Planning writes
 /// it, whichever way it ran (the guided flow, `darkbloom cluster plan`); the
 /// serving leader reads it to price each request's route. System facts only:
 /// chip, cores, memory, OS build and the speed index; no name, no address.
@@ -24,7 +24,7 @@ public struct ClusterMemberProfiles: Codable, Sendable, Equatable {
     }
 
     public static func defaultFile(homeDirectory: URL) -> URL {
-        homeDirectory.appendingPathComponent(".darkbloom/cluster/member-profiles.json")
+        ClusterUserPaths.observabilityDirectory(home: homeDirectory).appendingPathComponent("member-profiles.json")
     }
 
     /// Nil when absent, unreadable, not owner-only or malformed.
@@ -65,7 +65,7 @@ public enum ClusterServedSpeedHistory {
     /// plan keeps only the records its own worker builds served
     /// (`ClusterPlacementFlow.decide`), and the router only its setup's.
     public static func entries(homeDirectory: URL) -> [ClusterServedSpeedRecords.Entry] {
-        guard let file = ClusterServedSpeedFile.read(ClusterServedSpeedFile.defaultFile(homeDirectory: homeDirectory)) else { return [] }
+        guard let file = ClusterServedSpeedFile.read(ClusterServedSpeedFile.defaultFile(installDirectory: BuildEnvironment.current.installDirectory(home: homeDirectory))) else { return [] }
         return file.records.compactMap { record in
             guard record.isSpeedRecord, let sample = ClusterServedSample.fromTelemetry(route: record.route, promptTokens: record.promptTokens,
                 cachedTokens: record.cachedTokens, completionTokens: record.completionTokens,

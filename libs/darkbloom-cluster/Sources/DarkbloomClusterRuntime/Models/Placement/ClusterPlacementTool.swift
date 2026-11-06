@@ -44,10 +44,11 @@ public enum ClusterPlacementTool {
               `--tensor-parallel-first` plans as the product does: tensor parallel wherever it fits
               (owner rule), on an assumed reduction until a load measures the link.
               Without `--link`, two devices are planned on the link probes the setup saved for them
-              (~/.darkbloom/cluster/link-probes.json, or FILE): the median of the pair's last loads,
-              found by the two labels, which are member IDs there. The plan says what it found.
+              (cluster/link-probes.json in the folder that holds this helper's app, ~/.darkbloom for
+              production, or FILE): the median of the pair's last loads, found by the two labels,
+              which are member IDs there. The plan says what it found.
               Each device's share steps, as its tensor-parallel loads timed them, come from the
-              setup's ~/.darkbloom/cluster/share-probes.json (or --share-probes FILE), by label.
+              setup's cluster/share-probes.json beside it (or --share-probes FILE), by label.
         """
 
     struct Arguments {
@@ -86,15 +87,30 @@ public enum ClusterPlacementTool {
     }
 
     /// The link probes the setup saves (`ClusterLinkProbeHistory`), which
-    /// `plan` reads when it is given no `--link`.
+    /// `plan` reads when it is given no `--link`: those of the install this
+    /// helper ships in (`installDirectory`).
     public static var defaultLinkProbes: URL {
-        ClusterLinkProbeHistory.defaultFile(homeDirectory: FileManager.default.homeDirectoryForCurrentUser)
+        ClusterLinkProbeHistory.defaultFile(installDirectory: installDirectory())
     }
 
     /// The share probes the setup saves (`ClusterShareProbeHistory`), which
     /// `plan` reads when it is given no `--share-probes`.
     public static var defaultShareProbes: URL {
-        ClusterShareProbeHistory.defaultFile(homeDirectory: FileManager.default.homeDirectoryForCurrentUser)
+        ClusterShareProbeHistory.defaultFile(installDirectory: installDirectory())
+    }
+
+    /// The data folder of the install whose app holds this helper
+    /// (`<folder>/<App>.app/Contents/Helpers/darkbloom-cluster-plan`): DevNet's
+    /// `~/.darkbloom-dev` for its app's helper. A helper outside an app (a
+    /// development build) reads production's `~/.darkbloom`.
+    public static func installDirectory(executable: URL? = Bundle.main.executableURL,
+                                        home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        let helpers = executable?.resolvingSymlinksInPath().deletingLastPathComponent()
+        if let helpers, helpers.lastPathComponent == "Helpers", helpers.deletingLastPathComponent().lastPathComponent == "Contents",
+           helpers.deletingLastPathComponent().deletingLastPathComponent().pathExtension == "app" {
+            return helpers.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        }
+        return home.appendingPathComponent(".darkbloom", isDirectory: true)
     }
 
     /// Runs one subcommand and returns what it prints. `savedLinkProbes`: the

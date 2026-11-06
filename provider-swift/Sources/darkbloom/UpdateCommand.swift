@@ -342,7 +342,7 @@ enum ClusterServiceUpdateRequest {
             }
             try await Task.sleep(nanoseconds: UInt64(pollSeconds * 1_000_000_000))
         }
-        say("Still waiting after \(timeoutSeconds) s; the cluster service goes on by itself. Its log: ~/.darkbloom/cluster-setup/service.log")
+        say("Still waiting after \(timeoutSeconds) s; the cluster service goes on by itself. Its log: \(ClusterUserPaths.serviceLogShown)")
         return .waiting
     }
 

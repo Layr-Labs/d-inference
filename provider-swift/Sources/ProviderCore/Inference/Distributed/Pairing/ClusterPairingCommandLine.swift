@@ -9,7 +9,7 @@ public struct ClusterPairCommandRequest: Sendable {
     public var interface: String?
     public var device: String?
     public var localAddress: String?
-    public var port: Int = Int(ClusterLinkPairing.defaultPort)
+    public var port: Int = Int(ClusterCablePorts.current.pairing)
     public var clusterID: String?
     /// Only listen (answering probes): no search first, never dial. Default
     /// without `connect`: find the other Mac on the cable, or wait for it.
@@ -36,7 +36,8 @@ public struct ClusterPairCommandRequest: Sendable {
 public enum ClusterPairCommandLine {
     public struct Failure: Error, CustomStringConvertible { public let description: String }
 
-    public static var defaultPort: Int { Int(ClusterLinkPairing.defaultPort) }
+    /// This install's pairing port (`ClusterCablePorts`): production's 47421.
+    public static var defaultPort: Int { Int(ClusterCablePorts.current.pairing) }
     public static func isPin(_ value: String) -> Bool { ClusterPairingPin.isPin(value) }
 
     /// Runs the ceremony on this terminal; true when the Macs are paired.
@@ -66,7 +67,7 @@ public enum ClusterPairCommandLine {
         let callbacks = terminal.callbacks { interface, port in
             guard let selection = try? ClusterLinkInterfaceAdmission.select(interface: interface, localAddress: local,
                 peerAddress: nil, policy: policy, inspector: ClusterLinkSystemInterfaceInspector()) else { return nil }
-            let portText = port == ClusterLinkPairing.defaultPort ? "" : " --port \(port)"
+            let portText = port == ClusterCablePorts.current.pairing ? "" : " --port \(port)"
             return "darkbloom cluster pair\(portText)   (it finds this Mac; if not: darkbloom cluster pair --connect "
                 + "\(selection.local.address.dottedDecimal)\(portText))"
         }

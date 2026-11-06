@@ -4,7 +4,7 @@ import Foundation
 /// The link as the pair's recent loads measured it (`ClusterWorkerLinkProbe`,
 /// in each worker's ready record: every load over the cable, pipeline or
 /// tensor parallel, measures it before it reads a weight), by pair of members,
-/// in `~/.darkbloom/cluster/link-probes.json` (owner-only). The serving leader
+/// in the install's `cluster/link-probes.json` (owner-only). The serving leader
 /// adds each load's probe when the pair becomes ready (the provider keeps the
 /// file); every plan of that pair reads them (`costs`), so a re-plan uses the
 /// link as the pair's last loads measured it, with no user step, and the plan
@@ -60,8 +60,9 @@ public struct ClusterLinkProbeHistory: Codable, Sendable, Equatable {
 
     public init(pairs: [String: Entry] = [:]) { schema = Self.schemaName; self.pairs = pairs }
 
-    public static func defaultFile(homeDirectory: URL) -> URL {
-        homeDirectory.appendingPathComponent(".darkbloom/cluster/link-probes.json")
+    /// In the install's data folder (`installDirectory`): production's `~/.darkbloom`.
+    public static func defaultFile(installDirectory: URL) -> URL {
+        installDirectory.appendingPathComponent("cluster/link-probes.json")
     }
 
     /// The members in either order name one pair.

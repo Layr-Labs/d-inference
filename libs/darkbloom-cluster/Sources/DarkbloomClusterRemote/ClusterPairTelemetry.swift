@@ -9,7 +9,7 @@ import Foundation
 // the hand-off and MTP acceptance the ranks reported, and the prompt tokens
 // both ranks restored from their prefix caches. Values only: no prompt, no
 // output token, no client identity. The leader keeps the last records in
-// memory and in `~/.darkbloom/cluster/pair-telemetry.json` (owner-only), which
+// memory and in the install's `cluster/pair-telemetry.json` (owner-only), which
 // `darkbloom cluster status` and the console read.
 
 /// What the leader observed of one served request.
@@ -166,8 +166,8 @@ public struct ClusterPairTelemetryFile: Codable, Sendable, Equatable {
 
 /// Speed records written from served requests (PERF-BACKLOG item 12 / GAPS
 /// (c) 4): the leader keeps every request that computed its whole prompt, per
-/// setup (model, mode, cut) and route, across serving sessions, in
-/// `~/.darkbloom/cluster/served-speed.json` (owner-only), beside the pair
+/// setup (model, mode, cut) and route, across serving sessions, in the
+/// install's `cluster/served-speed.json` (owner-only), beside the pair
 /// telemetry. The planner reads it on the next plan (`darkbloom-cluster-plan
 /// plan --served`, `ClusterServedCalibration`) and the router prices each
 /// route from it. Values only, as the telemetry. Each record names the worker
@@ -185,8 +185,9 @@ public struct ClusterServedSpeedFile: Codable, Sendable, Equatable {
     /// Oldest first.
     public let records: [ClusterPairRequestTelemetry]
 
-    public static func defaultFile(homeDirectory: URL) -> URL {
-        homeDirectory.appendingPathComponent(".darkbloom/cluster/served-speed.json")
+    /// In the install's data folder (`installDirectory`): production's `~/.darkbloom`.
+    public static func defaultFile(installDirectory: URL) -> URL {
+        installDirectory.appendingPathComponent("cluster/served-speed.json")
     }
 
     /// `records` with `value` added when it is a speed record, bounded.
@@ -226,8 +227,9 @@ public struct ClusterServedSpeedFile: Codable, Sendable, Equatable {
 public final class ClusterPairTelemetryLog: @unchecked Sendable {
     public static let defaultCapacity = 64
 
-    public static func defaultFile(homeDirectory: URL) -> URL {
-        homeDirectory.appendingPathComponent(".darkbloom/cluster/pair-telemetry.json")
+    /// In the install's data folder (`installDirectory`): production's `~/.darkbloom`.
+    public static func defaultFile(installDirectory: URL) -> URL {
+        installDirectory.appendingPathComponent("cluster/pair-telemetry.json")
     }
 
     public let file: URL?

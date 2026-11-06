@@ -120,6 +120,7 @@ build_module InstalledContract \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterDeviceRecovery.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/Link/*.swift \
   "${task_console[@]}" \
+  "$task_sources/Inference/Distributed/Pairing/ClusterPairingStore+Install.swift" \
   "$task_sources/Inference/Distributed/Onboarding/ClusterModelProvisioning.swift" \
   "$task_sources/Inference/Distributed/Onboarding/ClusterModelProvisioningLink.swift"
 

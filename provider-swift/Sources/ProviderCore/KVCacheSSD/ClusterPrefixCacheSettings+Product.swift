@@ -14,7 +14,7 @@ extension ClusterPrefixCacheSettings {
     /// conservative fallback budget then applies, as on one Mac).
     public static func product(cacheSettings: CacheSettings, environment: [String: String] = ProcessInfo.processInfo.environment,
                                freeBytes: ((URL) -> Int?)? = nil) -> ClusterPrefixCacheSettings {
-        // `<base>/darkbloom/kv3` is the single-Mac tier; the pair's root is `<base>/darkbloom/cluster-prefix-v1`.
+        // `<base>/<namespace>/kv3` is the single-Mac tier; the pair's root is `<base>/<namespace>/cluster-prefix-v1`.
         let base = CacheStorage.root(for: cacheSettings).deletingLastPathComponent().deletingLastPathComponent()
         let root = Self.root(cacheBase: base)
         let free = (freeBytes ?? PrefixCachePolicy.volumeFreeBytes(at:))(root)

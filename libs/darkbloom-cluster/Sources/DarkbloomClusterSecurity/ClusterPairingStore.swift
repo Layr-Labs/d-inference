@@ -69,11 +69,12 @@ public enum ClusterPairingStoreError: Error, Equatable, Sendable, CustomStringCo
     }
 }
 
-/// The pairing store: `~/.darkbloom/cluster-pairing/` (0700) with
-/// `pairings.json`, one `edge-<pin>.secret` per peer, `gate.json` (the
-/// lockout) and `audit.jsonl`, every file 0600 and written atomically. A file
-/// that is not private to this user is refused, never repaired: trust rests
-/// on these files, so a widened mode fails closed.
+/// The pairing store: `cluster-pairing/` in the install's own folder (0700;
+/// production's `~/.darkbloom/cluster-pairing`, the provider picks it per
+/// install) with `pairings.json`, one `edge-<pin>.secret` per peer, `gate.json`
+/// (the lockout) and `audit.jsonl`, every file 0600 and written atomically. A
+/// file that is not private to this user is refused, never repaired: trust
+/// rests on these files, so a widened mode fails closed.
 public final class ClusterPairingStore: @unchecked Sendable {
     public let directory: URL
     private let lock = NSLock()
@@ -86,11 +87,6 @@ public final class ClusterPairingStore: @unchecked Sendable {
 
     public init(directory: URL, clock: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 }) {
         self.directory = directory; self.clock = clock
-    }
-
-    /// `<home>/.darkbloom/cluster-pairing`.
-    public static func `default`(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> ClusterPairingStore {
-        ClusterPairingStore(directory: home.appendingPathComponent(".darkbloom/cluster-pairing", isDirectory: true))
     }
 
     // MARK: - Reading

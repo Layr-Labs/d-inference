@@ -33,8 +33,8 @@ enum ClusterLocalDeviceProfile {
     }
 }
 
-/// This Mac's own model-free speed index as it last measured it, in owner-only
-/// `~/.darkbloom/cluster/device-index.json`: what this Mac's profile carries
+/// This Mac's own model-free speed index as it last measured it, in this install's owner-only
+/// `cluster/device-index.json`: what this Mac's profile carries
 /// while a model is loaded here and no GPU benchmark may run
 /// (`ClusterLocalDeviceProfile`). One index, replaced at each measurement;
 /// figures only, no name or address.
@@ -50,7 +50,7 @@ struct ClusterDeviceIndexRecord: Codable, Equatable, Sendable {
     }
 
     static func file(homeDirectory: URL) -> URL {
-        homeDirectory.appendingPathComponent(".darkbloom/cluster/device-index.json")
+        ClusterUserPaths.observabilityDirectory(home: homeDirectory).appendingPathComponent("device-index.json")
     }
 
     /// Nil when absent, unreadable, not owner-only or malformed.

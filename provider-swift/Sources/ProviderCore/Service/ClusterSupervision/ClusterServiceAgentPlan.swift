@@ -17,9 +17,13 @@ import CryptoKit
 /// - `KeepAlive` on an unsuccessful exit, throttled by the budget's first
 ///   backoff: launchd brings back a supervisor that crashed, never one an
 ///   operator stopped (it exits 0);
-/// - the label is scoped to the install (a digest of the installed app, or of
-///   the directory of a development build), so two installs never share a job
-///   and a newer install takes over the older one's job;
+/// - the label is scoped to the build (`BuildEnvironment.clusterServiceLabelPrefix`:
+///   production's `io.darkbloom.cluster-service.`, DevNet's
+///   `io.darkbloom.cluster-service.dev.`) and to the install (a digest of the
+///   installed app, or of the directory of a development build), so two
+///   installs never share a job, a newer location of the same build takes over
+///   the older one's job, and one build never takes, stops or removes
+///   another's (`isOwnAgent`);
 /// - `darkbloom cluster stop` and unpairing (`darkbloom cluster pair --forget`)
 ///   remove it, so a stopped cluster stays stopped across reboots.
 ///
@@ -27,7 +31,8 @@ import CryptoKit
 /// domain needs no administrator approval (macOS shows its "background item
 /// added" notice, as for the provider's own agent).
 public enum ClusterServiceAgentPlan {
-    public static let labelPrefix = "io.darkbloom.cluster-service."
+    /// This build's label prefix: production's `io.darkbloom.cluster-service.`.
+    public static var labelPrefix: String { BuildEnvironment.current.clusterServiceLabelPrefix }
 
     /// The bundle or folder that identifies an install: `<X>.app` for a
     /// binary inside an app bundle (`Contents/MacOS` or `Contents/Helpers`),
@@ -45,17 +50,56 @@ public enum ClusterServiceAgentPlan {
         return url.deletingLastPathComponent().path
     }
 
-    /// `io.darkbloom.cluster-service.<12 hex digits of SHA-256(install root)>`.
-    public static func label(executablePath: String) -> String {
+    /// `<prefix><12 hex digits of SHA-256(install root)>`: production's `io.darkbloom.cluster-service.<12 hex>`.
+    public static func label(executablePath: String, environment: BuildEnvironment = .current) -> String {
         let digest = SHA256.hash(data: Data(installRoot(executablePath: executablePath).utf8))
-        return labelPrefix + digest.prefix(6).map { String(format: "%02x", $0) }.joined()
+        return environment.clusterServiceLabelPrefix + digest.prefix(6).map { String(format: "%02x", $0) }.joined()
     }
 
-    /// Whether a LaunchAgents file name is one of this product's cluster service agents.
-    public static func isAgentFileName(_ name: String) -> Bool {
-        guard name.hasPrefix(labelPrefix), name.hasSuffix(".plist") else { return false }
-        let suffix = name.dropFirst(labelPrefix.count).dropLast(".plist".count)
+    /// Whether a LaunchAgents file name has the shape of `environment`'s cluster service agents: its prefix and 12
+    /// lowercase hex digits. Production's prefix starts every other build's too, but their labels have more after
+    /// it, so no other build's file has production's shape.
+    public static func isAgentFileName(_ name: String, environment: BuildEnvironment = .current) -> Bool {
+        let prefix = environment.clusterServiceLabelPrefix
+        guard name.hasPrefix(prefix), name.hasSuffix(".plist") else { return false }
+        let suffix = name.dropFirst(prefix.count).dropLast(".plist".count)
         return suffix.count == 12 && suffix.allSatisfy { $0.isHexDigit && !$0.isUppercase }
+    }
+
+    /// Whether the agent in `fileName`, whose job runs `program` (the plist's first program argument; nil when it
+    /// can't be read), is `environment`'s own: what its `cluster stop --service`, unpairing, uninstall and the next
+    /// `cluster` may stop, replace or remove. Production's shape is also what every build wrote before builds had
+    /// prefixes of their own (0.10.9 and earlier): such a job is another build's when its program is in that build's
+    /// folder (an older DevNet's `~/.darkbloom-dev/…/darkbloom-dev`), and production's otherwise, as before. Outside
+    /// production, a job of production's shape is this build's only when its program is in this build's own folder.
+    public static func isOwnAgent(fileName: String, program: String?, environment: BuildEnvironment = .current,
+                                  home: URL) -> Bool {
+        func inFolder(of install: BuildEnvironment) -> Bool {
+            guard let program else { return false }
+            let folder = canonical(install.installDirectory(home: home).path)
+            return canonical(program).hasPrefix(folder + "/")
+        }
+        if isAgentFileName(fileName, environment: environment) {
+            guard environment == .prod else { return true }
+            return !BuildEnvironment.allCases.contains { $0 != .prod && inFolder(of: $0) }
+        }
+        return environment != .prod && isAgentFileName(fileName, environment: .prod) && inFolder(of: environment)
+    }
+
+    /// `path` with the links of its deepest existing folder resolved (`/var` reads `/private/var`), so a program
+    /// that is gone and the folder it was in compare alike.
+    static func canonical(_ path: String) -> String {
+        var existing = URL(fileURLWithPath: path).standardizedFileURL
+        var missing: [String] = []
+        while existing.path != "/" {
+            if let resolved = realpath(existing.path, nil) {
+                defer { free(resolved) }
+                return missing.reversed().reduce(String(cString: resolved)) { ($0 as NSString).appendingPathComponent($1) }
+            }
+            missing.append(existing.lastPathComponent)
+            existing = existing.deletingLastPathComponent()
+        }
+        return URL(fileURLWithPath: path).standardizedFileURL.path
     }
 
     /// The options `darkbloom cluster service` and its supervisor both take

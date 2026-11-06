@@ -210,10 +210,10 @@ public final class ClusterService: @unchecked Sendable {
         self.environment = environment
         self.listening = listening
         self.powerAssertionReason = powerAssertionReason
-        pairingStore = .default(home: paths.homeDirectory)
+        pairingStore = .default(home: paths.homeDirectory, environment: paths.environment)
         // This home's provider instance lock (`ProcessLifecycle.defaultPIDFile`'s, unless DARKBLOOM_PID_FILE moves it).
         providerInstanceLock = (ProcessInfo.processInfo.environment["DARKBLOOM_PID_FILE"].map { URL(fileURLWithPath: $0) }
-            ?? BuildEnvironment.current.installDirectory(home: paths.homeDirectory).appendingPathComponent("provider.pid"))
+            ?? paths.installDirectory.appendingPathComponent("provider.pid"))
             .appendingPathExtension("lock")
         var wizard = settings.wizard
         wizard.derivedPlacement = true
@@ -293,7 +293,7 @@ public final class ClusterService: @unchecked Sendable {
             if running() { return true }
             var status: Int32 = 0
             if waitpid(pid, &status, WNOHANG) == pid {
-                throw ClusterOnboardingFailure("this Mac's cluster service stopped at start; its log is ~/.darkbloom/cluster-setup/service.log")
+                throw ClusterOnboardingFailure("this Mac's cluster service stopped at start; its log is \(ClusterUserPaths.serviceLogShown)")
             }
             usleep(50_000)
         }
@@ -1064,7 +1064,7 @@ public final class ClusterService: @unchecked Sendable {
             value.localOnly = record?.leadership.map { $0.scope.isLocalOnly }
             value.loggedIn = AuthTokenStore.load() != nil
             value.startsAtLogin = ClusterServiceAgent.startsAtLogin(environment: ProcessInfo.processInfo.environment,
-                                                                    installedAgents: ClusterServiceAgent.installedLabels)
+                                                                    installedAgents: { ClusterServiceAgent.installedLabels() })
             if child?.isRunning == true, childIsMember {
                 value.child.pair = Self.pairReport(in: serviceFiles.rankLog, from: childLogOffset).map(ClusterOnboardingPairReport.text)
                 let state = DaemonStateFile.read()

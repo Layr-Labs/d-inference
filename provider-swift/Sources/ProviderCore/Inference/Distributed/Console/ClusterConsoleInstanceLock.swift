@@ -1,20 +1,28 @@
 import Foundation
 import Darwin
 
-/// One console screen per user. Two screens would each start actions without
-/// seeing the other's, so the second one refuses to open. The lock is an empty
-/// owner-only file in the user's own temporary directory, held with `flock`
+/// One console screen per user and install. Two screens would each start
+/// actions without seeing the other's, so the second one refuses to open. The
+/// lock is an empty owner-only file in the user's own temporary directory,
+/// named after the install's command (`darkbloom-cluster-console.lock`, DevNet's
+/// `darkbloom-dev-…`, whose screens act on its own pair), held with `flock`
 /// for the life of the screen. It records nothing, opening a screen leaves
 /// nothing in the home directory, and the kernel releases the lock if the
 /// process dies.
 public final class ClusterConsoleInstanceLock: @unchecked Sendable {
     public struct Held: Error, CustomStringConvertible {
         public var description: String {
-            "Another `darkbloom cluster` screen is open for this user. Close it first, or run `darkbloom cluster console --plain` to print the same state without opening a screen."
+            let cli = BuildEnvironment.current.cliName
+            return "Another `\(cli) cluster` screen is open for this user. Close it first, or run `\(cli) cluster console --plain` to print the same state without opening a screen."
         }
     }
 
-    static let fileName = "darkbloom-cluster-console.lock"
+    static let fileName = lockFileName("console")
+
+    /// This install's lock for `use` (`console`, `exchange`, `control`): production's `darkbloom-cluster-<use>.lock`.
+    static func lockFileName(_ use: String, environment: BuildEnvironment = .current) -> String {
+        "\(environment.cliName)-cluster-\(use).lock"
+    }
     private let descriptor: Int32
 
     private init(descriptor: Int32) { self.descriptor = descriptor }

@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-11-04
+> Last updated: 2026-11-06
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -346,9 +346,9 @@ No choice deletes a models folder you chose or the cluster model store beside
 it, even inside `~/.darkbloom` (the rest of that folder goes), caches in a
 folder you chose, anything that resolves outside Darkbloom's folders, or
 Keychain keys (a new install replaces them). With both the production Darkbloom
-and Darkbloom Dev on this Mac, uninstalling one keeps this Mac's pairing, cluster setup
-and cable port setup, which the other uses; uninstall that one too to remove
-them. Remove what it leaves first, if you
+and Darkbloom Dev on this Mac, uninstalling one removes only its own pairing and
+cluster setup and keeps this Mac's cable port setup, which the other may use;
+uninstall that one too to undo it. Remove what it leaves first, if you
 use it:
 
 ```bash

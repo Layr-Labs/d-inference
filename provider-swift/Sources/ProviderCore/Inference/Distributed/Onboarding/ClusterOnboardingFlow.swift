@@ -2320,8 +2320,12 @@ public enum ClusterOnboardingDriver {
         return ["\(cli) stop     Stop both Macs", "\(cli) restart  Restart with the current model", "\(cli) status   Check status"]
     }
 
-    /// Where the cluster service writes (`ClusterService.paths().log`).
+    /// Where the cluster service writes (`ClusterService.paths().log`), in the running build's folder.
+    #if SWIFT_PACKAGE
+    static var serviceLogPath: String { ClusterUserPaths.serviceLogShown }
+    #else
     static let serviceLogPath = "~/.darkbloom/cluster-setup/service.log"
+    #endif
 
     /// How a run that changed nothing ends: the status again, and the commands.
     static func unchangedEnding(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) {

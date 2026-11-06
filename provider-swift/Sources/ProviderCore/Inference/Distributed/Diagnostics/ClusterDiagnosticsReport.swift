@@ -30,7 +30,8 @@ public struct ClusterDiagnosticsReport: Encodable, Sendable {
     /// physical probe: no peer is contacted and no collective runs.
     public let localLinkInspectionPerformed: Bool
     /// This Mac's incident log, the leader's pair telemetry and the mirrored
-    /// follower status, read from `~/.darkbloom/cluster/` (S24). Absent when
+    /// follower status, read from this install's `cluster/` folder (production's
+    /// `~/.darkbloom/cluster/`, S24). Absent when
     /// none of those files exists.
     public let observability: ClusterObservabilitySnapshot?
     /// The observability section as terminal lines (empty when absent).

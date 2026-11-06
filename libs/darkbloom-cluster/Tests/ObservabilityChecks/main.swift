@@ -40,7 +40,7 @@ try! FileManager.default.createDirectory(at: scratch, withIntermediateDirectorie
 
 func incidentChecks() throws {
     let home = scratch.appendingPathComponent("home-a")
-    let file = ClusterIncidentLog.defaultFile(homeDirectory: home)
+    let file = ClusterIncidentLog.defaultFile(installDirectory: home.appendingPathComponent(".darkbloom"))
     let log = ClusterIncidentLog(file: file, redact: { $0.replacingOccurrences(of: "secret-host", with: "<host>") })
     let empty = log.feed()
     check(empty.incidents.isEmpty && empty.loadError == nil && empty.epoch.isEmpty, "A1 a missing log reads as empty, no error")
@@ -126,7 +126,7 @@ func incidentChecks() throws {
     // Each install keeps its own corrupt copy: DevNet's never replaces production's.
     let productionAside = file.deletingLastPathComponent().appendingPathComponent("incidents.corrupt.json")
     let kept = try Data(contentsOf: productionAside)
-    let devFile = ClusterIncidentLog.defaultFile(homeDirectory: home, install: "dev")
+    let devFile = ClusterIncidentLog.defaultFile(installDirectory: home.appendingPathComponent(".darkbloom"), install: "dev")
     try Data("{not json either".utf8).write(to: devFile)
     _ = try ClusterIncidentLog(file: devFile, install: "dev").record(.init(severity: .error, source: "leader",
         stateCode: .activationLaunchFailed, message: "after corruption"))
@@ -278,13 +278,13 @@ func telemetryChecks() throws {
     check(read?.records.count == 4 && read?.sessionID == "session-1" && read?.summary == log.summary, "C6 the file reads back")
     var info = stat()
     check(stat(file.path, &info) == 0 && info.st_mode & 0o777 == 0o600, "C7 the telemetry file is owner-only")
-    let snapshot = ClusterObservabilitySnapshot.read(homeDirectory: scratch.appendingPathComponent("home-c"))
+    let snapshot = ClusterObservabilitySnapshot.read(installDirectory: scratch.appendingPathComponent("home-c/.darkbloom"))
     check(snapshot.telemetry?.recent.first?.requestID == "r5" && snapshot.incidents == nil && snapshot.followers == nil,
           "C8 the status snapshot shows the newest request first and no absent section")
     check(snapshot.lines.contains { $0.contains("phase_split_mtp_v1 cut 0-16|16-32") && $0.contains("hand-off 80.0 ms") },
           "C9 status lines name mode, cut and hand-off")
     // Speed records from served requests: cold completed requests only, kept across sessions, with their route.
-    let history = ClusterServedSpeedFile.defaultFile(homeDirectory: scratch.appendingPathComponent("home-c"))
+    let history = ClusterServedSpeedFile.defaultFile(installDirectory: scratch.appendingPathComponent("home-c/.darkbloom"))
     check(ClusterServedSpeedFile.read(history)?.records.map(\.requestID) == ["r3", "r5"],
           "C10 every completed request that computed its whole prompt is a speed record (not cached, not failed, not the session's first on its route)")
     let next = ClusterPairTelemetryLog(file: file, sessionID: "session-2", capacity: 4)
@@ -309,7 +309,7 @@ func telemetryChecks() throws {
             outcome: "length"), to: many)
     }
     check(many.count == ClusterServedSpeedFile.keptPerRoute && many.first?.requestID == "x8", "C13 speed records are bounded per setup and route")
-    let routed = ClusterObservabilitySnapshot.read(homeDirectory: scratch.appendingPathComponent("home-c"))
+    let routed = ClusterObservabilitySnapshot.read(installDirectory: scratch.appendingPathComponent("home-c/.darkbloom"))
     check(routed.lines.contains { $0.contains("route alone:second") } && routed.lines.contains { $0.contains("route: second alone is predicted") }
             && routed.lines.contains { $0.hasPrefix("Speed records from served requests") && $0.contains("alone:second 1") && $0.contains("pair 2") },
           "C14 status shows each request's route and why, and the speed records by route")
@@ -581,9 +581,9 @@ func statusChecks() throws {
 
     // The leader's file and the snapshot `cluster status` reads.
     let home = scratch.appendingPathComponent("home-e")
-    let file = ClusterLinkStatusBoardFile.defaultFile(homeDirectory: home)
+    let file = ClusterLinkStatusBoardFile.defaultFile(installDirectory: home.appendingPathComponent(".darkbloom"))
     try ClusterLinkStatusBoardFile(updatedAt: clock.now, entries: board.entries()).write(to: file)
-    let snapshot = ClusterObservabilitySnapshot.read(homeDirectory: home, now: clock.now + 30)
+    let snapshot = ClusterObservabilitySnapshot.read(installDirectory: home.appendingPathComponent(".darkbloom"), now: clock.now + 30)
     check(snapshot.followers?.entries.first?.stale == true && snapshot.followers?.entries.first?.ageSeconds == 30,
           "E16 the snapshot recomputes age and staleness from the file")
     check(snapshot.lines.contains { $0.contains("Rank 1 (mirrored over the link)") && $0.contains("STALE") }, "E17 status lines show it")

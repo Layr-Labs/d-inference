@@ -35,7 +35,7 @@ extension ClusterService {
         while !running() {
             guard Date() < deadline else {
                 throw ClusterOnboardingFailure("this Mac's cluster service was installed but did not start within \(Int(waitSeconds)) s; "
-                    + "its log is ~/.darkbloom/cluster-setup/service.log")
+                    + "its log is \(ClusterUserPaths.serviceLogShown)")
             }
             usleep(100_000)
         }

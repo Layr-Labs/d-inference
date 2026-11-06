@@ -12,8 +12,9 @@ task_sources=()
 for task_source in "$task_link"/*.swift; do
   [[ "$(basename "$task_source")" == "ClusterLinkDiagnosticChecks.swift" ]] || task_sources+=("$task_source")
 done
-# The alias record is kept with the cluster file policy and user paths.
-task_sources+=("$task_config/ClusterConfigurationFiles.swift" "$task_config/ClusterConfigurationPaths.swift")
+# The alias record is kept with the cluster file policy and user paths, which name the install.
+task_sources+=("$task_config/ClusterConfigurationFiles.swift" "$task_config/ClusterConfigurationPaths.swift"
+  "$task_provider"/Sources/ProviderBuildEnvironment/*.swift)
 xcrun swiftc -swift-version 6 -warnings-as-errors -parse-as-library \
   -target "$(uname -m)-apple-macos14.0" \
   "${task_sources[@]}" "$task_checks"/*.swift -o "$task_build/link-check"

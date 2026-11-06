@@ -10,10 +10,10 @@ public struct ProviderUninstallPaths: Sendable, Equatable {
     public let home: URL
     /// The install these paths are for.
     public let environment: BuildEnvironment
-    /// `~/.darkbloom`: the app, the `bin/` links, logs, pairing, cluster setup and service state.
+    /// `~/.darkbloom`: the app, the `bin/` links, logs, and this install's pairing, cluster setup and service state.
     public let installDirectory: URL
     public let appBundleName: String
-    /// `~/.config/darkbloom`: `provider.toml` and saved cluster setups.
+    /// `~/.config/darkbloom`: `provider.toml` and this install's saved cluster setups.
     public let configDirectory: URL
     /// `~/Library/Caches/darkbloom`: the encrypted prompt caches.
     public let cacheDirectory: URL
@@ -28,9 +28,9 @@ public struct ProviderUninstallPaths: Sendable, Equatable {
     public var savedCacheDirectory: URL?
     /// Another Darkbloom install on this Mac (`~/.darkbloom-dev`, …) reads the same model cache, so its models stay.
     public var otherInstall: URL?
-    /// Another Darkbloom install on this Mac, told by its app or its command in its own folder. Not by the folder
-    /// alone: `~/.darkbloom` also holds the cluster files every install writes. It shares this Mac's pairing, cluster
-    /// setup and cable port setup (`sharedClusterFiles`), so those stay.
+    /// Another Darkbloom install on this Mac, told by its app or its command in its own folder. Each install keeps its
+    /// own pairing and cluster setup in its own folders, but both use this Mac's one cable port setup, which stays
+    /// while the other is here (`ProviderUninstall.Plan.cableKeptFor`).
     public var otherEnvironment: BuildEnvironment?
 
     public init(home: URL, environment: BuildEnvironment = .current, commandLinkDirectory: URL = URL(fileURLWithPath: "/usr/local/bin")) {
@@ -77,17 +77,6 @@ public struct ProviderUninstallPaths: Sendable, Equatable {
         [installDirectory, configDirectory, cacheDirectory, modelCache, clusterModelStore].map(\.path)
     }
 
-    /// The cluster files every install on this Mac reads and writes, whichever install it is: `~/.darkbloom/cluster*`
-    /// (pairing, setup, device and link records: `ClusterUserPaths`, `ClusterSetupWizardStore`, `ClusterMemberHealth`)
-    /// and the saved cluster setups in `~/.config/darkbloom/clusters`.
-    var sharedClusterFiles: [URL] {
-        let darkbloom = BuildEnvironment.prod.installDirectory(home: home)
-        let names = ((try? FileManager.default.contentsOfDirectory(atPath: darkbloom.path)) ?? []).filter { $0.hasPrefix("cluster") }
-        return names.sorted().map { darkbloom.appendingPathComponent($0) }
-            + [BuildEnvironment.prod.configDirectory(home: home).appendingPathComponent("clusters", isDirectory: true)]
-                .filter { FileManager.default.fileExists(atPath: $0.path) }
-    }
-
     static func canonical(_ path: String) -> String {
         guard let resolved = realpath(path, nil) else { return URL(fileURLWithPath: path).standardizedFileURL.path }
         defer { free(resolved) }
@@ -127,12 +116,6 @@ public struct ProviderUninstallItem: Codable, Sendable, Equatable {
     var keeping: [String] = []
     /// What `keeping` is, as the deleted folder's row names it ("the models you chose").
     var keepingWhat = ""
-    /// The other install whose cluster state this item keeps: the pairing and the cable port setup stay with it.
-    var sharedWith: String?
-    /// This install's own cluster service agent (`ClusterServiceAgentPlan.label` of its app), and its file when
-    /// installed. Beside another install, step 2 removes only this one.
-    var ownClusterAgent: String?
-    var ownClusterAgentPlist: String?
     /// Kept although it lies inside one of Darkbloom's folders, because the person chose it for models.
     var keptInDarkbloomFolder = false
 
@@ -216,17 +199,21 @@ extension ProviderUninstall {
         public let pairing: ProviderUninstallPairing?
         /// Darkbloom things this command never removes, each with how to remove it (the fan helper, …).
         public let elsewhere: [String]
+        /// The other install on this Mac (`ProviderUninstallPaths.otherEnvironment`), which may use the same cable: the
+        /// cable port setup stays for it. Nil when this install is the only one.
+        public let cableKeptFor: BuildEnvironment?
 
         public init(cli: String = BuildEnvironment.current.cliName,
                     installCommand: String = "curl -fsSL \(BuildEnvironment.current.coordinatorHTTPURL)/install.sh | bash",
                     clusterService: [String] = [], clusterServiceRunning: Bool = false,
                     runningClusterService: RunningClusterService? = nil, services: [Service],
                     items: [ProviderUninstallItem],
-                    pairing: ProviderUninstallPairing?, elsewhere: [String] = []) {
+                    pairing: ProviderUninstallPairing?, elsewhere: [String] = [], cableKeptFor: BuildEnvironment? = nil) {
             self.cli = cli; self.installCommand = installCommand; self.clusterService = clusterService
             self.clusterServiceRunning = clusterServiceRunning || runningClusterService != nil
             self.runningClusterService = runningClusterService
             self.services = services; self.items = items; self.pairing = pairing; self.elsewhere = elsewhere
+            self.cableKeptFor = cableKeptFor
         }
 
         /// What `mode` deletes, in order.
@@ -236,15 +223,12 @@ extension ProviderUninstall {
         var models: [ProviderUninstallItem] { items.filter { $0.verdict == .remove && $0.kind == .model } }
         var kept: [ProviderUninstallItem] { items.filter { $0.verdict == .keep } }
         var refused: [ProviderUninstallItem] { items.filter { $0.verdict == .refused } }
-        /// Another install on this Mac uses the same pairing and cable port setup, so they stay (`inventory`).
-        var sharesCluster: Bool { items.contains { $0.sharedWith != nil } }
         /// Disk space deleting `mode`'s items frees, with APFS clones counted once.
         func frees(_ mode: Mode) -> Int64 { uniqueBytes(removed(mode)) }
         var modelBytes: Int64 { uniqueBytes(models) }
     }
 
     static let chosenModelsLabel = "Models in the folder you chose"
-    static let sharedClusterLabel = "This Mac's pairing, cluster setup and cable port setup"
     static let foreignLinkReason = "it is not the link Darkbloom's installer made"
     static let chosenStoreLabel = "Cluster model store beside the folder you chose"
     static let clusterStoreLabel = "Cluster model store"
@@ -291,53 +275,12 @@ extension ProviderUninstall {
         items += models(paths)
         add(clusterStoreLabel, paths.clusterModelStore, keep: paths.otherInstall.map(sharedReason), kind: .model)
         add("The `\(paths.commandLink.lastPathComponent)` command link", paths.commandLink, kind: .command)
-        add(installFolderLabel(paths), paths.installDirectory, kind: .command)
-        // Another install on this Mac reads the same pairing, cluster setup and cable port setup: they stay with it.
-        var ownIncidents: [ProviderUninstallItem] = []
-        if let other = paths.otherEnvironment {
-            let files = paths.sharedClusterFiles
-            var shared = ProviderUninstallItem(label: sharedClusterLabel,
-                                               path: paths.home.appendingPathComponent(".darkbloom/cluster*").path,
-                                               bytes: files.reduce(0) { $0 + measure($1).bytes }, verdict: .keep,
-                                               reason: "\(installName(other)) on this Mac also uses them; the pair and its "
-                                                   + "cluster service are left as they are. Run `\(other.cliName) uninstall` there to remove them")
-            shared.keptInDarkbloomFolder = true
-            shared.sharedWith = installName(other)
-            let ownAgent = ClusterServiceAgentPlan.label(executablePath: paths.installDirectory
-                .appendingPathComponent("\(paths.appBundleName)/Contents/MacOS/\(paths.commandLink.lastPathComponent)").path)
-            let ownPlist = paths.home.appendingPathComponent("Library/LaunchAgents/\(ownAgent).plist")
-            shared.ownClusterAgent = ownAgent
-            shared.ownClusterAgentPlist = FileManager.default.fileExists(atPath: ownPlist.path) ? ownPlist.path : nil
-            items.append(shared)
-            protected += files.map { (ProviderUninstallPaths.canonical($0.path), "the cluster files \(installName(other)) uses") }
-            ownIncidents = ownIncidentLog(paths)
-        }
+        add(installFolderLabel, paths.installDirectory, kind: .command)
         // What finishes the uninstall once the models are out: the settings that named the folder are gone by then.
         let again = "\(paths.installDirectory.path)/bin/\(paths.commandLink.lastPathComponent) uninstall"
         let advice = ". To finish, move the models you want to keep out of it, then run `\(again)` again, which deletes the rest of it"
-        var listed = items.compactMap { around($0, protected, advice: advice) }
-        // Before the install folder, so the app still goes last.
-        listed.insert(contentsOf: ownIncidents, at: listed.firstIndex { $0.path == paths.installDirectory.path } ?? listed.endIndex)
-        return listed
+        return items.compactMap { around($0, protected, advice: advice) }
     }
-
-    /// This install's own incident log in the shared cluster folder (`ClusterIncidentLog.forThisInstall`): its log,
-    /// lock and corrupt copy, which no other install reads, so they go while the folder stays. Production's log is the
-    /// folder's shared `incidents.json`, which a build of the other install from before installs had their own logs
-    /// still writes: it stays with the folder.
-    static func ownIncidentLog(_ paths: ProviderUninstallPaths) -> [ProviderUninstallItem] {
-        let install = paths.environment.rawValue
-        let file = ClusterIncidentLog.defaultFile(homeDirectory: paths.home, install: install)
-        guard file != ClusterIncidentLog.defaultFile(homeDirectory: paths.home) else { return [] }
-        let labels = [ownIncidentsLabel, "This install's incident log lock", "This install's incident log, set aside as corrupt"]
-        return zip(labels, ClusterIncidentLog(file: file, install: install).files).compactMap { label, url in
-            var info = stat()
-            guard lstat(url.path, &info) == 0 else { return nil }
-            return ProviderUninstallItem(label: label, path: url.path, bytes: measure(url).bytes, verdict: .remove, reason: nil)
-        }
-    }
-
-    static let ownIncidentsLabel = "This install's incident log"
 
     /// `item` with the protected folders inside it left out (and measured without them); nil when it lies inside one.
     private static func around(_ item: ProviderUninstallItem, _ protected: [(path: String, what: String)],
@@ -364,11 +307,8 @@ extension ProviderUninstall {
         return kept
     }
 
-    /// The install folder's row. The pairing and cluster setup are in `~/.darkbloom` whichever install made them.
-    static func installFolderLabel(_ paths: ProviderUninstallPaths) -> String {
-        paths.installDirectory.lastPathComponent == BuildEnvironment.prod.installDirectoryName
-            ? "Darkbloom folder: the app, logs, pairing and cluster setup" : "Darkbloom folder: the app and logs"
-    }
+    /// The install folder's row: each install keeps its own pairing and cluster setup in it (`ClusterUserPaths`).
+    static let installFolderLabel = "Darkbloom folder: the app, logs, pairing and cluster setup"
 
     /// How the summary and the kept lines name an install: the production one, or by its app's name.
     static func installName(_ environment: BuildEnvironment) -> String {

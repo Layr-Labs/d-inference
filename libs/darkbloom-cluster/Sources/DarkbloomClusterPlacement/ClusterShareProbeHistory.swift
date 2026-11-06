@@ -4,7 +4,7 @@ import Foundation
 /// Each Mac's own tensor-parallel share steps as its loads measured them
 /// (`ClusterWorkerShareProbe`, in each worker's ready record: a dense Qwen
 /// tensor-parallel load times its own share alone before it serves), by model
-/// artifact and member, in `~/.darkbloom/cluster/share-probes.json`
+/// artifact and member, in the install's `cluster/share-probes.json`
 /// (owner-only). The serving leader adds both ranks' probes when the pair
 /// becomes ready (the provider keeps the file); every plan of the pair reads
 /// each member's points for the model it plans (`shareRates`) as that Mac's
@@ -60,8 +60,9 @@ public struct ClusterShareProbeHistory: Codable, Sendable, Equatable {
 
     public init(artifacts: [String: [String: Member]] = [:]) { schema = Self.schemaName; self.artifacts = artifacts }
 
-    public static func defaultFile(homeDirectory: URL) -> URL {
-        homeDirectory.appendingPathComponent(".darkbloom/cluster/share-probes.json")
+    /// In the install's data folder (`installDirectory`): production's `~/.darkbloom`.
+    public static func defaultFile(installDirectory: URL) -> URL {
+        installDirectory.appendingPathComponent("cluster/share-probes.json")
     }
 
     static func hash(_ value: String) -> Bool {

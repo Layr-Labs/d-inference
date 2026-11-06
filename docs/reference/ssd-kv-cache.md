@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-11-05
+> Last updated: 2026-11-06
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -581,8 +581,12 @@ accounting and publication behavior are unchanged.
 ## Cluster prompt-prefix records
 
 The two-Mac cluster's ranks keep their prompt prefixes in their own encrypted
-records under `<cache base>/darkbloom/cluster-prefix-v1`, separate from the
-`kv3/` tier above and its DBK3 format
+records under `<cache base>/<encryptedCacheNamespace>/cluster-prefix-v1`
+(`<cache base>/darkbloom/cluster-prefix-v1` in production; a dev build's pair
+has its own namespace, as for `kv3`, so it never reads, evicts or sweeps
+production's records; `ClusterPrefixCacheSettings.rootDirectoryName` in
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterPrefixCacheSettings.swift`),
+separate from the `kv3/` tier above and its DBK3 format
 (`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Prefix/QwenStagePrefixDiskTier.swift`,
 `QwenStagePrefixDiskRecord.swift` beside it). Attention rows are stored at the
 pair's checkpoint precision, `balanced` by default; the mechanism, eligibility

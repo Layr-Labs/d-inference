@@ -3,7 +3,7 @@ import DarkbloomClusterPlacement
 import DarkbloomClusterProtocol
 
 /// The pair's recent link probes (`ClusterLinkProbeHistory`, kept per pair of
-/// members in `~/.darkbloom/cluster/link-probes.json`) as this provider keeps
+/// members in this install's `cluster/link-probes.json`) as this provider keeps
 /// them: owner-only, replaced under the configuration lock. The serving
 /// leader records each load's probe when the pair becomes ready; every plan of
 /// that pair reads them, so a re-plan uses the link as the pair's last loads
@@ -23,7 +23,7 @@ extension ClusterLinkProbeHistory {
     public static func record(_ probe: ClusterWorkerLinkProbe, members: [String], homeDirectory: URL,
                               now: Double = Date().timeIntervalSince1970) -> Bool {
         guard probe.valid, members.count == 2, Set(members).count == 2 else { return false }
-        let file = defaultFile(homeDirectory: homeDirectory)
+        let file = defaultFile(installDirectory: BuildEnvironment.current.installDirectory(home: homeDirectory))
         do {
             try ClusterConfigurationFiles.update(file, maximum: maximumBytes) { old in
                 let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -42,6 +42,6 @@ extension ClusterLinkProbeHistory {
     /// (their median), or nil (unmeasured: no tensor-parallel mode is chosen then).
     public static func costs(homeDirectory: URL, members: [String],
                              now: Double = Date().timeIntervalSince1970) -> ClusterLinkCosts? {
-        read(defaultFile(homeDirectory: homeDirectory))?.costs(members: members, now: now)
+        read(defaultFile(installDirectory: BuildEnvironment.current.installDirectory(home: homeDirectory)))?.costs(members: members, now: now)
     }
 }

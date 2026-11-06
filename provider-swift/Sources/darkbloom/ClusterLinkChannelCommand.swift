@@ -16,7 +16,7 @@ extension Cluster {
             @Option(help: "RDMA device of the link, such as rdma_en7; picks the interface that carries its IPv4.") var device: String?
             @Option(name: .customLong("local-address"), help: "IPv4 address on the interface to bind.") var localAddress: String?
             @Option(name: .customLong("peer-address"), help: "IPv4 address of the other Mac on the link.") var peerAddress: String?
-            @Option(help: "TCP port.") var port: Int = 47_420
+            @Option(help: "TCP port.") var port: Int = Int(ClusterCablePorts.current.linkControl)
             @Option(help: "Epoch UUID shared by both ends.") var epoch: String
             @Option(help: "Edge UUID shared by both ends.") var edge: String
             @Flag(name: .customLong("loopback-for-tests"), help: "Use loopback (one-Mac test only).") var loopback = false

@@ -87,8 +87,9 @@ struct DistributedInstalledValidation: Sendable {
         }
     }
 
-    /// A link key made by the pairing ceremony (S17) lives in the pairing
-    /// store as `.darkbloom/cluster-pairing/edge-<pin>.secret`. When that file
+    /// A link key made by the pairing ceremony (S17) lives in this install's
+    /// pairing store as `edge-<pin>.secret` (production's
+    /// `~/.darkbloom/cluster-pairing`). When that file
     /// is gone the Macs were unpaired (`darkbloom cluster pair --forget`), so
     /// say that instead of a missing credential. Either way the start fails.
     static func linkSecretMetadata(_ path: String) throws {

@@ -111,6 +111,16 @@ extension BuildEnvironment {
         }
     }
 
+    /// launchd label prefix of the cluster service login agent; the label ends
+    /// in 12 hex digits of the install's app path.
+    public var clusterServiceLabelPrefix: String {
+        switch self {
+        case .prod: return "io.darkbloom.cluster-service."
+        case .dev: return "io.darkbloom.cluster-service.dev."
+        case .staging: return "io.darkbloom.cluster-service.staging."
+        }
+    }
+
     /// Unified logging subsystem of the engine and the KV cache.
     public var logSubsystem: String {
         switch self {
@@ -136,6 +146,16 @@ extension BuildEnvironment {
         case .prod: return 8000
         case .dev: return 8001
         case .staging: return 8002
+        }
+    }
+
+    /// Added to each port a two-Mac pair uses on the cable, so two installs'
+    /// pairs on the same Macs never reach each other.
+    public var clusterPortOffset: UInt16 {
+        switch self {
+        case .prod: return 0
+        case .dev: return 10
+        case .staging: return 20
         }
     }
 

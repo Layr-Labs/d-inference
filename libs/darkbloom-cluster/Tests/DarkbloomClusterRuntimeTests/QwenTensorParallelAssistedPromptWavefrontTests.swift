@@ -39,18 +39,11 @@ struct QwenTensorParallelAssistedPromptWavefrontTests {
 
     private static func bytes(_ a: MLXArray) -> Data { eval(a); return a.asData(access: .copy).data }
 
-    @Test func anAssistedPromptMergesFramesIntoTheUnassistedWavefront() throws { try verify(hybrid: false) }
-
-    /// The 27B's hybrid layout on the GPU, then ten tokens of speculation:
-    /// the same drafts, acceptance and tokens as one frame a step.
-    @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_MTP_GPU"] == "1"))
-    func anAssistedHybridPromptMergesFramesAndSpeculatesAlikeOnGPU() throws { try verify(hybrid: true) }
-
-    private func verify(hybrid: Bool) throws {
-        let device = hybrid ? Device.gpu : Device.cpu
-        // Emptied before and after: a GPU test's compiled traces would replay on the GPU stream here.
-        QwenTensorParallelMTPSessionTests.clearDefaultCompileCache()
-        defer { QwenTensorParallelMTPSessionTests.clearDefaultCompileCache() }
+    /// Two ranks of a synthetic checkpoint (four layers; `hybrid`: the 27B's
+    /// Gated DeltaNet and attention layout, else attention layers only) and
+    /// their assistant heads, every weight drawn on `device`.
+    private static func fixture(device: Device, hybrid: Bool) throws
+        -> (configuration: Data, models: [QwenTensorParallelModel], heads: [QwenTensorParallelMTPHead], groups: [Wire.Rank]) {
         // The random checkpoint is built on `device` too: built outside it, its
         // weights would be drawn on the GPU in the CPU leg.
         let source = Device.withDefaultDevice(device) {
@@ -95,6 +88,122 @@ struct QwenTensorParallelAssistedPromptWavefrontTests {
             }
             return (models, heads, groups)
         }
+        return (configuration, models, heads, groups)
+    }
+
+    @Test func anAssistedPromptMergesFramesIntoTheUnassistedWavefront() throws { try verify(hybrid: false) }
+
+    private struct Reservation: QwenTensorParallelBatchReservation {
+        let request: QwenLayerStageGenerationRequest
+        let deadline: UInt64 = .max
+        var laneStateBytes: Int { 1 }
+        var joinable: Bool { true }
+    }
+
+    private struct LaneOutcome: Equatable {
+        var rows: [Data] = []
+        var assistant: [Data] = []
+        var token = -1
+        var steps = 0
+        var captured = 0
+    }
+
+    private final class LaneResults: @unchecked Sendable {
+        var outcomes: [LaneOutcome?] = [nil, nil]
+        var failures: [Error?] = [nil, nil]
+    }
+
+    /// Through the native executor (`QwenTensorParallelNativeBatchExecutor`:
+    /// the lane's step planning, its frame guard and `prefill`, the assistant
+    /// attached to the lane), on the CPU: an assisted lane's merged steps leave
+    /// the prompt state, the assistant's history of hidden rows (with the
+    /// carried row) and the first token of the same lane run one frame a step,
+    /// bit for bit, and the unassisted lane's prompt state and token, in 2
+    /// steps instead of 5 (the first ending at the assistant's capture at 32).
+    @Test func anAssistedLaneThroughTheExecutorMergesItsPromptSteps() throws {
+        let device = Device.cpu
+        QwenTensorParallelMTPSessionTests.clearDefaultCompileCache()
+        defer { QwenTensorParallelMTPSessionTests.clearDefaultCompileCache() }
+        let (configuration, models, heads, groups) = try Self.fixture(device: device, hybrid: false)
+        let profile = try QwenLayerStageGenerationProfile(identifier: "qwen-tp-assisted-executor", vocabularySize: 256,
+            hiddenSize: 256, activationDType: "bfloat16", maximumPromptTokens: 128, maximumChunkTokens: 16,
+            maximumOutputTokens: 16, maximumContextTokens: 256)
+        let prompt = (0..<70).map { ($0 * 7 + 3) % 256 }, captureFrontier = 32
+
+        func run(_ mode: Mode) throws -> [LaneOutcome] {
+            let id = UUID(), results = LaneResults()
+            let boxes = (models, heads)
+            DispatchQueue.concurrentPerform(iterations: 2) { rank in
+                Device.withDefaultDevice(device) {
+                    do {
+                        let model = boxes.0[rank]
+                        let request = try QwenLayerStageGenerationRequest(profile: profile, requestID: id,
+                            promptTokenIDs: prompt, chunkSize: 16, outputCount: 11, stopTokenIDs: [])
+                        let host = try CBv2StageKVHost(model: model.model, kind: .contiguous, lanes: 1,
+                            maximumTokensPerRequest: 128, maximumChunkTokens: 16)
+                        let executor = try QwenTensorParallelNativeBatchExecutor<Reservation>(model: model,
+                            configuration: configuration, host: host, group: groups[rank], prepare: { _, _ in nil },
+                            completedDecode: { _ in }, completedPrefill: {}, releaseResources: { _ in })
+                        let lane = try executor.open(.init(request: request), check: {})
+                        if mode != .unassisted {
+                            lane.assistant = try QwenTensorParallelMTPDecoder(target: lane.session, head: boxes.1[rank],
+                                group: groups[rank], depth: 2, captureFrontier: captureFrontier,
+                                captureLimitBytes: 64 << 20, allocationBound: { (($0 + 16_383) / 16_384) * 16_384 })
+                        }
+                        var outcome = LaneOutcome()
+                        while lane.nextFrame?.phase == .prefill {
+                            // The step the driver plans: as many frames as the lane merges, or one.
+                            let frames = mode == .assistedOneFrame ? 1 : QwenTensorParallelPromptWavefront.maximumFrames
+                            let step = try #require(lane.promptStep(frames: frames))
+                            outcome.steps += 1
+                            if let token = try executor.prefill(lane, frame: step, check: {}) { outcome.token = token }
+                        }
+                        for row in lane.session.state.rows {
+                            guard let row else { continue }
+                            let snapshot = row.snapshot()
+                            outcome.rows += [Self.bytes(snapshot.keys), Self.bytes(snapshot.values)]
+                        }
+                        if let assistant = lane.assistant {
+                            outcome.assistant = assistant.assistantStateArrays.map(Self.bytes)
+                            try assistant.retire()
+                            outcome.captured = try assistant.takeCapturedPrefix()?.committedTokens ?? 0
+                        } else {
+                            try lane.session.retire()
+                        }
+                        results.outcomes[rank] = outcome
+                    } catch { results.failures[rank] = error }
+                }
+            }
+            for failure in results.failures { if let failure { throw failure } }
+            return try results.outcomes.map { try #require($0) }
+        }
+
+        let unassisted = try run(.unassisted), oneFrame = try run(.assistedOneFrame), merged = try run(.assistedMerged)
+        for rank in 0...1 {
+            #expect(merged[rank].steps == 2 && oneFrame[rank].steps == 5 && unassisted[rank].steps == 1,
+                    "rank \(rank): steps \(merged[rank].steps) / \(oneFrame[rank].steps) / \(unassisted[rank].steps)")
+            #expect(merged[rank].rows == oneFrame[rank].rows && merged[rank].rows == unassisted[rank].rows
+                && !merged[rank].rows.isEmpty, "rank \(rank): prompt state")
+            #expect(merged[rank].assistant == oneFrame[rank].assistant && !merged[rank].assistant.isEmpty,
+                    "rank \(rank): the assistant's hidden-row history and carried row")
+            #expect(merged[rank].token == oneFrame[rank].token && merged[rank].token == unassisted[rank].token
+                && merged[rank].token >= 0, "rank \(rank): first token")
+            #expect(merged[rank].captured == captureFrontier && oneFrame[rank].captured == captureFrontier)
+        }
+        #expect(merged[0].token == merged[1].token)
+    }
+
+    /// The 27B's hybrid layout on the GPU, then ten tokens of speculation:
+    /// the same drafts, acceptance and tokens as one frame a step.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_MTP_GPU"] == "1"))
+    func anAssistedHybridPromptMergesFramesAndSpeculatesAlikeOnGPU() throws { try verify(hybrid: true) }
+
+    private func verify(hybrid: Bool) throws {
+        let device = hybrid ? Device.gpu : Device.cpu
+        // Emptied before and after: a GPU test's compiled traces would replay on the GPU stream here.
+        QwenTensorParallelMTPSessionTests.clearDefaultCompileCache()
+        defer { QwenTensorParallelMTPSessionTests.clearDefaultCompileCache() }
+        let (configuration, models, heads, groups) = try Self.fixture(device: device, hybrid: hybrid)
         // 70 prompt tokens in frames of 16 (16, 16, 16, 16, 6); the assistant captures at 32.
         let profile = try QwenLayerStageGenerationProfile(identifier: "qwen-tp-assisted-wavefront", vocabularySize: 256,
             hiddenSize: 256, activationDType: "bfloat16", maximumPromptTokens: 128, maximumChunkTokens: 16,

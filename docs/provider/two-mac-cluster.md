@@ -64,8 +64,10 @@ place, and once you are approved it says so and names the command that starts
 a cluster. `darkbloom waitlist` alone lists every waitlist and where you stand
 on each.
 
-A new pair needs that approval: on a Mac that is not paired yet,
-`darkbloom cluster` checks the waitlist before it starts. Not on it, it offers
+A new pair that serves through Darkbloom needs that approval: on a Mac that is
+not paired yet, `darkbloom cluster` checks the waitlist before it starts.
+Serving on your own Macs only (`darkbloom cluster local`) needs no approval and
+no connection to Darkbloom. Not on it, it offers
 to join; waitlisted, it shows your place and sets nothing up ("Nothing was set
 up. Run `darkbloom cluster` again once Darkbloom approves your account.").
 Macs that are already paired are never asked: a pair you set up before the

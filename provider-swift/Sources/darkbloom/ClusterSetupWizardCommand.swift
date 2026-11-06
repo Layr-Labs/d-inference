@@ -113,7 +113,7 @@ extension Cluster.Setup {
     /// local-only serving). Run again, it shows where this Mac stands and the next step.
     static func runOnboarding(config: String?, modelDir: String?, worker: String?, request: ClusterOnboardingRequest) async throws {
         Darkbloom.ensureLogging()
-        try await requireNewPairApproval(gate: clusterWaitlistGate(access: .live(configPath: config)))
+        try await requireNewPairApproval(request: request, gate: clusterWaitlistGate(access: .live(configPath: config)))
         let settings = try onboardingSettings(config: config, modelDir: modelDir, worker: worker, request: request)
         let operations = try ClusterOnboardingOperations.live(settings)
         let instance: ClusterConsoleInstanceLock
@@ -141,15 +141,20 @@ extension Cluster.Setup {
     static func clusterWaitlistGate(access: @escaping @autoclosure () -> FeatureWaitlistAccess) -> () -> FeatureWaitlistGate {
         {
             FeatureWaitlistGate(feature: waitlistFeature, fallbackTitle: "Clusters", setupCommand: "\(ClusterPairSummary.cli) cluster",
-                                unchanged: "Nothing was set up.", access: access(), ask: { SandboxTerminal.confirm($0) })
+                                unchanged: "Nothing was set up.", access: access(), ask: { SandboxTerminal.confirm($0) },
+                                stopNote: "  Serving on your own Macs only needs no approval: \(ClusterPairSummary.cli) cluster local")
         }
     }
 
-    /// A new pair needs an account Darkbloom approved from the clusters waitlist (`FeatureWaitlistGate`). A Mac that
-    /// holds a pairing, or one it can't read, is never asked: a pair set up before the waitlist, or serving now, keeps
-    /// working as it did, across updates and restarts, and its screen (start over, pair again) stays as it was.
-    static func requireNewPairApproval(pair: ClusterPairSummary = .local(), gate: () -> FeatureWaitlistGate) async throws {
-        guard !pair.paired else { return }
+    /// A new pair that serves through Darkbloom needs an account Darkbloom approved from the clusters waitlist
+    /// (`FeatureWaitlistGate`). `darkbloom cluster local` serves on the owner's own Macs only and is never asked, so it
+    /// works offline as its help says. A Mac that holds a pairing, or one it can't read, is never asked either: a pair
+    /// set up before the waitlist, or serving now, keeps working as it did, across updates and restarts, and its screen
+    /// (start over, pair again) stays as it was.
+    static func requireNewPairApproval(pair: @autoclosure () -> ClusterPairSummary = .local(), request: ClusterOnboardingRequest,
+                                       gate: () -> FeatureWaitlistGate) async throws {
+        if case .localOnly = request.scope { return }
+        guard !pair().paired else { return }
         try await gate().require()
     }
 

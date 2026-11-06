@@ -33,6 +33,8 @@ struct FeatureWaitlistGate {
     var joinWithoutAsking = false
     /// Asks the question at a prompt; nil without one.
     var ask: ((String) -> Bool)?
+    /// A last line for every stop, such as what works without the approval.
+    var stopNote: String?
     var say: (String) -> Void = { print($0) }
     var warn: (String) -> Void = { printError($0) }
 
@@ -46,6 +48,7 @@ struct FeatureWaitlistGate {
             say("\(shown) is open to the accounts Darkbloom approves from its waitlist.")
             guard joinWithoutAsking || ask?("Join the \(shown) waitlist now?") == true else {
                 say(view.joinLine(feature))
+                if let stopNote { say(stopNote) }
                 throw ExitCode.failure
             }
             lookup = await access.join(feature)
@@ -59,12 +62,14 @@ struct FeatureWaitlistGate {
             if place.status == .waitlisted {
                 say("  \(unchanged) Run `\(setupCommand)` again once Darkbloom approves your account.")
             }
+            if let stopNote { say(stopNote) }
             throw ExitCode.failure
         case .failure(let problem):
             view.problem(problem, title: title).forEach(warn)
             if case .unavailable = problem {
                 warn("  \(unchanged) Check this Mac's network and run `\(setupCommand)` again.")
             }
+            if let stopNote { warn(stopNote) }
             throw ExitCode.failure
         }
     }

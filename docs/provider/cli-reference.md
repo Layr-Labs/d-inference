@@ -1707,15 +1707,18 @@ new pair of [`darkbloom cluster`](#the-cluster-waitlist-gate) an approved
 
 ### The cluster waitlist gate
 
-`darkbloom cluster` and `darkbloom cluster local` on a Mac that holds no
-pairing ask the coordinator of `provider.toml` whether Darkbloom approved this
+`darkbloom cluster` on a Mac that holds no pairing asks the coordinator of `provider.toml` whether Darkbloom approved this
 account from the `cluster` waitlist (`GET /v1/waitlists/cluster` with the
 `darkbloom login` token) before the setup screen opens, with the outcomes of the
 [sandbox setup gate](#setup): approved goes on; a coordinator without the
 waitlist (`404`) prints `<coordinator> has no Clusters waitlist; going on.` and
 goes on; not on the waitlist asks `Join the Clusters waitlist now? [y/N]` (no
 prints `Join it: darkbloom waitlist cluster`); waitlisted, revoked, `401`,
-`403` and no usable answer say why and exit `1` with nothing set up. A Mac that
+`403` and no usable answer say why and exit `1` with nothing set up; every
+such stop ends with `Serving on your own Macs only needs no approval:
+darkbloom cluster local`. The waitlist gates clustering through Darkbloom only:
+`darkbloom cluster local` serves on the owner's own Macs, is never asked and
+makes no waitlist call, so it works offline. A Mac that
 holds a pairing, or one whose pairing can't be read, is never asked and makes no
 waitlist call: a pair set up before the waitlist, or serving now, keeps working
 across updates and restarts, and `darkbloom start`, `stop`, `restart`,

@@ -135,7 +135,8 @@ struct Waitlist: AsyncParsableCommand {
         account stands. With a name, it puts your account on that waitlist and shows where it stands; running \
         it again keeps your place. Use a Mac linked to your account (`\(BuildEnvironment.current.cliName) login`); \
         `\(BuildEnvironment.current.cliName) sandbox setup` installs nothing, and `\(BuildEnvironment.current.cliName) cluster` \
-        sets up no new pair, until Darkbloom approves the account; Macs already paired keep working.
+        sets up no new pair through Darkbloom, until Darkbloom approves the account; Macs already paired, and \
+        `\(BuildEnvironment.current.cliName) cluster local`, keep working without it.
 
         Examples:
           \(BuildEnvironment.current.cliName) waitlist

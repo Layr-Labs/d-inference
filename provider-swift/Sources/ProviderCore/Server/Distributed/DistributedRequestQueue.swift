@@ -25,6 +25,7 @@ enum DistributedRequestQueue {
     static let waitingEnvironmentName = "DARKBLOOM_CLUSTER_QUEUE_WAITING"
     static let fullMessage = "Distributed request queue full"
     static let waitedTooLongMessage = "Distributed request waited too long in the queue"
+    static let unavailableMessage = "Distributed session is unavailable"
     static let pollInterval: Duration = .milliseconds(10)
 
     /// The queue's bounds for one local server, fixed when it starts.

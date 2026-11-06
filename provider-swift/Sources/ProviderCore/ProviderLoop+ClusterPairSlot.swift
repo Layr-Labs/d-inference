@@ -64,13 +64,18 @@ final class ClusterPairSlotHandle: @unchecked Sendable {
     let tokenizer: TokenizerHandle
     let sizing: SlotSizingSnapshot
     let owner: ClusterPairSlotOwner
+    /// The profile's request lifetime: a queued local request's ceiling.
+    let requestTimeout: Duration
     let publishedAt = ContinuousClock.now
 
     init(modelID: String, membershipEpoch: UUID, tokenizer: TokenizerHandle, sizing: SlotSizingSnapshot,
-         owner: ClusterPairSlotOwner) {
+         owner: ClusterPairSlotOwner, requestTimeout: Duration) {
         self.modelID = modelID; self.membershipEpoch = membershipEpoch; self.tokenizer = tokenizer
-        self.sizing = sizing; self.owner = owner
+        self.sizing = sizing; self.owner = owner; self.requestTimeout = requestTimeout
     }
+
+    /// The pair's batch lanes, which its engine admits at once.
+    var lanes: Int { max(1, owner.concurrentRequests) }
 }
 
 /// The execution owner as the slot's engine sees it, with one addition: the
@@ -206,7 +211,7 @@ extension ProviderLoop {
             defaultMaxTokens: min(profile.maxOutputTokens, Self.schedulerDefaultMaxTokens))
         let handle = ClusterPairSlotHandle(modelID: specification.publicModelID,
             membershipEpoch: specification.expectedIdentity.membershipEpoch,
-            tokenizer: specification.tokenizer, sizing: sizing, owner: owner)
+            tokenizer: specification.tokenizer, sizing: sizing, owner: owner, requestTimeout: profile.requestTimeout)
         // No suspension since the checks above: publication is atomic on
         // this actor with them.
         try requireClusterPairPublication(specification.publicModelID)
@@ -237,7 +242,11 @@ extension ProviderLoop {
                 return id
             }
         }
+        // Admission opens, the coordinator's and the local API's alike: a
+        // local request made during the canary has waited for this.
+        clusterPairAdmissionOpenSlotID = handle.id
         refreshClusterMemberAdmission()
+        wakeClusterPairLocalWaiters()
         syncWarmModelState()
         startClusterPairCapacityRefresh()
         await refreshClusterPairCapacity()
@@ -280,6 +289,10 @@ extension ProviderLoop {
             return false
         }
         modelsUnloading.insert(modelID)
+        // Local admission closes with the slot: its waiters hear 503 now; its
+        // local requests in flight drain below with the Darkbloom ones.
+        clusterPairAdmissionOpenSlotID = nil
+        wakeClusterPairLocalWaiters()
         logger.info("Cluster pair slot retiring (\(handle.id.uuidString.prefix(8))): \(reason)")
         // Fixed words only: a warm-up failure's detail is the engine's own text.
         Self.reportPair(ClusterOnboardingPairReport.stoppedLine(reason.hasPrefix("warmup canary failed") ? "its first request failed" : reason))
@@ -348,6 +361,9 @@ extension ProviderLoop {
         state.inferenceActive = summary.activeRequests > 0
         scheduleEventHeartbeatIfMaterial()
         writeDaemonState()
+        // Each Darkbloom request's end comes through here (`updateAggregateCapacity`),
+        // as does the periodic refresh: a lane may be free for a local waiter.
+        wakeClusterPairLocalWaiters()
     }
 
     /// A member runs no solo capacity monitor; while a pair slot is

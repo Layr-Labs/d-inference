@@ -14,6 +14,8 @@ extension ProviderLoop {
         }
         localResponseTracker.setAccepting(false)
         state.refusingNewWork = true
+        // A pair leader's waiting local requests hear the drain now.
+        wakeClusterPairLocalWaiters()
     }
 
     internal var lifecycleRemaining: Int {

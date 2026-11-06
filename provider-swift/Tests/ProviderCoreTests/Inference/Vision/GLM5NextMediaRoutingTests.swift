@@ -456,11 +456,7 @@ struct GLM5NextMediaRoutingTests {
     /// budgets: `input-video-base64.mov` (QuickTime, variable frame rate), once
     /// refused as `invalid_media`, and `input-video-url.mp4` (MP4, constant
     /// 24 fps), whose video reader once failed in CI (Layr-Labs/d-inference#1847).
-    @Test(
-        .disabled(
-            "Issue #1847: intermittent video decoding failed on the MP4 readiness clip (input-video-url.mp4); David 2026-11-06"
-        ))
-    func openRouterReadinessVideosReachTheEngineInsteadOfInvalidMedia() async throws {
+    @Test func openRouterReadinessVideosReachTheEngineInsteadOfInvalidMedia() async throws {
         let mov = try openRouterVideo(
             "input-video-base64.mov",
             sha256: "0a53a3aa1da409c54b57b6955139525f77c421893aaa172ebc1f86ba3a7323f4")

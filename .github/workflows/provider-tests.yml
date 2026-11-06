@@ -733,8 +733,9 @@ jobs:
     # The switched cluster runtime tests these runners cannot pass, the long
     # ones and the benchmarks (scripts/cluster-test-plan.py). They run and
     # report whenever the cluster jobs run; a failure does not fail the
-    # workflow. Shard 2 uses 42 GiB, more than any signed Darkbloom size, so
-    # both shards run on Blacksmith without asking the route
+    # workflow. Shards 1 and 3 each run one half of the real-geometry rows
+    # check. Shard 2 uses 42 GiB, more than any signed Darkbloom size, so
+    # every shard runs on Blacksmith without asking the route
     # (provider-plan.yml).
     name: Cluster GPU Tests (non-blocking, shard ${{ matrix.shard }})
     needs: build-cluster
@@ -744,7 +745,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3]
     steps:
       # The fixed build path, as in build-cluster (scripts/ci-test-products.py).
       - name: Work at the fixed build path

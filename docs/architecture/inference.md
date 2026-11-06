@@ -7090,9 +7090,12 @@ and gate rows whose SwiGLU inputs reach its range (about ±30). A row's logits
 and history equal its run alone, on a one- or an eight-lane host, beside rows
 of 100 to 4,600 tokens that join and leave, across two KV segments, while an
 assistant observes the cohort, and at every position of a four-column verify
-window alone and in a cohort. Both ranks run it in one process
-(`QwenTensorParallelRealGeometryRowsTests`, `QWEN_TP_REAL_GEOMETRY_GPU=1`) or
-as two processes over the loopback ring (`darkbloom-cluster-tp-check
+window alone and in a cohort. The check has two halves
+(`QwenTensorParallelRowsCheck.Part`): the rows of 100 to 4,090 tokens, and the
+rows that span KV segments. Each compares only against the solo runs it makes
+itself, so each also runs alone. Both ranks run it in one process
+(`QwenTensorParallelRealGeometryRowsTests`, `QWEN_TP_REAL_GEOMETRY_GPU=1`, one
+test a half) or, both halves, as two processes over the loopback ring (`darkbloom-cluster-tp-check
 qwen-rows`, native or sealed sums, with the worker's arithmetic environment).
 It refuses to report when a logit is not finite, when its reference logits are
 not all distinct, when the long rows fit one KV segment, or when its comparison

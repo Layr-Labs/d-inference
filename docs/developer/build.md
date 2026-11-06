@@ -354,7 +354,7 @@ fallback is `blacksmith-12vcpu-macos-27`. While job sizes are off, a
 | `cluster-release-checks` (Cluster Release Build Checks) | routed, `required` | - | Compiles the release build of the worker capability and prefill schedule checks, and runs them |
 | `test-provider`, shards 1 and 2 | routed | `build-provider` | The provider selections, Prompt Parity, the native gates, the audit and coverage |
 | `test-cluster`, shards 1 to 3 | routed | `build-cluster` | The blocking cluster selections |
-| `test-cluster-gpu`, shards 1 and 2 | `blacksmith-12vcpu-macos-27`, not routed | `build-cluster` | The non-blocking cluster GPU selections |
+| `test-cluster-gpu`, shards 1 to 3 | `blacksmith-12vcpu-macos-27`, not routed | `build-cluster` | The non-blocking cluster GPU selections |
 | `test-cluster-focused`, shards 1 and 2 | routed | - | The focused runner scripts (shard 1); the stage metadata, provisioning and onboarding runners (shard 2) |
 
 The cluster lane builds in a job of its own, so the cluster tests start as soon
@@ -556,10 +556,11 @@ and memory pressure stayed normal.
 | `cluster-release-checks` | 1 | 8x16 | 9.65 with a reused build; a cold release compile (run 42041608780: 11.33 GiB, 11.4 busy vCPUs at p95 of 12) takes 26% longer on 4 vCPUs and 5.5% on 8 | Blacksmith, not asked |
 
 A run that tests every component asks for 10 macOS jobs while sizes are on,
-and 7 while they are off. The two Cluster GPU Tests shards are not routed:
+and 7 while they are off. The three Cluster GPU Tests shards are not routed:
 they run on `blacksmith-12vcpu-macos-27` (12 vCPU, 48 GiB). Shard 2 uses
-41.99 GiB, which no signed size holds, and one lane carries one size for both
-shards (shard 1 uses 17.40 GiB).
+41.99 GiB, which no signed size holds, and one lane carries one size for every
+shard (shard 1 used 17.40 GiB when it ran the whole real-geometry rows check;
+shards 1 and 3 each run half of it now).
 
 A lane sent with a size uses a grant only when the grant's labels are its
 profile's labels with the last one qualified by the size, such as

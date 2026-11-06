@@ -142,9 +142,9 @@ jobs:
   # lane and size. A lane is granted whole or falls back whole, so each job
   # (each shard) has a lane of its own and falls back alone, except the two
   # Cluster Focused Checks shards, which share one lane with a count of 2. A
-  # lane asks for a job only when the job runs. The two Cluster GPU Tests
+  # lane asks for a job only when the job runs. The three Cluster GPU Tests
   # shards are not routed: shard 2 uses 42 GiB, more than any signed size,
-  # and one lane carries one size for both shards. They run on
+  # and one lane carries one size for every shard. They run on
   # blacksmith-12vcpu-macos-27.
   #
   # Sizes (<vCPUs>x<GiB>) are sent only while DARKBLOOM_JOB_SHAPES is `on`

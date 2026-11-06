@@ -117,6 +117,23 @@ class ClusterTestPlanTests(unittest.TestCase):
         self.assertEqual({selection.lane for selection in plan.SELECTIONS if selection.group is not None},
                          {"blocking"})
 
+    def test_each_half_of_the_real_geometry_rows_check_has_a_gpu_shard_to_itself(self):
+        # As one test the check alone set the run's wall time; its halves
+        # compare against their own solo runs, so each runs on its own Mac.
+        halves = {"qwen-tp-real-geometry-gpu": "rowsEqualTheirSoloStepsAndWindowPositionsAtRealWidths",
+                  "qwen-tp-real-geometry-gpu-segments": "rowsAcrossKVSegmentsEqualTheirSoloStepsAtRealWidths"}
+        selections = {selection.name: selection for selection in plan.SELECTIONS}
+        shards = set()
+        for name, test in halves.items():
+            with self.subTest(selection=name):
+                selection = selections[name]
+                self.assertEqual((selection.lane, selection.tests, selection.group), ("nonblocking", (test,), None))
+                self.assertEqual(selection.environment, {"QWEN_TP_REAL_GEOMETRY_GPU": "1"})
+                self.assertEqual([other.name for other in plan.SELECTIONS
+                                  if (other.lane, other.shard) == ("nonblocking", selection.shard)], [name])
+                shards.add(selection.shard)
+        self.assertEqual(len(shards), 2)
+
     def test_a_shard_runs_its_groups_together_then_its_other_selections_alone(self):
         marks = Path(self.enterContext(tempfile.TemporaryDirectory())) / "marks"
         script = ("import os, sys, time; name = sys.argv[1]; path = sys.argv[2]\n"

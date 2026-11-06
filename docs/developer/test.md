@@ -1310,9 +1310,9 @@ other provider files the cluster runners compile, the cluster plan and the
 shared build recipe. The
 `Provider Tests` gate accepts a skipped cluster job only when `cluster` was not
 selected. A provider-only change runs 3 Macs (the provider build and the 2
-provider shards). A cluster change adds 9 Macs (the cluster build, the release
-build checks, 3 runtime shards, 2 focused shards and 2 GPU shards). Every
-Mac job but the 2 GPU shards is routed; the GPU shards run on Blacksmith
+provider shards). A cluster change adds 10 Macs (the cluster build, the release
+build checks, 3 runtime shards, 2 focused shards and 3 GPU shards). Every
+Mac job but the 3 GPU shards is routed; the GPU shards run on Blacksmith
 ([job sizes](build.md#job-sizes)). A change whose tree a successful run of the
 same workflow already tested runs no test job at all
 (`scripts/ci-tested-tree.py`).
@@ -1331,7 +1331,10 @@ The second group starts `CLUSTER_TEST_START_GAP` seconds (default 15) after
 the first, as the provider shards' processes do, so their SwiftPM startups do
 not meet on the shared build database.
 Shard 3 runs `base-gemma` alone: the Gemma 4 base suites (`GEMMA_SUITES`, 592 of
-the base tests' 970 s), so each model family still shares one process. A grouped selection that finds SwiftPM's build database locked, and whose log
+the base tests' 970 s), so each model family still shares one process.
+Cluster GPU Tests shards 1 and 3 each run one half of the real-geometry rows
+check alone ([Qwen27 capacity consistency checks](#qwen27-capacity-consistency-checks));
+shard 2 runs the other non-blocking selections one at a time. A grouped selection that finds SwiftPM's build database locked, and whose log
 proves every test passed, runs once more, as in the provider shards; the job
 log prints both attempts' logs. Every process starts with
 `MLX_QMV_BATCH_INVARIANT=1`, as every cluster process does.
@@ -3192,7 +3195,13 @@ that widened them inside the matmul and each row alone. `QwenTensorParallelBatch
 runs the resident assistant's transitions on the 9B ratio (`QWEN_TP_MTP_GPU=1`).
 `QWEN_TP_REAL_GEOMETRY_GPU=1` runs `QwenTensorParallelRealGeometryRowsTests` (about 3 GB of random
 weights): the 27B row contract at its registered per-rank widths (`QwenTensorParallelRowsCheck`), both
-ranks in one process; start it with the worker's arithmetic environment.
+ranks in one process; start it with the worker's arithmetic environment. Its two tests each run one half
+of the check (`QwenTensorParallelRowsCheck.Part`), and each half compares only against the solo runs it
+makes itself: `rowsEqualTheirSoloStepsAndWindowPositionsAtRealWidths` runs the rows of 100 to 4,090
+tokens (one- and eight-lane hosts, rows that join and leave, the observed cohort, the verify windows),
+and `rowsAcrossKVSegmentsEqualTheirSoloStepsAtRealWidths` runs the rows of 4,000 to 4,600 tokens across
+KV segments. CI runs them alone on Cluster GPU Tests shards 1 and 3; as one test they took 1,098 s
+(run 42268059756) and set the run's wall time. The tool's `qwen-rows run` runs both halves.
 `darkbloom-cluster-tp-check qwen-rows synthesize --output DIR` writes that checkpoint (about 2.1 GB), and
 `darkbloom-cluster-tp-check qwen-rows run --model-dir DIR --report FILE` runs the check as two processes
 (`MLX_RANK`, `MLX_HOSTFILE` with two free `127.0.0.1` ports; `--backend ring` or `socket`,

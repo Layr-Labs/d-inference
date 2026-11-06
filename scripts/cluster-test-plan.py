@@ -192,8 +192,14 @@ SELECTIONS = (
     Selection("gemma-tp-diag", "blocking", 2, {"GEMMA_TP_DIAG": "1"}, tests=(
         "diagnosticShardOperationsEqualWholeOperations",
     ), group=1),
+    # The two halves of QwenTensorParallelRowsCheck, each alone on a GPU shard.
+    # As one test it took 1098 s and decided the run's wall time (run
+    # 42268059756); each half prefills about half of its 130k prompt tokens.
     Selection("qwen-tp-real-geometry-gpu", "nonblocking", 1, {"QWEN_TP_REAL_GEOMETRY_GPU": "1"}, tests=(
         "rowsEqualTheirSoloStepsAndWindowPositionsAtRealWidths",
+    )),
+    Selection("qwen-tp-real-geometry-gpu-segments", "nonblocking", 3, {"QWEN_TP_REAL_GEOMETRY_GPU": "1"}, tests=(
+        "rowsAcrossKVSegmentsEqualTheirSoloStepsAtRealWidths",
     )),
     Selection("qwen-tp-mtp-gpu-wide-kernel", "nonblocking", 2, {"QWEN_TP_MTP_GPU": "1"}, tests=(
         "wideKernelRowsEqualEachRowsOwnWindowCall",

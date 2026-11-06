@@ -59,6 +59,10 @@ struct ClusterSetupModeEvidenceTests {
         #expect(Self.earlier(Self.history + otherWays, serving: .local) == [.pipeline: 120], "a local plan reads the local records")
         #expect(Self.earlier(Self.history + otherWays, assisted: true) == [.tensorParallel: 150, .pipeline: 57.2],
                 "a plan with Qwen's tensor assistant reads its assisted tensor-parallel records")
+        // Only tensor parallel must name the assistant (`ClusterServedSpeedRecords.Setup.servedAs` weighs it there alone).
+        let assistantUnnamed = Self.served(Self.pp, build: Self.build110, serving: .darkbloom, assisted: nil, decode: 70, at: 6_000)
+        #expect(Self.earlier(Self.history + assistantUnnamed) == [.tensorParallel: 84, .pipeline: 70],
+                "a pipeline record that names its serving counts without naming the assistant")
         #expect(Self.earlier([]).isEmpty)
     }
 

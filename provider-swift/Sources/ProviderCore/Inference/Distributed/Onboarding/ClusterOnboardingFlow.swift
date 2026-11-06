@@ -362,7 +362,8 @@ public struct ClusterOnboardingMode: Codable, Sendable, Equatable {
     /// Each Mac's share as the screen names the Macs ("this Mac 6 layers / the other Mac 24 layers", "this Mac 50% /
     /// the other Mac 50%"); nil when not known.
     public var split: String?
-    /// Decode tokens per second this pair served the model at in this mode; nil: not measured on these Macs yet.
+    /// Decode tokens per second this pair served the model at in this mode with this build; nil: not measured with this
+    /// build yet (an earlier build's figure reaches only the recommendation: `ClusterOnboardingModeAdvice`).
     public var measuredTokensPerSecond: Double?
     /// Requests the pair serves at once in this mode, from the plan that loads (1: one at a time); nil when not known
     /// and from an older leader.
@@ -383,7 +384,7 @@ public struct ClusterOnboardingMode: Codable, Sendable, Equatable {
     /// not the one that loads.
     static let decidedWhenItLoads = "decided when it loads"
 
-    /// The default among `modes`: the fastest measured on this pair, else the planner's (the first).
+    /// The default among `modes`: the fastest measured on this pair with this build, else the planner's (the first).
     public static func defaultIndex(_ modes: [ClusterOnboardingMode]) -> Int {
         modes.indices.filter { modes[$0].measuredTokensPerSecond != nil }
             .max { modes[$0].measuredTokensPerSecond! < modes[$1].measuredTokensPerSecond! } ?? 0
@@ -507,10 +508,11 @@ public struct ClusterOnboardingModeAdvice: Codable, Sendable, Equatable {
         // they served with an earlier build. Every Darkbloom update starts a build with nothing served, and the planner's
         // figures can rank the modes the other way round (pair-2, an M3 Ultra and an M5 Max, DevNet .118: right after the
         // update the question said "Pipeline, faster here" for Gemma, from predictions, though these Macs had served its
-        // tensor parallel faster on every earlier build).
-        let thisBuild = open.contains { $0.measuredTokensPerSecond != nil }
+        // tensor parallel faster on every earlier build). The two are never ranked together: once one of these modes has
+        // served with this build, another's earlier figure, even a faster one, waits until that mode serves with it too.
+        let servedWithThisBuild = open.contains { $0.measuredTokensPerSecond != nil }
         func measurement(_ option: Option) -> Double? {
-            thisBuild ? option.measuredTokensPerSecond : option.earlierMeasuredTokensPerSecond
+            servedWithThisBuild ? option.measuredTokensPerSecond : option.earlierMeasuredTokensPerSecond
         }
         let measured = open.allSatisfy { measurement($0) != nil }
         let speeds: [Double]? = measured ? open.map { measurement($0)! }

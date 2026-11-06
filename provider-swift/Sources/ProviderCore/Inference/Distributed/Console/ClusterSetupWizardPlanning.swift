@@ -442,18 +442,21 @@ enum ClusterSetupPlanning {
 
     /// Each mode's decode rate as this pair last served it with an earlier worker build, which no plan of this build
     /// reads (`ClusterServedSpeedRecords.servedBy`), so that the mode question still ranks the modes by what these Macs
-    /// served right after an update (`ClusterOnboardingModeAdvice.advise`). Only records that name how they were served
-    /// count, and only those served the way the plan will serve: `serving`, and tensor parallel with Qwen's tensor
-    /// assistant exactly when `tensorAssistant` (a record written before either was recorded may have been served the
-    /// other way: pair-2's Qwen decoded 34-36 tok/s locally with the assistant, 14-20 through Darkbloom without it). A
-    /// mode's rate is the latest earlier build's that served it, read as one build's records are
-    /// (`ClusterServedModes.figures`). `entries`: this model's records on these Macs, any build.
+    /// served right after an update (`ClusterOnboardingModeAdvice.advise`). `entries`: this model's records on these
+    /// Macs, any build. Only records that name how they were served count, and only those served the way the plan will
+    /// serve (`ClusterServedSpeedRecords.Setup.servedAs`: `serving`, and tensor parallel with Qwen's tensor assistant
+    /// exactly when `tensorAssistant`). `servedAs` alone reads a record that does not say how it was served as served
+    /// either way, which suits a plan only because such a record is an earlier build's, and `servedBy` keeps those out
+    /// of it; here it may have been served the other way (pair-2's Qwen decoded 34-36 tok/s locally with the assistant,
+    /// 14-20 through Darkbloom without it). A mode's rate is that of the latest earlier build (by its newest request)
+    /// that served it, read as one build's records are (`ClusterServedModes.figures`), so two modes' rates can come
+    /// from different builds.
     static func earlierFigures(_ entries: [ClusterServedSpeedRecords.Entry], builds: [String: String], serving: ClusterServedScope,
                                tensorAssistant: Bool, promptTokens: Int, outputTokens: Int) -> [ClusterGenerationMode: Double] {
         let earlier = entries.filter { entry in
             let setup = entry.setup
-            guard !setup.servedBy(builds), setup.serving == serving else { return false }
-            return setup.mode != ClusterGenerationMode.tensorParallel.rawValue || setup.tensorAssistant == tensorAssistant
+            let namesHow = setup.serving != nil && (setup.mode != ClusterGenerationMode.tensorParallel.rawValue || setup.tensorAssistant != nil)
+            return !setup.servedBy(builds) && namesHow && setup.servedAs(serving, tensorAssistant: tensorAssistant)
         }
         // Each build's records, the latest build first: by its newest request.
         let byBuild: [[String]: [ClusterServedSpeedRecords.Entry]] = Dictionary(grouping: earlier) { $0.setup.rankBuildSHA256 ?? [] }

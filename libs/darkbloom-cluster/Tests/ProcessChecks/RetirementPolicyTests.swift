@@ -179,7 +179,8 @@ private func seconds(_ value: Double) -> UInt64 { UInt64(value * 1_000_000_000) 
         // later. 2.4 s is before rank 1's own startup deadline, so no signal
         // can have ended it.
         try require(second.waitForExit(until: begin + seconds(2.4)) && second.termination == .exited(9)
-            && second.sentSignals.isEmpty, "Rank 1's own exit was not observed: \(String(describing: second.termination))")
+            && second.sentSignals.isEmpty,
+            "Rank 1's own exit was not observed: \(String(describing: second.termination)) signals \(second.sentSignals)")
         try require(first.readiness == nil && first.sentSignals.isEmpty, "Rank 0 was signalled when the pair failed")
         try require(first.waitForExit(until: begin + seconds(6)) && first.sentSignals == [SIGTERM], "Rank 0 was not retired after its own startup deadline")
     }

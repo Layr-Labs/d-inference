@@ -304,7 +304,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         fixtures = steps["Test the prompt fixture downloaders offline"]
         self.assertEqual(field(fixtures, "if"), "${{ !cancelled() }}")
         self.assertEqual(run_command(fixtures).splitlines(), ["python3 scripts/test-prepare-prompt-fixtures.py",
-                                                              "python3 scripts/test-prepare-mimo-prompt-fixtures.py"])
+                                                              "python3 scripts/test-prepare-mimo-prompt-fixtures.py",
+                                                              "python3 scripts/test-prepare-mimo-image-http-fixtures.py"])
         # The record names its change through the lookup's own code, and only
         # a run that tested something records.
         record = steps["Name the record of the change these tests passed"]

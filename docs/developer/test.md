@@ -1224,13 +1224,17 @@ full-size body with the wrong SHA-256, an oversize body, a Content-Length
 mismatch, a cross-origin response, another non-200 status or the deadline fails
 at once. `scripts/prepare-mimo-prompt-fixtures.py` and
 `scripts/prepare-mimo-image-http-fixtures.py` apply the same retry rule to each
-metadata file, with these differences. They refuse a redirect to plain HTTP but
-follow a redirect to a different HTTPS host. The MiMo prompt script has no total
-deadline: each connect and read has a 60 s socket timeout. The image script has
-a 120 s deadline for each file, and it classifies curl's exit code: a cut
-transfer (for example exit 18 or 56) retries, and an oversize body (63), a
-certificate failure or a plain-HTTP redirect does not. Provisioning failures
-fail qualification; they must not silently skip vectors.
+metadata file, with these differences. The MiMo prompt script refuses a
+redirect to plain HTTP but follows a redirect to a different HTTPS host: Hugging
+Face serves `tokenizer.json` from its CDN host. It has no total deadline: each
+connect and read has a 60 s socket timeout. The image script has a 120 s
+deadline for each file, and it classifies curl's exit code: a cut transfer (for
+example exit 18 or 56) retries, and an oversize body (63) or a certificate
+failure does not. curl does not follow redirects for the image script. The
+script follows a redirect only when its scheme, host and port are those of the
+requested URL, for at most 10 redirects. A redirect to another origin, plain
+HTTP included, fails at once and is not requested. Provisioning failures fail
+qualification; they must not silently skip vectors.
 
 Public validation means **this implementation matches those fixed expectations**.
 It does not run private Go/Rust implementations, establish current cross-implementation

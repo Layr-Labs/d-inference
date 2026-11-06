@@ -1,0 +1,104 @@
+{
+  "schema": "upstream_cluster_go_resolution_v1",
+  "base": "605651bb95d71c1da9bb122107925143e9441973",
+  "upstream": "cc225365f866d9a0e6f565fe9426703785611f84",
+  "sourceReceipt": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-refresh-20260920/tracked-three-way/receipt.json",
+    "bytes": 29015,
+    "sha256": "c2f1033e4fa26a68a55036fc6e728cf8ce5aa78a3f46543839b488eec45b3b3e"
+  },
+  "inputPins": [
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-refresh-20260920/tracked-three-way/base/coordinator/api/provider.go",
+      "bytes": 167918,
+      "sha256": "fbd9345a9b5b7605f6d7fff3fca47e719c5eb3f8e4cf08ad3b7f8bbffdf76020"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-refresh-20260920/tracked-three-way/local/coordinator/api/provider.go",
+      "bytes": 169600,
+      "sha256": "9d6f07b7d7c220bfb298fa52d8caa6eedb991f9934485c4f2574847999b9247a"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-refresh-20260920/tracked-three-way/upstream/coordinator/api/provider.go",
+      "bytes": 168162,
+      "sha256": "cbec2d058b6155cbff1dba6ff07db7649c215836d24ffbb1f29b776871e77ae1"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-refresh-20260920/tracked-three-way/merged/coordinator/api/provider.go",
+      "bytes": 170076,
+      "sha256": "884e639f70c74117c875fda2ff438d3b9063addab429561b6b4f6c585b30ccea"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-refresh-20260920/tracked-three-way/base/coordinator/registry/attestation_policy.go",
+      "bytes": 22065,
+      "sha256": "1f96b31b645afc94ce25f2186c7358520e00526952decdef7505c9611d2c5872"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-refresh-20260920/tracked-three-way/local/coordinator/registry/attestation_policy.go",
+      "bytes": 22470,
+      "sha256": "a46fcac43c33829e3321dcafea63bf243d9436b23f13ca0cdccd8dbb3a2a2098"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-refresh-20260920/tracked-three-way/upstream/coordinator/registry/attestation_policy.go",
+      "bytes": 23917,
+      "sha256": "4498e55806157d48d5a6edaa2f194f4aeabe3afbf6fc2dbebf34676ba3f9343a"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-refresh-20260920/tracked-three-way/merged/coordinator/registry/attestation_policy.go",
+      "bytes": 24393,
+      "sha256": "3323e86dd6e815151763afd26a2a4ed66780b1ef69109462dd67b3683e00599e"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-refresh-20260920/tracked-three-way/base/coordinator/registry/provider_capabilities.go",
+      "bytes": 9326,
+      "sha256": "0db49301cf58d76afc5e814209f0af66999e9eed6bbaf7311161d32214561ea4"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-refresh-20260920/tracked-three-way/local/coordinator/registry/provider_capabilities.go",
+      "bytes": 9908,
+      "sha256": "b994e9384d02db8d9636ca4dbd47251ec9b9ef16cd0eba868c01bbca07d7fbd0"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-refresh-20260920/tracked-three-way/upstream/coordinator/registry/provider_capabilities.go",
+      "bytes": 10625,
+      "sha256": "c3665309e9ec7ead06c4f7ad8b65a91a77cf4720494be521d5ed236ee7329771"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-refresh-20260920/tracked-three-way/merged/coordinator/registry/provider_capabilities.go",
+      "bytes": 12092,
+      "sha256": "62882cf0950b0559794dde94f14d414512431e4aa89b9fa39d17dd76dbcb469a"
+    }
+  ],
+  "resolved": [
+    {
+      "path": "coordinator/api/provider.go",
+      "conflictsResolved": 2,
+      "after": {
+        "bytes": 169844,
+        "sha256": "c4ae388e6fcb92e8934c30308b81f8cfa4ad904c2c98a22878463640bea51761"
+      }
+    },
+    {
+      "path": "coordinator/registry/attestation_policy.go",
+      "conflictsResolved": 1,
+      "after": {
+        "bytes": 24322,
+        "sha256": "616e6182d5ae589c6b3cb2278198f0e5df37cee933ecb30f186b20a89bc8d6d1"
+      }
+    },
+    {
+      "path": "coordinator/registry/provider_capabilities.go",
+      "conflictsResolved": 3,
+      "after": {
+        "bytes": 11207,
+        "sha256": "9fe43ecffc236b8e59117acf54b473391355990423b1833e849a6f8dfed3c13f"
+      }
+    }
+  ],
+  "onlyConflictBlocksChangedFromAutomaticMerge": true,
+  "lockContract": "Registry RLock stays held while provider fields and current App Attest policy/lease are checked. Deferred provider unlock then registry RUnlock precede exact-state pair invalidation and capability notification. Nil provider unlocks once before returning. Named error preserves revocation on failed reconciliation.",
+  "testsOrCompilerExecuted": false,
+  "MAINModified": false,
+  "currentStrictLegacyPairPolicyPreserved": true,
+  "AppAttestPairAdmissionImplemented": false
+}

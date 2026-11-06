@@ -1,0 +1,20 @@
+--- a/libs/darkbloom-cluster-worker/Package.swift
++++ b/libs/darkbloom-cluster-worker/Package.swift
+@@ -7,6 +7,7 @@
+     name: "DarkbloomClusterWorker",
+     platforms: [.macOS("26.2")],
+     products: [
++        .executable(name: "LabAuthenticatedRDMABenchmark", targets: ["LabAuthenticatedRDMABenchmark"]),
+         .executable(name: "ProtectedCapabilityCheck", targets: ["ProtectedCapabilityCheck"]),
+         .executable(name: "darkbloom-cluster-worker", targets: ["DarkbloomClusterWorker"]),
+     ],
+@@ -14,6 +15,9 @@
+         .package(path: "../darkbloom-cluster"),
+     ],
+     targets: [
++        .executableTarget(name: "LabAuthenticatedRDMABenchmark", dependencies: [
++            .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
++        ], path: "Tests/LabAuthenticatedRDMABenchmark"),
+         .executableTarget(name: "ProtectedCapabilityCheck", dependencies: [
+             .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
+             .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),

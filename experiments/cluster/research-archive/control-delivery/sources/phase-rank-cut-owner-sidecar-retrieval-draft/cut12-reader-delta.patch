@@ -1,0 +1,140 @@
+--- originals/rank_retrieval_fixture.py
++++ rank_retrieval_fixture.py
+@@ -8,8 +8,8 @@
+ 
+ from sidecar_files import sha
+ 
+-UPSTREAM = Path(__file__).parent.parent / 'remote-long-rank-owner-launcher-draft'
+-assert sha((UPSTREAM / 'source-review-20260914.json').read_bytes()) == '09afb38e895269f3ea9b0a2612111dd672bb97f98b1d5b334bc361fd4085f52d'
++UPSTREAM = Path(__file__).parent.parent / 'remote-long-rank-cut-launcher-draft'
++assert sha((UPSTREAM / 'source-review-20260914.json').read_bytes()) == '8086edc5df71bc209bc6de366dd4f2087ac6f34743ec88d0c9733fe9ae290017'
+ for entry in json.loads((UPSTREAM / 'source-review-20260914.json').read_bytes())['files']:
+     if entry['path'].endswith('.py'):
+         raw = (UPSTREAM / entry['path']).read_bytes()
+@@ -20,6 +20,7 @@
+     from long_rank_test_support import EPOCH, ENDPOINTS, INPUTS, RAW_PROMPT, fixtures
+     from long_rank_warning import WARNING
+     from long_reference_inputs import ARTIFACT, CONFIGURATION
++    from long_pair_cut import selection_receipt
+ finally:
+     sys.path.pop(0)
+ 
+@@ -81,12 +82,12 @@
+     (run / 'source-manifest.json').write_bytes(source_raw)
+     (run / 'launcher').mkdir()
+     launchers = []
+-    for name in ('launch_remote_long_ranks.py', 'long_rank_configuration.py', 'long_rank_paths.py'):
++    for name in ('launch_remote_long_ranks.py', 'long_rank_configuration.py', 'long_rank_paths.py', 'long_pair_cut.py', 'long_rank_cut.py'):
+         raw = (UPSTREAM / name).read_bytes()
+         (run / 'launcher' / name).write_bytes(raw)
+         launchers.append(dict(path=name, sha256=sha(raw), size_bytes=len(raw)))
+-    receipt = dict(kind='remote_qwen_long_prefill_rank_owner_launcher', schema_version=1,
+-        native_rank_count=2, transport='loopback-test', backend='ring', flow='profiled_prefill_measurement_v1',
++    receipt = dict(kind='remote_qwen_long_prefill_rank_cut_owner_launcher', schema_version=1,
++        selected_layer_plan=selection_receipt(), native_rank_count=2, transport='loopback-test', backend='ring', flow='profiled_prefill_measurement_v1',
+         envelope_version=4, stage_logits_dtype='bfloat16', stage_prefill_policy=policy,
+         passed=True, phase_timing_requested=True, owner_timing_requested=True, stage_model_forward_requested=True, timing_requested=True,
+         timing_diagnostic_only=True, native_execution_attempted=True,
+--- originals/rank_sidecar_admission.py
++++ rank_sidecar_admission.py
+@@ -4,6 +4,7 @@
+ from rank_sidecar_archives import archives, rank_files
+ from rank_sidecar_evidence import FLOW, canonical, native_identity
+ from sidecar_files import bounded_bytes, parse, pin, require, sha
++from rank_sidecar_selection import validate_receipt_selection
+ 
+ 
+ def locations(receipt):
+@@ -28,11 +29,12 @@
+     raw = bounded_bytes(run / 'receipt.json', 4 * 1024 * 1024)
+     require(sha(raw) == pin(expected_sha256), 'Completed rank launcher receipt pin differs')
+     receipt = parse(raw)
+-    expected = dict(kind='remote_qwen_long_prefill_rank_owner_launcher', schema_version=1,
++    expected = dict(kind='remote_qwen_long_prefill_rank_cut_owner_launcher', schema_version=1,
+                     native_rank_count=2, transport='loopback-test', backend='ring', flow=FLOW, envelope_version=4,
+                     stage_logits_dtype='bfloat16')
+     require(type(receipt) is dict and all(type(receipt.get(key)) is type(value) and receipt[key] == value
+             for key, value in expected.items()), 'Wrong rank-owner launcher namespace/geometry')
++    validate_receipt_selection(receipt)
+     require(receipt['stage_prefill_policy'] in ('serial_v1', 'prompt_lookahead_one_v1'), 'Unsupported recorded policy')
+     for key in ('passed', 'phase_timing_requested', 'owner_timing_requested', 'stage_model_forward_requested', 'timing_requested',
+                 'timing_diagnostic_only', 'native_execution_attempted',
+@@ -75,7 +77,8 @@
+             expected_identity=dict(rank['expected_identity'], frameSequence=7, tokenOffset=3584,
+                                    tokenCount=512, committedFrontier=4096)))
+     return dict(sidecars=sidecars, run=str(run), launcher_receipt_sha256=sha(raw), host=host, epoch=receipt['epoch'],
+-        stage_prefill_policy=receipt['stage_prefill_policy'], ranks=ranks, rank_files=retained,
++        stage_prefill_policy=receipt['stage_prefill_policy'], selected_layer_plan=receipt['selected_layer_plan'],
++        ranks=ranks, rank_files=retained,
+         archive_manifests=manifests, launcher_files=receipt['launcher_files'],
+         agreement_fingerprint=identities[0]['agreement_fingerprint'],
+         recorded_request_json_sha256=sha(canonical(identities[0]['request'])),
+--- originals/rank_sidecar_archives.py
++++ rank_sidecar_archives.py
+@@ -3,8 +3,10 @@
+ from sidecar_files import bounded_bytes, file_record, parse, pin, require, sha
+ 
+ OWNER_RUNTIME = {
+-    'launch_remote_long_ranks.py': 'f12eb7cc2034e11b9dc1e92c13205c9e041ec92dd2f6a389a2eb15af985f71bf',
+-    'long_rank_configuration.py': 'b9d9cd763ca42875a134e41b1ad9ffebf0c92df553d6e3b467e317f78b93a03c',
++    'long_pair_cut.py': 'e6fc6d1defa40c09703560f7c571dd46b8ec7d5568c0a059e2d9732fb4e1c175',
++    'long_rank_cut.py': 'f973c125cf022a29176dcc65806050b661223955ccfacd2f4b9d08800ae333aa',
++    'launch_remote_long_ranks.py': '1d891fc1fe95ee64da3764caa78a429bb9d5db3a8035f7342180fbcd7793fd76',
++    'long_rank_configuration.py': '4f6bb0a6522c5a786eb749229e5201256545d35dc2b915e4819eefcb1b28cf43',
+     'long_rank_paths.py': 'ca1b6cd8dc9ecd34c3ca41f5ee6f9aeb26b7efd38b2e6630a4da69d994cc36fe',
+ }
+ 
+--- originals/rank_sidecar_evidence.py
++++ rank_sidecar_evidence.py
+@@ -3,6 +3,7 @@
+ import uuid
+ from rank_sidecar_archives import WARNING
+ from sidecar_files import parse, pin, require, sha
++from rank_sidecar_selection import validate_native_selection
+ 
+ PROFILE = 'long_prefill_8k_v1'
+ FLOW = 'profiled_prefill_measurement_v1'
+@@ -23,7 +24,8 @@
+         environment=dict(ENVIRONMENT, MLX_RANK=str(rank)), environment_files={'MLX_HOSTFILE': 'hosts.json'}, input_files={},
+         arguments=['--mode', 'qwen-long-prefill-rank-check', '--model-dir', '@model',
+             '--artifact-aggregate-sha256', artifact, '--transport', 'loopback-test', '--epoch', epoch,
+-            '--execution-path', 'cbv2-contiguous', '--stage-prefill-policy', receipt['stage_prefill_policy'],
++            '--execution-path', 'cbv2-contiguous', '--stage-cut', '12',
++            '--stage-prefill-policy', receipt['stage_prefill_policy'],
+             '--stage-logits-dtype', 'bfloat16', '--tokens-file', '@rank/prompt.json',
+             '--long-prompt-sha256', prompt, '--prompt-tokens', '8192', '--chunk-size', '512',
+             '--decode-tokens', '1', '--repeats', '1', '--warmups', '0', '--seed', '7',
+@@ -77,5 +79,6 @@
+             and source['sourceConfigurationSHA256'] == receipt['configuration_sha256']
+             and source['storageCommitmentSHA256'] == agreement['storageCommitmentSHA256'], 'Native stage/source differs')
+     require(final['arithmeticEnvironmentSHA256'] == agreement['arithmeticEnvironmentSHA256'], 'Native arithmetic identity differs')
++    validate_native_selection(agreement, source, rank)
+     return dict(expected_identity=dict(requestFingerprint=fingerprint, profile=PROFILE, role='rank' + str(rank)),
+                 agreement=agreement, agreement_fingerprint=first['agreementFingerprint'], request=request)
+--- originals/retrieve_rank_owner_sidecars.py
++++ retrieve_rank_owner_sidecars.py
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env python3
+-"""Retrieve four sidecars of a passed rank-owner run; root executes actual SSH."""
++"""Retrieve four sidecars of a passed cut12 rank-owner run; root executes actual SSH."""
+ import argparse
+ from datetime import datetime, timezone
+ from pathlib import Path
+@@ -12,7 +12,7 @@
+ def retrieve(run, launcher_receipt_sha256, output, *, reader=read_over_ssh):
+     output = Path(output).expanduser().absolute()
+     output.mkdir(mode=0o700, parents=False)
+-    receipt = dict(kind='qwen_prefill_rank_owner_sidecar_retrieval', schema_version=1, passed=False,
++    receipt = dict(kind='qwen_prefill_rank_cut_owner_sidecar_retrieval', schema_version=1, passed=False,
+         created_at_utc=datetime.now(timezone.utc).isoformat(), primary_failure=None,
+         cleanup_errors=[], sidecars=[], model_or_native_executed=False, remote_file_modified=False,
+         numerical_or_timing_semantics_audited=False, remote_process_reaping_verified=False,
+@@ -63,7 +63,7 @@
+         receipt['passed'] = True
+     except BaseException as error:
+         if receipt['primary_failure'] is None:
+-            receipt['primary_failure'] = dict(operation='rank_owner_sidecar_retrieval', rank=active_rank, sidecar=active_name,
++            receipt['primary_failure'] = dict(operation='rank_cut_owner_sidecar_retrieval', rank=active_rank, sidecar=active_name,
+                 error=type(error).__name__ + ': ' + str(error))
+     receipt['helper_sources'] = [file_record(path.name, bounded_bytes(path, 256 * 1024))
+         for path in sorted(Path(__file__).parent.glob('*.py')) if not path.name.startswith('test_')]

@@ -1,0 +1,16 @@
+{
+  "schema": "owner_release_eof_drain_source_v1",
+  "baseManifestSHA256": "c43faeb94089f431a15f14c20f5a33060b8a16b652bbae461825a44e105a5654",
+  "baseCandidateSHA256": "eb981ab134f01601cc9bfbbdbf2a4594ea14c318f7397bca6686456389268056",
+  "files": [
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift",
+      "beforeSHA256": "6cfe6e914f4d6d46cd872da9c9179fa3f2af34fc04d1d74e66a1dc72d060b0f3",
+      "afterSHA256": "5d1fae1ec3b8aa83e2f6468e61620edf2d7087582173b9bd94a57dd7ba8b564e",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-release-eof-drain-correction-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift"
+    }
+  ],
+  "unchangedServiceSHA256": "628ac962efb0733129e330d6409c89240351d4cdff552d1cd12b614794f23ee7",
+  "providerTestsUnchanged": true,
+  "compiled": false
+}

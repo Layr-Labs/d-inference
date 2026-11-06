@@ -1,0 +1,233 @@
+{
+  "files": [
+    {
+      "id": "ClusterRuntimeCapability.swift",
+      "origin": "draft",
+      "path": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapability.swift",
+      "sha256": "bb66c18489f693a8bce237cd4cff277c7d96360abdb82cdd09d2278cd55fe21b"
+    },
+    {
+      "id": "ClusterRuntimeCapabilityCodec.swift",
+      "origin": "draft",
+      "path": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityCodec.swift",
+      "sha256": "9b3e461608fa661766d8b162607e69bdbe8cae0094435112bbb0c5474c934f0e"
+    },
+    {
+      "id": "ClusterRuntimeCapabilityValidation.swift",
+      "origin": "draft",
+      "path": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityValidation.swift",
+      "sha256": "193db3cdae708f37cc0f4ce213094716a3441da7b94662d34f6399b4fe7d8e08"
+    },
+    {
+      "id": "ClusterWorkerCodec.swift",
+      "origin": "draft",
+      "path": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerCodec.swift",
+      "sha256": "070fbea45cb5f1d1a39d09bac9cfc73a9f9d7a31e5825ec4ea355a8789f8538e"
+    },
+    {
+      "id": "ClusterWorkerObject.swift",
+      "origin": "draft",
+      "path": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerObject.swift",
+      "sha256": "4bd7b6bcc4fe128e99c400b84c2e9ec1d470ae7db1d5d0f0c90c68308ba65a0d"
+    },
+    {
+      "id": "ClusterWorkerEnvelopeValidation.swift",
+      "origin": "main",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerEnvelopeValidation.swift",
+      "sha256": "a058472e4c0739681e7fd21d410dc60060dc42ea3c071c6fee934dd155d3bc26"
+    },
+    {
+      "id": "ClusterWorkerFraming.swift",
+      "origin": "main",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerFraming.swift",
+      "sha256": "f8b361ccf8770a3fd46b7985accd3f28cfdce31c78532b874c570e8fae6dbd45"
+    },
+    {
+      "id": "ClusterWorkerJSON.swift",
+      "origin": "main",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerJSON.swift",
+      "sha256": "dec57dd50237af7d0597374e36a49b23f5105b07943ca024be368f6b9f1d5046"
+    },
+    {
+      "id": "ClusterWorkerMessages.swift",
+      "origin": "main",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerMessages.swift",
+      "sha256": "fe9cd8e5ac2a92559cb5d4ded98fcf5cbc4194c5341eb91c3880c2f21a312dea"
+    },
+    {
+      "id": "ClusterWorkerSession.swift",
+      "origin": "main",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerSession.swift",
+      "sha256": "f2afbfe40df22f023089d208f78a0d949a5c3fcf09e9cb8930eedbaf28acfa76"
+    },
+    {
+      "id": "ClusterWorkerValidation.swift",
+      "origin": "main",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerValidation.swift",
+      "sha256": "c09f396c8ad55e10568337afb6bbae07853a841768f95898c3dd604602a849c8"
+    },
+    {
+      "id": "ClusterMetadataHashing.swift",
+      "origin": "draft",
+      "path": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ClusterMetadataHashing.swift",
+      "sha256": "2692e225c505e68572d9093646813d2fb9db05e4839dddf47d510225557f4f41"
+    },
+    {
+      "id": "QwenResidentAdapterDefinition.swift",
+      "origin": "draft",
+      "path": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdapterDefinition.swift",
+      "sha256": "956849c43467a6b11b450d45b47f063dc52e425bf2e0a5ffa2a39a3ad634227e"
+    },
+    {
+      "id": "QwenResidentCapabilityMetadata.swift",
+      "origin": "draft",
+      "path": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentCapabilityMetadata.swift",
+      "sha256": "1f73ef10038495ef750ade9f8ec032d0919fefbf99b403dc16490c835d6703cf"
+    },
+    {
+      "id": "BoundedProbeInput.swift",
+      "origin": "main",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/BoundedProbeInput.swift",
+      "sha256": "1b4445a5fb199ff6ad1b83da683ff59de20be82b99e786f47191af6457b1cbc3"
+    },
+    {
+      "id": "CanonicalJSON.swift",
+      "origin": "main",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CanonicalJSON.swift",
+      "sha256": "76a9a9f632464d8bfa73a77b16e3c3d470ee2863a71b81677816f8902e62af0a"
+    },
+    {
+      "id": "ClusterRuntimeError.swift",
+      "origin": "main",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ClusterRuntimeError.swift",
+      "sha256": "1344ac5e10936fbc894220f7b5e91862bb522920ea00e7fdb8a647660be27865"
+    },
+    {
+      "id": "QwenDenseProfileTypes.swift",
+      "origin": "main",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenDenseProfileTypes.swift",
+      "sha256": "1385db5eb76c5ef5e90a563a489ee95077a3018532b95ff24af5d7ef57ae42b1"
+    },
+    {
+      "id": "QwenDenseRegisteredSpecification.swift",
+      "origin": "main",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenDenseRegisteredSpecification.swift",
+      "sha256": "964df43a6caa8affb2b6c085e2a1d02e5ab9f54d605ed4bba21f4912c0a09a26"
+    },
+    {
+      "id": "QwenLayerStageGenerationRequest.swift",
+      "origin": "main",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationRequest.swift",
+      "sha256": "964a8ceaa41b59c54251549bb2f41614f6878ab42e4c09fc48b43b4a58d7051d"
+    },
+    {
+      "id": "QwenLayerStageMetadata.swift",
+      "origin": "main",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageMetadata.swift",
+      "sha256": "ad1a5ebaea87b739cc3cf9969e60d0e151bf93efb2e6f5b71944868d204fa83f"
+    },
+    {
+      "id": "QwenLayerStagePlan.swift",
+      "origin": "main",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStagePlan.swift",
+      "sha256": "d3ccab7ac3531ea34c5bb64ec70c07d03d2a273306a38f9e8f7ff85dccbda97e"
+    },
+    {
+      "id": "QwenLayerStageSchedule.swift",
+      "origin": "main",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageSchedule.swift",
+      "sha256": "56867db8cd032319297d4ec7447bfc0cb13cba984c0c282de7e5a79b5233fe65"
+    },
+    {
+      "id": "QwenLayerStageWireExpectation.swift",
+      "origin": "main",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageWireExpectation.swift",
+      "sha256": "c798852ee1f3cae995cf1489044e0faa4ad813bbca8ed3212712432f86398247"
+    },
+    {
+      "id": "QwenLongPrefillArithmeticEnvironment.swift",
+      "origin": "main",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLongPrefillArithmeticEnvironment.swift",
+      "sha256": "b6b9036557a3a937a454d0a8e1b3ba6032954a93c2ded370a97b23d6f984454f"
+    },
+    {
+      "id": "QwenLongPrefillTensorBudget.swift",
+      "origin": "main",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLongPrefillTensorBudget.swift",
+      "sha256": "671b0d788eb3950c12f928c61fb12eb6e99d97c386a97a928bec6c8a96e81c09"
+    },
+    {
+      "id": "WorkerJSONScanner.swift",
+      "origin": "main",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/WorkerJSONScanner.swift",
+      "sha256": "0de78448249ed9718e01ca98b519c33b0735f3cba24d3c24073488f975a90ef1"
+    },
+    {
+      "id": "CapabilityCheck.swift",
+      "origin": "draft",
+      "path": "fixtures/CapabilityCheck.swift",
+      "sha256": "40f924e9ca755911861215114f56dcc780445502c20c51ce53950f975adfb8b1"
+    },
+    {
+      "id": "WorkerCapabilityCommand.swift",
+      "origin": "draft",
+      "path": "proposed/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerCapabilityCommand.swift",
+      "sha256": "deb7439d4cce4efcd848197171e92f5f41f4cbd31874aef371239e3f93da9e6d"
+    },
+    {
+      "id": "WorkerCapabilityInput.swift",
+      "origin": "draft",
+      "path": "proposed/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerCapabilityInput.swift",
+      "sha256": "1aa4ab37451c850c2f31004664aa30034e37d55f48ee0dd1075cdf05d8535817"
+    },
+    {
+      "id": "retained-metadata",
+      "origin": "main",
+      "path": "experiments/cluster/inference/Tests/RegisteredDenseProfiles/retained-inputs.json",
+      "sha256": "1a7e2d74df5e055ec31c12478f49d1d07d1bb48cc64d150248859defb518cd25"
+    },
+    {
+      "id": "original-protocol-test",
+      "origin": "main",
+      "path": "libs/darkbloom-cluster/Tests/ProtocolChecks/ClusterWorkerProtocolTests.swift",
+      "sha256": "870ce86af0df4bd8155ae3714a7cca7374dd6f46dcad7c936876ff85afd4dd83"
+    }
+  ],
+  "fixture": [
+    "CapabilityCheck.swift",
+    "WorkerCapabilityCommand.swift",
+    "WorkerCapabilityInput.swift"
+  ],
+  "metadata": [
+    "ClusterMetadataHashing.swift",
+    "QwenResidentAdapterDefinition.swift",
+    "QwenResidentCapabilityMetadata.swift",
+    "BoundedProbeInput.swift",
+    "CanonicalJSON.swift",
+    "ClusterRuntimeError.swift",
+    "QwenDenseProfileTypes.swift",
+    "QwenDenseRegisteredSpecification.swift",
+    "QwenLayerStageGenerationRequest.swift",
+    "QwenLayerStageMetadata.swift",
+    "QwenLayerStagePlan.swift",
+    "QwenLayerStageSchedule.swift",
+    "QwenLayerStageWireExpectation.swift",
+    "QwenLongPrefillArithmeticEnvironment.swift",
+    "QwenLongPrefillTensorBudget.swift",
+    "WorkerJSONScanner.swift"
+  ],
+  "protocol": [
+    "ClusterRuntimeCapability.swift",
+    "ClusterRuntimeCapabilityCodec.swift",
+    "ClusterRuntimeCapabilityValidation.swift",
+    "ClusterWorkerCodec.swift",
+    "ClusterWorkerObject.swift",
+    "ClusterWorkerEnvelopeValidation.swift",
+    "ClusterWorkerFraming.swift",
+    "ClusterWorkerJSON.swift",
+    "ClusterWorkerMessages.swift",
+    "ClusterWorkerSession.swift",
+    "ClusterWorkerValidation.swift"
+  ],
+  "schema": "private_runtime_capability_source_inputs_v1"
+}

@@ -1,0 +1,62 @@
+--- originals/provider-swift/Sources/ProviderCore/Coordinator/NativePairRequestBridge.swift
++++ proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairRequestBridge.swift
+@@ -79,9 +79,10 @@
+         if start.rank==1 {
+             guard packet.kind == .command else {throw NativePairMemberError.binding}
+             let (frame,delivery)=try packet.localCommand(lifetime:lifetime,now:DispatchTime.now().uptimeNanoseconds)
+-            condition.lock();defer{condition.unlock()}
+-            guard frame.membershipEpoch==start.common.epoch,frame.sequence==nextCommand else {throw NativePairMemberError.binding}
+-            try endpoint.sendWorkerCommand(frame.command,requestID:frame.requestID,deadline:delivery);nextCommand += 1
++            try Self.deliverWhileLive(condition, invalid: { self.invalid }) {
++                guard frame.membershipEpoch==start.common.epoch,frame.sequence==nextCommand else {throw NativePairMemberError.binding}
++                try endpoint.sendWorkerCommand(frame.command,requestID:frame.requestID,deadline:delivery);nextCommand += 1
++            }
+         } else {
+             guard let remote, packet.kind == .ready || packet.kind == .event else {throw NativePairMemberError.binding}
+             let frame=try ClusterWorkerCodec.decodeEvent(packet.payload)
+@@ -89,6 +90,14 @@
+             else {if case .ready=frame.event {throw NativePairMemberError.binding}}
+             try remote.accept(frame)
+         }
++    }
++    /// The live recheck and native enqueue share the same lock as invalidate.
++    /// Parsing outside this lock cannot preserve permission across cancellation.
++    static func deliverWhileLive(_ condition: NSCondition, invalid: () -> Bool,
++                                 _ send: () throws -> Void) throws {
++        condition.lock(); defer { condition.unlock() }
++        guard !invalid() else { throw NativePairMemberError.inactive }
++        try send()
+     }
+     func invalidate() {
+         condition.lock();invalid=true;let endpoints=[local,remote].compactMap{$0};condition.broadcast();condition.unlock()
+--- originals/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairSharedRequestTests.swift
++++ proposed/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairSharedRequestTests.swift
+@@ -91,6 +91,28 @@
+         #expect(try clean.receiveWorkerEvent(until:end,cancelled:{false})==terminal)
+         #expect(throws:(any Error).self){try clean.sendWorkerCommand(.shutdown,requestID:nil,deadline:end)}
+     }
++    @Test func cancelBetweenDecodeAndFollowerDeliveryNeverEnqueuesCommand() throws {
++        let condition=NSCondition(), epoch=UUID()
++        var invalid=false, sends=0
++        condition.lock();let initiallyAllowed = !invalid;condition.unlock()
++        #expect(initiallyAllowed)
++        let raw=try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(membershipEpoch:epoch,
++            sequence:0,requestID:nil,command:.shutdown))
++        let packet=try NativePairWorkerPacket(kind:.command,transcript:Data(repeating:1,count:32),payload:raw)
++        let now=DispatchTime.now().uptimeNanoseconds
++        let (frame,_)=try packet.localCommand(lifetime:now+1_000_000_000,now:now)
++        #expect(frame.membershipEpoch==epoch)
++        // Deterministically cancel AFTER the first snapshot/real decode and
++        // BEFORE the exact delivery critical section used by the follower.
++        condition.lock();invalid=true;condition.unlock()
++        #expect(throws:(any Error).self) {
++            try NativePairRequestBridge.deliverWhileLive(condition,invalid:{invalid}) {sends += 1}
++        }
++        #expect(sends==0)
++        let live=NSCondition()
++        try NativePairRequestBridge.deliverWhileLive(live,invalid:{false}) {sends += 1}
++        #expect(sends==1)
++    }
+     private struct Fixture {
+         let start:ClusterNativeAuthorizationStart,identity:ClusterWorkerIdentity,profile:ClusterWorkerProfile
+         let description:Data,descriptionHash:String,plan:String,gate:ClusterOwnerProtectedReady

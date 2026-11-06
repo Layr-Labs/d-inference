@@ -1,0 +1,16 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/Main.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/Main.swift
+@@ -10,7 +10,12 @@
+     }
+ 
+     static func run() throws {
+-        let options = try Options(arguments: Array(CommandLine.arguments.dropFirst()))
++        let arguments = Array(CommandLine.arguments.dropFirst())
++        if QwenDenseConstructorCLI.isRequested(arguments) {
++            try QwenDenseConstructorCLI(arguments: arguments).run()
++            return
++        }
++        let options = try Options(arguments: arguments)
+         // Covers initialization too, so a missing rank cannot wait indefinitely.
+         alarm(UInt32(options.timeoutSeconds))
+         defer { alarm(0) }

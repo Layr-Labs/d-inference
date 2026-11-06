@@ -1,0 +1,15 @@
+# Enable quota rotation for local distributed start
+
+Source-only candidate: two CLI runtime files and one repository test file. No MAIN CLI change, compiler, model or remote operation has run. The already-tested host rotation is integrated separately; this candidate supplies its factory from `Start.runLocalDistributed`.
+
+`DistributedStartSessionFactory` captures the initial selected configuration reference. Initial startup and every replacement call the same factory. It re-reads the selected provider pointer and the freshly resolved default-owner pointer before and after `DistributedInstalledSession.prepare(reference:)`. Either change refuses the result. Preparation runs on the existing detached startup queue and remains bounded by the installed preparer's existing fifteen-second deadline.
+
+Every call uses a fresh `DistributedInstalledSession.prepare`, including current installed worker/config/manifest/tokenizer/known-hosts/capability checks and a new membership UUID. It neither caches preparation nor starts owners. The host retains the returned candidate, verifies its full initial binding and unseen epoch, validates tokenizer inputs before and after loading, then starts owners through the existing actual resource and device-journal gates. Stop and late-return cleanup stay in the reviewed host. A failure during metadata preparation cannot orphan a native owner because none has been started.
+
+The added synchronous `withCurrentReference` boundary is used directly by the production factory and six prospective actual-file tests. Tests cover repeated fresh preparation calls, either pointer changing before/during preparation, default-path reselection, missing/symlinked owner input, and propagation of the original metadata refusal. They test selection binding; they do not replace or claim execution of installed capability/resource validation. Existing host tests cover fresh epochs, replacement binding, stop races and quarantine.
+
+The exact inverse CLI source check restores the original startup method after removing only the factory selection and new initializer argument. Signal, listener, auth, first-token budget, PID/sleep, shutdown and failure propagation code remain unchanged. The saved configuration's native quota/lifetime and ordinary solo path are unchanged. Fixed lifetime expiry still stops the listener; this is quota activation only.
+
+This enables no coordinator registration, peer attestation/routability or atomic joint-device reservation. The existing local installed trust model remains authoritative, and broader production membership remains a separate task. Configuration changes after the final pointer sample still encounter the existing owner launch/identity checks; this helper is not an atomic configuration lock.
+
+Review `runtime-and-tests.patch` and `integration.json`. Before applying, require the one existing CLI preimage and both new destinations to match their recorded states. Root must schedule the compile and any physical validation; the source package itself makes neither claim.

@@ -1,0 +1,373 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift
+@@ -40,12 +40,15 @@
+     private var nextWireEvent: UInt64 = 0
+     private var fenceRequested = false
+     private var releaseRequested = false
+-    private var stderr = Data()
++    private let diagnosticCapture = ClusterOwnerDiagnostics()
+     public var readiness: ClusterWorkerReady? { lock.withLock { invalid ? nil : ready } }
+     public var nativeCleanupObserved: Bool { lock.withLock { cleanup } }
+     /// Authenticated current-owner acknowledgment that its device lease journal was resolved.
+     public var ownerDeviceLeaseReleasedObserved: Bool { lock.withLock { ownerReleased } }
+-    public var diagnosticTail: Data { lock.withLock { stderr } }
++    public var diagnosticTail: Data { diagnosticCapture.snapshot }
++    /// True only after the diagnostic pipe reaches EOF within its byte/time
++    /// bounds. Independent of native cleanup, release ACK and transport exit.
++    public var diagnosticDrainComplete: Bool { diagnosticCapture.isComplete }
+     public var ownerTermination: ClusterWorkerProcessTermination? { lock.withLock { ownerTerminationValue } }
+ 
+     /// Actual local owner/SSH transport exit plus the authenticated release ACK.
+@@ -199,12 +202,19 @@
+             // A valid release ACK precedes normal owner return. Give that
+             // return the same bounded exit grace; do not race it with SIGTERM.
+             if process.isRunning && !lock.withLock({ ownerReleased }) { process.terminate() }
+-            let limit = DispatchTime.now().uptimeNanoseconds + 2_000_000_000
+-            while process.isRunning && DispatchTime.now().uptimeNanoseconds < limit { Thread.sleep(forTimeInterval: 0.01) }
++            let limit = min(localLifetimeDeadlineUptimeNanoseconds + 2_000_000_000,
++                DispatchTime.now().uptimeNanoseconds + 2_000_000_000)
++            while process.isRunning && DispatchTime.now().uptimeNanoseconds < limit {
++                // The owner may emit its final diagnostic after the released
++                // ACK. Keep reading during the existing bounded exit grace.
++                do { try diagnosticCapture.readAvailable(from: diagnostics.fileHandleForReading.fileDescriptor) } catch { fail() }
++                Thread.sleep(forTimeInterval: 0.01)
++            }
+             if process.isRunning { _ = Darwin.kill(process.processIdentifier, SIGKILL) }
+             process.waitUntilExit()
+             lock.withLock { ownerTerminationValue = process.terminationReason == .exit
+                 ? .exited(process.terminationStatus) : .signalled(process.terminationStatus) }
++            diagnosticCapture.drain(diagnostics.fileHandleForReading.fileDescriptor, until: limit)
+             try? input.fileHandleForWriting.close(); try? output.fileHandleForReading.close(); try? diagnostics.fileHandleForReading.close()
+             ownerEnded.leave()
+         }
+@@ -213,11 +223,7 @@
+                 let now = DispatchTime.now().uptimeNanoseconds
+                 if now >= localLifetimeDeadlineUptimeNanoseconds { fail() }
+                 if now >= localLifetimeDeadlineUptimeNanoseconds + 2_000_000_000 { throw ClusterWorkerOwnerError.deadline }
+-                var buffer = [UInt8](repeating: 0, count: 65_536)
+-                let count = Darwin.read(diagnostics.fileHandleForReading.fileDescriptor, &buffer, buffer.count)
+-                if count > 0 {
+-                    try lock.withLock { guard stderr.count <= 1_048_576 - count else { throw OwnerWire.invalid("SSH stderr exceeded bound") }; stderr.append(contentsOf: buffer.prefix(count)) }
+-                }
++                try diagnosticCapture.readAvailable(from: diagnostics.fileHandleForReading.fileDescriptor)
+                 if let bytes = try pipe.read(until: now + 50_000_000) { try accept(OwnerWire.decode(bytes, commandStream: false)) }
+                 if lock.withLock({ ownerReleased }) { return }
+                 if !process.isRunning { throw ClusterWorkerOwnerError.closed }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerDiagnostics.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerDiagnostics.swift
+@@ -0,0 +1,54 @@
++import Foundation
++import Darwin
++
++/// One nonblocking pipe reader. EOF is diagnostic completeness only; it is
++/// never evidence of native retirement or authenticated owner lease release.
++final class ClusterOwnerDiagnostics: @unchecked Sendable {
++    private let lock = NSLock()
++    private var bytes = Data()
++    private var reachedEOF = false
++    private var failed = false
++    static let maximumBytes = 1_048_576
++
++    var snapshot: Data { lock.withLock { bytes } }
++    var isComplete: Bool { lock.withLock { reachedEOF && !failed } }
++    private var isTerminal: Bool { lock.withLock { reachedEOF || failed } }
++
++    /// At most one bounded read; false also covers a temporarily empty pipe.
++    @discardableResult
++    func readAvailable(from descriptor: Int32) throws -> Bool {
++        guard !isTerminal else { return false }
++        var buffer = [UInt8](repeating: 0, count: 65_536)
++        let count = Darwin.read(descriptor, &buffer, buffer.count)
++        if count > 0 {
++            try lock.withLock {
++                guard bytes.count <= Self.maximumBytes - count else {
++                    failed = true
++                    throw OwnerWire.invalid("SSH stderr exceeded bound")
++                }
++                bytes.append(contentsOf: buffer.prefix(count))
++            }
++            return true
++        }
++        if count == 0 { lock.withLock { reachedEOF = true }; return false }
++        if errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR { return false }
++        lock.withLock { failed = true }
++        throw OwnerWire.invalid("SSH stderr read failed")
++    }
++
++    /// Retain buffered bytes after transport exit. A leaked writer or a read
++    /// error leaves isComplete false; neither extends the supplied deadline.
++    func drain(_ descriptor: Int32, until deadline: UInt64) {
++        repeat {
++            do {
++                let madeProgress = try readAvailable(from: descriptor)
++                if isTerminal { return }
++                if !madeProgress {
++                    let now = DispatchTime.now().uptimeNanoseconds
++                    guard now < deadline else { return }
++                    Thread.sleep(forTimeInterval: min(0.005, Double(deadline - now) / 1_000_000_000))
++                }
++            } catch { return }
++        } while DispatchTime.now().uptimeNanoseconds < deadline
++    }
++}
+--- a/libs/darkbloom-cluster/Tests/SSHChecks/DiagnosticFailureWorker.swift
++++ b/libs/darkbloom-cluster/Tests/SSHChecks/DiagnosticFailureWorker.swift
+@@ -0,0 +1,13 @@
++import Foundation
++import Darwin
++
++/// Model-free actual child: no Ready, fixed bounded diagnostic, real exit 7.
++@main struct DiagnosticFailureWorker {
++    static func main() throws {
++        let bytes = CommandLine.arguments.dropFirst().first == "large"
++            ? Data(repeating: 120, count: 1_048_577)
++            : Data("fake-native: selected failure\n".utf8)
++        try FileHandle.standardError.write(contentsOf: bytes)
++        Darwin.exit(7)
++    }
++}
+--- a/libs/darkbloom-cluster/Tests/SSHChecks/LateDiagnosticOwner.swift
++++ b/libs/darkbloom-cluster/Tests/SSHChecks/LateDiagnosticOwner.swift
+@@ -0,0 +1,55 @@
++import Foundation
++import Darwin
++import DarkbloomClusterProtocol
++import DarkbloomClusterProcess
++@testable import DarkbloomClusterRemote
++
++private final class OwnedFixtureChild: @unchecked Sendable {
++    private let lock = NSLock()
++    private var child: ClusterWorkerProcess?
++    func remember(_ child: ClusterWorkerProcess) { lock.withLock { self.child = child } }
++    func record() throws -> Data {
++        guard let value = lock.withLock({ child }), value.nativeCleanupObserved,
++              value.termination == .exited(7) else { throw OwnerWire.invalid("Missing actual child failure") }
++        return value.diagnosticTail
++    }
++}
++
++/// Runs the real owner service and real failing child. The test opens the gate
++/// only after observing released, making the late-stderr regression deterministic.
++@main struct LateDiagnosticOwner {
++    static func main() throws {
++        guard CommandLine.arguments.count == 4 else { Darwin.exit(64) }
++        let executable = URL(fileURLWithPath: CommandLine.arguments[1])
++        let directory = URL(fileURLWithPath: CommandLine.arguments[2])
++        let behavior = CommandLine.arguments[3]
++        let child = OwnedFixtureChild()
++        try ClusterWorkerOwnerService.serveConfigured(input: STDIN_FILENO, output: STDOUT_FILENO,
++            clusterID: "cpu-test", leaseDirectory: directory, maximumLifetimeNanoseconds: 10_000_000_000, bootstrapProfile: nil,
++            binding: { epoch, lease, incarnation in
++                guard epoch == fixtureIdentity.membershipEpoch else { throw OwnerWire.invalid("Fixture epoch differs") }
++                return try .init(clusterID: "cpu-test", ownerIncarnation: incarnation, leaseID: lease,
++                    identity: fixtureIdentity, profile: fixtureProfile, rank: 0, executionPlanSHA256: fixturePlan)
++            }, native: { binding, deadline, _ in
++                let value = try ClusterWorkerProcess(launch: .init(executable: executable, arguments: [], environment: [:]),
++                    expectedIdentity: binding.identity, rank: 0, profile: binding.profile,
++                    executionPlanSHA256: binding.executionPlanSHA256, startupDeadline: deadline, lifetimeDeadline: deadline)
++                child.remember(value)
++                return value
++            })
++        let deadline = DispatchTime.now().uptimeNanoseconds + 1_500_000_000
++        let gate = directory.appendingPathComponent("emit-after-ack")
++        while !FileManager.default.fileExists(atPath: gate.path) {
++            guard DispatchTime.now().uptimeNanoseconds < deadline else { Darwin.exit(65) }
++            Thread.sleep(forTimeInterval: 0.005)
++        }
++        let bytes = try child.record()
++        try bytes.write(to: directory.appendingPathComponent("emitted-diagnostic"), options: .withoutOverwriting)
++        try FileHandle.standardError.write(contentsOf: bytes)
++        if behavior == "abnormal" { Darwin.exit(9) }
++        if behavior == "hang" {
++            signal(SIGTERM, SIG_IGN)
++            while true { Thread.sleep(forTimeInterval: 0.05) }
++        }
++    }
++}
+--- a/libs/darkbloom-cluster/Tests/SSHChecks/OwnerDiagnosticDrainTests.swift
++++ b/libs/darkbloom-cluster/Tests/SSHChecks/OwnerDiagnosticDrainTests.swift
+@@ -0,0 +1,126 @@
++import Foundation
++import Darwin
++import DarkbloomClusterProtocol
++import DarkbloomClusterProcess
++@testable import DarkbloomClusterRemote
++
++private func require(_ condition: @autoclosure () -> Bool, _ message: String) throws {
++    guard condition() else { throw OwnerWire.invalid(message) }
++}
++
++@main struct OwnerDiagnosticDrainTests {
++    static let expected = Data("fake-native: selected failure\n".utf8)
++
++    static func main() async throws {
++        guard CommandLine.arguments.count == 4 else { Darwin.exit(64) }
++        signal(SIGALRM) { _ in Darwin._exit(124) }; alarm(30)
++        let owner = URL(fileURLWithPath: CommandLine.arguments[1])
++        let worker = URL(fileURLWithPath: CommandLine.arguments[2])
++        let root = URL(fileURLWithPath: CommandLine.arguments[3])
++        try await late(owner, worker, root, behavior: "normal")
++        #if OWNER_DIAGNOSTIC_DRAIN
++        try await late(owner, worker, root, behavior: "abnormal")
++        try await late(owner, worker, root, behavior: "hang")
++        try retainedWriter(worker)
++        try excessiveBytes(worker)
++        print("owner-diagnostic-drain: 5 actual-child/pipe groups passed")
++        #else
++        print("owner-diagnostic-drain: baseline lost post-ACK diagnostic reproduced")
++        #endif
++        alarm(0)
++    }
++
++    static func late(_ owner: URL, _ worker: URL, _ root: URL, behavior: String) async throws {
++        let directory = root.appendingPathComponent(behavior)
++        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
++            attributes: [.posixPermissions: 0o700])
++        let start = DispatchTime.now().uptimeNanoseconds
++        let endpoint = try ClusterRemoteWorkerEndpoint(transport: .init(executable: owner,
++            arguments: [worker.path, directory.path, behavior], environment: [:]), clusterID: "cpu-test",
++            expectedIdentity: fixtureIdentity, profile: fixtureProfile, rank: 0, executionPlanSHA256: fixturePlan,
++            lifetimeDeadlineUptimeNanoseconds: start + 10_000_000_000)
++        // Receiving a terminal must not make the pre-Ready failure a success.
++        do {
++            _ = try endpoint.receiveWorkerEvent(until: start + 5_000_000_000)
++            throw OwnerWire.invalid("Failing child unexpectedly produced a worker event")
++        } catch ClusterWorkerOwnerError.closed { }
++        while !endpoint.ownerDeviceLeaseReleasedObserved && DispatchTime.now().uptimeNanoseconds < start + 5_000_000_000 {
++            try await Task.sleep(nanoseconds: 5_000_000)
++        }
++        try require(endpoint.nativeCleanupObserved && endpoint.ownerDeviceLeaseReleasedObserved,
++            "Actual native cleanup and authenticated ACK must precede fixture diagnostic")
++        try require(endpoint.diagnosticTail.isEmpty, "Late diagnostic was emitted before test opened gate")
++        try Data([1]).write(to: directory.appendingPathComponent("emit-after-ack"), options: .withoutOverwriting)
++        let released = await endpoint.waitUntilOwnerReleased(deadline: start + 6_000_000_000)
++        let emitted = try Data(contentsOf: directory.appendingPathComponent("emitted-diagnostic"))
++        try require(emitted == expected, "Actual owner did not emit fixed child diagnostic")
++        try require(endpoint.nativeCleanupObserved && endpoint.ownerDeviceLeaseReleasedObserved,
++            "Transport drain changed native/lease proofs")
++        #if OWNER_DIAGNOSTIC_DRAIN
++        try require(endpoint.diagnosticTail == expected && endpoint.diagnosticDrainComplete,
++            "Post-ACK bytes or EOF lost before owner-ended barrier")
++        if behavior == "normal" {
++            try require(released && endpoint.ownerTermination == .exited(0), "Natural owner return not observed")
++        } else if behavior == "abnormal" {
++            try require(!released && endpoint.ownerTermination == .exited(9), "Abnormal exit fabricated clean release")
++        } else {
++            try require(!released && endpoint.ownerTermination == .signalled(SIGKILL), "Hung owner escaped bounded transport fence")
++            try require(DispatchTime.now().uptimeNanoseconds - start < 5_000_000_000, "Exit grace was extended")
++        }
++        #else
++        try require(released && endpoint.ownerTermination == .exited(0) && endpoint.diagnosticTail.isEmpty,
++            "Baseline no longer reproduces unread post-ACK bytes")
++        #endif
++        let journal = try Data(contentsOf: directory.appendingPathComponent("native-device.lease"))
++        try require(journal.isEmpty, "Actual service journal was not released")
++    }
++
++    #if OWNER_DIAGNOSTIC_DRAIN
++    static func child(_ worker: URL, arguments: [String], error: Pipe) throws -> Process {
++        let value = Process()
++        value.executableURL = worker; value.arguments = arguments; value.environment = [:]
++        value.standardInput = FileHandle.nullDevice; value.standardOutput = FileHandle.nullDevice; value.standardError = error
++        try value.run()
++        try error.fileHandleForWriting.close()
++        return value
++    }
++
++    static func reader(_ pipe: Pipe) throws -> ClusterOwnerDiagnostics {
++        let fd = pipe.fileHandleForReading.fileDescriptor
++        try require(fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) == 0, "Cannot make test pipe nonblocking")
++        return ClusterOwnerDiagnostics()
++    }
++
++    static func retainedWriter(_ worker: URL) throws {
++        let pipe = Pipe(), capture = try reader(pipe)
++        let retained = fcntl(pipe.fileHandleForWriting.fileDescriptor, F_DUPFD_CLOEXEC, 3)
++        try require(retained >= 0, "Cannot retain test-owned writer")
++        var writerOpen = true
++        defer { if writerOpen { Darwin.close(retained) }; try? pipe.fileHandleForReading.close() }
++        let process = try child(worker, arguments: [], error: pipe)
++        process.waitUntilExit()
++        let start = DispatchTime.now().uptimeNanoseconds
++        capture.drain(pipe.fileHandleForReading.fileDescriptor, until: start + 80_000_000)
++        try require(process.terminationReason == .exit && process.terminationStatus == 7,
++            "Actual child termination not observed")
++        try require(capture.snapshot == expected && !capture.isComplete,
++            "Child exit fabricated EOF while a writer is retained")
++        try require(DispatchTime.now().uptimeNanoseconds - start < 500_000_000, "Missing EOF exceeded drain deadline")
++        Darwin.close(retained); writerOpen = false
++        capture.drain(pipe.fileHandleForReading.fileDescriptor, until: DispatchTime.now().uptimeNanoseconds + 100_000_000)
++        try require(capture.isComplete, "Closing final writer failed to expose actual EOF")
++    }
++
++    static func excessiveBytes(_ worker: URL) throws {
++        let pipe = Pipe(), capture = try reader(pipe)
++        defer { try? pipe.fileHandleForReading.close() }
++        let process = try child(worker, arguments: ["large"], error: pipe)
++        capture.drain(pipe.fileHandleForReading.fileDescriptor, until: DispatchTime.now().uptimeNanoseconds + 3_000_000_000)
++        process.waitUntilExit()
++        try require(process.terminationReason == .exit && process.terminationStatus == 7,
++            "Oversize diagnostic child did not actually exit")
++        try require(!capture.isComplete && capture.snapshot.count <= ClusterOwnerDiagnostics.maximumBytes,
++            "Diagnostic byte overflow was accepted or unbounded")
++    }
++    #endif
++}
+--- a/libs/darkbloom-cluster/Tests/SSHChecks/run.sh
++++ b/libs/darkbloom-cluster/Tests/SSHChecks/run.sh
+@@ -13,18 +13,20 @@
+     -I "$task_build" -L "$task_build" "${task_links[@]}" -Xlinker -rpath -Xlinker "$task_build" \
+     "$task_root/Sources/$task_module"/*.swift -o "$task_build/lib$task_module.dylib"
+ done
+-for task_name in FakeClusterWorker FakeOwner RemoteOwnerTests RetirementShutdownTests; do
++for task_name in FakeClusterWorker FakeOwner RemoteOwnerTests RetirementShutdownTests DiagnosticFailureWorker LateDiagnosticOwner OwnerDiagnosticDrainTests; do
+   task_source="$task_root/Tests/SSHChecks/$task_name.swift"
+   if [[ "$task_name" == FakeClusterWorker ]]; then task_source="$task_root/Tests/ProcessChecks/$task_name.swift"; fi
+   task_sources=("$task_root/Tests/ProcessChecks/FixtureIdentity.swift" "$task_source")
+   if [[ "$task_name" == RetirementShutdownTests ]]; then task_sources+=("$task_root/Tests/SSHChecks/RetirementOwnerConnection.swift"); fi
+-  xcrun swiftc -j 2 -swift-version 6 -warnings-as-errors -target "$task_target" -parse-as-library \
++  xcrun swiftc -j 2 -swift-version 6 -warnings-as-errors -target "$task_target" -parse-as-library -D OWNER_DIAGNOSTIC_DRAIN \
+     -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterRemote \
+     -Xlinker -rpath -Xlinker "$task_build" "${task_sources[@]}" -o "$task_build/$task_name"
+ done
+ "$task_build/RemoteOwnerTests" "$task_build/FakeOwner" "$task_build/FakeClusterWorker"
+ mkdir "$task_build/retirement-checks"
+ "$task_build/RetirementShutdownTests" "$task_build/FakeOwner" "$task_build/FakeClusterWorker" "$task_build/retirement-checks" corrected
++mkdir "$task_build/diagnostic-checks"
++"$task_build/OwnerDiagnosticDrainTests" "$task_build/LateDiagnosticOwner" "$task_build/DiagnosticFailureWorker" "$task_build/diagnostic-checks"
+ 
+ xcrun swiftc -j 2 -swift-version 6 -warnings-as-errors -target "$task_target" \
+   -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterRemote \
+--- a/libs/darkbloom-cluster/Tests/SSHChecks/README.md
++++ b/libs/darkbloom-cluster/Tests/SSHChecks/README.md
+@@ -1,4 +1,4 @@
+-# Owner transport and retirement checks
++# Owner transport, retirement and diagnostic checks
+ 
+ Run from the repository root:
+ 
+@@ -23,6 +23,24 @@
+ - Valid late shutdown followed by EOF retains the journal if explicit release
+   never arrives.
+ 
++Five additional diagnostic groups use the actual owner service and local child
++processes:
++
++- A file gate delays owner stderr until after the endpoint observes native
++  cleanup and the authenticated release ACK. The final bytes and actual pipe EOF
++  must be available before the owner-ended barrier completes.
++- An owner exiting nonzero retains its diagnostic but cannot report a clean
++  transport release.
++- A post-ACK hung owner is fenced within the existing two-second exit grace.
++- A test-owned writer retained after actual child exit prevents diagnostic EOF
++  until the final writer closes; the drain remains bounded.
++- Oversized stderr is refused under the existing 1 MiB capture cap.
++
++`OWNER_DIAGNOSTIC_DRAIN` selects all five assertions in the retained fixture;
++the archived pre-fix baseline branch is not run. Diagnostic completeness,
++native cleanup, authenticated lease release and transport exit are independent
++observations. No private qualification controller is compiled by this runner.
++
+ The temporary test directory is owned by the runner and removed on exit. Any
+ nonempty journals in refusal tests are fabricated test artifacts, not production
+ recovery. Cleanup observations do not establish physical peer or model behavior.

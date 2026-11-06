@@ -1,0 +1,63 @@
+--- a/proposed/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/ring_impl.h
++++ b/proposed/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/ring_impl.h
+@@ -376,9 +376,9 @@
+         }
+         for (int lr = 0; lr < MAX_DIR; lr++) {
+           int64_t offset = wire_offset[lr] + send_count[lr] * N;
++          const int64_t elems = std::max<int64_t>(0, std::min(N, wire_end[lr] - offset));
+           send_buffer(sz, buff, lr, lw).stage_send(
+-              send_base + send_base_offset[lr] + offset,
+-              std::max<int64_t>(0, std::min(N, wire_end[lr] - offset)));
++              elems > 0 ? send_base + send_base_offset[lr] + offset : nullptr, elems);
+           send_count[lr]++;
+           send_to(sz, buff, lr, lw);
+         }
+@@ -401,9 +401,9 @@
+           if (work_type == SEND_WR) {
+             if (send_count[lr] < n_steps) {
+               int64_t offset = wire_offset[lr] + send_count[lr] * N;
++              const int64_t elems = std::max<int64_t>(0, std::min(N, wire_end[lr] - offset));
+               send_buffer(sz, buff, lr, lw).stage_send(
+-                  send_base + send_base_offset[lr] + offset,
+-                  std::max<int64_t>(0, std::min(N, wire_end[lr] - offset)));
++                  elems > 0 ? send_base + send_base_offset[lr] + offset : nullptr, elems);
+               send_count[lr]++;
+               send_to(sz, buff, lr, lw);
+               in_flight++;
+@@ -498,9 +498,9 @@
+         }
+         for (int lr = 0; lr < MAX_DIR; lr++) {
+           int64_t offset = wire_offset[lr] + send_count[lr] * N;
++          const int64_t elems = std::max<int64_t>(0, std::min(N, send_limits[lr] - offset));
+           send_buffer(sz, buff, lr, lw).stage_send(
+-              send_base + send_offset[lr] + offset,
+-              std::max<int64_t>(0, std::min(N, send_limits[lr] - offset)));
++              elems > 0 ? send_base + send_offset[lr] + offset : nullptr, elems);
+           send_count[lr]++;
+           send_to(sz, buff, lr, lw);
+         }
+@@ -524,9 +524,9 @@
+ 
+           if (work_type == SEND_WR && send_count[lr] < n_steps) {
+             int64_t offset = wire_offset[lr] + send_count[lr] * N;
++            const int64_t elems = std::max<int64_t>(0, std::min(N, send_limits[lr] - offset));
+             send_buffer(sz, buff, lr, lw).stage_send(
+-                send_base + send_offset[lr] + offset,
+-                std::max<int64_t>(0, std::min(N, send_limits[lr] - offset)));
++                elems > 0 ? send_base + send_offset[lr] + offset : nullptr, elems);
+             send_to(sz, buff, lr, lw);
+             in_flight++;
+             send_count[lr]++;
+--- a/Tests/Collectives.cpp
++++ b/Tests/Collectives.cpp
+@@ -61,9 +61,7 @@
+       const int64_t steps = (perWire + elements - 1) / elements;
+       std::array<std::vector<float>, 2> input, output;
+       for (int rank = 0; rank < 2; ++rank) {
+-        // Extra storage keeps zero-length inactive source windows valid. It is
+-        // not part of the logical payload and must never appear in a sent tail.
+-        input[rank].assign(count + 32, float(rank + 1));
++        input[rank].assign(count, float(rank + 1));
+         output[rank].assign((scatter ? chunk : count) + 32, -19);
+       }
+       auto run = [&](int rank) {

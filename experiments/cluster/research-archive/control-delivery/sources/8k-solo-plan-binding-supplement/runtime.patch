@@ -1,0 +1,10 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillSoloCheck.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillSoloCheck.swift
+@@ -7,6 +7,7 @@
+     ownerCapture: QwenPrefillOwnerCapture? = nil, check: () throws -> Void
+ ) throws -> QwenLongPrefillSoloReport {
+     _ = try QwenLongPrefillSoloCLI.referenceOptions(options)
++    try QwenLongPrefillStageCut.validateBinding(nil, plan: admission.plan)
+     var memory = [QwenStageMemoryObservation("before_full_model_load")]
+     weak var model: Module?
+     do {

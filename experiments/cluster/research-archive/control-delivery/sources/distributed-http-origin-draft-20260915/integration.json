@@ -1,0 +1,78 @@
+{
+  "schema": "distributed_http_origin_overlay_v1",
+  "baseRoot": "/Users/developer/DarkbloomDev/d-inference",
+  "files": [
+    {
+      "source": "proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedEngineFactory.swift",
+      "destination": "provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedEngineFactory.swift",
+      "sha256": "1239d9b83afce7c33df59932181689b1d6263d2f827b72b03a4f430337e1cfcc",
+      "originalSHA256": "69dbcc6912a2428a3aa27b4beb03a8c28efbbb202b848ad8b19a44ac929da0ec"
+    },
+    {
+      "source": "proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedFirstTokenBudgetPolicy.swift",
+      "destination": "provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedFirstTokenBudgetPolicy.swift",
+      "sha256": "37359c6100d891ce087ef769a7c81bed26b38dc30c90c5a1844b4e3d75612bd4",
+      "originalSHA256": null
+    },
+    {
+      "source": "proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedRequestOrigin.swift",
+      "destination": "provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedRequestOrigin.swift",
+      "sha256": "482345991cee8fd8ca75ec2e65c47740d86f423583c083daca86659746415106",
+      "originalSHA256": null
+    },
+    {
+      "source": "proposed/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift",
+      "destination": "provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift",
+      "sha256": "00bfe79cabcdd31e8e7405bcc72863c5785bed8b358bd22701cd4d37a5142ee6",
+      "originalSHA256": "cc9345e2264efddd735234ad981ebfd94dddd42604d91c82a7cdab8e2233a909"
+    },
+    {
+      "source": "proposed/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift",
+      "destination": "provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift",
+      "sha256": "93c6db0716c5b2993d710cf3e9f91ca68a81c70c2306b2ead1fd3ec182fe6424",
+      "originalSHA256": "2f90c0b9d2ac5a063aca5ecb0e07f13e795e2c1e83f8f203907f0d03344910be"
+    },
+    {
+      "source": "proposed/provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift",
+      "destination": "provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift",
+      "sha256": "1c5c02e34ff7af0d41817e09a2aa0899524c73eef96ee60a974d25eec49840b1",
+      "originalSHA256": "a97aff28bc9ea7fb6f5a2cfddfe356fb94cea7c460cfcce07f2c38c73c5d43cc"
+    },
+    {
+      "source": "proposed/provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift",
+      "destination": "provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift",
+      "sha256": "62246571ad0f10cb3b87d776a8ae36badd255f7cc47b14f616deb9c99e956fb0",
+      "originalSHA256": "7f83f25cef9efbd0fc9f7ff4ec309011973d4d6ee6202d9c2f7a508356219de9"
+    },
+    {
+      "source": "proposed/provider-swift/Sources/ProviderCore/Server/LocalRequestOriginResponder.swift",
+      "destination": "provider-swift/Sources/ProviderCore/Server/LocalRequestOriginResponder.swift",
+      "sha256": "6d6068b59d2679cc1bdd641c13eee707907ccb61561e3216ddabc4a15be40c8c",
+      "originalSHA256": null
+    },
+    {
+      "source": "proposed/provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift",
+      "destination": "provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift",
+      "sha256": "9660918a0035e119ed89c4368062cb307509fee245f6a1c112f57c8c467cd1be",
+      "originalSHA256": "6afbeaa06625c6f24b317599a6890db5a94695e0e4db9627957a818cb653ba0a"
+    },
+    {
+      "source": "proposed/provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPOriginTestSupport.swift",
+      "destination": "provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPOriginTestSupport.swift",
+      "sha256": "f225df29237f973f53143c9a66fef8c7b62a88908e7cae081b3cd3011b5bf903",
+      "originalSHA256": null
+    },
+    {
+      "source": "proposed/provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPOriginTests.swift",
+      "destination": "provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPOriginTests.swift",
+      "sha256": "91afa97ba9938b3f1037abffa859dfe3713aac2ff54f86c94f6447de7cb4fdd2",
+      "originalSHA256": null
+    }
+  ],
+  "patchSHA256": "01b3a81cb717c6dee39a1f6abc7c8b2fea448ce07b4ff50923945383ba5e1df1",
+  "mainEdits": false,
+  "newRuntimeFiles": 3,
+  "replacedRuntimeFiles": 6,
+  "newProviderTestFiles": 2,
+  "providerTestMethods": 7
+}

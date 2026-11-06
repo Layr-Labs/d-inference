@@ -1,0 +1,250 @@
+--- a/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/send_frame.h
++++ b/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/send_frame.h
+@@ -0,0 +1,33 @@
++// Copyright © 2026 Apple Inc.
++
++#pragma once
++
++#include <algorithm>
++#include <cstdint>
++#include <cstring>
++#include <span>
++#include <stdexcept>
++
++namespace jaccl {
++
++// The posted receive/send size stays fixed. Clear every byte after this payload.
++template <typename T>
++inline void stage_send_frame(
++    std::span<char> destination,
++    const T* source,
++    int64_t count) {
++  if (destination.empty() || destination.data() == nullptr || count < 0 ||
++      static_cast<uint64_t>(count) > destination.size() / sizeof(T) ||
++      (count > 0 && source == nullptr)) {
++    throw std::invalid_argument("[jaccl] Send payload exceeds its scratch frame");
++  }
++  const size_t bytes = static_cast<size_t>(count) * sizeof(T);
++  if (count > 0) {
++    std::copy_n(source, count, reinterpret_cast<T*>(destination.data()));
++  }
++  if (bytes < destination.size()) {
++    std::memset(destination.data() + bytes, 0, destination.size() - bytes);
++  }
++}
++
++} // namespace jaccl
+--- a/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/rdma.h
++++ b/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/rdma.h
+@@ -12,6 +12,7 @@
+ #include <vector>
+ 
+ #include "jaccl/tcp.h"
++#include "jaccl/send_frame.h"
+ 
+ constexpr const char* IBV_TAG = "[jaccl]";
+ constexpr int SEND_WR = 1;
+@@ -123,6 +124,11 @@
+     entry.length = size();
+     entry.lkey = local_key(protection_domain);
+     return entry;
++  }
++
++  template <typename T>
++  void stage_send(const T* source, int64_t count) {
++    stage_send_frame(std::span<char>(static_cast<char*>(data_), size()), source, count);
+   }
+ 
+   template <typename T>
+--- a/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/mesh_impl.h
++++ b/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/mesh_impl.h
+@@ -73,10 +73,8 @@
+       int64_t elems = std::min(N, total - read_offset);
+       std::copy(
+           in + read_offset, in + read_offset + elems, local_staging(buff));
+-      std::copy(
+-          in + read_offset,
+-          in + read_offset + elems,
+-          send_buffer(sz, buff).begin<T>());
++      send_buffer(sz, buff).stage_send(
++          in + read_offset, elems);
+       recv_end[rank_]++;
+       post_send_all(sz, buff);
+ 
+@@ -111,10 +109,8 @@
+           completed_send_count[buff]++;
+           if (completed_send_count[buff] == num_peers) {
+             int64_t elems = std::min(N, total - read_offset);
+-            std::copy(
+-                in + read_offset,
+-                in + read_offset + elems,
+-                send_buffer(sz, buff).begin<T>());
++            send_buffer(sz, buff).stage_send(
++                in + read_offset, elems);
+             post_send_all(sz, buff);
+ 
+             completed_send_count[buff] = 0;
+@@ -228,10 +224,8 @@
+     int buff = 0;
+     while (read_offset < total && buff < PIPELINE) {
+       post_recv_all(sz, buff);
+-      std::copy(
+-          our_data + read_offset,
+-          our_data + std::min(read_offset + N, total),
+-          send_buffer(sz, buff).begin<char>());
++      send_buffer(sz, buff).stage_send(
++          our_data + read_offset, std::min(N, total - read_offset));
+       post_send_all(sz, buff);
+ 
+       buff++;
+@@ -256,10 +250,8 @@
+         if (work_type == SEND_WR && read_offset < total) {
+           completed_send_count[buff]++;
+           if (completed_send_count[buff] == num_peers) {
+-            std::copy(
+-                our_data + read_offset,
+-                our_data + std::min(read_offset + N, total),
+-                send_buffer(sz, buff).begin<char>());
++            send_buffer(sz, buff).stage_send(
++                our_data + read_offset, std::min(N, total - read_offset));
+             post_send_all(sz, buff);
+ 
+             completed_send_count[buff] = 0;
+@@ -329,8 +321,8 @@
+           continue;
+         }
+         const T* src = in + static_cast<int64_t>(p) * count + read_offset;
+-        std::copy(
+-            src, src + elems, scatter_send_buffer(sz, buff, p).begin<T>());
++        scatter_send_buffer(sz, buff, p).stage_send(
++            src, elems);
+       }
+       scatter_post_send_all(sz, buff);
+ 
+@@ -363,10 +355,8 @@
+                 continue;
+               }
+               const T* src = in + static_cast<int64_t>(p) * count + read_offset;
+-              std::copy(
+-                  src,
+-                  src + elems,
+-                  scatter_send_buffer(sz, buff, p).begin<T>());
++              scatter_send_buffer(sz, buff, p).stage_send(
++                  src, elems);
+             }
+             scatter_post_send_all(sz, buff);
+ 
+@@ -453,10 +443,8 @@
+     // Prefill the pipeline
+     int buff = 0;
+     while (read_offset < n_bytes && buff < PIPELINE) {
+-      std::copy(
+-          in_ptr + read_offset,
+-          in_ptr + std::min(read_offset + N, n_bytes),
+-          send_buffer(sz, buff).begin<char>());
++      send_buffer(sz, buff).stage_send(
++          in_ptr + read_offset, std::min(N, n_bytes - read_offset));
+       send_to(sz, dst, buff);
+ 
+       buff++;
+@@ -479,10 +467,8 @@
+         in_flight--;
+ 
+         if (read_offset < n_bytes) {
+-          std::copy(
+-              in_ptr + read_offset,
+-              in_ptr + std::min(read_offset + N, n_bytes),
+-              send_buffer(sz, buff).begin<char>());
++          send_buffer(sz, buff).stage_send(
++              in_ptr + read_offset, std::min(N, n_bytes - read_offset));
+           send_to(sz, dst, buff);
+ 
+           read_offset += N;
+--- a/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/ring_impl.h
++++ b/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/ring_impl.h
+@@ -376,11 +376,9 @@
+         }
+         for (int lr = 0; lr < MAX_DIR; lr++) {
+           int64_t offset = wire_offset[lr] + send_count[lr] * N;
+-          std::copy(
+-              send_base + send_base_offset[lr] + offset,
+-              send_base + send_base_offset[lr] +
+-                  std::max(offset, std::min(offset + N, wire_end[lr])),
+-              send_buffer(sz, buff, lr, lw).template begin<T>());
++          const int64_t elems = std::max<int64_t>(0, std::min(N, wire_end[lr] - offset));
++          send_buffer(sz, buff, lr, lw).stage_send(
++              elems > 0 ? send_base + send_base_offset[lr] + offset : nullptr, elems);
+           send_count[lr]++;
+           send_to(sz, buff, lr, lw);
+         }
+@@ -403,11 +401,9 @@
+           if (work_type == SEND_WR) {
+             if (send_count[lr] < n_steps) {
+               int64_t offset = wire_offset[lr] + send_count[lr] * N;
+-              std::copy(
+-                  send_base + send_base_offset[lr] + offset,
+-                  send_base + send_base_offset[lr] +
+-                      std::max(offset, std::min(offset + N, wire_end[lr])),
+-                  send_buffer(sz, buff, lr, lw).template begin<T>());
++              const int64_t elems = std::max<int64_t>(0, std::min(N, wire_end[lr] - offset));
++              send_buffer(sz, buff, lr, lw).stage_send(
++                  elems > 0 ? send_base + send_base_offset[lr] + offset : nullptr, elems);
+               send_count[lr]++;
+               send_to(sz, buff, lr, lw);
+               in_flight++;
+@@ -502,11 +498,9 @@
+         }
+         for (int lr = 0; lr < MAX_DIR; lr++) {
+           int64_t offset = wire_offset[lr] + send_count[lr] * N;
+-          std::copy(
+-              send_base + send_offset[lr] + offset,
+-              send_base + send_offset[lr] +
+-                  std::max(offset, std::min(offset + N, send_limits[lr])),
+-              send_buffer(sz, buff, lr, lw).template begin<T>());
++          const int64_t elems = std::max<int64_t>(0, std::min(N, send_limits[lr] - offset));
++          send_buffer(sz, buff, lr, lw).stage_send(
++              elems > 0 ? send_base + send_offset[lr] + offset : nullptr, elems);
+           send_count[lr]++;
+           send_to(sz, buff, lr, lw);
+         }
+@@ -530,11 +524,9 @@
+ 
+           if (work_type == SEND_WR && send_count[lr] < n_steps) {
+             int64_t offset = wire_offset[lr] + send_count[lr] * N;
+-            std::copy(
+-                send_base + send_offset[lr] + offset,
+-                send_base + send_offset[lr] +
+-                    std::max(offset, std::min(offset + N, send_limits[lr])),
+-                send_buffer(sz, buff, lr, lw).template begin<T>());
++            const int64_t elems = std::max<int64_t>(0, std::min(N, send_limits[lr] - offset));
++            send_buffer(sz, buff, lr, lw).stage_send(
++                elems > 0 ? send_base + send_offset[lr] + offset : nullptr, elems);
+             send_to(sz, buff, lr, lw);
+             in_flight++;
+             send_count[lr]++;
+@@ -613,10 +605,8 @@
+     // Prefill the pipeline
+     int buff = 0;
+     while (read_offset < limit && buff < PIPELINE) {
+-      std::copy(
+-          in_ptr + read_offset,
+-          in_ptr + std::min(read_offset + N, limit),
+-          send_buffer(sz, buff, dir, lw).begin<char>());
++      send_buffer(sz, buff, dir, lw).stage_send(
++          in_ptr + read_offset, std::min(N, limit - read_offset));
+       send_to(sz, buff, dir, lw);
+ 
+       buff++;
+@@ -638,10 +628,8 @@
+         in_flight--;
+ 
+         if (read_offset < limit) {
+-          std::copy(
+-              in_ptr + read_offset,
+-              in_ptr + std::min(read_offset + N, limit),
+-              send_buffer(sz, buff, dir, lw).begin<char>());
++          send_buffer(sz, buff, dir, lw).stage_send(
++              in_ptr + read_offset, std::min(N, limit - read_offset));
+           send_to(sz, buff, dir, lw);
+ 
+           read_offset += N;

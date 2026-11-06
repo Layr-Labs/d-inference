@@ -1,0 +1,123 @@
+--- originals/launch_remote_long_pair.py
++++ launch_remote_long_pair.py
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env python3
+-"""Guarded one-process registered-9B 8K full-model/stage comparison; root executes it."""
++"""Guarded one-process registered-9B 8K cut12 full-model/stage comparison; root executes it."""
+ import argparse
+ import json
+ from pathlib import Path
+@@ -13,6 +13,7 @@
+ from remote_prefill_client import RemoteControl, RemoteMemoryGate, collect_metadata, create_remote, prepare_controls, upload_new
+ from remote_prefill_paths import absolute_path, host_alias
+ from remote_prefill_supervision import supervise
++from long_pair_cut import selection_receipt
+ 
+ 
+ def main(argv=None):
+@@ -39,13 +40,14 @@
+     output.mkdir(parents=True, mode=0o700)
+     run_id, gate, rank, modules = uuid.uuid4().hex, RemoteMemoryGate(), None, None
+     children, handlers = [], {}
+-    receipt = dict(kind='remote_qwen_long_prefill_pair_launcher', schema_version=1, run_id=run_id,
++    receipt = dict(kind='remote_qwen_long_prefill_pair_cut_launcher', schema_version=1, run_id=run_id,
+         passed=False, execution_host=args.host, native_execution_attempted=False, native_process_count=1,
+         physical_two_machine_execution=False, interprocess_model_transport=False, throughput_qualification=False,
+         independent_reference_oracle_run=False, parent_timeout_seconds=args.parent_timeout_seconds,
+         native_timeout_seconds=NATIVE_TIMEOUT_SECONDS, artifact_aggregate_sha256=ARTIFACT,
+         configuration_sha256=CONFIGURATION, primary_failure=None, cleanup_errors=[], post_run_errors=[],
+-        full_reference_forward_requested=True, stage_model_forward_requested=True, timing_requested=False)
++        full_reference_forward_requested=True, stage_model_forward_requested=True, timing_requested=False,
++        selected_layer_plan=selection_receipt())
+     try:
+         launcher = archive_launcher(output)
+         sources = archive_sources(runtime, output)
+--- originals/long_reference_configuration.py
++++ long_reference_configuration.py
+@@ -1,5 +1,6 @@
+ """Fixed native request and byte-preserving staging contract."""
+ from long_reference_inputs import ARTIFACT, is_sha256, require
++from long_pair_cut import STAGE_CUT
+ 
+ NATIVE_TIMEOUT_SECONDS = 300
+ MAX_PARENT_SECONDS = 330
+@@ -20,6 +21,7 @@
+         environment_files={}, input_files={},
+         arguments=['--mode', 'qwen-long-prefill-pair-check', '--model-dir', '@model',
+             '--artifact-aggregate-sha256', ARTIFACT, '--execution-path', 'cbv2-contiguous',
++            '--stage-cut', str(STAGE_CUT),
+             '--tokens-file', '@rank/prompt.json', '--long-prompt-sha256', prompt_sha256,
+             '--prompt-tokens', '8192', '--chunk-size', '512', '--decode-tokens', '1',
+             '--repeats', '1', '--warmups', '0', '--timeout-seconds', str(NATIVE_TIMEOUT_SECONDS)])
+--- originals/long_reference_contract.py
++++ long_reference_contract.py
+@@ -3,6 +3,7 @@
+ import math
+ from pathlib import Path
+ from long_reference_inputs import ARTIFACT, CONFIGURATION, PROFILE, PROFILE_SHA256, is_sha256, require
++from long_pair_cut import validate_reference_source, validate_selected_stages
+ 
+ FIRST, FINAL = 'qwen_long_prefill_pair_reference_checkpoint', 'qwen_long_prefill_pair_report'
+ MAX_STDOUT, MAX_STDERR, MAX_LINE = 8 * 1024**2, 64 * 1024, 8 * 1024**2
+@@ -49,6 +50,7 @@
+     source = reference.get('execution', {}).get('source', {})
+     require(source.get('artifactAggregateSHA256') == ARTIFACT
+             and source.get('sourceConfigurationSHA256') == CONFIGURATION, 'Wrong complete reference source')
++    validate_reference_source(source)
+     memory_phases(record['memory'], ['before_baseline_load', 'baseline_released_cache_cleared'])
+ 
+ 
+@@ -79,6 +81,7 @@
+     for stage in stages:
+         require(stage.get('verifiedAggregateSHA256') == ARTIFACT
+                 and stage.get('sourceConfigurationSHA256') == CONFIGURATION, 'Pair stage source differs')
++    validate_selected_stages(stages, comparison.get('agreement'))
+     memory_phases(record['memory'], ['before_baseline_load', 'baseline_released_cache_cleared',
+         'both_stages_loaded', 'stage_requests_retired_weights_resident', 'stage_models_released_cache_cleared'])
+     require(record['memory'][:2] == first['memory'], 'Pair changed baseline memory observations')
+--- originals/test_long_pair_outer_contract.py
++++ test_long_pair_outer_contract.py
+@@ -7,6 +7,7 @@
+ from long_reference_configuration import configuration
+ from long_reference_contract import Records, validate_first, validate_final, MAX_STDOUT
+ from long_reference_inputs import ARTIFACT, CONFIGURATION, PROFILE, PROFILE_SHA256
++from long_pair_cut import PLAN_SHA256, SOURCE_LAYOUT_SHA256, SOURCE_MODEL_BYTES, STAGE_PLAN_SHA256, STAGE_CONFIGURATION_SHA256
+ 
+ 
+ def fixture():
+@@ -18,7 +19,9 @@
+         throughputMeasurementValid=False, modelReleased=True, allRequestStateRetired=True,
+         profile=PROFILE, profileFingerprint=PROFILE_SHA256, promptFileSHA256='a'*64,
+         promptTokenIDsSHA256='b'*64, arithmeticEnvironmentSHA256='c'*64, fingerprint='d'*64,
+-        execution=dict(source=dict(artifactAggregateSHA256=ARTIFACT, sourceConfigurationSHA256=CONFIGURATION)))
++        execution=dict(source=dict(artifactAggregateSHA256=ARTIFACT, sourceConfigurationSHA256=CONFIGURATION,
++            planSHA256=PLAN_SHA256, sourceParameterLayoutSHA256=SOURCE_LAYOUT_SHA256,
++            sourceModelTensorBytes=SOURCE_MODEL_BYTES, layerCount=32)))
+     first = dict(kind='qwen_long_prefill_pair_reference_checkpoint', schemaVersion=1,
+                  baselineModelReleasedBeforeStageLoading=True, reference=reference, memory=memory[:2])
+     comparison = dict(kind='qwen_long_prefill_pair_comparison', baselineEvidenceFingerprint='d'*64,
+@@ -26,13 +29,21 @@
+         physicalTransferQualified=False, allRequestStateRetired=True, completeStateMetadataAndDigestsExact=True,
+         finalLogitMetadataAndDigestExact=True, selectedTokenExact=True,
+         candidateFullLogitValuesExported=False, candidateNativeBytesComparedDirectly=False,
+-        frames=[{} for _ in range(16)], finalDigests=[{}, {}])
++        frames=[{} for _ in range(16)], finalDigests=[{}, {}],
++        agreement=dict(planFingerprint=PLAN_SHA256, producerStageFingerprint=STAGE_PLAN_SHA256[0],
++            consumerStageFingerprint=STAGE_PLAN_SHA256[1],
++            producerConstructionConfigurationSHA256=STAGE_CONFIGURATION_SHA256[0],
++            consumerConstructionConfigurationSHA256=STAGE_CONFIGURATION_SHA256[1],
++            storageCommitmentSHA256='f'*64))
+     final = dict(kind='qwen_long_prefill_pair_report', schemaVersion=1, correctnessOnly=True,
+         throughputMeasurementValid=False, interprocessTransportUsed=False, physicalTransferQualified=False,
+         allRequestStateRetired=True, baselineModelReleasedBeforeStageLoading=True, stageModelsReleased=True,
+         comparison=comparison, memory=memory,
+-        stageLoads=[dict(stageIndex=i, verifiedAggregateSHA256=ARTIFACT, sourceConfigurationSHA256=CONFIGURATION)
+-                    for i in range(2)])
++        stageLoads=[dict(stageIndex=i, verifiedAggregateSHA256=ARTIFACT, sourceConfigurationSHA256=CONFIGURATION,
++            planSHA256=PLAN_SHA256, stagePlanSHA256=STAGE_PLAN_SHA256[i],
++            constructionConfigurationSHA256=STAGE_CONFIGURATION_SHA256[i],
++            sourceParameterLayoutSHA256=SOURCE_LAYOUT_SHA256, sourceModelTensorBytes=SOURCE_MODEL_BYTES,
++            storageCommitmentSHA256='f'*64) for i in range(2)])
+     return inputs, first, final
+ 
+ 

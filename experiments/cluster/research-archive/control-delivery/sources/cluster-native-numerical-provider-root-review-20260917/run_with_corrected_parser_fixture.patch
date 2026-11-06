@@ -1,0 +1,19 @@
+--- c7/run.py
++++ root/run_with_corrected_parser_fixture.py
+@@ -2,6 +2,7 @@
+ import argparse,json,os,resource,sys
+ from pathlib import Path
+ sys.dont_write_bytecode=True
++sys.path.insert(0, '/Users/developer/DarkbloomDev/cluster-research/cluster-native-numerical-provider-build-draft-20260917')
+ from context import BASE,ADAPTER,WORKSPACE,OUTPUT,SOURCE,SWIFT_FILTER,OLD_HELPER,DRAIN,isolated_environment
+ from guards import verify,recheck_sources,require_preserved_cli,require_helper,sha,save,require
+ from check_process import run_owned
+@@ -35,7 +36,7 @@
+         finally:recheck()
+     try:
+         if a.phase=='helper':
+-            execute([sys.executable,'-B',str(BASE/'test_coverage.py')],'coverage-parser',30)
++            execute([sys.executable,'-B','/Users/developer/DarkbloomDev/cluster-research/cluster-native-numerical-provider-root-review-20260917/test_coverage_method_filter.py'],'coverage-parser',30)
+             source=WORKSPACE/'libs/darkbloom-cluster';(out/'module-cache').mkdir(mode=0o700)
+             command=['xcrun','swiftc','-j','2','-swift-version','6','-warnings-as-errors','-target','arm64-apple-macos14.0',
+                 '-parse-as-library','-module-cache-path',str(out/'module-cache')]

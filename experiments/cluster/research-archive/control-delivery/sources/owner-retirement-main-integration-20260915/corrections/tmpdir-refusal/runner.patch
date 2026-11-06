@@ -1,0 +1,11 @@
+--- a/libs/darkbloom-cluster/Tests/SSHChecks/run.sh
++++ b/libs/darkbloom-cluster/Tests/SSHChecks/run.sh
+@@ -1,7 +1,7 @@
+ #!/bin/bash
+ set -euo pipefail
+ task_root="$(cd "$(dirname "$0")/../.." && pwd)"
+-task_build="$(mktemp -d "${TMPDIR:-/tmp}/cluster-remote-owner.XXXXXX")"
++task_build="$(mktemp -d "/private/tmp/cluster-remote-owner.XXXXXX")"
+ trap 'rm -rf "$task_build"' EXIT
+ task_target="$(uname -m)-apple-macos14.0"
+ for task_module in DarkbloomClusterProtocol DarkbloomClusterProcess DarkbloomClusterBootstrap DarkbloomClusterRemote; do

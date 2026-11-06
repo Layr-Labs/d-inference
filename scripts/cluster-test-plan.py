@@ -111,8 +111,8 @@ QWEN_TP_MTP_GPU_TESTS = (
     "anAssistedHybridPromptMergesFramesAndSpeculatesAlikeOnGPU",
 )
 
-# The Gemma 4 suites: 610 s in one process (median of 14 runs, Cluster Runtime
-# Tests shard 3, 2026-11-06). `audit` checks that every Gemma suite is listed
+# The Gemma 4 suites: 610 s in one process (median of 14 runs of 2026-11-06,
+# when they all ran in base-gemma). `audit` checks that every Gemma suite is listed
 # and that each runs whole in exactly one base selection of Gemma suites:
 # Gemma4TensorParallelTests (296 s) in one, the others (314 s) in the other.
 GEMMA_SUITES = (

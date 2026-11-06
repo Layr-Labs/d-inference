@@ -1341,7 +1341,8 @@ not meet on the shared build database.
 Shards 4 and 5 each run one half of the Gemma 4 base suites (`GEMMA_SUITES`,
 610 s in one process) alone: shard 4 runs `base-gemma-tensor-parallel`
 (`Gemma4TensorParallelTests`, 296 s), shard 5 `base-gemma` (the other Gemma
-suites, 314 s). Each Gemma suite runs whole in one of the two. A grouped selection that finds SwiftPM's build database locked, and whose log
+suites, 314 s). Each Gemma suite runs whole in one of the two.
+A grouped selection that finds SwiftPM's build database locked, and whose log
 proves every test passed, runs once more, as in the provider shards; the job
 log prints both attempts' logs. Every process starts with
 `MLX_QMV_BATCH_INVARIANT=1`, as every cluster process does.

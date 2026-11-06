@@ -356,7 +356,7 @@ fallback is `blacksmith-12vcpu-macos-27`. While job sizes are off, a
 | `build-provider` (Build provider test products) | routed, `required` | - | Builds the provider lane, uploads `provider-test-products` |
 | `cluster-release-checks` (Cluster Release Build Checks) | routed, `required` | - | Compiles the release build of the worker capability and prefill schedule checks, and runs them |
 | `test-provider`, shards 1 and 2 | routed | `build-provider` | The provider selections, Prompt Parity, the native gates, the audit and coverage |
-| `test-cluster`, shards 1 to 3 | routed | `build-cluster` | The blocking cluster selections |
+| `test-cluster`, shards 1 to 5 | routed | `build-cluster` | The blocking cluster selections |
 | `test-cluster-gpu`, shards 1 and 2 | `blacksmith-12vcpu-macos-27`, not routed | `build-cluster` | The non-blocking cluster GPU selections |
 | `test-cluster-focused`, shards 1 and 2 | routed | - | The focused runner scripts (shard 1); the stage metadata, provisioning and onboarding runners (shard 2) |
 

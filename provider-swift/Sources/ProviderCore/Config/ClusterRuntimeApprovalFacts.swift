@@ -303,6 +303,7 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
             pairServingGrant: grant,
             parityQualifications: declared.map { parityQualifications($0, metallibSHA256: metallibSHA256, inputModalities: inputModalities,
                 layers: layerCount(configuration),
+                servedProfile: { ClusterModelFeaturePolicy.servedProfile(capability, mode: $0) },
                 servesMedia: { ClusterModelFeaturePolicy.mediaContract(capability: capability, mode: $0) != nil }) } ?? []),
             runtimeModelID: capability.runtimeModelID)
     }
@@ -326,20 +327,24 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
     /// (a pipeline needs the model's `layers`: without them its records are
     /// left out), its ranks in this build's numerics class, its envelope
     /// admitting media only when its mode `servesMedia` for this model
-    /// (`ClusterModelFeaturePolicy.mediaContract`). A model declared with a
+    /// (`ClusterModelFeaturePolicy.mediaContract`) and prompts and outputs up
+    /// to what a pair serves in that mode (`servedProfile`,
+    /// `ClusterModelFeaturePolicy.servedProfile`). A model declared with a
     /// resident assistant (`ClusterPublicModel.tensorAssistant`) has its
     /// serial-schedule (1) tensor-parallel qualification rest on the
     /// assistant's evidence: a pair of that build decodes with it. The
     /// assistant requires serial prefill (`ClusterConfiguration.validate`), so a
     /// one-chunk-lookahead (2) pair decodes plain and keeps the model's evidence.
     static func parityQualifications(_ declared: ClusterPublicModel, metallibSHA256: String, inputModalities: [String],
-                                     layers: Int?, servesMedia: (ClusterGenerationMode) -> Bool) -> [ParityQualification] {
+                                     layers: Int?, servedProfile: (ClusterGenerationMode) -> ClusterWorkerProfile,
+                                     servesMedia: (ClusterGenerationMode) -> Bool) -> [ParityQualification] {
         let classes = numericsClasses(declared.ranks, metallibSHA256: metallibSHA256)
         return declared.families.sorted { $0.rawValue.utf8.lexicographicallyPrecedes($1.rawValue.utf8) }.flatMap { family in
             guard let placement = ClusterPublicModels.placement(of: family, layers: layers, ranks: declared.ranks.count) else {
                 return [ParityQualification]()
             }
-            let envelope = ClusterPublicModels.requestEnvelope(inputModalities: inputModalities, servesMedia: servesMedia(placement.mode))
+            let envelope = ClusterPublicModels.requestEnvelope(inputModalities: inputModalities, servesMedia: servesMedia(placement.mode),
+                                                               profile: servedProfile(placement.mode))
             return declared.schedules.sorted().map { schedule in
                 let assistant = family == .tensorParallel && schedule == Self.assistantSchedule ? declared.tensorAssistant : nil
                 return ParityQualification(schedule: schedule, numericsClasses: classes, cuts: placement.cuts, mode: placement.mode,

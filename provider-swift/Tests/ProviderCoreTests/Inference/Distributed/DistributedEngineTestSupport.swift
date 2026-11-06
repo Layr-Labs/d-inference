@@ -69,6 +69,8 @@ final class DistributedTestOwner: DistributedResidentExecutionOwner, @unchecked 
         ])
     var available = true
     var capacityBytes = 1024
+    /// The context the fabricated ranks' memory admits now; nil states none.
+    var servingContextTokens: Int?
     var profileID = "fabricated-greedy"
     var projection: CBv2FirstTokenProjectedWork = .bounded(
         work: .init(prefillTokens: 3, decodeTokens: 1, scheduledSteps: 2, mixedSteps: 0),
@@ -94,7 +96,8 @@ final class DistributedTestOwner: DistributedResidentExecutionOwner, @unchecked 
 
     func readiness() -> DistributedResidentReadiness? {
         lock.withLock {
-            available ? .init(identity: identity, profileID: profileID, requestCapacityBytes: capacityBytes) : nil
+            available ? .init(identity: identity, profileID: profileID, requestCapacityBytes: capacityBytes,
+                              servingContextTokens: servingContextTokens) : nil
         }
     }
     func setReadinessInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {

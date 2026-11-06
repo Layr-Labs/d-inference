@@ -32,7 +32,7 @@ struct LongContextLimitsTests {
         #expect(Self.declaring == QwenRegisteredDenseModel.allCases)
         // One row serves its native context with its catalog output limit;
         // every other keeps the protocol's standard request.
-        #expect(QwenDenseRegisteredSpecification.nativeOutputTokensByModel == [.qwen38TwentySevenB: 32_768])
+        #expect(QwenDenseRegisteredSpecification.nativeOutputTokensByModel == [.qwen38TwentySevenB: 65_536])
         for model in Self.declaring {
             let spec = try Self.specification(model)
             #expect(spec.declaredContextTokens == 262_144)
@@ -45,12 +45,22 @@ struct LongContextLimitsTests {
             #expect(memory.maximumChunkTokens == 512)
             if model == .qwen38TwentySevenB {
                 #expect(limits.maximumContextTokens == 262_144 && limits.maximumPromptTokens == 262_143)
-                #expect(limits.maximumOutputTokens == 32_768 && limits.maximumChunkTokens == 512)
+                // The catalog's output limit, which the coordinator gives a
+                // request that omits `max_tokens`.
+                #expect(limits.maximumOutputTokens == 65_536 && limits.maximumChunkTokens == 512)
                 #expect(limits.declaredContextTokens == 262_144)
             } else {
                 #expect(limits == memory)
             }
             let profile = try QwenResidentAdapterDefinition.profile(specification: spec)
+            if model == .qwen38TwentySevenB {
+                // An 18,774-token prompt asking for 65,536 (production, 11-06)
+                // is a request the row serves, as a single Mac does.
+                let asked = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(),
+                    promptTokenIDs: Array(repeating: 1000, count: 18_774), chunkSize: 512,
+                    outputCount: 65_536, stopTokenIDs: [])
+                #expect(asked.maximumTokens == 84_310)
+            }
             #expect(profile.maximumPromptTokens == limits.maximumPromptTokens)
             #expect(profile.maximumOutputTokens == limits.maximumOutputTokens)
             #expect(profile.maximumContextTokens == limits.maximumContextTokens)

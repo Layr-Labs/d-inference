@@ -81,6 +81,9 @@ public enum CapacityHeartbeatMateriality {
             if before.deadlineProfile != slot.deadlineProfile { return true }
             if before.promptWorkIdentity != slot.promptWorkIdentity { return true }
             if before.deadlineWork != slot.deadlineWork { return true }
+            // A pair's serving context moves while it idles (prefix memory
+            // given back or taken): the coordinator gates on it.
+            if before.requestLimits != slot.requestLimits { return true }
             if performanceChanged(before, slot) { return true }
             // Token budget drifting without an admission-count change
             // (re-slice, queued work retiring, KV reclaim) is compared PER

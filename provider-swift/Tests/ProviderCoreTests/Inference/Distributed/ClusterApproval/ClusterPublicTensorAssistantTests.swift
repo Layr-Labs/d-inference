@@ -14,6 +14,9 @@ import DarkbloomClusterSecurity
 struct ClusterPublicTensorAssistantTests {
     static let report = "docs/reports/2026-11-01-qwen27-public-assistant.md"
     static let qualifiedAt = "2026-11-05T00:00:00Z"
+    /// The registered row's limits (`QwenResidentContextLimits.Ceiling.native`): what a qualification's envelope admits.
+    static let qwen27Profile = ClusterWorkerProfile(id: "registered_qwen38_27b_greedy_generation_v1", vocabularySize: 248_320,
+        maximumPromptTokens: 262_143, maximumOutputTokens: 65_536, maximumChunkTokens: 512, maximumContextTokens: 262_144)
 
     static func policy(depth: Int = 3, inventory: Character = "8",
                        verification: ClusterQwenTensorAssistantPolicy.Verification = .singleton) throws -> ClusterQwenTensorAssistantPolicy {
@@ -81,7 +84,7 @@ struct ClusterPublicTensorAssistantTests {
     @Test func theTensorParallelQualificationsRestOnTheAssistantsEvidence() throws {
         func qualifications(_ assistant: ClusterQwenTensorAssistantPolicy?) throws -> [ClusterRuntimeApprovalFacts.ParityQualification] {
             ClusterRuntimeApprovalFacts.parityQualifications(try Self.declaration(assistant)[0], metallibSHA256: ClusterApprovalMacs.hash("9"),
-                inputModalities: ["text"], layers: 64, servesMedia: { _ in false })
+                inputModalities: ["text"], layers: 64, servedProfile: { _ in Self.qwen27Profile }, servesMedia: { _ in false })
         }
         let assisted = try qualifications(try Self.policy(verification: .admittedCohort)), plain = try qualifications(nil)
         #expect(assisted.map(\.mode) == [.pipeline, .pipeline, .tensorParallel, .tensorParallel])
@@ -131,7 +134,8 @@ struct ClusterPublicTensorAssistantTests {
         #expect(ClusterPlacementTensorAssistantSelection.discoveryMode(.auto, coordinator: true, declared: true) == .auto)
         let model = try #require(ClusterPublicModels.declared.first { $0.runtimeModelID == ClusterQwenTensorAssistantPolicy.runtimeModelID })
         let qualifications = ClusterRuntimeApprovalFacts.parityQualifications(model, metallibSHA256: ClusterApprovalMacs.hash("9"),
-            inputModalities: ["text", "image"], layers: 64, servesMedia: { $0 == .tensorParallel })
+            inputModalities: ["text", "image"], layers: 64, servedProfile: { _ in Self.qwen27Profile },
+            servesMedia: { $0 == .tensorParallel })
         #expect(qualifications.filter { $0.mode == .tensorParallel }.map(\.evidenceSHA256)
                 == [declared.evidenceSHA256, ClusterPublicModels.evidenceSHA256], "serial: the assistant's; one-chunk lookahead: plain")
         #expect(qualifications.filter { $0.mode == .pipeline }.allSatisfy { $0.evidenceSHA256 == ClusterPublicModels.evidenceSHA256 })

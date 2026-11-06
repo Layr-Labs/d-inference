@@ -163,8 +163,11 @@ extension QwenDenseRegisteredSpecification {
     /// keeps the protocol's standard request. Tensor parallel charges a request
     /// beyond the standard one at its own context when a rank reserves it.
     static let nativeOutputTokensByModel: [QwenRegisteredDenseModel: Int] = [
-        // Catalog `max_context_length` 262,144 and `max_output_length` 32,768.
-        .qwen38TwentySevenB: 32_768,
+        // Catalog `max_context_length` 262,144 and `max_output_length` 65,536,
+        // the `max_tokens` the coordinator gives a request that omits it. Not
+        // the wire's 131,072: at a pair's ~35 tokens a second, 65,536 tokens
+        // after the longest prompt still finish within the 3,600 s request limit.
+        .qwen38TwentySevenB: 65_536,
     ]
     var nativeOutputTokens: Int? { Self.nativeOutputTokensByModel[model] }
 }

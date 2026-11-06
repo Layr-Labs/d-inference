@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-11-02
+> Last updated: 2026-11-06
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -502,6 +502,7 @@ routing on them.
 | `deadline_profile` | `*DeadlinePerformanceProfileReference` | `DeadlinePerformanceProfileReference?` | opt | Exact scheduler identity for measured first-content cells; grants no concurrency or chunk-policy change |
 | `deadline_work` | `*DeadlineWork` | `DeadlineWork?` | opt | Coherent existing-owner work bounds; [schema below](#slotsdeadline_work) |
 | `performance_measurements` | `*PerformanceMeasurements` | `PerformanceMeasurements?` | opt | Transient routing observations; [schema below](#slotsperformance_measurements) |
+| `request_limits` | `*SlotRequestLimits` | `SlotRequestLimits?` | opt | The request sizes a cluster pair leader's slot serves; [schema below](#slotsrequest_limits). Omitted by a single Mac's slot and by providers before 0.10.10 |
 | `active_tokens` | `int64` | `Int64` | req | Σ (prompt + completion) tokens over running requests |
 | `max_tokens_potential` | `int64` | `Int64` | req | Σ `max_tokens` over running requests |
 | `observed_decode_tps` | `float64` | `Double` | opt | EWMA of per-request decode TPS |
@@ -518,6 +519,36 @@ routing on them.
 | `telemetry` | `*SlotTelemetry` | `SlotTelemetry?` | opt | [`slots[].telemetry`](#slotstelemetry); **presence is the "profiler-aware provider" sentinel** — omission ≠ empty object |
 | `prefix_cache` | `*PrefixCacheTelemetry` | `PrefixCacheTelemetry?` | opt | [Durable cache observation](#slotsprefix_cache); no store or disabled stats tick means absent |
 | `paged_storage` | `*PagedStorageTelemetry` | `PagedStorageTelemetry?` | opt | [Paged storage observation](#slotspaged_storage); absent means uninstrumented, never zero ownership |
+
+#### `slots[].request_limits`
+
+Optional `SlotRequestLimits` ([coordinator/protocol/slot_request_limits.go](https://github.com/Layr-Labs/darkbloom-platform/blob/master/coordinator/protocol/slot_request_limits.go),
+`provider-swift/Sources/ProviderCore/Protocol/SlotRequestLimits.swift`). Only the
+leader of a cluster pair sends it, on its pair's slot, in every heartbeat. Every
+value is a token count.
+
+| JSON key | Presence | Meaning |
+|---|---|---|
+| `max_prompt_tokens` | req | The pair refuses a longer prompt (`prompt_too_long`) |
+| `max_output_tokens` | req | The pair refuses a larger `max_tokens` (`output_too_long`) |
+| `max_context_tokens` | req | The pair refuses a larger prompt plus `max_tokens` (`context_too_long`) |
+| `serving_context_tokens` | opt | The longest prompt plus `max_tokens` that both ranks' memory admits now, at most `max_context_tokens`. Both ranks work it out again while the pair is idle. A longer request is refused for capacity (`request_exceeds_node_budget`). Omitted, never `0`, when neither rank states one |
+
+The first three are what the pair serves in its generation mode
+(`DistributedResidentExecutionProfile.served`,
+`ClusterModelFeaturePolicy.servedProfile`). In tensor parallel, that is the
+worker's whole profile: for Qwen3.8 27B, 262,143 prompt tokens, 65,536 output
+tokens and a 262,144-token context. In any other mode, it is the memory plan's
+request: 32,768 prompt and 32,768 output tokens in a 65,536-token context. A
+pipeline's ranks refuse any reservation beyond that request. The leader refuses
+any request outside these limits before it asks either rank.
+
+A change of `serving_context_tokens` is a material capacity change, so it sends
+an event heartbeat (`CapacityHeartbeatMateriality`). The coordinator drops the
+whole object when a required value is not positive, when one is above
+1,048,576, or when the context is below the prompt or output limit. It caps
+`serving_context_tokens` at the context. It then holds every request routed to
+the pair to these limits.
 
 #### `slots[].prefix_cache`
 

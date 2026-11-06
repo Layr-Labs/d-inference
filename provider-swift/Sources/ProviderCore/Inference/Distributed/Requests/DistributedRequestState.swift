@@ -76,6 +76,9 @@ final class DistributedRequestState: @unchecked Sendable {
     /// When the first and the latest committed token arrived (S24 telemetry).
     var firstTokenAt: ContinuousClock.Instant?
     var lastTokenAt: ContinuousClock.Instant?
+    /// The latest committed token's process uptime, which ages the request's
+    /// decode measurement (`CBv2RequestTiming.lastTokenUptimeNanos`).
+    var lastTokenUptimeNanos: UInt64 = 0
     /// What the ranks reported they measured of this request.
     var rankTelemetry: DistributedRankTelemetry?
     var terminal: CBv2FinishReason?

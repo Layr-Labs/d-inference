@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import unittest
 from unittest import mock
+import urllib.parse
 import zlib
 
 SPEC = importlib.util.spec_from_file_location(
@@ -168,16 +169,17 @@ class FixtureTests(unittest.TestCase):
         self.sleep.assert_called_once_with(1)
 
     def test_a_redirect_to_another_origin_fails_at_once(self):
-        path = F.PINS.BASE_URL.partition("models.darkbloom.ai")[2] + "/config.json"
+        # Each case changes one part of the requested origin.
+        requested = urllib.parse.urlsplit(F.PINS.BASE_URL + "/config.json")
         cases = {
-            "another HTTPS host": "https://mirror.example" + path,
-            "another port": "https://models.darkbloom.ai:8443" + path,
-            "plain-HTTP downgrade": "http://models.darkbloom.ai" + path,
+            "another HTTPS host": requested._replace(netloc="mirror.example"),
+            "another port": requested._replace(netloc=requested.hostname + ":8443"),
+            "plain-HTTP downgrade": requested._replace(scheme="http"),
         }
         for case, location in cases.items():
             with self.subTest(case=case):
                 with self.assertRaisesRegex(ValueError, "another origin"):
-                    self.download((0, "301 " + location, None), (0, "200", self.body))
+                    self.download((0, "301 " + location.geturl(), None), (0, "200", self.body))
                 # The other origin is never requested and nothing is retried.
                 self.assertEqual(len(self.curl.argv), 1)
                 self.sleep.assert_not_called()

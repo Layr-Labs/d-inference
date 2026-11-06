@@ -273,10 +273,11 @@ extension Gemma4TensorParallelModel {
         try $layerStride.withValue(stride, operation: body)
     }
     /// Row parts of each prompt chunk's work after attention, each part's sums
-    /// issued as soon as built (`Gemma4TensorParallelPromptParts`): values and
-    /// tokens unchanged, only when the GPU and the link run. 1 (whole): off by
-    /// default. On two M5 Ultras 4 parts measured best (9,651-token prefill
-    /// +13 %).
+    /// issued as soon as built (`Gemma4TensorParallelPromptParts`). Bit-identical
+    /// to the whole chunk on the GPU for two ranks while every op after
+    /// attention is per-row; not on the CPU backend, not exact with more than
+    /// two ranks, and not enforced at production size, so 1 (whole): off. On
+    /// two M5 Ultras 4 parts measured best (9,651-token prefill +13 %).
     static let promptChunkParts = 1
     /// A bench or test's own part count (nil: `promptChunkParts`).
     @TaskLocal static var benchPromptParts: Int?

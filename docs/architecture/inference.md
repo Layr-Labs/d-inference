@@ -4809,6 +4809,12 @@ resident runtime's own request path instead of the SDK's legacy caches;
 `--layer-stride N` submits each decode step every N layers instead of the
 product's `decodeLayerStride` (1), so a pair can measure the stride before the
 product's changes (Qwen's measured choice is 8, `QwenTensorParallelLaunch`).
+`--prompt-parts N` (shard or tp, paged) runs each prompt chunk's work after
+attention in N row parts whose sums are issued as built
+(`Gemma4TensorParallelPromptParts`; the product keeps 1): bit-identical to the
+whole chunk on the GPU for two ranks while every op after attention is per-row,
+not on the CPU backend, not exact with more than two ranks, and not enforced,
+so it stays a bench option (two M5 Ultras: 4 parts, +13 % at 9,651 tokens).
 `tp-check gemma lanes` serves several requests together through the batch
 driver and checks each against itself alone.
 

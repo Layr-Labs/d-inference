@@ -168,6 +168,8 @@ enum GemmaCheck {
             guard let parts = Int(value), (1 ... 8).contains(parts), paged, ["shard", "tp"].contains(mode) else {
                 throw Failure("--prompt-parts takes 1 to 8 on the paged path of a shard or tp rank")
             }
+            // The parts always pack each part's feed-forward collective: the unpacked diagnostic would be silently packed.
+            guard pack || parts == 1 else { throw Failure("--prompt-parts above 1 needs --pack yes") }
             return parts
         }
         guard layerStride == nil || (paged && Gemma4TensorParallelModel.benchLayerStrideApplies(mode: mode)) else {

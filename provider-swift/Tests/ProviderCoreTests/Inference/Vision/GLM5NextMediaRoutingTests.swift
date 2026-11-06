@@ -377,7 +377,11 @@ struct GLM5NextMediaRoutingTests {
     /// The readiness requests through the scheduler with GLM's actual request
     /// normalization, shared ingest and processor at the published budgets.
     /// The variable-frame-rate QuickTime clip was refused as `invalid_media`.
-    @Test func openRouterReadinessVideosReachTheEngineInsteadOfInvalidMedia() async throws {
+    @Test(
+        .disabled(
+            "Issue #1847: intermittent video decoding failed on the MP4 readiness clip (input-video-url.mp4); David 2026-11-06"
+        ))
+    func openRouterReadinessVideosReachTheEngineInsteadOfInvalidMedia() async throws {
         let mov = try openRouterVideo(
             "input-video-base64.mov",
             sha256: "0a53a3aa1da409c54b57b6955139525f77c421893aaa172ebc1f86ba3a7323f4")

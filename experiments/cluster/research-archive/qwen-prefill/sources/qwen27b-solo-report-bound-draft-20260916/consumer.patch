@@ -1,0 +1,11 @@
+--- a/run-template/solo_contract.py
++++ b/run-template/solo_contract.py
+@@ -125,7 +125,7 @@
+ 
+ 
+ def report(raw, expected, first, pid, bundle):
+-    require(0 < len(raw) <= 128*1024, 'Solo report bound')
++    require(0 < len(raw) <= 512*1024, 'Solo report bound')
+     value = fields(parse(raw), 'kind schemaVersion completed verifiedFullModelLoads warmupCount measuredCount '
+         'freshRequestsAdmitted modelReleased allRequestStateRetired prefixReuse mtpEnabled allocatorPolicy '
+         'unusedDiagnosticAllowanceStillReserved independentNumericalComparisonPerformed '

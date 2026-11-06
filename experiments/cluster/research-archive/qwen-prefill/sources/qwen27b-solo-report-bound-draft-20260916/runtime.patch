@@ -1,0 +1,40 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloEntry.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloEntry.swift
+@@ -87,16 +87,31 @@
+             preflight: input, resources: resources,
+             publishLoaded: { try publishSolo($0, check: resources.check) },
+             publishRetired: { try publishSolo($0, check: resources.check) })
+-        try publishSolo(report, check: resources.check)
++        try publishSolo(report, maximumBytes: QwenResidentSoloOutput.finalMaximumBytes, check: resources.check)
+     }
+ 
+-    private func publishSolo<T: Encodable>(_ value: T, check: () throws -> Void) throws {
++    private func publishSolo<T: Encodable>(_ value: T,
++        maximumBytes: Int = QwenResidentSoloOutput.progressMaximumBytes, check: () throws -> Void) throws {
+         try check()
+-        var data = try canonicalJSONData(value)
+-        // Only CPU timing/token/metadata values; no tensor row or state payload.
+-        guard !data.isEmpty, data.count <= 128 * 1024 else { throw ProbeError("Resident solo output exceeds its bound") }
+-        data.append(10); try check()
++        let data = try QwenResidentSoloOutput.encode(value, maximumBytes: maximumBytes)
++        try check()
+         try FileHandle.standardOutput.write(contentsOf: data)
+         try check()
+     }
+ }
++
++/// Bounds count JSON bytes, before the single framing LF. The final report
++/// retains the complete per-tensor resource ledger; progress remains smaller.
++enum QwenResidentSoloOutput {
++    static let progressMaximumBytes = 128 * 1024
++    static let finalMaximumBytes = 512 * 1024
++
++    static func encode<T: Encodable>(_ value: T, maximumBytes: Int) throws -> Data {
++        var data = try canonicalJSONData(value)
++        guard !data.isEmpty, data.count <= maximumBytes else {
++            throw ProbeError("Resident solo output exceeds its bound")
++        }
++        data.append(10)
++        return data
++    }
++}

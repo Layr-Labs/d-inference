@@ -1,0 +1,82 @@
+--- a/run_physical.py
++++ b/run_physical.py
+@@ -10,13 +10,16 @@
+ import threading
+ import time
+ from lease_source import LEASE
++from parent_settings import SSH
++from probe_postflight import postflight
++from parent_cleanup import invoke_controller, observe_retirement
+ 
+ BASE = Path(__file__).resolve().parent
+ ROOT = BASE.parent
+ REMOTE = '/Users/developer/DarkbloomDev/owner-native-mtp-probe-20260915'
+ OUTPUT = BASE / 'physical-1'
+-SSH = ['/usr/bin/ssh', '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', '-o', 'IdentitiesOnly=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'UserKnownHostsFile=/Users/developer/DarkbloomDev/cluster-research/qwen-resident-mtp-registered-probe-qualification-20260915/configuration/known_hosts', '-i', '/Users/developer/.ssh/id_ed25519_darkbloom_dev']
+-CONTROLLER = BASE / 'controller/owner-controller'
++
++CONTROLLER = ROOT / 'qwen-resident-mtp-registered-probe-qualification-20260915/controller/owner-controller'
+ 
+ 
+ class Monitor:
+@@ -82,6 +85,7 @@
+     monitors = []
+     lease = None
+     password = ''
++    controller_started = None
+     try:
+         for rank, host in enumerate(['darkbloom-24', 'darkbloom-48']):
+             monitor = Monitor(host, rank); monitors.append(monitor)
+@@ -114,14 +118,40 @@
+         record['aliasReady'] = json.loads(line)
+         if record['aliasReady'].get('state') != 'ready':
+             raise RuntimeError('Alias not admitted')
++        controller_started = time.monotonic()
+         command = [str(CONTROLLER), str(BASE / 'configuration/controller.json')]
+         record['controllerInvocation'] = command
+         with (OUTPUT / 'controller.stdout.jsonl').open('xb') as out, (OUTPUT / 'controller.stderr').open('xb') as err:
+-            result = subprocess.run(command, stdout=out, stderr=err, timeout=315)
+-        record['controllerExitCode'] = result.returncode
++            record['localController'] = {}
++            invoke_controller(command, out, err, record['localController'])
++        record['controllerExitCode'] = record['localController']['exitCode']
+     except BaseException as error:
+         record['error'] = type(error).__name__ + ': ' + str(error)
+     finally:
++        # Reuse the current HTTP postflight ordering. Keep the alias while any
++        # owner/native may remain, including after timeout killed the controller.
++        origin = controller_started if controller_started is not None else started
++        try:
++            observations = []
++            def collect(rank, timeout):
++                return postflight(['darkbloom-24', 'darkbloom-48'][rank], timeout=timeout)
++            cleanup = observe_retirement(origin + 420, collect, observations.append)
++            # Publication follows the bounded observation so a disk failure
++            # cannot skip the wait and release the alias around a live child.
++            record['remoteCleanup'] = cleanup
++            with (OUTPUT / 'postflight-observations.jsonl').open('xb') as observed:
++                for value in observations:
++                    observed.write((json.dumps(value, sort_keys=True) + '\n').encode())
++            record['nativeProcessesAbsent'] = cleanup['nativeProcessesAbsent']
++            record['journalsEmpty'] = cleanup['journalsEmpty']
++            if cleanup.get('interrupted'):
++                record.setdefault('error', cleanup['interrupted'])
++        except BaseException as error:
++            record['remoteCleanupError'] = type(error).__name__ + ': ' + str(error)
++            record['nativeProcessesAbsent'] = False; record['journalsEmpty'] = False
++        if record.get('localController'):
++            record['controllerExitCode'] = record['localController'].get('exitCode')
++        record['aliasReleaseAfterControllerSeconds'] = time.monotonic() - origin
+         if lease:
+             try:
+                 lease.stdin.write(b'release\n'); lease.stdin.flush()
+@@ -145,6 +175,9 @@
+     final = record.get('leaseFinal', [])
+     record['runCompletedAndAliasRestored'] = (record.get('controllerExitCode') == 0 and 'error' not in record
+         and record.get('leaseExitCode') == 0 and len(final) == 1 and final[0].get('restored') is True
++        and record.get('nativeProcessesAbsent') is True and record.get('journalsEmpty') is True
++        and record.get('localController', {}).get('reaped') is True
++        and record.get('localController', {}).get('groupAbsent') is True
+         and record['pinsUnchanged'] and all(m['exitCode'] == 0 and not m['errors'] for m in record['monitors']))
+     record['outputFiles'] = [{'path': p.name, 'bytes': p.stat().st_size, 'sha256': hashlib.sha256(p.read_bytes()).hexdigest()}
+         for p in sorted(OUTPUT.iterdir()) if p.is_file()]

@@ -1,0 +1,11 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedEvidenceExport.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedEvidenceExport.swift
+@@ -16,7 +16,7 @@
+                        into: writer, check: check)
+             try check()
+             try writer.publish { bytes in
+-                try publisher(bytes, check)
++                try publisher(bytes) { try check() }
+                 try check()
+             }
+         }

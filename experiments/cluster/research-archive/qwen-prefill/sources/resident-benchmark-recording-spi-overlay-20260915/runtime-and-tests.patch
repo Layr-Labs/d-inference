@@ -1,0 +1,1186 @@
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationDiagnosticBudget.swift
+@@ -0,0 +1,51 @@
++import Foundation
++
++/// Named incremental capture storage, separate from the existing request
++/// state/fusion allowance. These are not whole-process peak bounds.
++struct QwenGenerationDiagnosticBudget: Encodable {
++    let rank: Int
++    let vocabularySize: Int
++    let activationDType: String
++    let logicalRowBytes: Int
++    let float32RowBytes: Int
++    let extraHostBytes: Int
++    let extraNativeBytes: Int
++    let originalRequestReservedBytes: Int
++
++    static func derive(rank: Int, vocabularySize: Int, activationDType: String,
++                       requestReservedBytes: Int, bound: (Int) throws -> Int) throws -> Self {
++        guard (0...1).contains(rank), (1...262_144).contains(vocabularySize),
++              ["float16", "bfloat16", "float32"].contains(activationDType),
++              requestReservedBytes > 0 else { throw ProbeError("Invalid generation diagnostic capture budget") }
++        let sum = QwenLongPrefillCheckedBytes.sum, product = QwenLongPrefillCheckedBytes.product
++        let row = rank == 1 ? try product([vocabularySize, activationDType == "float32" ? 4 : 2]) : 0
++        let floating = rank == 1 ? try product([vocabularySize, 4]) : 0
++        var native = 0
++        if rank == 1 {
++            // Bound each array independently, including the final native row
++            // whose lifetime extends through its complete CPU capture.
++            let rowBound = try bound(row), floatingBound = try bound(floating)
++            guard rowBound >= row, floatingBound >= floating else {
++                throw ProbeError("Generation diagnostic allocator bound is smaller than its array")
++            }
++            native = try sum([rowBound, floatingBound])
++        }
++        return .init(rank: rank, vocabularySize: vocabularySize, activationDType: activationDType,
++            logicalRowBytes: row, float32RowBytes: floating, extraHostBytes: try sum([row, floating]),
++            extraNativeBytes: native, originalRequestReservedBytes: requestReservedBytes)
++    }
++
++    func requiredActualFreeBytes(minimum: Int, headroom: Int) throws -> Int {
++        guard minimum > 0, headroom > 0 else { throw ProbeError("Invalid diagnostic actual-free policy") }
++        return max(minimum, try QwenLongPrefillCheckedBytes.sum([
++            originalRequestReservedBytes, extraHostBytes, extraNativeBytes, headroom,
++        ]))
++    }
++
++    func requiredAllocatorBytes(active: Int, cache: Int, headroom: Int) throws -> Int {
++        guard active >= 0, cache >= 0, headroom > 0 else { throw ProbeError("Invalid diagnostic allocator observation") }
++        return try QwenLongPrefillCheckedBytes.sum([
++            active, cache, originalRequestReservedBytes, extraNativeBytes, headroom,
++        ])
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationDiagnosticCapture.swift
+@@ -0,0 +1,96 @@
++import Foundation
++import MLX
++
++/// Request-local CPU captures. No model, session, MLXArray or file is retained.
++/// Both captures are private until the driver returns after bilateral retirement.
++final class QwenGenerationDiagnosticCapture {
++    let request: QwenLayerStageGenerationRequest
++    let rank: Int
++    let resources: QwenGenerationDiagnosticResources
++    private var finalFrame: QwenLayerStageFrame?
++    private var finalTokenID: Int?
++    private var finalLogits: QwenRecordedLogits?
++    private var state: QwenLayerStageRankStateCapture?
++    private var completion: QwenGenerationDiagnosticCompletion?
++    private var consumed = false
++
++    init(request: QwenLayerStageGenerationRequest, rank: Int,
++         resources: QwenGenerationDiagnosticResources) {
++        self.request = request; self.rank = rank; self.resources = resources
++    }
++
++    func captureFinalRow(_ row: MLXArray?, frame: QwenLayerStageFrame, tokenID: Int,
++                         check: () throws -> Void) throws {
++        guard !consumed, finalFrame == nil, completion == nil, state == nil,
++              (row != nil) == (rank == 1) else { throw ProbeError("Repeated or wrong-rank diagnostic row capture") }
++        try resources.requireLive(force: true)
++        try check()
++        if let row {
++            guard String(describing: row.dtype) == request.profile.activationDType else {
++                throw ProbeError("Diagnostic final row dtype differs from the generation profile")
++            }
++            let captured = try QwenRecordedLogits(row,
++                vocabularySize: request.profile.vocabularySize, check: check)
++            guard let maximum = captured.record.values.max(),
++                  captured.record.values.firstIndex(of: maximum) == tokenID else {
++                throw ProbeError("Diagnostic final row differs from the agreed target token")
++            }
++            finalLogits = captured
++        }
++        try check()
++        try resources.requireLive(force: true)
++        finalFrame = frame; finalTokenID = tokenID
++    }
++
++    func captureState(session: QwenLayerStageSession, stage: QwenLayerStagePlan.Stage,
++                      selectedTokenIDs: [Int], completedFrames: Int, committedTokens: Int,
++                      reason: QwenLayerStageGenerationFinishReason,
++                      check: () throws -> Void) throws {
++        guard !consumed, completion == nil, state == nil,
++              let finalFrame, let finalTokenID else { throw ProbeError("Diagnostic state precedes final row or repeats") }
++        let completed = try QwenGenerationDiagnosticCompletion(request: request,
++            selectedTokenIDs: selectedTokenIDs, completedFrames: completedFrames,
++            committedTokens: committedTokens, reason: reason)
++        try completed.requireCapture(rank: rank, frame: finalFrame, frontier: session.committedTokens,
++            tokenID: finalTokenID, hasLogits: finalLogits != nil)
++        try resources.requireLive(force: true)
++        try check()
++        let snapshot = try session.snapshot(includeBytes: false, check: check)
++        let captured = try QwenLayerStageRankStateCapture(snapshot: snapshot, stage: stage,
++            committedTokens: committedTokens)
++        try check()
++        try resources.requireLive(force: true)
++        state = captured; completion = completed
++    }
++
++    func finish(execution: QwenLayerStageGenerationResult, agreement: QwenLayerStageGenerationAgreement,
++                stage: QwenLayerStagePlan.Stage) throws -> QwenGenerationDiagnosticEvidence {
++        guard !consumed, let state, let completion, let finalFrame,
++              execution.bothRequestStatesRetired,
++              execution.agreementFingerprint == agreement.fingerprint,
++              execution.membershipEpoch == agreement.descriptor.membershipEpoch,
++              execution.identity.stageIndex == rank,
++              execution.identity.requestFingerprint == request.fingerprint,
++              execution.identity.stageFingerprint == stage.fingerprint,
++              execution.committedTokens == completion.committedTokens,
++              execution.selectedTokenIDs.count == completion.selectedTokenCount,
++              execution.selectedTokenIDs.last == completion.finalTokenID,
++              qwenGenerationTokenHash(execution.selectedTokenIDs) == completion.selectedTokenIDsSHA256,
++              execution.finishReason == completion.reason,
++              execution.completedFrames == finalFrame.sequence + 1,
++              resources.observationCount > 0 else { throw ProbeError("Diagnostic publication precedes complete retirement/evidence") }
++        consumed = true
++        return .init(execution: execution, agreement: agreement.descriptor, requestFingerprint: request.fingerprint,
++            profileFingerprint: request.profile.fingerprint, rank: rank,
++            sourceLayerStart: stage.sourceRange.lowerBound, sourceLayerEnd: stage.sourceRange.upperBound,
++            finalFrame: finalFrame, stateEntries: state.entries, logicalStateBytes: state.logicalBytes,
++            stageStateSHA256: state.fingerprint, finalLogits: finalLogits, captureBudget: resources.budget,
++            resourceObservationCount: resources.observationCount,
++            minimumObservedActualFreeBytes: resources.minimumActualFreeBytes,
++            minimumObservedAllocatorLimitBytes: resources.minimumAllocatorLimitBytes)
++    }
++
++    func discard() {
++        consumed = true; finalFrame = nil; finalTokenID = nil; finalLogits = nil; state = nil; completion = nil
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationDiagnosticCompletion.swift
+@@ -0,0 +1,46 @@
++import Foundation
++
++/// Replays the existing native generation schedule against the actual selected
++/// history. A client stop is clean, but need not match a full-reference run.
++struct QwenGenerationDiagnosticCompletion {
++    let finalFrame: QwenLayerStageFrame
++    let committedTokens: Int
++    let selectedTokenCount: Int
++    let finalTokenID: Int
++    let selectedTokenIDsSHA256: String
++    let reason: QwenLayerStageGenerationFinishReason
++
++    init(request: QwenLayerStageGenerationRequest, selectedTokenIDs: [Int],
++         completedFrames: Int, committedTokens: Int,
++         reason: QwenLayerStageGenerationFinishReason) throws {
++        guard !selectedTokenIDs.isEmpty, selectedTokenIDs.count <= request.outputCount,
++              selectedTokenIDs.allSatisfy({ (0..<request.profile.vocabularySize).contains($0) }),
++              !selectedTokenIDs.dropLast().contains(where: request.stopTokenIDs.contains),
++              completedFrames == request.prefillFrameCount + selectedTokenIDs.count - 1 else {
++            throw ProbeError("Diagnostic completion differs from selected generation history")
++        }
++        var schedule = QwenLayerStageGenerationSchedule(request: request)
++        for sequence in 0..<completedFrames { try schedule.commit(request.frame(sequence: sequence)) }
++        let last = selectedTokenIDs[selectedTokenIDs.count - 1]
++        if reason == .clientStop {
++            guard selectedTokenIDs.count < request.outputCount, !request.stopTokenIDs.contains(last) else {
++                throw ProbeError("Diagnostic client stop masks the generation EOS/output-limit policy")
++            }
++        }
++        try schedule.finish(reason, selectedTokenCount: selectedTokenIDs.count, lastTokenID: last)
++        guard schedule.committedTokens == committedTokens else {
++            throw ProbeError("Diagnostic completion differs from the committed native frontier")
++        }
++        finalFrame = try request.frame(sequence: completedFrames - 1)
++        self.committedTokens = committedTokens; selectedTokenCount = selectedTokenIDs.count; finalTokenID = last
++        selectedTokenIDsSHA256 = qwenGenerationTokenHash(selectedTokenIDs); self.reason = reason
++    }
++
++    func requireCapture(rank: Int, frame: QwenLayerStageFrame, frontier: Int,
++                        tokenID: Int, hasLogits: Bool) throws {
++        guard (0...1).contains(rank), frame == finalFrame, frontier == committedTokens,
++              tokenID == finalTokenID, hasLogits == (rank == 1) else {
++            throw ProbeError("Diagnostic final capture differs from rank or completion")
++        }
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationDiagnosticEvidence.swift
+@@ -0,0 +1,43 @@
++import Foundation
++
++/// CPU values only, emitted after the existing bilateral retirement. State is
++/// the complete local stage; its hash is not a full-model state hash. Join both
++/// disjoint global entry sets before comparing with the independent reference.
++struct QwenGenerationDiagnosticEvidence: Encodable {
++    let schema = "qwen_stage_generation_final_diagnostic_v1"
++    let execution: QwenLayerStageGenerationResult
++    let agreement: QwenLayerStageGenerationAgreement.Descriptor
++    let requestFingerprint: String
++    let profileFingerprint: String
++    let rank: Int
++    let sourceLayerStart: Int
++    let sourceLayerEnd: Int
++    let finalFrame: QwenLayerStageFrame
++    let stateEntries: [QwenRecordedState.Entry]
++    let logicalStateBytes: Int
++    let stageStateSHA256: String
++    /// Present only on rank1. Includes the complete Float32 values and the
++    /// original native logical-byte hash; the private original Data is omitted.
++    let finalLogits: QwenRecordedLogits?
++    let captureBudget: QwenGenerationDiagnosticBudget
++    let resourceObservationCount: Int
++    let minimumObservedActualFreeBytes: Int
++    let minimumObservedAllocatorLimitBytes: Int
++    let actualAllocatorBoundsUsed = true
++    let correctnessOnly = true
++    let throughputMeasurementValid = false
++    let stateBytesIncluded = false
++    let intermediateLogitRowsCompared = false
++    let independentNumericalComparisonPerformed = false
++    let physicalTransferQualified = false
++
++    /// Publication is separately bounded after native retirement. The encode
++    /// cap limits output bytes; it is not a serialization allocation bound.
++    func encoded() throws -> Data {
++        let bytes = try canonicalJSONData(self)
++        guard !bytes.isEmpty, bytes.count <= 16 * 1024 * 1024 else {
++            throw ProbeError("Generation final diagnostic exceeds its output cap")
++        }
++        return bytes
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationDiagnosticResources.swift
+@@ -0,0 +1,68 @@
++import Foundation
++import MLX
++
++/// Private live gate, constructed only by the explicit diagnostic entry. It
++/// observes the same OS/power/thermal policy as the resident owner and uses
++/// actual per-array allocator/max-buffer bounds, never caller-supplied bounds.
++final class QwenGenerationDiagnosticResources {
++    let budget: QwenGenerationDiagnosticBudget
++    private(set) var observationCount = 0
++    private(set) var minimumActualFreeBytes = Int.max
++    private(set) var minimumAllocatorLimitBytes = Int.max
++    private var previousCheck: UInt64?
++
++    init(loaded: LoadedQwenLayerStage, profile: QwenRegisteredDenseModelProfile,
++         plan: QwenLayerStagePlan, request: QwenLayerStageGenerationRequest, rank: Int,
++         requestAllowance: QwenResidentRequestAllowance) throws {
++        guard (0...1).contains(rank), loaded.stageIndex == rank, plan.stages.count == 2,
++              profile.configuration == plan.originalConfiguration,
++              profile.configurationSHA256 == loaded.receipt.sourceConfigurationSHA256,
++              profile.artifactAggregateSHA256 == loaded.receipt.verifiedAggregateSHA256,
++              loaded.plan.fingerprint == plan.fingerprint, loaded.receipt.planSHA256 == plan.fingerprint,
++              loaded.receipt.stagePlanSHA256 == plan.stages[rank].fingerprint,
++              profile.vocabularySize == request.profile.vocabularySize,
++              profile.geometry.hiddenSize == request.profile.hiddenSize,
++              profile.requiredNativeDType == request.profile.activationDType,
++              profile.requiredNativeDType == String(describing: loaded.activationDType),
++              loaded.receipt.bf16ConversionEnabled == profile.requiredBF16ConversionPolicy else {
++            throw ProbeError("Diagnostic registered profile differs from the loaded generation source")
++        }
++        let rebuilt = try profile.makePlanningPlan(stageCut: plan.stages[0].sourceRange.upperBound)
++        guard rebuilt.fingerprint == plan.fingerprint else { throw ProbeError("Diagnostic profile Plan differs from loaded cut") }
++        // A byte-only allowance is not a permit: rederive the exact request/rank
++        // with the actual allocator, then require the owner's reservation to match.
++        let actual = try QwenResidentRequestAllowance.derive(profile: profile, plan: plan, rank: rank,
++            maximumTokens: request.maximumTokens, chunkSize: min(request.chunkSize, request.promptCount),
++            bound: QwenResidentResourceEnvironment.allocationBound)
++        guard actual.stateBytes == requestAllowance.stateBytes,
++              actual.fusionBytes == requestAllowance.fusionBytes,
++              actual.reservedBytes == requestAllowance.reservedBytes else {
++            throw ProbeError("Diagnostic allowance differs from the actual reserved generation geometry")
++        }
++        // Preserve the base in full, including its largest host state-copy component.
++        budget = try .derive(rank: rank, vocabularySize: request.profile.vocabularySize,
++            activationDType: request.profile.activationDType,
++            requestReservedBytes: actual.reservedBytes,
++            bound: QwenResidentResourceEnvironment.allocationBound)
++        try requireLive(force: true)
++    }
++
++    func requireLive(force: Bool = false) throws {
++        let now = DispatchTime.now().uptimeNanoseconds
++        if !force, let previousCheck, now >= previousCheck, now - previousCheck < 250_000_000 { return }
++        try QwenResidentResourceEnvironment.require()
++        let os = try QwenDenseStageLoadResources.requireInitial()
++        let native = QwenDenseStageLoadResources.observeNative()
++        let free = try budget.requiredActualFreeBytes(minimum: QwenDenseStageLoadPolicy.minimumActualFreeBytes,
++            headroom: QwenDenseStageLoadPolicy.loadingHeadroomBytes)
++        let allocator = try budget.requiredAllocatorBytes(active: native.activeBytes, cache: native.cacheBytes,
++            headroom: QwenDenseStageLoadPolicy.allocatorHeadroomBytes)
++        guard os.actualFreeBytes >= free, native.allocatorLimitBytes >= allocator else {
++            throw ProbeError("Generation diagnostics exceed current actual-free or allocator limits")
++        }
++        observationCount = try QwenLongPrefillCheckedBytes.sum([observationCount, 1])
++        minimumActualFreeBytes = min(minimumActualFreeBytes, os.actualFreeBytes)
++        minimumAllocatorLimitBytes = min(minimumAllocatorLimitBytes, native.allocatorLimitBytes)
++        previousCheck = now
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift
+@@ -14,82 +14,149 @@
+     collective: Collective, onCommittedToken: (Int) throws -> Bool,
+     check: () throws -> Void
+ ) throws -> QwenLayerStageGenerationResult {
++    try runQwenLayerStageGenerationCore(loaded: loaded, plan: plan, agreement: agreement,
++        collective: collective, diagnostics: nil, onCommittedToken: onCommittedToken, check: check)
++}
++
++/// Explicit diagnostic entry for an already owned reservation. The owner must
++/// pass the exact allowance derived for that reservation and retain all existing
++/// build/source/arithmetic, deadline and cancellation checks. There is no default
++/// diagnostic mode or permissive resource callback. Do not time this as serving.
++func recordQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
++    profile: QwenRegisteredDenseModelProfile,
++    plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement,
++    collective: Collective, requestAllowance: QwenResidentRequestAllowance,
++    onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
++) throws -> QwenGenerationDiagnosticEvidence {
++    let resources = try MLX.withError { nativeError in
++        do {
++            try check(); try nativeError.check()
++            let value = try QwenGenerationDiagnosticResources(loaded: loaded, profile: profile,
++                plan: plan, request: agreement.request,
++                rank: collective.rank, requestAllowance: requestAllowance)
++            try nativeError.check(); try check(); try nativeError.check()
++            return value
++        } catch {
++            try nativeError.check()
++            throw error
++        }
++    }
++    let capture = QwenGenerationDiagnosticCapture(request: agreement.request,
++        rank: collective.rank, resources: resources)
++    defer { capture.discard() }
++    let result = try runQwenLayerStageGenerationCore(loaded: loaded, plan: plan, agreement: agreement,
++        collective: collective, diagnostics: capture, onCommittedToken: onCommittedToken, check: check)
++    // The core has validated both retirement acknowledgements and its final
++    // native error check. Only CPU values are assembled outside that scope.
++    return try capture.finish(execution: result, agreement: agreement, stage: plan.stages[collective.rank])
++}
++
++private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
++    plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement,
++    collective: Collective, diagnostics: QwenGenerationDiagnosticCapture?,
++    onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
++) throws -> QwenLayerStageGenerationResult {
+     try MLX.withError { nativeError in
+-        func checked() throws { try nativeError.check(); try check(); try nativeError.check() }
+-        try requireGenerationSource(loaded: loaded, plan: plan, agreement: agreement, collective: collective)
+-        try checked()
+-        _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
+-            material: { .generation(agreementFingerprint: agreement.fingerprint) },
+-            disagreementMessage: "Generation membership/request/source readiness differs", check: checked)
+-        let control = QwenLayerStageGenerationControl(agreement: agreement)
+-        let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective)
+-        var session: QwenLayerStageSession?
++        func checked() throws {
++            try nativeError.check(); try check()
++            try diagnostics?.resources.requireLive()
++            try nativeError.check()
++        }
+         do {
+-            let owned = try QwenLayerStageSession(stage: loaded, plan: plan, generationRequest: agreement.request)
+-            session = owned
+-            var selectedTokens = [Int]()
+-            var finalDecision: QwenLayerStageGenerationDecisionPacket?
+-            while control.phase == .frame {
+-                try autoreleasepool {
+-                    try checked()
+-                    let expected = try control.beginFrame()
+-                    let (packet, row) = try runGenerationFrame(session: owned, control: control,
+-                        transport: transport, expected: expected, check: checked)
+-                    guard control.phase == .token else { return }
+-                    let token = try agreeGenerationToken(row: row, boundary: packet, control: control,
+-                        transport: transport, check: checked)
+-                    let selected = try control.takeCommittedToken()
+-                    selectedTokens.append(selected)
+-                    // The scalar agreement is complete. No next forward can run
+-                    // while this callback is active or before decision agreement.
+-                    let decision: QwenLayerStageGenerationDecisionPacket
+-                    if collective.rank == 0 {
++            try requireGenerationSource(loaded: loaded, plan: plan, agreement: agreement, collective: collective)
++            try checked()
++            _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
++                material: { .generation(agreementFingerprint: agreement.fingerprint) },
++                disagreementMessage: "Generation membership/request/source readiness differs", check: checked)
++            let control = QwenLayerStageGenerationControl(agreement: agreement)
++            let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective)
++            var session: QwenLayerStageSession?
++            do {
++                let owned = try QwenLayerStageSession(stage: loaded, plan: plan, generationRequest: agreement.request)
++                session = owned
++                var selectedTokens = [Int]()
++                var finalDecision: QwenLayerStageGenerationDecisionPacket?
++                while control.phase == .frame {
++                    try autoreleasepool {
+                         try checked()
+-                        let keepGoing = try onCommittedToken(selected)
+-                        try checked()
+-                        decision = try control.decide(continueRequested: keepGoing)
+-                        try control.acknowledgeDecision(rank: 0, packet: decision)
+-                        try transport.sendDecision(decision, check: checked)
+-                        try control.acknowledgeDecision(rank: 1, packet: decision)
+-                    } else {
+-                        decision = try transport.receiveDecision(token: token, check: checked)
+-                        let local = try control.decide(continueRequested: decision.content.decision == .proceed)
+-                        guard local.content == decision.content else {
+-                            throw ProbeError("Generation owner decision differs from local token/stop policy")
++                        let expected = try control.beginFrame()
++                        let (packet, row) = try runGenerationFrame(session: owned, control: control,
++                            transport: transport, expected: expected, check: checked)
++                        guard control.phase == .token else { return }
++                        let token = try agreeGenerationToken(row: row, boundary: packet, control: control,
++                            transport: transport, check: checked)
++                        let selected = try control.takeCommittedToken()
++                        selectedTokens.append(selected)
++                        // The scalar agreement is complete. No next forward can run
++                        // while this callback is active or before decision agreement.
++                        let decision: QwenLayerStageGenerationDecisionPacket
++                        if collective.rank == 0 {
++                            try checked()
++                            let keepGoing = try onCommittedToken(selected)
++                            try checked()
++                            decision = try control.decide(continueRequested: keepGoing)
++                            try control.acknowledgeDecision(rank: 0, packet: decision)
++                            try transport.sendDecision(decision, check: checked)
++                            try control.acknowledgeDecision(rank: 1, packet: decision)
++                        } else {
++                            decision = try transport.receiveDecision(token: token, check: checked)
++                            let local = try control.decide(continueRequested: decision.content.decision == .proceed)
++                            guard local.content == decision.content else {
++                                throw ProbeError("Generation owner decision differs from local token/stop policy")
++                            }
++                            try control.acknowledgeDecision(rank: 0, packet: decision)
++                            try control.acknowledgeDecision(rank: 1, packet: decision)
++                            try transport.acknowledgeDecision(decision, check: checked)
+                         }
+-                        try control.acknowledgeDecision(rank: 0, packet: decision)
+-                        try control.acknowledgeDecision(rank: 1, packet: decision)
+-                        try transport.acknowledgeDecision(decision, check: checked)
++                        if control.phase == .retiring {
++                            finalDecision = decision
++                            // Both decision ACKs are complete, and rank1 still owns
++                            // the final native row inside this frame's pool.
++                            try diagnostics?.captureFinalRow(row, frame: expected.frame,
++                                tokenID: selected, check: checked)
++                        }
+                     }
+-                    if control.phase == .retiring { finalDecision = decision }
+                 }
++                guard control.phase == .retiring, !control.isFailed,
++                      let reason = control.finishReason, let lastToken = control.lastTokenID,
++                      let finalDecision, selectedTokens.count == control.selectedTokenCount else {
++                    throw ProbeError("Generation ended without agreed clean stop")
++                }
++                try checked()
++                // Snapshot committed local state before finishGeneration retires it.
++                // No extra collective is introduced: the existing retirement ACK
++                // exchange cannot complete until both local captures have returned.
++                try diagnostics?.captureState(session: owned, stage: plan.stages[collective.rank],
++                    selectedTokenIDs: selectedTokens, completedFrames: control.completedFrames,
++                    committedTokens: control.committedTokens, reason: reason, check: checked)
++                try owned.finishGeneration(reason, selectedTokenCount: control.selectedTokenCount, lastTokenID: lastToken)
++                guard owned.isClosed, !owned.isFailed else { throw ProbeError("Generation native state failed retirement") }
++                try control.acknowledgeRetirement(rank: collective.rank, disposition: .retired)
++                try transport.exchangeRetirement(decision: finalDecision, check: checked)
++                try control.acknowledgeRetirement(rank: 1 - collective.rank, disposition: .retired)
++                try checked()
++                guard control.isRetired, !control.isFailed, !transport.isFailed else {
++                    throw ProbeError("Generation both-rank retirement is incomplete")
++                }
++                return .init(agreementFingerprint: agreement.fingerprint,
++                    membershipEpoch: agreement.descriptor.membershipEpoch, identity: owned.identity,
++                    selectedTokenIDs: selectedTokens, tokenChainSHA256: control.tokenChainSHA256,
++                    completedFrames: control.completedFrames, committedTokens: control.committedTokens,
++                    finishReason: reason)
++            } catch {
++                // Prefer a recorded native fault before invoking any cleanup. The
++                // normal withError epilogue is skipped when its body throws Swift.
++                var primary: Error = error
++                do { try nativeError.check() } catch { primary = error }
++                diagnostics?.discard()
++                control.cancel(); transport.retire()
++                do { try session?.cancel() }
++                catch { throw ProbeError("Generation failed (\(primary)); local retirement also failed (\(error))") }
++                throw primary
+             }
+-            guard control.phase == .retiring, !control.isFailed,
+-                  let reason = control.finishReason, let lastToken = control.lastTokenID,
+-                  let finalDecision, selectedTokens.count == control.selectedTokenCount else {
+-                throw ProbeError("Generation ended without agreed clean stop")
+-            }
+-            try checked()
+-            try owned.finishGeneration(reason, selectedTokenCount: control.selectedTokenCount, lastTokenID: lastToken)
+-            guard owned.isClosed, !owned.isFailed else { throw ProbeError("Generation native state failed retirement") }
+-            try control.acknowledgeRetirement(rank: collective.rank, disposition: .retired)
+-            try transport.exchangeRetirement(decision: finalDecision, check: checked)
+-            try control.acknowledgeRetirement(rank: 1 - collective.rank, disposition: .retired)
+-            try checked()
+-            guard control.isRetired, !control.isFailed, !transport.isFailed else {
+-                throw ProbeError("Generation both-rank retirement is incomplete")
+-            }
+-            return .init(agreementFingerprint: agreement.fingerprint,
+-                membershipEpoch: agreement.descriptor.membershipEpoch, identity: owned.identity,
+-                selectedTokenIDs: selectedTokens, tokenChainSHA256: control.tokenChainSHA256,
+-                completedFrames: control.completedFrames, committedTokens: control.committedTokens,
+-                finishReason: reason)
+         } catch {
+-            let primary = error
+-            control.cancel(); transport.retire()
+-            do { try session?.cancel(); try nativeError.check() }
+-            catch { throw ProbeError("Generation failed (\(primary)); local retirement also failed (\(error))") }
+-            throw primary
++            try nativeError.check()
++            throw error
+         }
+     }
+ }
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageRankStateCapture.swift
+@@ -0,0 +1,47 @@
++import Foundation
++
++/// Validate only this stage's complete state coverage, including its explicit
++/// local/global map. This does not assert equality with a baseline or other rank.
++struct QwenLayerStageRankStateCapture {
++    let entries: [QwenRecordedState.Entry]
++    let logicalBytes: Int
++    let fingerprint: String
++
++    init(snapshot: CBv2OwnedStateSnapshot, stage: QwenLayerStagePlan.Stage,
++         committedTokens: Int) throws {
++        guard committedTokens > 0, snapshot.committedTokens == committedTokens,
++              snapshot.entries.allSatisfy({
++                  stage.layers.indices.contains($0.localLayerIndex)
++                      && stage.layers[$0.localLayerIndex].localIndex == $0.localLayerIndex
++                      && stage.layers[$0.localLayerIndex].globalIndex == $0.globalLayerIndex
++              }) else { throw ProbeError("Rank snapshot differs from its local/global layer map or token frontier") }
++        var expected = Set<String>()
++        for layer in stage.layers {
++            let components: [String]
++            switch layer.kind {
++            case "full_attention": components = ["kv.keys", "kv.values", "kv.position_offsets"]
++            case "linear_attention": components = ["conv", "ssm"]
++            default: throw ProbeError("Rank snapshot has an unsupported layer policy")
++            }
++            for component in components { expected.insert("\(layer.globalIndex)|\(component)") }
++        }
++        let entries = snapshot.entries.map {
++            QwenRecordedState.Entry(globalLayerIndex: $0.globalLayerIndex, component: $0.component,
++                shape: $0.shape, dtype: $0.dtype, byteCount: $0.byteCount, sha256: $0.sha256)
++        }.sorted { ($0.globalLayerIndex, $0.component) < ($1.globalLayerIndex, $1.component) }
++        guard entries.count == expected.count, Set(entries.map(\.key)) == expected,
++              entries.allSatisfy({ $0.validLogicalStorage && qwenStageWireIsSHA256($0.sha256) }) else {
++            throw ProbeError("Rank snapshot lacks complete disjoint native state components")
++        }
++        var logicalBytes = 0
++        for entry in entries {
++            let next = logicalBytes.addingReportingOverflow(entry.byteCount)
++            guard !next.overflow else { throw ProbeError("Rank snapshot logical byte total overflow") }
++            logicalBytes = next.partialValue
++        }
++        let fingerprint = sha256(Data((["cbv2-owned-state-v1", "tokens=\(committedTokens)"]
++            + entries.map(\.identity)).joined(separator: "\n").utf8))
++        guard fingerprint == snapshot.fingerprint else { throw ProbeError("Rank snapshot capture changed its state identity") }
++        self.entries = entries; self.logicalBytes = logicalBytes; self.fingerprint = fingerprint
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageRecordedLogits.swift
+@@ -0,0 +1,62 @@
++import Foundation
++import MLX
++
++/// Encoded values are finite Float32 conversions of the entire vocabulary row.
++/// Exact comparison uses the original logical bytes, including signed zeros.
++struct QwenRecordedLogitValues: Encodable {
++    let shape: [Int]
++    let dtype: String
++    let byteCount: Int
++    let logicalBytesSHA256: String
++    let values: [Float]
++}
++
++/// CPU storage only. No MLXArray, no-copy Data, or lazy graph escapes capture.
++/// The native Data remains private and is deliberately omitted from encoding.
++struct QwenRecordedLogits: Encodable {
++    let record: QwenRecordedLogitValues
++    private let logicalBytes: Data
++
++    init(_ array: MLXArray, vocabularySize: Int, check: () throws -> Void) throws {
++        guard (1...262_144).contains(vocabularySize), array.shape == [1, vocabularySize],
++              array.size == vocabularySize, [.float16, .bfloat16, .float32].contains(array.dtype),
++              array.nbytes == vocabularySize * array.dtype.size else {
++            throw ProbeError("Recorded logits require one complete bounded native vocabulary row")
++        }
++        // Caller's MLX scope owns fault handling around these native reads.
++        let bytes = array.asData(access: .copy).data
++        try check()
++        guard bytes.count == array.nbytes else { throw ProbeError("Recorded logit byte count differs") }
++        let floating = array.asType(.float32)
++        eval(floating)
++        try check()
++        let values = floating.asArray(Float.self)
++        try check()
++        guard values.count == vocabularySize, values.allSatisfy(\.isFinite) else {
++            throw ProbeError("Recorded full-vocabulary logits contain nonfinite or missing values")
++        }
++        self.logicalBytes = bytes
++        self.record = .init(shape: array.shape, dtype: String(describing: array.dtype),
++            byteCount: bytes.count, logicalBytesSHA256: sha256(bytes), values: values)
++    }
++
++    func requireExact(_ candidate: QwenRecordedLogits, frontier: Int) throws {
++        guard record.shape == candidate.record.shape, record.dtype == candidate.record.dtype,
++              record.byteCount == candidate.record.byteCount,
++              record.logicalBytesSHA256 == candidate.record.logicalBytesSHA256,
++              logicalBytes == candidate.logicalBytes else {
++            throw ProbeError("Recorded native full-vocabulary logits differ at frontier \(frontier)")
++        }
++    }
++
++    func encode(to encoder: Encoder) throws { try record.encode(to: encoder) }
++
++    /// Compare a final-only observation without converting its whole vocabulary
++    /// to Float32 JSON. Both values retain independently copied CPU bytes.
++    func requireExactNativeBytes(shape: [Int], dtype: String, bytes: Data, frontier: Int) throws {
++        guard record.shape == shape, record.dtype == dtype, record.byteCount == bytes.count,
++              record.logicalBytesSHA256 == sha256(bytes), logicalBytes == bytes else {
++            throw ProbeError("Recorded native full-vocabulary logits differ at frontier \(frontier)")
++        }
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenRecordedState.swift
+@@ -0,0 +1,82 @@
++import Foundation
++
++struct QwenRecordedState: Encodable, Equatable {
++    struct Entry: Encodable, Equatable {
++        let globalLayerIndex: Int
++        let component: String
++        let shape: [Int]
++        let dtype: String
++        let byteCount: Int
++        let sha256: String
++
++        var key: String { "\(globalLayerIndex)|\(component)" }
++        var identity: String { "\(key)|\(shape)|\(dtype)|\(byteCount)|\(sha256)" }
++
++        var validLogicalStorage: Bool {
++            // The admitted kernel-size-one model has no convolution history.
++            // Its public CBv2 spec explicitly permits [1,0,channels].
++            if component == "conv", shape.count == 3, shape[0] == 1,
++               shape[1] == 0, shape[2] > 0 { return byteCount == 0 }
++            return !shape.isEmpty && shape.allSatisfy({ $0 > 0 }) && byteCount > 0
++        }
++    }
++    let committedTokens: Int
++    let entries: [Entry]
++    let logicalByteCount: Int
++    let fingerprint: String
++
++    /// Both a single full-model snapshot and the disjoint stage snapshots use
++    /// the same global key space. Local indices intentionally do not compare.
++    init(snapshots: [CBv2OwnedStateSnapshot], plan: QwenLayerStagePlan,
++         committedTokens: Int) throws {
++        guard committedTokens > 0, !snapshots.isEmpty,
++              snapshots.allSatisfy({ $0.committedTokens == committedTokens }) else {
++            throw ProbeError("Recorded state snapshots have different token frontiers")
++        }
++        var expected = Set<String>()
++        for layer in plan.stages.flatMap(\.layers) {
++            let components: [String]
++            switch layer.kind {
++            case "full_attention": components = ["kv.keys", "kv.values", "kv.position_offsets"]
++            case "linear_attention": components = ["conv", "ssm"]
++            default: throw ProbeError("Recorded state has an unsupported layer policy")
++            }
++            for component in components { expected.insert("\(layer.globalIndex)|\(component)") }
++        }
++        let entries = snapshots.flatMap(\.entries).map {
++            Entry(globalLayerIndex: $0.globalLayerIndex, component: $0.component,
++                shape: $0.shape, dtype: $0.dtype, byteCount: $0.byteCount, sha256: $0.sha256)
++        }.sorted { ($0.globalLayerIndex, $0.component) < ($1.globalLayerIndex, $1.component) }
++        guard entries.count == expected.count, Set(entries.map(\.key)) == expected,
++              entries.allSatisfy({ $0.validLogicalStorage && $0.sha256.count == 64 }) else {
++            throw ProbeError("Recorded state lacks complete, disjoint global layer/component coverage")
++        }
++        var bytes = 0
++        for entry in entries {
++            let addition = bytes.addingReportingOverflow(entry.byteCount)
++            guard !addition.overflow else { throw ProbeError("Recorded state byte total overflowed") }
++            bytes = addition.partialValue
++        }
++        self.committedTokens = committedTokens; self.entries = entries; self.logicalByteCount = bytes
++        self.fingerprint = sha256(Data((["cbv2-owned-state-v1", "tokens=\(committedTokens)"]
++            + entries.map(\.identity)).joined(separator: "\n").utf8))
++        // Preserve the established baseline snapshot fingerprint convention.
++        if snapshots.count == 1, snapshots[0].fingerprint != fingerprint {
++            throw ProbeError("Recorded state changed its original snapshot identity")
++        }
++    }
++
++    func requireExact(_ candidate: QwenRecordedState) throws {
++        guard committedTokens == candidate.committedTokens,
++              entries.count == candidate.entries.count else {
++            throw ProbeError("Recorded state frontier or entry count differs")
++        }
++        for (original, other) in zip(entries, candidate.entries) where original != other {
++            throw ProbeError("Recorded state metadata or digest differs at global layer \(original.globalLayerIndex), \(original.component), frontier \(committedTokens)")
++        }
++        guard logicalByteCount == candidate.logicalByteCount, fingerprint == candidate.fingerprint else {
++            throw ProbeError("Recorded complete state identity differs at frontier \(committedTokens)")
++        }
++    }
++}
++
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRecording.swift
+@@ -0,0 +1,82 @@
++import Foundation
++
++/// Benchmark-only CPU result. Encoding completes before the resident owner
++/// restores request capacity. The caller still owns durable publication and
++/// independent numerical comparison; these diagnostic timings are not TTFT.
++@_spi(Benchmark) public struct QwenResidentRecordingCompletion: Sendable {
++    public let completion: QwenResidentGenerationCompletion
++    public let encodedEvidence: Data
++}
++
++enum QwenResidentRequestMode: Equatable {
++    case serving, recording
++
++    func require(_ expected: Self) throws {
++        guard self == expected else { throw ProbeError("Resident start mode differs from its reservation") }
++    }
++}
++
++/// Additional named capture storage, charged before a recording request starts.
++/// The original allowance remains separate for the driver's source/request
++/// rederivation. Encoding/metadata overhead is not a whole-process peak bound.
++struct QwenResidentRecordingCharge {
++    let base: QwenResidentRequestAllowance
++    let capture: QwenGenerationDiagnosticBudget
++    let reservedBytes: Int
++
++    static func derive(base: QwenResidentRequestAllowance, rank: Int, vocabularySize: Int,
++                       activationDType: String, bound: (Int) throws -> Int) throws -> Self {
++        guard base.stateBytes > 0, base.fusionBytes >= 0,
++              base.reservedBytes == (try QwenLongPrefillCheckedBytes.sum([base.stateBytes, base.fusionBytes])) else {
++            throw ProbeError("Recording charge requires a consistent original request allowance")
++        }
++        let capture = try QwenGenerationDiagnosticBudget.derive(rank: rank, vocabularySize: vocabularySize,
++            activationDType: activationDType, requestReservedBytes: base.reservedBytes, bound: bound)
++        return .init(base: base, capture: capture, reservedBytes: try QwenLongPrefillCheckedBytes.sum([
++            base.reservedBytes, capture.extraHostBytes, capture.extraNativeBytes,
++        ]))
++    }
++
++    func requireCapacity(ownerLimit: Int, readinessLimit: Int) throws {
++        guard ownerLimit > 0, readinessLimit > 0,
++              reservedBytes <= ownerLimit, reservedBytes <= readinessLimit else {
++            throw ProbeError("Recording reservation exceeds its combined capture capacity ceiling")
++        }
++    }
++
++    func requireCapture(_ actual: QwenGenerationDiagnosticBudget) throws {
++        guard actual.rank == capture.rank, actual.vocabularySize == capture.vocabularySize,
++              actual.activationDType == capture.activationDType,
++              actual.logicalRowBytes == capture.logicalRowBytes, actual.float32RowBytes == capture.float32RowBytes,
++              actual.extraHostBytes == capture.extraHostBytes, actual.extraNativeBytes == capture.extraNativeBytes,
++              actual.originalRequestReservedBytes == base.reservedBytes else {
++            throw ProbeError("Diagnostic capture budget differs from the charged reservation")
++        }
++    }
++}
++
++/// Shared serving/recording completion order. The private native body returns
++/// only CPU values after retirement; the lifecycle itself cannot prove that.
++/// A preparation/encoding failure withdraws capacity even after local scope
++/// retirement, and preserves the original error for the outer owner's fence.
++enum QwenResidentRequestPublication {
++    static func run<NativeValue, Output>(control: QwenResidentControl,
++        lifecycle: QwenLayerStageResidentLifecycle,
++        identity: QwenLayerStageResidentRequestIdentity, deadline: UInt64,
++        body: () throws -> NativeValue, prepare: (NativeValue) throws -> Output
++    ) throws -> Output {
++        try control.start(identity.requestID)
++        do {
++            try control.check(deadline: deadline)
++            let value = try lifecycle.withRequest(identity: identity, body)
++            try control.check(deadline: deadline)
++            let output = try prepare(value)
++            try control.check(deadline: deadline)
++            try control.completed(identity.requestID)
++            return output
++        } catch {
++            control.fail()
++            throw error
++        }
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift
+@@ -34,7 +34,14 @@
+     private let lifecycle: QwenLayerStageResidentLifecycle
+     private var stage: QwenResidentLoadedStage?
+     private weak var model: Module?
+-    private var reservation: (request: QwenLayerStageGenerationRequest, allowance: QwenResidentRequestAllowance, deadline: UInt64)?
++    private struct Reservation {
++        let request: QwenLayerStageGenerationRequest
++        let allowance: QwenResidentRequestAllowance
++        let deadline: UInt64
++        let mode: QwenResidentRequestMode
++        let recordingCharge: QwenResidentRecordingCharge?
++    }
++    private var reservation: Reservation?
+     private var processLeaseOwned = true
+ 
+     init(admission: QwenResidentAdmission, control: QwenResidentControl, collective: Collective,
+@@ -51,9 +58,46 @@
+         return baseReady
+     }
+ 
++    /// Named local recording ceiling, available only after the existing bilateral
++    /// load and while idle. This query allocates no request state and does not
++    /// replace live admission at reserve/start or the enclosing process fence.
++    @_spi(Benchmark) public func recordingReadiness() throws -> ClusterWorkerReady? {
++        guard operation.try() else { throw ProbeError("Resident native operation is already active") }
++        defer { operation.unlock() }
++        guard control.available, (try? control.check()) != nil else { return nil }
++        let capacity = try maximumRecordingCharge().reservedBytes
++        try control.check()
++        return .init(identity: baseReady.identity, rank: baseReady.rank, profile: baseReady.profile,
++            executionPlanSHA256: baseReady.executionPlanSHA256, requestCapacityBytes: capacity)
++    }
++
++    private func maximumRecordingCharge() throws -> QwenResidentRecordingCharge {
++        guard let stage else { throw ProbeError("Resident model already released") }
++        let base = try QwenResidentRequestAllowance.derive(profile: stage.profile, plan: admission.plan,
++            rank: collective.rank, maximumTokens: admission.profile.maximumContextTokens,
++            chunkSize: admission.profile.maximumChunkTokens, bound: QwenResidentResourceEnvironment.allocationBound)
++        guard base.reservedBytes <= baseReady.requestCapacityBytes else {
++            throw ProbeError("Recording maximum differs from the admitted resident base ceiling")
++        }
++        return try .derive(base: base, rank: collective.rank, vocabularySize: admission.profile.vocabularySize,
++            activationDType: admission.profile.activationDType, bound: QwenResidentResourceEnvironment.allocationBound)
++    }
++
+     /// Metadata/native resource reservation only; no request state or forward.
+     /// Returned bytes are this rank's named allowance, not combined peer RAM.
+     public func reserve(requestID: UUID, request value: ClusterWorkerReservation) throws -> Int {
++        try reserve(requestID: requestID, request: value, mode: .serving)
++    }
++
++    /// Charges the original state/fusion allowance plus both named host/native
++    /// capture terms. Both workers must use recording reservations; a serving
++    /// reservation cannot be upgraded at start or by a live resource check.
++    @_spi(Benchmark) public func reserveRecording(requestID: UUID, request value: ClusterWorkerReservation) throws -> Int {
++        try reserve(requestID: requestID, request: value, mode: .recording)
++    }
++
++    private func reserve(requestID: UUID, request value: ClusterWorkerReservation,
++                         mode: QwenResidentRequestMode) throws -> Int {
+         guard operation.try() else { throw ProbeError("Resident native operation is already active") }
+         defer { operation.unlock() }
+         let request = try admission.request(value, id: requestID, now: DispatchTime.now().uptimeNanoseconds)
+@@ -63,13 +107,30 @@
+             let allowance = try QwenResidentRequestAllowance.derive(profile: stage.profile,
+                 plan: admission.plan, rank: collective.rank, maximumTokens: request.maximumTokens,
+                 chunkSize: min(request.chunkSize, request.promptCount), bound: QwenResidentResourceEnvironment.allocationBound)
+-            guard allowance.reservedBytes <= value.capacityLimitBytes,
+-                  allowance.reservedBytes <= baseReady.requestCapacityBytes else {
+-                throw ProbeError("Resident reservation exceeds its additional owner capacity ceiling")
++            let charge: QwenResidentRecordingCharge?
++            if mode == .recording {
++                let recording = try QwenResidentRecordingCharge.derive(base: allowance, rank: collective.rank,
++                    vocabularySize: request.profile.vocabularySize, activationDType: request.profile.activationDType,
++                    bound: QwenResidentResourceEnvironment.allocationBound)
++                try recording.requireCapacity(ownerLimit: value.capacityLimitBytes,
++                    readinessLimit: maximumRecordingCharge().reservedBytes)
++                // Reuse the actual diagnostic source/request/allocator binding
++                // and live policy; no caller-supplied budget grants permission.
++                let resources = try QwenGenerationDiagnosticResources(loaded: stage.loaded, profile: stage.profile,
++                    plan: admission.plan, request: request, rank: collective.rank, requestAllowance: allowance)
++                try recording.requireCapture(resources.budget)
++                charge = recording
++            } else {
++                guard allowance.reservedBytes <= value.capacityLimitBytes,
++                      allowance.reservedBytes <= baseReady.requestCapacityBytes else {
++                    throw ProbeError("Resident reservation exceeds its additional owner capacity ceiling")
++                }
++                charge = nil
+             }
+             try allowance.requireLive(); try control.check(deadline: value.deadlineUptimeNanoseconds)
+-            reservation = (request, allowance, value.deadlineUptimeNanoseconds)
+-            return allowance.reservedBytes
++            reservation = .init(request: request, allowance: allowance, deadline: value.deadlineUptimeNanoseconds,
++                mode: mode, recordingCharge: charge)
++            return charge?.reservedBytes ?? allowance.reservedBytes
+         } catch { control.fail(); throw error }
+     }
+ 
+@@ -77,15 +138,34 @@
+     /// False requests agreed clean stop; a thrown callback is abnormal failure.
+     public func start(requestID: UUID,
+                       onCommittedToken: (Int, Int, Int) throws -> Bool) throws -> QwenResidentGenerationCompletion {
++        try execute(requestID: requestID, mode: .serving, onCommittedToken: onCommittedToken) { completion, _ in completion }
++    }
++
++    /// Returns bounded CPU evidence only after bilateral retirement, local
++    /// lifecycle exit and encoding. No tensors or model handle cross this SPI.
++    @_spi(Benchmark) public func startRecording(requestID: UUID,
++        onCommittedToken: (Int, Int, Int) throws -> Bool
++    ) throws -> QwenResidentRecordingCompletion {
++        try execute(requestID: requestID, mode: .recording, onCommittedToken: onCommittedToken) { completion, evidence in
++            guard let evidence else { throw ProbeError("Recording request returned no diagnostic evidence") }
++            return .init(completion: completion, encodedEvidence: try evidence.encoded())
++        }
++    }
++
++    private func execute<Output>(requestID: UUID, mode: QwenResidentRequestMode,
++        onCommittedToken: (Int, Int, Int) throws -> Bool,
++        prepare: (QwenResidentGenerationCompletion, QwenGenerationDiagnosticEvidence?) throws -> Output
++    ) throws -> Output {
+         guard operation.try() else { throw ProbeError("Resident native operation is already active") }
+         defer { operation.unlock() }
+         guard let reserved = reservation, reserved.request.requestID == requestID else {
+             throw ProbeError("Resident start has no matching reservation")
+         }
+-        try control.start(requestID)
++        try reserved.mode.require(mode)
+         do {
+-            let value = try lifecycle.withRequest(identity: .init(requestID: requestID, epoch: requestID,
+-                recordedRequestFingerprint: reserved.request.fingerprint)) {
++            let value = try QwenResidentRequestPublication.run(control: control, lifecycle: lifecycle,
++                identity: .init(requestID: requestID, epoch: requestID,
++                    recordedRequestFingerprint: reserved.request.fingerprint), deadline: reserved.deadline, body: {
+                 try autoreleasepool {
+                     guard let stage else { throw ProbeError("Resident model already released") }
+                     let receipt = stage.loaded.receipt
+@@ -109,24 +189,44 @@
+                         try control.check(deadline: reserved.deadline)
+                     }
+                     try check()
+-                    let result = try runQwenLayerStageGenerationRequest(loaded: stage.loaded,
+-                        plan: admission.plan, agreement: agreement, collective: collective,
+-                        onCommittedToken: { token in
+-                            let current = ordinal; ordinal += 1
+-                            return try onCommittedToken(current, token, reserved.request.promptCount + current)
+-                        }, check: check)
++                    func committedToken(_ token: Int) throws -> Bool {
++                        let current = ordinal; ordinal += 1
++                        return try onCommittedToken(current, token, reserved.request.promptCount + current)
++                    }
++                    let result: QwenLayerStageGenerationResult
++                    let evidence: QwenGenerationDiagnosticEvidence?
++                    if mode == .recording {
++                        guard let charge = reserved.recordingCharge else { throw ProbeError("Recording capture was not reserved") }
++                        let actual = try QwenResidentRecordingCharge.derive(base: reserved.allowance, rank: collective.rank,
++                            vocabularySize: reserved.request.profile.vocabularySize,
++                            activationDType: reserved.request.profile.activationDType,
++                            bound: QwenResidentResourceEnvironment.allocationBound)
++                        try charge.requireCapture(actual.capture)
++                        let recorded = try recordQwenLayerStageGenerationRequest(loaded: stage.loaded,
++                            profile: stage.profile, plan: admission.plan, agreement: agreement, collective: collective,
++                            requestAllowance: reserved.allowance, onCommittedToken: committedToken, check: check)
++                        try charge.requireCapture(recorded.captureBudget)
++                        evidence = recorded; result = recorded.execution
++                    } else {
++                        result = try runQwenLayerStageGenerationRequest(loaded: stage.loaded,
++                            plan: admission.plan, agreement: agreement, collective: collective,
++                            onCommittedToken: committedToken, check: check)
++                        evidence = nil
++                    }
+                     guard result.bothRequestStatesRetired,
+                           let reason = ClusterWorkerFinishReason(rawValue: result.finishReason.rawValue) else {
+                         throw ProbeError("Resident generation returned without clean bilateral retirement")
+                     }
+-                    return QwenResidentGenerationCompletion(requestID: requestID, finishReason: reason,
++                    let completion = QwenResidentGenerationCompletion(requestID: requestID, finishReason: reason,
+                         selectedTokenIDs: result.selectedTokenIDs, completedFrames: result.completedFrames,
+                         committedTokens: result.committedTokens, tokenChainSHA256: result.tokenChainSHA256,
+                         bothRequestStatesRetired: true)
++                    return (completion, evidence)
+                 }
+-            }
+-            // Publication occurs after the lifecycle and complete native scope.
+-            try control.completed(requestID); reservation = nil
++            }, prepare: { try prepare($0.0, $0.1) })
++            // Output is fully prepared and control completed before this slot
++            // is cleared. A thrown encode keeps the failed owner unavailable.
++            reservation = nil
+             return value
+         } catch { control.fail(); throw error }
+     }
+--- /dev/null
++++ b/libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/ResidentRecordingTests.swift
+@@ -0,0 +1,165 @@
++import Foundation
++import XCTest
++@testable import DarkbloomClusterRuntime
++
++final class ResidentRecordingTests: XCTestCase {
++    private enum Marker: Error { case allocator, capture, encoding }
++    private let base = QwenResidentRequestAllowance(stateBytes: 10_000, fusionBytes: 2_000, reservedBytes: 12_000)
++
++    private func charge(rank: Int = 1, padding: Int = 0) throws -> QwenResidentRecordingCharge {
++        try .derive(base: base, rank: rank, vocabularySize: 248_320,
++            activationDType: "bfloat16", bound: { $0 + padding })
++    }
++
++    func testAsymmetricCaptureChargeAndExactCeilings() throws {
++        var allocations: [Int] = []
++        let first = try QwenResidentRecordingCharge.derive(base: base, rank: 0, vocabularySize: 248_320,
++            activationDType: "bfloat16", bound: { allocations.append($0); return $0 })
++        XCTAssertTrue(allocations.isEmpty)
++        XCTAssertEqual(first.reservedBytes, 12_000)
++        let last = try QwenResidentRecordingCharge.derive(base: base, rank: 1, vocabularySize: 248_320,
++            activationDType: "bfloat16", bound: { allocations.append($0); return $0 + (allocations.count == 1 ? 17 : 31) })
++        XCTAssertEqual(allocations, [496_640, 993_280])
++        XCTAssertEqual(last.capture.extraHostBytes, 1_489_920)
++        XCTAssertEqual(last.capture.extraNativeBytes, 1_489_968)
++        XCTAssertEqual(last.reservedBytes, 2_991_888)
++        XCTAssertEqual(last.base.stateBytes, 10_000)
++        XCTAssertEqual(last.base.fusionBytes, 2_000)
++        XCTAssertEqual(last.capture.originalRequestReservedBytes, 12_000)
++        try last.requireCapacity(ownerLimit: 2_991_888, readinessLimit: 2_991_888)
++        XCTAssertThrowsError(try last.requireCapacity(ownerLimit: 2_991_887, readinessLimit: Int.max))
++        XCTAssertThrowsError(try last.requireCapacity(ownerLimit: Int.max, readinessLimit: 2_991_887))
++        XCTAssertThrowsError(try last.requireCapacity(ownerLimit: base.reservedBytes, readinessLimit: Int.max))
++        XCTAssertThrowsError(try first.requireCapacity(ownerLimit: 0, readinessLimit: Int.max))
++    }
++
++    func testChargeRejectsOverflowInvalidBaseAndPreservesAllocatorFailure() throws {
++        for invalid in [
++            QwenResidentRequestAllowance(stateBytes: 0, fusionBytes: 0, reservedBytes: 0),
++            .init(stateBytes: 10, fusionBytes: -1, reservedBytes: 9),
++            .init(stateBytes: 10, fusionBytes: 2, reservedBytes: 11),
++            .init(stateBytes: Int.max, fusionBytes: 1, reservedBytes: Int.max),
++        ] {
++            var calls = 0
++            XCTAssertThrowsError(try QwenResidentRecordingCharge.derive(base: invalid, rank: 1,
++                vocabularySize: 248_320, activationDType: "bfloat16", bound: { calls += 1; return $0 }))
++            XCTAssertEqual(calls, 0)
++        }
++        let extreme = QwenResidentRequestAllowance(stateBytes: Int.max - 1, fusionBytes: 1, reservedBytes: Int.max)
++        XCTAssertThrowsError(try QwenResidentRecordingCharge.derive(base: extreme, rank: 1,
++            vocabularySize: 248_320, activationDType: "bfloat16", bound: { $0 }))
++        XCTAssertThrowsError(try QwenResidentRecordingCharge.derive(base: base, rank: 1,
++            vocabularySize: 248_320, activationDType: "bfloat16", bound: { _ in throw Marker.allocator })) { error in
++            guard case Marker.allocator = error else { return XCTFail("Allocator error replaced") }
++        }
++        XCTAssertThrowsError(try QwenResidentRecordingCharge.derive(base: base, rank: 1,
++            vocabularySize: 248_320, activationDType: "bfloat16", bound: { $0 - 1 }))
++    }
++
++    func testStoredCaptureChargeRejectsLaterGeometryOrAllocationSubstitution() throws {
++        let reserved = try charge()
++        try reserved.requireCapture(charge().capture)
++        for other in [try charge(rank: 0), try charge(padding: 16_384),
++            try QwenResidentRecordingCharge.derive(base: base, rank: 1, vocabularySize: 248_319,
++                activationDType: "bfloat16", bound: { $0 }),
++            try QwenResidentRecordingCharge.derive(base: .init(stateBytes: 20_000, fusionBytes: 2_000, reservedBytes: 22_000),
++                rank: 1, vocabularySize: 248_320, activationDType: "bfloat16", bound: { $0 }),
++            try QwenResidentRecordingCharge.derive(base: base, rank: 1, vocabularySize: 248_320,
++                activationDType: "float32", bound: { $0 }),
++        ] { XCTAssertThrowsError(try reserved.requireCapture(other.capture)) }
++    }
++
++    func testReservationModesCannotUpgradeOrDowngrade() throws {
++        try QwenResidentRequestMode.serving.require(.serving)
++        try QwenResidentRequestMode.recording.require(.recording)
++        XCTAssertThrowsError(try QwenResidentRequestMode.serving.require(.recording))
++        XCTAssertThrowsError(try QwenResidentRequestMode.recording.require(.serving))
++    }
++
++    private func owner() throws -> (QwenResidentControl, QwenLayerStageResidentLifecycle, QwenLayerStageResidentRequestIdentity) {
++        let control = QwenResidentControl(deadline: DispatchTime.now().uptimeNanoseconds + 30_000_000_000)
++        let identity = QwenLayerStageResidentRequestIdentity(requestID: UUID(), epoch: UUID(),
++            recordedRequestFingerprint: String(repeating: "a", count: 64))
++        try control.loaded(); try control.reserve(identity.requestID)
++        return (control, try .init(maximumRequests: 2), identity)
++    }
++
++    func testCapacityRemainsHeldUntilScopeRetiresAndOutputIsPrepared() throws {
++        let (control, lifecycle, identity) = try owner()
++        var order: [String] = []
++        let value = try QwenResidentRequestPublication.run(control: control, lifecycle: lifecycle,
++            identity: identity, deadline: control.deadline, body: {
++                order.append("native")
++                XCTAssertTrue(lifecycle.snapshot.requestScopeActive)
++                XCTAssertFalse(control.available)
++                return [271, 99]
++            }, prepare: { tokens in
++                order.append("encode")
++                XCTAssertFalse(lifecycle.snapshot.requestScopeActive)
++                XCTAssertEqual(lifecycle.snapshot.completedRequestScopes, 1)
++                XCTAssertFalse(control.available)
++                XCTAssertThrowsError(try control.reserve(UUID()))
++                return Data(tokens.map { UInt8($0 & 255) })
++            })
++        XCTAssertEqual(order, ["native", "encode"])
++        XCTAssertEqual(value, Data([15, 99]))
++        XCTAssertTrue(control.available)
++        XCTAssertThrowsError(try control.reserve(identity.requestID))
++    }
++
++    func testCaptureFailureSkipsEncodingAndWithdrawsCapacity() throws {
++        let (control, lifecycle, identity) = try owner()
++        var encoded = false
++        XCTAssertThrowsError(try QwenResidentRequestPublication.run(control: control, lifecycle: lifecycle,
++            identity: identity, deadline: control.deadline, body: { () throws -> Int in throw Marker.capture },
++            prepare: { value in encoded = true; return value })) { error in
++            guard case Marker.capture = error else { return XCTFail("Capture error replaced") }
++        }
++        XCTAssertFalse(encoded); XCTAssertFalse(control.available)
++        XCTAssertFalse(lifecycle.snapshot.requestScopeActive)
++        XCTAssertEqual(lifecycle.snapshot.completedRequestScopes, 0)
++        XCTAssertTrue(lifecycle.snapshot.failed)
++        XCTAssertThrowsError(try control.reserve(UUID()))
++    }
++
++    func testEncodingFailureAfterRetirementDoesNotRestoreCapacity() throws {
++        let (control, lifecycle, identity) = try owner()
++        XCTAssertThrowsError(try QwenResidentRequestPublication.run(control: control, lifecycle: lifecycle,
++            identity: identity, deadline: control.deadline, body: { 7 },
++            prepare: { _ -> Int in
++                XCTAssertEqual(lifecycle.snapshot.completedRequestScopes, 1)
++                XCTAssertFalse(lifecycle.snapshot.requestScopeActive)
++                XCTAssertFalse(control.available)
++                throw Marker.encoding
++            })) { error in
++            guard case Marker.encoding = error else { return XCTFail("Encoding error replaced") }
++        }
++        XCTAssertEqual(lifecycle.snapshot.completedRequestScopes, 1)
++        XCTAssertFalse(control.available)
++        XCTAssertThrowsError(try control.reserve(UUID()))
++        // Native scope has retired, so explicit local release can still run.
++        try control.beginClose()
++        var released = false
++        try lifecycle.withModelRelease { released = true }
++        XCTAssertTrue(released)
++    }
++
++    func testCancellationDuringEncodingCannotPublishSuccess() throws {
++        let (control, lifecycle, identity) = try owner()
++        XCTAssertThrowsError(try QwenResidentRequestPublication.run(control: control, lifecycle: lifecycle,
++            identity: identity, deadline: control.deadline, body: { 7 },
++            prepare: { value in control.cancel(identity.requestID); return value }))
++        XCTAssertEqual(lifecycle.snapshot.completedRequestScopes, 1)
++        XCTAssertFalse(control.available)
++    }
++
++    func testExpiredRequestCannotEncodeOrRestoreCapacity() throws {
++        let (control, lifecycle, identity) = try owner()
++        var executed = false, encoded = false
++        XCTAssertThrowsError(try QwenResidentRequestPublication.run(control: control, lifecycle: lifecycle,
++            identity: identity, deadline: 0, body: { executed = true; return 7 },
++            prepare: { value in encoded = true; return value }))
++        XCTAssertFalse(executed); XCTAssertFalse(encoded); XCTAssertFalse(control.available)
++        XCTAssertEqual(lifecycle.snapshot.completedRequestScopes, 0)
++    }
++}

@@ -1,0 +1,407 @@
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenDenseRegisteredResourceProfile.swift
+@@ -0,0 +1,79 @@
++import Foundation
++
++/// Exact registered metadata limits, not an execution, payload or OS permit.
++/// Legacy callers keep their original limits. Ordinary resident admission is
++/// still 9B-only; native validation is a separate explicit admission decision.
++struct QwenDenseRegisteredResourceProfile {
++    static let maximumContextTokens = 8320
++    static let maximumChunkTokens = 512
++
++    let model: QwenRegisteredDenseModel
++    let configurationSHA256: String, manifestSHA256: String, artifactAggregateSHA256: String
++    let geometry: QwenLongPrefillBudgetGeometry
++    let maximumManifestPayloadBytes: Int
++    let namedTensorByteCeiling: Int
++    let maximumNamedStateBudget: QwenLongPrefillTensorBudget
++    let runtimeExecutionAuthorized = false
++    let actualPayloadVerificationEstablished = false
++    let independentResourcePolicyRequired = true
++
++    init(specification: QwenDenseRegisteredSpecification) throws {
++        let expectedMaximumStateBytes: Int
++        switch specification.model {
++        case .qwen35NineB:
++            // Preserve the resident's prior legacy manifest limit and unchanged
++            // exact-9B long-prefill ceiling; this does not alter that receipt.
++            maximumManifestPayloadBytes = 8 * 1024 * 1024 * 1024
++            namedTensorByteCeiling = QwenRegistered9BLongPrefillAdmission.namedTensorByteCeiling
++            expectedMaximumStateBytes = 754_188_320
++        case .qwen38TwentySevenB:
++            // Independent registered metadata scope. No legacy constant grows,
++            // and selecting these values grants no 27B execution permission.
++            maximumManifestPayloadBytes = 16_320_415_757
++            namedTensorByteCeiling = 1_616_248_896
++            expectedMaximumStateBytes = 1_616_248_896
++        }
++        model = specification.model
++        configurationSHA256 = specification.configurationSHA256
++        manifestSHA256 = specification.manifestSHA256
++        artifactAggregateSHA256 = specification.artifactSHA256
++        geometry = try specification.expectedGeometry()
++        maximumNamedStateBudget = try QwenLongPrefillTensorBudget.estimate(geometry: geometry,
++            maximumTokens: Self.maximumContextTokens, chunkSize: Self.maximumChunkTokens)
++        guard specification.manifestBytes > 0,
++              specification.manifestBytes <= maximumManifestPayloadBytes,
++              maximumNamedStateBudget.conservativeStateAndBoundaryBytes == expectedMaximumStateBytes,
++              expectedMaximumStateBytes <= namedTensorByteCeiling else {
++            throw QwenDenseProfileError("Registered resource profile differs from its exact byte vector")
++        }
++    }
++
++    init(profile: QwenRegisteredDenseModelProfile) throws {
++        guard let specification = QwenDenseRegisteredSpecification.all.first(where: { $0.model == profile.model }),
++              profile.configurationSHA256 == specification.configurationSHA256,
++              profile.manifestSHA256 == specification.manifestSHA256,
++              profile.artifactAggregateSHA256 == specification.artifactSHA256,
++              profile.canonicalInventorySHA256 == specification.inventorySHA256,
++              profile.manifestPayloadBytes == specification.manifestBytes,
++              profile.sourceTensorBytes == specification.sourceBytes,
++              profile.largestSourceTensorBytes == specification.largestTensorBytes,
++              profile.geometry == (try specification.expectedGeometry()) else {
++            throw QwenDenseProfileError("Registered resource profile uses different admitted metadata")
++        }
++        try self.init(specification: specification)
++    }
++
++    /// Bounded calculation for the selected model, never a runtime admission.
++    func namedStateBudget(maximumTokens: Int, chunkSize: Int) throws -> QwenLongPrefillTensorBudget {
++        guard (1...Self.maximumContextTokens).contains(maximumTokens),
++              (1...Self.maximumChunkTokens).contains(chunkSize), chunkSize <= maximumTokens else {
++            throw QwenDenseProfileError("Registered resource request exceeds its context/chunk calculation scope")
++        }
++        let budget = try QwenLongPrefillTensorBudget.estimate(geometry: geometry,
++            maximumTokens: maximumTokens, chunkSize: chunkSize)
++        guard budget.conservativeStateAndBoundaryBytes <= namedTensorByteCeiling else {
++            throw QwenDenseProfileError("Registered resource request exceeds its named-state ceiling")
++        }
++        return budget
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenRegisteredDenseModelProfile.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenRegisteredDenseModelProfile.swift
+@@ -15,9 +15,13 @@
+     let runtimeExecutionAuthorized = false, actualPayloadVerificationEstablished = false
+     let providerEligibilityEstablished = false
+     let supportedPlanningRoles = QwenDenseStorageRole.allCases
++    private let residentPlanningCuts: [Int]?
+ 
+     private init(spec: QwenDenseRegisteredSpecification, configuration: Data, manifest: Data,
+-                 tensors: [QwenDenseCanonicalTensor], geometry: QwenLongPrefillBudgetGeometry) {
++                 tensors: [QwenDenseCanonicalTensor], geometry: QwenLongPrefillBudgetGeometry,
++                 residentDefinition: QwenResidentModelDefinition? = nil) {
++        self.residentPlanningCuts = residentDefinition?.planningScopeFields.isEmpty == false
++            ? residentDefinition?.supportedCuts : nil
+         self.model = spec.model; self.configuration = configuration; self.manifest = manifest
+         self.configurationSHA256 = spec.configurationSHA256; self.manifestSHA256 = spec.manifestSHA256
+         self.artifactAggregateSHA256 = spec.artifactSHA256; self.canonicalInventorySHA256 = spec.inventorySHA256
+@@ -29,11 +33,12 @@
+             spec.configurationSHA256, spec.manifestSHA256, spec.artifactSHA256, spec.inventorySHA256,
+             "manifest=\(spec.manifestBytes)", "source=\(spec.sourceBytes)", "count=\(spec.tensorCount)",
+             "largest=\(spec.largestTensorBytes)", "native=bfloat16", "bf16Policy=true", "executionAuthorized=false",
+-        ])
++        ] + (residentDefinition?.planningScopeFields ?? []))
+     }
+ 
+     static func admit(configuration: Data, manifest: Data, expectedArtifactAggregateSHA256: String,
+-                      canonicalTensors: [QwenDenseCanonicalTensor]) throws -> Self {
++                      canonicalTensors: [QwenDenseCanonicalTensor],
++                      residentDefinition: QwenResidentModelDefinition? = nil) throws -> Self {
+         guard (1...1_048_576).contains(configuration.count), (1...4_194_304).contains(manifest.count),
+               (1...2048).contains(canonicalTensors.count) else {
+             throw QwenDenseProfileError("Registered metadata exceeds its explicit bounded input scope")
+@@ -43,6 +48,12 @@
+               QwenDenseProfileIdentity.sha256(manifest) == spec.manifestSHA256,
+               expectedArtifactAggregateSHA256 == spec.artifactSHA256 else {
+             throw QwenDenseProfileError("Configuration, manifest or expected artifact is not the exact registered model")
++        }
++        if let residentDefinition {
++            guard residentDefinition.specification.model == spec.model,
++                  residentDefinition.specification.configurationSHA256 == spec.configurationSHA256 else {
++                throw QwenDenseProfileError("Resident planning definition differs from the registered source")
++            }
+         }
+         struct Manifest: Decodable {
+             struct Entry: Decodable { let path: String, sha256: String; let size_bytes: Int }
+@@ -88,14 +99,15 @@
+         guard state.conservativeStateAndBoundaryBytes == spec.namedStateBytes else {
+             throw QwenDenseProfileError("Registered independently checked state term vector differs")
+         }
+-        return Self(spec: spec, configuration: configuration, manifest: manifest, tensors: tensors, geometry: geometry)
++        return Self(spec: spec, configuration: configuration, manifest: manifest, tensors: tensors,
++            geometry: geometry, residentDefinition: residentDefinition)
+     }
+ 
+     func makePlanningPlan(stageCut: Int? = nil) throws -> QwenLayerStagePlan {
+         let cut = stageCut ?? geometry.layers / 2
+         let legal = try QwenLayerStageCandidates.structuralCuts(layerCount: geometry.layers,
+             fullAttentionInterval: geometry.fullAttentionInterval)
+-        guard legal.contains(cut), model == .qwen35NineB || cut == 32 else {
++        guard legal.contains(cut), model == .qwen35NineB || cut == 32 || residentPlanningCuts?.contains(cut) == true else {
+             throw QwenDenseProfileError("The initial27B planning scope is explicit32/32; legacy9B legal cuts are preserved")
+         }
+         return try QwenLayerStagePlan(configuration: configuration, ranges: [0..<cut, cut..<geometry.layers])
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdapterDefinition.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdapterDefinition.swift
+@@ -4,16 +4,20 @@
+ /// One definition for the currently admitted resident adapter and its metadata.
+ /// Describing these limits does not allocate a model or admit a request.
+ enum QwenResidentAdapterDefinition {
+-    static let profileID = "registered_qwen35_9b_greedy_generation_v1"
++    static let profileID = QwenResidentModelDefinition.nineBProfileID
+     static let maximumLifetimeNanoseconds: UInt64 = 300_000_000_000
+     static let maximumRequests = 16
+-    static let supportedCuts = [4, 8, 12, 16]
++    static let supportedCuts = QwenResidentModelDefinition.nineBCuts
+     static let supportedPrefillSchedules: [ClusterPrefillSchedule] = [.serial, .oneChunkLookahead]
+ 
+     static func profile(specification: QwenDenseRegisteredSpecification) throws -> QwenLayerStageGenerationProfile {
+         guard specification.model == .qwen35NineB else { throw ProbeError("Unsupported resident model") }
+-        return try .init(identifier: profileID, vocabularySize: 248_320,
+-            hiddenSize: specification.hidden, activationDType: "bfloat16", maximumPromptTokens: 8192,
++        return try profile(definition: QwenResidentModelDefinition(model: specification.model))
++    }
++
++    static func profile(definition: QwenResidentModelDefinition) throws -> QwenLayerStageGenerationProfile {
++        return try .init(identifier: definition.profileID, vocabularySize: 248_320,
++            hiddenSize: definition.specification.hidden, activationDType: "bfloat16", maximumPromptTokens: 8192,
+             maximumChunkTokens: 512, maximumOutputTokens: 128, maximumContextTokens: 8320)
+     }
+ }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdmission.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdmission.swift
+@@ -11,11 +11,23 @@
+     public let deadlineUptimeNanoseconds: UInt64
+     public let allocatorPolicy: QwenResidentAllocatorPolicy
+     public let prefillSchedule: ClusterPrefillSchedule
++    // nil is the unchanged public 9B path. Only the explicit validation SPI
++    // constructs the other closed model selection; it is never advertised.
++    let nativeValidationModel: QwenRegisteredDenseModel?
+ 
+     public init(identity: ClusterWorkerIdentity, modelDirectory: URL, rank: Int,
+                 stageCut: Int, deadlineUptimeNanoseconds: UInt64,
+                 allocatorPolicy: QwenResidentAllocatorPolicy = .unchanged,
+                 prefillSchedule: ClusterPrefillSchedule = .serial) {
++        self.init(identity: identity, modelDirectory: modelDirectory, rank: rank, stageCut: stageCut,
++            deadlineUptimeNanoseconds: deadlineUptimeNanoseconds, allocatorPolicy: allocatorPolicy,
++            prefillSchedule: prefillSchedule, nativeValidationModel: nil)
++    }
++
++    init(identity: ClusterWorkerIdentity, modelDirectory: URL, rank: Int, stageCut: Int,
++         deadlineUptimeNanoseconds: UInt64, allocatorPolicy: QwenResidentAllocatorPolicy,
++         prefillSchedule: ClusterPrefillSchedule, nativeValidationModel: QwenRegisteredDenseModel?) {
++        self.nativeValidationModel = nativeValidationModel
+         self.identity = identity; self.modelDirectory = modelDirectory
+         self.rank = rank; self.stageCut = stageCut
+         self.deadlineUptimeNanoseconds = deadlineUptimeNanoseconds
+@@ -31,6 +43,7 @@
+     let configuration: QwenResidentLoadConfiguration
+     let configBytes: Data, manifestBytes: Data
+     let specification: QwenDenseRegisteredSpecification
++    let definition: QwenResidentModelDefinition
+     let plan: QwenLayerStagePlan
+     let profile: QwenLayerStageGenerationProfile
+     let arithmetic: QwenLongPrefillArithmeticEnvironment.Receipt
+@@ -41,10 +54,13 @@
+          environment: [String: String], now: UInt64,
+          read: (URL, Int) throws -> Data) throws {
+         let identity = configuration.identity
+-        guard (0...1).contains(configuration.rank), QwenResidentAdapterDefinition.supportedCuts.contains(configuration.stageCut),
++        let definition = try QwenResidentModelDefinition(model: configuration.nativeValidationModel ?? .qwen35NineB)
++        let spec = definition.specification
++        guard (0...1).contains(configuration.rank), definition.supportedCuts.contains(configuration.stageCut),
+               QwenResidentAdapterDefinition.supportedPrefillSchedules.contains(configuration.prefillSchedule),
++              definition.supportsLookahead || configuration.prefillSchedule == .serial,
+               configuration.modelDirectory.isFileURL,
+-              identity.modelID == QwenRegisteredDenseModel.qwen35NineB.rawValue,
++              identity.modelID == spec.model.rawValue,
+               identity.peers.count == 2, identity.peers[0].id != identity.peers[1].id,
+               identity.peers.allSatisfy({ !$0.id.isEmpty && $0.id.utf8.count <= 128 &&
+                   $0.id.utf8.allSatisfy({ (33...126).contains($0) }) && qwenStageWireIsSHA256($0.buildSHA256) }),
+@@ -52,12 +68,13 @@
+               configuration.deadlineUptimeNanoseconds - now <= Self.maximumLifetimeNanoseconds,
+               (1...1_048_576).contains(configBytes.count),
+               (1...4_194_304).contains(manifestBytes.count),
+-              let spec = QwenDenseRegisteredSpecification.all.first(where: { $0.model == .qwen35NineB }),
+               identity.configurationSHA256 == spec.configurationSHA256,
+               identity.artifactSHA256 == spec.artifactSHA256,
+               sha256(configBytes) == spec.configurationSHA256,
+               sha256(manifestBytes) == spec.manifestSHA256 else {
+-            throw ProbeError("Resident load requires the closed 9B identity, cut4|8|12|16 and bounded local lifetime")
++            throw ProbeError(configuration.nativeValidationModel == nil
++                ? "Resident load requires the closed 9B identity, cut4|8|12|16 and bounded local lifetime"
++                : "Resident native validation requires the closed model identity, serial candidate cut and bounded local lifetime")
+         }
+         // Before any model construction or native environment cache is used.
+         arithmetic = try QwenLongPrefillArithmeticEnvironment.admit(environment)
+@@ -65,15 +82,16 @@
+         jaccl = try QwenResidentJACCLConfiguration.admit(environment: environment, read: read)
+         guard jaccl.rank == configuration.rank else { throw ProbeError("Resident local rank differs from JACCL") }
+         self.configuration = configuration; self.configBytes = configBytes; self.manifestBytes = manifestBytes
+-        specification = spec
++        specification = spec; self.definition = definition
+         plan = try QwenLayerStagePlan(configuration: configBytes,
+             ranges: [0..<configuration.stageCut, configuration.stageCut..<spec.layers], activeMTP: false)
+-        profile = try QwenResidentAdapterDefinition.profile(specification: spec)
++        profile = try QwenResidentAdapterDefinition.profile(definition: definition)
+         // Recalculate the existing named-state formula at the generation cap;
+         // never relabel the separate exact 8192/512/output1 admission receipt.
++        let resources = try QwenDenseRegisteredResourceProfile(specification: spec)
+         let maximum = try QwenLongPrefillTensorBudget.estimate(geometry: spec.expectedGeometry(),
+             maximumTokens: profile.maximumContextTokens, chunkSize: profile.maximumChunkTokens)
+-        guard maximum.conservativeStateAndBoundaryBytes <= QwenRegistered9BLongPrefillAdmission.namedTensorByteCeiling else {
++        guard maximum.conservativeStateAndBoundaryBytes <= resources.namedTensorByteCeiling else {
+             throw ProbeError("Resident generation exceeds the unchanged named-state ceiling")
+         }
+     }
+@@ -99,7 +117,8 @@
+             plan.fingerprint, profile.fingerprint, arithmeticSHA256, jaccl.fingerprint,
+             configuration.allocatorPolicy.rawValue,
+         ] + identity.peers.flatMap { [$0.id, $0.buildSHA256] }
+-            + QwenResidentPrefillSelection.loadAgreementFields(configuration.prefillSchedule)))
++            + QwenResidentPrefillSelection.loadAgreementFields(configuration.prefillSchedule)
++            + (configuration.nativeValidationModel == nil ? [] : ["native-validation-only-v1"])))
+     }
+ 
+     var wireProfile: ClusterWorkerProfile {
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentModelDefinition.swift
+@@ -0,0 +1,44 @@
++import Foundation
++
++/// Closed model/profile geometry shared by ordinary admission and the explicit
++/// native-validation entry. Describing a model grants no execution permission.
++struct QwenResidentModelDefinition {
++    static let nineBCuts = [4, 8, 12, 16]
++    static let nineBProfileID = "registered_qwen35_9b_greedy_generation_v1"
++    let specification: QwenDenseRegisteredSpecification
++    let profileID: String
++    let supportedCuts: [Int]
++    let supportsLookahead: Bool
++
++    init(model: QwenRegisteredDenseModel) throws {
++        guard let specification = QwenDenseRegisteredSpecification.all.first(where: { $0.model == model }) else {
++            throw QwenDenseProfileError("Unknown registered resident model")
++        }
++        self.specification = specification
++        switch model {
++        case .qwen35NineB:
++            profileID = Self.nineBProfileID
++            supportedCuts = Self.nineBCuts
++            supportsLookahead = true
++        case .qwen38TwentySevenB:
++            profileID = "registered_qwen38_27b_greedy_generation_v1"
++            supportedCuts = Self.nineBCuts + [specification.layers / 2]
++            supportsLookahead = false
++        }
++        let geometry = try specification.expectedGeometry()
++        let legal = try QwenLayerStageCandidates.structuralCuts(layerCount: geometry.layers,
++            fullAttentionInterval: geometry.fullAttentionInterval)
++        guard supportedCuts == Array(Set(supportedCuts)).sorted(),
++              supportedCuts.allSatisfy(legal.contains) else {
++            throw QwenDenseProfileError("Resident candidate cuts differ from registered layer geometry")
++        }
++    }
++
++    /// Only the unqualified model receives an extended metadata planning scope.
++    /// These fields join its metadata fingerprint; the 9B identity stays exact.
++    var planningScopeFields: [String] {
++        specification.model == .qwen38TwentySevenB
++            ? ["resident-native-validation-planning-v1", "cuts=" + supportedCuts.map(String.init).joined(separator: ",")]
++            : []
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentNativeValidation.swift
+@@ -0,0 +1,36 @@
++import DarkbloomClusterProtocol
++import Foundation
++
++/// Unadvertised selection for an owned native correctness run. This creates a
++/// load configuration for the same resident runtime, never an alternate engine
++/// or an installed/provider capability. The ordinary configuration stays 9B.
++@_spi(Benchmark) public enum QwenResidentNativeValidationModel: Sendable {
++    case qwen38TwentySevenB
++
++    public var runtimeModelID: String { QwenRegisteredDenseModel.qwen38TwentySevenB.rawValue }
++
++    private var definition: QwenResidentModelDefinition {
++        get throws { try QwenResidentModelDefinition(model: .qwen38TwentySevenB) }
++    }
++
++    public var supportedCuts: [Int] { get throws { try definition.supportedCuts } }
++
++    public func configuration(identity: ClusterWorkerIdentity, modelDirectory: URL,
++        rank: Int, stageCut: Int, deadlineUptimeNanoseconds: UInt64, now: UInt64
++    ) throws -> QwenResidentLoadConfiguration {
++        let selected = try definition, spec = selected.specification
++        guard identity.modelID == runtimeModelID, identity.artifactSHA256 == spec.artifactSHA256,
++              identity.configurationSHA256 == spec.configurationSHA256,
++              selected.supportedCuts.contains(stageCut), (0...1).contains(rank),
++              modelDirectory.isFileURL, deadlineUptimeNanoseconds > now,
++              deadlineUptimeNanoseconds - now <= QwenResidentAdapterDefinition.maximumLifetimeNanoseconds else {
++            throw ProbeError("Native validation requires the exact registered 27B identity, candidate cut and local lifetime")
++        }
++        // Full metadata, peer, source, bootstrap and resource validation remains
++        // in QwenResidentAdmission/load. This entry does not bypass those gates.
++        return .init(identity: identity, modelDirectory: modelDirectory, rank: rank,
++            stageCut: stageCut, deadlineUptimeNanoseconds: deadlineUptimeNanoseconds,
++            allocatorPolicy: .disableFreedBufferCache, prefillSchedule: .serial,
++            nativeValidationModel: spec.model)
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRequestResources.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRequestResources.swift
+@@ -14,13 +14,20 @@
+     static func derive(profile: QwenRegisteredDenseModelProfile, plan: QwenLayerStagePlan,
+                        rank: Int, maximumTokens: Int, chunkSize: Int,
+                        bound: (Int) throws -> Int) throws -> Self {
+-        guard plan.stages.count == 2, (0...1).contains(rank), profile.model == .qwen35NineB else {
++        guard plan.stages.count == 2, (0...1).contains(rank) else {
+             throw ProbeError("Resident request allowance requires the admitted 9B stage")
+         }
++        let resources = try QwenDenseRegisteredResourceProfile(profile: profile)
+         let g = profile.geometry
+-        let b = try QwenLongPrefillTensorBudget.estimate(geometry: g,
+-            maximumTokens: maximumTokens, chunkSize: chunkSize)
+-        guard b.conservativeStateAndBoundaryBytes <= QwenRegistered9BLongPrefillAdmission.namedTensorByteCeiling else {
++        let b: QwenLongPrefillTensorBudget
++        if profile.model == .qwen35NineB {
++            // Preserve every prior 9B bound/refusal and the unchanged formula.
++            b = try QwenLongPrefillTensorBudget.estimate(geometry: g,
++                maximumTokens: maximumTokens, chunkSize: chunkSize)
++        } else {
++            b = try resources.namedStateBudget(maximumTokens: maximumTokens, chunkSize: chunkSize)
++        }
++        guard b.conservativeStateAndBoundaryBytes <= resources.namedTensorByteCeiling else {
+             throw ProbeError("Resident request exceeds the unchanged named-state byte ceiling")
+         }
+         let sum = QwenLongPrefillCheckedBytes.sum, product = QwenLongPrefillCheckedBytes.product
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentSource.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentSource.swift
+@@ -17,9 +17,10 @@
+ func prepareQwenResidentSource(_ admission: QwenResidentAdmission,
+                               check: () throws -> Void) throws -> QwenResidentSource {
+     guard !_qwen35MTPEnabled else { throw ProbeError("Resident generation requires MTP disabled") }
++    let resources = try QwenDenseRegisteredResourceProfile(specification: admission.specification)
+     let checkpoint = try VerifiedCheckpoint(directory: admission.configuration.modelDirectory,
+         configurationData: admission.configBytes, expectedAggregateSHA256: admission.specification.artifactSHA256,
+-        maximumPayloadBytes: LocalCorrectnessStorage.maximumManifestPayloadBytes,
++        maximumPayloadBytes: resources.maximumManifestPayloadBytes,
+         expectedManifestSHA256: admission.specification.manifestSHA256)
+     try checkpoint.requireConfiguration(admission.configBytes)
+     let base = try JSONDecoder().decode(BaseConfiguration.self, from: admission.configBytes)
+@@ -39,9 +40,9 @@
+             let observed = observedQwenDenseSource(prepared, model: model)
+             let profile = try QwenRegisteredDenseModelProfile.admit(configuration: admission.configBytes,
+                 manifest: admission.manifestBytes, expectedArtifactAggregateSHA256: checkpoint.aggregate,
+-                canonicalTensors: observed.map(\.canonical))
++                canonicalTensors: observed.map(\.canonical), residentDefinition: admission.definition)
+             let rebuilt = try profile.makePlanningPlan(stageCut: admission.configuration.stageCut)
+-            guard profile.model == .qwen35NineB, rebuilt.fingerprint == admission.plan.fingerprint else {
++            guard profile.model == admission.specification.model, rebuilt.fingerprint == admission.plan.fingerprint else {
+                 throw ProbeError("Resident source differs from the exact registered model and selected Plan")
+             }
+             let pair = try QwenDenseStorageRequirement.derive(profile: profile, plan: rebuilt, role: .sequentialPair)

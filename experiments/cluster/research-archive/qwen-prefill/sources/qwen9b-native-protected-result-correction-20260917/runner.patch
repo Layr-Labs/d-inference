@@ -1,0 +1,54 @@
+--- a/run_checks.py
++++ b/run_checks.py
+@@ -4,11 +4,11 @@
+ import re
+ import sys
+ from pathlib import Path
+-from build_inputs import BASE, WORKSPACE, SCRATCH, inputs, sha
++from retry_inputs import BASE, WORKSPACE, SCRATCH, inputs, sha
+ from check_process import run_owned
+ from check_results import require_tests
+ from validate_description import validate
+-from verify_build_inputs import verify
++from verify_retry import verify
+ 
+ PRODUCT = 'darkbloom-cluster-worker'
+ CAPABILITY_PRODUCT = 'ProtectedCapabilityCheck'
+@@ -29,8 +29,8 @@
+     out.mkdir(mode=0o700)
+     value, old, _, _, _ = inputs()
+     receipt = dict(phase=phase, status='started', steps=[], sourceManifestSHA256=value['candidateManifestSHA256'],
+-                   sourceSnapshotSHA256=sha(BASE / 'source-snapshot-1.json'),
+-                   dependencySnapshotSHA256=sha(BASE / 'dependency-snapshot-1.json'),
++                   sourceSnapshotSHA256=sha(BASE / 'source-snapshot-2.json'),
++                   dependencySnapshotSHA256=sha(BASE / 'dependency-snapshot-2.json'),
+                    modelExecuted=False, gpuExecuted=False, remoteExecuted=False,
+                    protectedTransportExecuted=False, servingEnabled=False)
+     print('Protected native build runner PID ' + str(os.getpid()) + ' phase ' + phase, flush=True)
+--- a/package_native.py
++++ b/package_native.py
+@@ -4,11 +4,11 @@
+ import re
+ import shutil
+ import sys
+-from build_inputs import BASE, SCRATCH, inputs, sha
++from retry_inputs import BASE, SCRATCH, inputs, sha
+ from check_results import require_tests
+ from run_checks import PRODUCT
+ from validate_description import validate
+-from verify_build_inputs import verify
++from verify_retry import verify
+ 
+ 
+ def main():
+@@ -25,8 +25,8 @@
+             raise ValueError('A required actual phase did not pass')
+         if record.get('sourceManifestSHA256') != value['candidateManifestSHA256']:
+             raise ValueError('Tested source manifest differs')
+-        for filename, field in [('source-snapshot-1.json', 'sourceSnapshotSHA256'),
+-                                ('dependency-snapshot-1.json', 'dependencySnapshotSHA256')]:
++        for filename, field in [('source-snapshot-2.json', 'sourceSnapshotSHA256'),
++                                ('dependency-snapshot-2.json', 'dependencySnapshotSHA256')]:
+             if sha(BASE / filename) != record[field]:
+                 raise ValueError('Tested snapshot differs')
+         if not record['steps'] or any(step.get('exitCode') != 0 or not step.get('reaped') or

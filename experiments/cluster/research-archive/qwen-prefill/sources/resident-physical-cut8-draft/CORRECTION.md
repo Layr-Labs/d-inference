@@ -1,0 +1,7 @@
+# V2: bounded JACCL startup diagnostic
+
+V1 remains frozen at manifest b83f50a594da2115ff51018c6b2eae255a08ada12e667895ee682ec815ff1882. Its actual first run stopped before ready when rank 1 emitted `[jaccl] Connection attempt 0 waiting 1000 ms\n` (45 bytes, SHA f919fe10e6c53df9cc31bff522c1b61eb3e9853d9ea5fff80cc870cb1bc6ebca). Both remote native leaders were reaped and their groups fenced. The diagnostic comes from the frozen JACCL TCP bootstrap retry callback; it alone establishes neither connection success nor terminal connection failure.
+
+Only the remote stderr branch changes, through a subclass of unchanged V3 PipeWorkers. The parser is a closed prefix of the four source-defined ordered retry lines; rank 0, unknown text, incomplete text at EOF/readiness, and text after readiness all fail. Native raw stderr remains retained. The parent keeps SSH stderr empty, compares stdin/stdout exactly, and independently validates retrieved native stderr plus the remote policy summary. Native/package/DTO/wire/math/resource/deadline/group cleanup logic is unchanged.
+
+`bootstrap-source-pins.json` binds copied rdma.cpp and utils.cpp. `correction.patch` contains all changed existing Python files; new jaccl_stderr.py and test_retry_stderr.py are separately present. Original 13 tests and four focused new tests passed under Python 3.9 (17 tests, 7.224 seconds reported by unittest). Tests used fabricated Python children only; actual JACCL/model success remains pending root.

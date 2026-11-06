@@ -1,0 +1,291 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSolo27BCheck.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSolo27BCheck.swift
+@@ -44,6 +44,20 @@
+             && $0.request.finalCommittedTokens == 8319 && $0.request.maximumTokens == 8320
+             && $0.source.plan.stages.map(\.sourceRange) == [0..<16, 16..<64]
+     }, "complete 27B trunk and matched request geometry")
++    let short = try QwenResidentSoloCLI(arguments: arguments + ["--measured-count", "1"])
++    var shortIndex = 1
++    let shortInput = try short.preflight(environment: QwenLongPrefillArithmeticEnvironment.requiredValues,
++        read: read, makeUUID: { defer { shortIndex += 1 }; return ids[shortIndex] })
++    try require(shortInput.requests.map { $0.request.requestID } == Array(ids.prefix(2))
++        && shortInput.measuredCount == 1, "explicit one warmup plus one measured request")
++    try require(shortIndex == 2, "two-request preflight creates only one additional history")
++    try require(cli.measuredCount == 3 && input.measuredCount == 3, "legacy default remains one plus three")
++    for bad in ["0", "4", "01", "1.0", "-1"] {
++        try refuse { _ = try QwenResidentSoloCLI(arguments: arguments + ["--measured-count", bad]) }
++    }
++    try refuse { _ = try QwenResidentSoloCLI(arguments: arguments + ["--measured-count", "1", "--measured-count", "1"]) }
++    try refuse { _ = try QwenResidentSoloPreflight(first: input.first, requests: input.requests,
++        expectedTokenIDs: input.expectedTokenIDs, expectedTokenFileSHA256: input.expectedTokenFileSHA256, measuredCount: 1) }
+     let scope = try QwenResidentSoloModelScope(definition: cli.reference.definition)
+     try require(scope.gatedDeltaLayers == 48 && scope.warmupProfile.valueHeads == 48,
+         "48 actual GDN layers with 48 value heads")
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloCLI.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloCLI.swift
+@@ -5,16 +5,25 @@
+     let reference: QwenFullGenerationReferenceCLI
+     let expectedTokensFile: URL
+     let expectedTokensSHA256: String
++    let measuredCount: Int
+ 
+     init(arguments: [String]) throws {
+-        guard arguments.count == 28 else { throw ProbeError("Resident solo requires exactly fourteen option pairs") }
++        guard arguments.count == 28 || arguments.count == 30 else {
++            throw ProbeError("Resident solo requires fourteen option pairs and an optional measured count")
++        }
+         var base: [String] = [], expectedPath: String?, expectedSHA: String?
+         var seen = Set<String>()
++        var measured = 3
+         for i in stride(from: 0, to: arguments.count, by: 2) {
+             let key = arguments[i], value = arguments[i+1]
+             guard seen.insert(key).inserted, !value.isEmpty, value.utf8.count <= 4096,
+                   !value.utf8.contains(0) else { throw ProbeError("Repeated or invalid solo option") }
+             switch key {
++            case "--measured-count":
++                guard ["1", "2", "3"].contains(value), let count = Int(value) else {
++                    throw ProbeError("Solo measured count must be1...3")
++                }
++                measured = count
+             case "--expected-token-ids-file": expectedPath = value
+             case "--expected-token-ids-sha256": expectedSHA = value
+             case "--mode":
+@@ -30,7 +39,7 @@
+         guard value.stageCut == scope.referenceCut,
+               value.promptCount == 8192, value.chunkSize == 512, value.outputCount == 128,
+               value.stopTokenIDs.isEmpty else { throw ProbeError("Resident solo requires the selected registered model/cut and matched 8192/512/128 request") }
+-        reference = value
++        reference = value; measuredCount = measured
+         expectedTokensFile = URL(fileURLWithPath: expectedPath); expectedTokensSHA256 = expectedSHA
+     }
+ 
+@@ -52,7 +61,7 @@
+         }
+         let source = first.admission.source
+         var requests = [first.admission]
+-        for _ in 0..<3 {
++        for _ in 0..<measuredCount {
+             let next = try QwenRegisteredGenerationReferenceSource(definition: source.definition,
+                 configuration: source.configuration, manifest: source.manifest, promptData: prompt,
+                 expectedPromptSHA256: source.promptFileSHA256, promptCount: 8192, requestID: makeUUID(),
+@@ -60,7 +69,7 @@
+             requests.append(try .init(source: next, request: next.request))
+         }
+         return try .init(first: first, requests: requests, expectedTokenIDs: expected,
+-            expectedTokenFileSHA256: expectedTokensSHA256)
++            expectedTokenFileSHA256: expectedTokensSHA256, measuredCount: measuredCount)
+     }
+ }
+ 
+@@ -70,15 +79,16 @@
+     let expectedTokenIDs: [Int]
+     let expectedTokenFileSHA256: String
+     let warmupCount = 1
+-    let measuredCount = 3
++    let measuredCount: Int
+ 
+     init(first: QwenFullGenerationReferencePreflight, requests: [QwenGenerationReferenceAdmission],
+-         expectedTokenIDs: [Int], expectedTokenFileSHA256: String) throws {
++         expectedTokenIDs: [Int], expectedTokenFileSHA256: String, measuredCount: Int = 3) throws {
+         let base = first.admission
+         let scope = try QwenResidentSoloModelScope(definition: base.source.definition)
+         guard base.source.plan.stages.map(\.sourceRange) ==
+                 [0..<scope.referenceCut, scope.referenceCut..<base.source.specification.layers],
+-              requests.count == 4, Set(requests.map { $0.request.requestID }).count == 4,
++              (1...3).contains(measuredCount), requests.count == 1 + measuredCount,
++              Set(requests.map { $0.request.requestID }).count == requests.count,
+               requests[0].request.requestID == base.request.requestID,
+               expectedTokenIDs.count == 128, expectedTokenIDs.allSatisfy({ (0..<248_320).contains($0) }),
+               qwenStageWireIsSHA256(expectedTokenFileSHA256) else {
+@@ -104,6 +114,6 @@
+             }
+         }
+         self.first = first; self.requests = requests; self.expectedTokenIDs = expectedTokenIDs
+-        self.expectedTokenFileSHA256 = expectedTokenFileSHA256
++        self.expectedTokenFileSHA256 = expectedTokenFileSHA256; self.measuredCount = measuredCount
+     }
+ }
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloCohort.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloCohort.swift
+@@ -37,8 +37,8 @@
+     let completed = true
+     let verifiedFullModelLoads = 1
+     let warmupCount = 1
+-    let measuredCount = 3
+-    let freshRequestsAdmitted = 4
++    let measuredCount: Int
++    let freshRequestsAdmitted: Int
+     let modelReleased = true
+     let allRequestStateRetired = true
+     let prefixReuse = false
+@@ -66,9 +66,9 @@
+     private let lifecycle: QwenLayerStageResidentLifecycle
+     private let scope: QwenResidentSoloModelScope
+ 
+-    init(loaded: LoadedModel, scope: QwenResidentSoloModelScope) throws {
++    init(loaded: LoadedModel, scope: QwenResidentSoloModelScope, maximumRequests: Int) throws {
+         self.scope = scope
+-        lifecycle = try QwenLayerStageResidentLifecycle(maximumRequests: 4)
++        lifecycle = try QwenLayerStageResidentLifecycle(maximumRequests: maximumRequests)
+         self.loaded = loaded; model = loaded.model
+     }
+ 
+@@ -103,7 +103,9 @@
+ }
+ 
+ func produceQwenResidentSoloCohort(directory: URL, preflight: QwenResidentSoloPreflight,
+-    resources: QwenFullGenerationReferenceResources) throws -> QwenResidentSoloCohortReport {
++    resources: QwenFullGenerationReferenceResources,
++    publishLoaded: (QwenResidentSoloModelLoaded) throws -> Void,
++    publishRetired: (QwenResidentSoloRequestRetired) throws -> Void) throws -> QwenResidentSoloCohortReport {
+     let scope = try QwenResidentSoloModelScope(definition: preflight.first.admission.source.definition)
+     var owner: QwenResidentSoloModelOwner?
+     weak var model: Module?
+@@ -121,11 +123,12 @@
+                     let admitted = try admitQwenRegisteredGenerationReferenceSource(
+                         loaded: loaded, admission: preflight.first.admission.source)
+                     try resources.modelLoaded(admitted.1)
+-                    owner = try QwenResidentSoloModelOwner(loaded: loaded, scope: scope)
++                    owner = try QwenResidentSoloModelOwner(loaded: loaded, scope: scope, maximumRequests: preflight.requests.count)
+                     try checked()
+                     return admitted
+                 }
+                 memory.append(QwenStageMemoryObservation("resident_solo_loaded_no_request_state"))
++                try publishLoaded(.init(preflight: preflight, source: source, sourceLoad: receipt))
+                 var results: [QwenResidentSoloCohortRequest] = []
+                 var eligibility: QwenResidentSoloKernelEligibility?
+                 var requestAdmissions = 0
+@@ -144,7 +147,7 @@
+                         guard let owner, requestAdmissions == ordinal else { throw ProbeError("Solo admission order differs") }
+                         return try owner.request(admission, expected: preflight.expectedTokenIDs,
+                             admitResources: {
+-                                // The inherited ledger is admitted once for a four-request serial
++                                // The inherited ledger is admitted once for the bounded serial
+                                 // cohort. Every request has already passed the exact same-geometry
+                                 // preflight; its live check is repeated before any fresh state.
+                                 if ordinal == 0 { try resources.admitRequest(preflight.first.admission.requirements) }
+@@ -163,17 +166,24 @@
+                         result = try request()
+                     }
+                     try requestCheck()
+-                    results.append(.init(ordinal: ordinal, isWarmup: ordinal == 0, execution: result))
++                    let retired = QwenResidentSoloCohortRequest(ordinal: ordinal, isWarmup: ordinal == 0, execution: result)
++                    results.append(retired)
+                     memory.append(QwenStageMemoryObservation("resident_solo_request_\(ordinal)_retired"))
++                    guard let eligibility else { throw ProbeError("Retired request lacks warmup eligibility") }
++                    // CPU-only publication follows request/autorelease/lifecycle retirement.
++                    // Its I/O is outside every request timing interval and before the next request.
++                    try publishRetired(.init(preflight: preflight, request: retired, kernelEligibility: eligibility))
+                 }
+-                guard requestAdmissions == 4, results.count == 4, let eligibility, let owned = owner else {
+-                    throw ProbeError("Resident solo cohort ended before all four retired requests")
++                guard requestAdmissions == preflight.requests.count, results.count == preflight.requests.count,
++                      let eligibility, let owned = owner else {
++                    throw ProbeError("Resident solo cohort ended before all configured retired requests")
+                 }
+                 releaseAttempted = true; try owned.release(); owner = nil
+                 guard model == nil else { throw ProbeError("Resident solo did not release its full model") }
+                 try checked()
+                 memory.append(QwenStageMemoryObservation("resident_solo_model_released"))
+-                return .init(source: source, sourceLoad: receipt,
++                return .init(measuredCount: preflight.measuredCount, freshRequestsAdmitted: requestAdmissions,
++                    source: source, sourceLoad: receipt,
+                     expectedTokenFileSHA256: preflight.expectedTokenFileSHA256, kernelEligibility: eligibility,
+                     requests: results, resources: try resources.completedReceipt(), memory: memory,
+                     runtime: QwenDenseStageLoadRuntimeObservation())
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloEntry.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloEntry.swift
+@@ -28,7 +28,7 @@
+     let freshRequestStateCreated = false
+     let canonicalDeviceExclusionHeld = true
+     let warmupCount = 1
+-    let measuredCount = 3
++    let measuredCount: Int
+     let requestedOutputCount = 128
+     let maximumTokens = 8320
+     let requestIDs: [UUID]
+@@ -50,7 +50,7 @@
+ 
+ extension QwenResidentSoloCLI {
+     func run() throws {
+-        // One alarm includes metadata, model load, all four requests, teardown
++        // One alarm includes metadata, model load, all configured requests, teardown
+         // and stdout. Native work cannot extend it with a new request.
+         alarm(UInt32(reference.timeoutSeconds)); defer { alarm(0) }
+         let priorSIGPIPE = signal(SIGPIPE, SIG_IGN)
+@@ -65,7 +65,7 @@
+         try resources.check()
+         let first = input.first.admission
+         try publishSolo(QwenResidentSoloAdmitted(
+-            requestIDs: input.requests.map { $0.request.requestID },
++            measuredCount: input.measuredCount, requestIDs: input.requests.map { $0.request.requestID },
+             requestFingerprints: input.requests.map { $0.request.fingerprint }, profile: first.request.profile,
+             promptFileSHA256: first.source.promptFileSHA256,
+             promptTokenIDsSHA256: first.source.promptTokenIDsSHA256,
+@@ -84,7 +84,9 @@
+             guard Memory.cacheMemory == 0 else { throw ProbeError("Solo allocator retained freed buffers before load") }
+         }
+         let report = try produceQwenResidentSoloCohort(directory: reference.directory,
+-            preflight: input, resources: resources)
++            preflight: input, resources: resources,
++            publishLoaded: { try publishSolo($0, check: resources.check) },
++            publishRetired: { try publishSolo($0, check: resources.check) })
+         try publishSolo(report, check: resources.check)
+     }
+ 
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloProgress.swift
+@@ -0,0 +1,53 @@
++import Foundation
++
++/// CPU metadata only. Published after verified load and before fresh request state.
++/// This is phase evidence, never a completed cohort or a throughput sample.
++struct QwenResidentSoloModelLoaded: Encodable {
++    let kind = "qwen_resident_solo_model_loaded"
++    let schemaVersion = 1
++    let verifiedFullModelLoads = 1
++    let freshRequestStateCreated = false
++    let modelReleased = false
++    let cohortCompleted = false
++    let warmupCount = 1
++    let measuredCount: Int
++    let firstRequestID: UUID
++    let firstRequestFingerprint: String
++    let expectedTokenFileSHA256: String
++    let source: QwenLongPrefillReferenceSource
++    let sourceLoad: VerifiedQwenDiagnosticReceipt
++    let publishedNanoseconds: UInt64
++
++    init(preflight: QwenResidentSoloPreflight, source: QwenLongPrefillReferenceSource,
++         sourceLoad: VerifiedQwenDiagnosticReceipt) {
++        measuredCount = preflight.measuredCount
++        firstRequestID = preflight.first.admission.request.requestID
++        firstRequestFingerprint = preflight.first.admission.request.fingerprint
++        expectedTokenFileSHA256 = preflight.expectedTokenFileSHA256
++        self.source = source; self.sourceLoad = sourceLoad
++        publishedNanoseconds = DispatchTime.now().uptimeNanoseconds
++    }
++}
++
++/// The request has left its autorelease/lifecycle scope before this value exists.
++/// A later failure retains this record but cannot qualify the incomplete cohort.
++struct QwenResidentSoloRequestRetired: Encodable {
++    let kind = "qwen_resident_solo_request_retired"
++    let schemaVersion = 1
++    let modelReleased = false
++    let cohortCompleted = false
++    let warmupCount = 1
++    let measuredCount: Int
++    let expectedTokenFileSHA256: String
++    let request: QwenResidentSoloCohortRequest
++    let kernelEligibility: QwenResidentSoloKernelEligibility
++    let publishedNanoseconds: UInt64
++
++    init(preflight: QwenResidentSoloPreflight, request: QwenResidentSoloCohortRequest,
++         kernelEligibility: QwenResidentSoloKernelEligibility) {
++        measuredCount = preflight.measuredCount
++        expectedTokenFileSHA256 = preflight.expectedTokenFileSHA256
++        self.request = request; self.kernelEligibility = kernelEligibility
++        publishedNanoseconds = DispatchTime.now().uptimeNanoseconds
++    }
++}

@@ -1,0 +1,1651 @@
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationHistoryOwner.swift
+@@ -0,0 +1,9 @@
++import MLX
++
++/// Only the final-rank forwarding seam is shared. The original one-proposal
++/// hook, ordinary generation and accepted-round driver retain separate owners.
++protocol QwenGenerationHistoryOwner {
++    func forward(tokens: [Int], frame: QwenLayerStageFrame,
++                 incoming: QwenLayerStageBoundary, check: () throws -> Void) throws -> QwenLayerStageOutput
++}
++extension QwenLayerStageMTPProbe: QwenGenerationHistoryOwner {}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationAgreement.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationAgreement.swift
+@@ -18,7 +18,8 @@
+         let rankBuildSHA256: [String]
+         let numericalPolicySHA256: String
+         let prefillSchedulingPolicy: String?
+-        let mtpEnabled = false
++        let mtpEnabled: Bool
++        let mtpPolicySHA256: String?
+     }
+     let request: QwenLayerStageGenerationRequest
+     let descriptor: Descriptor
+@@ -29,7 +30,9 @@
+     init(request: QwenLayerStageGenerationRequest, membershipEpoch: UUID,
+          source: QwenLayerStageWireSourceIdentity, consumerStageFingerprint: String,
+          rankBuildSHA256: [String], numericalPolicySHA256: String,
+-         prefillPolicy: QwenResidentPrefillPolicy = .serial) throws {
++         prefillPolicy: QwenResidentPrefillPolicy = .serial,
++         speculation: QwenMTPAcceptedPolicy? = nil) throws {
++        try speculation?.require(request: request, prefillPolicy: prefillPolicy)
+         guard rankBuildSHA256.count == 2,
+               (rankBuildSHA256 + [consumerStageFingerprint, numericalPolicySHA256]).allSatisfy(qwenStageWireIsSHA256),
+               consumerStageFingerprint != source.producerStageFingerprint else {
+@@ -45,7 +48,8 @@
+             storageCommitmentSHA256: source.storageCommitmentSHA256, planFingerprint: source.planFingerprint,
+             stageFingerprints: [source.producerStageFingerprint, consumerStageFingerprint],
+             rankBuildSHA256: rankBuildSHA256, numericalPolicySHA256: numericalPolicySHA256,
+-            prefillSchedulingPolicy: prefillPolicy == .serial ? nil : prefillPolicy.rawValue)
++            prefillSchedulingPolicy: prefillPolicy == .serial ? nil : prefillPolicy.rawValue,
++            mtpEnabled: speculation != nil, mtpPolicySHA256: speculation?.fingerprint)
+         fingerprint = try qwenGenerationFingerprint("agreement", descriptor)
+         initialTokenChainSHA256 = sha256(Data(("qwen-generation-history-v1|" + fingerprint + "|"
+             + qwenGenerationTokenHash(request.promptTokenIDs)).utf8))
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift
+@@ -63,6 +63,9 @@
+             try nativeError.check()
+         }
+         do {
++            guard !agreement.descriptor.mtpEnabled else {
++                throw ProbeError("Ordinary generation cannot execute an accepted-MTP agreement")
++            }
+             if probe != nil {
+                 guard diagnostics == nil, agreement.prefillPolicy == .serial else {
+                     throw ProbeError("MTP proposal probe cannot overlap recording or lookahead")
+@@ -200,7 +203,7 @@
+     }
+ }
+ 
+-private func requireGenerationSource(loaded: LoadedQwenLayerStage, plan: QwenLayerStagePlan,
++func requireGenerationSource(loaded: LoadedQwenLayerStage, plan: QwenLayerStagePlan,
+     agreement: QwenLayerStageGenerationAgreement, collective: Collective) throws {
+     let source = agreement.descriptor, receipt = loaded.receipt
+     guard collective.size == 2, (0...1).contains(collective.rank),
+@@ -225,9 +228,9 @@
+         dtype: loaded.activationDType, maximumBytes: CollectivePointToPointShape.hardByteLimit)
+ }
+ 
+-private func runGenerationFrame(session: QwenLayerStageSession, control: QwenLayerStageGenerationControl,
++func runGenerationFrame(session: QwenLayerStageSession, control: QwenLayerStageGenerationControl,
+     transport: QwenLayerStageGenerationTransport, expected: QwenLayerStageGenerationBoundaryExpectation,
+-    probe: QwenLayerStageMTPProbe? = nil, check: () throws -> Void
++    probe: (any QwenGenerationHistoryOwner)? = nil, check: () throws -> Void
+ ) throws -> (QwenLayerStageGenerationBoundaryPacket, MLXArray?) {
+     let request = control.agreement.request, frame = expected.frame
+     let tokens: [Int]
+@@ -273,7 +276,7 @@
+     return (packet, row)
+ }
+ 
+-private func agreeGenerationToken(row: MLXArray?, boundary: QwenLayerStageGenerationBoundaryPacket,
++func agreeGenerationToken(row: MLXArray?, boundary: QwenLayerStageGenerationBoundaryPacket,
+     control: QwenLayerStageGenerationControl, transport: QwenLayerStageGenerationTransport,
+     check: () throws -> Void
+ ) throws -> QwenLayerStageGenerationTokenPacket {
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationResult.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationResult.swift
+@@ -14,7 +14,7 @@
+     let finishReason: QwenLayerStageGenerationFinishReason
+     let bothRequestStatesRetired = true
+     let modelRemainsResident = true
+-    let mtpEnabled = false
++    var mtpEnabled = false
+     let physicalTransferQualified = false
+     let independentNumericalComparisonPerformed = false
+     let externalTTFTMeasured = false
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenMTPAcceptedDriver.swift
+@@ -0,0 +1,242 @@
++import Foundation
++import MLX
++
++struct QwenMTPAcceptedRoundEvidence: Encodable {
++    let proposal: QwenResidentMTPProposal
++    let verificationFingerprint: String
++    let stagedInputs: Int
++    let keptInputs: Int
++    let selectedTokens: [Int]
++    let receipts: [[QwenTargetVerificationLocalReceipt]]
++}
++struct QwenMTPAcceptedEvidence: Encodable {
++    let schema = "qwen_registered_mtp_accepted_depth1_v1"
++    let policySHA256: String
++    let target: QwenGenerationDiagnosticEvidence
++    let rounds: [QwenMTPAcceptedRoundEvidence]
++    let assistantRequestReleased: Bool?
++    let mtpEnabled = true
++    let correctnessOnly = true
++    let encryptedTransportQualified = false
++    let throughputMeasurementValid = false
++}
++
++private final class QwenMTPAcceptedHistoryOwner: QwenGenerationHistoryOwner {
++    let owner: QwenResidentMTPRequest
++    init(_ owner: QwenResidentMTPRequest) { self.owner = owner }
++    func forward(tokens: [Int], frame: QwenLayerStageFrame, incoming: QwenLayerStageBoundary,
++                 check: () throws -> Void) throws -> QwenLayerStageOutput {
++        if frame.phase == .prefill {
++            return try owner.prefill(tokens: tokens, frame: frame, incoming: incoming, check: check)
++        }
++        // The final single remaining target input needs no unusable draft.
++        guard tokens.count == 1 else { throw ProbeError("MTP ordinary tail requires one input") }
++        return try owner.probeSession.decode(tokens[0], offset: frame.tokenOffset, incoming: incoming, check: check)
++    }
++}
++
++/// One request under the original resident reservation and process fence.
++/// Every thrown path retires local state; the external owner must still fence
++/// the peer before releasing its lease. No successful throw-only retirement.
++func runQwenMTPAcceptedRequest(loaded: QwenResidentLoadedStage, assets: QwenResidentStageWithMTPAssets?,
++    plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement, collective: Collective,
++    resources: QwenMTPAcceptedResources, deadline: UInt64,
++    onCommittedToken: (Int) throws -> Bool, check: () throws -> Void) throws -> QwenMTPAcceptedEvidence {
++    try withoutActuallyEscaping(check) { borrowedCheck in
++        try withoutActuallyEscaping(onCommittedToken) { borrowedToken in
++            try MLX.withError { nativeError in
++                do {
++                    func checked() throws {
++                        try nativeError.check(); try borrowedCheck(); try resources.requireLive(); try nativeError.check()
++                    }
++                    guard agreement.descriptor.mtpEnabled,
++                          agreement.descriptor.mtpPolicySHA256 == QwenMTPAcceptedPolicy.registered9BDepth1Short.fingerprint else {
++                        throw ProbeError("Accepted MTP driver requires its explicit agreement policy")
++                    }
++                    try requireGenerationSource(loaded: loaded.loaded, plan: plan, agreement: agreement, collective: collective)
++                    let diagnostics = try QwenGenerationDiagnosticResources(loaded: loaded.loaded, profile: loaded.profile,
++                        plan: plan, request: agreement.request, rank: collective.rank, requestAllowance: resources.base)
++                    try resources.recording.requireCapture(diagnostics.budget)
++                    let capture = QwenGenerationDiagnosticCapture(request: agreement.request, rank: collective.rank, resources: diagnostics)
++                    defer { capture.discard() }
++                    let generation = QwenLayerStageGenerationControl(agreement: agreement)
++                    let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective)
++                    let mtpTransport = try QwenMTPAcceptedTransport(collective: collective)
++                    let rounds = QwenMTPAcceptedRoundControl()
++                    var session: QwenLayerStageSession?
++                    var history: QwenMTPAcceptedHistoryOwner?
++                    do {
++                        try checked()
++                        _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
++                            material: { .generation(agreementFingerprint: agreement.fingerprint) },
++                            disagreementMessage: "MTP policy/request/source readiness differs", check: checked)
++                        let owned: QwenLayerStageSession
++                        if collective.rank == 1 {
++                            guard let assets else { throw ProbeError("Accepted MTP final rank lacks loaded assistant") }
++                            let owner = try QwenResidentMTPRequest(assets: assets, plan: plan, agreement: agreement,
++                                capacityLimitBytes: resources.reservedBytes, deadlineUptimeNanoseconds: deadline,
++                                acceptedMode: true, check: checked)
++                            history = .init(owner); owned = owner.probeSession
++                        } else { owned = try .init(stage: loaded.loaded, plan: plan, generationRequest: agreement.request) }
++                        session = owned
++                        var selected = [Int](), evidence = [QwenMTPAcceptedRoundEvidence]()
++                        var finalDecision: QwenLayerStageGenerationDecisionPacket?
++        
++                        func publish(row: MLXArray?, packet: QwenLayerStageGenerationBoundaryPacket,
++                                     frame: QwenLayerStageFrame) throws -> Int {
++                            let tokenPacket = try agreeGenerationToken(row: row, boundary: packet, control: generation,
++                                transport: transport, check: checked)
++                            let token = try generation.takeCommittedToken(); selected.append(token)
++                            let decision = try mtpGenerationDecision(token: tokenPacket, generation: generation,
++                                transport: transport, onCommittedToken: borrowedToken, check: checked)
++                            if generation.phase == .retiring {
++                                finalDecision = decision
++                                try capture.captureFinalRow(row, frame: frame, tokenID: token, check: checked)
++                            }
++                            return token
++                        }
++        
++                        while generation.phase == .frame {
++                            try autoreleasepool {
++                                try checked()
++                                let remaining = agreement.request.forwardCount - generation.completedFrames
++                                if generation.committedTokens < agreement.request.promptCount || remaining == 1 {
++                                    let expected = try generation.beginFrame()
++                                    let (packet, row) = try runGenerationFrame(session: owned, control: generation,
++                                        transport: transport, expected: expected, probe: history, check: checked)
++                                    if expected.frame.phase == .prefill {
++                                        try history?.owner.observeCommitted(generation: generation, check: checked)
++                                    }
++                                    if generation.phase == .token { _ = try publish(row: row, packet: packet, frame: expected.frame) }
++                                    return
++                                }
++        
++                                let localProposal = try history?.owner.proposeAccepted(generation: generation,
++                                    roundID: UUID(), check: checked)
++                                let request = try mtpTransport.proposal(localProposal, ordinal: rounds.roundCount,
++                                    admit: { try rounds.begin(proposal: $0, generation: generation) }, check: checked)
++                                func ownerCheck(_ budget: QwenTargetVerificationBudget) throws {
++                                    try checked(); try resources.requireVerification(budget)
++                                }
++                                _ = try owned.beginTargetVerification(profile: loaded.profile, proposal: request.proposal,
++                                    generation: generation, ownerCheck: ownerCheck)
++                                var packets = [QwenMTPAcceptedWire.Boundary](), rows = [MLXArray]()
++                                for step in 0..<request.maximumSteps {
++                                    if collective.rank == 0 {
++                                        guard case .provisionalHidden(let boundary) = try owned.stageTargetVerification(
++                                            roundID: request.proposal.roundID, step: step, ownerCheck: ownerCheck) else {
++                                            throw ProbeError("MTP ingress stage did not return a provisional residual")
++                                        }
++                                        packets.append(try mtpTransport.sendBoundary(boundary, request: request, step: step, check: checked))
++                                    } else {
++                                        let (row, packet): (MLXArray, QwenMTPAcceptedWire.Boundary) = try mtpTransport.receiveBoundary(
++                                            request: request, step: step, consume: { incoming in
++                                                guard case .provisionalLogits(let row) = try owned.stageTargetVerification(
++                                                    roundID: request.proposal.roundID, step: step, incoming: incoming, ownerCheck: ownerCheck) else {
++                                                    throw ProbeError("MTP final stage did not return a provisional row")
++                                                }
++                                                return row
++                                            }, check: checked)
++                                        rows.append(row); packets.append(packet)
++                                    }
++                                    try rounds.didStage(step: step)
++                                }
++                                var hidden = [MLXArray](), receiptSets = [[QwenTargetVerificationLocalReceipt]]()
++                                var roundTokens = [Int]()
++                                for step in 0..<request.maximumSteps {
++                                    try rounds.authorizeCommit(generation: generation)
++                                    let expected = try generation.beginFrame()
++                                    guard expected.frame == (try request.frame(step: step)) else { throw ProbeError("MTP commit frame differs") }
++                                    let commit = try owned.commitNextTargetVerification(roundID: request.proposal.roundID, ownerCheck: ownerCheck)
++                                    defer { commit.discard() }
++                                    let receipts = try mtpTransport.receipts(commit.localReceipt, check: checked)
++                                    let joined = try rounds.joinCommit(receipts)
++                                    receiptSets.append(receipts)
++                                    let localRows = try commit.takeLocalHiddenRows()
++                                    guard localRows.count == (collective.rank == 1 ? 1 : 0),
++                                          owned.committedTokens == joined.committedInputs else { throw ProbeError("MTP local commit rows/frontier differ") }
++                                    hidden.append(contentsOf: localRows)
++                                    let packet = try QwenLayerStageGenerationBoundaryPacket(expected: expected, payloadSHA256: packets[step].payloadSHA256)
++                                    // These frame acknowledgements follow BOTH real prefix
++                                    // receipts. A provisional-staged ACK never reaches here.
++                                    for rank in 0...1 {
++                                        try generation.acknowledgeFrame(rank: rank, packet: packet, nativeCommittedTokens: joined.committedInputs)
++                                    }
++                                    let token = try publish(row: collective.rank == 1 ? rows[step] : nil, packet: packet, frame: expected.frame)
++                                    roundTokens.append(token)
++                                    if generation.phase != .frame || (step == 0 && token != request.proposal.proposedTokenID) { break }
++                                }
++                                let final = try owned.reconcileTargetVerification(roundID: request.proposal.roundID,
++                                    keepingInputs: rounds.committed, ownerCheck: ownerCheck)
++                                defer { final.discard() }
++                                let receipts = try mtpTransport.receipts(final.localReceipt, check: checked)
++                                let joined = try rounds.joinReconciliation(receipts)
++                                receiptSets.append(receipts)
++                                guard try final.takeLocalHiddenRows().isEmpty else { throw ProbeError("MTP final reconcile committed unpublished inputs") }
++                                try history?.owner.finalizeAccepted(request: request, joined: joined, committedHidden: hidden, check: checked)
++                                try rounds.finish(generation: generation)
++                                evidence.append(.init(proposal: request.proposal, verificationFingerprint: request.fingerprint,
++                                    stagedInputs: request.maximumSteps, keptInputs: joined.retainedInputs,
++                                    selectedTokens: roundTokens, receipts: receiptSets))
++                            }
++                        }
++                        guard generation.phase == .retiring, !generation.isFailed, let finalDecision,
++                              let reason = generation.finishReason, let last = generation.lastTokenID,
++                              selected.count == generation.selectedTokenCount, rounds.active == nil else {
++                            throw ProbeError("Accepted MTP ended without reconciled agreed completion")
++                        }
++                        try capture.captureState(session: owned, stage: plan.stages[collective.rank], selectedTokenIDs: selected,
++                            completedFrames: generation.completedFrames, committedTokens: generation.committedTokens, reason: reason, check: checked)
++                        if let history { try history.owner.finishAccepted(reason: reason, selectedTokenCount: selected.count, lastTokenID: last, check: checked) }
++                        else { try owned.finishGeneration(reason, selectedTokenCount: selected.count, lastTokenID: last) }
++                        guard owned.isClosed, !owned.isFailed else { throw ProbeError("MTP native target state did not retire") }
++                        try generation.acknowledgeRetirement(rank: collective.rank, disposition: .retired)
++                        try transport.exchangeRetirement(decision: finalDecision, check: checked)
++                        try generation.acknowledgeRetirement(rank: 1-collective.rank, disposition: .retired)
++                        try checked()
++                        guard generation.isRetired, !generation.isFailed, !transport.isFailed, !mtpTransport.failed else {
++                            throw ProbeError("Accepted MTP bilateral retirement is incomplete")
++                        }
++                        var result = QwenLayerStageGenerationResult(agreementFingerprint: agreement.fingerprint,
++                            membershipEpoch: agreement.descriptor.membershipEpoch, identity: owned.identity,
++                            selectedTokenIDs: selected, tokenChainSHA256: generation.tokenChainSHA256,
++                            completedFrames: generation.completedFrames, committedTokens: generation.committedTokens, finishReason: reason)
++                        result.mtpEnabled = true
++                        return .init(policySHA256: QwenMTPAcceptedPolicy.registered9BDepth1Short.fingerprint,
++                            target: try capture.finish(execution: result, agreement: agreement, stage: plan.stages[collective.rank]),
++                            rounds: evidence, assistantRequestReleased: history?.owner.probeAssistantRequestReleased)
++                    } catch {
++                        var primary: Error = error
++                        do { try nativeError.check() } catch { primary = error }
++                        capture.discard(); generation.cancel(); rounds.cancel(); transport.retire(); mtpTransport.retire()
++                        var failures = [String]()
++                        do { try history?.owner.retire(failed: true) } catch { failures.append("assistant: \(error)") }
++                        do { try session?.cancel() } catch { failures.append("target: \(error)") }
++                        guard failures.isEmpty else { throw ProbeError("MTP failed (\(primary)); retirement failed (\(failures.joined(separator: "; ")))") }
++                        throw primary
++                    }
++                } catch { try nativeError.check(); throw error }
++            }
++        }
++    }
++}
++
++private func mtpGenerationDecision(token: QwenLayerStageGenerationTokenPacket,
++    generation: QwenLayerStageGenerationControl, transport: QwenLayerStageGenerationTransport,
++    onCommittedToken: (Int) throws -> Bool, check: () throws -> Void) throws -> QwenLayerStageGenerationDecisionPacket {
++    if transport.rank == 0 {
++        try check(); let proceed = try onCommittedToken(token.content.tokenID); try check()
++        let decision = try generation.decide(continueRequested: proceed)
++        try generation.acknowledgeDecision(rank: 0, packet: decision)
++        try transport.sendDecision(decision, check: check)
++        try generation.acknowledgeDecision(rank: 1, packet: decision)
++        return decision
++    }
++    let decision = try transport.receiveDecision(token: token, check: check)
++    let local = try generation.decide(continueRequested: decision.content.decision == .proceed)
++    guard local.content == decision.content else { throw ProbeError("MTP owner decision differs from target stop policy") }
++    try generation.acknowledgeDecision(rank: 0, packet: decision)
++    try generation.acknowledgeDecision(rank: 1, packet: decision)
++    try transport.acknowledgeDecision(decision, check: check)
++    return decision
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenMTPAcceptedPolicy.swift
+@@ -0,0 +1,17 @@
++import Foundation
++
++enum QwenMTPAcceptedPolicy {
++    case registered9BDepth1Short
++    var fingerprint: String {
++        sha256(Data("registered-qwen35-9b-mtp-depth1-short-v1|cut4|serial|P1-32|C1-16|O2-8|emptyStops|target-prefix-receipts|assistant-finalize|plain-lab".utf8))
++    }
++    func require(request: QwenLayerStageGenerationRequest, prefillPolicy: QwenResidentPrefillPolicy) throws {
++        guard prefillPolicy == .serial, request.profile.hiddenSize == 4096,
++              request.profile.vocabularySize == 248320, request.profile.activationDType == "bfloat16",
++              (1...32).contains(request.promptCount), (1...16).contains(request.chunkSize),
++              (2...8).contains(request.outputCount), request.stopTokenIDs.isEmpty else {
++            throw ProbeError("MTP policy is outside the explicit short registered9B experiment")
++        }
++    }
++}
++
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenMTPAcceptedResources.swift
+@@ -0,0 +1,83 @@
++import Foundation
++import MLX
++
++/// One reservation charges simultaneous target, assistant, provisional outputs,
++/// native transfers and CPU evidence. No sum of independently passing gates is
++/// treated as a combined allowance. Loaded weights/caches remain in MLX active.
++struct QwenMTPAcceptedResources {
++    let base: QwenResidentRequestAllowance
++    let assistant: QwenResidentMTPRequestResources?
++    let verification: QwenTargetVerificationBudget
++    let recording: QwenResidentRecordingCharge
++    let additionalNativeBytes: Int
++    let additionalHostBytes: Int
++    let reservedBytes: Int
++
++    init(loaded: QwenResidentLoadedStage, assets: QwenResidentStageWithMTPAssets?,
++         agreement: QwenLayerStageGenerationAgreement, plan: QwenLayerStagePlan) throws {
++        let rank = loaded.loaded.stageIndex, request = agreement.request
++        guard loaded.profile.model == .qwen35NineB, plan.stages.count == 2,
++              plan.stages[0].sourceRange == 0..<4, (0...1).contains(rank),
++              (assets != nil) == (rank == 1), loaded.loaded.activationDType == .bfloat16,
++              agreement.prefillPolicy == .serial, (1...32).contains(request.promptCount),
++              request.chunkSize <= 16, (2...8).contains(request.outputCount), request.stopTokenIDs.isEmpty else {
++            throw ProbeError("Accepted MTP requires exact registered cut4/BF16/serial9B P<=32/C<=16/O2...8")
++        }
++        if let assets {
++            guard assets.target.loaded.model === loaded.loaded.model,
++                  sha256(try canonicalJSONData(assets.target.loaded.receipt)) == sha256(try canonicalJSONData(loaded.loaded.receipt)) else {
++                throw ProbeError("MTP assistant assets belong to another native target owner")
++            }
++        }
++        base = try .derive(profile: loaded.profile, plan: plan, rank: rank,
++            maximumTokens: request.maximumTokens, chunkSize: min(request.chunkSize, request.promptCount),
++            bound: QwenResidentResourceEnvironment.allocationBound)
++        assistant = try assets.map { try QwenResidentMTPRequestResources(assets: $0, plan: plan, agreement: agreement, capacityLimitBytes: Int.max) }
++        verification = try .derive(hiddenSize: request.profile.hiddenSize,
++            vocabularySize: request.profile.vocabularySize, dtypeBytes: 2, rank: rank, steps: 2,
++            bound: QwenResidentResourceEnvironment.allocationBound)
++        recording = try .derive(base: base, rank: rank, vocabularySize: request.profile.vocabularySize,
++            activationDType: request.profile.activationDType, bound: QwenResidentResourceEnvironment.allocationBound)
++        let sum = QwenLongPrefillCheckedBytes.sum, bound = QwenResidentResourceEnvironment.allocationBound
++        // Additional carry/finalization roots coexist with the two target rows
++        // and retained assistant roots until the final bilateral reconciliation.
++        // Eight short hidden roots conservatively cover both dtype promotions.
++        let finalization = rank == 1 ? try QwenLongPrefillCheckedBytes.product([8, bound(request.profile.hiddenSize * 4)]) : 0
++        // The original single-proposal ledger uses prompt length. Later rounds
++        // can attend beyond that frontier, and P1 can retain two feed rows.
++        // Charge another complete graph at maximum context; do not subtract
++        // the original prompt graph or assume its roots have already retired.
++        let repeated = rank == 1 ? try Self.repeatedAssistantBytes(
++            maximumInputs: request.maximumTokens, bound: bound) : 0
++        additionalNativeBytes = try sum([assistant?.additionalBytes ?? 0, repeated,
++            verification.additionalNativeBytes, recording.capture.extraNativeBytes,
++            finalization, bound(4096), bound(4096), bound(64), bound(4)])
++        // Retain the diagnostic row plus bounded control/round descriptors and
++        // a 16MiB JSON publication allowance through encoding and sink return.
++        additionalHostBytes = try sum([verification.additionalHostBytes,
++            recording.capture.extraHostBytes, 65_536, 16_777_216])
++        reservedBytes = try sum([base.reservedBytes, additionalNativeBytes, additionalHostBytes])
++        try requireLive()
++    }
++    private static func repeatedAssistantBytes(maximumInputs n: Int,
++        bound: (Int) throws -> Int) throws -> Int {
++        let product = QwenLongPrefillCheckedBytes.product, sum = QwenLongPrefillCheckedBytes.sum
++        let h = 4096, kv = 1024
++        let arrays: [(count: Int, shape: [Int])] = [
++            (2,[n,h,4]), (1,[n,h,4]), (2,[n,4]), (3,[n,h,4]),
++            (1,[n,2,h,4]), (2,[n,h,4]), (4,[n,kv,4]),
++            (8,[2,h,4]), (4,[12288,4]), (4,[16,n,4]), (1,[248320,4]), (1,[4]),
++        ]
++        return try sum(arrays.map { item in try product([item.count, bound(product(item.shape))]) })
++    }
++    func requireLive() throws {
++        try base.requireLive(additionalNativeBytes: additionalNativeBytes, additionalHostBytes: additionalHostBytes)
++    }
++    func requireVerification(_ value: QwenTargetVerificationBudget) throws {
++        guard value.additionalNativeBytes <= verification.additionalNativeBytes,
++              value.additionalHostBytes <= verification.additionalHostBytes else {
++            throw ProbeError("MTP transaction exceeds the retained combined reservation")
++        }
++        try requireLive()
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenMTPAcceptedRoundControl.swift
+@@ -0,0 +1,138 @@
++import Foundation
++
++/// A joined receipt proves only the two values supplied by the owned transport.
++/// Actual process/lease release remains the resident owner's separate obligation.
++struct QwenMTPJoinedReceipt {
++    let verificationFingerprint: String
++    let retainedInputs: Int
++    let committedInputs: Int
++    let isFinal: Bool
++    fileprivate init(_ receipt: QwenTargetVerificationLocalReceipt) {
++        verificationFingerprint = receipt.verificationFingerprint
++        retainedInputs = receipt.retainedInputs; committedInputs = receipt.committedInputs
++        isFinal = receipt.isFinal
++    }
++}
++
++/// Bounded depth-one control. Provisional staging never advances the existing
++/// generation control; only a joined, independently expected prefix can do that.
++final class QwenMTPAcceptedRoundControl {
++    private var used = Set<UUID>()
++    private(set) var roundCount = 0
++    private(set) var failed = false
++    private(set) var active: QwenTargetVerificationRequest?
++    private(set) var committed = 0
++    private var staged = 0
++    private var reconciled = false
++    private var commitAuthorized = false
++    private var nextBase: Int?
++
++    func begin(proposal: QwenResidentMTPProposal, generation: QwenLayerStageGenerationControl) throws
++        -> QwenTargetVerificationRequest {
++        try operation {
++            let request = generation.agreement.request
++            guard generation.agreement.descriptor.mtpEnabled,
++                  generation.agreement.descriptor.mtpPolicySHA256 == QwenMTPAcceptedPolicy.registered9BDepth1Short.fingerprint,
++                  active == nil, roundCount < 7, !used.contains(proposal.roundID),
++                  (2...8).contains(request.outputCount), request.promptCount <= 32,
++                  request.chunkSize <= 16, request.stopTokenIDs.isEmpty,
++                  nextBase == nil || nextBase == generation.committedTokens else {
++                throw ProbeError("MTP round is reused, skipped or outside the private short scope")
++            }
++            let value = try QwenTargetVerificationRequest(proposal: proposal, generation: generation)
++            used.insert(proposal.roundID); active = value; roundCount += 1
++            committed = 0; staged = 0; reconciled = false; commitAuthorized = false
++            return value
++        }
++    }
++
++    func didStage(step: Int) throws {
++        try operation {
++            guard let active, !reconciled, committed == 0, step == staged,
++                  step < active.maximumSteps else { throw ProbeError("MTP staging is out of order") }
++            staged += 1
++        }
++    }
++
++    /// This check runs BEFORE either native prefix commit. In particular, a
++    /// staged draft can only commit after its token equals the target-selected
++    /// value and the client's continue decision is acknowledged by both ranks.
++    func authorizeCommit(generation: QwenLayerStageGenerationControl) throws {
++        try operation {
++            guard let active, !reconciled, !commitAuthorized, staged == active.maximumSteps,
++                  committed < staged, !generation.isFailed, generation.phase == .frame,
++                  generation.agreement.fingerprint == active.agreement.fingerprint,
++                  generation.committedTokens == active.base + committed,
++                  generation.completedFrames == active.descriptor.firstSequence + committed,
++                  generation.lastTokenID == (try active.token(step: committed)) else {
++                throw ProbeError("MTP prefix lacks actual target-token and continuation agreement")
++            }
++            commitAuthorized = true
++        }
++    }
++
++    func joinCommit(_ values: [QwenTargetVerificationLocalReceipt]) throws -> QwenMTPJoinedReceipt {
++        try operation {
++            guard let active, !reconciled, commitAuthorized, staged == active.maximumSteps, committed < staged else {
++                throw ProbeError("MTP prefix commit precedes complete bounded staging")
++            }
++            let retained = committed + 1
++            try require(values, active: active, retained: retained,
++                pending: staged - retained, newlyCommitted: 1, final: false)
++            committed = retained; commitAuthorized = false
++            return .init(values[0])
++        }
++    }
++
++    func joinReconciliation(_ values: [QwenTargetVerificationLocalReceipt]) throws -> QwenMTPJoinedReceipt {
++        try operation {
++            guard let active, !reconciled, !commitAuthorized, staged == active.maximumSteps, committed > 0 else {
++                throw ProbeError("MTP final reconciliation lacks an already published prefix")
++            }
++            // Reconciliation discards only the uncommitted suffix. It may not
++            // silently commit another input after the publication decision.
++            try require(values, active: active, retained: committed,
++                pending: 0, newlyCommitted: 0, final: true)
++            reconciled = true
++            return .init(values[0])
++        }
++    }
++
++    func finish(generation: QwenLayerStageGenerationControl) throws {
++        try operation {
++            guard let active, reconciled, !generation.isFailed,
++                  generation.agreement.fingerprint == active.agreement.fingerprint,
++                  generation.phase == .frame || generation.phase == .retiring,
++                  generation.committedTokens == active.base + committed,
++                  generation.completedFrames == active.descriptor.firstSequence + committed,
++                  generation.selectedTokenCount == generation.committedTokens
++                    - active.agreement.request.promptCount + 1 else {
++                throw ProbeError("MTP round finalization differs from committed generation progress")
++            }
++            nextBase = generation.committedTokens; self.active = nil
++        }
++    }
++
++    private func require(_ values: [QwenTargetVerificationLocalReceipt], active: QwenTargetVerificationRequest,
++                         retained: Int, pending: Int, newlyCommitted: Int, final: Bool) throws {
++        guard values.count == 2, Set(values.map(\.rank)) == [0, 1] else {
++            throw ProbeError("MTP commit requires exactly one receipt from each rank")
++        }
++        for value in values {
++            guard value.verificationFingerprint == active.fingerprint, value.base == active.base,
++                  value.stagedInputs == staged, value.retainedInputs == retained,
++                  value.committedInputs == active.base + retained, value.pendingInputs == pending,
++                  value.newlyCommittedInputs == newlyCommitted, value.isFinal == final else {
++                throw ProbeError("MTP peer receipt differs from the expected native prefix")
++            }
++        }
++    }
++
++    func cancel() { failed = true; active = nil }
++    private func operation<T>(_ body: () throws -> T) throws -> T {
++        do {
++            guard !failed else { throw ProbeError("MTP round control is failed") }
++            return try body()
++        } catch { failed = true; throw error }
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenMTPAcceptedRuntime.swift
+@@ -0,0 +1,115 @@
++import DarkbloomClusterProtocol
++import Foundation
++
++@_spi(Benchmark) public struct QwenMTPAcceptedCompletion: Sendable {
++    public let completion: QwenResidentGenerationCompletion
++    public let encodedEvidence: Data
++}
++
++/// A component of the existing exclusive resident owner, never another owner.
++/// The reservation remains retained after completion until owner shutdown, so
++/// CPU evidence publication cannot race reuse of the charged native lifetime.
++final class QwenMTPAcceptedRuntime {
++    private let admission: QwenResidentAdmission
++    private let control: QwenResidentControl
++    private let collective: Collective
++    private let lifecycle: QwenLayerStageResidentLifecycle
++    private var loaded: QwenResidentLoadedStage?
++    private var assets: QwenResidentStageWithMTPAssets?
++    private let capacity: Int
++    private struct Reservation {
++        let request: QwenLayerStageGenerationRequest
++        let agreement: QwenLayerStageGenerationAgreement
++        let resources: QwenMTPAcceptedResources
++        let deadline: UInt64
++    }
++    private var reservation: Reservation?
++    private var used = false
++    var admitsAnotherRequest: Bool { !used && loaded != nil }
++
++    init(admission: QwenResidentAdmission, control: QwenResidentControl, collective: Collective,
++         lifecycle: QwenLayerStageResidentLifecycle, loaded: QwenResidentLoadedStage,
++         assets: QwenResidentStageWithMTPAssets?, capacity: Int) {
++        self.admission = admission; self.control = control; self.collective = collective
++        self.lifecycle = lifecycle; self.loaded = loaded; self.assets = assets; self.capacity = capacity
++    }
++
++    static func agreement(admission: QwenResidentAdmission, loaded: QwenResidentLoadedStage,
++                          request: QwenLayerStageGenerationRequest) throws -> QwenLayerStageGenerationAgreement {
++        let receipt = loaded.loaded.receipt
++        let source = try QwenLayerStageWireSourceIdentity(sourceConfigurationSHA256: receipt.sourceConfigurationSHA256,
++            artifactAggregateSHA256: receipt.verifiedAggregateSHA256,
++            storageCommitmentSHA256: receipt.storageCommitmentSHA256, planFingerprint: admission.plan.fingerprint,
++            producerStageFingerprint: admission.plan.stages[0].fingerprint)
++        return try .init(request: request, membershipEpoch: admission.configuration.identity.membershipEpoch,
++            source: source, consumerStageFingerprint: admission.plan.stages[1].fingerprint,
++            rankBuildSHA256: admission.configuration.identity.peers.map(\.buildSHA256),
++            numericalPolicySHA256: admission.arithmeticSHA256, prefillPolicy: .serial,
++            speculation: .registered9BDepth1Short)
++    }
++
++    static func maximumCapacity(admission: QwenResidentAdmission, loaded: QwenResidentLoadedStage,
++                                assets: QwenResidentStageWithMTPAssets?) throws -> Int {
++        let request = try QwenLayerStageGenerationRequest(profile: admission.profile,
++            requestID: UUID(uuidString: "00000000-0000-0000-0000-000000000000")!,
++            promptTokenIDs: Array(repeating: 0, count: 32), chunkSize: 16, outputCount: 8, stopTokenIDs: [])
++        let agreement = try agreement(admission: admission, loaded: loaded, request: request)
++        return try QwenMTPAcceptedResources(loaded: loaded, assets: assets,
++            agreement: agreement, plan: admission.plan).reservedBytes
++    }
++
++    func reserve(requestID: UUID, request value: ClusterWorkerReservation) throws -> Int {
++        guard !used, reservation == nil, let loaded else { throw ProbeError("Accepted MTP owner permits one request") }
++        let request = try admission.request(value, id: requestID, now: DispatchTime.now().uptimeNanoseconds)
++        let agreement = try Self.agreement(admission: admission, loaded: loaded, request: request)
++        try control.check(); try control.reserve(requestID)
++        do {
++            let resources = try QwenMTPAcceptedResources(loaded: loaded, assets: assets, agreement: agreement, plan: admission.plan)
++            guard resources.reservedBytes <= value.capacityLimitBytes, resources.reservedBytes <= capacity else {
++                throw ProbeError("Accepted MTP combined reservation exceeds caller or Ready capacity")
++            }
++            try resources.requireLive(); try control.check(deadline: value.deadlineUptimeNanoseconds)
++            reservation = .init(request: request, agreement: agreement, resources: resources, deadline: value.deadlineUptimeNanoseconds)
++            return resources.reservedBytes
++        } catch { control.fail(); throw error }
++    }
++
++    func start(requestID: UUID, onCommittedToken: (Int, Int, Int) throws -> Bool) throws -> QwenMTPAcceptedCompletion {
++        guard let reserved = reservation, reserved.request.requestID == requestID, let loaded else {
++            throw ProbeError("Accepted MTP start lacks its retained reservation")
++        }
++        used = true
++        return try QwenResidentRequestPublication.run(control: control, lifecycle: lifecycle,
++            identity: .init(requestID: requestID, epoch: requestID, recordedRequestFingerprint: reserved.request.fingerprint),
++            deadline: reserved.deadline, body: {
++                try autoreleasepool {
++                    var ordinal = 0
++                    func check() throws {
++                        try control.check(deadline: reserved.deadline); try reserved.resources.requireLive()
++                        try control.check(deadline: reserved.deadline)
++                    }
++                    return try runQwenMTPAcceptedRequest(loaded: loaded, assets: assets, plan: admission.plan,
++                        agreement: reserved.agreement, collective: collective, resources: reserved.resources, deadline: reserved.deadline,
++                        onCommittedToken: { token in
++                            let current = ordinal; ordinal += 1
++                            return try onCommittedToken(current, token, reserved.request.promptCount + current)
++                        }, check: check)
++                }
++            }, prepare: { evidence in
++                let result = evidence.target.execution
++                guard result.mtpEnabled, result.bothRequestStatesRetired,
++                      let reason = ClusterWorkerFinishReason(rawValue: result.finishReason.rawValue) else {
++                    throw ProbeError("Accepted MTP lacks actual bilateral request retirement")
++                }
++                try reserved.resources.requireLive(); try control.check(deadline: reserved.deadline)
++                let bytes = try canonicalJSONData(evidence)
++                guard bytes.count <= 16_777_216 else { throw ProbeError("Accepted MTP evidence exceeds16MiB") }
++                try reserved.resources.requireLive(); try control.check(deadline: reserved.deadline)
++                return .init(completion: .init(requestID: requestID, finishReason: reason,
++                    selectedTokenIDs: result.selectedTokenIDs, completedFrames: result.completedFrames,
++                    committedTokens: result.committedTokens, tokenChainSHA256: result.tokenChainSHA256,
++                    bothRequestStatesRetired: true), encodedEvidence: bytes)
++            })
++    }
++    func release() { reservation = nil; assets = nil; loaded = nil }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenMTPAcceptedTransport.swift
+@@ -0,0 +1,128 @@
++import Foundation
++import MLX
++
++/// Uses the resident's existing group and completed IO. There is no independent
++/// owner, socket, sequence reset or fallback. This private plaintext laboratory
++/// route is NOT admitted by the protected-record P32/O2 capability.
++final class QwenMTPAcceptedTransport {
++    private let collective: Collective
++    private var busy = false
++    private(set) var failed = false
++    var rank: Int { collective.rank }
++
++    init(collective: Collective) throws {
++        guard collective.size == 2, (0...1).contains(collective.rank) else {
++            throw ProbeError("MTP transport requires the original two-rank group")
++        }
++        self.collective = collective
++    }
++    func retire() { failed = true }
++
++    func proposal(_ local: QwenResidentMTPProposal?, ordinal: Int,
++        admit: (QwenResidentMTPProposal) throws -> QwenTargetVerificationRequest,
++        check: () throws -> Void) throws -> QwenTargetVerificationRequest {
++        try operation {
++            if rank == 1 {
++                guard let local else { throw ProbeError("MTP final rank has no actual assistant proposal") }
++                let request = try admit(local)
++                try send(QwenMTPAcceptedWire.encode(QwenMTPAcceptedWire.Proposal(local, ordinal: ordinal)), check: check)
++                try receiveACK("proposal", request.fingerprint, check: check)
++                return request
++            }
++            guard local == nil else { throw ProbeError("MTP ingress rank cannot invent an assistant proposal") }
++            let value = try QwenMTPAcceptedWire.decode(QwenMTPAcceptedWire.Proposal.self, receive(check: check))
++            let request = try admit(value.proposal(expectedOrdinal: ordinal))
++            try sendACK("proposal", request.fingerprint, check: check)
++            return request
++        }
++    }
++
++    func sendBoundary(_ boundary: QwenTargetVerificationBoundary, request: QwenTargetVerificationRequest,
++                      step: Int, check: () throws -> Void) throws -> QwenMTPAcceptedWire.Boundary {
++        try operation {
++            guard rank == 0 else { throw ProbeError("Only MTP ingress sends provisional residuals") }
++            let owned = try boundary.ownedCopy(check: check)
++            try owned.validate(request: request, step: step, dtype: .bfloat16)
++            let packet = try QwenMTPAcceptedWire.Boundary(request: request, step: step, payloadSHA256: owned.payloadSHA256)
++            let bytes = try QwenMTPAcceptedWire.encode(packet), fingerprint = sha256(bytes)
++            try send(bytes, check: check)
++            try receiveACK("provisional-ready", fingerprint, check: check)
++            _ = try collective.sendCompleted(owned.array, to: 1,
++                maximumBytes: request.agreement.request.profile.hiddenSize * 2, check: check)
++            try receiveACK("provisional-staged", fingerprint, check: check)
++            return packet
++        }
++    }
++
++    func receiveBoundary<T>(request: QwenTargetVerificationRequest, step: Int,
++        consume: (QwenTargetVerificationBoundary) throws -> T,
++        check: () throws -> Void) throws -> (T, QwenMTPAcceptedWire.Boundary) {
++        try operation {
++            guard rank == 1 else { throw ProbeError("Only MTP final rank consumes provisional residuals") }
++            let bytes = try receive(check: check)
++            let packet = try QwenMTPAcceptedWire.decode(QwenMTPAcceptedWire.Boundary.self, bytes)
++            try packet.validate(request: request, step: step)
++            let fingerprint = sha256(bytes), hidden = request.agreement.request.profile.hiddenSize
++            try sendACK("provisional-ready", fingerprint, check: check)
++            let array = try collective.receiveCompleted(shape: [1, 1, hidden], dtype: .bfloat16,
++                from: 0, maximumBytes: hidden * 2, check: check)
++            let boundary = QwenTargetVerificationBoundary(verificationFingerprint: request.fingerprint,
++                producerStageFingerprint: packet.producerStageFingerprint, step: step,
++                tokenID: packet.tokenID, payloadSHA256: packet.payloadSHA256, array: array)
++            try boundary.validate(request: request, step: step, dtype: .bfloat16)
++            let value = try consume(boundary)
++            try check()
++            // This acknowledges provisional native staging only. The separate
++            // receipt exchange below must precede generation/publication.
++            try sendACK("provisional-staged", fingerprint, check: check)
++            return (value, packet)
++        }
++    }
++
++    func receipts(_ local: QwenTargetVerificationLocalReceipt, check: () throws -> Void)
++        throws -> [QwenTargetVerificationLocalReceipt] {
++        try operation {
++            guard local.rank == rank else { throw ProbeError("MTP local receipt rank differs") }
++            let data = try QwenMTPAcceptedWire.encode(QwenMTPAcceptedWire.Receipt(local))
++            let peerData: Data
++            // Both contributions complete before either side rejects contents.
++            if rank == 0 { try send(data, check: check); peerData = try receive(check: check) }
++            else { peerData = try receive(check: check); try send(data, check: check) }
++            let peer = try QwenMTPAcceptedWire.decode(QwenMTPAcceptedWire.Receipt.self, peerData).receipt(peer: 1-rank)
++            return rank == 0 ? [local, peer] : [peer, local]
++        }
++    }
++
++    private func send(_ data: Data, check: () throws -> Void) throws {
++        guard (1...QwenMTPAcceptedWire.maximumBytes).contains(data.count) else { throw ProbeError("MTP send byte limit") }
++        _ = try collective.sendCompleted(MLXArray([UInt32(data.count)]), to: 1-rank, maximumBytes: 4, check: check)
++        _ = try collective.sendCompleted(MLXArray(Array(data)), to: 1-rank,
++            maximumBytes: QwenMTPAcceptedWire.maximumBytes, check: check)
++    }
++    private func receive(check: () throws -> Void) throws -> Data {
++        let count = try collective.receiveCompleted(shape: [1], dtype: .uint32, from: 1-rank,
++            maximumBytes: 4, check: check).item(UInt32.self)
++        guard count > 0, Int(count) <= QwenMTPAcceptedWire.maximumBytes else { throw ProbeError("MTP receive byte limit") }
++        let value = try collective.receiveCompleted(shape: [Int(count)], dtype: .uint8, from: 1-rank,
++            maximumBytes: QwenMTPAcceptedWire.maximumBytes, check: check).asData().data
++        try check(); return value
++    }
++    private func ack(_ phase: String, _ fingerprint: String) throws -> [UInt8] {
++        Array(sha256(try canonicalJSONData(["qwen-mtp-depth1-ack-v1", phase, fingerprint])).utf8)
++    }
++    private func sendACK(_ phase: String, _ fingerprint: String, check: () throws -> Void) throws {
++        _ = try collective.sendCompleted(MLXArray(try ack(phase, fingerprint)), to: 1-rank, maximumBytes: 64, check: check)
++    }
++    private func receiveACK(_ phase: String, _ fingerprint: String, check: () throws -> Void) throws {
++        let actual = try collective.receiveCompleted(shape: [64], dtype: .uint8, from: 1-rank,
++            maximumBytes: 64, check: check).asArray(UInt8.self)
++        guard actual == (try ack(phase, fingerprint)) else { throw ProbeError("MTP phase acknowledgement differs") }
++        try check()
++    }
++    private func operation<T>(_ body: () throws -> T) throws -> T {
++        guard !busy, !failed else { failed = true; throw ProbeError("MTP transport is failed or reentered") }
++        busy = true; defer { busy = false }
++        do { let value = try body(); guard !failed else { throw ProbeError("MTP transport poisoned") }; return value }
++        catch { failed = true; throw error }
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenMTPAcceptedWire.swift
+@@ -0,0 +1,95 @@
++import Foundation
++
++/// These are private transaction frames, distinct from ordinary committed
++/// residual ACKs. Canonical byte equality rejects surplus/duplicate fields.
++enum QwenMTPAcceptedWire {
++    static let maximumBytes = 4096
++    static func encode<T: Encodable>(_ value: T) throws -> Data {
++        let data = try canonicalJSONData(value)
++        guard !data.isEmpty, data.count <= maximumBytes else { throw ProbeError("MTP frame exceeds byte limit") }
++        return data
++    }
++    static func decode<T: Codable>(_ type: T.Type, _ data: Data) throws -> T {
++        guard !data.isEmpty, data.count <= maximumBytes else { throw ProbeError("MTP frame exceeds byte limit") }
++        let value = try JSONDecoder().decode(type, from: data)
++        guard try encode(value) == data else { throw ProbeError("MTP frame is not exact canonical encoding") }
++        return value
++    }
++
++    struct Proposal: Codable {
++        let schema: String
++        let ordinal: Int
++        let requestID: UUID
++        let roundID: UUID
++        let agreementFingerprint: String
++        let committedTargetInputs: Int
++        let seedTokenID: Int
++        let previousTokenChainSHA256: String
++        let proposedTokenID: Int
++        init(_ value: QwenResidentMTPProposal, ordinal: Int) {
++            schema = "qwen_mtp_depth1_proposal_v1"; self.ordinal = ordinal
++            requestID = value.requestID; roundID = value.roundID
++            agreementFingerprint = value.agreementFingerprint; committedTargetInputs = value.committedTargetInputs
++            seedTokenID = value.seedTokenID; previousTokenChainSHA256 = value.previousTokenChainSHA256
++            proposedTokenID = value.proposedTokenID
++        }
++        func proposal(expectedOrdinal: Int) throws -> QwenResidentMTPProposal {
++            guard schema == "qwen_mtp_depth1_proposal_v1", ordinal == expectedOrdinal else {
++                throw ProbeError("MTP proposal version or round ordinal differs")
++            }
++            return .init(requestID: requestID, roundID: roundID, agreementFingerprint: agreementFingerprint,
++                committedTargetInputs: committedTargetInputs, seedTokenID: seedTokenID,
++                previousTokenChainSHA256: previousTokenChainSHA256, proposedTokenID: proposedTokenID)
++        }
++    }
++
++    struct Boundary: Codable, Equatable {
++        let schema: String
++        let verificationFingerprint: String
++        let producerStageFingerprint: String
++        let step: Int
++        let tokenID: Int
++        let payloadSHA256: String
++        init(request: QwenTargetVerificationRequest, step: Int, payloadSHA256: String) throws {
++            guard payloadSHA256.count == 64, payloadSHA256.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) else {
++                throw ProbeError("MTP residual digest is invalid")
++            }
++            schema = "qwen_mtp_provisional_boundary_v1"; verificationFingerprint = request.fingerprint
++            producerStageFingerprint = request.agreement.descriptor.stageFingerprints[0]
++            self.step = step; tokenID = try request.token(step: step); self.payloadSHA256 = payloadSHA256
++        }
++        func validate(request: QwenTargetVerificationRequest, step: Int) throws {
++            guard self == (try .init(request: request, step: step, payloadSHA256: payloadSHA256)) else {
++                throw ProbeError("MTP provisional boundary differs from this round")
++            }
++        }
++    }
++
++    struct Receipt: Codable {
++        let schema: String
++        let verificationFingerprint: String
++        let rank: Int
++        let base: Int
++        let stagedInputs: Int
++        let retainedInputs: Int
++        let committedInputs: Int
++        let pendingInputs: Int
++        let newlyCommittedInputs: Int
++        let isFinal: Bool
++        init(_ value: QwenTargetVerificationLocalReceipt) {
++            schema = "qwen_mtp_prefix_receipt_v1"; verificationFingerprint = value.verificationFingerprint
++            rank = value.rank; base = value.base; stagedInputs = value.stagedInputs
++            retainedInputs = value.retainedInputs; committedInputs = value.committedInputs
++            pendingInputs = value.pendingInputs; newlyCommittedInputs = value.newlyCommittedInputs
++            isFinal = value.isFinal
++        }
++        func receipt(peer: Int) throws -> QwenTargetVerificationLocalReceipt {
++            guard schema == "qwen_mtp_prefix_receipt_v1", rank == peer else {
++                throw ProbeError("MTP receipt version or peer differs")
++            }
++            return .init(verificationFingerprint: verificationFingerprint, rank: rank, base: base,
++                stagedInputs: stagedInputs, retainedInputs: retainedInputs, committedInputs: committedInputs,
++                pendingInputs: pendingInputs, newlyCommittedInputs: newlyCommittedInputs, isFinal: isFinal)
++        }
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPRequest.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPRequest.swift
+@@ -3,8 +3,8 @@
+ import MLXLLM
+ import MLXLMCommon
+ 
+-/// A private, serialized final-rank request owner for committed prompt history
+-/// and exactly one unaccepted proposal. No serving path constructs this object.
++/// A private, serialized final-rank owner for real assistant history. The
++/// default probe makes one unaccepted proposal; accepted rounds opt in explicitly.
+ /// The outer distributed owner retains the full reservation until this object
+ /// retires AND the peer is actually retired/fenced. Local cleanup is not that ACK.
+ final class QwenResidentMTPRequest {
+@@ -16,6 +16,8 @@
+     private var assistantState: (any CBv2MTPRequestState)?
+     private var pending: QwenLayerStageMTPCommittedFrame?
+     private var carry: MLXArray?
++    private let acceptedMode: Bool
++    private var acceptedProposal: QwenResidentMTPProposal?
+     private(set) var isRetired = false
+     var committedTargetInputs: Int { session.committedTokens }
+ 
+@@ -29,8 +31,11 @@
+ 
+     init(assets: QwenResidentStageWithMTPAssets, plan: QwenLayerStagePlan,
+          agreement: QwenLayerStageGenerationAgreement, capacityLimitBytes: Int,
+-         deadlineUptimeNanoseconds: UInt64,
++         deadlineUptimeNanoseconds: UInt64, acceptedMode: Bool = false,
+          check: () throws -> Void) throws {
++        guard agreement.descriptor.mtpEnabled == acceptedMode else {
++            throw ProbeError("MTP owner mode differs from its bound agreement")
++        }
+         let now = DispatchTime.now().uptimeNanoseconds
+         guard deadlineUptimeNanoseconds > now, deadlineUptimeNanoseconds - now <= 300_000_000_000 else {
+             throw ProbeError("MTP proposal requires an explicit at-most300s same-Mac deadline")
+@@ -78,6 +83,7 @@
+                 throw primary
+             }
+         }
++        self.acceptedMode = acceptedMode
+         self.assets = assets; self.session = owned.0; self.resources = prepared
+         self.deadlineUptimeNanoseconds = deadlineUptimeNanoseconds
+         self.control = control; assistantState = owned.1
+@@ -136,7 +142,7 @@
+     func propose(generation: QwenLayerStageGenerationControl, roundID: UUID,
+                  check: () throws -> Void) throws -> QwenResidentMTPProposal {
+         try operation(check: check) { checked in
+-            guard pending == nil, let carry, let state = assistantState,
++            guard !acceptedMode, pending == nil, let carry, let state = assistantState,
+                   session.committedTokens == control.agreement.request.promptCount else {
+                 throw ProbeError("MTP proposal requires complete committed target prompt history")
+             }
+@@ -159,8 +165,7 @@
+         }
+     }
+ 
+-    /// No target verification transaction exists in this increment. Discarding
+-    /// the head's round therefore cannot authorize target rollback or reuse.
++    /// Probe-only discard cannot authorize target rollback or reuse.
+     func discardProposal(check: () throws -> Void) throws {
+         try operation(check: check) { checked in
+             guard control.phase == .proposed, let state = assistantState else {
+@@ -178,7 +183,7 @@
+     func decodeSeedForProbe(_ token: Int, frame: QwenLayerStageFrame,
+                             incoming: QwenLayerStageBoundary, check: () throws -> Void) throws -> QwenLayerStageOutput {
+         try operation(check: check) { checked in
+-            guard control.phase == .proposed, pending == nil, token == control.seedTokenID,
++            guard !acceptedMode, control.phase == .proposed, pending == nil, token == control.seedTokenID,
+                   frame.phase == .decode, frame.tokenCount == 1,
+                   frame.tokenOffset == control.agreement.request.promptCount,
+                   frame == (try control.agreement.request.frame(sequence: control.observedFrames)),
+@@ -194,7 +199,7 @@
+     func finishProbe(reason: QwenLayerStageGenerationFinishReason, selectedTokenCount: Int,
+                      lastTokenID: Int, check: () throws -> Void) throws {
+         try operation(check: check) { checked in
+-            guard control.phase == .proposed, reason == .length, selectedTokenCount == 2,
++            guard !acceptedMode, control.phase == .proposed, reason == .length, selectedTokenCount == 2,
+                   session.committedTokens == control.agreement.request.promptCount + 1,
+                   let state = assistantState else {
+                 throw ProbeError("MTP probe cannot finish before two ordinary target tokens")
+@@ -210,6 +215,93 @@
+             try session.finishGeneration(reason, selectedTokenCount: selectedTokenCount, lastTokenID: lastTokenID)
+             try checked()
+             guard session.isClosed, !session.isFailed else { throw ProbeError("MTP probe target failed clean retirement") }
++            isRetired = true; control.retired(failed: false)
++        }
++    }
++
++    /// Reuses the same actual assistant and exclusive request state after each
++    /// target-prefix reconciliation. The one-proposal public probe stays closed.
++    func proposeAccepted(generation: QwenLayerStageGenerationControl, roundID: UUID,
++                         check: () throws -> Void) throws -> QwenResidentMTPProposal {
++        try operation(check: check) { checked in
++            guard acceptedMode, acceptedProposal == nil, pending == nil,
++                  control.phase == .ready, let carry, let state = assistantState,
++                  generation.agreement.fingerprint == control.agreement.fingerprint,
++                  generation.phase == .frame, !generation.isFailed,
++                  generation.committedTokens == session.committedTokens,
++                  state.committedInputCount == session.committedTokens - 1,
++                  state.stagedInputCount == 0, let seed = generation.lastTokenID,
++                  generation.selectedTokenCount == session.committedTokens - control.agreement.request.promptCount + 1 else {
++                throw ProbeError("Repeated assistant proposal lacks reconciled committed history")
++            }
++            let result = assets.assistant.draftStep(tokens: MLXArray([Int32(seed)]).reshaped([1, 1]),
++                hidden: carry, shortlist: nil, requestState: state)
++            eval([result.tokens, result.hidden] + assets.assistant.evaluationTargets(for: state))
++            try checked()
++            guard result.tokens.shape == [1], result.tokens.dtype == .int32,
++                  result.hidden.shape == [1, 1, control.agreement.request.profile.hiddenSize],
++                  result.hidden.dtype == assets.target.loaded.activationDType,
++                  state.committedInputCount == session.committedTokens, state.stagedInputCount == 0 else {
++                throw ProbeError("Repeated assistant output or input frontier differs")
++            }
++            let token = Int(result.tokens.item(Int32.self)); try checked()
++            guard (0..<control.agreement.request.profile.vocabularySize).contains(token) else {
++                throw ProbeError("Assistant draft is outside the target vocabulary")
++            }
++            let value = QwenResidentMTPProposal(requestID: control.agreement.request.requestID,
++                roundID: roundID, agreementFingerprint: control.agreement.fingerprint,
++                committedTargetInputs: session.committedTokens, seedTokenID: seed,
++                previousTokenChainSHA256: generation.tokenChainSHA256, proposedTokenID: token)
++            acceptedProposal = value
++            return value
++        }
++    }
++
++    func finalizeAccepted(request: QwenTargetVerificationRequest, joined: QwenMTPJoinedReceipt,
++                          committedHidden: [MLXArray], check: () throws -> Void) throws {
++        try operation(check: check) { checked in
++            let count = joined.retainedInputs, h = control.agreement.request.profile.hiddenSize
++            guard acceptedMode, acceptedProposal == request.proposal, let state = assistantState,
++                  joined.isFinal, joined.verificationFingerprint == request.fingerprint,
++                  (1...2).contains(count), committedHidden.count == count,
++                  joined.committedInputs == request.base + count,
++                  session.committedTokens == joined.committedInputs,
++                  state.committedInputCount == request.base,
++                  committedHidden.allSatisfy({ $0.shape == [1, 1, h] && $0.dtype == assets.target.loaded.activationDType }) else {
++                throw ProbeError("Assistant finalization lacks the exact bilateral committed target prefix")
++            }
++            let draftTokens = MLXArray(count == 2 ? [Int32(request.proposal.proposedTokenID)] : [Int32]()).reshaped([1, count - 1])
++            // hidden(seed) conditions the accepted draft; hidden(draft) is the
++            // next carry. The assistant applies target final norm exactly once.
++            let targetRows = count == 2 ? committedHidden[0] : committedHidden[0][0..., 0..<0, 0...]
++            assets.assistant.finalizeRound(requestState: state, confirmedInputTokens: count,
++                committedDraftTokens: draftTokens, committedTargetHidden: targetRows)
++            carry = committedHidden[count - 1]
++            eval(assets.assistant.evaluationTargets(for: state) + [carry!])
++            try checked()
++            guard state.committedInputCount == session.committedTokens - 1, state.stagedInputCount == 0 else {
++                throw ProbeError("Finalized assistant history differs from the next target frontier")
++            }
++            acceptedProposal = nil
++        }
++    }
++
++    func finishAccepted(reason: QwenLayerStageGenerationFinishReason, selectedTokenCount: Int,
++                        lastTokenID: Int, check: () throws -> Void) throws {
++        try operation(check: check) { checked in
++            guard acceptedMode, acceptedProposal == nil, pending == nil, let state = assistantState else {
++                throw ProbeError("Accepted MTP cannot retire an unreconciled assistant round")
++            }
++            assets.assistant.releaseRequestState(state)
++            Stream.gpu.synchronize(); Stream.cpu.synchronize(); try checked()
++            guard state.materializedBytes == 0, state.committedInputCount == 0,
++                  state.stagedInputCount == 0, assets.assistant.evaluationTargets(for: state).isEmpty else {
++                throw ProbeError("Accepted MTP assistant state did not retire")
++            }
++            assistantState = nil; carry = nil
++            try session.finishGeneration(reason, selectedTokenCount: selectedTokenCount, lastTokenID: lastTokenID)
++            try checked()
++            guard session.isClosed, !session.isFailed else { throw ProbeError("Accepted MTP target failed retirement") }
+             isRetired = true; control.retired(failed: false)
+         }
+     }
+@@ -234,7 +326,7 @@
+                         throw ProbeError("MTP assistant retained request arrays after release")
+                     }
+                 }
+-                pending?.discard(); pending = nil; carry = nil; assistantState = nil
++                pending?.discard(); pending = nil; carry = nil; assistantState = nil; acceptedProposal = nil
+                 Stream.gpu.synchronize(); Stream.cpu.synchronize()
+                 try nativeError.check()
+             }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift
+@@ -19,8 +19,18 @@
+         return try loadImpl(configuration, bootstrap: bootstrap, mtpProbeMode: true)
+     }
+ 
++    @_spi(Benchmark) public static func loadForMTPAcceptedValidation(_ configuration: QwenResidentLoadConfiguration,
++        bootstrap: QwenResidentBootstrap? = nil) throws -> QwenResidentRuntime {
++        guard configuration.identity.modelID == QwenRegisteredDenseModel.qwen35NineB.rawValue,
++              configuration.stageCut == 4, configuration.prefillSchedule == .serial,
++              configuration.allocatorPolicy == .disableFreedBufferCache, bootstrap != nil else {
++            throw ProbeError("Accepted MTP requires registered9B cut4/serial/cache0 and the original owned bootstrap")
++        }
++        return try loadImpl(configuration, bootstrap: bootstrap, mtpProbeMode: false, mtpAcceptedMode: true)
++    }
++
+     private static func loadImpl(_ configuration: QwenResidentLoadConfiguration,
+-        bootstrap: QwenResidentBootstrap?, mtpProbeMode: Bool) throws -> QwenResidentRuntime {
++        bootstrap: QwenResidentBootstrap?, mtpProbeMode: Bool, mtpAcceptedMode: Bool = false) throws -> QwenResidentRuntime {
+         // nil preserves the legacy experimental native TCP bootstrap.
+         let nativeBootstrap = try bootstrap?.make(configuration: configuration)
+         let directory = configuration.modelDirectory
+@@ -57,6 +67,10 @@
+                 common = sha256(try canonicalJSONData([common, "registered-qwen35-9b-single-unaccepted-proposal-v1",
+                     "head-rank1", "replicated-input-embedding", "one-request"]))
+             }
++            if mtpAcceptedMode {
++                common = sha256(try canonicalJSONData([common, QwenMTPAcceptedPolicy.registered9BDepth1Short.fingerprint,
++                    "head-rank1", "replicated-input-embedding", "one-request"]))
++            }
+             let capacity = try MLX.withError { nativeError in
+                 func checked() throws { try nativeError.check(); try control.check(); try nativeError.check() }
+                 do {
+@@ -64,7 +78,7 @@
+                         material: { .residentLoadIntent(agreementFingerprint: common) },
+                         disagreementMessage: "Resident load membership/source/Plan differs", check: checked)
+                     try autoreleasepool {
+-                        if mtpProbeMode, collective.rank == 1 {
++                        if mtpProbeMode || mtpAcceptedMode, collective.rank == 1 {
+                             let value = try loadQwenResidentStageWithMTPAssets(admission, check: checked)
+                             mtpAssets = value; retired = value.target.loaded.model; stage = value.target
+                         } else {
+@@ -95,13 +109,15 @@
+                     let mtpCapacity: Int? = mtpProbeMode
+                         ? try QwenResidentMTPProbeRuntime.maximumCapacity(admission: admission,
+                             loaded: loaded, assets: mtpAssets, base: maximum) : nil
++                    let acceptedCapacity: Int? = mtpAcceptedMode
++                        ? try QwenMTPAcceptedRuntime.maximumCapacity(admission: admission, loaded: loaded, assets: mtpAssets) : nil
+                     let loadedIdentity = sha256(try canonicalJSONData([common,
+                         loaded.loaded.receipt.storageCommitmentSHA256, loaded.loaded.receipt.sourceParameterLayoutSHA256]))
+                     _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
+                         material: { .residentLoaded(agreementFingerprint: loadedIdentity) },
+                         disagreementMessage: "Resident peers did not load matching verified stage commitments", check: checked)
+                     try checked()
+-                    return try mtpCapacity ?? QwenLongPrefillCheckedBytes.sum([maximum.reservedBytes, prefill?.reservedBytes ?? 0])
++                    return try acceptedCapacity ?? mtpCapacity ?? QwenLongPrefillCheckedBytes.sum([maximum.reservedBytes, prefill?.reservedBytes ?? 0])
+                 } catch {
+                     // Prefer a recorded native fault over a secondary Swift
+                     // validation/shape error before leaving this error scope.
+@@ -112,7 +128,7 @@
+             let lifecycle = try QwenLayerStageResidentLifecycle(maximumRequests: QwenResidentAdmission.maximumRequests)
+             try control.loaded()
+             return .init(admission: admission, control: control, collective: collective,
+-                stage: stage!, capacity: capacity, lifecycle: lifecycle, mtpProbeMode: mtpProbeMode, mtpAssets: mtpAssets)
++                stage: stage!, capacity: capacity, lifecycle: lifecycle, mtpProbeMode: mtpProbeMode, mtpAcceptedMode: mtpAcceptedMode, mtpAssets: mtpAssets)
+         } catch {
+             let primary = error; control.fail(); mtpAssets = nil; stage = nil
+             do {
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift
+@@ -47,13 +47,17 @@
+     private var processLeaseOwned = true
+     private var mtpProbe: QwenResidentMTPProbeRuntime?
+     private let mtpProbeMode: Bool
++    private let mtpAcceptedMode: Bool
++    private var mtpAccepted: QwenMTPAcceptedRuntime?
+ 
+     init(admission: QwenResidentAdmission, control: QwenResidentControl, collective: Collective,
+          stage: QwenResidentLoadedStage, capacity: Int, lifecycle: QwenLayerStageResidentLifecycle,
+-         mtpProbeMode: Bool = false, mtpAssets: QwenResidentStageWithMTPAssets? = nil) {
++         mtpProbeMode: Bool = false, mtpAcceptedMode: Bool = false, mtpAssets: QwenResidentStageWithMTPAssets? = nil) {
+         self.admission = admission; self.control = control; self.collective = collective
+         self.stage = stage; model = stage.loaded.model; self.lifecycle = lifecycle
+-        self.mtpProbeMode = mtpProbeMode
++        self.mtpProbeMode = mtpProbeMode; self.mtpAcceptedMode = mtpAcceptedMode
++        mtpAccepted = mtpAcceptedMode ? .init(admission: admission, control: control, collective: collective,
++            lifecycle: lifecycle, loaded: stage, assets: mtpAssets, capacity: capacity) : nil
+         mtpProbe = mtpProbeMode ? .init(admission: admission, control: control, collective: collective,
+             lifecycle: lifecycle, loaded: stage, assets: mtpAssets, capacity: capacity) : nil
+         baseReady = .init(identity: admission.configuration.identity, rank: collective.rank,
+@@ -63,10 +67,10 @@
+ 
+     public var readiness: ClusterWorkerReady? {
+         guard control.available, (try? control.check()) != nil else { return nil }
+-        if mtpProbeMode {
++        if mtpProbeMode || mtpAcceptedMode {
+             guard operation.try() else { return nil }
+             defer { operation.unlock() }
+-            guard mtpProbe?.admitsAnotherRequest == true else { return nil }
++            guard (mtpProbeMode ? mtpProbe?.admitsAnotherRequest : mtpAccepted?.admitsAnotherRequest) == true else { return nil }
+         }
+         return baseReady
+     }
+@@ -77,7 +81,7 @@
+     @_spi(Benchmark) public func recordingReadiness(prefillPolicy: QwenResidentPrefillPolicy = .serial) throws -> ClusterWorkerReady? {
+         guard operation.try() else { throw ProbeError("Resident native operation is already active") }
+         defer { operation.unlock() }
+-        guard !mtpProbeMode else { throw ProbeError("Private MTP probe owner has no recording mode") }
++        guard !mtpProbeMode && !mtpAcceptedMode else { throw ProbeError("Private MTP probe owner has no recording mode") }
+         guard control.available, (try? control.check()) != nil else { return nil }
+         let capacity = try recordingCapacity(prefillPolicy)
+         try control.check()
+@@ -115,7 +119,7 @@
+     /// Metadata/native resource reservation only; no request state or forward.
+     /// Returned bytes are this rank's named allowance, not combined peer RAM.
+     public func reserve(requestID: UUID, request value: ClusterWorkerReservation) throws -> Int {
+-        guard !mtpProbeMode else { throw ProbeError("Private MTP probe owner rejects serving reservations") }
++        guard !mtpProbeMode && !mtpAcceptedMode else { throw ProbeError("Private MTP probe owner rejects serving reservations") }
+         return try reserve(requestID: requestID, request: value, mode: .serving,
+             prefillPolicy: QwenResidentPrefillSelection.policy(admission.configuration.prefillSchedule))
+     }
+@@ -125,7 +129,7 @@
+     /// reservation cannot be upgraded at start or by a live resource check.
+     @_spi(Benchmark) public func reserveRecording(requestID: UUID, request value: ClusterWorkerReservation,
+         prefillPolicy: QwenResidentPrefillPolicy = .serial) throws -> Int {
+-        guard !mtpProbeMode else { throw ProbeError("Private MTP probe owner rejects recording reservations") }
++        guard !mtpProbeMode && !mtpAcceptedMode else { throw ProbeError("Private MTP probe owner rejects recording reservations") }
+         return try reserve(requestID: requestID, request: value, mode: .recording, prefillPolicy: prefillPolicy)
+     }
+ 
+@@ -143,6 +147,21 @@
+         defer { operation.unlock() }
+         guard let mtpProbe else { throw ProbeError("Resident owner was not loaded for the private MTP probe") }
+         return try mtpProbe.start(requestID: requestID, onCommittedToken: onCommittedToken)
++    }
++
++    @_spi(Benchmark) public func reserveMTPAccepted(requestID: UUID, request: ClusterWorkerReservation) throws -> Int {
++        guard operation.try() else { throw ProbeError("Resident native operation is already active") }
++        defer { operation.unlock() }
++        guard let mtpAccepted else { throw ProbeError("Resident owner was not loaded for accepted MTP") }
++        return try mtpAccepted.reserve(requestID: requestID, request: request)
++    }
++
++    @_spi(Benchmark) public func startMTPAccepted(requestID: UUID,
++        onCommittedToken: (Int, Int, Int) throws -> Bool) throws -> QwenMTPAcceptedCompletion {
++        guard operation.try() else { throw ProbeError("Resident native operation is already active") }
++        defer { operation.unlock() }
++        guard let mtpAccepted else { throw ProbeError("Resident owner was not loaded for accepted MTP") }
++        return try mtpAccepted.start(requestID: requestID, onCommittedToken: onCommittedToken)
+     }
+ 
+     private func reserve(requestID: UUID, request value: ClusterWorkerReservation,
+@@ -205,7 +224,7 @@
+     /// False requests agreed clean stop; a thrown callback is abnormal failure.
+     public func start(requestID: UUID,
+                       onCommittedToken: (Int, Int, Int) throws -> Bool) throws -> QwenResidentGenerationCompletion {
+-        guard !mtpProbeMode else { throw ProbeError("Private MTP probe owner has no serving mode") }
++        guard !mtpProbeMode && !mtpAcceptedMode else { throw ProbeError("Private MTP probe owner has no serving mode") }
+         return try execute(requestID: requestID, mode: .serving, onCommittedToken: onCommittedToken) { completion, _ in completion }
+     }
+ 
+@@ -214,7 +233,7 @@
+     @_spi(Benchmark) public func startRecording(requestID: UUID,
+         onCommittedToken: (Int, Int, Int) throws -> Bool
+     ) throws -> QwenResidentRecordingCompletion {
+-        guard !mtpProbeMode else { throw ProbeError("Private MTP probe owner has no recording mode") }
++        guard !mtpProbeMode && !mtpAcceptedMode else { throw ProbeError("Private MTP probe owner has no recording mode") }
+         return try execute(requestID: requestID, mode: .recording, onCommittedToken: onCommittedToken) { completion, evidence in
+             guard let evidence else { throw ProbeError("Recording request returned no diagnostic evidence") }
+             return .init(completion: completion, encodedEvidence: try evidence.encoded())
+@@ -323,6 +342,7 @@
+                 try MLX.withError { error in
+                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
+                     mtpProbe?.release(); mtpProbe = nil
++                    mtpAccepted?.release(); mtpAccepted = nil
+                     reservation = nil; stage = nil
+                     guard model == nil else { throw ProbeError("Resident model remains retained") }
+                     Memory.clearCache(); try error.check()
+--- a/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift
++++ b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift
+@@ -2,50 +2,79 @@
+ @_spi(Benchmark) import DarkbloomClusterRuntime
+ import Foundation
+ 
+-/// Private evidence-producing wrapper around the private shared MTP proposal SPI.
+-/// The public serving worker retains its normal non-recording wrapper.
++/// Private paired correctness worker. Default installed capability is unchanged.
++/// Both modes use this same worker/owner; there is no second request route.
+ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
++    private enum Mode: String { case off, depth1 }
+     private let owner: QwenResidentRuntime
++    private let mode: Mode
+     private let sink: ResidentEvidenceSink
+     private var active: (id: UUID, deadline: UInt64)?
++    private var used = false
+ 
+     init(_ configuration: QwenResidentLoadConfiguration, bootstrap: WorkerBootstrapConfiguration? = nil) throws {
+         guard let bootstrap,
+-              let path = ProcessInfo.processInfo.environment["DARKBLOOM_BENCHMARK_EVIDENCE_DIR"] else {
+-            throw WorkerFailure.invalid("Private benchmark requires owner bootstrap and an evidence directory")
++              let raw = ProcessInfo.processInfo.environment["DARKBLOOM_PRIVATE_QWEN_MTP_MODE"],
++              let mode = Mode(rawValue: raw),
++              let path = ProcessInfo.processInfo.environment["DARKBLOOM_BENCHMARK_EVIDENCE_DIR"],
++              configuration.identity.modelID == "registered_qwen35_9b", configuration.stageCut == 4,
++              configuration.prefillSchedule == .serial, configuration.allocatorPolicy == .disableFreedBufferCache else {
++            throw WorkerFailure.invalid("Private MTP correctness requires explicit off/depth1, registered9B cut4/serial/cache0 and owned bootstrap/evidence")
+         }
+-        sink = try ResidentEvidenceSink(path: path)
++        self.mode = mode; sink = try ResidentEvidenceSink(path: path)
+         let attachment = try bootstrap.connect(epoch: configuration.identity.membershipEpoch, rank: configuration.rank)
+-        owner = try .loadForMTPProposalProbe(configuration, bootstrap: QwenResidentBootstrap(connection: attachment))
++        let native = QwenResidentBootstrap(connection: attachment)
++        switch mode {
++        case .off: owner = try .load(configuration, bootstrap: native)
++        case .depth1: owner = try .loadForMTPAcceptedValidation(configuration, bootstrap: native)
++        }
+     }
+ 
+-    var readiness: ClusterWorkerReady? { owner.readiness }
++    var readiness: ClusterWorkerReady? {
++        guard !used else { return nil }
++        switch mode {
++        case .off: return try? owner.recordingReadiness()
++        case .depth1: return owner.readiness
++        }
++    }
+ 
+     func reserve(_ id: UUID, _ value: ClusterWorkerReservation) throws -> Int {
+-        guard active == nil else { throw WorkerFailure.invalid("Benchmark request already active") }
+-        let bytes = try owner.reserveMTPProposalProbe(requestID: id, request: value)
++        guard !used, active == nil, (1...32).contains(value.promptTokenIDs.count),
++              (1...16).contains(value.chunkSize), (2...8).contains(value.outputCount), value.stopTokenIDs.isEmpty else {
++            throw WorkerFailure.invalid("MTP correctness request exceeds private short scope or repeats")
++        }
++        let bytes: Int
++        switch mode {
++        case .off: bytes = try owner.reserveRecording(requestID: id, request: value)
++        case .depth1: bytes = try owner.reserveMTPAccepted(requestID: id, request: value)
++        }
+         active = (id, value.deadlineUptimeNanoseconds)
+         return bytes
+     }
+ 
+     func start(_ id: UUID, token: (Int, Int, Int) throws -> Bool) throws -> ClusterWorkerFinishReason {
+-        guard let reservation = active, reservation.id == id else {
+-            throw WorkerFailure.invalid("Benchmark start has no matching reservation")
++        guard let reservation = active, reservation.id == id, !used else {
++            throw WorkerFailure.invalid("MTP correctness start has no retained request")
+         }
+-        let result = try owner.startMTPProposalProbe(requestID: id, onCommittedToken: token)
+-        guard result.completion.requestID == id, result.completion.bothRequestStatesRetired else {
+-            throw WorkerFailure.invalid("Benchmark generation returned without matching retirement")
++        used = true
++        let completion: QwenResidentGenerationCompletion, bytes: Data
++        switch mode {
++        case .off:
++            let value = try owner.startRecording(requestID: id, onCommittedToken: token)
++            completion = value.completion; bytes = value.encodedEvidence
++        case .depth1:
++            let value = try owner.startMTPAccepted(requestID: id, onCommittedToken: token)
++            completion = value.completion; bytes = value.encodedEvidence
+         }
+-        guard owner.readiness == nil else {
+-            throw WorkerFailure.invalid("Single-request MTP probe unexpectedly retained another admission")
++        guard completion.requestID == id, completion.bothRequestStatesRetired else {
++            throw WorkerFailure.invalid("MTP correctness return precedes matching bilateral retirement")
+         }
+-        // Coordinator cannot emit finished/retired until this returns. A write
+-        // failure makes this worker fail; no successful sidecar is fabricated.
+-        try sink.publish(result.encodedEvidence, requestID: id, deadline: reservation.deadline)
++        // The actual owner must retain/fence this worker until publication,
++        // shutdown, normal child exit, diagnostic drain and lease ACK complete.
++        try sink.publish(bytes, requestID: id, deadline: reservation.deadline)
+         active = nil
+-        return result.completion.finishReason
++        return completion.finishReason
+     }
+-
+     func cancel(_ id: UUID) { owner.cancel(requestID: id) }
+     func shutdown() throws { try owner.shutdown(); active = nil }
+ }
+--- a/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/mesh_impl.h
++++ b/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/mesh_impl.h
+@@ -73,10 +73,8 @@
+       int64_t elems = std::min(N, total - read_offset);
+       std::copy(
+           in + read_offset, in + read_offset + elems, local_staging(buff));
+-      std::copy(
+-          in + read_offset,
+-          in + read_offset + elems,
+-          send_buffer(sz, buff).begin<T>());
++      send_buffer(sz, buff).stage_send(
++          in + read_offset, elems);
+       recv_end[rank_]++;
+       post_send_all(sz, buff);
+ 
+@@ -111,10 +109,8 @@
+           completed_send_count[buff]++;
+           if (completed_send_count[buff] == num_peers) {
+             int64_t elems = std::min(N, total - read_offset);
+-            std::copy(
+-                in + read_offset,
+-                in + read_offset + elems,
+-                send_buffer(sz, buff).begin<T>());
++            send_buffer(sz, buff).stage_send(
++                in + read_offset, elems);
+             post_send_all(sz, buff);
+ 
+             completed_send_count[buff] = 0;
+@@ -228,10 +224,8 @@
+     int buff = 0;
+     while (read_offset < total && buff < PIPELINE) {
+       post_recv_all(sz, buff);
+-      std::copy(
+-          our_data + read_offset,
+-          our_data + std::min(read_offset + N, total),
+-          send_buffer(sz, buff).begin<char>());
++      send_buffer(sz, buff).stage_send(
++          our_data + read_offset, std::min(N, total - read_offset));
+       post_send_all(sz, buff);
+ 
+       buff++;
+@@ -256,10 +250,8 @@
+         if (work_type == SEND_WR && read_offset < total) {
+           completed_send_count[buff]++;
+           if (completed_send_count[buff] == num_peers) {
+-            std::copy(
+-                our_data + read_offset,
+-                our_data + std::min(read_offset + N, total),
+-                send_buffer(sz, buff).begin<char>());
++            send_buffer(sz, buff).stage_send(
++                our_data + read_offset, std::min(N, total - read_offset));
+             post_send_all(sz, buff);
+ 
+             completed_send_count[buff] = 0;
+@@ -329,8 +321,8 @@
+           continue;
+         }
+         const T* src = in + static_cast<int64_t>(p) * count + read_offset;
+-        std::copy(
+-            src, src + elems, scatter_send_buffer(sz, buff, p).begin<T>());
++        scatter_send_buffer(sz, buff, p).stage_send(
++            src, elems);
+       }
+       scatter_post_send_all(sz, buff);
+ 
+@@ -363,10 +355,8 @@
+                 continue;
+               }
+               const T* src = in + static_cast<int64_t>(p) * count + read_offset;
+-              std::copy(
+-                  src,
+-                  src + elems,
+-                  scatter_send_buffer(sz, buff, p).begin<T>());
++              scatter_send_buffer(sz, buff, p).stage_send(
++                  src, elems);
+             }
+             scatter_post_send_all(sz, buff);
+ 
+@@ -453,10 +443,8 @@
+     // Prefill the pipeline
+     int buff = 0;
+     while (read_offset < n_bytes && buff < PIPELINE) {
+-      std::copy(
+-          in_ptr + read_offset,
+-          in_ptr + std::min(read_offset + N, n_bytes),
+-          send_buffer(sz, buff).begin<char>());
++      send_buffer(sz, buff).stage_send(
++          in_ptr + read_offset, std::min(N, n_bytes - read_offset));
+       send_to(sz, dst, buff);
+ 
+       buff++;
+@@ -479,10 +467,8 @@
+         in_flight--;
+ 
+         if (read_offset < n_bytes) {
+-          std::copy(
+-              in_ptr + read_offset,
+-              in_ptr + std::min(read_offset + N, n_bytes),
+-              send_buffer(sz, buff).begin<char>());
++          send_buffer(sz, buff).stage_send(
++              in_ptr + read_offset, std::min(N, n_bytes - read_offset));
+           send_to(sz, dst, buff);
+ 
+           read_offset += N;
+--- a/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/rdma.h
++++ b/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/rdma.h
+@@ -12,6 +12,7 @@
+ #include <vector>
+ 
+ #include "jaccl/tcp.h"
++#include "jaccl/send_frame.h"
+ 
+ constexpr const char* IBV_TAG = "[jaccl]";
+ constexpr int SEND_WR = 1;
+@@ -123,6 +124,11 @@
+     entry.length = size();
+     entry.lkey = local_key(protection_domain);
+     return entry;
++  }
++
++  template <typename T>
++  void stage_send(const T* source, int64_t count) {
++    stage_send_frame(std::span<char>(static_cast<char*>(data_), size()), source, count);
+   }
+ 
+   template <typename T>
+--- a/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/ring_impl.h
++++ b/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/ring_impl.h
+@@ -376,11 +376,9 @@
+         }
+         for (int lr = 0; lr < MAX_DIR; lr++) {
+           int64_t offset = wire_offset[lr] + send_count[lr] * N;
+-          std::copy(
+-              send_base + send_base_offset[lr] + offset,
+-              send_base + send_base_offset[lr] +
+-                  std::max(offset, std::min(offset + N, wire_end[lr])),
+-              send_buffer(sz, buff, lr, lw).template begin<T>());
++          const int64_t elems = std::max<int64_t>(0, std::min(N, wire_end[lr] - offset));
++          send_buffer(sz, buff, lr, lw).stage_send(
++              elems > 0 ? send_base + send_base_offset[lr] + offset : nullptr, elems);
+           send_count[lr]++;
+           send_to(sz, buff, lr, lw);
+         }
+@@ -403,11 +401,9 @@
+           if (work_type == SEND_WR) {
+             if (send_count[lr] < n_steps) {
+               int64_t offset = wire_offset[lr] + send_count[lr] * N;
+-              std::copy(
+-                  send_base + send_base_offset[lr] + offset,
+-                  send_base + send_base_offset[lr] +
+-                      std::max(offset, std::min(offset + N, wire_end[lr])),
+-                  send_buffer(sz, buff, lr, lw).template begin<T>());
++              const int64_t elems = std::max<int64_t>(0, std::min(N, wire_end[lr] - offset));
++              send_buffer(sz, buff, lr, lw).stage_send(
++                  elems > 0 ? send_base + send_base_offset[lr] + offset : nullptr, elems);
+               send_count[lr]++;
+               send_to(sz, buff, lr, lw);
+               in_flight++;
+@@ -502,11 +498,9 @@
+         }
+         for (int lr = 0; lr < MAX_DIR; lr++) {
+           int64_t offset = wire_offset[lr] + send_count[lr] * N;
+-          std::copy(
+-              send_base + send_offset[lr] + offset,
+-              send_base + send_offset[lr] +
+-                  std::max(offset, std::min(offset + N, send_limits[lr])),
+-              send_buffer(sz, buff, lr, lw).template begin<T>());
++          const int64_t elems = std::max<int64_t>(0, std::min(N, send_limits[lr] - offset));
++          send_buffer(sz, buff, lr, lw).stage_send(
++              elems > 0 ? send_base + send_offset[lr] + offset : nullptr, elems);
+           send_count[lr]++;
+           send_to(sz, buff, lr, lw);
+         }
+@@ -530,11 +524,9 @@
+ 
+           if (work_type == SEND_WR && send_count[lr] < n_steps) {
+             int64_t offset = wire_offset[lr] + send_count[lr] * N;
+-            std::copy(
+-                send_base + send_offset[lr] + offset,
+-                send_base + send_offset[lr] +
+-                    std::max(offset, std::min(offset + N, send_limits[lr])),
+-                send_buffer(sz, buff, lr, lw).template begin<T>());
++            const int64_t elems = std::max<int64_t>(0, std::min(N, send_limits[lr] - offset));
++            send_buffer(sz, buff, lr, lw).stage_send(
++                elems > 0 ? send_base + send_offset[lr] + offset : nullptr, elems);
+             send_to(sz, buff, lr, lw);
+             in_flight++;
+             send_count[lr]++;
+@@ -613,10 +605,8 @@
+     // Prefill the pipeline
+     int buff = 0;
+     while (read_offset < limit && buff < PIPELINE) {
+-      std::copy(
+-          in_ptr + read_offset,
+-          in_ptr + std::min(read_offset + N, limit),
+-          send_buffer(sz, buff, dir, lw).begin<char>());
++      send_buffer(sz, buff, dir, lw).stage_send(
++          in_ptr + read_offset, std::min(N, limit - read_offset));
+       send_to(sz, buff, dir, lw);
+ 
+       buff++;
+@@ -638,10 +628,8 @@
+         in_flight--;
+ 
+         if (read_offset < limit) {
+-          std::copy(
+-              in_ptr + read_offset,
+-              in_ptr + std::min(read_offset + N, limit),
+-              send_buffer(sz, buff, dir, lw).begin<char>());
++          send_buffer(sz, buff, dir, lw).stage_send(
++              in_ptr + read_offset, std::min(N, limit - read_offset));
+           send_to(sz, buff, dir, lw);
+ 
+           read_offset += N;
+--- /dev/null
++++ b/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/send_frame.h
+@@ -0,0 +1,33 @@
++// Copyright © 2026 Apple Inc.
++
++#pragma once
++
++#include <algorithm>
++#include <cstdint>
++#include <cstring>
++#include <span>
++#include <stdexcept>
++
++namespace jaccl {
++
++// The posted receive/send size stays fixed. Clear every byte after this payload.
++template <typename T>
++inline void stage_send_frame(
++    std::span<char> destination,
++    const T* source,
++    int64_t count) {
++  if (destination.empty() || destination.data() == nullptr || count < 0 ||
++      static_cast<uint64_t>(count) > destination.size() / sizeof(T) ||
++      (count > 0 && source == nullptr)) {
++    throw std::invalid_argument("[jaccl] Send payload exceeds its scratch frame");
++  }
++  const size_t bytes = static_cast<size_t>(count) * sizeof(T);
++  if (count > 0) {
++    std::copy_n(source, count, reinterpret_cast<T*>(destination.data()));
++  }
++  if (bytes < destination.size()) {
++    std::memset(destination.data() + bytes, 0, destination.size() - bytes);
++  }
++}
++
++} // namespace jaccl

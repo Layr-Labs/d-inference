@@ -1,0 +1,120 @@
+--- a/prepare_remote.py
++++ b/prepare_remote.py
+@@ -8,18 +8,19 @@
+ import time
+ 
+ BASE=Path(__file__).resolve().parent
+-SSH=['/usr/bin/ssh','-T','-o','BatchMode=yes','-o','ConnectTimeout=8','darkbloom-48','/usr/bin/python3 -B -']
++from parent_settings import SSH as SSH_OPTIONS
++SSH=SSH_OPTIONS+['-S','none','darkbloom-48','/usr/bin/python3 -B -']
+ 
+ 
+ def main():
+     metadata=json.loads((BASE/'deployment.json').read_bytes())
+     target=Path(metadata['remoteRoot'])
+-    assert str(target)=='/Users/developer/DarkbloomDev/qwen9b-resident-solo-generation-20260915'
++    assert str(target)=='/Users/developer/DarkbloomDev/qwen27b-resident-solo-generation-20260915'
+     output=BASE/'deployment-1';output.mkdir(mode=0o700)
+     stage=output/'stage';stage.mkdir(mode=0o700)
+-    # Whitelist exactly38 supervisor members+manifest, the4-file native bundle
+-    # and2 inputs. Root's later source-review file is deliberately not copied.
+-    assert len(metadata['files'])==45
++    # Whitelist the19-file supervisor tree (including its inputs and manifest)
++    # and the exact4-file native bundle.
++    assert len(metadata['files'])==23
+     for row in metadata['files']:
+         relative=Path(row['path']);source=Path(row['source'])
+         assert not relative.is_absolute() and '..' not in relative.parts
+@@ -47,16 +48,16 @@
+     try:
+         setup="from pathlib import Path\np=Path("+repr(str(target))+ ")\nassert p.parent.resolve()==p.parent\np.mkdir(mode=0o700)\n(p/'runs').mkdir(mode=0o700)\n"
+         invoke('prepare',SSH,setup.encode())
+-        invoke('copy',['/usr/bin/scp','-q','-r','-o','BatchMode=yes','-o','ConnectTimeout=8',
+-            str(stage/'native'),str(stage/'supervisor'),str(stage/'inputs'),'darkbloom-48:'+str(target)+'/'],timeout=600)
++        invoke('copy',['/usr/bin/scp','-q','-r']+SSH_OPTIONS[2:]+['-o','ControlPath=none',
++            str(stage/'native'),str(stage/'supervisor'),'darkbloom-48:'+str(target)+'/'],timeout=180)
+         preflight="import json\nvalue=json.loads("+repr(json.dumps(metadata,separators=(',',':')))+")\n"+(BASE/'remote_preflight.py').read_text()
+         checked=json.loads(invoke('verification',SSH,preflight.encode(),timeout=90))
+-        assert len(checked['verified'])==45 and checked['journal']['bytes']==0 and checked['evidenceEmpty'] is True
++        assert len(checked['verified'])==23 and checked['journal']['bytes']==0 and checked['evidenceEmpty'] is True
+         passed=True
+     finally:
+         (output/'execution.json').write_text(json.dumps(dict(passed=passed,operations=records,
+-            files=45,modelExecuted=False,remoteRoot=str(target)),indent=2,sort_keys=True)+'\n')
+-    print(json.dumps(dict(passed=passed,files=45,remoteRoot=str(target))))
++            files=23,modelExecuted=False,remoteRoot=str(target)),indent=2,sort_keys=True)+'\n')
++    print(json.dumps(dict(passed=passed,files=23,remoteRoot=str(target))))
+ 
+ 
+ if __name__=='__main__':main()
+--- a/remote_preflight.py
++++ b/remote_preflight.py
+@@ -1,7 +1,7 @@
+ from pathlib import Path
+ import fcntl,hashlib,json,os,stat,subprocess,sys
+ root=Path(value['remoteRoot'])
+-assert root==Path('/Users/developer/DarkbloomDev/qwen9b-resident-solo-generation-20260915') and root.resolve()==root
++assert root==Path('/Users/developer/DarkbloomDev/qwen27b-resident-solo-generation-20260915') and root.resolve()==root
+ sys.path.insert(0,str(root/'supervisor'));from reference_resources import sample_local,validate_local
+ observed={}
+ for item in value['files']:
+--- a/run_physical.py
++++ b/run_physical.py
+@@ -4,7 +4,7 @@
+ out=base/'run-1';out.mkdir(mode=0o700)
+ script='''from pathlib import Path
+ import json,os,subprocess,sys
+-root=Path('/Users/developer/DarkbloomDev/qwen9b-resident-solo-generation-20260915')
++root=Path('/Users/developer/DarkbloomDev/qwen27b-resident-solo-generation-20260915')
+ sys.path.insert(0,str(root/'supervisor'));sys.dont_write_bytecode=True
+ from reference_resources import sample_local,validate_local
+ ps=subprocess.check_output(['/bin/ps','-axo','pid=,comm='],text=True)
+@@ -15,11 +15,12 @@
+ resource=sample_local();validate_local(resource)
+ print(json.dumps(dict(kind='root_reference_preflight',active=active,journalBytes=0,resource=resource)),flush=True)
+ os.chdir(root/'supervisor')
+-os.execv('/usr/bin/python3',['/usr/bin/python3','-B',str(root/'supervisor/run_solo.py'),'--job',str(root/'supervisor/job.json'),'--job-sha256','da9b19233d6ca24879c1ee6ccafbc8ae7dd509eb70ce43f9d796f1709941bd37','--launcher-sha256','c59521b53eeac0b7fcf213c44e3058c2bcd530da3f73ee762e4e5a77c40568c7'])
++os.execv('/usr/bin/python3',['/usr/bin/python3','-B',str(root/'supervisor/run_solo.py'),'--job',str(root/'supervisor/job.json'),'--job-sha256','435d2e1e22d259ebff09d468ce2638a5d3c52c56ee12b9023d6c122d7f550d6d','--launcher-sha256','b94cc8cebf02eecb2bec79642e9647973dcc1b1e5ed0ff052c989e8334625aa9'])
+ '''
+ (out/'remote-launch.py').write_text(script)
+-argv=['/usr/bin/ssh','-T','-o','BatchMode=yes','-o','ConnectTimeout=8','darkbloom-48','/usr/bin/python3 -B -']
+-start=time.monotonic();receipt=dict(argv=argv,remoteRun='/Users/developer/DarkbloomDev/qwen9b-resident-solo-generation-20260915/runs/cohort-1',timedOut=False,localRunnerPID=os.getpid())
++from parent_settings import SSH
++argv=SSH+['-S','none','darkbloom-48','/usr/bin/python3 -B -']
++start=time.monotonic();receipt=dict(argv=argv,remoteRun='/Users/developer/DarkbloomDev/qwen27b-resident-solo-generation-20260915/runs/cohort-1',timedOut=False,localRunnerPID=os.getpid())
+ with (out/'ssh.stdout').open('xb') as stdout,(out/'ssh.stderr').open('xb') as stderr:
+  child=subprocess.Popen(argv,stdin=subprocess.PIPE,stdout=stdout,stderr=stderr,start_new_session=True)
+  receipt.update(sshPID=child.pid,sshPGID=child.pid)
+@@ -34,6 +35,10 @@
+    child.wait(timeout=10)
+  finally:
+   receipt.update(exitCode=child.returncode,elapsedSeconds=time.monotonic()-start,sshReaped=child.returncode is not None)
++  if child.returncode is not None:
++   try:os.killpg(child.pid,0)
++   except ProcessLookupError:receipt['sshGroupAbsent']=True
++   else:receipt['sshGroupAbsent']=False
+   (out/'execution.json').write_text(json.dumps(receipt,indent=2)+'\n')
+ print(json.dumps(receipt),flush=True)
+-raise SystemExit(0 if child.returncode==0 and 'error' not in receipt else 1)
++raise SystemExit(0 if child.returncode==0 and receipt.get('sshGroupAbsent') is True and 'error' not in receipt else 1)
+--- a/collect_run.py
++++ b/collect_run.py
+@@ -11,7 +11,7 @@
+ 
+ REMOTE = r'''from pathlib import Path
+ import base64,hashlib,json,subprocess,sys
+-p=Path('/Users/developer/DarkbloomDev/qwen9b-resident-solo-generation-20260915/runs')/sys.argv[1]
++p=Path('/Users/developer/DarkbloomDev/qwen27b-resident-solo-generation-20260915/runs')/sys.argv[1]
+ items=[]
+ for f in sorted(p.rglob('*')):
+  if f.is_file():
+@@ -38,7 +38,8 @@
+     assert base.is_dir()
+     returned = base / 'returned'
+     returned.mkdir(mode=0o700)
+-    command = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', 'darkbloom-48',
++    from parent_settings import SSH
++    command = SSH + ['-S', 'none', 'darkbloom-48',
+                shlex.join(['/usr/bin/python3', '-B', '-c', REMOTE, 'cohort-' + str(number)])]
+     completed = subprocess.run(command, capture_output=True, timeout=30)
+     (base / 'retrieval.stdout').write_bytes(completed.stdout)

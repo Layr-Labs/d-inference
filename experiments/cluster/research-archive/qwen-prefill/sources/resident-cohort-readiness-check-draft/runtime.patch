@@ -1,0 +1,389 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/Main.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/Main.swift
+@@ -25,7 +25,8 @@
+             try checkQwenLongPrefillPairCLI()
+             try checkQwenLongPrefillRankAdmission()
+             try checkQwenLongPrefillResidentRankAdmission()
+-        try checkQwenLongPrefillResidentCohortAgreement()
++            try checkQwenLongPrefillResidentCohortAgreement()
++            try checkQwenLongPrefillCohortReadinessAdmission()
+             try checkQwenLongPrefillSoloCLI()
+             try checkQwenPrefillPhaseCLI()
+             try checkQwenPrefillOwnerCLI()
+@@ -60,6 +61,18 @@
+             try checkLocalCorrectnessStorage()
+             try checkGemmaPartitionPlan()
+             try checkPartitionStorage()
++            return
++        }
++        if options.mode == .qwenLongPrefillCohortReadinessCheck {
++            // Both pure rank intents precede native setup; no model/input preflight.
++            let admission = try QwenLongPrefillCohortReadinessAdmission(options: options)
++            _ = MLXArray(0)
++            try MLX.withError { error in
++                let report = try runQwenLongPrefillCohortReadinessCheck(admission,
++                    check: { try error.check() })
++                try error.check()
++                try emitJSON(report)
++            }
+             return
+         }
+         let localInputs = try LocalCorrectness.preflight(options)
+--- a/experiments/cluster/inference/Sources/ClusterInference/Options.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/Options.swift
+@@ -29,6 +29,7 @@
+         case qwenLongPrefillPairCheck = "qwen-long-prefill-pair-check"
+         case qwenLongPrefillRankCheck = "qwen-long-prefill-rank-check"
+         case qwenLongPrefillSoloCheck = "qwen-long-prefill-solo-check"
++        case qwenLongPrefillCohortReadinessCheck = "qwen-long-prefill-cohort-readiness-check"
+         var isGDNDiagnostic: Bool { self == .qwenGDNInputCheck || self == .qwenGDNArithmeticCheck }
+         var isWorker: Bool { self == .worker || self == .workerTP }
+     }
+@@ -48,6 +49,7 @@
+     var longPromptSHA256: String?
+     var prefillPhaseTraceFile: URL?
+     var prefillOwnerTraceFile: URL?
++    var cohortReadinessCase: QwenLongPrefillCohortReadinessCase?
+     var localCorrectness = false
+     var expectedArtifactAggregateSHA256: String?
+     var modelDirectory: URL?
+@@ -72,7 +74,7 @@
+     var hasRoutingDiagnostic: Bool { routingFile != nil || routingReplayFile != nil }
+ 
+     static let usage = """
+-    cluster-inference --mode baseline|ffn-tp|worker|worker-tp|worker-protocol-check|adapter-check|gemma-loader-check|qwen-output-check|qwen-gdn-input-check|qwen-gdn-arithmetic-check|qwen-layer-stage-check|qwen-layer-stage-profiled-check|qwen-layer-stage-compare|stage-p2p-check|qwen-layer-stage-rank-check|qwen-layer-stage-lookahead-check|qwen-layer-stage-prefill-check|qwen-layer-stage-prefill-rank-check|qwen-layer-stage-solo-prefill-check|qwen-long-prefill-reference|qwen-long-prefill-pair-check|qwen-long-prefill-rank-check|qwen-long-prefill-solo-check|local-parity|loader-parity|operator-parity|token-selection-check|capability
++    cluster-inference --mode baseline|ffn-tp|worker|worker-tp|worker-protocol-check|adapter-check|gemma-loader-check|qwen-output-check|qwen-gdn-input-check|qwen-gdn-arithmetic-check|qwen-layer-stage-check|qwen-layer-stage-profiled-check|qwen-layer-stage-compare|stage-p2p-check|qwen-layer-stage-rank-check|qwen-layer-stage-lookahead-check|qwen-layer-stage-prefill-check|qwen-layer-stage-prefill-rank-check|qwen-layer-stage-solo-prefill-check|qwen-long-prefill-reference|qwen-long-prefill-pair-check|qwen-long-prefill-rank-check|qwen-long-prefill-solo-check|qwen-long-prefill-cohort-readiness-check|local-parity|loader-parity|operator-parity|token-selection-check|capability
+       --model-dir PATH | --synthetic
+       [--transport jaccl|loopback-test]
+       [--local-correctness --artifact-aggregate-sha256 HEX64]
+@@ -84,6 +86,7 @@
+       [--long-prompt-sha256 HEX64] (explicit qwen-long-prefill reference, pair, rank or solo check)
+       [--prefill-phase-trace-file NEW_PATH] (optional CPU phases for long rank or solo check)
+       [--prefill-owner-trace-file NEW_PATH] (optional chunk-7 owner intervals for long rank or solo check)
++      [--cohort-readiness-case match|warmup-mismatch] (closed model-free readiness check only)
+       [--attention-output-precision native|float32]
+       [--ffn-output-precision native|float32] (dense Qwen only)
+       [--ffn-branch-precision native|float32|float32-through-norm] (Gemma only)
+@@ -186,6 +189,10 @@
+     clock; fresh state through finite argmax is timed. Final numerical capture
+     and retirement follow stop. It requires no stage policy, epoch or reference;
+     independent output comparison is external and timings remain diagnostic.
++    qwen-long-prefill-cohort-readiness-check accepts only mode, loopback transport,
++    epoch, cohort-readiness-case and timeout1...30 as five explicit flag/value pairs.
++    It admits synthetic CPU A/B/A descriptors and tests only cohort readiness.
++    It does not accept model paths, load weights, execute requests or time inference.
+     Gemma Float32 FFN-branch precision widens after the ordinary input norm,
+     retains Float32 through projections, expert weighting and branch reduction,
+     then casts once before each output norm. Router arithmetic stays unchanged.
+@@ -298,9 +305,19 @@
+             case "--routing-file": routingFile = URL(fileURLWithPath: value)
+             case "--routing-replay-file": routingReplayFile = URL(fileURLWithPath: value)
+             case "--gemma-boundary-file": gemmaBoundaryFile = URL(fileURLWithPath: value)
++            case "--cohort-readiness-case":
++                guard let parsed = QwenLongPrefillCohortReadinessCase(rawValue: value) else {
++                    throw ProbeError("Unknown cohort readiness fixture case")
++                }
++                cohortReadinessCase = parsed
+             default: throw ProbeError("Unknown option \(flag)")
+             }
+             i += 2
++        }
++        if mode == .qwenLongPrefillCohortReadinessCheck {
++            try QwenLongPrefillCohortReadinessAdmission.validateArguments(arguments, options: self)
++        } else if cohortReadinessCase != nil {
++            throw ProbeError("Cohort readiness case applies only to the closed model-free readiness check")
+         }
+         // Check the original CLI mode before any admission adapter rewrites it.
+         if let cut = stageCut {
+@@ -310,7 +327,7 @@
+                 throw ProbeError("--stage-cut requires qwen-layer-stage-compare, serialized short ranks, or explicit long reference/pair/rank and a cut between 1 and 127")
+             }
+         }
+-        guard mode == .capability || mode == .workerProtocolCheck || mode == .adapterCheck || synthetic != (modelDirectory != nil) else {
++        guard mode == .capability || mode == .workerProtocolCheck || mode == .adapterCheck || mode == .qwenLongPrefillCohortReadinessCheck || synthetic != (modelDirectory != nil) else {
+             throw ProbeError("Choose exactly one of --synthetic and --model-dir")
+         }
+         guard !explicitSyntheticDType || synthetic else { throw ProbeError("synthetic-dtype requires --synthetic") }
+@@ -375,10 +392,11 @@
+         guard (1...86400).contains(timeoutSeconds) else {
+             throw ProbeError("timeout-seconds must be between 1 and 86400")
+         }
+-        guard transport != .loopbackTest || localCorrectness || mode == .qwenLayerStageRankCheck || mode == .qwenLayerStageLookaheadCheck || mode == .qwenLayerStagePrefillRankCheck || mode == .qwenLongPrefillRankCheck || (synthetic && (mode == .ffnTP || mode == .workerTP || mode == .tokenSelectionCheck || mode == .stageP2PCheck)) else {
++        guard transport != .loopbackTest || localCorrectness || mode == .qwenLongPrefillCohortReadinessCheck || mode == .qwenLayerStageRankCheck || mode == .qwenLayerStageLookaheadCheck || mode == .qwenLayerStagePrefillRankCheck || mode == .qwenLongPrefillRankCheck || (synthetic && (mode == .ffnTP || mode == .workerTP || mode == .tokenSelectionCheck || mode == .stageP2PCheck)) else {
+             throw ProbeError("loopback-test requires synthetic execution or explicit bounded local-correctness")
+         }
+-        if mode.isGDNDiagnostic { try QwenGDNInputAdmission.validateOptions(self) }
++        if mode == .qwenLongPrefillCohortReadinessCheck { try QwenLongPrefillCohortReadinessAdmission.validateOptions(self) }
++        else if mode.isGDNDiagnostic { try QwenGDNInputAdmission.validateOptions(self) }
+         else if mode == .qwenLayerStageCheck { try validateQwenLayerStageCheckOptions(self) }
+         else if mode == .qwenLayerStageProfiledCheck { try validateQwenLayerStageProfiledCheckOptions(self) }
+         else if mode == .qwenLayerStageCompare { try QwenLayerStageComparisonAdmission.validateOptions(self) }
+@@ -398,7 +416,7 @@
+                 benchmarkFlags.isEmpty, tokensFile == nil, teacherTokensFile == nil,
+                 logitsFile == nil, !hasRoutingDiagnostic
+             else { throw ProbeError("Workers require --epoch HEX32 and receive all request inputs through JSONL commands") }
+-        } else if epoch != nil && mode != .stageP2PCheck && mode != .qwenLayerStageRankCheck && mode != .qwenLayerStageLookaheadCheck && mode != .qwenLayerStagePrefillRankCheck && mode != .qwenLongPrefillRankCheck {
++        } else if epoch != nil && mode != .qwenLongPrefillCohortReadinessCheck && mode != .stageP2PCheck && mode != .qwenLayerStageRankCheck && mode != .qwenLayerStageLookaheadCheck && mode != .qwenLayerStagePrefillRankCheck && mode != .qwenLongPrefillRankCheck {
+             throw ProbeError("epoch is only valid for persistent workers or stage rank/transport checks")
+         }
+         if syntheticProfile.hasPrefix("gemma-") {
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillCohortReadinessAdmission.swift
+@@ -0,0 +1,95 @@
++import Foundation
++
++enum QwenLongPrefillCohortReadinessCase: String, Codable, CaseIterable {
++    case match
++    case warmupMismatch = "warmup-mismatch"
++}
++
++/// Both rank intents are admitted before MLX or Collective setup. These are
++/// synthetic metadata fixtures, not loaded-source or actual-resource admission.
++struct QwenLongPrefillCohortReadinessAdmission {
++    let epoch: String
++    let fixtureCase: QwenLongPrefillCohortReadinessCase
++    private let agreements: [QwenLongPrefillResidentCohortAgreement]
++
++    init(options: Options) throws {
++        try Self.validateOptions(options)
++        let epoch = options.epoch!, fixtureCase = options.cohortReadinessCase!
++        let fixture = try QwenLongPrefillResidentCohortFixture()
++        let requests = try (0..<3).map { ordinal in
++            let requestEpoch = ordinal == 0 ? epoch : String(sha256(Data(
++                "qwen-cohort-readiness-fixture-request-v1|\(epoch)|\(ordinal)".utf8)).prefix(32))
++            let prompt = ordinal == 1 ? fixture.promptB : fixture.promptA
++            let request = try QwenLayerStageProfiledPrefillRequestSpec(profile: .longPrefill8KV1,
++                requestID: QwenLayerStageRankAdmission.requestID(epoch: requestEpoch),
++                batchSize: 1, promptCount: 8192, chunkSize: 512, outputCount: 1)
++            let local = try QwenRegistered9BLongPrefillReferenceAdmission(
++                configuration: fixture.configuration,
++                expectedArtifactAggregateSHA256: QwenLongPrefillResidentRankFixture.artifactSHA256,
++                promptData: prompt, expectedPromptSHA256: sha256(prompt), request: request,
++                arithmetic: fixture.arithmetic, stageCut: 12)
++            return QwenLongPrefillResidentRankRequest(epoch: requestEpoch, local: local)
++        }
++        let rankOptions = try fixture.options(requests[0])
++        let first = try QwenLongPrefillResidentCohortAgreement(
++            options: rankOptions, requests: requests, warmupCount: 1)
++        let second = try QwenLongPrefillResidentCohortAgreement(options: rankOptions,
++            requests: requests, warmupCount: fixtureCase == .match ? 1 : 0)
++        self.epoch = epoch; self.fixtureCase = fixtureCase
++        agreements = [first, second]
++    }
++
++    func agreement(forRank rank: Int) throws -> QwenLongPrefillResidentCohortAgreement {
++        guard (0..<2).contains(rank) else { throw ProbeError("Readiness fixture requires rank zero or one") }
++        return agreements[rank]
++    }
++
++    static func validateArguments(_ arguments: [String], options: Options) throws {
++        try validateOptions(options)
++        let allowed: Set<String> = ["--mode", "--transport", "--epoch", "--cohort-readiness-case", "--timeout-seconds"]
++        guard arguments.count == allowed.count * 2 else {
++            throw ProbeError("Cohort readiness check requires exactly five explicit flag/value pairs")
++        }
++        var values: [String: String] = [:]
++        for index in stride(from: 0, to: arguments.count, by: 2) {
++            let flag = arguments[index]
++            guard allowed.contains(flag), values[flag] == nil else {
++                throw ProbeError("Cohort readiness check rejects extra or duplicate flags")
++            }
++            values[flag] = arguments[index + 1]
++        }
++        guard Set(values.keys) == allowed,
++              values["--mode"] == options.mode.rawValue,
++              values["--transport"] == options.transport.rawValue,
++              values["--epoch"] == options.epoch,
++              values["--cohort-readiness-case"] == options.cohortReadinessCase?.rawValue,
++              values["--timeout-seconds"] == String(options.timeoutSeconds) else {
++            throw ProbeError("Cohort readiness check requires exact canonical argument values")
++        }
++    }
++
++    static func validateOptions(_ options: Options) throws {
++        guard options.mode == .qwenLongPrefillCohortReadinessCheck,
++              options.transport == .loopbackTest, options.cohortReadinessCase != nil,
++              let epoch = options.epoch, (1...30).contains(options.timeoutSeconds) else {
++            throw ProbeError("Cohort readiness check requires an explicit case, loopback epoch and timeout between 1 and 30 seconds")
++        }
++        _ = try QwenLayerStageRankAdmission.requestID(epoch: epoch)
++        guard options.modelDirectory == nil, !options.synthetic, !options.localCorrectness,
++              options.expectedArtifactAggregateSHA256 == nil,
++              options.tokensFile == nil, options.teacherTokensFile == nil, options.logitsFile == nil,
++              options.stageCut == nil, options.stagePrefillPolicy == nil, options.stageLogitsDType == nil,
++              options.longPromptSHA256 == nil, options.soloReferenceFile == nil,
++              options.soloReferenceSHA256 == nil, options.soloBaselineEvidenceSHA256 == nil,
++              options.prefillPhaseTraceFile == nil, options.prefillOwnerTraceFile == nil,
++              options.routingFile == nil, options.routingReplayFile == nil,
++              !options.gemmaDiagnostic, options.gemmaBoundaryFile == nil,
++              options.partition == .ffn, options.attentionOutputPrecision == .native,
++              options.ffnOutputPrecision == .native, options.ffnBranchPrecision == .native,
++              options.executionPath == .ordinary, options.syntheticDType == "float32",
++              options.syntheticProfile == "tiny", options.promptCount == 128, options.chunkSize == 128,
++              options.decodeCount == 16, options.repeats == 3, options.warmups == 1, options.seed == 7 else {
++            throw ProbeError("Cohort readiness check accepts no model, workload, source, trace or precision options")
++        }
++    }
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillCohortReadinessAdmissionCheck.swift
+@@ -0,0 +1,113 @@
++import Foundation
++
++func checkQwenLongPrefillCohortReadinessAdmission() throws {
++    let epoch = String(repeating: "1", count: 32)
++    let base = ["--mode", "qwen-long-prefill-cohort-readiness-check", "--transport", "loopback-test",
++        "--epoch", epoch, "--cohort-readiness-case", "match", "--timeout-seconds", "30"]
++    func replacing(_ flag: String, _ value: String, in arguments: [String] = []) -> [String] {
++        var result = arguments.isEmpty ? base : arguments
++        result[result.firstIndex(of: flag)! + 1] = value
++        return result
++    }
++    var accepted: [String] = [], rejected: [String] = [], identities: [String] = []
++    for fixtureCase in QwenLongPrefillCohortReadinessCase.allCases {
++        _ = try Options(arguments: replacing("--cohort-readiness-case", fixtureCase.rawValue))
++        accepted.append(fixtureCase.rawValue)
++    }
++    _ = try Options(arguments: replacing("--timeout-seconds", "1"))
++    accepted.append("minimum native timeout")
++    func reject(_ label: String, _ body: () throws -> Void) throws {
++        do { try body() } catch { rejected.append(label); return }
++        throw ProbeError("Readiness entry admitted invalid fixture: " + label)
++    }
++    func identity(_ label: String, _ condition: Bool) throws {
++        guard condition else { throw ProbeError("Readiness identity fixture failed: " + label) }
++        identities.append(label)
++    }
++
++    for (flag, value) in [("--cohort-readiness-case", "unknown"), ("--timeout-seconds", "0"),
++        ("--timeout-seconds", "31"), ("--timeout-seconds", "+30"),
++        ("--epoch", String(repeating: "A", count: 32)), ("--epoch", "abc")] {
++        try reject("invalid " + flag + " " + value) { _ = try Options(arguments: replacing(flag, value)) }
++    }
++    for flag in ["--mode", "--transport", "--epoch", "--cohort-readiness-case", "--timeout-seconds"] {
++        let index = base.firstIndex(of: flag)!
++        var missing = base; missing.removeSubrange(index...(index + 1))
++        try reject("missing " + flag) { _ = try Options(arguments: missing) }
++        try reject("duplicate " + flag) { _ = try Options(arguments: base + [flag, base[index + 1]]) }
++    }
++    for mode in ["baseline", "adapter-check", "qwen-long-prefill-rank-check", "qwen-long-prefill-solo-check"] {
++        try reject("foreign original mode " + mode) { _ = try Options(arguments: replacing("--mode", mode)) }
++    }
++    for extra in [["--model-dir", "unused"], ["--synthetic"], ["--tokens-file", "unused"],
++        ["--stage-cut", "12"], ["--prefill-phase-trace-file", "unused"],
++        ["--prefill-owner-trace-file", "unused"], ["--prompt-tokens", "128"], ["--seed", "7"],
++        ["--stage-logits-dtype", "bfloat16"], ["--stage-prefill-policy", "serial_v1"]] {
++        try reject("extra " + extra[0]) { _ = try Options(arguments: base + extra) }
++    }
++    let direct = try Options(arguments: base)
++    let mutations: [(String, (inout Options) -> Void)] = [
++        ("direct model directory", { $0.modelDirectory = URL(fileURLWithPath: "unused") }),
++        ("direct synthetic", { $0.synthetic = true }),
++        ("direct repeats", { $0.repeats = 4 }),
++        ("direct warmups", { $0.warmups = 0 }),
++        ("direct trace", { $0.prefillPhaseTraceFile = URL(fileURLWithPath: "unused") }),
++        ("direct missing case", { $0.cohortReadinessCase = nil }),
++        ("direct foreign mode", { $0.mode = .qwenLongPrefillRankCheck }),
++        ("direct transport", { $0.transport = .jaccl }),
++        ("direct epoch", { $0.epoch = "bad" }),
++        ("direct timeout", { $0.timeoutSeconds = 31 }),
++    ]
++    for (label, mutate) in mutations {
++        var changed = direct; mutate(&changed)
++        try reject(label) { _ = try QwenLongPrefillCohortReadinessAdmission(options: changed) }
++    }
++
++    let matched = try QwenLongPrefillCohortReadinessAdmission(options: direct)
++    let rank0 = try matched.agreement(forRank: 0), rank1 = try matched.agreement(forRank: 1)
++    try identity("both matching rank intents admitted before native selection",
++        rank0.fingerprint == rank1.fingerprint && rank0.descriptor == rank1.descriptor &&
++        rank0.descriptor.requestCount == 3 && rank0.descriptor.warmupCount == 1)
++    let mismatched = try QwenLongPrefillCohortReadinessAdmission(options:
++        Options(arguments: replacing("--cohort-readiness-case", "warmup-mismatch")))
++    let mismatch0 = try mismatched.agreement(forRank: 0), mismatch1 = try mismatched.agreement(forRank: 1)
++    func withoutWarmupLabels(_ descriptor: QwenLongPrefillResidentCohortAgreement.Descriptor) throws -> Data {
++        guard var object = try JSONSerialization.jsonObject(with: canonicalJSONData(descriptor)) as? [String: Any],
++              var entries = object["requests"] as? [[String: Any]] else {
++            throw ProbeError("Readiness fixture lost its typed descriptor encoding")
++        }
++        object.removeValue(forKey: "warmupCount")
++        for index in entries.indices { entries[index].removeValue(forKey: "excludedWarmup") }
++        object["requests"] = entries
++        return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
++    }
++    try identity("mismatch changes only warmup classification",
++        mismatch0.fingerprint == rank0.fingerprint && mismatch1.fingerprint != mismatch0.fingerprint &&
++        mismatch1.descriptor.warmupCount == 0 && mismatch1.descriptor.requests.allSatisfy { !$0.excludedWarmup } &&
++        withoutWarmupLabels(mismatch0.descriptor) == withoutWarmupLabels(mismatch1.descriptor))
++    let requestEpochs = rank0.descriptor.requests.map(\.epoch)
++    try identity("three fresh epochs derive from the run epoch",
++        requestEpochs == [epoch, "a76dcf545cb5be98dff623df474b57ae", "a410045a3477334545b86d6e853a64c3"] &&
++        Set(requestEpochs).count == 3 && Set(rank0.descriptor.requests.map(\.requestID)).count == 3)
++    let repeated = try QwenLongPrefillCohortReadinessAdmission(options: direct)
++    try identity("same run case reproduces exact intent", repeated.agreement(forRank: 0).fingerprint == rank0.fingerprint)
++    let changedRun = try QwenLongPrefillCohortReadinessAdmission(options:
++        Options(arguments: replacing("--epoch", String(repeating: "2", count: 32))))
++    let changedRank = try changedRun.agreement(forRank: 0)
++    try identity("new run epoch changes every request identity", changedRank.fingerprint != rank0.fingerprint &&
++        Set(changedRank.descriptor.requests.map(\.epoch)).isDisjoint(with: Set(requestEpochs)))
++    try reject("negative native rank") { _ = try matched.agreement(forRank: -1) }
++    try reject("out-of-range native rank") { _ = try matched.agreement(forRank: 2) }
++
++    guard accepted.count == 3, rejected.count == 42, identities.count == 5 else {
++        throw ProbeError("Readiness entry admission fixture count changed")
++    }
++    struct Result: Encodable {
++        let kind = "qwen_long_prefill_cohort_readiness_admission_check", cpuOnly = true
++        let acceptedFixtures = 3, rejectedFixtures = 42, identityFixtures = 5
++        let accepted: [String], rejected: [String], identities: [String]
++        let actualOptionsAndLocalAdmissionUsed = true
++        let nativeExchangeExecuted = false, modelConstructed = false, weightsMaterialized = false
++    }
++    try emitJSON(Result(accepted: accepted, rejected: rejected, identities: identities))
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillCohortReadinessCheck.swift
+@@ -0,0 +1,43 @@
++import Foundation
++import MLX
++
++struct QwenLongPrefillCohortReadinessCheckReport: Encodable {
++    let kind = "qwen_long_prefill_cohort_readiness_check", schemaVersion = 1
++    let epoch: String
++    let fixtureCase: QwenLongPrefillCohortReadinessCase
++    let rank: Int
++    let worldSize = 2, transport = "loopback-test"
++    let cohortAgreement: QwenLongPrefillResidentCohortAgreement.Descriptor
++    let cohortReadiness: QwenLongPrefillResidentCohortReadiness
++    let postAgreementMarker = "reached_without_model_load"
++    let readinessExchangePassed = true
++    let modelConstructed = false, weightsMaterialized = false, requestsExecuted = false
++    let modelPayloadRead = false, requestStateCreated = false
++    let arithmeticEnvironmentIsFixture = true
++    let actualArtifactVerificationPerformed = false, actualOSResourceAdmissionPerformed = false
++    let residentReuseQualified = false, physicalTransferQualified = false
++    let throughputMeasurementValid = false
++}
++
++/// The only native path is the existing fixed-shape readiness exchange. A
++/// failure returns directly to Main/parent retirement without a blocking fence.
++func runQwenLongPrefillCohortReadinessCheck(_ admission: QwenLongPrefillCohortReadinessAdmission,
++    check: () throws -> Void
++) throws -> QwenLongPrefillCohortReadinessCheckReport {
++    let collective = try Collective(transport: .loopbackTest)
++    return try MLX.withError { error in
++        func checked() throws { try error.check(); try check(); try error.check() }
++        // Select only from the admitted native group, never an environment rank.
++        let agreement = try admission.agreement(forRank: collective.rank)
++        let readiness = try requireQwenLongPrefillResidentCohortReadiness(
++            agreement, collective: collective, check: checked)
++        try checked()
++        let report = QwenLongPrefillCohortReadinessCheckReport(epoch: admission.epoch,
++            fixtureCase: admission.fixtureCase, rank: collective.rank,
++            cohortAgreement: agreement.descriptor, cohortReadiness: readiness)
++        guard try canonicalJSONData(report).count < 65_536 else {
++            throw ProbeError("Cohort readiness success record exceeds its 64 KiB line bound")
++        }
++        return report
++    }
++}

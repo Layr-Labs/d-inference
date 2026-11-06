@@ -1,0 +1,123 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/Options.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/Options.swift
+@@ -78,7 +78,7 @@
+       [--local-correctness --artifact-aggregate-sha256 HEX64]
+       [--partition ffn|full]
+       [--execution-path ordinary|cbv2-contiguous]
+-      [--stage-cut LAYER] (optional first-stage end for qwen-layer-stage-compare only)
++      [--stage-cut LAYER] (optional first-stage end for short comparison or serialized rank check)
+       [--stage-prefill-policy serial_v1|prompt_lookahead_one_v1 --stage-logits-dtype float16|bfloat16|float32]
+       [--solo-reference-file PATH --solo-reference-sha256 HEX64 --solo-baseline-evidence-sha256 HEX64]
+       [--long-prompt-sha256 HEX64] (explicit qwen-long-prefill reference, pair, rank or solo check)
+@@ -147,7 +147,8 @@
+     file for multiple outputs, with the same native CBv2/count/timeout bounds.
+     It emits baseline evidence before loading stages and never measures throughput.
+     Optional --stage-cut selects a legal interval-aligned split; omission keeps
+-    the historical equal split. Other modes do not accept the option.
++    the historical equal split. The serialized qwen-layer-stage-rank-check also
++    accepts it; lookahead, prefill, long-prefill and solo modes do not.
+     stage-p2p-check requires --synthetic, --transport loopback-test, a fresh
+     --epoch HEX32 and timeout<=60. Its fixed 65/32/4 native-byte transfer matrix
+     loads no model, uses no benchmark count flags and never measures throughput.
+@@ -301,8 +302,9 @@
+         }
+         // Check the original CLI mode before any admission adapter rewrites it.
+         if let cut = stageCut {
+-            guard mode == .qwenLayerStageCompare, (1...127).contains(cut) else {
+-                throw ProbeError("--stage-cut requires qwen-layer-stage-compare and a cut between 1 and 127")
++            guard (mode == .qwenLayerStageCompare || mode == .qwenLayerStageRankCheck),
++                  (1...127).contains(cut) else {
++                throw ProbeError("--stage-cut requires qwen-layer-stage-compare or qwen-layer-stage-rank-check and a cut between 1 and 127")
+             }
+         }
+         guard mode == .capability || mode == .workerProtocolCheck || mode == .adapterCheck || synthetic != (modelDirectory != nil) else {
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageCutAdmissionCheck.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageCutAdmissionCheck.swift
+@@ -85,7 +85,7 @@
+     try configuration.write(to: configFile)
+ 
+     let foreignModes: [Options.Mode] = [.baseline, .ffnTP, .worker, .workerTP, .qwenLayerStageCheck,
+-        .qwenLayerStageProfiledCheck, .qwenLayerStageRankCheck, .qwenLayerStageLookaheadCheck,
++        .qwenLayerStageProfiledCheck, .qwenLayerStageLookaheadCheck,
+         .qwenLayerStagePrefillCheck, .qwenLayerStagePrefillRankCheck, .qwenLayerStageSoloPrefillCheck,
+         .qwenLongPrefillReference, .qwenLongPrefillPairCheck, .qwenLongPrefillRankCheck, .qwenLongPrefillSoloCheck]
+     for mode in foreignModes {
+@@ -107,7 +107,6 @@
+     solo.soloReferenceSHA256 = String(repeating: "c", count: 64)
+     solo.soloBaselineEvidenceSHA256 = String(repeating: "d", count: 64)
+     let helpers: [(Options, (Options) throws -> Void)] = [
+-        (rank, QwenLayerStageRankAdmission.validateOptions),
+         (lookahead, QwenLayerStageLookaheadAdmission.validateOptions),
+         (prefill, QwenLayerStagePrefillAdmission.validateOptions),
+         (prefillRank, QwenLayerStagePrefillRankAdmission.validateOptions),
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageLookaheadAdmission.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageLookaheadAdmission.swift
+@@ -4,6 +4,10 @@
+ /// It changes wire/scheduling policy only; bare v1 peers fail v2 header admission.
+ enum QwenLayerStageLookaheadAdmission {
+     static func validateOptions(_ options: Options) throws {
++        // This foreign mode must reject before cloning into the serialized rank admission.
++        guard options.stageCut == nil else {
++            throw ProbeError("--stage-cut is only admitted by qwen-layer-stage-compare or qwen-layer-stage-rank-check")
++        }
+         guard options.mode == .qwenLayerStageLookaheadCheck else {
+             throw ProbeError("Expected the explicit layer-stage lookahead diagnostic mode")
+         }
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStagePrefillAdmission.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStagePrefillAdmission.swift
+@@ -6,7 +6,7 @@
+     static func validateOptions(_ options: Options) throws {
+         // Reject before the shared comparison adapter changes the mode.
+         guard options.stageCut == nil else {
+-            throw ProbeError("--stage-cut is only admitted by qwen-layer-stage-compare")
++            throw ProbeError("--stage-cut is only admitted by qwen-layer-stage-compare or qwen-layer-stage-rank-check")
+         }
+         guard options.mode == .qwenLayerStagePrefillCheck, options.decodeCount == 1,
+               options.teacherTokensFile == nil else {
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStagePrefillRankAdmission.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStagePrefillRankAdmission.swift
+@@ -2,6 +2,10 @@
+ 
+ enum QwenLayerStagePrefillRankAdmission {
+     static func validateOptions(_ options: Options) throws {
++        // This foreign mode must reject before cloning into the serialized rank admission.
++        guard options.stageCut == nil else {
++            throw ProbeError("--stage-cut is only admitted by qwen-layer-stage-compare or qwen-layer-stage-rank-check")
++        }
+         guard options.mode == .qwenLayerStagePrefillRankCheck,
+               options.decodeCount == 1, options.teacherTokensFile == nil,
+               options.stagePrefillPolicy != nil,
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageRankAdmission.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageRankAdmission.swift
+@@ -4,10 +4,6 @@
+ /// persistent-worker semantics; the existing comparison preflight owns inputs.
+ enum QwenLayerStageRankAdmission {
+     static func validateOptions(_ options: Options) throws {
+-        // Reject before the shared comparison adapter changes the mode.
+-        guard options.stageCut == nil else {
+-            throw ProbeError("--stage-cut is only admitted by qwen-layer-stage-compare")
+-        }
+         guard options.mode == .qwenLayerStageRankCheck, options.transport == .loopbackTest,
+             let epoch = options.epoch, epoch.count == 32,
+             epoch.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageRankCheck.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageRankCheck.swift
+@@ -28,6 +28,7 @@
+     inputs: QwenLayerStageComparisonAdmission.Inputs, check: () throws -> Void
+ ) throws -> QwenLayerStageRankReport {
+     try QwenLayerStageRankAdmission.validateOptions(options)
++    try QwenLayerStageComparisonAdmission.validatePlanBinding(options, inputs: inputs)
+     let collective = try Collective(transport: options.transport)
+     let request = try QwenLayerStageRecordedRequest(request: .init(
+         requestID: QwenLayerStageRankAdmission.requestID(epoch: options.epoch!),
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageSoloPrefillCLIAdmission.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageSoloPrefillCLIAdmission.swift
+@@ -12,7 +12,7 @@
+     static func validateOptions(_ options: Options) throws {
+         // Reject before the shared comparison adapter changes the mode.
+         guard options.stageCut == nil else {
+-            throw ProbeError("--stage-cut is only admitted by qwen-layer-stage-compare")
++            throw ProbeError("--stage-cut is only admitted by qwen-layer-stage-compare or qwen-layer-stage-rank-check")
+         }
+         guard options.mode == .qwenLayerStageSoloPrefillCheck,
+               options.decodeCount == 1, options.teacherTokensFile == nil,

@@ -1,0 +1,927 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageSession.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageSession.swift
+@@ -172,6 +172,29 @@
+         proposal: QwenResidentMTPProposal, generation: QwenLayerStageGenerationControl,
+         ownerCheck: (QwenTargetVerificationBudget) throws -> Void
+     ) throws -> QwenTargetVerificationBudget {
++        try beginVerification(proposal: proposal, generation: generation, ownerCheck: ownerCheck) { spec in
++            try .init(request: spec, profile: profile, stage: stage,
++                identity: identity, state: state, schedule: schedule)
++        }
++    }
++
++    #if QWEN_TARGET_TINY_FIXTURE
++    func beginTinyTargetVerification(resources: QwenTinyTargetFixtureResources,
++        proposal: QwenResidentMTPProposal, generation: QwenLayerStageGenerationControl,
++        ownerCheck: (QwenTargetVerificationBudget) throws -> Void
++    ) throws -> QwenTargetVerificationBudget {
++        try beginVerification(proposal: proposal, generation: generation, ownerCheck: ownerCheck) { spec in
++            try .init(request: spec, tiny: resources, stage: stage,
++                identity: identity, state: state, schedule: schedule)
++        }
++    }
++    #endif
++
++    private func beginVerification(proposal: QwenResidentMTPProposal,
++        generation: QwenLayerStageGenerationControl,
++        ownerCheck: (QwenTargetVerificationBudget) throws -> Void,
++        makeExecution: (QwenTargetVerificationRequest) throws -> QwenTargetVerificationExecution
++    ) throws -> QwenTargetVerificationBudget {
+         do {
+             try state.requireOpen()
+             guard case .generation = request, verification == nil,
+@@ -180,8 +203,7 @@
+                 throw ProbeError("Target verification requires a fresh bounded generation round")
+             }
+             let spec = try QwenTargetVerificationRequest(proposal: proposal, generation: generation)
+-            let value = try QwenTargetVerificationExecution(request: spec, profile: profile, stage: stage,
+-                identity: identity, state: state, schedule: schedule)
++            let value = try makeExecution(spec)
+             verification = value; usedVerificationRounds.insert(proposal.roundID)
+             try value.begin(ownerCheck: ownerCheck)
+             return value.resources.budget
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTargetVerificationExecution.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTargetVerificationExecution.swift
+@@ -6,7 +6,7 @@
+ /// whole-request retirement. No assistant, peer ACK or output publication here.
+ final class QwenTargetVerificationExecution {
+     let request: QwenTargetVerificationRequest
+-    let resources: QwenTargetVerificationResources
++    let resources: QwenTargetVerificationResourceAuthority
+     private let stage: LoadedQwenLayerStage
+     private let state: CBv2OwnedRequestState
+     private var stagedOutputs: [MLXArray] = []
+@@ -15,9 +15,28 @@
+     var stagedCount: Int { stagedOutputs.count }
+     private(set) var committedCount = 0
+ 
+-    init(request: QwenTargetVerificationRequest, profile: QwenRegisteredDenseModelProfile,
++    convenience init(request: QwenTargetVerificationRequest, profile: QwenRegisteredDenseModelProfile,
+          stage: LoadedQwenLayerStage, identity: QwenLayerStageSessionIdentity,
+          state: CBv2OwnedRequestState, schedule: QwenLayerStageAdmittedSchedule) throws {
++        try self.init(request: request, stage: stage, identity: identity, state: state, schedule: schedule) {
++            .registered(try .init(loaded: stage, profile: profile, request: request))
++        }
++    }
++
++    #if QWEN_TARGET_TINY_FIXTURE
++    convenience init(request: QwenTargetVerificationRequest, tiny: QwenTinyTargetFixtureResources,
++         stage: LoadedQwenLayerStage, identity: QwenLayerStageSessionIdentity,
++         state: CBv2OwnedRequestState, schedule: QwenLayerStageAdmittedSchedule) throws {
++        try self.init(request: request, stage: stage, identity: identity, state: state, schedule: schedule) {
++            .tiny(try tiny.authority(stage: stage, request: request))
++        }
++    }
++    #endif
++
++    private init(request: QwenTargetVerificationRequest, stage: LoadedQwenLayerStage,
++         identity: QwenLayerStageSessionIdentity, state: CBv2OwnedRequestState,
++         schedule: QwenLayerStageAdmittedSchedule,
++         makeResources: () throws -> QwenTargetVerificationResourceAuthority) throws {
+         let a = request.agreement.descriptor
+         guard (0...1).contains(stage.stageIndex), a.stageFingerprints.count == 2,
+               identity.requestFingerprint == request.agreement.request.fingerprint,
+@@ -31,7 +50,7 @@
+             throw ProbeError("Target verification does not bind this loaded session and frontier")
+         }
+         self.request = request; self.stage = stage; self.state = state
+-        resources = try .init(loaded: stage, profile: profile, request: request)
++        resources = try makeResources()
+     }
+ 
+     func begin(ownerCheck: (QwenTargetVerificationBudget) throws -> Void) throws {
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTargetVerificationResourceAuthority.swift
+@@ -0,0 +1,26 @@
++/// Closed constructors. Ordinary execution can only select the existing sealed
++/// registered profile. The other case does not exist in product compilation.
++enum QwenTargetVerificationResourceAuthority {
++    case registered(QwenTargetVerificationResources)
++    #if QWEN_TARGET_TINY_FIXTURE
++    case tiny(QwenTinyTargetVerificationResources)
++    #endif
++
++    var budget: QwenTargetVerificationBudget {
++        switch self {
++        case .registered(let value): value.budget
++        #if QWEN_TARGET_TINY_FIXTURE
++        case .tiny(let value): value.budget
++        #endif
++        }
++    }
++
++    func requireLive(ownerCheck: (QwenTargetVerificationBudget) throws -> Void) throws {
++        switch self {
++        case .registered(let value): try value.requireLive(ownerCheck: ownerCheck)
++        #if QWEN_TARGET_TINY_FIXTURE
++        case .tiny(let value): try value.requireLive(ownerCheck: ownerCheck)
++        #endif
++        }
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTinyTargetCase.swift
+@@ -0,0 +1,167 @@
++#if QWEN_TARGET_TINY_FIXTURE
++import Foundation
++import MLX
++
++final class QwenTinyTargetCase {
++    let resources: QwenTinyTargetFixtureResources
++    var ordinary: QwenTinyTargetPair
++    let target: QwenTinyTargetPair
++    let generation: QwenLayerStageGenerationControl
++    private(set) var seed = -1
++    private(set) var maximumDifference: Float = 0
++    private(set) var stagedPayloadHashes: [String] = []
++    private(set) var selectedTokens: [Int] = []
++    private(set) var provisionalTokens: [Int] = []
++
++    init(model: QwenTinyTargetModel, outputCount: Int = 4, stops: Set<Int> = [],
++         check: @escaping () throws -> Void) throws {
++        let profile = try QwenLayerStageGenerationProfile(identifier: "fabricated-tiny-target-session-v1",
++            vocabularySize: 128, hiddenSize: 64, activationDType: "float32", maximumPromptTokens: 5,
++            maximumChunkTokens: 2, maximumOutputTokens: 4, maximumContextTokens: 9)
++        let request = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(),
++            promptTokenIDs: [1, 2, 3, 4, 5], chunkSize: 2, outputCount: outputCount, stopTokenIDs: stops)
++        resources = try .init(model: model, request: request, check: check)
++        ordinary = try .init(resources: resources)
++        target = try .init(resources: resources)
++        let stage = model.stages[0], source = try QwenLayerStageWireSourceIdentity(
++            sourceConfigurationSHA256: stage.receipt.sourceConfigurationSHA256,
++            artifactAggregateSHA256: stage.receipt.verifiedAggregateSHA256,
++            storageCommitmentSHA256: stage.receipt.storageCommitmentSHA256,
++            planFingerprint: stage.plan.fingerprint, producerStageFingerprint: stage.plan.stages[0].fingerprint)
++        let fixture = sha256(Data("fabricated-target-session-control-v1".utf8))
++        let agreement = try QwenLayerStageGenerationAgreement(request: request, membershipEpoch: UUID(), source: source,
++            consumerStageFingerprint: stage.plan.stages[1].fingerprint,
++            rankBuildSHA256: [fixture, fixture], numericalPolicySHA256: fixture)
++        generation = .init(agreement: agreement)
++    }
++
++    func prefillAndSelectSeed() throws {
++        let request = resources.request
++        for _ in 0..<request.prefillFrameCount {
++            let expected = try generation.beginFrame(), frame = expected.frame
++            let tokens = Array(request.promptTokenIDs[frame.tokenOffset..<(frame.tokenOffset+frame.tokenCount)])
++            let a = try ordinary.forward(frame, tokens: tokens), b = try target.forward(frame, tokens: tokens)
++            if frame.finalPromptChunk {
++                maximumDifference = max(maximumDifference, try QwenTinyTargetAssertions.logits(a.value, b.value, check: resources.requireLive))
++            }
++            let packet = try QwenLayerStageGenerationBoundaryPacket(expected: expected, payloadSHA256: b.boundary.payloadSHA256)
++            for rank in [0, 1] { try generation.acknowledgeFrame(rank: rank, packet: packet,
++                nativeCommittedTokens: target.sessions[rank].committedTokens) }
++            if frame.finalPromptChunk {
++                seed = try QwenTinyTargetAssertions.token(b.value, check: resources.requireLive)
++                try publish(token: seed, boundary: packet, continueRequested: true)
++            }
++        }
++        try QwenTinyTargetAssertions.state(ordinary, target)
++    }
++
++    func proposal(_ draft: Int) -> QwenResidentMTPProposal {
++        .init(requestID: resources.request.requestID, roundID: UUID(),
++            agreementFingerprint: generation.agreement.fingerprint, committedTargetInputs: generation.committedTokens,
++            seedTokenID: seed, previousTokenChainSHA256: generation.tokenChainSHA256, proposedTokenID: draft)
++    }
++
++    func begin(_ proposal: QwenResidentMTPProposal) throws {
++        for session in target.sessions {
++            _ = try session.beginTinyTargetVerification(resources: resources, proposal: proposal,
++                generation: generation, ownerCheck: { _ in try self.resources.requireLive() })
++        }
++    }
++
++    func stage(_ proposal: QwenResidentMTPProposal) throws {
++        let count = min(2, resources.request.outputCount-1)
++        for step in 0..<count {
++            let first = try target.sessions[0].stageTargetVerification(roundID: proposal.roundID, step: step,
++                ownerCheck: { _ in try self.resources.requireLive() })
++            guard case .provisionalHidden(let boundary) = first else { throw ProbeError("Tiny target producer output differs") }
++            let owned = try boundary.ownedCopy(check: resources.requireLive)
++            let last = try target.sessions[1].stageTargetVerification(roundID: proposal.roundID, step: step,
++                incoming: owned, ownerCheck: { _ in try self.resources.requireLive() })
++            guard case .provisionalLogits(let logits) = last else { throw ProbeError("Tiny target consumer output differs") }
++            let input = step == 0 ? proposal.seedTokenID : proposal.proposedTokenID
++            let reference = try ordinary.decode(input)
++            maximumDifference = max(maximumDifference, try QwenTinyTargetAssertions.logits(reference, logits, check: resources.requireLive))
++            stagedPayloadHashes.append(boundary.payloadSHA256)
++            provisionalTokens.append(try QwenTinyTargetAssertions.token(logits, check: resources.requireLive))
++        }
++    }
++
++    func reconcile(_ proposal: QwenResidentMTPProposal, keeping count: Int) throws {
++        let rows = try target.sessions.map { try $0.reconcileTargetVerification(roundID: proposal.roundID,
++            keepingInputs: count, ownerCheck: { _ in try self.resources.requireLive() }) }
++        try join(rows, retained: count, final: true)
++    }
++
++    func commit(_ proposal: QwenResidentMTPProposal, prefix: Int) throws {
++        let rows = try target.sessions.map { try $0.commitNextTargetVerification(roundID: proposal.roundID,
++            ownerCheck: { _ in try self.resources.requireLive() }) }
++        try join(rows, retained: prefix, final: false)
++    }
++
++    private func join(_ values: [QwenTargetVerificationCommit], retained: Int, final: Bool) throws {
++        defer { values.forEach { $0.discard() } }
++        let first = values[0].localReceipt, second = values[1].localReceipt
++        try QwenTinyTargetAssertions.require(first.rank == 0 && second.rank == 1
++            && first.verificationFingerprint == second.verificationFingerprint
++            && first.base == 5 && second.base == 5 && first.retainedInputs == retained && second.retainedInputs == retained
++            && first.committedInputs == 5+retained && second.committedInputs == 5+retained
++            && first.pendingInputs == second.pendingInputs && first.stagedInputs == second.stagedInputs
++            && first.isFinal == final && second.isFinal == final,
++            "Actual two-stage local commit receipts differ")
++        let firstRows = try values[0].takeLocalHiddenRows(), secondRows = try values[1].takeLocalHiddenRows()
++        try QwenTinyTargetAssertions.require(firstRows.isEmpty && secondRows.count == second.newlyCommittedInputs,
++            "Committed pre-norm row ownership differs")
++        for row in secondRows {
++            try QwenTinyTargetAssertions.require(row.shape == [1, 1, 64] && row.dtype == .float32,
++                "Committed tiny pre-norm row geometry differs")
++        }
++    }
++
++    func publishCommittedStep(_ step: Int, continueRequested: Bool) throws {
++        // Ordinary existing control consumes actual local receipts above. No
++        // wire/peer ACK is fabricated or claimed by this local fixture.
++        let expected = try generation.beginFrame()
++        let packet = try QwenLayerStageGenerationBoundaryPacket(expected: expected, payloadSHA256: stagedPayloadHashes[step])
++        for rank in [0, 1] { try generation.acknowledgeFrame(rank: rank, packet: packet,
++            nativeCommittedTokens: target.sessions[rank].committedTokens) }
++        try publish(token: provisionalTokens[step], boundary: packet, continueRequested: continueRequested)
++    }
++
++    private func publish(token: Int, boundary: QwenLayerStageGenerationBoundaryPacket, continueRequested: Bool) throws {
++        let packet = try QwenLayerStageGenerationTokenPacket(agreement: generation.agreement,
++            boundaryFingerprint: boundary.fingerprint, previousTokenChainSHA256: generation.tokenChainSHA256,
++            ordinal: generation.selectedTokenCount, committedTokens: generation.committedTokens, tokenID: token)
++        for rank in [0, 1] { try generation.acknowledgeToken(rank: rank, packet: packet) }
++        selectedTokens.append(try generation.takeCommittedToken())
++        let decision = try generation.decide(continueRequested: continueRequested)
++        for rank in [0, 1] { try generation.acknowledgeDecision(rank: rank, packet: decision) }
++    }
++
++    func replayOrdinary(keeping count: Int, proposal: QwenResidentMTPProposal) throws {
++        try ordinary.cancel(); ordinary = try .init(resources: resources)
++        _ = try ordinary.prefill()
++        if count >= 1 { _ = try ordinary.decode(proposal.seedTokenID) }
++        if count == 2 { _ = try ordinary.decode(proposal.proposedTokenID) }
++        try QwenTinyTargetAssertions.state(ordinary, target)
++    }
++
++    func finishTarget() throws {
++        guard let reason = generation.finishReason, let last = generation.lastTokenID else {
++            throw ProbeError("Tiny generation lacks an agreed terminal decision")
++        }
++        for session in target.sessions {
++            try session.finishGeneration(reason, selectedTokenCount: generation.selectedTokenCount, lastTokenID: last)
++        }
++        try QwenTinyTargetAssertions.require(target.sessions.allSatisfy { $0.isClosed && !$0.isFailed },
++            "Tiny clean finish did not retire actual state")
++    }
++
++    func cancel() throws {
++        var first: Error?
++        do { try ordinary.cancel() } catch { first = error }
++        do { try target.cancel() } catch { first = first ?? error }
++        if let first { throw first }
++    }
++    deinit { try? ordinary.cancel(); try? target.cancel() }
++}
++#endif
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTinyTargetFixtureResources.swift
+@@ -0,0 +1,111 @@
++#if QWEN_TARGET_TINY_FIXTURE
++import Foundation
++import MLX
++import MLXLMCommon
++import MLXNN
++
++/// Authority is minted from actual private fixture-owned stage objects. Neither
++/// a caller byte count nor a fabricated registered profile can construct it.
++final class QwenTinyTargetFixtureResources {
++    struct Ledger: Encodable {
++        let maximumTokens: Int, chunkTokens: Int, simultaneousPairs: Int
++        let perPairLogicalStateAndBoundaryBytes: Int
++        let roundedStateAndBoundaryBytes: Int, fusionBytes: Int
++        let comparisonNativeBytes: Int, comparisonHostBytes: Int
++        let transactionNativeBytes: [Int], transactionHostBytes: [Int]
++        let wholeProcessBound = false
++    }
++    let model: QwenTinyTargetModel
++    let request: QwenLayerStageGenerationRequest
++    let ledger: Ledger
++    private let base: QwenResidentRequestAllowance
++    private let increments: [QwenTargetVerificationBudget]
++    private let check: () throws -> Void
++
++    init(model: QwenTinyTargetModel, request: QwenLayerStageGenerationRequest,
++         check: @escaping () throws -> Void) throws {
++        guard request.promptTokenIDs == [1, 2, 3, 4, 5], request.chunkSize == 2,
++              [2, 4].contains(request.outputCount), request.profile.hiddenSize == 64,
++              request.profile.vocabularySize == 128, request.profile.activationDType == "float32" else {
++            throw ProbeError("Tiny authority requires its exact bounded geometry")
++        }
++        try check(); try QwenResidentResourceEnvironment.require()
++        let g = try QwenLongPrefillBudgetGeometry(layers: 8, fullAttentionInterval: 4, hiddenSize: 64,
++            queryHeads: 1, kvHeads: 1, headDimension: 64, linearKeyHeads: 1, linearValueHeads: 1,
++            linearKeyDimension: 32, linearValueDimension: 32, convolutionKernel: 4)
++        let b = try QwenLongPrefillTensorBudget.estimate(geometry: g,
++            maximumTokens: request.maximumTokens, chunkSize: request.chunkSize)
++        for stage in model.stages {
++            try model.requireStage(stage)
++            let actual = try CBv2RequestGeometry(model: stage.model, family: .qwen35,
++                feedForwardKind: "dense", layerCount: stage.layerCount, vocabularySize: 128,
++                configurationData: stage.configurationData, maximumTokens: request.maximumTokens)
++            guard stage.layerCount == 4, actual.kinds.count == 1, actual.kvDType == .float32,
++                  actual.kinds[0].modelLayerIndex == 3, actual.kinds[0].headDim == 64,
++                  actual.kinds[0].kvHeads == 1, actual.kinds[0].queryHeads == 1,
++                  actual.kvCapacityBytes == b.kvCapacityBytesPerAttentionLayer,
++                  actual.recurrent.modelLayerIndices == [0, 1, 2],
++                  actual.recurrent.layers.allSatisfy({ $0.convShape == [1, 3, 96] && $0.convDType == .float32
++                    && $0.ssmShape == [1, 1, 32, 32] && $0.ssmDType == .float32 }),
++                  try actual.recurrent.fixedBytesPerRequest() == 3 * (b.convolutionBytesPerLayer + b.ssmBytesPerLayer),
++                  !stage.model.leafModules().flattened().contains(where: { $0.1 is QuantizedLinear || $0.1 is QuantizedEmbedding }) else {
++                throw ProbeError("Actual tiny model geometry/fusion policy differs from its named ledger")
++            }
++        }
++        let sum = QwenLongPrefillCheckedBytes.sum, product = QwenLongPrefillCheckedBytes.product
++        func array(_ bytes: Int, _ count: Int) throws -> Int {
++            try product([QwenResidentResourceEnvironment.allocationBound(bytes), count])
++        }
++        // Two simultaneous complete two-stage requests: ordinary and target.
++        // Each has 3 recurrent generations, full KV/offsets, one snapshot and
++        // two prefill boundaries. Unquantized projections cannot take the
++        // private QuantizedLinear fusion branch in Qwen35.swift.
++        let perPair = try sum([array(b.convolutionBytesPerLayer, 3*b.recurrentLayers),
++            array(b.ssmBytesPerLayer, 3*b.recurrentLayers),
++            array(b.kvCapacityBytesPerAttentionLayer/2, 2*b.attentionLayers),
++            array(4, b.attentionLayers), array(b.largestSingleHostStateComponentBytes, 1), array(b.boundaryBytes, 2)])
++        let state = try product([perPair, 2])
++        let comparisonNative = try array(128*4, 4), comparisonHost = 128*4*2
++        let increments = try [0, 1].map { rank in
++            try QwenTargetVerificationBudget.derive(hiddenSize: 64, vocabularySize: 128, dtypeBytes: 4, rank: rank,
++                steps: min(2, request.outputCount-1), bound: QwenResidentResourceEnvironment.allocationBound)
++        }
++        base = .init(stateBytes: state, fusionBytes: 0, reservedBytes: try sum([state, comparisonNative]))
++        self.model = model; self.request = request; self.check = check; self.increments = increments
++        ledger = .init(maximumTokens: request.maximumTokens, chunkTokens: 2, simultaneousPairs: 2,
++            perPairLogicalStateAndBoundaryBytes: b.conservativeStateAndBoundaryBytes,
++            roundedStateAndBoundaryBytes: state, fusionBytes: 0,
++            comparisonNativeBytes: comparisonNative, comparisonHostBytes: comparisonHost,
++            transactionNativeBytes: increments.map(\.additionalNativeBytes), transactionHostBytes: increments.map(\.additionalHostBytes))
++        try requireLive()
++    }
++
++    func requireLive() throws {
++        try check()
++        try base.requireLive(additionalNativeBytes: QwenLongPrefillCheckedBytes.sum(increments.map(\.additionalNativeBytes)),
++            additionalHostBytes: QwenLongPrefillCheckedBytes.sum(increments.map(\.additionalHostBytes) + [ledger.comparisonHostBytes]))
++        try check()
++    }
++
++    func authority(stage: LoadedQwenLayerStage, request: QwenTargetVerificationRequest) throws -> QwenTinyTargetVerificationResources {
++        try model.requireStage(stage)
++        guard request.agreement.request == self.request,
++              request.agreement.descriptor.storageCommitmentSHA256 == stage.receipt.storageCommitmentSHA256 else {
++            throw ProbeError("Tiny resource authority belongs to a different request/source")
++        }
++        try requireLive()
++        return .init(scope: self, budget: increments[stage.stageIndex])
++    }
++}
++
++struct QwenTinyTargetVerificationResources {
++    private let scope: QwenTinyTargetFixtureResources
++    let budget: QwenTargetVerificationBudget
++    fileprivate init(scope: QwenTinyTargetFixtureResources, budget: QwenTargetVerificationBudget) {
++        self.scope = scope; self.budget = budget
++    }
++    func requireLive(ownerCheck: (QwenTargetVerificationBudget) throws -> Void) throws {
++        try scope.requireLive(); try ownerCheck(budget); try scope.requireLive()
++    }
++}
++#endif
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTinyTargetModel.swift
+@@ -0,0 +1,139 @@
++#if QWEN_TARGET_TINY_FIXTURE
++import Foundation
++import MLX
++import MLXLMCommon
++import MLXNN
++
++/// A deterministic fabricated source inventory, never a registered checkpoint.
++/// Both actual stage models borrow exactly its globally named parameter arrays.
++final class QwenTinyTargetModel {
++    let stages: [LoadedQwenLayerStage]
++    let sourceTensorCount: Int
++    let sourceTensorBytes: Int
++    let sourcePayloadSHA256: String
++    private init(stages: [LoadedQwenLayerStage], count: Int, bytes: Int, payload: String) {
++        self.stages = stages; sourceTensorCount = count; sourceTensorBytes = bytes; sourcePayloadSHA256 = payload
++    }
++
++    static func configuration() throws -> Data {
++        var object = try JSONSerialization.jsonObject(with: MTPTinyModel.configuration(layers: 8, mtpLayers: 0)) as! [String: Any]
++        object["mtplx_mtp"] = ["included": false, "prefix": "mtp.", "block_size": 3]
++        return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
++    }
++
++    static func make(check: () throws -> Void) throws -> QwenTinyTargetModel {
++        try check(); try QwenResidentResourceEnvironment.require()
++        let configuration = try configuration()
++        let plan = try QwenLayerStagePlan(configuration: configuration, ranges: [0..<4, 4..<8])
++        let full = try constructQwenModel(configuration)
++        let sourceParameters = full.parameters().flattened().sorted { $0.0 < $1.0 }
++        let mappings = try plan.parameters(canonicalSourceNames: sourceParameters.map(\.0))
++        guard mappings.count == sourceParameters.count,
++              sourceParameters.allSatisfy({ $0.1.dtype == .float32 }),
++              !full.namedModules().contains(where: { $0.0 == "mtp" || $0.0.hasSuffix(".mtp") }) else {
++            throw ProbeError("Tiny full source is not the exact complete F32 target")
++        }
++        // Check actual constructor sizes BEFORE creating/evaluating values.
++        // Four full source-shaped sets conservatively cover full defaults,
++        // replacements, compact defaults and transition retention. Two largest
++        // leaves cover the serial host construction/hash copies. This is a
++        // named constructor allowance, not a whole native workspace bound.
++        let rounded = try sourceParameters.map { try QwenResidentResourceEnvironment.allocationBound($0.1.nbytes) }
++        let sum = QwenLongPrefillCheckedBytes.sum
++        let construction = QwenResidentRequestAllowance(stateBytes: 0, fusionBytes: 0,
++            reservedBytes: try sum([sum(rounded), sum(rounded), sum(rounded), sum(rounded),
++                rounded.max() ?? 0, rounded.max() ?? 0]))
++        try construction.requireLive(); try check()
++        let values = sourceParameters.map { name, old -> (String, MLXArray) in
++            let salt = name.utf8.reduce(0) { ($0 + Int($1)) % 31 }
++            let data = (0..<old.size).map { i -> Float in
++                if name.hasSuffix("A_log") { return -1 }
++                if name.contains("norm") { return 1 + Float((i + salt) % 5) * 0.02 }
++                return Float((i + salt) % 17 - 8) * 0.003
++            }
++            return (name, MLXArray(data).reshaped(old.shape))
++        }
++        try full.update(parameters: ModuleParameters.unflattened(values), verify: [.all])
++        full.freeze(); eval(full); try check(); try construction.requireLive()
++        let source = Dictionary(uniqueKeysWithValues: full.parameters().flattened())
++        let fullLayout = modelParameterLayout(full)
++        let payloadLines = try source.keys.sorted().map { name -> String in
++            let array = source[name]!, bytes = array.asData().data
++            try check()
++            return "\(name)|\(array.shape)|float32|\(array.nbytes)|\(sha256(bytes))"
++        }
++        let payload = sha256(Data(payloadLines.joined(separator: "\n").utf8))
++        let aggregate = sha256(Data(("fabricated-tiny-global-parameters-v1\n" + payload).utf8))
++        let sourceBytes = try sum(source.values.map(\.nbytes))
++        var constructed: [(any LanguageModel, QwenStagePreparedInventory)] = []
++        for descriptor in plan.stages {
++            try construction.requireLive(); try check()
++            let model = try constructQwenModel(descriptor.constructionConfiguration)
++            let inert = try installQwenStageInertParameters(model: model, stage: descriptor,
++                hiddenSize: 64, activationDType: .float32)
++            var replacements = Dictionary(uniqueKeysWithValues: model.parameters().flattened())
++            var active: [QwenStageActiveTensor] = []
++            for mapping in mappings.filter({ $0.stage == descriptor.index }).sorted(by: { $0.localName < $1.localName }) {
++                guard let array = source[mapping.sourceName], let old = replacements[mapping.localName],
++                      old.shape == array.shape, old.dtype == array.dtype else {
++                    throw ProbeError("Tiny global-to-local parameter mapping differs from the actual constructor")
++                }
++                replacements[mapping.localName] = array
++                active.append(.init(sourceName: mapping.sourceName, localName: mapping.localName,
++                    shape: array.shape, sourceDType: "float32", loadedDType: "float32", byteCount: array.nbytes))
++            }
++            let inertNames = Set(inert.flatMap(\.parameters).map(\.localName))
++            guard Set(replacements.keys) == Set(active.map(\.localName)).union(inertNames),
++                  Set(active.map(\.localName)).isDisjoint(with: inertNames) else {
++                throw ProbeError("Tiny stage active/inert inventory does not cover every parameter")
++            }
++            try model.update(parameters: ModuleParameters.unflattened(replacements.map { ($0.key, $0.value) }
++                .sorted { $0.0 < $1.0 }), verify: [.all])
++            model.freeze(); eval(model); try check()
++            let summary = QwenStageStorageSummary(stageIndex: descriptor.index,
++                constructionConfigurationSHA256: sha256(descriptor.constructionConfiguration),
++                stagePlanSHA256: descriptor.fingerprint, activeMappingSHA256: sha256(try canonicalJSONData(active)),
++                activeParameterLayoutSHA256: qwenStageLayout(active.map { "\($0.localName):\($0.loadedDType):\($0.shape)" }),
++                parameterLayoutSHA256: modelParameterLayout(model), loadedTensorBytes: active.reduce(0) { $0 + $1.byteCount },
++                activeTensorCount: active.count, inertTensorBytes: inert.flatMap(\.parameters).reduce(0) { $0 + $1.byteCount },
++                inertTensorCount: inert.flatMap(\.parameters).count)
++            constructed.append((model, .init(active: active, inert: inert, summary: summary)))
++        }
++        guard try sum(constructed.map { $0.1.summary.loadedTensorBytes }) == sourceBytes,
++              constructed.flatMap({ $0.1.active }).map(\.sourceName).sorted() == source.keys.sorted() else {
++            throw ProbeError("Tiny two-stage source tensor ownership is not a complete disjoint partition")
++        }
++        let storage = QwenLayerStageStorageCommitment(schemaVersion: 1, verifiedAggregateSHA256: aggregate,
++            sourceConfigurationSHA256: sha256(configuration), planSHA256: plan.fingerprint,
++            sourceTensorManifestSHA256: payload, sourceModelTensorBytes: sourceBytes,
++            largestSourceTensorBytes: source.values.map(\.nbytes).max()!, sourceTensorCount: source.count,
++            canonicalTensorCount: source.count, bf16ConversionEnabled: false, stages: constructed.map { $0.1.summary })
++        let storageHash = sha256(try canonicalJSONData(storage))
++        let stages = plan.stages.map { descriptor -> LoadedQwenLayerStage in
++            let (model, inventory) = constructed[descriptor.index], s = inventory.summary
++            let receipt = QwenLayerStageLoadReceipt(schemaVersion: 1, stageIndex: descriptor.index,
++                verifiedAggregateSHA256: aggregate, sourceConfigurationSHA256: sha256(configuration),
++                constructionConfigurationSHA256: s.constructionConfigurationSHA256, planSHA256: plan.fingerprint,
++                stagePlanSHA256: descriptor.fingerprint, sourceTensorManifestSHA256: payload,
++                sourceParameterLayoutSHA256: fullLayout, parameterLayoutSHA256: s.parameterLayoutSHA256,
++                activeParameterLayoutSHA256: s.activeParameterLayoutSHA256, activeMappingSHA256: s.activeMappingSHA256,
++                embeddingActivationDType: "float32", bf16ConversionEnabled: false, sourceModelTensorBytes: sourceBytes,
++                loadedTensorBytes: s.loadedTensorBytes, largestHostTensorBytes: source.values.map(\.nbytes).max()!,
++                activeTensors: inventory.active, inertModules: inventory.inert, inertTensorBytes: s.inertTensorBytes,
++                storageCommitment: storage, storageCommitmentSHA256: storageHash, selectedPayloadReadAccounting: nil)
++            return .init(model: model, plan: plan, stageIndex: descriptor.index, receipt: receipt,
++                activationDType: .float32, vocabularySize: 128)
++        }
++        return .init(stages: stages, count: source.count, bytes: sourceBytes, payload: payload)
++    }
++
++    func requireStage(_ loaded: LoadedQwenLayerStage) throws {
++        guard stages.indices.contains(loaded.stageIndex),
++              ObjectIdentifier(loaded.model) == ObjectIdentifier(stages[loaded.stageIndex].model),
++              loaded.receipt.storageCommitmentSHA256 == stages[loaded.stageIndex].receipt.storageCommitmentSHA256,
++              loaded.plan.originalConfiguration == (try Self.configuration()) else {
++            throw ProbeError("Tiny resource authority belongs to a different constructed stage")
++        }
++    }
++}
++#endif
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTinyTargetPair.swift
+@@ -0,0 +1,109 @@
++#if QWEN_TARGET_TINY_FIXTURE
++import Foundation
++import MLX
++
++/// Local fixture routing calls the actual two Session trunks. This is not a
++/// replacement forward or a claim about network/bilateral protocol delivery.
++final class QwenTinyTargetPair {
++    struct FrameOutput { let boundary: QwenLayerStageBoundary; let value: MLXArray }
++    let sessions: [QwenLayerStageSession]
++    let request: QwenLayerStageGenerationRequest
++    let resources: QwenTinyTargetFixtureResources
++
++    init(resources: QwenTinyTargetFixtureResources) throws {
++        try resources.requireLive()
++        self.resources = resources; request = resources.request
++        var values: [QwenLayerStageSession] = []
++        do {
++            for stage in resources.model.stages {
++                try resources.requireLive()
++                values.append(try .init(stage: stage, plan: stage.plan, generationRequest: request))
++            }
++        } catch { for value in values { try? value.cancel() }; throw error }
++        sessions = values
++    }
++
++    func forward(_ frame: QwenLayerStageFrame, tokens: [Int]) throws -> FrameOutput {
++        try resources.requireLive()
++        let first: QwenLayerStageOutput
++        if frame.phase == .prefill {
++            first = try sessions[0].prefillChunk(tokens, offset: frame.tokenOffset,
++                final: frame.finalPromptChunk, check: resources.requireLive)
++        } else {
++            first = try sessions[0].decode(tokens[0], offset: frame.tokenOffset, check: resources.requireLive)
++        }
++        guard case .hidden(let boundary) = first else { throw ProbeError("Tiny producer did not return its real residual") }
++        let last: QwenLayerStageOutput
++        if frame.phase == .prefill {
++            last = try sessions[1].prefillChunk(tokens, offset: frame.tokenOffset,
++                final: frame.finalPromptChunk, incoming: boundary, check: resources.requireLive)
++        } else {
++            last = try sessions[1].decode(tokens[0], offset: frame.tokenOffset,
++                incoming: boundary, check: resources.requireLive)
++        }
++        switch last {
++        case .logits(let value), .evaluationHandle(let value): return .init(boundary: boundary, value: value)
++        case .hidden: throw ProbeError("Tiny final stage returned a residual")
++        }
++    }
++
++    func prefill() throws -> MLXArray {
++        var output: MLXArray?
++        for sequence in 0..<request.prefillFrameCount {
++            let frame = try request.frame(sequence: sequence)
++            let tokens = Array(request.promptTokenIDs[frame.tokenOffset..<(frame.tokenOffset+frame.tokenCount)])
++            output = try forward(frame, tokens: tokens).value
++        }
++        return output!
++    }
++
++    func decode(_ token: Int) throws -> MLXArray {
++        let offset = sessions[0].committedTokens
++        let sequence = request.prefillFrameCount + offset - request.promptCount
++        return try forward(request.frame(sequence: sequence), tokens: [token]).value
++    }
++
++    func snapshots() throws -> [CBv2OwnedStateSnapshot] {
++        try sessions.map { try $0.snapshot(check: resources.requireLive) }
++    }
++
++    func cancel() throws {
++        var first: Error?
++        for session in sessions {
++            do { try session.cancel() } catch { first = first ?? error }
++        }
++        guard sessions.allSatisfy(\.isClosed) else { throw ProbeError("Tiny pair retained native request ownership") }
++        if let first { throw first }
++    }
++    deinit { try? cancel() }
++}
++
++enum QwenTinyTargetAssertions {
++    static func require(_ value: Bool, _ message: String) throws {
++        guard value else { throw ProbeError(message) }
++    }
++    static func logits(_ a: MLXArray, _ b: MLXArray, check: () throws -> Void) throws -> Float {
++        eval(a, b); try check()
++        try require(a.shape == b.shape && a.shape == [1, 128], "Tiny target logit geometry differs")
++        let left = a.asType(.float32).asArray(Float.self), right = b.asType(.float32).asArray(Float.self)
++        try check()
++        try require(left.allSatisfy(\.isFinite) && right.allSatisfy(\.isFinite), "Tiny logits are nonfinite")
++        let difference = zip(left, right).reduce(Float(0)) { max($0, abs($1.0-$1.1)) }
++        try require(difference <= 0.00001, "Actual transaction logits differ from ordinary target")
++        return difference
++    }
++    static func token(_ value: MLXArray, check: () throws -> Void) throws -> Int {
++        let selected = argMax(value, axis: -1).asType(.int32); eval(selected); try check()
++        let values = selected.asArray(Int32.self)
++        try require(values.count == 1 && (0..<128).contains(Int(values[0])), "Tiny greedy scalar differs")
++        return Int(values[0])
++    }
++    static func state(_ left: QwenTinyTargetPair, _ right: QwenTinyTargetPair) throws {
++        let a = try left.snapshots(), b = try right.snapshots()
++        try require(a.count == 2 && b.count == 2 && zip(a, b).allSatisfy { pair in
++            pair.0.committedTokens == pair.1.committedTokens && pair.0.fingerprint == pair.1.fingerprint
++                && pair.0.entries.map(\.identity) == pair.1.entries.map(\.identity)
++        }, "Actual transaction KV/recurrent state differs from fresh ordinary replay")
++    }
++}
++#endif
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/TargetVerificationSessionCheck.swift
+@@ -0,0 +1,194 @@
++#if QWEN_TARGET_TINY_FIXTURE
++import Foundation
++import MLX
++import MLXNN
++
++/// Actual fabricated-weight Qwen trunks and shared target-state transactions.
++/// No registered checkpoint, assistant proposal, network or provider claim.
++@_spi(ClusterTesting) public enum TargetVerificationSessionCheck {
++    public static func run() throws -> Data {
++        try MLX.withError { native in
++            do {
++                let deadline = DispatchTime.now().uptimeNanoseconds + 55_000_000_000
++                func checked() throws {
++                    try native.check()
++                    guard DispatchTime.now().uptimeNanoseconds < deadline else { throw ProbeError("Tiny Session fixture expired") }
++                }
++                weak var first: Module?, last: Module?
++                let result = try autoreleasepool { () throws -> Data in
++                    let model = try QwenTinyTargetModel.make(check: checked)
++                    first = model.stages[0].model; last = model.stages[1].model
++                    return try perform(model: model, check: checked)
++                }
++                Stream.gpu.synchronize(); Stream.cpu.synchronize(); try checked()
++                guard first == nil, last == nil else { throw ProbeError("Tiny stage models remained owned after request cleanup") }
++                Memory.clearCache(); try checked()
++                return result
++            } catch { try native.check(); throw error }
++        }
++    }
++
++    private static func perform(model: QwenTinyTargetModel, check: @escaping () throws -> Void) throws -> Data {
++        let require = QwenTinyTargetAssertions.require
++        var passed: [String] = [], maximumDifference: Float = 0
++        // Separate fresh ordinary target evaluation supplies a matching scalar
++        // for acceptance test inputs; this does not pretend an MTP proposed it.
++        let oracle = try QwenTinyTargetCase(model: model, check: check)
++        try oracle.prefillAndSelectSeed()
++        let seed = oracle.seed
++        let draft = try QwenTinyTargetAssertions.token(oracle.ordinary.decode(seed), check: oracle.resources.requireLive)
++        let ledger = try JSONSerialization.jsonObject(with: canonicalJSONData(oracle.resources.ledger))
++        try oracle.cancel()
++
++        for keep in 0...2 {
++            let difference = try autoreleasepool { () throws -> Float in
++                let value = try QwenTinyTargetCase(model: model, check: check)
++                defer { try? value.cancel() }
++                try value.prefillAndSelectSeed(); try require(value.seed == seed, "Tiny source replay selected a different seed")
++                let proposal = value.proposal(draft)
++                try value.begin(proposal); try value.stage(proposal)
++                try value.reconcile(proposal, keeping: keep)
++                try value.replayOrdinary(keeping: keep, proposal: proposal)
++                // One further real decode proves immediate KV position rebinding
++                // and committed recurrent restoration, including keep0.
++                let next = keep == 0 ? seed : (draft + 7) % 128
++                let a = try value.ordinary.decode(next), b = try value.target.decode(next)
++                let difference = try QwenTinyTargetAssertions.logits(a, b, check: value.resources.requireLive)
++                try QwenTinyTargetAssertions.state(value.ordinary, value.target)
++                try value.cancel()
++                return max(value.maximumDifference, difference)
++            }
++            maximumDifference = max(maximumDifference, difference); passed.append("actual-trunk-keep-\(keep)-and-next-decode")
++        }
++        try autoreleasepool {
++            let value = try QwenTinyTargetCase(model: model, check: check)
++            defer { try? value.cancel() }
++            try value.prefillAndSelectSeed()
++            let proposal = value.proposal((draft+1)%128)
++            try value.begin(proposal); try value.stage(proposal)
++            try require(value.provisionalTokens[0] != proposal.proposedTokenID, "Mismatch fixture accidentally matched")
++            try value.reconcile(proposal, keeping: 1)
++            try value.replayOrdinary(keeping: 1, proposal: proposal)
++            let a = try value.ordinary.decode(value.provisionalTokens[0]), b = try value.target.decode(value.provisionalTokens[0])
++            maximumDifference = max(max(maximumDifference, value.maximumDifference),
++                try QwenTinyTargetAssertions.logits(a, b, check: value.resources.requireLive))
++            try QwenTinyTargetAssertions.state(value.ordinary, value.target)
++            try value.cancel()
++        }
++        passed.append("actual-mismatching-draft-rollback-and-next-decode")
++        for continuing in [false, true] {
++            maximumDifference = max(maximumDifference, try progressive(model: model, seed: seed,
++                draft: draft, continuing: continuing, outputCount: 4, stops: [], check: check))
++            passed.append(continuing ? "actual-progressive-continue" : "actual-progressive-client-stop")
++        }
++        maximumDifference = max(maximumDifference, try progressive(model: model, seed: seed,
++            draft: draft, continuing: false, outputCount: 2, stops: [], check: check))
++        passed.append("actual-one-step-output-limit")
++        // If the same greedy token occurs twice, making token2 EOS also makes
++        // token1 EOS. Record that limitation, never invent a post-seed EOS run.
++        if draft != seed {
++            maximumDifference = max(maximumDifference, try progressive(model: model, seed: seed,
++                draft: draft, continuing: true, outputCount: 4, stops: [draft], check: check))
++            passed.append("actual-progressive-eos")
++        }
++        try failures(model: model, seed: seed, draft: draft, check: check, passed: &passed)
++        return try JSONSerialization.data(withJSONObject: ["fixture": "fabricated-full-source-two-real-stages",
++            "passed": passed, "maximumLogitDifference": maximumDifference,
++            "stateComparison": "exact-named-state-hashes-after-reconcile-and-next-decode",
++            "seedTokenID": seed, "ordinaryTargetChosenDraftTokenID": draft,
++            "eosAfterSeedExercised": draft != seed, "resourceLedger": ledger,
++            "sourceTensorCount": model.sourceTensorCount, "sourceTensorBytes": model.sourceTensorBytes,
++            "sourcePayloadSHA256": model.sourcePayloadSHA256,
++            "stageActiveTensorCounts": model.stages.map { $0.receipt.activeTensors.count },
++            "sharedSessionTransactionExecuted": true, "registeredProfileExecuted": false,
++            "mtpAssistantProposalExecuted": false, "bilateralWireVerification": false,
++            "providerEligibilityEstablished": false], options: [.sortedKeys])
++    }
++
++    private static func progressive(model: QwenTinyTargetModel, seed: Int, draft: Int, continuing: Bool,
++        outputCount: Int, stops: Set<Int>, check: @escaping () throws -> Void) throws -> Float {
++        try autoreleasepool {
++            let value = try QwenTinyTargetCase(model: model, outputCount: outputCount, stops: stops, check: check)
++            defer { try? value.cancel() }
++            try value.prefillAndSelectSeed()
++            try QwenTinyTargetAssertions.require(value.seed == seed, "Tiny source replay seed differs")
++            let proposal = value.proposal(draft)
++            try value.begin(proposal); try value.stage(proposal)
++            try QwenTinyTargetAssertions.require(value.provisionalTokens[0] == draft, "Oracle-selected draft did not match actual seed target")
++            try value.commit(proposal, prefix: 1)
++            try value.publishCommittedStep(0, continueRequested: continuing)
++            var kept = 1
++            if value.generation.phase == .frame {
++                try value.commit(proposal, prefix: 2)
++                try value.publishCommittedStep(1, continueRequested: false)
++                kept = 2
++            }
++            try value.reconcile(proposal, keeping: kept)
++            try value.replayOrdinary(keeping: kept, proposal: proposal)
++            try QwenTinyTargetAssertions.require(value.generation.committedTokens == 5+kept
++                && value.generation.selectedTokenCount == kept+1, "Published and consumed frontiers differ")
++            try value.finishTarget(); try value.ordinary.cancel()
++            return value.maximumDifference
++        }
++    }
++
++    private static func failures(model: QwenTinyTargetModel, seed: Int, draft: Int,
++        check: @escaping () throws -> Void, passed: inout [String]) throws {
++        for kind in ["owner-before-stage", "owner-after-two-stages", "pending-snapshot", "pending-decode", "pending-finish", "commit-then-reject-prefix", "seed-eos"] {
++            try autoreleasepool {
++                let value = try QwenTinyTargetCase(model: model, stops: kind == "seed-eos" ? [seed] : [], check: check)
++                defer { try? value.cancel() }
++                try value.prefillAndSelectSeed()
++                let proposal = value.proposal(draft), victim = value.target.sessions[0]
++                var refused = false
++                func acceptExpected(_ error: Error) throws {
++                    let wanted: String
++                    switch kind {
++                    case "owner-before-stage": wanted = "Injected tiny owner refusal"
++                    case "owner-after-two-stages": wanted = "Injected refusal after real native staging"
++                    case "commit-then-reject-prefix": wanted = "Target verification schedule or retained prefix differs"
++                    case "seed-eos": wanted = "Target verification proposal differs from the continued committed token chain"
++                    default: wanted = "CBv2 state is retired, failed or has unfinished work"
++                    }
++                    // A native fault, unrelated resource refusal or failed
++                    // cleanup is not an expected negative-test success.
++                    guard let value = error as? ProbeError, value.description == wanted else { throw error }
++                    refused = true
++                }
++                if kind == "owner-before-stage" || kind == "seed-eos" {
++                    do {
++                        _ = try victim.beginTinyTargetVerification(resources: value.resources, proposal: proposal,
++                            generation: value.generation, ownerCheck: { _ in
++                                if kind == "owner-before-stage" { throw ProbeError("Injected tiny owner refusal") }
++                            })
++                    } catch { try acceptExpected(error) }
++                } else {
++                    try value.begin(proposal)
++                    if kind == "owner-after-two-stages" || kind == "commit-then-reject-prefix" { try value.stage(proposal) }
++                    if kind == "commit-then-reject-prefix" { try value.commit(proposal, prefix: 1) }
++                    do {
++                        if kind == "owner-after-two-stages" {
++                            _ = try victim.commitNextTargetVerification(roundID: proposal.roundID,
++                                ownerCheck: { _ in throw ProbeError("Injected refusal after real native staging") })
++                        } else if kind == "commit-then-reject-prefix" {
++                            _ = try victim.reconcileTargetVerification(roundID: proposal.roundID, keepingInputs: 0,
++                                ownerCheck: { _ in try value.resources.requireLive() })
++                        } else if kind == "pending-snapshot" {
++                            _ = try victim.snapshot(check: value.resources.requireLive)
++                        } else if kind == "pending-decode" {
++                            _ = try victim.decode(seed, offset: 5, check: value.resources.requireLive)
++                        } else {
++                            try victim.finishGeneration(.clientStop, selectedTokenCount: 1, lastTokenID: seed)
++                        }
++                    } catch { try acceptExpected(error) }
++                }
++                try QwenTinyTargetAssertions.require(refused && victim.isClosed && victim.isFailed,
++                    "Tiny invalid operation did not refuse and retire actual native state")
++                try value.cancel()
++                try QwenTinyTargetAssertions.require(value.target.sessions.allSatisfy(\.isClosed), "Tiny peer request did not retire")
++            }
++            passed.append("actual-" + kind + "-retired")
++        }
++    }
++}
++#endif
+--- a/libs/darkbloom-cluster-worker/Package.swift
++++ b/libs/darkbloom-cluster-worker/Package.swift
+@@ -7,6 +7,7 @@
+     name: "DarkbloomClusterWorker",
+     platforms: [.macOS("26.2")],
+     products: [
++        .executable(name: "TargetVerificationSessionCheck", targets: ["TargetVerificationSessionCheck"]),
+         .executable(name: "TargetVerificationCheck", targets: ["TargetVerificationCheck"]),
+         .executable(name: "MTPTinyForwardCheck", targets: ["MTPTinyForwardCheck"]),
+         .executable(name: "MTPSelectedLoadCheck", targets: ["MTPSelectedLoadCheck"]),
+@@ -19,6 +20,11 @@
+         .package(path: "../darkbloom-cluster"),
+     ],
+     targets: [
++        .executableTarget(name: "TargetVerificationSessionCheck", dependencies: [
++            .product(name: "MLX", package: "mlx-swift"),
++            .product(name: "DarkbloomClusterProcess", package: "darkbloom-cluster"),
++            .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
++        ], path: "Tests/TargetVerificationSessionCheck"),
+         .executableTarget(name: "TargetVerificationCheck", dependencies: [
+             .product(name: "MLX", package: "mlx-swift"),
+             .product(name: "DarkbloomClusterProcess", package: "darkbloom-cluster"),
+--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Tests/TargetVerificationSessionCheck/Main.swift
+@@ -0,0 +1,46 @@
++import Foundation
++import Darwin
++import MLX
++import DarkbloomClusterProcess
++@_spi(ClusterTesting) import DarkbloomClusterRuntime
++
++/// Private qualification entry. It never loads checkpoint weights or launches peers.
++@main struct TargetVerificationSessionMain {
++    static func main() throws {
++        let arguments = Array(CommandLine.arguments.dropFirst())
++        guard arguments == ["run-tiny-session-on-gpu"] || arguments == ["check-arguments"] else {
++            throw NSError(domain: "TargetVerificationCheck.arguments", code: 1)
++        }
++        // Keep the process bound through final stdout publication as well as native work.
++        alarm(60)
++        if arguments == ["check-arguments"] {
++            FileHandle.standardOutput.write(Data("{\"argumentsAccepted\":true,\"nativeExecuted\":false}\n".utf8))
++            alarm(0)
++            return
++        }
++        let directory = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".darkbloom/cluster-device")
++        let gate = try ClusterDeviceExclusion(directoryURL: directory)
++        try withExtendedLifetime(gate) {
++            let result = try Device.withDefaultDevice(.gpu) {
++                try Stream.withNewDefaultStream(device: .gpu) {
++                    try MLX.withError { native in
++                        do {
++                            let result = try TargetVerificationSessionCheck.run()
++                            Stream.gpu.synchronize(); Stream.cpu.synchronize(); try native.check()
++                            Memory.clearCache(); try native.check()
++                            return result
++                        } catch {
++                            Stream.gpu.synchronize(); Stream.cpu.synchronize()
++                            try native.check()
++                            Memory.clearCache(); try native.check()
++                            throw error
++                        }
++                    }
++                }
++            }
++            guard result.count <= 16_384 else { throw NSError(domain: "TargetVerificationCheck.output", code: 1) }
++            FileHandle.standardOutput.write(result + Data([10]))
++        }
++        alarm(0)
++    }
++}

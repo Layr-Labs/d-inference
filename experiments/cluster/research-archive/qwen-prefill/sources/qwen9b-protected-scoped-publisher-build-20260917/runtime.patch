@@ -1,0 +1,15 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedEvidenceExport.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedEvidenceExport.swift
+@@ -16,7 +16,11 @@
+                        into: writer, check: check)
+             try check()
+             try writer.publish { bytes in
+-                try publisher(bytes) { try check() }
++                // Temporarily make the publisher callable without widening either borrowed API.
++                // Swift verifies that this publisher does not escape the synchronous scope.
++                try withoutActuallyEscaping(publisher) { scopedPublisher in
++                    try scopedPublisher(bytes) { try check() }
++                }
+                 try check()
+             }
+         }

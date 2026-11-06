@@ -1,0 +1,12 @@
+--- a/libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/CollectiveScopeTests.swift
++++ b/libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/CollectiveScopeTests.swift
+@@ -49,7 +49,8 @@
+             #expect(pair.second.status.codec.openedRecords == UInt64(index + 1))
+         }
+         #expect(pair.frames.sentCounts[0] == Array(repeating: 48, count: scopes.count))
+-        #expect(pair.frames.incoming.allSatisfy(\.isEmpty))
++        let incomingFramesAreEmpty: Bool = pair.frames.incoming.allSatisfy { $0.isEmpty }
++        #expect(incomingFramesAreEmpty)
+         let reverse = try pair.expectation(scopes[4])
+         try pair.second.send(bytes, expecting: reverse, check: {})
+         #expect(try pair.first.receive(expecting: reverse, check: {}) == bytes)

@@ -1,0 +1,10 @@
+{
+  "files": [
+    {
+      "afterSHA256": "bd015470dc5ebb51da986fdf033d607a261e724c2d2425ab40bee2c7e1ec1827",
+      "beforeSHA256": "0aca3ff66acde9f8a13c406cba8f6f2f80bd006245e991138633af78c57ecea5",
+      "path": "libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/CollectiveScopeTests.swift",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-native-protected-scope-fixture-correction-20260917/proposed/libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/CollectiveScopeTests.swift"
+    }
+  ]
+}

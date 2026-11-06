@@ -1,0 +1,74 @@
+--- ancestor/collect.py
++++ observer/collect.py
+@@ -25,12 +25,12 @@
+                 publish(out/f'rank{rank}.transport.stdout',error.stdout or b'');publish(out/f'rank{rank}.transport.stderr',error.stderr or b'');raise
+             publish(out/f'rank{rank}.transport.stdout',child.stdout);publish(out/f'rank{rank}.transport.stderr',child.stderr)
+             row['sshExitCode']=child.returncode
+-            require(child.returncode==0 and child.stderr==b'' and 0<len(child.stdout)<=512*1024,'Collection SSH failed or exceeded bound')
++            require(child.returncode==0 and child.stderr==b'' and 0<len(child.stdout)<=2*1024*1024,'Collection SSH failed or exceeded bound')
+             packet=parse(child.stdout)
+             require(set(packet)==set('schema path bytes sha256 identity data active journalBytes journalSHA256 journalIdentity'.split()),'Collection fields differ')
+             require(packet['schema']=='qwen27b_sidecar_collection_v1' and packet['path']==prior['binding']['remoteRoot']+'/evidence/'+prior['binding']['requestID']+'.json','Wrong exact sidecar')
+             data=base64.b64decode(packet['data'],validate=True)
+-            require(0<len(data)<=256*1024 and packet['bytes']==len(data) and packet['sha256']==digest(data),'Sidecar size/hash differs')
++            require(0<len(data)<=1024*1024 and packet['bytes']==len(data) and packet['sha256']==digest(data),'Sidecar size/hash differs')
+             require(packet['active']==[] and packet['journalBytes']==0 and packet['journalSHA256']==digest(b''),'Fresh process/journal refusal')
+             for key in ['identity','journalIdentity']:require(type(packet[key]) is list and len(packet[key])==6 and all(type(n) is int for n in packet[key]),'Missing file identity')
+             before=prior['preflightJournals'][rank]
+--- ancestor/physical_evidence.py
++++ observer/physical_evidence.py
+@@ -62,11 +62,11 @@
+         require(d['schema']=='qwen27b_owner_native_diagnostic_v1' and d['rank']==rank and d['childConstructed'] is True and d['nativeCleanupObserved'] is True and d['termination']==dict(kind='exited',status=0),'Actual native exit/cleanup differs')
+         require(d['diagnosticTailBytes']==0 and d['diagnosticTailBase64']=='' and d['diagnosticTailTruncated'] is False,'Native stderr not empty')
+         require(type(d['launchedPID']) is int and d['launchedPID']>1,'Missing native PID');pids.append(d['launchedPID'])
+-    cap=parse(read(case/'capacity.json'));wanted=[x['totalReservedBytes'] for x in cap['ranks']]
++    cap=parse(read(case/'capacity.json'));wanted=[x['readyCapacityBytes'] for x in cap['ranks']];reserved=[x['requestReservationBytes'] for x in cap['ranks']]
+     o=result['phaseReservationObservation']
+     require(set(o)==set('schema rankReadinessCapacityBytes admittedReservedBytes bytesInUseAfterRetirementBeforeRelease bytesInUseAfterRelease actualRequestRetired'.split()),'Incomplete external reservation observation')
+     require(o['schema']=='resident_phase_external_reservation_v1' and o['rankReadinessCapacityBytes']==wanted and all(type(v) is int for v in o['rankReadinessCapacityBytes']),'Actual phase readiness differs from prospective capacity')
+-    for k in ['admittedReservedBytes','bytesInUseAfterRetirementBeforeRelease']:require(type(o[k]) is int and o[k]==sum(wanted),'Actual admitted bytes differ: '+k)
++    for k in ['admittedReservedBytes','bytesInUseAfterRetirementBeforeRelease']:require(type(o[k]) is int and o[k]==sum(reserved),'Actual admitted bytes differ: '+k)
+     require(type(o['bytesInUseAfterRelease']) is int and o['bytesInUseAfterRelease']==0 and o['actualRequestRetired'] is True,'Actual request capacity not retired/released')
+     resources=[];journals=[]
+     for rank in [0,1]:
+--- ancestor/validate_run.py
++++ observer/validate_run.py
+@@ -2,7 +2,7 @@
+ from pathlib import Path
+ import argparse,json
+ from physical_evidence import terminal,read,parse,require,digest,pin
+-from validate_phase import validate
++from validate_phase_memory import validate
+ BASE=Path(__file__).resolve().parent
+ 
+ def join_reports(reports,expected,external):
+@@ -11,9 +11,10 @@
+     require(reports[0]['execution']['tokenChainSHA256']==reports[1]['execution']['tokenChainSHA256'],'Token chains disagree')
+     cap=external['capacities'];actual=external['controller']['phaseReservationObservation']
+     for rank,report in enumerate(reports):
+-        budget=dict(cap['hostBudget'],totalReservedBytes=cap['ranks'][rank]['totalReservedBytes'])
++        budget=dict(cap['hostBudget'],totalReservedBytes=cap['ranks'][rank]['requestReservationBytes'])
+         require(report['budget']==budget,'Native named phase budget differs from prospective host allocation')
+-        require(report['budget']['totalReservedBytes']==actual['rankReadinessCapacityBytes'][rank],'Sidecar total differs from external Ready')
++        require(all(x['pageSizeBytes']==cap['pageSize'] for x in report['memory']['samples']),'Sample/allocator page geometry differs')
++        require(cap['ranks'][rank]['readyCapacityBytes']==actual['rankReadinessCapacityBytes'][rank],'Maximum-profile Ready differs from its separate prospective ceiling')
+         ev=report['events'];first=next(e for e in ev if e['phase']=='firstTokenAgreed')
+         local[rank].update(requestToFirstTokenAgreementNanoseconds=first['localUptimeNanoseconds']-ev[0]['localUptimeNanoseconds'],
+             requestThroughRetirementNanoseconds=ev[-1]['localUptimeNanoseconds']-ev[0]['localUptimeNanoseconds'])
+@@ -31,13 +32,13 @@
+         require(row['rank']==rank and row['status']=='collected' and row['sshExitCode']==0,'Rank collection failed')
+         p=out/f'rank{rank}.json';require(pin(p)==row['sidecar'],'Collected sidecar changed')
+         require(pin(out/f'rank{rank}.transport.stdout')==row['transport'],'Raw collection transport changed')
+-        transport=parse(read(out/f'rank{rank}.transport.stdout',512*1024));observed={k:v for k,v in transport.items() if k!='data'}
++        transport=parse(read(out/f'rank{rank}.transport.stdout',2*1024*1024));observed={k:v for k,v in transport.items() if k!='data'}
+         require(observed==row['observed'] and observed['active']==[] and observed['journalBytes']==0 and observed['journalSHA256']==digest(b''),'Collection postflight differs')
+         import base64
+-        require(base64.b64decode(transport['data'],validate=True)==read(p,256*1024),'Collected raw bytes differ')
++        require(base64.b64decode(transport['data'],validate=True)==read(p,1024*1024),'Collected raw bytes differ')
+         before=external['preflightJournals'][rank];require(observed['journalIdentity'][:2]==[before['device'],before['inode']],'Journal inode changed')
+         require(read(out/f'rank{rank}.transport.stderr')==b'','Collection stderr')
+-        reports.append(parse(read(p,256*1024)));expected.append(parse(read(case/f'expected-rank{rank}.json',16384)));inputs.append(pin(p))
++        reports.append(parse(read(p,1024*1024)));expected.append(parse(read(case/f'expected-rank{rank}.json',16384)));inputs.append(pin(p))
+     local=join_reports(reports,expected,external)
+     result=dict(schema='resident_phase_physical_comparison_v1',accepted=True,policy=external['binding']['policy'],
+         requestID=external['binding']['requestID'],membershipEpoch=external['binding']['membershipEpoch'],ranks=local,

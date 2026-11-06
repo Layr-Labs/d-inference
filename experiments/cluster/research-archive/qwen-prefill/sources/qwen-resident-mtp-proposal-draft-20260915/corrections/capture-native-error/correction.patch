@@ -1,0 +1,12 @@
+--- libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageSession.swift
++++ libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageSession.swift
+@@ -184,6 +184,9 @@
+                     let value = try Qwen35ClusterMTPForward.forward(target: stage.model, tokens: input,
+                         residual: incoming.array, caches: caches.map { $0 as! any KVCache },
+                         recurrentState: [evaluation], output: requirement)
++                    // The nested handler owns faults from graph construction.
++                    // Check it before a secondary capture validation can throw.
++                    try error.check()
+                     try capture.stage(value.preNormHidden)
+                     return value.value
+                 }

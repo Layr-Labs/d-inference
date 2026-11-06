@@ -1,0 +1,57 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenDenseShortReferenceLoadBudget.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseShortReferenceLoadBudget.swift
+@@ -55,7 +55,8 @@
+         }
+         guard source.tensors.count == allocationBounds.count,
+               zip(source.tensors, allocationBounds).allSatisfy({ $0.1 >= $0.0.canonical.byteCount }),
+-              source.tensors.allSatisfy({ ["uint32", "bfloat16"].contains($0.loadedDType) }) else {
++              source.tensors.allSatisfy({ $0.loadedDType ==
++                  ["U32": "uint32", "BF16": "bfloat16", "F32": "float32"][$0.canonical.sourceDType] }) else {
+             throw ProbeError("Short full-reference allocator bounds or loaded types differ")
+         }
+         let rounded = try QwenLongPrefillCheckedBytes.sum(allocationBounds)
+--- a/experiments/cluster/inference/Tests/ShortReferenceLoading/ShortReferenceLoadCheck.swift
++++ b/experiments/cluster/inference/Tests/ShortReferenceLoading/ShortReferenceLoadCheck.swift
+@@ -103,6 +103,33 @@
+                 admission: admission, ledger: requestLedger ?? ledger, allocationBounds: allocations ?? bounds)
+         }
+         let value = try budget()
++        let f32 = observed.tensors.filter { $0.canonical.sourceDType == "F32" }
++        try require(label + " exact retained source-to-loaded dtype preservation",
++            observed.tensors.filter { $0.loadedDType == "uint32" }.count == (large ? 498 : 250) &&
++            observed.tensors.filter { $0.loadedDType == "bfloat16" }.count == (large ? 1349 : 653) &&
++            observed.tensors.filter { $0.loadedDType == "float32" }.count == (large ? 0 : 24) &&
++            f32.count == (large ? 0 : 24) && f32.allSatisfy {
++                $0.canonical.name.hasSuffix(".linear_attn.A_log") && $0.canonical.shape == [32] &&
++                $0.canonical.byteCount == 128 && $0.loadedDType == "float32"
++            })
++        try reject(label + " cannot widen a retained BF16 tensor to F32") {
++            var changed = profile.canonicalTensors
++            let i = changed.firstIndex { $0.sourceDType == "BF16" }!
++            let t = changed[i]
++            changed[i] = .init(name: t.name, shape: t.shape, sourceDType: "F32", byteCount: t.byteCount * 2)
++            _ = try QwenDenseObservedSourceValidation.validateRegistered(changed.map { fixtureObserved($0) },
++                identity: fixtureIdentity(profile), profile: profile, requirement: full, plan: plan)
++        }
++        if !large {
++            try reject(label + " cannot narrow retained F32 A_log to BF16") {
++                var changed = profile.canonicalTensors
++                let i = changed.firstIndex { $0.sourceDType == "F32" }!
++                let t = changed[i]
++                changed[i] = .init(name: t.name, shape: t.shape, sourceDType: "BF16", byteCount: t.byteCount / 2)
++                _ = try QwenDenseObservedSourceValidation.validateRegistered(changed.map { fixtureObserved($0) },
++                    identity: fixtureIdentity(profile), profile: profile, requirement: full, plan: plan)
++            }
++        }
+         try require(label + " complete full ownership without inert storage", value.tensors == profile.canonicalTensors &&
+             value.tensors.count == (large ? 1847 : 927) && value.roundedResidentBytes == profile.sourceTensorBytes &&
+             full.selectedInertBytes == 0 && value.role == "fullReference" && !value.resourceAdmissionPerformed)
+@@ -173,7 +200,7 @@
+                 os: os(required), native: native(active: 1), now: 11)
+         }
+     }
+-    guard accepted.count == 20, rejected.count == 98 else {
++    guard accepted.count == 22, rejected.count == 101 else {
+         throw ProbeError("Short reference fixture counts changed: \(accepted.count)/\(rejected.count)")
+     }
+     return .init(accepted: accepted, rejected: rejected)

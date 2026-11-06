@@ -1,0 +1,34 @@
+--- /Users/developer/DarkbloomDev/cluster-research/qwen27b-owner-copy-preparation-20260915/install_new_tree.py
++++ install_new_tree.py
+@@ -7,7 +7,7 @@
+ import sys
+ import tarfile
+ 
+-ROOTS = {'owner': Path('/Users/developer/DarkbloomDev/qwen27b-owner-validation-20260915')}
++ROOTS = {'owner': Path('/Users/developer/DarkbloomDev/qwen9b-balanced-prefill-20260915')}
+ 
+ def require(value, message):
+     if not value: raise RuntimeError(message)
+@@ -17,7 +17,7 @@
+     raw = sys.stdin.buffer.readline(1_048_577)
+     require(len(raw) <= 1_048_576 and raw.endswith(b'\n'), 'Deployment manifest exceeded bound')
+     manifest = json.loads(raw)
+-    require(manifest['schema'] == 'qwen27b_copy_only_tree_v1', 'Wrong deployment schema')
++    require(manifest['schema'] == 'qwen9b_balanced_copy_only_tree_v1', 'Wrong deployment schema')
+     files = manifest['files']
+     require(type(files) is dict and 10 <= len(files) <= 100, 'Wrong deployment member count')
+     require(sum(x['bytes'] for x in files.values()) < 300_000_000, 'Deployment exceeded bound')
+@@ -75,9 +75,10 @@
+             require(info.st_size == files[name]['bytes'] and checksum.hexdigest() == files[name]['sha256'], 'Installed full rehash differs')
+             verified[name] = dict(bytes=info.st_size, sha256=checksum.hexdigest())
+     require(set(verified) == set(files), 'Installed closure differs')
+-    (ROOTS['owner'] / 'evidence').mkdir(mode=0o700)
+-    (ROOTS['owner'] / 'mlx-swift-lm_MLXLMCommon.bundle').chmod(0o755)
+-    print(json.dumps(dict(schema='qwen27b_copy_only_verification_v1', manifestSHA256=hashlib.sha256(raw).hexdigest(),
++    for name in ('cut4-correctness', 'cut16-correctness', 'cut4-timing', 'cut16-timing'):
++        (ROOTS['owner'] / name / 'evidence').mkdir(mode=0o700)
++    (ROOTS['owner'] / 'native/mlx-swift-lm_MLXLMCommon.bundle').chmod(0o755)
++    print(json.dumps(dict(schema='qwen9b_balanced_copy_only_verification_v1', manifestSHA256=hashlib.sha256(raw).hexdigest(),
+         verified=verified, canonicalJournalObserved=journal, modelOrOwnerLaunched=False, existingInputsModified=False)), flush=True)
+ 
+ if __name__ == '__main__': main()

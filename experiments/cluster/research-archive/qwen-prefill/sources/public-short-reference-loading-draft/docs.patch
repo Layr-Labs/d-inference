@@ -1,0 +1,36 @@
+--- a/experiments/cluster/inference/README.md
++++ b/experiments/cluster/inference/README.md
+@@ -180,6 +180,11 @@
+ state, fusion and evidence allowance for registered 9B/27B full-reference and
+ stage-pair scopes. Its pure checks establish no allocator provenance, execution
+ permission or whole-process memory bound.
++
++The [short full-reference loading support](QWEN_DENSE_SHORT_REFERENCE_LOADING.md)
++binds that ledger to exact observed source tensors and a private live resource
++gate. It returns CPU evidence after full-model release and grants no forward
++permission. The standalone admission fixture passes 22 accepted/101 rejected checks.
+ 
+ | Stage | Active weights | Inactive components that the loader must handle |
+ |---|---|---|
+--- a/docs/developer/test.md
++++ b/docs/developer/test.md
+@@ -74,6 +74,19 @@
+ registered-profile metadata. Invented allocator callbacks test exact short state,
+ fusion and evidence allowances without qualifying resource admission or native
+ forward execution.
++
++Run the [short full-reference loading fixtures](../../experiments/cluster/inference/QWEN_DENSE_SHORT_REFERENCE_LOADING.md)
++without MLX or model payloads:
++
++```sh
++bash experiments/cluster/inference/Tests/ShortReferenceLoading/run.sh
++```
++
++The corrected standalone fixture passed 22 accepted/101 rejected checks with
++empty stderr; public runner execution remains pending. The 38-source runner
++reuses the shared retained metadata. Synthetic allocator/resource observations
++exercise the pure predicates, without running the private loading gate or a
++forward pass.
+ 
+ Run the [resident lifecycle fixtures](../../experiments/cluster/inference/QWEN_RESIDENT_STAGES.md)
+ under Swift 6 without MLX:

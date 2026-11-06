@@ -237,13 +237,12 @@ enum SuperHTTPErrors {
                 return MultiModelBatchSchedulerEngineError.generationFailed("native output handling failed")
             }
         }
-        if let failure = error as? VideoReaderFailure {
-            return failure.isTransient
-                ? MultiModelBatchSchedulerEngineError.requestRejected(
-                    "inline video decoder fault (\(failure)); retry on another provider")
-                : MultiModelBatchSchedulerEngineError.multimodalRejected("unsupported or invalid inline video request")
+        if let failure = error as? VideoReaderFailure, failure.isTransient {
+            return MultiModelBatchSchedulerEngineError.requestRejected(
+                "inline video decoder fault (\(failure)); retry on another provider")
         }
-        if error is NemotronSuperVideoDecode.Failure || error is NemotronSuperVideoPreprocessing.Failure {
+        if error is VideoReaderFailure || error is NemotronSuperVideoDecode.Failure
+            || error is NemotronSuperVideoPreprocessing.Failure {
             return MultiModelBatchSchedulerEngineError.multimodalRejected("unsupported or invalid inline video request")
         }
         if error is DecodingError || error is NemotronSuperImageDecode.Failure

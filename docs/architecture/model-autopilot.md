@@ -1,6 +1,6 @@
 # Provider Autopilot
 
-> Last updated: 2026-11-04
+> Last updated: 2026-11-06
 
 Provider Autopilot offers an external controller the models of a Mac whose
 operator saved Autopilot consent: the saved selection plus every verified
@@ -198,7 +198,9 @@ status carries the first reason as `detail`, and consented snapshots report the
 reasons and their age ([protocol](../reference/protocol-messages.md#model_autopilot-state)).
 While a local add-on holds the Mac the reason is `addon_hold`, reported instead
 of `draining` for the drain the hold owns; operations are refused until the
-[hold](addon-hold.md) ends.
+[hold](addon-hold.md) ends. While the [owner pause](owner-pause.md) holds
+Darkbloom work the reason is `draining`, so a command racing its heartbeat is
+refused and cannot evict the model the owner is using.
 
 `superviseTransitions` runs on the capacity tick while consent is saved. It ages
 each occurrence of a bounded transition (`ModelAutopilotTransition.stallBound`).

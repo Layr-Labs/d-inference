@@ -38,10 +38,11 @@ extension ProviderLoop {
         )
     }
 
-    /// A coordinator `prefetch_model`. While admission is closed it gets the
-    /// draining failure, which the coordinator retries later.
+    /// A coordinator `prefetch_model`. While admission is closed or the owner
+    /// pause holds Darkbloom work it gets the draining failure, which the
+    /// coordinator retries later.
     func handleCoordinatorPrefetch(modelId: String, priority: Int, send: SendHandle) async {
-        if isDraining {
+        if isDraining || ownerPausesPublic {
             sendDrainingPrefetchFailure(modelId: modelId, send: send)
             return
         }
@@ -332,10 +333,11 @@ extension ProviderLoop {
     }
 
     internal func handleDesiredModels(_ entries: [CoordinatorMessage.DesiredModelEntry], send: SendHandle) async {
-        if isDraining || prefetchCoordinator == nil {
+        if isDraining || ownerPausesPublic || prefetchCoordinator == nil {
             // Declarative state: keep only the latest snapshot until a switch
-            // restores prefetching or an update aborts. A reconnect gets a
-            // fresh snapshot. Never consume it with an absent subsystem.
+            // restores prefetching, an update aborts or the owner pause ends.
+            // A reconnect gets a fresh snapshot. Never consume it with an
+            // absent subsystem.
             deferredDesiredModels = entries
             logger.info("Deferring desired_models until prefetch is ready (\(entries.count) entr(ies))")
         } else {

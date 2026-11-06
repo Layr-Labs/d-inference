@@ -6,7 +6,8 @@ import Foundation
 public enum ProviderBusyReason: String, Codable, Sendable, CaseIterable {
     /// A local add-on (for example the sandbox VM host) holds the Mac.
     case addon
-    /// Me first: the owner is using this Mac through its local API.
+    /// Me first: the owner is using this Mac through its local API, so only
+    /// Darkbloom work pauses. Coordinators treat it as a plain drain.
     case owner
 }
 
@@ -26,9 +27,9 @@ public struct ProviderBusy: Sendable, Equatable {
         self.addon = addon
     }
 
-    /// The busy fields to publish.
+    /// The busy fields to publish: an add-on hold outranks the owner pause.
     static func publishing(addonHold: ProviderBusy?, ownerPause: ProviderBusy?) -> ProviderBusy? {
-        nil
+        addonHold ?? ownerPause
     }
 }
 

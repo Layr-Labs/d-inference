@@ -1,11 +1,12 @@
 # Provider And Native Architecture
 
-> Last updated: 2026-10-27
+> Last updated: 2026-11-06
 
 Provider execution, local security and external contracts. Backend and console implementation live in [platform architecture](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture).
 
 - [MLX stack: the three pinned submodules and the metallib](components/mlx-swift.md)
 - [Add-on hold: leaving routing while a local add-on uses the Mac](addon-hold.md)
+- [Owner pause ("me first"): no Darkbloom work while the owner uses the Mac](owner-pause.md)
 - [Provider process](components/provider.md)
 - [Landing public HTML, Markdown, pricing and API discovery](components/landing.md)
 - [Hardware support and the provider memory model](hardware-support.md)

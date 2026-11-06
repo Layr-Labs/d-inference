@@ -197,7 +197,8 @@ extension ProviderLoop {
             await coordinatorClient?.sendEventHeartbeat()
             prefetchCoordinator = makePrefetchCoordinator()
         }
-        if let entries = deferredDesiredModels, let send = outboundSend {
+        // An owner pause that goes on replays them when it ends.
+        if !ownerPausesPublic, let entries = deferredDesiredModels, let send = outboundSend {
             deferredDesiredModels = nil
             await reconcileDesiredModels(entries, send: send)
         }

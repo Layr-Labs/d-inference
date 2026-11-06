@@ -184,17 +184,18 @@ and local response writes finish
 ## Add-on hold busy fields
 
 While a local add-on holds the Mac ([add-on hold](../architecture/addon-hold.md)),
+or while its owner uses it through the local API ([owner pause](../architecture/owner-pause.md)),
 the provider stays registered and reports `heartbeat.status = draining` with
 three optional busy fields. `register` carries the same fields, so a connection
-made during a hold is excluded before its first heartbeat. The hold never sends
-`provider_drain`: that barrier fences a connection until it closes, and the hold
-returns on the same connection with its next `idle` or `serving` heartbeat.
+made during a hold is excluded before its first heartbeat. Neither sends
+`provider_drain`: that barrier fences a connection until it closes, and both
+return on the same connection with the next `idle` or `serving` heartbeat.
 
 | JSON key | Swift | Presence | Meaning |
 |---|---|---|---|
-| `busy_reason` | `ProviderBusy.reason` (`ProviderBusyReason`) | opt | Closed vocabulary: `addon` |
-| `busy_since_ms` | `ProviderBusy.sinceMs` (`Int64`) | opt, with `busy_reason` | Unix milliseconds at which the oldest active hold began |
-| `busy_addon` | `ProviderBusy.addon` (`String?`) | opt | Holding add-on's code-signing identifier, for example `io.darkbloom.sandbox`; `operator` for `darkbloom addon hold` |
+| `busy_reason` | `ProviderBusy.reason` (`ProviderBusyReason`) | opt | Closed vocabulary: `addon` (an add-on holds the Mac) or `owner` (the owner pause) |
+| `busy_since_ms` | `ProviderBusy.sinceMs` (`Int64`) | opt, with `busy_reason` | Unix milliseconds at which the oldest active hold, or the owner pause, began |
+| `busy_addon` | `ProviderBusy.addon` (`String?`) | opt | Holding add-on's code-signing identifier, for example `io.darkbloom.sandbox`; `operator` for `darkbloom addon hold`. Never sent with `owner` |
 
 All three are omitted when the provider is not held, and a heartbeat sends
 them only beside `status: draining` (`buildHeartbeatFrame` in
@@ -205,6 +206,14 @@ Decoders map an unknown `busy_reason` to absent. Coordinator support for the
 fields is separate platform work; a coordinator that ignores them still stops
 routing on the draining status and clears the mark on the release heartbeat.
 Routed requests that arrive during a hold get the typed draining rejection.
+
+An add-on hold outranks the owner pause: while both apply the fields describe
+the hold, and its release hands them back to the pause (`ProviderBusy.publishing`).
+Coordinators key the add-on hold on `addon` only, so they treat `owner` as a
+plain drain: the Mac leaves routing and keeps its uptime. Because a coordinator
+does not act on `owner` in `register`, the first event heartbeat of a fresh
+connection repeats the draining status. Routed requests that race the owner
+pause's heartbeat get the same typed draining rejection.
 
 
 ## Close codes and the reconnect wait
@@ -315,7 +324,7 @@ connection, first.
 | `member_registration_nonce` | `string` | `String?` | opt | 64 lowercase hex chars, this connection's member negotiation nonce; invalid without the member role |
 | `cluster_models` | `[]ModelInfo` | `[ModelInfo]?` | opt | separate cluster inventory for the member role; invalid on a solo registration; old coordinators ignore it and see no routable model |
 | `cluster_membership` | `*ClusterMembership` | `ClusterMembership?` | opt | member role only (a solo registration carrying it is refused, and the provider never encodes it for one). `cluster_id`: the saved cluster label, 1–128 of `A–Z a–z 0–9 - . _`, not starting with `-`; `rank`: `0` leader or `1` follower; `policy_sha256`: 64 lowercase hex, SHA-256 of the canonical coordinator runtime policy the member installed. A claim the pair selector matches against a second member of the same account and the operator's approval catalog; it grants nothing. A member that omits it is acknowledged and never paired (`darkbloom-platform:coordinator/protocol/execution_role.go`, `ClusterMembership.Validate`; [pair formation](cluster-control-protocol.md#pair-formation)). The provider sends it only when its saved setup carries a pair approval, and derives it from the installed member control, so `policy_sha256` is the digest of exactly the policy bytes that control requires in a prepare frame (`provider-swift/Sources/ProviderCore/Protocol/ClusterMembership.swift`, `ClusterMembership`; `provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberInstallation.swift`, `membership`). Each plan of a roster registration's `plans[]` names its generation `mode` (omitted is `pipeline_v1`) and that mode's `cuts`: none for `tensor_parallel_v1`, one fewer than `members` for every other mode (`provider-swift/Sources/ProviderCore/Protocol/ClusterRosterRegistration.swift`, `ClusterPlan.cutCount`; `darkbloom-platform:coordinator/protocol/cluster_generation_mode.go`, `ClusterPlanModeCutCount`). The provider does not encode `tensor_parallel_shares` yet, so a setup with unequal tensor-parallel shares is refused at registration (`provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberRoster.swift`, `NativePairMemberRoster`). A plan for a model approval also carries `runtime`, exactly `native_runtime_sha256`, `capability_sha256`, `resource_policy_sha256` and `profile_sha256` (64 lowercase hex, nonzero), from the member's own saved setup; it is left out of a plan for a build-pinned approval and is part of the plan both members must register byte for byte (`ClusterPlan.runtime`, `samePlacement`; [model approvals](configuration.md#model-approvals)) |
-| `busy_reason`, `busy_since_ms`, `busy_addon` | — | `ProviderBusy?` | opt | Present only while an add-on holds the provider; [add-on hold busy fields](#add-on-hold-busy-fields) |
+| `busy_reason`, `busy_since_ms`, `busy_addon` | — | `ProviderBusy?` | opt | Present only while an add-on holds the provider or the owner pause is on; [add-on hold busy fields](#add-on-hold-busy-fields) |
 
 An attested registration is encoded by the raw-attestation encoder, not the
 Codable one. Both write the three member fields, and only for the member role
@@ -419,7 +428,7 @@ the sinks of each field are in [telemetry-inventory.md](https://github.com/Layr-
 | `prefix_cache_memory_models` | `*[]PrefixCacheV2Capability` | `[…]?` | ptr | omitted preserves resident inventory; `[]` clears it; protocol downgrade clears it; `UpdatePrefixCacheSnapshot`, [coordinator/registry/cache_snapshot.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_snapshot.go) |
 | `prefix_cache_statuses`, `prefix_cache_donation_outcomes` | `*[]…` | `[…]?` | ptr | same pointer rule |
 | `apns_device_token`, `apns_environment` | `string` | `String?` | opt | late or rotated APNs token so the coordinator can re-arm a code challenge without a reconnect; the token alone never grants `CodeAttested` |
-| `busy_reason`, `busy_since_ms`, `busy_addon` | — | `ProviderBusy?` | opt | Only beside `status: draining` while an add-on holds the provider; [add-on hold busy fields](#add-on-hold-busy-fields) |
+| `busy_reason`, `busy_since_ms`, `busy_addon` | — | `ProviderBusy?` | opt | Only beside `status: draining` while an add-on holds the provider or the owner pause is on; [add-on hold busy fields](#add-on-hold-busy-fields) |
 
 #### `stats`
 

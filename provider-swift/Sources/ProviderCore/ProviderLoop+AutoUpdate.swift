@@ -237,7 +237,8 @@ extension ProviderLoop {
         // A lifecycle-owned drain cannot replay model work after a cancelled update.
         guard !servingDrain.refusing else { return }
         lifecycleStatus = .init()
-        if let entries = deferredDesiredModels {
+        // An owner pause that goes on replays it when it ends.
+        if !ownerPausesPublic, let entries = deferredDesiredModels {
             deferredDesiredModels = nil
             if let send = outboundSend {
                 logger.info("Replaying desired_models deferred during update drain (\(entries.count) entr(ies))")

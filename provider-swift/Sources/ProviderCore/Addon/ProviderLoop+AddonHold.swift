@@ -165,7 +165,7 @@ extension ProviderLoop {
         addonHolds.insert(hold)
         logger.info("Add-on hold accepted from \(addon): lease \(leaseSeconds)s, closing admission")
         AddonHoldTelemetry.emit(.begin, hold: hold, inFlight: lifecycleRemaining)
-        if first { enterAddonHold() } else { publishAddonBusy() }
+        if first { enterAddonHold() } else { publishBusy() }
         persistAddonHolds()
         writeDaemonState()
         startAddonHoldMonitor()
@@ -191,7 +191,7 @@ extension ProviderLoop {
         persistAddonHolds()
         logger.info("Add-on hold from \(hold.addon) \(outcome.rawValue)")
         AddonHoldTelemetry.emit(outcome == .released ? .released : .expired, hold: hold)
-        if addonHolds.isEmpty { leaveAddonHold() } else { publishAddonBusy() }
+        if addonHolds.isEmpty { leaveAddonHold() } else { publishBusy() }
         writeDaemonState()
         return hold
     }
@@ -200,7 +200,7 @@ extension ProviderLoop {
         addonHoldGeneration &+= 1
         let generation = addonHoldGeneration
         beginServingDrain(owner: .addonHold)
-        publishAddonBusy()
+        publishBusy()
         // Coordinator preloads would load models the hold is about to unload.
         for task in preloadTasks.values { task.cancel() }
         // Announce now: routing stops on the status, not on 503 bounces.
@@ -212,7 +212,8 @@ extension ProviderLoop {
         addonHoldGeneration &+= 1
         addonHoldTask?.cancel()
         addonHoldTask = nil
-        state.busy = nil
+        // An owner pause that goes on takes the busy fields back.
+        publishBusy()
         // A stop that took over keeps admission closed.
         guard servingDrain.owner == .addonHold else { return }
         resumeAfterAddonHold()
@@ -225,11 +226,12 @@ extension ProviderLoop {
 
     /// Re-probe headroom (the VMs just returned their memory), announce the
     /// routable status, then replay desired_models deferred during the hold.
+    /// An owner pause that goes on replays them when it ends.
     private func announceAddonHoldRelease() async {
         await refreshActivationReserve()
         await updateAggregateCapacity()
         await coordinatorClient?.sendEventHeartbeat()
-        guard !servingDrain.refusing, !addonHoldActive else { return }
+        guard !servingDrain.refusing, !addonHoldActive, !ownerPausesPublic else { return }
         if let entries = deferredDesiredModels, let send = outboundSend {
             deferredDesiredModels = nil
             logger.info("Replaying desired_models deferred during the add-on hold (\(entries.count) entr(ies))")
@@ -257,7 +259,7 @@ extension ProviderLoop {
         await updateAggregateCapacity()
         guard ownsAddonHold(generation) else { return }
         addonHolds.markHeld()
-        publishAddonBusy()
+        publishBusy()
         persistAddonHolds()
         writeDaemonState()
         if retained.isEmpty {
@@ -324,10 +326,6 @@ extension ProviderLoop {
             guard ownsAddonHold(generation) else { return }
             await unloadModel(modelID)
         }
-    }
-
-    private func publishAddonBusy() {
-        state.busy = addonHolds.oldest.map { ProviderBusy(reason: .addon, sinceMs: $0.sinceMs, addon: $0.addon) }
     }
 
     // MARK: - Model load fence
@@ -425,7 +423,7 @@ extension ProviderLoop {
         guard !restored.isEmpty else { return }
         addonHoldGeneration &+= 1
         beginServingDrain(owner: .addonHold)
-        publishAddonBusy()
+        publishBusy()
         for hold in addonHolds.sorted {
             logger.info("Add-on hold from \(hold.addon) restored; models stay unloaded")
             AddonHoldTelemetry.emit(.restored, hold: hold)

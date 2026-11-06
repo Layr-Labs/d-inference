@@ -519,6 +519,7 @@ extension ProviderLoop {
         // session shutdown is closing (its shutdown check has a hop).
         pendingRetirementReconnect?.cancel()
         idleMonitorTask = nil
+        cancelMeFirstResumeTimer()
         capacityRefreshTask?.cancel()
         await stopServiceAllowanceRefreshMonitor()
         await stopPerformanceRefreshMonitor()

@@ -334,9 +334,18 @@ public final class ProviderState: @unchecked Sendable {
         set { lock.withLock { _refusingNewWork = newValue } }
     }
 
+    /// Mirror of the loop's owner pause (`ProviderLoop+MeFirst`): Darkbloom
+    /// work is refused while local work is admitted, so it is kept apart
+    /// from `refusingNewWork`, which closes local admission too.
     public var ownerPausesPublic: Bool {
         get { lock.withLock { _ownerPausesPublic } }
         set { lock.withLock { _ownerPausesPublic = newValue } }
+    }
+
+    /// The heartbeat's draining verdict: new Darkbloom work is refused, for a
+    /// drain or for the owner.
+    var refusingDarkbloomWork: Bool {
+        lock.withLock { _refusingNewWork || _ownerPausesPublic }
     }
 
     /// The model of the pair slot a leader member serves (S09), nil when it
@@ -347,9 +356,10 @@ public final class ProviderState: @unchecked Sendable {
         set { lock.withLock { _memberPairSlotModel = newValue } }
     }
 
-    /// Why the provider refuses work while connected (an add-on hold). Every
-    /// heartbeat and registration copies it; the loop sets it before the
-    /// event heartbeat that announces the hold and clears it on release.
+    /// Why the provider refuses work while connected (an add-on hold or the
+    /// owner pause). Every heartbeat and registration copies it; the loop's
+    /// `publishBusy()` writes it before the event heartbeat that announces a
+    /// change.
     public var busy: ProviderBusy? {
         get { lock.withLock { _busy } }
         set { lock.withLock { _busy = newValue } }
@@ -377,8 +387,9 @@ public final class ProviderState: @unchecked Sendable {
         }
     }
 
+    /// What a capacity quote for `modelID` refuses on.
     func refusingNewWork(forModel modelID: String) -> Bool {
-        lock.withLock { _refusingNewWork || _modelAdmissionDrains.contains(modelID) }
+        lock.withLock { _refusingNewWork || _ownerPausesPublic || _modelAdmissionDrains.contains(modelID) }
     }
 
     /// The capacity payload of the LAST heartbeat actually sent on the

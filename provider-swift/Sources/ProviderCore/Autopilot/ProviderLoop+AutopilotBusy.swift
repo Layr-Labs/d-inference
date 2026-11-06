@@ -13,7 +13,8 @@ extension ProviderLoop {
         case .autopilotOperation: return false
         case .shuttingDown: return isShuttingDown
         case .addonHold: return addonHoldActive
-        case .draining: return isDraining && servingDrain.owner != .addonHold
+        // The owner pause refuses coordinator residency changes as a drain does.
+        case .draining: return (isDraining && servingDrain.owner != .addonHold) || ownerPausesPublic
         case .reconnectAfterRetirement: return isReconnectingAfterRetirement
         case .modelSwitch: return modelSwitchTask != nil
         case .revisionActivation: return modelRevisionActivationID != nil

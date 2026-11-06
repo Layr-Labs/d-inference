@@ -98,6 +98,7 @@ extension ProviderLoop {
         localResponseTracker.setAccepting(!servingDrain.refusing && !isShuttingDown)
         if !servingDrain.refusing { lifecycleStatus = .init() }
         reassertAddonHoldAfterReconnect()
+        reassertOwnerPauseAfterReconnect()
         // A model-store rollback during the old close may need another fresh
         // registration. Do not lose it to coalescing with the earlier request.
         startPlannedReconnectIfNeeded()

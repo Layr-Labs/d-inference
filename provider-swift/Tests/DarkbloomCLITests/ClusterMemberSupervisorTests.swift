@@ -126,6 +126,27 @@ struct ClusterMemberSupervisorTests {
         #expect(await run.value == 0)
     }
 
+    /// #1857 review: a member start refused because the other app holds this Mac's GPU says the refusal's `Error:` line
+    /// itself (an `ExitCode` prints nothing, and the cluster service waits on that line) and ends with the reserved 76,
+    /// which the supervisor waits on. Any other failure ends the start as before.
+    @Test func aMemberStartRefusedForTheGPUSaysWhyAndEndsWith76() {
+        struct Held: Error, CustomStringConvertible {
+            var description: String {
+                "Darkbloom Dev on this Mac holds this Mac's GPU for its pair (or a model check), and two pairs don't fit one "
+                    + "Mac's memory: this pair starts by itself once Darkbloom Dev's stops, or now after `darkbloom-dev cluster stop`."
+            }
+        }
+        struct Other: Error {}
+        var said: [String] = []
+        let ending = Start.memberStartFailure(Held()) { said.append($0) }
+        #expect(said == ["Error: \(Held())"])
+        #expect((ending as? ExitCode)?.rawValue == ClusterMemberRunEnd.gpuHeldExitCode)
+        #expect(ClusterMemberRunEnd.classify(stopRequested: false, exitCode: ClusterMemberRunEnd.gpuHeldExitCode, signal: nil) == .gpuHeld)
+        said = []
+        #expect(Start.memberStartFailure(Other()) { said.append($0) } is Other)
+        #expect(said.isEmpty)
+    }
+
     /// Final review of #1846: a member refused because another Darkbloom build holds this Mac's GPU exits with its own
     /// code. The supervisor waits for that hold to end without spending its budget, then starts the member at once.
     @Test func aMemberRefusedForTheGPUWaitsForTheHoldAndStartsOnceItEnds() async throws {

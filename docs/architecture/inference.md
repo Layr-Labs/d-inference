@@ -582,12 +582,17 @@ serving (both start at login, say): it fences the part's GPU work at once
 (SIGUSR1 to the worker owners the part started, `ClusterService.fenceOwners`,
 whose force-cancel hook ends each worker's requests and unloads it), then stops
 the part. No model of such a build loads for single-Mac serving while
-production serves here either: `ModelContainerLoading.loadServingContainer`,
-the one loader both slot owners use, refuses (`ClusterGPUHold.productionServesHere`),
-which the provider reports as a transient 503. A cluster member that ends on a
-refusal exits with `ClusterMemberRunEnd.gpuHeldExitCode` (76), so the
-developer `--always-on` supervisor waits for the hold (`ClusterGPUHold.now`)
-instead of spending its restart budget. The cluster service never starts its part
+production serves here either (`ClusterGPUHold.productionServesHere`): both
+slot owners (`ProviderLoop.ensureModelLoaded`, `StandaloneServer.ensureModelLoaded`)
+refuse a cold load at its start, before any eviction, weight hash or load
+reservation, as a transient 503, and `ModelContainerLoading.loadServingContainer`
+refuses too, for any other caller; a model already loaded keeps serving. A
+cluster member whose start is refused that way prints the refusal's `Error:`
+line (which its cluster service waits on) and exits with
+`ClusterMemberRunEnd.gpuHeldExitCode` (76, reserved for that alone: a source
+check keeps every other path off it), so the developer `--always-on` supervisor
+waits for the hold (`ClusterGPUHold.now`) instead of spending its restart
+budget. The cluster service never starts its part
 into a hold: `ClusterMachineDeviceLock.heldByAnotherBuild`
 probes the lock shared and lets it go at once (a start at that moment retries
 for up to 100 ms, `ClusterDeviceExclusion.machineLockTries`), and the part

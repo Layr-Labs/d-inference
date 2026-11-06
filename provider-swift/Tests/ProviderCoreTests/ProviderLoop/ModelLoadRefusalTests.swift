@@ -370,6 +370,45 @@ struct ModelLoadRefusalTests {
         #expect(await loop.modelLoadingIsLoadingAny() == false)
     }
 
+    /// #1857 review: outside production's build, a load beside production serving on this Mac was refused only by the
+    /// loader, after eviction and a full weight hash, so each request routed here evicted, hashed, then failed. It is
+    /// refused first now, as a transient 503, and a model already loaded stays.
+    @Test("a load beside production serving is refused before any eviction, weight hash or load")
+    func productionServingRefusesBeforeEvictionOrHash() async throws {
+        let words = "The production Darkbloom on this Mac holds this Mac's GPU: it is serving (process 4242), and two models "
+            + "don't fit one Mac's memory: no model of this build loads here until production stops serving."
+        let sandbox = try ModelLoadingSandbox()
+        defer { sandbox.remove() }
+        let resident = "test/resident-beside-production", id = "test/beside-production"
+        let directory = try sandbox.makeSnapshot("beside-production")
+        // One slot, taken by an idle resident model: a load would evict it, hash the new weights and reach the load
+        // itself (the before-load hook, which stops the load there) first.
+        let recorder = ModelLoadHookRecorder()
+        let loop = try await ModelLoadingFixtures.makeLoop(
+            sandbox: sandbox, models: [ModelLoadingFixtures.model(resident), ModelLoadingFixtures.model(id)],
+            maxModelSlots: 1, beforeModelLoad: { modelId in await recorder.recordAndShutDown(modelId) })
+        await recorder.attach(loop)
+        let stub = makeInertStubBridge(modelId: resident)
+        await loop.modelLoadingInstallSlot(resident, bridge: stub.bridge)
+        await ModelLoadingFixtures.setAvailableMemory(loop, gb: 1_000_000)
+        await loop.setProductionServesForTesting { words }
+        do {
+            try await loop.ensureModelLoaded(modelId: id, revisionDirectory: directory)
+            Issue.record("a load went ahead while production served here")
+        } catch let InferenceError.modelLoadFailed(message) {
+            #expect(message == words)
+            #expect(ProviderLoop.loadErrorStatusCode(for: InferenceError.modelLoadFailed(message)) == 503)
+        } catch {
+            Issue.record("not production's refusal: \(error)")
+        }
+        #expect(await loop.modelLoadingResidentIDs() == [resident], "the resident model was evicted first")
+        #expect(stub.engine.shutdownCalls == 0)
+        #expect(await recorder.seen.isEmpty, "the load hashed the weights and reached the load first")
+        #expect(await loop.modelLoadingLastLoadError()?.message == words)
+        #expect(await loop.outstandingKVReservationBytesForTesting() == 0)
+        #expect(await loop.modelLoadingIsLoadingAny() == false)
+    }
+
     // MARK: - Memory admission and failure cleanup
 
     @Test("a memory refusal is recorded for doctor and the loop state is reset")

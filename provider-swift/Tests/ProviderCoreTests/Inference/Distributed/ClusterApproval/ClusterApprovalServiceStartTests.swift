@@ -190,19 +190,23 @@ struct ClusterApprovalServiceStartTests {
             var held: ClusterDeviceExclusion? = try ClusterDeviceExclusion(
                 directoryURL: parts.appendingPathComponent("lease-other-app", isDirectory: true),
                 machineLock: .init(file: parts.appendingPathComponent("gpu.lock"), heldElsewhere: "the other app holds it"))
-            var mostQuickEnds = 0, polled = Date.distantPast, releasedAt: Date?, startedAt: Date?
+            var mostQuickEnds = 0, polled = Date.distantPast, releasedAt: Date?, startedAt: Date?, refusedEnd: String?
             let (reached, lines) = run(service, parts: parts) {
                 if Date().timeIntervalSince(polled) >= 0.2 {
                     polled = Date()
                     mostQuickEnds = max(mostQuickEnds, service.status().memberQuickEnds ?? 0)
                 }
-                // Four refusals: the service has seen at least three of them end.
-                if held != nil, count(parts, "member", ".refused") >= 4 { held = nil; releasedAt = Date() }
+                // Four refusals: the service has seen at least three of them end, each as the member ends (exit 76).
+                if held != nil, count(parts, "member", ".refused") >= 4 {
+                    refusedEnd = service.status().child.lastEnd
+                    held = nil; releasedAt = Date()
+                }
                 if releasedAt != nil, started(parts, "member") { startedAt = Date(); return true }
                 return false
             }
             #expect(count(parts, "member", ".refused") >= 4, "the part was not refused for the GPU again and again: \(lines)")
             #expect(mostQuickEnds == 0, "a refusal for the GPU counted as a failing part: \(lines)")
+            #expect(refusedEnd == "exit \(ClusterMemberRunEnd.gpuHeldExitCode)", "the refused member's end: \(String(describing: refusedEnd))")
             #expect(try service.store.readRecord().approvalSetAside == nil, "the approval was set aside as failing")
             #expect(try macs.saved(macs.leader).configuration.nativeMember?.clusterApproval != nil, "the pair stopped being offered")
             #expect(reached, "the part did not start once the GPU was let go: \(lines)")

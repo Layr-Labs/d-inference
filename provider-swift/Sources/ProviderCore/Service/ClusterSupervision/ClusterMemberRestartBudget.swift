@@ -22,8 +22,11 @@ public enum ClusterMemberRunEnd: Equatable, Sendable {
 
     /// The JACCL progress guard's teardown exit code (guard v2, mlx#33).
     public static let guardTeardownExitCode: Int32 = 75
-    /// The member's exit code when its start found this Mac's GPU held by another Darkbloom build
-    /// (`ClusterGPUHold.refused`).
+    /// Reserved: 76 means only "another Darkbloom app holds this Mac's GPU" (or, outside production's build, production
+    /// serves here). Only the member's start refused for that exits with it (`ClusterMemberPreparation.gpuHoldRefusal`),
+    /// and the supervisor waits on it without counting anything, so another exit 76 would restart forever and never
+    /// park. When it was chosen, nothing in the provider, the cluster library, the SwiftPM dependencies or MLX exited 76
+    /// (it is `EX_PROTOCOL` in `sysexits.h`); the source check `exit76IsReservedForAGPUHold` keeps our sources so.
     public static let gpuHeldExitCode: Int32 = 76
 
     /// Classify a finished child process. `stopRequested` is the

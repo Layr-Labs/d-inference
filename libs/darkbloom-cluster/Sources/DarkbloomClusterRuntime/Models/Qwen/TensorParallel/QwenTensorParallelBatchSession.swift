@@ -108,12 +108,13 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
     /// The prompt frames one step runs from the next frame: up to `limit`
     /// merged into one graph (`QwenTensorParallelPromptWavefront`), ending at
     /// the capture frontier; the next frame alone where frames do not merge.
-    func promptFrames(limit: Int) -> [QwenLayerStageFrame] {
+    /// `frontiers`: further boundaries a step must end at (an assistant's capture).
+    func promptFrames(limit: Int, frontiers extra: [Int] = []) -> [QwenLayerStageFrame] {
         guard !retired else { return [] }
         let merges = QwenTensorParallelPromptWavefront.merges(model: model, request: request,
             mediaInputs: inputs != nil, packedStorage: state.packedStorage)
         return QwenTensorParallelPromptWavefront.frames(request: request, from: schedule.nextSequence,
-            frontiers: prefixCapture?.frontiers ?? [], limit: merges ? limit : 1)
+            frontiers: (prefixCapture?.frontiers ?? []) + extra, limit: merges ? limit : 1)
     }
 
     /// Runs the planned prompt step `step` (`promptFrames`), its frames as one graph.
@@ -125,15 +126,21 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
         return try prompt(capturingHidden: false, frames: count, check: check).logits
     }
 
-    func prefillForMTP(check: () throws -> Void) throws -> QwenTensorParallelMTPPromptResult {
+    /// An assisted lane's prompt step of `frames` frames: a lone frame through
+    /// the target's hidden forward, consecutive frames through the same
+    /// wavefront an unassisted lane runs (every target value its bits), with
+    /// each frame's last-layer rows for the assistant's history.
+    func prefillForMTP(frames count: Int, check: () throws -> Void) throws -> QwenTensorParallelMTPPromptResult {
         guard inputs == nil, request.qwenMedia == nil else { throw ProbeError("Qwen TP media cannot enter assistant history") }
-        let result = try prompt(capturingHidden: true, check: check)
-        guard let hidden = result.hidden else { throw ProbeError("Qwen TP assistant prompt omitted target hidden") }
+        let result = try prompt(capturingHidden: true, frames: count, check: check)
+        guard let hidden = result.hidden, hidden.count == count else {
+            throw ProbeError("Qwen TP assistant prompt omitted target hidden")
+        }
         return .init(hidden: hidden, logits: result.logits)
     }
 
     private func prompt(capturingHidden: Bool, frames count: Int = 1,
-                        check: () throws -> Void) throws -> (hidden: MLXArray?, logits: MLXArray?) {
+                        check: () throws -> Void) throws -> (hidden: [MLXArray]?, logits: MLXArray?) {
         try MLX.withError { error in
             func checked() throws { try error.check(); try check() }
             // Each frame is admitted on the schedule as the frames before it leave it.
@@ -144,7 +151,7 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
                     final: proposed.finalPromptChunk)
                 frames.append(admitted); try planned.commit(admitted)
             }
-            guard let frame = QwenTensorParallelPromptWavefront.step(frames), count == 1 || !capturingHidden,
+            guard let frame = QwenTensorParallelPromptWavefront.step(frames),
                   !retired, !failed, window?.isIdle ?? true, frame.phase == .prefill, state.committedTokens == frame.tokenOffset else {
                 throw ProbeError("Qwen TP batch prefill frontier differs")
             }
@@ -161,7 +168,7 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
                 }
             }
             let final = range.upperBound == request.promptCount
-            var hidden: MLXArray?
+            var hidden: [MLXArray]?
             let started = DispatchTime.now().uptimeNanoseconds
             var phases: CBv2OwnerPhaseObserver?
             var timing: QwenTensorParallelPrefillFrameClock?
@@ -177,15 +184,17 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
             let stride = Self.prefillStride ?? (state.packedStorage ? 0 : Self.prefillLayerStride)
             let output = try state.run(tokenCount: frame.tokenCount, observer: phases, check: checked, forward: { caches, evaluation in
               if frames.count > 1 {
-                  return QwenTensorParallelPromptWavefront.forward(model: self.model, request: self.request,
-                      frames: frames, caches: caches, evaluation: evaluation)
+                  let step = QwenTensorParallelPromptWavefront.forward(model: self.model, request: self.request,
+                      frames: frames, caches: caches, evaluation: evaluation, capturingHidden: capturingHidden)
+                  hidden = step.hidden
+                  return step.output
               }
               return Qwen35LayerSubmission.$stride.withValue(stride) { () -> MLXArray in
                 let native = self.model.model
                 if capturingHidden {
                     let result = native.cbv2ForwardWithHidden(input,
                         caches: caches.map { $0 as! any KVCache }, recurrentState: [evaluation], positionIds: nil)
-                    hidden = result.lastHidden
+                    hidden = [result.lastHidden]
                     return final ? result.logits[0..., -1, 0...] : result.lastHidden
                 }
                 if !final {
@@ -212,8 +221,11 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
                 }
             })
             if capturingHidden {
-                guard let hidden, hidden.shape == [1, frame.tokenCount, model.plan.hiddenSize],
-                      String(describing: hidden.dtype) == request.profile.activationDType else {
+                guard let hidden, hidden.count == frames.count,
+                      zip(hidden, frames).allSatisfy({ rows, frame in
+                          rows.shape == [1, frame.tokenCount, model.plan.hiddenSize]
+                              && String(describing: rows.dtype) == request.profile.activationDType
+                      }) else {
                     throw ProbeError("Qwen TP assistant prompt hidden differs from the actual target")
                 }
                 eval(hidden); try checked()

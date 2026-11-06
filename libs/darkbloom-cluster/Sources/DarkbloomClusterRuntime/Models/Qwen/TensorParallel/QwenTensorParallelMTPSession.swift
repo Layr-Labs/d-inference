@@ -73,13 +73,14 @@ final class QwenTensorParallelMTPSession: QwenTensorParallelMTPTarget {
                     if frame.finalPromptChunk { try self.validateLogits(output, count: frame.tokenCount) }
                 })
                 try schedule.commit(frame)
-                return PromptResult(hidden: hidden!, logits: frame.finalPromptChunk ? output[0..., -1, 0...] : nil)
+                return PromptResult(hidden: [hidden!], logits: frame.finalPromptChunk ? output[0..., -1, 0...] : nil)
             }
         } catch { failed = true; throw error }
     }
 
-    func prefillForMTP(check: () throws -> Void) throws -> PromptResult {
-        try prefill(check: check)
+    func prefillForMTP(frames: Int, check: () throws -> Void) throws -> PromptResult {
+        guard frames == 1 else { throw ProbeError("Qwen TP MTP session prefills one frame a step") }
+        return try prefill(check: check)
     }
 
     func beginWindow(tokens: MLXArray, offset: Int) throws -> (outputs: [MLXArray], roots: [MLXArray]) {

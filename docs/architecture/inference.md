@@ -7178,8 +7178,8 @@ A Qwen TP prompt frame of 512 rows used to compute, then wait for its own
 sealed FP32 sums: two per layer, each read by the next residual norm, so the
 GPU and the link took turns. On the pair at 11K tokens a 27B frame computes for
 about 165 ms and its 128 sums take about 186 ms, so prefill ran at 0.75x one Mac
-[INFERENCE: split from `qwen27-tp-speed-plan` measurements, not traced]. A plain
-text lane now prefills up to eight consecutive frames as one graph, built layer
+[INFERENCE: split from `qwen27-tp-speed-plan` measurements, not traced]. A text
+lane, assisted or not, now prefills up to eight consecutive frames as one graph, built layer
 by layer as GLM's micro-batches are (`GLM5NextTextStage.microBatchedLayer`): a
 frame's mixer through its row-parallel output projection, that sum submitted at
 once, the next frame's mixer while it crosses; then each frame's MLP the same
@@ -7200,7 +7200,8 @@ flowchart LR
 - **Planning.** The leader plans one prompt step a driver step: up to
   `QwenTensorParallelPromptWavefront.maximumFrames` (8) frames, or
   `framesBesideDecoding` (2) while another lane decodes, ending at the prompt's
-  end or at the lane's capture frontier (`QwenTensorParallelBatchSession.promptFrames`).
+  end, at the lane's capture frontier or, for an assisted lane, at its assistant's
+  capture frontier (`QwenTensorParallelBatchSession.promptFrames`).
   The plan carries the step's offset, tokens and final flag; each rank runs it
   only as a prefix of its own frames (`promptStep(tokens:)`), so both ranks run
   the same frames.
@@ -7222,8 +7223,13 @@ flowchart LR
   when the step reaches the frontier, as after a lone frame.
 
 Invariants:
-1. Every frame runs the operations it runs alone, at its own 512-row shapes;
-   only submission order changes. Logits, attention rows, conv and SSM states
+1. Every frame of a plain lane runs the operations it runs alone, at its own
+   512-row shapes; only submission order changes. A merged assisted frame runs
+   the plain lane's operations, while a lone assisted frame takes the target's
+   hidden forward with its fused residual norms; their equality rests on
+   `ResidualRMSNorm`'s byte parity with the unfused ops on its verified GPU
+   families (`Qwen35DecodeFusionParityTests.residualRMSNormEqualsTheUnfusedOps`;
+   on Mac A, family 17, the hybrid assisted test passed with the kernel on). Logits, attention rows, conv and SSM states
    and prefix captures are the per-frame bytes
    (`QwenTensorParallelPromptWavefrontTests.mergedFramesKeepEveryBit`: both
    ranks, paged with the mirror and with page gathers, contiguous, a prompt
@@ -7233,8 +7239,14 @@ Invariants:
    same order on both ranks. They stay sealed FP32 all-sums: no BF16 partial,
    no TF32 change.
 3. Only text lanes of dense models on native KV rows merge
-   (`QwenTensorParallelPromptWavefront.merges`). Assisted (MTP) lanes, media
-   lanes, packed KV and routed-expert models run one frame a step.
+   (`QwenTensorParallelPromptWavefront.merges`). Media lanes, packed KV and
+   routed-expert models run one frame a step. An assisted (MTP) lane merges too:
+   its step also ends at its assistant's capture frontier, runs the same
+   wavefront (`Qwen35PromptWavefront.prefillWithHidden` also returns each
+   frame's last-layer rows), and its assistant then takes each frame's rows in
+   order as after a lone frame (`QwenTensorParallelMTPDecoder.prefill(frames:)`;
+   `QwenTensorParallelAssistedPromptWavefrontTests`: the unassisted wavefront's
+   logits and rows, and the one-frame assistant state, bit for bit).
 4. A step's further frames in flight are charged:
    `QwenTensorParallelPromptWavefront.inFlightBytes` (per further frame, five
    frames' FP32 collective payload: two partials, two sums and the BF16

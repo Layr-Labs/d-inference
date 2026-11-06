@@ -1,6 +1,6 @@
 # Provider And Native Architecture
 
-> Last updated: 2026-10-27
+> Last updated: 2026-11-06
 
 Provider execution, local security and external contracts. Backend and console implementation live in [platform architecture](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture).
 
@@ -14,6 +14,7 @@ Provider execution, local security and external contracts. Backend and console i
 - [Provider Model Registry Boundary](model-registry.md)
 - [Model artifact revisions](model-revisions.md)
 - [Native block-generation adapter](native-block-inference.md)
+- [OpenCode and Hermes config writers](tool-integrations.md)
 - [Provider Architecture](overview.md)
 - [KV cache layouts and prefix caching](prefix-cache.md)
 - [Native live KV, independent checkpoint precision and optional live-packed execution](kv-cache-quantization.md)

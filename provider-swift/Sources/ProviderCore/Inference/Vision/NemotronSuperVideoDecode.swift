@@ -60,6 +60,11 @@ enum NemotronSuperVideoDecode {
     /// released. Read when the reader is set up.
     @TaskLocal static var readerCancelledForTesting: (@Sendable (AVAssetReader) -> Void)?
 
+    /// Tests only: runs on the reader's queue before each sample read, with
+    /// that reader, so a test can end a reader partway. Read when the reader
+    /// is set up.
+    @TaskLocal static var beforeReadForTesting: (@Sendable (AVAssetReader) -> Void)?
+
     struct Plan: Sendable {
         let sourceFrames: Int
         let sourceFPS: Double
@@ -452,6 +457,7 @@ private final class SerialReader: @unchecked Sendable {
     private let queue = DispatchQueue(label: "ai.darkbloom.super-video.reader", qos: .userInitiated,
                                       autoreleaseFrequency: .workItem)
     private let cancelledForTesting: (@Sendable (AVAssetReader) -> Void)?
+    private let beforeReadForTesting: (@Sendable (AVAssetReader) -> Void)?
     private let lock = NSLock()
     /// Nanoseconds of decoder wait left; nil without an allowance.
     private var remaining: UInt64?
@@ -470,6 +476,7 @@ private final class SerialReader: @unchecked Sendable {
         self.reopen = reopen
         self.source = source
         cancelledForTesting = NemotronSuperVideoDecode.readerCancelledForTesting
+        beforeReadForTesting = NemotronSuperVideoDecode.beforeReadForTesting
         remaining = allowance.map(Self.nanoseconds)
     }
 
@@ -541,6 +548,7 @@ private final class SerialReader: @unchecked Sendable {
         }
         guard let deadline else { return nil }
         queue.async { [self] in
+            beforeReadForTesting?(reader)
             let sample = autoreleasepool { output.copyNextSampleBuffer() }
             let delivered = lock.withLock { () -> Bool in
                 guard !read.abandoned else { return false }

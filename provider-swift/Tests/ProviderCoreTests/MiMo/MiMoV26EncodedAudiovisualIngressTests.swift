@@ -160,7 +160,8 @@ final class MiMoV26EncodedAudiovisualIngressTests: XCTestCase {
             XCTAssertEqual(failure.status,AVAssetReader.Status.cancelled.rawValue)
             let refusal = MiMoV26EncodedMediaIngress.outwardFailure(failure)
             XCTAssertEqual(refusal as? MultiModelBatchSchedulerEngineError,
-                .multimodalRejected("video audio requires contiguous mono24k LPCM16/Float32 without edits"))
+                MultiModelBatchSchedulerEngineError.multimodalRejected(
+                    "video audio requires contiguous mono24k LPCM16/Float32 without edits"))
             let wire = ProviderLoop.sanitizedInferenceFailure(from:refusal,phase:.streamStart)
             XCTAssertEqual(wire.code,.invalidMedia)
             XCTAssertEqual(wire.statusCode,400)

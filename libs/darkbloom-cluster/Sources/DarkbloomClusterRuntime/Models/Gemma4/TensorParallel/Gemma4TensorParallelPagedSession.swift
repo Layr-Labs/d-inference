@@ -125,9 +125,12 @@ final class Gemma4TensorParallelPagedSession {
         var logits: MLXArray?
         let output = try state.run(tokenCount: range.count, check: check, forward: { caches, _ in
             let kv = caches.map { $0 as! any KVCache }
+            let parts = Gemma4TensorParallelModel.benchPromptParts ?? Gemma4TensorParallelModel.promptChunkParts
             let row = Gemma4PrefillProjectionScope.withPrefillFrame(tokens: input, enabled: true) {
-                text.cbv2Prefill(input, inputEmbedding: nil, cache: kv,
-                    requirement: final ? .lastPositionLogits : .evaluationOnly)
+                Gemma4TensorParallelPromptParts.$parts.withValue(parts) {
+                    text.cbv2Prefill(input, inputEmbedding: nil, cache: kv,
+                        requirement: final ? .lastPositionLogits : .evaluationOnly)
+                }
             }
             guard final else { return row }
             logits = row
@@ -268,6 +271,18 @@ extension Gemma4TensorParallelModel {
     /// (`darkbloom-cluster-tp-check gemma run --layer-stride`).
     public static func withLayerStride<R>(_ stride: Int?, _ body: () throws -> R) rethrows -> R {
         try $layerStride.withValue(stride, operation: body)
+    }
+    /// Row parts of each prompt chunk's work after attention, each part's sums
+    /// issued as soon as built (`Gemma4TensorParallelPromptParts`): values and
+    /// tokens unchanged, only when the GPU and the link run. 1 (whole) until a
+    /// pair measures the gain.
+    static let promptChunkParts = 1
+    /// A bench or test's own part count (nil: `promptChunkParts`).
+    @TaskLocal static var benchPromptParts: Int?
+    /// Runs `body` with a bench's own prompt parts
+    /// (`darkbloom-cluster-tp-check gemma run --prompt-parts`).
+    public static func withPromptParts<R>(_ parts: Int?, _ body: () throws -> R) rethrows -> R {
+        try $benchPromptParts.withValue(parts, operation: body)
     }
     /// The bench modes a `withLayerStride` stride reaches: ranks that decode
     /// on the calling thread (`full`, `shard`, `tp`). `simulated` runs both

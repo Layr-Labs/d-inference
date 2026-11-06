@@ -3,6 +3,7 @@
 import CryptoKit
 import Darwin
 import Foundation
+import ProviderCoreFoundation
 import ProviderMetallibControl
 import os
 
@@ -167,7 +168,8 @@ public func sha256Hex(_ data: Data) -> String {
 func sha256Digest(of handle: FileHandle, chunkSize: Int = 65_536) -> SHA256.Digest {
     var hasher = SHA256()
     while true {
-        let chunk = handle.readData(ofLength: chunkSize)
+        // `readData(ofLength:)` returns autoreleased storage; see `readDrained`.
+        let chunk = autoreleasepool { handle.readData(ofLength: chunkSize) }
         if chunk.isEmpty { break }
         hasher.update(data: chunk)
     }
@@ -263,9 +265,11 @@ func makeRuntimeMetallibSnapshot(
     )
     var hasher = SHA256()
     while true {
-        let bytes = try source.read(upToCount: 1024 * 1024) ?? Data()
+        let bytes = try source.readDrained(upToCount: 1024 * 1024) ?? Data()
         if bytes.isEmpty { break }
-        try destination.write(contentsOf: bytes)
+        // The write calls into Objective-C too: its autoreleased objects, if
+        // any, drain with each chunk as well.
+        try autoreleasepool { try destination.write(contentsOf: bytes) }
         hasher.update(data: bytes)
     }
     try destination.synchronize()

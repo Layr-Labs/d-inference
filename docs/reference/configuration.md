@@ -107,6 +107,8 @@ file (`registered_models`), not from configuration. It has no setting. See
 ## Runtime metallib snapshots
 
 The provider creates an anonymous snapshot before binding the runtime metallib.
+It copies and hashes the metallib in 1 MiB chunks and releases each chunk
+before the next read.
 
 | Variable | Default / accepted values | Consumer |
 |---|---|---|

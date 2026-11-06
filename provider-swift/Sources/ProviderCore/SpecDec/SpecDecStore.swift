@@ -711,7 +711,7 @@ enum SpecDecStore {
     /// Hash once per file, in bounded chunks, checking cancellation between
     /// chunks. The resulting digest serves both the per-file manifest check and
     /// aggregate digest, avoiding the prior second full artifact read.
-    private static func digestRegularFile(at url: URL) -> SHA256Digest? {
+    static func digestRegularFile(at url: URL) -> SHA256Digest? {
         guard regularFileSize(url) != nil,
             let handle = try? FileHandle(forReadingFrom: url)
         else { return nil }
@@ -721,7 +721,7 @@ enum SpecDecStore {
         while true {
             guard !Task.isCancelled else { return nil }
             do {
-                guard let chunk = try handle.read(upToCount: 1024 * 1024) else {
+                guard let chunk = try handle.readDrained(upToCount: 1024 * 1024) else {
                     return hasher.finalize()
                 }
                 if chunk.isEmpty { return hasher.finalize() }

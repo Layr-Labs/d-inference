@@ -188,11 +188,14 @@ enum DistributedHTTPEventStream {
             upstreamFailed = true
         }
         control.expire(at: ContinuousClock.now)
-        if let failure = try failureFrame(for: control, upstreamFailed: upstreamFailed, identity: identity) {
-            // When the shared pipeline framed the failure itself, the client
-            // gets exactly the single-Mac endpoint's frame; either way the
-            // stream ends there, as the product's does (no [DONE] after it).
-            try await writer.write(ByteBuffer(string: trailing.first(where: isProductFailureFrame) ?? failure))
+        if let productFailure = trailing.first(where: isProductFailureFrame) {
+            // The shared pipeline framed the failure itself: the client gets
+            // exactly the single-Mac endpoint's frame, and nothing follows it
+            // (no [DONE]). It needs no native terminal, which a request the
+            // pipeline cancelled mid-stream has only once the pair retired it.
+            try await writer.write(ByteBuffer(string: productFailure))
+        } else if let failure = try failureFrame(for: control, upstreamFailed: upstreamFailed, identity: identity) {
+            try await writer.write(ByteBuffer(string: failure))
         } else {
             for frame in trailing { try await writer.write(ByteBuffer(string: frame)) }
         }

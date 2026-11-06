@@ -355,6 +355,27 @@ jobs:
             --output-dir "$RUNNER_TEMP/provider-test-diagnostics" \
             --diagnostic-after-seconds 900 --timeout-seconds 1800 \
             -- ../scripts/run-provider-tests.sh
+      # TEMPORARY (Layr-Labs/d-inference#1851): loop the GLM readiness test; reverted before review.
+      - name: Loop the GLM readiness test
+        if: ${{ !cancelled() && steps.test-products.outcome == 'success' }}
+        timeout-minutes: 30
+        working-directory: provider-swift
+        run: |
+          echo "runner: $RUNNER_NAME"
+          pass=0; fail=0
+          for i in $(seq 1 50); do
+            log="$RUNNER_TEMP/readiness-loop-$i.log"
+            if swift test --skip-build --filter 'openRouterReadinessVideosReachTheEngineInsteadOfInvalidMedia' > "$log" 2>&1 \
+                && grep -q 'openRouterReadinessVideosReachTheEngineInsteadOfInvalidMedia() passed' "$log"; then
+              pass=$((pass + 1))
+            else
+              fail=$((fail + 1))
+              echo "::group::iteration $i failed"; tail -60 "$log"; echo "::endgroup::"
+            fi
+            grep -h 'video_reader_failed retrying=' "$log" | sed "s/^/iteration $i: /" || true
+          done
+          echo "LOOP: runner=$RUNNER_NAME pass=$pass fail=$fail"
+          [ "$fail" -eq 0 ]
       - name: Upload provider test diagnostics
         if: ${{ !cancelled() && steps.provider-unit-tests.outcome != 'skipped' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

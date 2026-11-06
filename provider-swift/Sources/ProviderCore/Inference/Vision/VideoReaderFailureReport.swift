@@ -36,6 +36,8 @@ enum VideoReaderFailureReport {
     ) async rethrows -> Result {
         try await VideoReaderRetry.$failedPassObserver.withValue({ failure, retrying in
             logger.warning("video reader pass failed (retrying: \(retrying)): \(failure)")
+            // TEMPORARY (#1851 loop): echo the report to the test log; reverted before review.
+            FileHandle.standardError.write(Data("video_reader_failed retrying=\(retrying) \(failure)\n".utf8))
             emit(event(failure, retrying: retrying))
         }, operation: operation)
     }

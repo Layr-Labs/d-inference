@@ -35,7 +35,10 @@ extension PairingCheck {
                     _ = poll(&fd, 1, 20)
                     let count = read(master, &buffer, buffer.count)
                     if count > 0 { lock.withLock { bytes += buffer.prefix(count) }; continue }
-                    if ended || count == 0 || (errno != EAGAIN && errno != EINTR) { return }
+                    let failure = errno
+                    if count == 0 || (failure != EAGAIN && failure != EINTR) { return }
+                    // An interrupted read proves nothing about what is left; only an empty terminal ends a child's text.
+                    if ended && failure == EAGAIN { return }
                 }
             }
         }

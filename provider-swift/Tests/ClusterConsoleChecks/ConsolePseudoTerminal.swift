@@ -35,7 +35,13 @@ final class PseudoTerminal: @unchecked Sendable {
         // from another thread without closing a descriptor under a sleeper.
         Thread.detachNewThread { [self] in
             defer {
-                lock.withLock { () -> [DispatchSemaphore] in readerRunning = false; defer { drains = [] }; return drains }.forEach { $0.signal() }
+                // A stopped reader reads nothing more: every drain still waiting is released, and later ones return at once.
+                let waiting = lock.withLock { () -> [DispatchSemaphore] in
+                    readerRunning = false
+                    defer { drains = [] }
+                    return drains
+                }
+                waiting.forEach { $0.signal() }
                 readerStopped.signal()
             }
             var buffer = [UInt8](repeating: 0, count: 65_536)
@@ -140,7 +146,7 @@ final class ConsoleRun: @unchecked Sendable {
     /// The terminal's mode before the console touched it: what must be back when it is done.
     let initialMode: termios
     /// Where the loop draws: `terminal`, or the separate output terminal it was given.
-    private let screen: PseudoTerminal
+    private let outputTerminal: PseudoTerminal
     private let finished = DispatchSemaphore(value: 0)
     private let lock = NSLock()
     private var outcome: Result<ClusterConsoleExit, Error>?
@@ -150,12 +156,12 @@ final class ConsoleRun: @unchecked Sendable {
          handlesSignals: Bool = false, output: PseudoTerminal? = nil) throws {
         self.operations = operations
         terminal = try PseudoTerminal(columns: columns, rows: rows)
-        screen = output ?? terminal
+        outputTerminal = output ?? terminal
         initialMode = terminal.mode
         let configuration = ClusterConsoleRunLoop.Configuration(options: options, candidate: candidate, color: true,
             darkbloomVersion: "0.0.0-check", pollMilliseconds: 40, escapeMilliseconds: 250, handlesSignals: handlesSignals,
             clock: { "06:00:00" })
-        let input = terminal.slave, outputDescriptor = output?.slave ?? terminal.slave, scripted = operations.operations
+        let input = terminal.slave, outputDescriptor = outputTerminal.slave, scripted = operations.operations
         Thread.detachNewThread { [self] in
             let result = Result { try ClusterConsoleRunLoop.run(input: input, output: outputDescriptor, configuration: configuration, operations: scripted) }
             lock.withLock { outcome = result }
@@ -169,7 +175,7 @@ final class ConsoleRun: @unchecked Sendable {
     func end(within seconds: Double = 5) -> Result<ClusterConsoleExit, Error>? {
         guard finished.wait(timeout: .now() + seconds) == .success else { return nil }
         finished.signal()
-        screen.drain()
+        outputTerminal.drain()
         return lock.withLock { outcome }
     }
 }

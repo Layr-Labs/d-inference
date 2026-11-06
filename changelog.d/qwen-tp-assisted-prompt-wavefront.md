@@ -1,3 +1,3 @@
-### Qwen 3.8 27B pairs with the assistant prefill long prompts faster
+### Qwen 3.8 27B pairs with the assistant prefill long prompts about twice as fast
 
-- A Qwen pair in tensor parallel that decodes with its speculative assistant processed each 512-token prompt chunk one at a time, waiting for its link traffic after each. It now processes up to eight chunks together, as a pair without the assistant already did, so one chunk's link traffic overlaps the next chunk's compute. The prompt's results and the assistant's state are unchanged.
+- A Qwen pair in tensor parallel that decodes with its speculative assistant processed each 512-token prompt chunk one at a time, waiting for its link traffic after each. It now processes up to eight chunks together, as a pair without the assistant already did, so one chunk's link traffic overlaps the next chunk's compute. Measured on two M5 Ultras with the bench tool (synthetic prompt tokens, real weights): an 8,192-token prompt prefilled at 2,775 tokens per second instead of 1,499, within 1 % of a pair without the assistant. The prompt's results and the assistant's state are unchanged.

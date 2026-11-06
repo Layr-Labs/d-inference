@@ -119,7 +119,8 @@ final class QwenTensorParallelMTPDecoder {
     /// The assistant's request state (history, head K/V) and the carried
     /// prompt row, for tests comparing what two prompt schedules left.
     var assistantStateArrays: [MLXArray] {
-        head.assistant.evaluationTargets(for: state) + (promptFrontier.map { [$0] } ?? [])
+        // The carried prompt row: still `promptFrontier`, or the carry once `begin` took it.
+        head.assistant.evaluationTargets(for: state) + ((promptFrontier ?? carry?.hidden).map { [$0] } ?? [])
     }
 
     /// Prompt boundaries a merged prompt step must end at: the capture

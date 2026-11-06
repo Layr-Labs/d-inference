@@ -1,6 +1,0 @@
-### `darkbloom cluster` says up front that its prompts are on each Mac's own screen
-
-- Setting up a pair raises macOS prompts on each Mac's own screen: the password for the cable port, Allow for Local Network, and Yes to the pairing code. `darkbloom cluster` now opens with that on both Macs, and says to open Screen Sharing first to a Mac with no display, such as a Mac Studio or a MacBook with its lid closed.
-- Once paired, the line for the other Mac's Local Network prompt names that Mac and says to use Screen Sharing if it has no display.
-- Over SSH, macOS can't show its approval prompt. `darkbloom cluster` now says so before its first step, before anything is tried, and offers Quit (nothing changed) or to go on over SSH. `darkbloom cluster link --fix` and `--remove` say it before they start and no longer wait for a prompt that cannot appear. `darkbloom uninstall` over SSH stops before it changes anything when a cable port setup is left to undo, instead of stopping part way.
-- The first line of the setup's Connect step now reads "Allow macOS permissions." (over SSH: "Allow macOS permissions here and on this Mac's screen (Screen Sharing if headless).") instead of naming the password and Local Network prompts.

@@ -713,6 +713,9 @@ extension ClusterPairSummary {
 
     static let linkRemoveQuestion = "Remove it? [y/N] "
     static let linkRemoveNeedsYes = "Nothing changed. To remove it anyway without a question, add --yes."
+    /// Beside another app that still uses the port: only the person at a terminal answers for it, never `--yes`.
+    static let linkRemoveOtherAppNeedsTerminal = "Nothing changed. --yes doesn't answer for the other app: run it in a "
+        + "terminal and confirm there."
     static let nothingChanged = "Nothing changed."
 
     /// `darkbloom cluster stop` on the Mac that follows a started cluster: the leading Mac stops both Macs, as the

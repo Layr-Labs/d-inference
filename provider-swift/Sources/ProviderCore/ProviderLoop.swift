@@ -307,6 +307,8 @@ public actor ProviderLoop {
     /// container EOS snapshot, and the production CBv2 engine builder used
     /// by `makeEngineV2BundleForSlot`. nil in production.
     internal var engineV2SlotHooks: EngineV2SlotHooks?
+    /// Stands in for `ClusterGPUHold.productionServesHere` in tests of the load's production guard. nil in production.
+    internal var productionServesForTesting: (@Sendable () -> String?)?
     #if DEBUG
     /// Replaces the GLM publication verdict so its unwind is testable without
     /// an undersized real pool.

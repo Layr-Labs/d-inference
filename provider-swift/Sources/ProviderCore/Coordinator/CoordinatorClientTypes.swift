@@ -377,6 +377,17 @@ public struct AttestationResponsePayload: Sendable {
     }
 }
 
+/// One received WebSocket message, other than a close frame, as the session
+/// treats it (`CoordinatorClient.inboundFrame`).
+enum CoordinatorInboundFrame: Equatable {
+    /// A ping or pong: answered by Network.framework, never decoded.
+    case control
+    /// No data and no control opcode: the transport ended without a close frame.
+    case transportClosed
+    /// A coordinator message for the codec.
+    case message(Data)
+}
+
 
 // MARK: - Errors
 

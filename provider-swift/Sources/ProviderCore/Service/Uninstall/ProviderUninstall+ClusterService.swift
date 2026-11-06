@@ -1,9 +1,9 @@
 import Darwin
 import Foundation
 
-// The live side of `Operations.runningClusterService` and `.stopClusterService`: who holds this Mac's cluster service
-// lock, and ending it. `darkbloom cluster` starts the service from a session when launchd does not take its agent, and
-// development builds always do, so a running service need not have a login agent.
+// The live side of `Operations.runningClusterService`: who holds this install's cluster service lock. `darkbloom
+// cluster` starts the service from a session when launchd does not take its agent, and development builds always do, so
+// a running service need not have a login agent.
 extension ProviderUninstall {
     /// The lock holder, its pid from the service's own pid file, its executable from the kernel, and whose that
     /// executable is. Nil when no cluster service holds the lock.
@@ -55,25 +55,6 @@ extension ProviderUninstall {
         defer { close(fd) }
         if flock(fd, LOCK_EX | LOCK_NB) == 0 { _ = flock(fd, LOCK_UN); return .free }
         return errno == EWOULDBLOCK ? .held : .unreadable
-    }
-
-    /// Ends the service as `cluster stop --local-only` does for one a session started: SIGTERM, on which it ends this
-    /// Mac's part, then waits until it has released the lock. A pid that is not a cluster service is not signalled.
-    public static func liveStopClusterService(pid: Int32) throws {
-        guard pid > 1, ClusterService.isClusterService(pid: pid) else {
-            throw StepFailure("pid \(pid) is not a cluster service, so it was not stopped")
-        }
-        guard kill(pid, SIGTERM) == 0 || errno == ESRCH else {
-            throw StepFailure("could not stop the cluster service (pid \(pid)): \(String(cString: strerror(errno)))")
-        }
-        let lock = try ClusterService.paths().lock
-        let deadline = Date().addingTimeInterval(Double(ClusterServiceAgentPlan.exitTimeOutSeconds))
-        while lockState(lock) != .free {
-            guard Date() < deadline else {
-                throw StepFailure("the cluster service (pid \(pid)) did not stop within \(ClusterServiceAgentPlan.exitTimeOutSeconds) s")
-            }
-            usleep(200_000)
-        }
     }
 
     /// The executable a process runs and its arguments, as the kernel records them (`KERN_PROCARGS2`: the executable,

@@ -2,6 +2,7 @@ import DarkbloomClusterPlacement
 import DarkbloomClusterProtocol
 import Foundation
 import MLX
+import MLXLLM
 import MLXLMCommon
 import Testing
 @testable import DarkbloomClusterRuntime
@@ -114,6 +115,49 @@ struct Gemma4TensorParallelRuntimeTests {
             #expect(other.tokenIDs == whole.tokenIDs && Self.bits(other.topLogits) == Self.bits(whole.topLogits))
             #expect(other.finalLogits.map { $0.map(\.bitPattern) } == whole.finalLogits.map { $0.map(\.bitPattern) })
         }
+    }
+
+    /// A prompt chunk's work after attention in row parts
+    /// (`Gemma4TensorParallelPromptParts`), each part's sums issued as soon as
+    /// they are built: both ranks keep every bit of the whole chunk's tokens,
+    /// top candidates, log probabilities and final row, each 16-row chunk's
+    /// layers take one attention and one feed-forward collective per part, and
+    /// the link carries the same rows in all.
+    @Test(arguments: [2, 4]) func promptPartsKeepEveryBitAndSplitEachChunksCollectives(parts: Int) throws {
+        let topK = 4, chunk = 16
+        let directory = try Self.synthetic(topK: topK)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let prompt = Self.prompt
+        func run(_ parts: Int) throws -> (ranks: [Gemma4TensorParallelModel.Generation], payloads: [[Int]]) {
+            let pair = Pair()
+            let models = Box(try (0 ..< 2).map {
+                try Gemma4TensorParallelModel.load(modelDirectory: directory, role: .shard(rank: $0),
+                                                   reduction: pair.reduction(rank: $0))
+            })
+            let ranks = try Pair.run(device: .gpu) { rank in
+                try Gemma4TensorParallelModel.withPromptParts(parts) {
+                    try models.value[rank].generatePaged(prompt: prompt, outputCount: 6, chunk: chunk, recordTop: 4)
+                }
+            }
+            return (ranks, pair.payloads)
+        }
+        let whole = try run(1), split = try run(parts)
+        for rank in 0 ... 1 {
+            let a = whole.ranks[rank], b = split.ranks[rank]
+            #expect(a.tokenIDs == b.tokenIDs && a.topTokenIDs == b.topTokenIDs, "rank \(rank)")
+            #expect(Self.bits(a.topLogits) == Self.bits(b.topLogits), "rank \(rank): top logits")
+            #expect(Self.bits(a.topLogprobs) == Self.bits(b.topLogprobs), "rank \(rank): log probabilities")
+            #expect(a.finalLogits.map { $0.map(\.bitPattern) } == b.finalLogits.map { $0.map(\.bitPattern) }, "rank \(rank)")
+        }
+        // Rows of hidden width a collective carries: an attention sum's [1, S, H], a feed-forward's [S * K + S, H]
+        // (K: the model's `topK` experts per token).
+        func rows(_ payloads: [[Int]]) -> Set<Int> { Set(payloads.filter { $0.count > 1 }.map { $0.dropLast().reduce(1, *) }) }
+        let part = chunk / parts, wholeRows = rows(whole.payloads), splitRows = rows(split.payloads)
+        #expect(wholeRows.isSuperset(of: [chunk, chunk * topK + chunk]), "\(wholeRows.sorted())")
+        #expect(splitRows.isSuperset(of: [part, part * topK + part]), "\(parts) parts: \(splitRows.sorted())")
+        #expect(splitRows.isDisjoint(with: [chunk, chunk * topK + chunk]), "\(parts) parts: \(splitRows.sorted())")
+        func elements(_ payloads: [[Int]]) -> Int { payloads.reduce(0) { $0 + $1.reduce(1, *) } }
+        #expect(elements(split.payloads) == elements(whole.payloads))
     }
 
     /// A bench's own decode layer stride holds for its body only.

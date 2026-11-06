@@ -13,6 +13,9 @@ import MLX
 //       [--record-top K] [--backend ring|socket|jaccl] [--reduction native|sealed-bench] [--shard-rank R]
 //       [--pack yes|no] [--path legacy|paged] [--prefix none|repeat] [--deadline-seconds S]
 //       [--layer-stride N (paged path, full/shard/tp: decode submitted every N layers, 0 = whole step; default the product's)]
+//       [--prompt-parts N (paged path, shard/tp, --pack yes: each prompt chunk's work after attention in N row parts,
+//        each part's sums issued as built; bit-identical on the GPU for two ranks only, not on the CPU; the product
+//        keeps 1 (off))]
 //   darkbloom-cluster-tp-check gemma compare --reference FILE --candidate FILE [--bitwise yes|no] [--near-tie-ulps U]
 //   darkbloom-cluster-tp-check gemma allsum [--backend ring|socket|jaccl] [--count N]
 //   darkbloom-cluster-tp-check gemma lanes --mode simulated|tp --model-dir DIR --report FILE [--lanes N] [--outputs N]
@@ -162,6 +165,14 @@ enum GemmaCheck {
         guard !sealed || mode == "tp" else { throw Failure("--reduction sealed-bench applies to a tp rank only") }
         let pack = (fields["--pack"] ?? "yes") == "yes"
         let layerStride = fields["--layer-stride"].flatMap { Int($0) }
+        let promptParts = try fields["--prompt-parts"].map { value -> Int in
+            guard let parts = Int(value), (1 ... 8).contains(parts), paged, ["shard", "tp"].contains(mode) else {
+                throw Failure("--prompt-parts takes 1 to 8 on the paged path of a shard or tp rank")
+            }
+            // The parts always pack each part's feed-forward collective: the unpacked diagnostic would be silently packed.
+            guard pack || parts == 1 else { throw Failure("--prompt-parts above 1 needs --pack yes") }
+            return parts
+        }
         guard layerStride == nil || (paged && Gemma4TensorParallelModel.benchLayerStrideApplies(mode: mode)) else {
             throw Failure("--layer-stride applies to the paged path of a full, shard or tp rank (simulated ranks run on their own threads)")
         }
@@ -204,7 +215,7 @@ enum GemmaCheck {
             reduction = g
             note("rank \(g.rank) of \(g.size) over \(backend.rawValue)\(backend.correctnessOnly ? " (correctness only, not a pair timing)" : "")")
             // Everything that changes the collectives is agreed before loading.
-            let workload = "\(configurationSHA)|\(request.promptTokenIDsSHA256)|\(request.outputCount)|\(request.chunkSize)|top=\(recordTop)|pack=\(pack)|sealed=\(sealed)|paged=\(paged)|prefix=\(repeatPrefix)|stride=\(layerStride.map(String.init) ?? "product")|\(Gemma4TensorParallelPlan.arithmeticAgreementFields.joined(separator: ","))"
+            let workload = "\(configurationSHA)|\(request.promptTokenIDsSHA256)|\(request.outputCount)|\(request.chunkSize)|top=\(recordTop)|pack=\(pack)|sealed=\(sealed)|paged=\(paged)|prefix=\(repeatPrefix)|stride=\(layerStride.map(String.init) ?? "product")|parts=\(promptParts.map(String.init) ?? "product")|\(Gemma4TensorParallelPlan.arithmeticAgreementFields.joined(separator: ","))"
             guard try g.digestsEqual(fnv(workload)) else {
                 throw Failure("the ranks disagree on the workload, the model configuration or the arithmetic contract")
             }
@@ -231,7 +242,7 @@ enum GemmaCheck {
                 && bits(a.topLogprobs) == bits(b.topLogprobs)
                 && a.finalLogits.map { $0.map(\.bitPattern) } == b.finalLogits.map { $0.map(\.bitPattern) }
         }
-        try Gemma4TensorParallelModel.withLayerStride(layerStride) {
+        try Gemma4TensorParallelModel.withPromptParts(promptParts) { try Gemma4TensorParallelModel.withLayerStride(layerStride) {
             if repeatPrefix {
                 let prompt = request.promptTokenIDs, count = request.outputCount, chunk = request.chunkSize
                 let runs: [(cold: Gemma4TensorParallelModel.Generation, restored: Gemma4TensorParallelModel.Generation, reused: Int)]
@@ -272,7 +283,7 @@ enum GemmaCheck {
                     : try model.generate(prompt: request.promptTokenIDs, outputCount: request.outputCount,
                                          chunk: request.chunkSize, recordTop: recordTop)
             }
-        }
+        } }
         if !generation.stepSeconds.isEmpty {
             let steps = generation.stepSeconds.sorted()
             note(String(format: "decode stride=%@ step_ms_p50=%.3f step_ms_min=%.3f steps=%d", layerStride.map(String.init) ?? "product",

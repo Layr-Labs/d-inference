@@ -4,7 +4,8 @@ import Foundation
 /// revoke the account token (best effort), unpair, undo the cable port setup and delete Darkbloom's folders
 /// (`ProviderUninstallPaths`), the app last. `keepModels` keeps the model folders Darkbloom downloaded and the
 /// cluster model store, so a reinstall finds them. Nothing in the Keychain is touched. Each step is idempotent; a
-/// failed one is reported and the safe ones after it still run.
+/// failed one is reported and the safe ones after it still run. Beside another install, only this install's own
+/// services, pairing and files go; the other's stay, and so does the cable port setup both may use.
 public enum ProviderUninstall {
     public enum Mode: String, Codable, Sendable, CaseIterable {
         case everything
@@ -48,11 +49,6 @@ public enum ProviderUninstall {
         public var availableBytes: () -> Int64?
         /// The cluster service holding this Mac's service lock, if one runs (launchd's or a session's), and whose.
         public var runningClusterService: () -> RunningClusterService?
-        /// Ends that service (SIGTERM to its pid) and waits until it has released this Mac's part.
-        public var stopClusterService: (_ pid: Int32) throws -> Void
-        /// Stops the pair this install's cluster service serves, on both Macs, as `darkbloom stop` on either Mac does
-        /// (a member asks the leader over the control channel). Its services stay up, idle.
-        public var stopBothMacs: () async throws -> PairStopOutcome
 
         public init(stopServing: @escaping () async throws -> Outcome, stopClusterPart: @escaping () async throws -> Outcome,
                     removeServices: [(name: String, remove: () throws -> Outcome)], servicesHandled: @escaping () -> Void = {},
@@ -60,35 +56,21 @@ public enum ProviderUninstall {
                     forget: @escaping (String) throws -> Void, removeCableSetup: @escaping () throws -> Outcome,
                     delete: @escaping (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) },
                     availableBytes: @escaping () -> Int64? = { nil },
-                    runningClusterService: @escaping () -> RunningClusterService? = { nil },
-                    stopClusterService: @escaping (Int32) throws -> Void = { _ in },
-                    stopBothMacs: @escaping () async throws -> PairStopOutcome = { .notServing }) {
+                    runningClusterService: @escaping () -> RunningClusterService? = { nil }) {
             self.stopServing = stopServing; self.stopClusterPart = stopClusterPart; self.removeServices = removeServices
             self.servicesHandled = servicesHandled; self.revokeToken = revokeToken; self.forget = forget
             self.removeCableSetup = removeCableSetup; self.delete = delete; self.availableBytes = availableBytes
-            self.runningClusterService = runningClusterService; self.stopClusterService = stopClusterService
-            self.stopBothMacs = stopBothMacs
+            self.runningClusterService = runningClusterService
         }
     }
 
-    /// How `Operations.stopBothMacs` ended.
-    public enum PairStopOutcome: Equatable, Sendable {
-        /// Both Macs stopped serving.
-        case stopped
-        /// The pair was not serving: there was nothing to tell the other Mac.
-        case notServing
-        /// The other Mac did not answer (why), so only this Mac's part stops.
-        case noAnswer(String)
-    }
-
-    static let pairNoAnswer = "did not answer the stop"
-
-    /// A cluster service that holds this Mac's service lock: launchd's, or one a session started (`darkbloom cluster`
+    /// A cluster service that holds this install's service lock: launchd's, or one a session started (`darkbloom cluster`
     /// when launchd did not take the agent, development builds). Its files must not go while it runs.
     public struct RunningClusterService: Sendable, Equatable {
         public enum Owner: Sendable, Equatable {
             case thisInstall
-            /// The other install on this Mac, by name ("the production Darkbloom").
+            /// The other install on this Mac, by name ("the production Darkbloom"): only a DevNet service from before
+            /// installs had their own folders still holds production's lock.
             case otherInstall(String)
             /// Neither, or its executable could not be read.
             case unknown
@@ -162,7 +144,6 @@ public enum ProviderUninstall {
     static let tokenStep = "Revoke this Mac's account token"
     static let cableStep = "Undo the cable port setup"
     static let forgetStep = "Forget this Mac's pairing"
-    static let ownClusterStep = "Remove this install's cluster service"
     static let stillServingReason = "serving did not stop (see the failed step above)"
     static let servicesRunningReason = "a Darkbloom service may still be running (see the failed step above)"
     /// What a failed cable step leaves once the pairing is forgotten, and the one command that finishes it.
@@ -174,8 +155,10 @@ public enum ProviderUninstall {
         "kept, so the uninstall can run again and undo the cable port setup (it holds the app and the cable records)"
 
     /// Runs `mode`. `items` is `inventory(_:)`, read before anything changed; `announce` prints each step as it starts.
+    /// `cableKeptFor`: the other install on this Mac (`Plan.cableKeptFor`), for which the cable port setup stays.
     public static func run(_ mode: Mode, items: [ProviderUninstallItem], pairing: ProviderUninstallPairing?,
-                           operations: Operations, announce: (String) -> Void = { _ in }) async -> Report {
+                           cableKeptFor: BuildEnvironment? = nil, operations: Operations,
+                           announce: (String) -> Void = { _ in }) async -> Report {
         var steps: [Step] = []
         func step(_ name: String, _ body: () async throws -> Outcome) async -> Bool {
             announce(name)
@@ -190,8 +173,6 @@ public enum ProviderUninstall {
                 return false
             }
         }
-        // Another install on this Mac uses the same pair, pairing and cable port setup: they all stay with it.
-        let sharedWith = items.lazy.compactMap(\.sharedWith).first
         // A cluster part serving here is not the provider service: step 1 says so, step 2 stops it.
         let running = operations.runningClusterService()
         let serving = await step(stopServingStep) {
@@ -199,14 +180,8 @@ public enum ProviderUninstall {
             guard case .skipped(let reason) = outcome, let running else { return outcome }
             return .skipped("\(reason); \(running.described)")
         }
-        let clusterHandled: Bool
-        if let other = sharedWith, let own = items.lazy.compactMap(\.ownClusterAgent).first {
-            clusterHandled = await step(ownClusterStep) {
-                try await removeOwnClusterService(own, keptFor: other, otherMac: pairing?.otherMacName, operations: operations)
-            }
-        } else {
-            clusterHandled = await step(clusterStep, operations.stopClusterPart)
-        }
+        // This install's own pair and cluster service only: another install's are never this one's to stop.
+        let clusterHandled = await step(clusterStep, operations.stopClusterPart)
         var servicesStopped = clusterHandled && serving
         for service in operations.removeServices {
             // As `stop --uninstall`: a provider that did not drain keeps its agents, so nothing interrupts it.
@@ -223,20 +198,18 @@ public enum ProviderUninstall {
         } else {
             steps.append(.init(name: tokenStep, status: .skipped, detail: stillServingReason))
         }
-        let keptForOther = sharedWith.map { "kept: \($0) on this Mac also uses it" }
-        if pairing != nil, let keptForOther {
-            steps.append(.init(name: forgetStep, status: .skipped, detail: keptForOther))
-        } else if let pairing {
+        if let pairing {
             for peer in pairing.peers {
                 _ = await step("Forget the pairing with \(peer.name)") { try operations.forget(peer.pin); return .done() }
             }
         } else {
             steps.append(.init(name: forgetStep, status: .skipped, detail: "this Mac is not paired"))
         }
-        // After the pairing, which tells the other Mac over the cable; this takes the cable's address away.
+        // After the pairing, which tells the other Mac over the cable; this takes the cable's address away. The cable
+        // port setup is this Mac's, not an install's: it stays while another install here may use the same cable.
         let cableUndone: Bool
-        if let keptForOther {
-            steps.append(.init(name: cableStep, status: .skipped, detail: keptForOther))
+        if let cableKeptFor {
+            steps.append(.init(name: cableStep, status: .skipped, detail: cableKeptReason(cableKeptFor)))
             cableUndone = true
         } else {
             cableUndone = await step(cableStep, operations.removeCableSetup)
@@ -298,38 +271,9 @@ public enum ProviderUninstall {
 
     static func notRemoved(_ reason: String) -> String { "not removed: \(reason)" }
 
-    /// Step 2 beside another install. This install's own agent goes first (booted out, launchd's service ends and is
-    /// not started again); a service of this install that still runs, a session's, is then stopped, ending this Mac's
-    /// part as `cluster stop --local-only` does. The other install's service and agent, the pairing and the cable port
-    /// setup stay. A service from neither install is left running, and the run deletes nothing.
-    static func removeOwnClusterService(_ label: String, keptFor other: String, otherMac: String?,
-                                        operations: Operations) async throws -> Outcome {
-        let running = operations.runningClusterService()
-        if let running, running.owner == .unknown { throw StepFailure(stillRunningReason(running)) }
-        // When this install's service serves the pair, the pair stops first, on both Macs, so the other Mac does not
-        // keep restarting its part for a member that is gone. Without an answer, only this Mac's part stops.
-        var pair: String?
-        if running?.owner == .thisInstall {
-            let outcome: PairStopOutcome
-            do { outcome = try await operations.stopBothMacs() } catch { outcome = .noAnswer("\(error)") }
-            switch outcome {
-            case .stopped: pair = "asked the pair to stop first, and both Macs stopped serving"
-            case .notServing: pair = nil
-            case .noAnswer(let why): pair = "the other Mac\(otherMac.map { " (\($0))" } ?? "") \(pairNoAnswer) (\(why))"
-            }
-        }
-        let installed = FileManager.default.fileExists(atPath: ClusterServiceAgent.plistPath(label: label).path)
-            || ClusterServiceAgent.isLoaded(label: label)
-        if installed { try ClusterServiceAgent.remove(label: label) }
-        if let still = operations.runningClusterService(), still.owner == .thisInstall { try operations.stopClusterService(still.pid) }
-        let ownPid = running?.owner == .thisInstall ? running?.pid : nil
-        let detail = [pair, ownPid.map { "stopped it (pid \($0)), so this Mac's part ended cleanly" } ?? running?.described,
-                      installed ? "removed \(label)" : nil,
-                      ownPid == nil && !installed ? "this install has none" : nil,
-                      ownPid == nil ? "the pair and \(other)'s cluster service are left as they are"
-                          : "the pairing and the cable port setup stay for \(other)"]
-            .compactMap { $0 }.joined(separator: "; ")
-        return ownPid != nil || installed ? .done(detail) : .skipped(detail)
+    /// Why the cable step is skipped beside another install (`Plan.cableKeptFor`).
+    static func cableKeptReason(_ other: BuildEnvironment) -> String {
+        "kept: \(installName(other)) on this Mac may use the same cable"
     }
 
     static func isLink(_ path: String) -> Bool {

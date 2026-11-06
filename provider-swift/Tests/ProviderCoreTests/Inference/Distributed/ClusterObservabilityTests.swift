@@ -72,7 +72,7 @@ struct ClusterObservabilityTests {
 
         let home = try temporaryHome()
         defer { try? FileManager.default.removeItem(at: home) }
-        let log = ClusterPairTelemetryLog(file: ClusterPairTelemetryLog.defaultFile(homeDirectory: home), sessionID: "epoch-1")
+        let log = ClusterPairTelemetryLog(file: ClusterPairTelemetryLog.defaultFile(installDirectory: BuildEnvironment.current.installDirectory(home: home)), sessionID: "epoch-1")
         // Each rank's worker build, rank order, as the pair's admission identity names it: the speed record carries it.
         let builds = [String(repeating: "c", count: 64), String(repeating: "d", count: 64)]
         let context = DistributedPairTelemetryContext(modelID: "fabricated-qwen-9b", mode: "phase_split_mtp_v1",
@@ -97,9 +97,9 @@ struct ClusterObservabilityTests {
         #expect(record.firstTokenMilliseconds == 400 && record.decodeTokensPerSecond == 10)
         #expect(record.handoffMilliseconds == 75 && record.handoffBytes == 1_000)
         #expect(record.mtpAcceptance == 0.8)
-        let file = try #require(ClusterPairTelemetryLog.read(ClusterPairTelemetryLog.defaultFile(homeDirectory: home)))
+        let file = try #require(ClusterPairTelemetryLog.read(ClusterPairTelemetryLog.defaultFile(installDirectory: BuildEnvironment.current.installDirectory(home: home))))
         #expect(file.records == [record] && file.summary.mtpAcceptance == 0.8)
-        let status = ClusterObservabilitySnapshot.read(homeDirectory: home)
+        let status = ClusterObservabilitySnapshot.read(installDirectory: BuildEnvironment.current.installDirectory(home: home))
         #expect(status.telemetry?.recent.first == record)
     }
 
@@ -146,7 +146,7 @@ struct ClusterObservabilityTests {
         // A file an earlier build kept, with its probes among the speed records: read back, only the full answer counts.
         let home = try temporaryHome()
         defer { try? FileManager.default.removeItem(at: home) }
-        let file = ClusterServedSpeedFile.defaultFile(homeDirectory: home)
+        let file = ClusterServedSpeedFile.defaultFile(installDirectory: BuildEnvironment.current.installDirectory(home: home))
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         let kept = [record("canary", 8), record("probe", 16), record("test", 48), record("chat", 128)]
         let json: [String: Any] = ["schema": ClusterServedSpeedFile.schemaName, "updatedAt": Date().timeIntervalSince1970,
@@ -177,7 +177,7 @@ struct ClusterObservabilityTests {
 
         let home = try temporaryHome()
         defer { try? FileManager.default.removeItem(at: home) }
-        let file = ClusterServedSpeedFile.defaultFile(homeDirectory: home)
+        let file = ClusterServedSpeedFile.defaultFile(installDirectory: BuildEnvironment.current.installDirectory(home: home))
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         let json: [String: Any] = ["schema": ClusterServedSpeedFile.schemaName, "updatedAt": 1,
             "records": try JSONSerialization.jsonObject(with: JSONEncoder().encode(kept))]
@@ -248,7 +248,8 @@ struct ClusterObservabilityTests {
         let observability = ClusterObservability(homeDirectory: home, hostNames: [], userNames: [])
         observability.recordFailure(.sessionFailed, source: "leader", error: "rank 1 ended: its owner exited with status 75",
                                     facts: nil)
-        let snapshot = ClusterObservabilitySnapshot.read(homeDirectory: home)
+        let snapshot = ClusterObservabilitySnapshot.read(installDirectory: BuildEnvironment.current.installDirectory(home: home),
+                                                         install: BuildEnvironment.current.rawValue)
         #expect(snapshot.incidents?.open == 1 && snapshot.incidents?.recent.first?.reasonCode == "collective_stall")
         #expect(snapshot.lines.contains { $0.contains("collective_stall") })
         let encoded = String(decoding: try JSONEncoder().encode(snapshot), as: UTF8.self)

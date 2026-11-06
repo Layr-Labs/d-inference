@@ -13,7 +13,8 @@ extension EngineV2Bridge {
     public func submit(
         request: ChatCompletionRequest,
         requestId: String? = nil,
-        cacheEnabled: Bool = true
+        cacheEnabled: Bool = true,
+        measurementPurpose: EngineMeasurementPurpose = .serving
     ) async -> AsyncStream<GenerationEvent> {
         let messages: [[String: any Sendable]] = request.messages.map { msg in
             [
@@ -36,7 +37,7 @@ extension EngineV2Bridge {
         }
         return await submitTokenized(
             promptTokens: promptTokens, request: request, requestId: requestId,
-            cacheScope: "", cacheEnabled: cacheEnabled
+            cacheScope: "", cacheEnabled: cacheEnabled, measurementPurpose: measurementPurpose
         )
     }
 

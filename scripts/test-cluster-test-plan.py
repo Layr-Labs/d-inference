@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -119,8 +120,8 @@ class ClusterTestPlanTests(unittest.TestCase):
     def test_a_shard_runs_its_groups_together_then_its_other_selections_alone(self):
         marks = Path(self.enterContext(tempfile.TemporaryDirectory())) / "marks"
         script = ("import os, sys, time; name = sys.argv[1]; path = sys.argv[2]\n"
-                  "open(path, 'a').write(f'start {name} {time.monotonic()} {os.environ.get(\"TMPDIR\", \"-\")}\\n')\n"
-                  "time.sleep(0.4)\n"
+                  "open(path, 'a').write(f'tmp {name} {os.environ.get(\"TMPDIR\", \"-\")}\\n')\n"
+                  "time.sleep(1.5 if name == 'a1' else 0.1)\n"
                   "open(path, 'a').write(f'end {name} {time.monotonic()}\\n')\n"
                   "sys.exit(3 if name == 'b2' else 0)\n")
         selections = (
@@ -128,30 +129,54 @@ class ClusterTestPlanTests(unittest.TestCase):
             plan.Selection("b1", "blocking", 1, group=2), plan.Selection("b2", "blocking", 1, group=2),
             plan.Selection("alone", "blocking", 1), plan.Selection("other-shard", "blocking", 2),
         )
-        command = lambda selection, output: (ROOT, [sys.executable, "-c", script, selection.name, str(marks)])
-        # Group 2 starts 0.2 s after group 1 (CLUSTER_TEST_START_GAP), while
-        # group 1's first selection (0.4 s) still runs.
+        # Each launch is timed here, in the test process: plan.execute spawns
+        # the child right after calling `command`. A start mark written by the
+        # child would also time its interpreter's startup, which a loaded
+        # runner delays (runs 42179534473, 42190956483).
+        launched = {}
+
+        def command(selection, output):
+            launched[selection.name] = time.monotonic()
+            return ROOT, [sys.executable, "-c", script, selection.name, str(marks)]
+
+        # CLUSTER_TEST_START_GAP: far longer than a1 takes to launch, and a
+        # second shorter than a1's 1.5 s, so b1 (0.1 s) launches and ends
+        # while a1 runs.
+        gap = 0.5
         with mock.patch.object(plan, "SELECTIONS", selections), mock.patch.object(plan, "command", command), \
-                mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": "", "CLUSTER_TEST_START_GAP": "0.2"}):
+                mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": "", "CLUSTER_TEST_START_GAP": str(gap)}):
+            started = time.monotonic()
             self.assertEqual(plan.run("blocking", 1), 1)
-        events = {}
+        ended, temporary = {}, {}
         for line in marks.read_text().splitlines():
-            kind, name, moment, *rest = line.split()
-            events[(kind, name)] = float(moment)
-            if kind == "start":
-                events[("tmp", name)] = rest[0] if rest else None
+            kind, name, value = line.split(maxsplit=2)
+            if kind == "tmp":
+                temporary[name] = value
+            else:
+                ended[name] = float(value)
+        # Exactly this shard's selections launch, and each child runs to its end mark.
         names = ("a1", "a2", "b1", "b2", "alone")
-        self.assertEqual({name for kind, name in events if kind == "start"}, set(names))
-        # Each group keeps its order; the two groups overlap, and the second
-        # starts one gap after the first, so their SwiftPM startups do not meet.
-        self.assertLessEqual(events[("end", "a1")], events[("start", "a2")])
-        self.assertLessEqual(events[("end", "b1")], events[("start", "b2")])
-        self.assertLess(events[("start", "b1")], events[("end", "a1")])
-        self.assertGreaterEqual(events[("start", "b1")] - events[("start", "a1")], 0.2)
-        # Each group has its own TMPDIR; the alone selection starts after all of them.
-        self.assertEqual(events[("tmp", "a1")], events[("tmp", "a2")])
-        self.assertNotEqual(events[("tmp", "a1")], events[("tmp", "b1")])
-        self.assertGreaterEqual(events[("start", "alone")], max(events[("end", name)] for name in names[:4]))
+        self.assertEqual(set(launched), set(names))
+        self.assertEqual(set(ended), set(names))
+        # Each group keeps its order: a selection launches after the one before it ends.
+        self.assertLessEqual(ended["a1"], launched["a2"])
+        self.assertLessEqual(ended["b1"], launched["b2"])
+        # Group 1 launches at once (within half a gap) and group 2 one gap
+        # after the groups start, while a1 still runs: the groups overlap, and
+        # their SwiftPM startups do not meet. The plan counts the gap from the
+        # groups' start, which follows `started`, so b1 cannot launch before
+        # `started + gap` when the plan works; a1's launch can trail that
+        # start, so a gap counted from it can fall short.
+        self.assertLess(launched["a1"], started + gap / 2)
+        self.assertGreaterEqual(launched["b1"], started + gap)
+        self.assertLess(launched["b1"], ended["a1"])
+        # A launch is not yet a running child: b1's child also runs to its end
+        # before a1's, so the children overlap, not only their launches.
+        self.assertLess(ended["b1"], ended["a1"])
+        # Each group has its own TMPDIR; the alone selection launches after all of them end.
+        self.assertEqual(temporary["a1"], temporary["a2"])
+        self.assertNotEqual(temporary["a1"], temporary["b1"])
+        self.assertGreaterEqual(launched["alone"], max(ended[name] for name in names[:4]))
 
     def test_a_grouped_selection_that_finds_the_build_database_locked_runs_once_more(self):
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))

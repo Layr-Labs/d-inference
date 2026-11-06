@@ -174,7 +174,13 @@ private func seconds(_ value: Double) -> UInt64 { UInt64(value * 1_000_000_000) 
         let elapsed = now() - begin
         try require(refused, "A pair formed without rank 1")
         try require(elapsed < seconds(1.2), "Pair waited for rank 0's startup deadline before looking at rank 1 (\(elapsed / 1_000_000) ms)")
-        try require(second.termination == .exited(9), "Rank 1's own exit was not observed")
+        // The pair refuses at rank 1's closed stream. Its owner publishes the
+        // exit status once it has observed the exit itself, which can come
+        // later. 2.4 s is before rank 1's own startup deadline, so no signal
+        // can have ended it.
+        try require(second.waitForExit(until: begin + seconds(2.4)) && second.termination == .exited(9)
+            && second.sentSignals.isEmpty,
+            "Rank 1's own exit was not observed: \(String(describing: second.termination)) signals \(second.sentSignals)")
         try require(first.readiness == nil && first.sentSignals.isEmpty, "Rank 0 was signalled when the pair failed")
         try require(first.waitForExit(until: begin + seconds(6)) && first.sentSignals == [SIGTERM], "Rank 0 was not retired after its own startup deadline")
     }

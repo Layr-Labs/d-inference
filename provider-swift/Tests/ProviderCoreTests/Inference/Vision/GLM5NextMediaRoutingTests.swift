@@ -229,11 +229,22 @@ private func preparedSubmission() -> EngineV2VisionPrefill.PreparedSubmission {
         positionState: nil, mediaKind: .image)
 }
 
-/// The scheduler's telemetry, for the reader-failure reports.
+/// The scheduler's telemetry, for the reader-failure reports. Disarms `fault`
+/// when a reader pass fails and a second pass follows, so that pass reads every byte.
 private final class TelemetryCapture: @unchecked Sendable {
     private let lock = NSLock()
+    private let fault: VideoDataRequestFault?
     private var recorded: [TelemetryEvent] = []
-    func record(_ event: TelemetryEvent) { lock.withLock { recorded.append(event) } }
+
+    init(disarming fault: VideoDataRequestFault? = nil) { self.fault = fault }
+
+    func record(_ event: TelemetryEvent) {
+        lock.withLock { recorded.append(event) }
+        if event.fields?["operation"]?.value as? String == "video_reader_failed",
+           event.fields?["retrying"]?.value as? Bool == true {
+            fault?.disarm()
+        }
+    }
 
     private func events(_ operation: String) -> [[String: AnyCodableValue]] {
         lock.withLock { recorded }.compactMap(\.fields).filter {
@@ -298,11 +309,12 @@ private func readinessMP4(under fault: VideoDataRequestFault, telemetry: Telemet
 }
 
 /// The clip keeps `moov` after `mdat`, so its middle byte is sample data that
-/// only a full reader pass requests.
-private func midMP4Fault(failures: Int, error: any Error & Sendable) throws -> VideoDataRequestFault {
+/// only a full reader pass requests. AVFoundation requests a failed range again,
+/// so a reader pass fails only while the fault stays armed.
+private func midMP4Fault(error: any Error & Sendable) throws -> VideoDataRequestFault {
     let mp4 = try openRouterVideo(
         "input-video-url.mp4", sha256: "dc11648bd3546cd0a37ecc1077ccc426d42c409fe4822ece0354eb250804431e")
-    return VideoDataRequestFault(offset: mp4.count / 2, failures: failures, error: error)
+    return VideoDataRequestFault(offset: mp4.count / 2, error: error)
 }
 
 @Suite("GLM5Next media routing")
@@ -507,17 +519,17 @@ struct GLM5NextMediaRoutingTests {
         }
     }
 
-    /// One data request fails partway through the MP4: the reader pass fails,
-    /// a second pass decodes the same frames, and the provider reports the
-    /// first pass with the reader's codes.
-    @Test func aFailedDataRequestPartwayThroughTheMP4IsDecodedAgain() async throws {
-        let fault = try midMP4Fault(failures: 1, error: MemoryBackedVideoAssetError.invalidRange)
-        let telemetry = TelemetryCapture()
+    /// Data requests fail partway through the MP4 until the first reader pass
+    /// fails: a second pass decodes the same frames, and the provider reports
+    /// the first pass with the reader's codes.
+    @Test func aReaderPassThatFailsPartwayThroughTheMP4IsDecodedAgain() async throws {
+        let fault = try midMP4Fault(error: MemoryBackedVideoAssetError.invalidRange)
+        let telemetry = TelemetryCapture(disarming: fault)
         let run = try await readinessMP4(under: fault, telemetry: telemetry)
         #expect(run.failure == nil, "\(String(describing: run.failure))")
         #expect(run.submitted == 1)
         #expect(run.prepared == readinessMP4Prepared)
-        #expect(fault.injected == 1)
+        #expect(fault.injected >= 1)
         let failures = telemetry.readerFailures
         #expect(failures.map { $0.retrying } == [true])
         #expect(failures.allSatisfy { $0.error.hasPrefix("video reader status 3: ") && !$0.error.hasSuffix("no error") },
@@ -527,7 +539,7 @@ struct GLM5NextMediaRoutingTests {
     /// A resource that ends partway (the loader refuses every range past it) is
     /// the media's fault on both passes: the deterministic `invalid_media` 400.
     @Test func aVideoTruncatedForBothPassesStaysInvalidMedia() async throws {
-        let fault = try midMP4Fault(failures: .max, error: MemoryBackedVideoAssetError.invalidRange)
+        let fault = try midMP4Fault(error: MemoryBackedVideoAssetError.invalidRange)
         let telemetry = TelemetryCapture()
         let run = try await readinessMP4(under: fault, telemetry: telemetry)
         #expect(run.submitted == 0)
@@ -542,7 +554,7 @@ struct GLM5NextMediaRoutingTests {
     @Test func aTransientDecoderFaultOnBothPassesIsARetryableRefusal() async throws {
         let decoderUnavailable = NSError(
             domain: AVFoundationErrorDomain, code: AVError.Code.decoderTemporarilyUnavailable.rawValue)
-        let fault = try midMP4Fault(failures: .max, error: decoderUnavailable)
+        let fault = try midMP4Fault(error: decoderUnavailable)
         let telemetry = TelemetryCapture()
         let run = try await readinessMP4(under: fault, telemetry: telemetry)
         #expect(run.submitted == 0)

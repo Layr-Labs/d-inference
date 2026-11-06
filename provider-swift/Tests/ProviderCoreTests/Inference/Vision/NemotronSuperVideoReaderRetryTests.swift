@@ -7,9 +7,12 @@ import Testing
 
 @testable import ProviderCore
 
-/// Every failed reader pass, in order.
+/// Every failed reader pass, in order. Disarms `fault` when a pass fails and a
+/// second pass follows, so that pass reads every byte.
 private final class FailedPasses: @unchecked Sendable {
     private let lock = NSLock()
+    private let fault: VideoDataRequestFault?
+    init(disarming fault: VideoDataRequestFault? = nil) { self.fault = fault }
     private var recorded: [VideoReaderFailure] = []
     private var retries: [Bool] = []
     var retrying: [Bool] { lock.withLock { retries } }
@@ -20,6 +23,7 @@ private final class FailedPasses: @unchecked Sendable {
                 recorded.append(failure)
                 retries.append(retrying)
             }
+            if retrying { fault?.disarm() }
         }
     }
 }
@@ -28,6 +32,8 @@ private final class FailedPasses: @unchecked Sendable {
 /// requests of its in-memory loader failed partway through the clip. The clip
 /// keeps `moov` after `mdat`, so its middle byte is sample data that only a
 /// full reader pass requests: first the timing pass, then the frame reader.
+/// AVFoundation requests a failed range again, so a pass fails only while the
+/// fault stays armed.
 struct NemotronSuperVideoReaderRetryTests {
     private typealias Decode = NemotronSuperVideoDecode
 
@@ -41,9 +47,9 @@ struct NemotronSuperVideoReaderRetryTests {
         return data
     }
 
-    private static func fault(_ data: Data, failures: Int, skipping: Int = 0) -> VideoDataRequestFault {
-        VideoDataRequestFault(offset: data.count / 2, failures: failures, skipping: skipping,
-                              error: MemoryBackedVideoAssetError.invalidRange)
+    private static func fault(_ data: Data, armed: Bool) -> VideoDataRequestFault {
+        VideoDataRequestFault(offset: data.count / 2, error: MemoryBackedVideoAssetError.invalidRange,
+                              armed: armed)
     }
 
     private static func inspect(_ data: Data, _ fault: VideoDataRequestFault?) async throws -> Decode.Plan {
@@ -69,10 +75,10 @@ struct NemotronSuperVideoReaderRetryTests {
     @Test func aFailedTimingPassIsReadAgainWithTheSamePlan() async throws {
         let data = try Self.clip()
         let baseline = try await Self.inspect(data, nil)
-        let fault = Self.fault(data, failures: 1)
-        let passes = FailedPasses()
+        let fault = Self.fault(data, armed: true)
+        let passes = FailedPasses(disarming: fault)
         let plan = try await Self.observing(passes) { try await Self.inspect(data, fault) }
-        #expect(fault.injected == 1)
+        #expect(fault.injected >= 1)
         #expect(passes.retrying == [true])
         #expect(plan.sourceFrames == baseline.sourceFrames && plan.sourceFPS == baseline.sourceFPS)
         #expect(plan.frameIndices == baseline.frameIndices && plan.labels == baseline.labels)
@@ -83,12 +89,12 @@ struct NemotronSuperVideoReaderRetryTests {
     @Test func aFailedFrameReaderIsReplacedOnceWithTheSameFrames() async throws {
         let data = try Self.clip()
         let baseline = try await Self.frames(Self.inspect(data, nil))
-        let fault = Self.fault(data, failures: 1, skipping: 1)
-        let passes = FailedPasses()
-        let plan = try await Self.observing(passes) { try await Self.inspect(data, fault) }
-        #expect(passes.retrying.isEmpty, "the timing pass met the fault")
+        let fault = Self.fault(data, armed: false)
+        let passes = FailedPasses(disarming: fault)
+        let plan = try await Self.inspect(data, fault)
+        fault.arm()
         let frames = try await Self.observing(passes) { try await Self.frames(plan) }
-        #expect(fault.injected == 1)
+        #expect(fault.injected >= 1)
         #expect(passes.retrying == [true])
         #expect(passes.failures.allSatisfy { !$0.codes.isEmpty })
         #expect(frames == baseline)
@@ -96,9 +102,10 @@ struct NemotronSuperVideoReaderRetryTests {
 
     @Test func aFrameReaderThatFailsAgainThrowsItsFailure() async throws {
         let data = try Self.clip()
-        let fault = Self.fault(data, failures: .max, skipping: 1)
+        let fault = Self.fault(data, armed: false)
         let passes = FailedPasses()
-        let plan = try await Self.observing(passes) { try await Self.inspect(data, fault) }
+        let plan = try await Self.inspect(data, fault)
+        fault.arm()
         await #expect(throws: VideoReaderFailure.self) {
             try await Self.observing(passes) { try await Self.frames(plan) }
         }

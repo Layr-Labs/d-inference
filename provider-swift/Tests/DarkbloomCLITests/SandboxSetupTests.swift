@@ -536,7 +536,7 @@ struct SandboxSetupTests {
             print("== FIRST")
             try await SandboxSetupFlow(options: first, confirmed: true, addon: .live(), interactiveInput: false,
                                        terminal: false, color: false,
-                                       probe: { _ in .mac(cores: 16, memoryGiB: 128) }).run()
+                                       probe: { _ in .mac(cores: 16, memoryGiB: 128) }, waitlist: .approved).run()
             print("== PLAN")
             print(try String(contentsOf: sandbox.sandboxAddonRoot.appendingPathComponent("plan-arguments"),
                              encoding: .utf8), terminator: "")
@@ -832,7 +832,7 @@ struct SandboxSetupTests {
                 try await SandboxSetupFlow(options: SandboxSetupOptions(server: "https://sandbox.invalid"),
                                            confirmed: true, addon: .live(), interactiveInput: false,
                                            terminal: false, color: false,
-                                           probe: { _ in .mac(cores: 16, memoryGiB: 128) }).run()
+                                           probe: { _ in .mac(cores: 16, memoryGiB: 128) }, waitlist: .approved).run()
             }
         }
         let output = decodedText(result.standardOutputContent)
@@ -863,7 +863,7 @@ struct SandboxSetupTests {
                 try await SandboxSetupFlow(
                     options: SandboxSetupOptions(server: "https://sandbox.invalid"), confirmed: true, addon: .live(),
                     interactiveInput: false, terminal: false, color: false,
-                    probe: { _ in .mac(cores: 16, memoryGiB: 128, freeGiB: 157, volumeGiB: 1_858) }).run()
+                    probe: { _ in .mac(cores: 16, memoryGiB: 128, freeGiB: 157, volumeGiB: 1_858) }, waitlist: .approved).run()
             }
         }
         let runs = decodedText(result.standardOutputContent).components(separatedBy: "== RUN\n").dropFirst()
@@ -898,7 +898,7 @@ struct SandboxSetupTests {
             try await SandboxSetupFlow(
                 options: SandboxSetupOptions(server: "https://sandbox.invalid", waitReady: true, macOSSlots: 1),
                 confirmed: true, addon: .live(), interactiveInput: false, terminal: false, color: false,
-                probe: { _ in .mac(cores: 16, memoryGiB: 128) }).run()
+                probe: { _ in .mac(cores: 16, memoryGiB: 128) }, waitlist: .approved).run()
             print("== ARGUMENTS")
             print(try String(contentsOf: sandbox.sandboxAddonRoot.appendingPathComponent("installer-arguments"),
                              encoding: .utf8), terminator: "")
@@ -931,7 +931,7 @@ struct SandboxSetupTests {
                 try await SandboxSetupFlow(options: SandboxSetupOptions(server: "https://sandbox.invalid"),
                                            confirmed: true, addon: .live(), interactiveInput: false,
                                            terminal: false, color: false,
-                                           probe: { _ in .mac(cores: 16, memoryGiB: 128) }).run()
+                                           probe: { _ in .mac(cores: 16, memoryGiB: 128) }, waitlist: .approved).run()
             }
         }
         let output = decodedText(result.standardOutputContent)
@@ -964,7 +964,7 @@ struct SandboxSetupTests {
                     try await SandboxSetupFlow(options: SandboxSetupOptions(server: "https://sandbox.invalid"),
                                                confirmed: true, addon: .live(), interactiveInput: false,
                                                terminal: false, color: false,
-                                               probe: { _ in .mac(cores: 16, memoryGiB: 128) }).run()
+                                               probe: { _ in .mac(cores: 16, memoryGiB: 128) }, waitlist: .approved).run()
                 } catch let code as ExitCode {
                     print("exit \(code.rawValue)")
                 }
@@ -1023,7 +1023,7 @@ struct SandboxSetupTests {
                                                facts.macOSMajor = 26
                                                facts.macOSVersion = "26.4"
                                                return facts
-                                           }).run()
+                                           }, waitlist: .approved).run()
             }
         }
         let output = decodedText(result.standardOutputContent)
@@ -1050,7 +1050,7 @@ struct SandboxSetupTests {
                 try await SandboxSetupFlow(options: SandboxSetupOptions(server: "https://sandbox.invalid"),
                                            confirmed: true, addon: .live(), interactiveInput: false,
                                            terminal: false, color: false,
-                                           probe: { _ in .mac(cores: 8, memoryGiB: 16) }).run()
+                                           probe: { _ in .mac(cores: 8, memoryGiB: 16) }, waitlist: .approved).run()
             }
         }
         let output = decodedText(result.standardOutputContent)
@@ -1069,7 +1069,7 @@ struct SandboxSetupTests {
             try await SandboxSetupFlow(options: SandboxSetupOptions(server: "https://sandbox.invalid"),
                                        confirmed: false, addon: .live(), interactiveInput: true,
                                        terminal: false, color: false,
-                                       probe: { _ in .mac(cores: 16, memoryGiB: 128) }).run()
+                                       probe: { _ in .mac(cores: 16, memoryGiB: 128) }, waitlist: .approved).run()
             let installed = sandbox.sandboxAddonRoot.appendingPathComponent("installer-arguments")
             print("installed \(FileManager.default.fileExists(atPath: installed.path))")
         }
@@ -1082,7 +1082,7 @@ struct SandboxSetupTests {
                 try await SandboxSetupFlow(options: SandboxSetupOptions(server: "https://sandbox.invalid"),
                                            confirmed: false, addon: .live(), interactiveInput: false,
                                            terminal: false, color: false,
-                                           probe: { _ in .mac(cores: 16, memoryGiB: 128) }).run()
+                                           probe: { _ in .mac(cores: 16, memoryGiB: 128) }, waitlist: .approved).run()
             }
         }
         #expect(decodedText(unattended.standardErrorContent).contains(
@@ -1097,7 +1097,7 @@ struct SandboxSetupTests {
                 try await SandboxSetupFlow(options: SandboxSetupOptions(server: "https://sandbox.invalid"),
                                            confirmed: true, addon: .live(), interactiveInput: false,
                                            terminal: false, color: false,
-                                           probe: { _ in .mac(cores: 16, memoryGiB: 128) }).run()
+                                           probe: { _ in .mac(cores: 16, memoryGiB: 128) }, waitlist: .approved).run()
             }
         }
         #expect(decodedText(result.standardErrorContent).contains(

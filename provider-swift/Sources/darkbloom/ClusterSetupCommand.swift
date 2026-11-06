@@ -21,6 +21,9 @@ extension Cluster {
 
                 Run it again on any Mac to see the cluster, change the model or stop it.
 
+                A new pair needs an account Darkbloom approved from the clusters waitlist: join it with \
+                `darkbloom waitlist cluster`. Macs already paired are never asked.
+
                 \(Cluster.commandList)
                 """)
         @OptionGroup var configOptions: ConfigOptions

@@ -1,0 +1,71 @@
+name: Provider CI Products
+description: Hand one lane's debug test products from its build job to its test jobs at the fixed build path
+inputs:
+  lane:
+    description: provider or cluster
+    required: true
+  direction:
+    description: "upload (the build job, after provider-ci-build) or download (a test job, before its tests)"
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Validate the lane and direction
+      shell: bash
+      env:
+        LANE: ${{ inputs.lane }}
+        DIRECTION: ${{ inputs.direction }}
+      run: |
+        case "$LANE/$DIRECTION" in
+          provider/upload|provider/download|cluster/upload|cluster/download) ;;
+          *) echo "Unknown test products lane or direction: $LANE/$DIRECTION" >&2; exit 2 ;;
+        esac
+    - name: Pack the test products
+      if: inputs.direction == 'upload'
+      shell: bash
+      env:
+        LANE: ${{ inputs.lane }}
+      run: python3 scripts/ci-test-products.py pack "$LANE" "$RUNNER_TEMP/test-products/$LANE.tar.zst"
+    # The archive is zstd already; the artifact store keeps it as it is.
+    - name: Upload the test products
+      if: inputs.direction == 'upload'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: ${{ inputs.lane }}-test-products
+        path: ${{ runner.temp }}/test-products/${{ inputs.lane }}.tar.zst
+        compression-level: 0
+        if-no-files-found: error
+        overwrite: true
+        retention-days: 1
+    - name: Report the upload time
+      if: inputs.direction == 'upload'
+      shell: bash
+      env:
+        LANE: ${{ inputs.lane }}
+      run: python3 scripts/ci-test-products.py uploaded "$RUNNER_TEMP/test-products/$LANE.tar.zst"
+    # The test job runs the products under the build job's toolchain, which
+    # the unpack step checks; it needs no CMake and no Metal toolchain.
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      if: inputs.direction == 'download'
+      with:
+        python-version: '3.12.10'
+    - name: Select SDK 27 provider toolchain
+      if: inputs.direction == 'download'
+      shell: bash
+      run: ./scripts/prepare-provider-release-toolchain.sh
+    - name: Start the download clock
+      if: inputs.direction == 'download'
+      shell: bash
+      run: python3 scripts/ci-test-products.py stamp
+    - name: Download the test products
+      if: inputs.direction == 'download'
+      uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+      with:
+        name: ${{ inputs.lane }}-test-products
+        path: ${{ runner.temp }}/test-products
+    - name: Check and unpack the test products
+      if: inputs.direction == 'download'
+      shell: bash
+      env:
+        LANE: ${{ inputs.lane }}
+      run: python3 scripts/ci-test-products.py unpack "$LANE" "$RUNNER_TEMP/test-products/$LANE.tar.zst"

@@ -172,6 +172,7 @@ extension DistributedInstalledPlan {
                   mode: configuration.selectedGenerationMode, tensorShares: configuration.tensorShares),
               membershipEpoch: membershipEpoch?.uuidString.lowercased(), diagnostics: diagnostics, terminations: [],
               peerHosts: configuration.peers.map(\.host), peerUsers: configuration.peers.map(\.user),
-              ranks: configuration.peers.sorted { $0.rank < $1.rank }.map(\.id))
+              ranks: configuration.peers.sorted { $0.rank < $1.rank }.map(\.id),
+              serving: DistributedSessionFacts.serving(configuration), tensorAssistant: configuration.tensorAssistant != nil)
     }
 }

@@ -930,7 +930,7 @@ final class OnboardingLive: @unchecked Sendable {
                 // Served for the owner either way. Once chosen: the planner's one-line reason for tensor parallel or
                 // a pipeline, and (serving through Darkbloom) whether public traffic may reach it yet. In the list,
                 // under the line: why not tensor parallel, for a model that has it and was split otherwise.
-                return .init(title: title, lines: [line] + (plan.modeReason.map { [$0] } ?? []),
+                return .init(title: title, lines: [line] + (plan.modeReason.map { [$0] } ?? []) + (plan.speculationNote.map { [$0] } ?? []),
                              blocker: option.blocker, provision: offer, fitRemedy: remedy, modelID: modelID,
                              publicTraffic: context.settings.privateImageQualification
                                 ? "Private unqualified image candidate; public traffic is prohibited." : plan.publicTraffic,
@@ -1427,7 +1427,10 @@ final class OnboardingLive: @unchecked Sendable {
         lock.withLock { chosenTitle = choice.title }
         // The deployment line the screen and status show, from the plan just adopted. An approval note was about the
         // setup this one replaced: the next check of the coordinator's approvals says why this one isn't offered.
-        try? store.updateRecord { $0.leadership?.deployment = choice.deployment; $0.approvalNote = nil }
+        try? store.updateRecord {
+            $0.leadership?.deployment = choice.deployment; $0.leadership?.speculationNote = choice.plan?.speculationNote
+            $0.approvalNote = nil
+        }
         // Which members the planner said hold this model alone: what failover may serve alone (synced by the lease),
         // bound to the plan just saved so a verdict never outlives its plan.
         let plan = context.savedConfiguration().configuration?.selectedPlanSHA256

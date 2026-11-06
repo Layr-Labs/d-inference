@@ -38,6 +38,17 @@ func httpDeliveryFrame(content: String? = nil, reasoning: String? = nil, role: S
             reasoningContent: reasoning, toolCalls: nil), finishReason: finish)], usage: nil, created: 1))
 }
 
+/// A generation failure as `MLXOpenAIService` frames it for HTTP
+/// (`frameGenerationErrors`): an empty delta, `finish_reason: "error"` and
+/// the sanitized error object.
+func httpDeliveryProductFailureFrame() throws -> String {
+    let object: [String: Any] = ["id": "fixture", "object": "chat.completion.chunk", "created": 1, "model": "fixture",
+        "choices": [["index": 0, "delta": ["content": ""], "finish_reason": "error"] as [String: Any]],
+        "error": ["message": "Response generation failed", "type": "server_error", "code": "server_error"]]
+    let bytes = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    return "data: \(String(decoding: bytes, as: UTF8.self))\n\n"
+}
+
 func httpDeliveryEventually(_ predicate: () -> Bool) async throws -> Bool {
     let end = ContinuousClock.now.advanced(by: .seconds(2))
     while ContinuousClock.now < end {

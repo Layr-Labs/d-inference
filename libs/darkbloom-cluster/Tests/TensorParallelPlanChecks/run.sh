@@ -4,7 +4,8 @@
 # model directory given as an argument (safetensors headers only), is covered
 # exactly once by the two ranks' cuts or replicated, with the shapes the
 # divided configuration constructs; and every launch option that changes the
-# collectives changes the ranks' first agreement. Swift 6, warnings as errors.
+# collectives changes the ranks' first agreement; and the one-token decode loop
+# (`TensorParallelOneTokenLoop`) builds greedy steps ahead and ends both ranks together. Swift 6, warnings as errors.
 #   bash libs/darkbloom-cluster/Tests/TensorParallelPlanChecks/run.sh [MODEL_DIR...]
 set -euo pipefail
 package="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -15,6 +16,8 @@ xcrun swiftc -swift-version 6 -warnings-as-errors -target "$(uname -m)-apple-mac
   "$package/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelLaunch.swift" \
   "$package/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelSealCodec.swift" \
   "$package/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelStopRule.swift" \
+  "$package/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/TensorParallelOneTokenLoop.swift" \
   "$package/Sources/DarkbloomClusterRuntime/Support/ClusterRuntimeError.swift" \
-  "$package/Tests/TensorParallelPlanChecks/TensorParallelPlanCheck.swift" -o "$build/tp-plan-check"
+  "$package/Tests/TensorParallelPlanChecks/TensorParallelPlanCheck.swift" \
+  "$package/Tests/TensorParallelPlanChecks/OneTokenLoopCheck.swift" -o "$build/tp-plan-check"
 "$build/tp-plan-check" "$@"

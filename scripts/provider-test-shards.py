@@ -28,7 +28,8 @@ Subcommands:
                          and that all of them together executed the full list
   audit-job LIST REPORTS K/N
                          the same for one CI job's own reports; job N also
-                         checks that the plans cover the list once
+                         checks that the plans cover the list once, and warns
+                         about serial suites without measured seconds
   weights XUNIT...       print measured seconds per suite from xUnit reports;
                          suites they do not cover (SwiftPM writes no XCTest
                          xUnit report for a serial run) keep their seconds in
@@ -267,6 +268,13 @@ def audit_job(test_ids, reports, isolated, weights, job, jobs, processes):
     return errors
 
 
+def unweighted(test_ids, weights):
+    """Serial suites of the list without measured seconds; the last selection runs them all."""
+    suites = {suite_key(test_id) for test_id in test_ids}
+    return sorted(suite for suite in suites - set(weights)
+                  if suite and "(" not in suite and suite.split(".", 1)[0] not in PARALLEL_MODULES)
+
+
 def audit_parity(test_ids, reports):
     """Each Prompt Parity suite ran once, with every listed test of that suite."""
     errors = []
@@ -358,10 +366,17 @@ def main():
         if len(patterns) != 1:
             print(f"::error::This job's reports disagree on the isolated-process pattern: {sorted(patterns)}")
             return 1
-        errors = audit_job(listed_tests(args.list.read_text()), reports, patterns.pop(), load_weights(),
-                           job, jobs, processes_per_job())
+        test_ids, weights = listed_tests(args.list.read_text()), load_weights()
+        errors = audit_job(test_ids, reports, patterns.pop(), weights, job, jobs, processes_per_job())
         for error in errors:
             print(f"::error::{error}")
+        # Report-only: unweighted suites still run, but they unbalance the last selection.
+        missing = unweighted(test_ids, weights) if job == jobs else []
+        if missing:
+            print(f"::warning title=Provider shard weights::{len(missing)} serial suites have no measured "
+                  f"seconds, so the last selection runs them all ({', '.join(missing[:5])}"
+                  f"{', ...' if len(missing) > 5 else ''}). Refresh scripts/provider-test-shard-weights.json "
+                  "(docs/developer/test.md).")
         return 1 if errors else 0
     else:
         json.dump(measured_weights(args.xunit, load_weights()), sys.stdout, indent=0, sort_keys=True)

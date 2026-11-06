@@ -144,6 +144,50 @@ struct SamplingSelectionTests {
         #expect(plain.sampler?.takePendingLogprobs() == nil)
     }
 
+    /// A tensor-parallel rank may draw a step before the previous step's
+    /// token is read and committed (`TensorParallelOneTokenLoop`, one step
+    /// ahead). Every draw is still the one made at its output index with the
+    /// history up to it: penalties, logit bias and the keyed stream advance
+    /// on the device with each draw, so the tokens and their logprobs equal
+    /// the draw-read-commit order's. Run on the CPU device: no GPU needed.
+    @Test func drawingOneStepAheadTakesTheStepByStepTokensAndLogprobs() throws {
+        try Device.withDefaultDevice(.cpu) {
+            let asks = ClusterWorkerSampling(temperature: 0.9, topP: 0.95, topK: 0, minP: 0, repetitionPenalty: 1.3,
+                repetitionContextSize: 64, frequencyPenalty: 0.4, presencePenalty: 0.2, seed: 11,
+                stream: 0x8000_0000_0000_0042, logitBias: [.init(tokenID: 5, bias: 2)], topLogprobs: 3)
+            let steps = 12
+            let stepping = try #require(try request(asks).sampler)
+            var expected: [(token: Int, logprobs: ClusterWorkerTokenLogprobs)] = []
+            for step in 0 ..< steps {
+                let drawn = stepping.sample(logits(row(step)))
+                eval(drawn)
+                let token = Int(drawn.reshaped([-1]).item(Int32.self))
+                expected.append((token, try #require(stepping.takePendingLogprobs())))
+                stepping.commit(token)
+            }
+            // Ahead: step k+1 is drawn before step k is read; each step keeps its own lazy gather.
+            let ahead = try #require(try request(asks).sampler)
+            var pending: (drawn: MLXArray, logprobs: CBv2StepLogprobs?)?
+            var actual: [(token: Int, logprobs: ClusterWorkerTokenLogprobs)] = []
+            for step in 0 ... steps {
+                let next = step < steps ? (ahead.sample(logits(row(step))), ahead.takePendingStepLogprobs()) : nil
+                if let (drawn, logprobs) = pending {
+                    eval(drawn)
+                    let token = Int(drawn.reshaped([-1]).item(Int32.self))
+                    actual.append((token, QwenStageTokenSampler.tokenLogprobs(try #require(logprobs))))
+                    ahead.commit(token)
+                }
+                pending = next
+            }
+            #expect(actual.map(\.token) == expected.map(\.token))
+            #expect(Set(expected.map(\.token)).count > 1, "the fixture must draw more than one token")
+            for (value, reference) in zip(actual.map(\.logprobs), expected.map(\.logprobs)) {
+                #expect(value.logprob == reference.logprob && value.top.map(\.tokenID) == reference.top.map(\.tokenID))
+            }
+            #expect(ahead.selected == stepping.selected)
+        }
+    }
+
     /// A logprob request in an MTP round (owner: MTP always on): each
     /// committed token's logprobs come from the verify window row whose draw
     /// it is, gathered as the one-token step gathers its row; the round's

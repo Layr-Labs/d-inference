@@ -18,6 +18,7 @@ import Darwin
         signal(SIGALRM) { _ in Darwin._exit(124) }; alarm(600); defer { alarm(0) }
         // A run over pipes that ended closes its end; a late key is then an error, never the end of the checks.
         signal(SIGPIPE, SIG_IGN)
+        aFinishedRunLeavesNothingReadingItsTerminal()
         privateMiMoSelectionRefusesBeforeAnyActionOnMemberOrUnpairedMac()
         terminalPresentationFallbacks()
         // The start's progress on both Macs (2026-11-04).
@@ -782,6 +783,10 @@ import Darwin
         private var exitCode: Int32?
         private(set) var keys = 0
         let done = DispatchSemaphore(value: 0)
+        /// Left once the reader read its last byte and will never use its descriptor again. The terminal closes only
+        /// after that: a reader still polling a closed number reads the next run's terminal once `openpty` reuses the
+        /// number, and takes that run's first lines (its title) or, on its blocking slave end, its keys (q).
+        let reading = DispatchGroup()
 
         init(_ operations: ClusterOnboardingOperations, request: ClusterOnboardingRequest = .init(),
              environment: [String: String] = ["NO_COLOR": "1"], columns: UInt16 = 132, rows: UInt16 = 50, logFile: URL? = nil) {
@@ -791,14 +796,19 @@ import Darwin
             master = primary; slave = secondary
             _ = fcntl(primary, F_SETFL, fcntl(primary, F_GETFL) | O_NONBLOCK)
             let reader = primary
+            reading.enter()
             Thread.detachNewThread { [self] in
+                defer { reading.leave() }
                 var buffer = [UInt8](repeating: 0, count: 4096)
                 while true {
+                    // The end is checked before the poll: a run that had ended by then wrote every byte already, so an
+                    // empty read after it is the end of the text, never a byte still on its way.
+                    let ended = code != nil
                     var descriptor = pollfd(fd: reader, events: Int16(POLLIN), revents: 0)
                     guard Darwin.poll(&descriptor, 1, 20) >= 0 else { return }
                     let count = Darwin.read(reader, &buffer, buffer.count)
-                    if count > 0 { lock.lock(); captured.append(contentsOf: buffer.prefix(count)); lock.unlock() }
-                    if lock.withLock({ exitCode != nil }) && count <= 0 { return }
+                    if count > 0 { lock.withLock { captured.append(contentsOf: buffer.prefix(count)) } }
+                    if ended && count <= 0 { return }
                 }
             }
             let slaveFD = secondary
@@ -833,14 +843,19 @@ import Darwin
             _ = bytes.withUnsafeBytes { Darwin.write(master, $0.baseAddress, $0.count) }
         }
 
+        /// The exit status once the run ended and every byte it wrote was read (nil while it still runs).
         func finish(seconds: Double = 10) -> Int32? {
             _ = done.wait(timeout: .now() + seconds)
+            guard let code else { return nil }
+            reading.wait()
             return code
         }
 
-        /// Closes both ends once the run ended, so a long list of checks never runs out of pseudo-terminals.
+        /// Closes both ends once the run ended and its reader stopped, so a long list of checks never runs out of
+        /// pseudo-terminals and no reader outlives its terminal.
         func release() {
             guard code != nil else { return }
+            reading.wait()
             closeTerminal()
         }
 
@@ -908,6 +923,19 @@ import Darwin
             _ = drained.wait(timeout: .now() + seconds)
             return lock.withLock { exitCode }
         }
+    }
+
+    /// The harness itself (runs 42057277814 and 42082393871, 2026-11-05): a run's reader stopped up to a poll after the
+    /// run's end, so `release` closed the terminal under it, the next run's `openpty` got the same numbers, and the old
+    /// reader took that run's title ("role, before pairing") or its q ("coordinator q"). The reader now stops before
+    /// `finish` returns, and so before `release` closes anything.
+    static func aFinishedRunLeavesNothingReadingItsTerminal() {
+        let run = TerminalRun(operations(Recorder(), pairEvents: memberEvents, pairResult: .failed(["Cancelled: nothing paired."])))
+        expect(run.finish(seconds: 20) != nil, "harness: the run ended")
+        expect(run.reading.wait(timeout: .now()) == .success, "harness: finish returns once the reader read the last byte and stopped")
+        let ended = run.text
+        run.release()
+        expect(run.text == ended, "harness: no byte arrives after finish: \(run.text.dropFirst(ended.count))")
     }
 
     static func leaderFromScratch() {

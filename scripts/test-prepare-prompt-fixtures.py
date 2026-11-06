@@ -7,10 +7,12 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import ssl
 import tempfile
 import time
 import unittest
 from unittest.mock import patch
+import urllib.error
 import urllib.request
 
 SCRIPT = Path(__file__).with_name("prepare-prompt-fixtures.py")
@@ -26,6 +28,39 @@ class Response(io.BytesIO):
         self.url = url
         self.status = 200
         self.headers = {} if length is None else {"Content-Length": str(length)}
+
+
+class CutResponse(Response):
+    """Returns the first bytes of a body, then fails as a cut TLS stream does."""
+
+    def __init__(self, prefix, url, error):
+        super().__init__(prefix, url)
+        self.error = error
+
+    def read(self, size=-1):
+        chunk = super().read(size)
+        if chunk:
+            return chunk
+        raise self.error
+
+
+class ScriptedOpener:
+    """Plays one outcome per attempt: a response, or an exception raised by open."""
+
+    def __init__(self, *outcomes):
+        self.outcomes = list(outcomes)
+        self.attempts = 0
+
+    def open(self, url, timeout):
+        self.attempts += 1
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+def ssl_eof():
+    return ssl.SSLEOFError(8, "[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol")
 
 
 class Opener:
@@ -139,19 +174,87 @@ class PromptFixturesTests(unittest.TestCase):
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 fixtures.validate_manifest(manifest)
 
-    def test_download_rejects_tampering_truncation_overflow_and_redirect(self):
-        for body, url, length in ((b"x" * len(self.body), "https://models.example.test/a", None),
-                                  (self.body[:-1], "https://models.example.test/a", None),
-                                  (self.body + b"x", "https://models.example.test/a", None),
-                                  (self.body, "https://other.test/a", None),
-                                  (self.body, "https://models.example.test/a", 1)):
-            opener = unittest.mock.Mock()
-            opener.open.return_value = Response(body, url, length)
-            output = self.root / "download"
-            with self.subTest(body=body, url=url, length=length), self.assertRaises(ValueError):
-                fixtures.download(opener, "https://models.example.test/a", output,
-                                  self.artifact, time.monotonic() + 120)
+    def fetch(self, opener, deadline=None):
+        output = self.root / "download"
+        try:
+            fixtures.download(opener, "https://models.example.test/a", output, self.artifact,
+                              time.monotonic() + 120 if deadline is None else deadline)
+            return output.read_bytes()
+        finally:
             output.unlink(missing_ok=True)
+
+    def test_download_fails_at_once_on_tampering_overflow_origin_and_status(self):
+        url = "https://models.example.test/a"
+        wrong = Response(b"x" * len(self.body), url)
+        accepted = Response(self.body, url)
+        accepted.status = 206
+        cases = {
+            "SHA-256 mismatch": wrong,
+            "exceeds declared size": Response(self.body + b"x", url),
+            "cross-origin": Response(self.body, "https://other.test/a"),
+            "Content-Length mismatch": Response(self.body, url, 1),
+            "HTTP 200": accepted,
+            "Not Found": urllib.error.HTTPError(url, 404, "Not Found", {}, None),
+        }
+        for message, outcome in cases.items():
+            opener = ScriptedOpener(outcome, Response(self.body, url))
+            with self.subTest(message=message), patch.object(fixtures.time, "sleep") as sleep:
+                with self.assertRaisesRegex((ValueError, urllib.error.HTTPError), message):
+                    self.fetch(opener)
+                self.assertEqual(opener.attempts, 1)
+                sleep.assert_not_called()
+
+    def test_download_retries_cut_transfers_with_backoff(self):
+        url = "https://models.example.test/a"
+        server_error = Response(b"", url)
+        server_error.status = 502
+        cases = {
+            "short read": Response(self.body[:-1], url),
+            "TLS EOF mid-body": CutResponse(self.body[:4], url, ssl_eof()),
+            "TLS EOF on open": urllib.error.URLError(ssl_eof()),
+            "connection reset": ConnectionResetError(54, "Connection reset by peer"),
+            "socket timeout": TimeoutError("timed out"),
+            "incomplete chunked body": fixtures.http.client.IncompleteRead(self.body[:4]),
+            "HTTP 503": urllib.error.HTTPError(url, 503, "Service Unavailable", {}, None),
+            "HTTP 502 status": server_error,
+        }
+        for name, failure in cases.items():
+            opener = ScriptedOpener(failure, Response(self.body, url))
+            with self.subTest(name=name), patch.object(fixtures.time, "sleep") as sleep:
+                self.assertEqual(self.fetch(opener), self.body)
+                self.assertEqual(opener.attempts, 2)
+                sleep.assert_called_once_with(1)
+
+    def test_download_gives_up_after_three_short_reads(self):
+        url = "https://models.example.test/a"
+        opener = ScriptedOpener(*(Response(self.body[:-1], url) for _ in range(3)), Response(self.body, url))
+        with patch.object(fixtures.time, "sleep") as sleep:
+            with self.assertRaisesRegex(fixtures.TransientTransfer, "ended before its declared size"):
+                self.fetch(opener)
+        self.assertEqual(opener.attempts, 3)
+        self.assertEqual([call.args for call in sleep.call_args_list], [(1,), (3,)])
+
+    def test_download_retries_stay_inside_the_deadline(self):
+        url = "https://models.example.test/a"
+        opener = ScriptedOpener(urllib.error.URLError(ssl_eof()), Response(self.body, url))
+        with patch.object(fixtures.time, "sleep") as sleep:
+            # The 1 s backoff would end after the deadline: stop instead of sleeping.
+            with self.assertRaisesRegex(ValueError, "timed out"):
+                self.fetch(opener, time.monotonic() + 0.5)
+            self.assertEqual(opener.attempts, 1)
+            with self.assertRaisesRegex(ValueError, "timed out"):
+                self.fetch(ScriptedOpener(), time.monotonic() - 1)
+        sleep.assert_not_called()
+
+    def test_download_never_deletes_an_output_it_did_not_create(self):
+        output = self.root / "download"
+        output.write_bytes(b"other")
+        opener = ScriptedOpener(Response(self.body, "https://models.example.test/a"))
+        with patch.object(fixtures.time, "sleep") as sleep, self.assertRaises(FileExistsError):
+            fixtures.download(opener, "https://models.example.test/a", output, self.artifact,
+                              time.monotonic() + 120)
+        self.assertEqual(output.read_bytes(), b"other")
+        sleep.assert_not_called()
 
     def test_redirect_policy_and_url_restrictions(self):
         for url in ("http://example.test", "https://user:pass@example.test", "https://example.test/?q=1",

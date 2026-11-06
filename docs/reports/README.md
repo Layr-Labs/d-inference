@@ -1,10 +1,11 @@
 # Provider And Native Evidence
 
-> Last updated: 2026-11-01
+> Last updated: 2026-11-05
 
 Dated records and raw native evidence retain their original content, revisions and limitations. A record is not a fresh test result or proof of private platform compatibility.
 
 - [Gemma pipeline prompt experts](2026-11-01-gemma-pipeline-prompt-experts.md) - the registered Gemma stages' prompt expert blocks in one shared dispatch with the same bytes: CPU and M5 Ultra GPU equality evidence and synthetic one-layer timings; no pair or qualification result.
+- [Qwen3.8-27B public tensor assistant](2026-11-05-qwen27-public-assistant.md) - the parity evidence of Qwen3.8-27B's resident assistant on tensor-parallel pairs served through Darkbloom: same-request speculative and plain decodes on one pair, sampling, tools, images and logprobs; the evidence document of `ClusterPublicModels.qwen27TensorAssistant`.
 - [Public cluster models](2026-10-31-public-cluster-models.md) - the owner's declaration of GLM-5.3-Flash, Qwen3.8-27B, MiMo-V2.6-Flash and Gemma 4 26B QAT for public cluster traffic in pipeline and tensor parallel, the checks it rests on and why releases carry pair-serving grants; the evidence document of `ClusterPublicModels`.
 - [Mixed-step prefill geometry](2026-10-21-mixed-step-prefill-geometry.md) - load, engine, inter-token latency and KV-subtracted activation measurements behind Gemma 4's 2,048 / 4,096 prompt geometry, its media ceiling and the GPT-OSS and dense Qwen opt-in.
 - [GLM-5.3-Flash single-Mac qualification record](2026-10-21-glm53-flash-single-mac-qualification.md)

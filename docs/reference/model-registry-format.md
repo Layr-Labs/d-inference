@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-10-27
+> Last updated: 2026-11-05
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -122,6 +122,10 @@ hash (`provider-swift/Sources/ProviderCoreFoundation/OverlappedFileDigest.swift`
 and the read then drops the file's pages from the file cache
 (`provider-swift/Sources/ProviderCoreFoundation/PageCache.swift`), so a verified
 download does not stay resident beside the model it is loaded into.
+`ManifestBuilder` (`darkbloom-publish`) reads each file in 64 KiB chunks, each
+in its own autorelease pool on macOS
+(`provider-swift/Sources/ProviderCoreFoundation/FileHandle+DrainedRead.swift`),
+so a publish holds one chunk for each file it hashes, not the files.
 
 ### R2 layout
 

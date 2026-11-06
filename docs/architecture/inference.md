@@ -3326,6 +3326,9 @@ blocks and is not checked.
 Its restart line reads FileVault with `fdesetup isactive`
 (`OnboardingLive.fileVaultOn`): five seconds, then SIGTERM and two more, and no
 answer reads as unknown. The exit comes from `ProcessExitObserver`, which does not run the calling thread's run loop.
+A Mac hashes its worker again only when the worker's size, modification time
+or inode moved (`LiveContext.workerSHA256`), in 4 MiB reads that each release
+their buffer before the next.
 After a Darkbloom update changes a Mac's worker digest, the control leader's
 cluster service re-plans and re-adopts the same model by itself
 (`ClusterService.checkForUpdate`, `ClusterOnboardingUpdate`), once both Macs
@@ -4589,6 +4592,23 @@ earlier build kept read the same way; the request mix's 64-token floor on the
 answer (`ClusterRequestMix.minimumOutputTokens`) stays for samples a plan is
 given directly.
 
+Each record also names how the request reached the pair (`serving`:
+`ClusterServedScope.darkbloom` for a setup saved for coordinator pairing,
+`local` for the leader's own API; `DistributedSessionFacts.serving`) and
+whether the setup decoded with Qwen's resident tensor assistant
+(`tensorAssistant`), and the leader keeps each combination's 32 newest apart.
+A plan, the setup screen's served figures (`ClusterSetupPlanning.modes`) and the
+router use only the records served the way they will serve
+(`ClusterServedSpeedRecords.Setup.servedAs`): the same scope, and in tensor
+parallel the assistant exactly when the plan has one. The served race reads
+each mode at its fastest setup (`ClusterServedModes.figures`), so without the
+split a local pair's assisted figure (pair-2's Qwen: 34–36 tok/s) stood for
+tensor parallel through Darkbloom without it (14–20). Served calibration skips
+assisted setups: its device rates are one-token rates, and nothing there knows
+the assistant's speed-up (`ClusterServedCalibration.measurements`). A record
+from before these fields existed reads as before; it is an earlier build's,
+which the build rule below already leaves out.
+
 Every plan of the pair (`ClusterPlacementFlow.decide`: the plan command, the
 setup screen with the other Mac's shared records, and automatic batch
 replacement) and the leader's per-request router (`ClusterRequestRoutingBasis`)
@@ -4785,7 +4805,10 @@ Oracles run on synthetic checkpoints with the 26B's structure scaled down:
   prefill width rounds some rows unlike its 512-row half.
 
 `tp-check gemma run --path paged` runs `full`, `simulated` and `tp` through the
-resident runtime's own request path instead of the SDK's legacy caches.
+resident runtime's own request path instead of the SDK's legacy caches;
+`--layer-stride N` submits each decode step every N layers instead of the
+product's `decodeLayerStride` (1), so a pair can measure the stride before the
+product's changes (Qwen's measured choice is 8, `QwenTensorParallelLaunch`).
 `tp-check gemma lanes` serves several requests together through the batch
 driver and checks each against itself alone.
 
@@ -4843,6 +4866,32 @@ stops, cancellations and retirements.
   that could not grow) ends both after the same step
   (`Gemma4TensorParallelRequestLoop`). A rank that stopped commits nothing
   more, but still ends at a stop token its peer commits.
+  A greedy request's steps are built one ahead, in GLM tensor parallel's step
+  order (`TensorParallelOneTokenLoop`): step k+1 is built on step k's lazy
+  agreed token and submitted (`Gemma4TensorParallelPagedSession.submitDecode`,
+  `CBv2OwnedRequestState.submit`, which commits the step on host-held
+  frontiers and leaves native errors to the evaluation that reads it) before
+  the host reads step k, answers the owner and commits, so the GPU and the
+  collectives run while the host works. On two M5 Ultras GLM's pipelined step
+  took 12.0 ms against 13.4 ms read-then-build; Gemma's pair has not been
+  measured. The tokens are the read-then-build path's, with one exception, as
+  in GLM's loop: a rank's own stop (cancel, deadline, memory) and a refused page
+  growth ride one step later. So when rank 1 stops on its own or its pages run
+  out, rank 0 may stream one token that the final count drops (the request then
+  errors on both ranks: rank 0 refuses the peer's stop, and the worker session
+  refuses a length finish short of the output count). And a refused growth, which
+  still keeps the margin's rows, ends the request one token later than before.
+  Never a token past a stop token, a length end or the owner's stop. Sampled
+  requests, and greedy ones with logit bias or penalties (they draw through the
+  sampler), are built ahead too: rank 0's draw is
+  `QwenStageTokenSampler.sample`, the product's `CBv2DefaultSampler`, which
+  advances its penalty counts with each drawn token on the device and its keyed
+  step index with each draw, so a draw built before the previous token is read
+  is still the draw at its output index with the history up to it; each step
+  keeps its own lazy logprob gather (`takePendingStepLogprobs`). Greedy
+  requests asking for logprobs read each step first: their vocabulary-split
+  top-k gather is a collective evaluated on the host after the token is
+  agreed, which would wait for the step built ahead.
 - Prompt prefixes. Each rank keeps its own heads' state at a prompt's chunk
   boundaries as the Gemma pipeline keeps a stage's, in the pipeline's memory
   tier and the owner's encrypted SSD tier (`Gemma4TensorParallelPrefix`). A
@@ -6676,10 +6725,17 @@ equals that row's alone; the agreement binds `moe-rows-one-collective-v1`.
 Mixed text/media rows retain their own original fused RoPE or MRoPE calculation.
 
 A decode step is submitted while it is built. `QwenTensorParallelBatchSession`
-decodes under `Qwen35LayerSubmission` with a stride of one layer
-(`decodeLayerStride`): after each decoder layer the forward submits what it has
-built (`asyncEval`), so that layer's kernels and collectives run while the host
-builds the next. The driver builds a step only after the previous step's tokens
+decodes under `Qwen35LayerSubmission` with a stride of eight layers
+(`QwenTensorParallelLaunch.decodeLayerStride`): after every eighth decoder layer
+the forward submits what it has built (`asyncEval`), so those layers' kernels and
+collectives run while the host builds the next eight. One layer a submission
+paid a commit and a GPU wake-up per layer: on two M5 Ultra 256 GB over JACCL
+(27B, sealed sums, synthetic 64-token prompt, 128-256 output tokens) a width-one
+step took 21.4 ms at stride 1 and 20.2-20.3 ms at 8 to 16 (25.1 against 19.9-20.4
+ms with the host loaded by other builds), a width-four step 35.4 against
+29.5-29.9 ms, and stride 32 was slower again (21.2 ms). Every stride retired the
+same tokens on both ranks. The stride is not a launch option: it changes only
+when work reaches the GPU. The driver builds a step only after the previous step's tokens
 are read (a plain step's plan is made before them, below), so the request-owned
 path does not build one step ahead as the retired single-lane loop did;
 submitting by layer hides the graph build instead.
@@ -6802,9 +6858,43 @@ earlier build refuses to load. Tokens, logits and native state are unchanged:
 the control limbs are exact in FP32, each element of the sum is added alone,
 and the collective payload quote covers the longer frame
 (`QwenTensorParallelBatchBudget`). `darkbloom-cluster-tp-check qwen-decode`
-(`QwenTensorParallelDecodeBench`) times the driver's decode on two ranks over
-the loopback ring with the control exchanged or folded and checks that both
-retire the same tokens.
+(`QwenTensorParallelDecodeBench`) times the driver's decode on two ranks, over
+the loopback ring or socket or, with `--backend jaccl`, over a pair's JACCL
+link, with the control exchanged or folded, and checks that both retire the
+same tokens; `--layer-strides 1,8,16` compares decode layer strides in one run.
+
+**Build-ahead (driver protocol; not yet on in the product).** With
+`QwenTensorParallelBatchSettings.buildsAhead` (load agreement field
+`qwen-tp-batch-build-ahead-v1`), the driver builds a plain decode step before
+it reads the step before it (`QwenTensorParallelBatchDriver.serveAhead`), so
+the GPU and the collectives run while the host reads, publishes and answers.
+The window-1 profile measured about 1.9 ms of GPU idle at each token boundary.
+- Every folded step's selection sum also carries two decision words, one per
+  rank, for the step two later. Continuations need no plan: both ranks build
+  that step on the unread step's selection rows (`QwenTensorParallelBatchExecutor.submitDecode`
+  and `readDecode`) only when neither rank asked for a barrier and the unread
+  step decoded the same lanes the decision covered.
+- A rank asks for a barrier whenever anything needs a plan: an owner's stop or
+  the answer to a request's last token, a request waiting to join, an idle lane,
+  a cancellation or deadline, an ended lane, a lane that would pass its output
+  count, or more than four tokens held unpublished. At a barrier both ranks read
+  every submitted step, and the next plan is made and exchanged with nothing in
+  flight, exactly as without build-ahead.
+- Owner answers that a decision reads and that need a plan are kept for that
+  plan, and their lane publishes nothing more meanwhile. Tokens selected before
+  their credit are held, one queue a row (`heldLogprobs`), and published in order,
+  one per "go on" answer. A client stop drops all held tokens. An EOS read after
+  the next step was built discards that one forward on both ranks (the
+  generation schedule accepts one declared discarded forward after an EOS). No
+  step is built past a request's output count.
+
+Every input to a decision and to the build is agreed state (read sums, read
+tokens, plans), so both ranks submit the same collectives in the same order.
+Ranks on different protocols refuse each other at load (the field). The driver
+is checked on two ranks with a fake executor (`QwenTensorParallelBatchDriverTests`:
+steady decode, EOS, owner stops, late credits, joins, prompts, cancellation, and
+ranks that disagree failing closed). The native executor does not submit decode
+steps yet (`buildsAhead` false), so the product runs read-then-build until it does.
 
 The batch path can restore mutually held original-grid prefix snapshots into
 fresh request-owned state. TP speculative rounds remain a separate integration. Installed owners propagate a priced
@@ -7228,7 +7318,12 @@ types them ([fields](../reference/configuration.md#cluster-runtime-facts),
    native start of an owner-formed session calls it for its
    `resourcePolicySHA256`. A coordinator-formed start carries the approval's
    value, which the member and its owner compare with the installed approval
-   (`NativePairMemberPolicy.require`).
+   (`NativePairMemberPolicy.require`). A resident assistant the build declares
+   public for the model's artifact (`ClusterPublicModels.tensorAssistant`) adds
+   its launch arguments and evidence digest to the formula, so the approval and
+   every start under it name the declared assistant
+   ([Qwen27 resident assistant](#qwen27-tensor-parallel-resident-assistant));
+   without one the digest is the five-field formula as before.
 4. Every model carries a pair-serving grant when the build qualifies it. A
    pair member reports only hardware capabilities
    (`DistributedServingEligibility.memberCapabilities`: `apple_m5` on an M5,
@@ -7349,9 +7444,17 @@ does not establish an installed distributed-model pass.
 
 The Qwen3.5 9B's artifact ships the same dense one-layer inline head, so its tensor owner runs the same resident assistant (`QwenTensorParallelMTPPolicy.models`, `ClusterQwenTensorAssistantPolicy.runtimeModelIDs`): `QwenTensorParallelMTPInventory.Head` derives every expected head tensor from the row's configuration and `QwenTensorParallelMTPBudget` prices the row's own widths (the 27B's inventory fingerprint and quotes are unchanged). The 9B's READY carries the assistant without the 27B's media contract. The routed-expert rows' heads are expert layers this assistant does not load; those rows serve their request-owned lanes without speculation, and planning never asks them for an assistant.
 
-For the exact registered Qwen3.8 27B artifact, normal cluster planning discovers the embedded assistant from the catalog manifest, capability identity and bounded inline header inspection. With `backend.mtp_mode` set to `auto` or `on`, `ClusterPlacementTensorAssistantSelection.readAutomatic` asks the native metadata helper for a complete depth-three cohort quote. The returned inventory fingerprint becomes the saved bilateral policy; the provider does not infer it from a model name. Explicit `off`, the existing MTP kill switch, or an absent head retains the completely quoted ordinary TP owner. A malformed declared assistant refuses planning. This policy does not create a hand-off or phase-split deployment.
+For the exact registered Qwen3.8 27B artifact, normal cluster planning discovers the embedded assistant from the catalog manifest, capability identity and bounded inline header inspection. With `backend.mtp_mode` set to `auto` or `on`, `ClusterPlacementTensorAssistantSelection.readAutomatic` asks the native metadata helper for a complete depth-three cohort quote for a local cluster (a cluster served through Darkbloom: below). The returned inventory fingerprint becomes the saved bilateral policy; the provider does not infer it from a model name. Explicit `off`, the existing MTP kill switch, or an absent head retains the completely quoted ordinary TP owner. A malformed declared assistant refuses planning. This policy does not create a hand-off or phase-split deployment.
 
-The assistant serves local clusters only. Its verify windows are a computation that no parity qualification covers: the coordinator qualifies `tensor_parallel_v1` placements by classes, cuts and mode, a pair's registration carries no speculation field, and the bundled tensor-parallel records of the 27B predate the assistant. A setup saved for coordinator pairing therefore carries none (`ClusterConfiguration.validate`). The guided setup plans a cluster served through Darkbloom under `auto` as under `off` (`ClusterPlacementTensorAssistantSelection.discoveryMode`, from the serving scope in `OnboardingLive.localPlanModels`). Explicit `on` is kept; the plan's public-traffic line then says the pair is not offered, and the leader refuses the coordinator's approval before any part stops (`ClusterApprovalAttachment.attachment` runs the setup's full validation). Public speculative decoding needs qualification evidence of the assisted placement.
+On a coordinator-formed pair the assistant serves only as the build declares it. Its verify windows are a computation the coordinator does not see: it qualifies `tensor_parallel_v1` placements by classes, cuts and mode, a pair's registration carries no speculation field, and the bundled tensor-parallel records of the 27B predate the assistant. The owner therefore declares a public assistant per artifact beside the public model declaration (`ClusterPublicModel.tensorAssistant`, a `ClusterPublicTensorAssistant`: depth, the inline head's inventory fingerprint, verification, the SHA-256 of its evidence report under `docs/reports/` and when it was qualified). This build declares Qwen3.8-27B's: depth three, admitted cohorts, the registered artifact's head inventory, the policy a local cluster plans by itself ([evidence](../reports/2026-11-05-qwen27-public-assistant.md): on one pair, the same requests decoded with the assistant's rounds and with plain steps gave identical greedy, sampled and tool answers). A release's facts give the model's serial-schedule tensor-parallel parity qualification the report's digest and instant (`ClusterRuntimeApprovalFacts.parityQualifications`), so the qualification a coordinator derives names the speculative decoding it covers; the one-chunk-lookahead qualification keeps the model's evidence, since the assistant needs serial prefill and those pairs decode plain.
+
+1. A setup saved for coordinator pairing carries no assistant, or exactly the declared one (`ClusterConfiguration.validate`, refusal `ClusterConfiguration.tensorAssistantServesLocally`). The leader checks a coordinator's approval against this rule before any part stops (`ClusterApprovalAttachment.attachment` runs the setup's full validation), and the other Mac checks it again before it saves.
+2. Under `auto` the guided setup plans a cluster served through Darkbloom with the declared assistant, or without one when none is declared (`ClusterPlacementTensorAssistantSelection.discoveryMode`, from the serving scope in `OnboardingLive.localPlanModels`). The quote is asked at the declared depth and verification, and the native helper must return exactly the declared policy, inventory included (`requireDiscoveredQuote`). When that quote is refused (a helper error or timeout, or another inventory), a cluster served through Darkbloom is planned with the ordinary target, as it was before the declaration, and the plan says why in one line (`ClusterSetupPlanning.assistantRefusedLine`, the plan's `speculationNote`); the line appears under the model on the screen, is kept with the adopted plan (`ClusterOnboardingLeadership.speculationNote`) and `darkbloom cluster status` prints it under how the cluster serves. A local cluster's refusal still stands. Explicit `on` plans the declared assistant the same way. Without a declaration, `on` plans a local cluster's assistant (depth three, admitted cohorts), the plan's public-traffic line says the pair is not offered (`ClusterPairOwnerServing.tensorAssistantNotOffered`), and the approval is refused as above.
+3. The declared assistant's launch arguments (`--mtp-depth`, `--tp-mtp-inventory-sha256`, the verification) and its evidence digest are part of the model's resource policy (`DistributedInstalledNativeStart.resourcePolicySHA256`, see [cluster runtime facts](#cluster-runtime-facts-of-an-installed-app)). A release's facts, the coordinator's approval and every committed start under it therefore name the declared assistant; without a declaration the digest is unchanged. The digest follows the build's declaration for the artifact, not the setup: a pair planned without the assistant (`mtp_mode = "off"`) carries the same value. The assistant a pair loads is bound by both workers at LOAD, as on a local cluster.
+4. Admitted-cohort verification (`admitted_target_cohort_v1`, the declared policy) verifies every eligible row of a step in one rectangle, as on a local cluster; a declared singleton verification (`singleton_ready_set_v1`) would speculate only for a step whose ready set is one request (`QwenTensorParallelNativeBatchExecutor.decodeRound`). Media rows, samplers that do not admit speculative verification and requested logprobs keep their target paths, as on a local cluster.
+5. A pair slot whose ranks report the assistant in READY (`ClusterQwenTensorAssistantReady`) reports MTP as configured in its slot posture (`darkbloom status`, the `engine_v2_slot_posture` telemetry event), with the counts rank zero's runtime returned request by request (`ProviderLoop.publishClusterPairSlot`, `EngineV2Bridge.mtpStatusSnapshot`, `DistributedCBv2Engine.mtpTotalsSnapshot`). Any other pair keeps the disabled posture.
+
+The evidence a declaration needs (the fixed greedy answers byte-identical with and without the assistant, concurrent answers equal to solo, sampled and logprob requests against plain tensor parallel) is recorded on a non-production pair; tiny paired-shard fixtures and the checks above do not establish it.
 
 The assistant stays resident across admitted widths. Each request owns its history, assistant pages, target frontier and bounded accepted-token queue. Each row's round starts with its own B=1 assistant step over its own history (the step that also feeds its trusted history); the round's later steps run every row of a cohort through one assistant forward (`Qwen35InlineMTPAssistant.draftHiddens`, see [Batch-invariant tensor-parallel decode projections](#batch-invariant-tensor-parallel-decode-projections)). In a cohort, one head call per draft step chooses every row's proposal (`QwenTensorParallelMTPDecoder.stepBatch`; the SDK's `Qwen35InlineMTPAssistant.draftHidden`, `draftHiddens` and `recordDraft`): the rows' hidden states go through the vocabulary-sharded head together, and the cohort's draft step is one evaluation holding two collectives (rank zero's hidden rows, then the score exchange) in the same order on both ranks, instead of one evaluation and two collectives per row. Each row's choice equals its own call's: both collectives are element-wise, the head shard computes every row with the batch-invariant kernel (`QwenTensorParallelMTPProjection.exactRows`; with exact drafts off, each row as its own single-vector MLX product, `rowsAlone`, because one plain multi-row call would let MLX pick `qmv_wide` on Apple GPU family 15 and later and change rows), and the first maximum is taken per row. `QwenTensorParallelMTPHeadRowsTests` checks the head rows byte for byte for two to eight rows, and `QwenTensorParallelBatchMTPTransitionTests.batchedCohortDraftsMatchRowByRowDraftsWithOneHeadCallPerStep` checks tokens, MTP statistics and native state against row-by-row drafting (collective reductions per run: 577 to 401 at two rows, 1,633 to 401 at eight). A one-row round runs the same per-step functions with one row, so a request proposes the same tokens alone and in a cohort. Both ranks read every proposal from the same exchanged (maximum, index) pairs, so no proposal broadcast is needed. Eligible requests then share one captured target rectangle: `QwenTensorParallelMTPDecoder.stepBatch` verifies their seed and proposals, settles every row to its independently accepted prefix, and confirms the entire ordered cohort before publishing any result. Accepted suffixes consume the existing per-token credits without another native step. Request RNG and stopping remain independent.
 

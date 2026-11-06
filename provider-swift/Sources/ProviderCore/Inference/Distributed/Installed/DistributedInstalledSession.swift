@@ -174,7 +174,8 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             // The last request failure comes last: the classifier scans newest first (S24).
             diagnostics: (ordered.compactMap(Self.diagnostic) + [values.3, values.2].compactMap { $0 }).filter { !$0.isEmpty },
             terminations: terminations, peerHosts: configuration.peers.map(\.host), peerUsers: configuration.peers.map(\.user),
-            ranks: configuration.peers.sorted { $0.rank < $1.rank }.map(\.id))
+            ranks: configuration.peers.sorted { $0.rank < $1.rank }.map(\.id),
+            serving: DistributedSessionFacts.serving(configuration), tensorAssistant: configuration.tensorAssistant != nil)
     }
 
     /// One rank's diagnostics for an incident: an SSH owner's standard-error

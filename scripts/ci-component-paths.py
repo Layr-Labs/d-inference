@@ -20,6 +20,7 @@ COMMON = (
 PROVIDER = (
     "provider-swift/**", "libs/**", "fixtures/**",
     ".github/workflows/provider-tests.yml", ".github/actions/provider-ci-build/**",
+    ".github/actions/provider-ci-products/**", "scripts/ci-test-products.py", "scripts/ci-resource-sampler.py",
     "scripts/provider-ci-cold-retry.sh",
     "scripts/provider-ci-cache.py", "scripts/provider_ci_cache/**",
     "scripts/provider-release-cache.py", "scripts/provider_release_cache/**",
@@ -62,6 +63,7 @@ CLUSTER = (
     "provider-swift/Tests/Cluster*Checks/**",
     "provider-swift/Tests/ProviderCoreTests/Fixtures/coordinator-wire/cluster_registration_vector.json",
     ".github/workflows/provider-tests.yml", ".github/actions/provider-ci-build/**",
+    ".github/actions/provider-ci-products/**", "scripts/ci-test-products.py", "scripts/ci-resource-sampler.py",
     "scripts/provider-ci-cold-retry.sh",
     "scripts/provider-ci-cache.py", "scripts/provider_ci_cache/**",
     "scripts/provider-release-cache.py", "scripts/provider_release_cache/**",

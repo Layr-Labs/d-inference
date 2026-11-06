@@ -151,6 +151,10 @@ public struct ClusterSetupPlanSummary: Codable, Sendable, Equatable {
     /// (`ClusterPlacementExplanation.tensorParallelNote`): nil when it is, when the model has no tensor-parallel
     /// plan, and in a summary written before it.
     public var tensorParallelNote: String? = nil
+    /// Why the plan serves without the model's speculative assistant where one was discovered or declared, in one
+    /// line (`ClusterSetupPlanning.assistantDoesNotFit`, `assistantRefusedLine`); nil otherwise and in a summary
+    /// written before it.
+    public var speculationNote: String? = nil
     /// Each mode family the planner could place for these Macs (`ClusterShardAssessment`), the chosen first, with each
     /// Mac's share and the decode rate this pair served it at (`ClusterServedModes`); nil before it existed.
     public var modes: [Mode]? = nil

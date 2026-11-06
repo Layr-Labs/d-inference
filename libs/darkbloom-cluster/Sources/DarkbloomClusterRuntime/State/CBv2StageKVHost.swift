@@ -352,6 +352,10 @@ final class CBv2StageKVHost {
     /// requests (`CBv2OwnedRequestState`): a step's completion is pool-wide,
     /// so none may complete under another request's open window.
     var openPackedWindows = 0
+    /// Frontier checks a submitted frame (`CBv2OwnedRequestState.submitBatch`)
+    /// read from the device: none on a paged host, whose frontiers the host
+    /// holds; a contiguous host reads each cache's (it waits for the frame).
+    var submittedDeviceFrontierReads = 0
 
     /// After a step's graph was built and before it is evaluated: a write the
     /// packed pool refused fails the step here, as main's engine checks before

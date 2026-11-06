@@ -55,9 +55,10 @@ struct QwenTensorParallelBatchSessionTests {
         var control: [Float]?
         var failure: Error?
         var releaseAttempts = 0, rejectRelease = false
-        init(_ model: QwenTensorParallelModel, lanes: Int, maximumTokens: Int = 256) throws {
+        init(_ model: QwenTensorParallelModel, lanes: Int, maximumTokens: Int = 256, kind: ClusterStageKVBackendKind? = nil) throws {
             self.model = model
-            host = try CBv2StageKVHost(model: model.model, kind: ProcessInfo.processInfo.environment["QWEN_TP_BATCH_KV"] == "paged" ? .paged : .contiguous,
+            host = try CBv2StageKVHost(model: model.model,
+                kind: kind ?? (ProcessInfo.processInfo.environment["QWEN_TP_BATCH_KV"] == "paged" ? .paged : .contiguous),
                 lanes: lanes, maximumTokensPerRequest: maximumTokens, maximumChunkTokens: 64)
         }
     }
@@ -584,6 +585,210 @@ struct QwenTensorParallelBatchSessionTests {
         for layer in 0..<3 { tensors += attention.map { ($0.0.replacingOccurrences(of: ".layers.3.", with: ".layers.\(layer)."), $0.1) } }
         try verifyMixedSampling(configuration: try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys]),
             tensors: tensors, hiddenSize: 256, foldedControl: true)
+    }
+
+    /// Build-ahead on the native executor (`submitDecode`/`readDecode`): each
+    /// cohort step is submitted on the previous step's unread selection before
+    /// that step is read, and takes the read-then-build cohort's tokens,
+    /// logprobs and folded control words, on both ranks: greedy, sampled
+    /// (penalties, logit bias) and logprob rows, widths 1 to 4. CPU (contiguous
+    /// host) by default; `QWEN_TP_BATCH_GPU=1` runs it on the GPU on a paged host.
+    @Test func buildAheadDecodeTakesTheReadThenBuildTokensAndLogprobs() throws {
+        // The selection suites' all-attention fixture (`controlWordsInTheSelectionSumKeepTokensAndLogprobs`).
+        let base = QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 4, heads: 4, kvHeads: 2, vocabulary: 256)
+        var tensors = base.tensors.filter { !$0.0.contains(".linear_attn.") }
+        let attention = base.tensors.filter { $0.0.contains(".layers.3.self_attn.") }
+        for layer in 0..<3 { tensors += attention.map { ($0.0.replacingOccurrences(of: ".layers.3.", with: ".layers.\(layer)."), $0.1) } }
+        let fixture = (configuration: base.configuration, tensors: tensors)
+        try Device.withDefaultDevice(device) {
+            var root = try JSONSerialization.jsonObject(with: fixture.configuration) as! [String: Any]
+            var text = root["text_config"] as! [String: Any]
+            text["max_position_embeddings"] = 4096; text["full_attention_interval"] = 1; root["text_config"] = text
+            let configuration = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
+            let profile = try QwenLayerStageGenerationProfile(identifier: "qwen-tp-build-ahead-tiny", vocabularySize: 256,
+                hiddenSize: 256, activationDType: "bfloat16", maximumPromptTokens: 128,
+                maximumChunkTokens: 64, maximumOutputTokens: 16, maximumContextTokens: 256)
+            let steps = 6
+            for width in [1, 2, 4] {
+                func pair(_ wire: Rendezvous, ahead: Bool) throws -> [Owned] {
+                    try (0..<2).map { rank in
+                        let reduction = Rank(rank, wire)
+                        let model = try QwenTensorParallelModel.assemble(configurationData: configuration,
+                            role: .shard(rank: rank, size: 2), reduction: reduction) { _, keep in
+                            for (name, value) in fixture.tensors { try keep(name, value) }
+                        }
+                        // The product's paged host on the GPU; the CPU device runs a contiguous one.
+                        let owned = try Owned(model, lanes: width, kind: device == .gpu ? .paged : .contiguous)
+                        owned.executor = try .init(model: model, configuration: configuration, host: owned.host, group: reduction,
+                            prepare: { _, _ in nil }, completedDecode: { _ in }, completedPrefill: {}, releaseResources: { _ in },
+                            buildsAhead: ahead)
+                        return owned
+                    }
+                }
+                let reference = try pair(Rendezvous(), ahead: false), candidate = try pair(Rendezvous(), ahead: true)
+                defer { for owner in reference + candidate { for lane in owner.nativeLanes { try? lane.session.retire() } } }
+                for row in 0..<width {
+                    let id = UUID()
+                    for owner in reference + candidate {
+                        let sampling: ClusterWorkerSampling? = row % 3 == 0 ? nil : .init(
+                            temperature: row % 3 == 1 ? 0.7 : 0, topP: 0.9, topK: 32, minP: 0.01,
+                            repetitionPenalty: 1.1, repetitionContextSize: 12, frequencyPenalty: 0.15,
+                            presencePenalty: 0.2, seed: UInt64(77 + row), stream: UInt64(5 * row + 1),
+                            logitBias: [.init(tokenID: row + 3, bias: 0.5)], topLogprobs: 5)
+                        let request = try QwenLayerStageGenerationRequest(profile: profile, requestID: id,
+                            promptTokenIDs: (0..<(3 + row * 2)).map { ($0 * 17 + row * 7 + 2) % 256 },
+                            chunkSize: 5, outputCount: 12, stopTokenIDs: [], sampling: sampling)
+                        owner.nativeLanes.append(try owner.executor!.open(.init(request: request), check: {}))
+                    }
+                    while let frame = reference[0].nativeLanes[row].nextFrame, frame.phase == .prefill {
+                        for owners in [reference, candidate] {
+                            try parallel(owners) { owner in
+                                if let token = try owner.executor!.prefill(owner.nativeLanes[row], frame: frame, check: {}) {
+                                    owner.selected.append(token)
+                                }
+                            }
+                        }
+                    }
+                    for rank in 0..<2 { #expect(reference[rank].selected[row] == candidate[rank].selected[row]) }
+                    _ = try reference[0].executor!.takeLogprobs(reference[0].nativeLanes[row])
+                    _ = try candidate[0].executor!.takeLogprobs(candidate[0].nativeLanes[row])
+                }
+                /// The control words a folded step carries: rank 0's plan for `step`, rank 1's report.
+                func words(_ step: Int, rank: Int) throws -> [Float] {
+                    var slot = QwenBatchWire.Slot(state: .active, requestID: UUID(uuidString: "00000000-0000-4000-8000-00000000000\(step)")!,
+                                                  role: .decode)
+                    slot.inputToken = QwenTensorParallelBatchWire.carriedToken; slot.selectedTokens = step + 2
+                    let plan = QwenBatchWire.Header(step: step, stop: false,
+                        slots: [slot] + Array(repeating: QwenBatchWire.Slot(), count: width - 1))
+                    let report = QwenBatchWire.Reply(step: step, tokens: (0..<width).map { $0 == 0 ? step + 2 : -1 }, cancelledMask: 0)
+                    return try QwenTensorParallelBatchWire.contribution(rank: rank, plan: rank == 0 ? plan : nil,
+                                                                        report: rank == 1 ? report : nil)
+                }
+                // Read-then-build: every step decoded and read before the next.
+                var expected: [[Int]] = [], expectedControl: [[Float]] = [], expectedLogprobs: [[ClusterWorkerTokenLogprobs?]] = []
+                for step in 0..<steps {
+                    try parallel(reference) { owner in
+                        let rank = owner.executor!.rank, control = try words(step, rank: rank)
+                        let output = try owner.executor!.decode(owner.nativeLanes, tokens: owner.selected, control: { control }, check: {})
+                        owner.selected = output.tokens; owner.control = output.control
+                    }
+                    expected.append(reference[0].selected); expectedControl.append(try #require(reference[0].control))
+                    #expect(reference[1].selected == reference[0].selected)
+                    expectedLogprobs.append(try reference[0].nativeLanes.map { try reference[0].executor!.takeLogprobs($0) })
+                }
+                // Build-ahead: step k+1 is submitted on step k's unread selection, then step k is read.
+                final class Chain: @unchecked Sendable { var pending: [QwenTensorParallelNativeBatchExecutor<SelectionReservation>.Submitted?] = [nil, nil] }
+                let chain = Chain()
+                var actual: [[Int]] = [], actualControl: [[Float]] = [], actualLogprobs: [[ClusterWorkerTokenLogprobs?]] = []
+                for step in 0...steps {
+                    try parallel(candidate) { owner in
+                        let rank = owner.executor!.rank, executor = owner.executor!
+                        var next: QwenTensorParallelNativeBatchExecutor<SelectionReservation>.Submitted?
+                        if step < steps {
+                            let control = try words(step, rank: rank)
+                            let inputs: QwenBatchDecodeInputs<QwenTensorParallelNativeBatchExecutor<SelectionReservation>.Submitted> =
+                                chain.pending[rank].map { .after($0, rows: Array(owner.nativeLanes.indices)) } ?? .tokens(owner.selected)
+                            next = try executor.submitDecode(owner.nativeLanes, inputs: inputs, control: { control }, check: {})
+                        }
+                        if let previous = chain.pending[rank] {
+                            let read = try executor.readDecode(previous, check: {})
+                            owner.selected = read.tokens; owner.control = read.control
+                        }
+                        chain.pending[rank] = next
+                    }
+                    guard step > 0 else { continue }
+                    actual.append(candidate[0].selected); actualControl.append(try #require(candidate[0].control))
+                    #expect(candidate[1].selected == candidate[0].selected)
+                    actualLogprobs.append(try candidate[0].nativeLanes.map { try candidate[0].executor!.takeLogprobs($0) })
+                }
+                #expect(actual == expected, "width=\(width)")
+                #expect(actualControl == expectedControl, "width=\(width): control words")
+                #expect(actualLogprobs == expectedLogprobs, "width=\(width): logprobs")
+                // A paged host commits a submitted step from the frontiers it holds: no device read.
+                // A contiguous host reads them (and waits): the counter is live.
+                for owner in candidate {
+                    let reads = owner.host.submittedDeviceFrontierReads
+                    #expect(owner.host.kind == .paged ? reads == 0 : reads > 0, "width=\(width): \(reads) device frontier reads")
+                }
+                for owner in reference + candidate {
+                    for lane in owner.nativeLanes { try owner.executor!.retire(lane, reason: nil, selected: 7, last: nil) }
+                    #expect(owner.host.isDrained)
+                }
+            }
+        }
+    }
+
+    /// A native lane whose EOS is read after its next step was built ahead
+    /// retires as a clean EOS with exactly that one decode forward discarded
+    /// (`QwenLayerStageGenerationSchedule.finish`), and its host drains.
+    @Test func aNativeLaneRetiresAfterABuiltAheadEOS() throws {
+        let base = QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 4, heads: 4, kvHeads: 2, vocabulary: 256)
+        var tensors = base.tensors.filter { !$0.0.contains(".linear_attn.") }
+        let attention = base.tensors.filter { $0.0.contains(".layers.3.self_attn.") }
+        for layer in 0..<3 { tensors += attention.map { ($0.0.replacingOccurrences(of: ".layers.3.", with: ".layers.\(layer)."), $0.1) } }
+        try Device.withDefaultDevice(device) {
+            var root = try JSONSerialization.jsonObject(with: base.configuration) as! [String: Any]
+            var text = root["text_config"] as! [String: Any]
+            text["max_position_embeddings"] = 4096; text["full_attention_interval"] = 1; root["text_config"] = text
+            let configuration = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
+            let profile = try QwenLayerStageGenerationProfile(identifier: "qwen-tp-build-ahead-eos", vocabularySize: 256,
+                hiddenSize: 256, activationDType: "bfloat16", maximumPromptTokens: 128,
+                maximumChunkTokens: 64, maximumOutputTokens: 16, maximumContextTokens: 256)
+            let prompt = (0..<7).map { ($0 * 17 + 2) % 256 }
+            func pair(stops: Set<Int>) throws -> [Owned] {
+                let wire = Rendezvous()
+                return try (0..<2).map { rank in
+                    let reduction = Rank(rank, wire)
+                    let model = try QwenTensorParallelModel.assemble(configurationData: configuration,
+                        role: .shard(rank: rank, size: 2), reduction: reduction) { _, keep in
+                        for (name, value) in tensors { try keep(name, value) }
+                    }
+                    let owned = try Owned(model, lanes: 1, kind: device == .gpu ? .paged : .contiguous)
+                    owned.executor = try .init(model: model, configuration: configuration, host: owned.host, group: reduction,
+                        prepare: { _, _ in nil }, completedDecode: { _ in }, completedPrefill: {}, releaseResources: { _ in },
+                        buildsAhead: true)
+                    let request = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(uuidString: "6f0e2a4c-0000-4000-8000-0000000000e0")!,
+                        promptTokenIDs: prompt, chunkSize: 8, outputCount: 12, stopTokenIDs: stops)
+                    owned.nativeLanes = [try owned.executor!.open(.init(request: request), check: {})]
+                    return owned
+                }
+            }
+            // The greedy tokens without a stop: the prefill's, then three decode steps'.
+            let reference = try pair(stops: [])
+            try parallel(reference) { owner in
+                let lane = owner.nativeLanes[0]
+                while let frame = lane.nextFrame, frame.phase == .prefill {
+                    if let token = try owner.executor!.prefill(lane, frame: frame, check: {}) { owner.selected = [token] }
+                }
+                for _ in 0..<3 { owner.selected.append(try owner.executor!.decode([lane], tokens: [owner.selected.last!], check: {})[0]) }
+            }
+            let tokens = reference[0].selected
+            for owner in reference { try owner.executor!.retire(owner.nativeLanes[0], reason: nil, selected: 4, last: nil) }
+            // With the third token as the stop: step 2 (on it) is built before step 1 (selecting it) is read.
+            let candidate = try pair(stops: [tokens[2]])
+            final class Chain: @unchecked Sendable { var handles: [[QwenTensorParallelNativeBatchExecutor<SelectionReservation>.Submitted]] = [[], []] }
+            let chain = Chain()
+            try parallel(candidate) { owner in
+                let lane = owner.nativeLanes[0], executor = owner.executor!, rank = executor.rank
+                while let frame = lane.nextFrame, frame.phase == .prefill {
+                    if let token = try executor.prefill(lane, frame: frame, check: {}) { owner.selected = [token] }
+                }
+                var handle = try executor.submitDecode([lane], inputs: .tokens([owner.selected[0]]), control: { [] }, check: {})
+                chain.handles[rank].append(handle)
+                for _ in 0..<2 {
+                    handle = try executor.submitDecode([lane], inputs: .after(handle, rows: [0]), control: { [] }, check: {})
+                    chain.handles[rank].append(handle)
+                    owner.selected.append(try executor.readDecode(chain.handles[rank][owner.selected.count - 1], check: {}).tokens[0])
+                }
+                // The EOS is read; the step built on it is drained and its token dropped.
+                _ = try executor.readDecode(handle, check: {})
+                try executor.retire(lane, reason: .eos, selected: 3, last: owner.selected[2])
+            }
+            for owner in candidate {
+                #expect(owner.selected == Array(tokens.prefix(3)))
+                #expect(owner.nativeLanes[0].isClosed && owner.host.isDrained)
+            }
+        }
     }
 
     /// Routed experts on the native executor: greedy, sampled and

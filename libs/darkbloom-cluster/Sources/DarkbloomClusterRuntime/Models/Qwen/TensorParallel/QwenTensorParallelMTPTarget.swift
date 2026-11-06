@@ -92,8 +92,9 @@ final class QwenTensorParallelTargetWindow {
         } catch { failed = true; throw error }
     }
 
-    /// A window's forward is submitted to the GPU layer by layer, as a decode
-    /// step's is (`QwenTensorParallelBatchSession.decodeLayerStride`): the GPU
+    /// A window's forward is submitted to the GPU as it is built, every
+    /// `QwenTensorParallelBatchSession.decodeLayerStride` layers as a decode
+    /// step's is: the GPU
     /// and the collectives run the layers already built while the host builds
     /// the rest, instead of idling for the whole graph construction.
     /// Evaluation order only: every primitive, input and rounded value is the

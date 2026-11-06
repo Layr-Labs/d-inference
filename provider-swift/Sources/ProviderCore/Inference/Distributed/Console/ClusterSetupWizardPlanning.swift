@@ -16,7 +16,10 @@ enum ClusterSetupPlanning {
         /// The tokenizer and chat template files the manifest pins.
         let tokenizerFiles: [ClusterConfiguration.TokenizerFile]
         /// A requested assistant has either its complete singleton quote or a
-        /// refusal. Failure never silently selects the ordinary target owner.
+        /// refusal. On a local cluster a refusal stands; through Darkbloom, where
+        /// the pair served plain tensor parallel before the assistant was
+        /// declared, a refused assistant gives way to `targetFallbackQuote` and
+        /// the plan says why (`assistantRefusedLine`).
         var tensorAssistantQuote: Result<ClusterPlacementTensorBatchQuote, ClusterSetupFailure>? = nil
         /// Automatic discovery's ordinary request-owned quote, kept only beside a
         /// discovered (not explicitly requested) assistant: used when no placement
@@ -37,6 +40,13 @@ enum ClusterSetupPlanning {
     /// The line a plan carries when the discovered assistant gave way to the ordinary target.
     static let assistantDoesNotFit = "The embedded assistant's complete reservation does not fit both Macs' memory now; "
         + "this plan serves without speculative decoding."
+
+    /// The line a plan through Darkbloom carries when the declared assistant's quote was refused and the plan serves
+    /// the ordinary target instead: the refusal, bounded, in the one line the screen shows under the model.
+    static func assistantRefusedLine(_ failure: ClusterSetupFailure) -> String {
+        "Qwen's speculative assistant could not be planned (" + ClusterConsoleText.bounded(failure.text, maximum: 160)
+            + "); this plan serves without speculative decoding."
+    }
 
     /// The discovered assistant's plan, or, when no placement can hold it, the
     /// ordinary request-owned target's plan. Without a fallback (an explicitly
@@ -194,12 +204,17 @@ enum ClusterSetupPlanning {
                 // Each Mac's share probes of this model, by member ID (`ClusterShareProbeHistory`).
                 let probes = shareProbes?.shareRates(artifactSHA256: capability.record.artifactSHA256,
                     members: description.members.map(\.id), now: now) ?? [:]
-                let discovered = try reading.tensorAssistantQuote?.get()
+                // Through Darkbloom a refused assistant leaves the pair its ordinary target (`ModelReading.tensorAssistantQuote`).
+                var refusedAssistant: ClusterSetupFailure?
+                if coordinator, case .failure(let failure)? = reading.tensorAssistantQuote, case .success? = reading.targetFallbackQuote {
+                    refusedAssistant = failure
+                }
+                let discovered = try refusedAssistant == nil ? reading.tensorAssistantQuote?.get() : reading.targetFallbackQuote?.get()
                 func widening(_ quote: ClusterPlacementTensorBatchQuote?) -> ClusterPlacementTensorBatchQuote? {
-                    quote == nil ? nil : quote == discovered ? reading.tensorWideningQuote : reading.targetFallbackWideningQuote
+                    quote == nil ? nil : quote == discovered && refusedAssistant == nil ? reading.tensorWideningQuote : reading.targetFallbackWideningQuote
                 }
                 func widths(_ quote: ClusterPlacementTensorBatchQuote?) -> [ClusterPlacementTensorBatchQuote] {
-                    quote == nil ? [] : quote == discovered ? reading.tensorWidthQuotes : reading.targetFallbackWidthQuotes
+                    quote == nil ? [] : quote == discovered && refusedAssistant == nil ? reading.tensorWidthQuotes : reading.targetFallbackWidthQuotes
                 }
                 // The plan a start makes for `family` (nil: the planner's own choice), with the quote it was made with.
                 func place(_ family: ClusterForcedMode?, raised: (local: ClusterDeviceProfile, peer: ClusterDeviceProfile)? = nil) throws
@@ -261,8 +276,14 @@ enum ClusterSetupPlanning {
                         + ClusterConsoleText.bounded(refusal.description, maximum: 200))
                 }
                 let profiles = [localMemberID: localProfile, peerID: peerProfile]
-                var plan = summary(decided.result, chosen: chosen, lines: decided.lines, localMemberID: localMemberID, profiles: profiles)
-                plan.modes = modes(decided.result, served: served, pair: pair, localMemberID: localMemberID)
+                // Why the plan serves without speculative decoding where the assistant gave way, in one line.
+                let speculationNote = refusedAssistant.map(assistantRefusedLine)
+                    ?? (discovered?.assistant != nil && assistantQuote != discovered ? assistantDoesNotFit : nil)
+                var plan = summary(decided.result, chosen: chosen, lines: (refusedAssistant.map { [assistantRefusedLine($0)] } ?? [])
+                    + decided.lines, localMemberID: localMemberID, profiles: profiles)
+                plan.speculationNote = speculationNote
+                plan.modes = modes(decided.result, served: served, pair: pair, localMemberID: localMemberID,
+                                   serving: coordinator ? .darkbloom : .local, tensorAssistant: assistantQuote?.assistant != nil)
                 plan.publicTraffic = ClusterPairServingGrants.publicTrafficLine(runtimeModelID: capability.record.runtimeModelID,
                     artifactSHA256: capability.record.artifactSHA256, mode: chosen.mode,
                     tensorAssistant: assistantQuote?.assistant != nil && chosen.mode == .tensorParallel)
@@ -391,15 +412,17 @@ enum ClusterSetupPlanning {
     /// chosen first: the planner's own sharded candidates that run here (not ones that do not fit, no runtime executes,
     /// a qualification check kept out, or that would drop a feature), one per family (the pipeline family's best:
     /// plain, compact or speculative), each with the decode rate this pair served it at, read as the planner reads its
-    /// served requests (`ClusterServedModes.figures` over this build's records of this model on these Macs).
+    /// served requests (`ClusterServedModes.figures` over this build's records of this model on these Macs, served the way
+    /// the plan will serve: `serving`, and tensor parallel with Qwen's tensor assistant exactly when `tensorAssistant`).
     static func modes(_ result: ClusterPlacementResult, served: [ClusterServedSpeedRecords.Entry], pair: ClusterPairDescription,
-                      localMemberID: String) -> [ClusterSetupPlanSummary.Mode]? {
+                      localMemberID: String, serving: ClusterServedScope, tensorAssistant: Bool) -> [ClusterSetupPlanSummary.Mode]? {
         guard let shards = result.shards else { return nil }
         let runs: Set<ClusterShardOption.Verdict> = [.chosen, .slower, .predictedFasterOnPriorOnly, .reductionNotMeasured]
         let members = Set(pair.members.map(\.id))
         let pairServed = served.filter { $0.setup.modelID == pair.publicModelID && ($0.setup.ranks.map { Set($0) == members } ?? false) }
         let builds = Dictionary(pair.members.map { ($0.id, $0.runtimeBinarySHA256) }, uniquingKeysWith: { first, _ in first })
-        let figures = ClusterServedModes.figures(ClusterServedSpeedRecords.servedBy(builds, pairServed).current,
+        let figures = ClusterServedModes.figures(ClusterServedSpeedRecords.servedAs(serving, tensorAssistant: tensorAssistant,
+                                                     ClusterServedSpeedRecords.servedBy(builds, pairServed).current),
                                                  promptTokens: result.promptTokens, outputTokens: result.outputTokens)
         var families = Set<ClusterForcedMode>(), modes = [ClusterSetupPlanSummary.Mode]()
         for option in shards.options.sorted(by: { ($0.verdict == .chosen ? 0 : 1) < ($1.verdict == .chosen ? 0 : 1) })

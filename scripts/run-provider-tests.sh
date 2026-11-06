@@ -52,6 +52,14 @@ provider_test_processes=${PROVIDER_TEST_PROCESSES:-1}
 # Processes of one job read the same build; SwiftPM's lock on .build would
 # otherwise serialize them. With --skip-build none of them writes the build.
 lock_flag=()
+# Report-only: in a sampled CI job (CI_RESOURCE_SAMPLES), tells
+# scripts/ci-resource-sampler.py that selection $2 starts or ends ($1) under
+# this shell (the mark's parent process), so its report names the selection of
+# each large process.
+mark_selection() {
+  [ -z "${CI_RESOURCE_SAMPLES:-}" ] ||
+    python3 "$script_directory/ci-resource-sampler.py" mark "$1" "$2" || true
+}
 run_provider_test_selection() {
   local selection=$1 name=${1//\//-of-} arguments argument parallel_flag=(--no-parallel) status attempt
   local selected=() report="$PROVIDER_TEST_REPORT_DIR/shard-$name"
@@ -60,6 +68,7 @@ run_provider_test_selection() {
   # The parallel class keeps Swift Testing's default in-process parallelism.
   [ "$selection" != parallel ] || parallel_flag=()
   echo "Provider test selection $name: ${#arguments} characters of filters"
+  mark_selection start "$name"
   # Beside other processes, SwiftPM can find the build database locked by
   # another process's startup; it then runs the tests and exits 1. Such a
   # selection runs once more, but only when its log proves every test passed
@@ -78,6 +87,7 @@ run_provider_test_selection() {
     mv "$report.log" "$PROVIDER_TEST_REPORT_DIR/attempt-1-shard-$name.log"
     [ ! -f "$report.xml" ] || mv "$report.xml" "$PROVIDER_TEST_REPORT_DIR/attempt-1-shard-$name.xml"
   done
+  mark_selection end "$name"
   python3 "$script_directory/provider-test-shards.py" counts "$selection" "$isolated_pattern" "$report.log" "$report.json" || status=1
   return "$status"
 }
@@ -148,6 +158,7 @@ else
   fi
 fi
 for test_filter in "${isolated_filters[@]}"; do
+  mark_selection start "$test_filter"
   if [ "$test_filter" = acceptedThenExpired ]; then
     env -u MIMO_V26_SERIAL_NATIVE_TESTS -u DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST DARKBLOOM_ISOLATED_DEADLINE_TEST=1 \
       "$script_directory/run-nested-suite.sh" "$test_filter" --no-parallel || provider_test_status=$?
@@ -155,9 +166,13 @@ for test_filter in "${isolated_filters[@]}"; do
     env -u MIMO_V26_SERIAL_NATIVE_TESTS -u DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST -u DARKBLOOM_ISOLATED_DEADLINE_TEST \
       "$script_directory/run-nested-suite.sh" "$test_filter" --no-parallel || provider_test_status=$?
   fi
+  mark_selection end "$test_filter"
 done
 # This assertion observes the real allocator and must own its entire process,
 # not merely run sequentially beside other tests in the same suite/process.
+exclusive_filter=evaluatedPagesAvoidDoubleTaxAndRetainedAliasKeepsPressure
+mark_selection start "$exclusive_filter"
 env -u MIMO_V26_SERIAL_NATIVE_TESTS -u DARKBLOOM_ISOLATED_DEADLINE_TEST "$script_directory/run-exclusive-native-gpu-test.sh" \
-  evaluatedPagesAvoidDoubleTaxAndRetainedAliasKeepsPressure || provider_test_status=$?
+  "$exclusive_filter" || provider_test_status=$?
+mark_selection end "$exclusive_filter"
 exit "$provider_test_status"

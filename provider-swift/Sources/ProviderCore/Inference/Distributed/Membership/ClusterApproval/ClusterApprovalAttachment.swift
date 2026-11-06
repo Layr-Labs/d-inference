@@ -145,9 +145,10 @@ enum ClusterApprovalAttachment {
             resourceLibraryPath: tools.resourceLibrary.path, clusterApproval: approval, roster: paired.roster,
             memberPins: paired.pins, edges: edge.map { [$0] })
         // Every check the save runs on the setup with the attachment, as at every load: the approval names this setup's
-        // model, artifact and schedule (and a build-pinned one its runtime, capability and profile), the roster's pins
-        // are its members in rank order, and nothing the setup carries is refused beside an approval (a tensor
-        // assistant serves local clusters only). So no part stops for an approval either Mac must refuse at the save.
+        // model, artifact and schedule (and a build-pinned one its runtime, capability, profile and resource policy,
+        // which carries any resident assistant this build declares public), the roster's pins are its members in rank
+        // order, and nothing the setup carries is refused beside an approval (a tensor assistant only as this build
+        // declares it public). So no part stops for an approval either Mac must refuse at the save.
         try configuration.replacingNativeMember(attachment).validate(capability: saved.capability,
                                                                     rawCapabilitySHA256: configuration.capabilitySHA256)
         return attachment

@@ -213,7 +213,7 @@ public enum ManifestBuilder {
 
     // MARK: - Internals
 
-    private struct Hashed: Sendable {
+    struct Hashed: Sendable {
         let relativePath: String
         let digest: SHA256Digest
         let sizeBytes: Int64
@@ -237,7 +237,7 @@ public enum ManifestBuilder {
         return "\(slug)--\(digest.prefix(12))"
     }
 
-    private static func hashOne(file: URL, basePrefix: String) throws -> Hashed {
+    static func hashOne(file: URL, basePrefix: String) throws -> Hashed {
         let fm = FileManager.default
 
         // (a) Compute the manifest-relative path against the symlink-preserving
@@ -302,7 +302,7 @@ public enum ManifestBuilder {
         while true {
             let chunk: Data
             do {
-                chunk = try handle.read(upToCount: 65536) ?? Data()
+                chunk = try handle.readDrained(upToCount: 65536) ?? Data()
             } catch {
                 throw Error.fileReadFailed(file, error)
             }

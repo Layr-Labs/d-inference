@@ -1,0 +1,4 @@
+### Provider updates hash bundles in bounded memory; CI samples memory by class
+
+- An install, a verify or a rollback of the provider no longer keeps every byte it hashes in memory. Each 1 MiB read of the bundle hash and the file hash now releases its buffer before the next read. Before, a rollback test of the debug CLI held 15 GiB until its test process ended. The hashes are unchanged.
+- The CI resource sampler now records memory by class: app (with Metal buffers), wired, file cache, compressed and swap. It also records the physical footprint of each process, which includes Metal memory, the test selection each large process runs, and busy vCPUs from the host's CPU ticks. Each job's report and `summary.json` show the peaks, the three largest processes and the time the job would take on 4 and 8 vCPUs. The sampler stays report-only.

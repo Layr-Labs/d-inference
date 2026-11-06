@@ -102,6 +102,7 @@ extension ClusterPairSummary {
         summary.modelID = leadership.modelName
         summary.modelName = leadership.modelName.flatMap { modelName($0, directory: store.paths.directory) }
         summary.deployment = leadership.deployment
+        summary.speculationNote = leadership.speculationNote
         let own = ClusterService.publishedLive()
         (summary.state, summary.reason) = ownState(started: summary.started, own: own, localOnly: summary.localOnly)
         summary.pairRunning = summary.started && ClusterService.pairRuns(own)

@@ -61,6 +61,7 @@
 import CryptoKit
 import Foundation
 import MLXLMCommon
+import ProviderCoreFoundation
 #if canImport(os)
 import os
 #endif
@@ -485,7 +486,8 @@ enum SSDBlockStore {
             try beforeRead?(0)
             let chunk: Data?
             do {
-                chunk = try handle.read(upToCount: count - out.count)
+                // Drained: a streamed restore reads every chunk of the file in one call.
+                chunk = try handle.readDrained(upToCount: count - out.count)
             } catch {
                 throw SSDBlockStoreError.ioFailure("read \(what): \(error)")
             }

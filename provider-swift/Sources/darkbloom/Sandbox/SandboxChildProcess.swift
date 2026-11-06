@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import ProviderCore
 
 /// Runs one child process for a sandbox command and waits for it from its
 /// termination handler, never blocking a thread. While the child runs, Ctrl-C
@@ -90,7 +91,7 @@ enum SandboxChildProcess {
 
     private static func read(_ handle: FileHandle, into output: Output) {
         var splitter = SandboxLineSplitter()
-        while let chunk = try? handle.read(upToCount: 16 * 1024), !chunk.isEmpty {
+        while let chunk = try? handle.readDrained(upToCount: 16 * 1024), !chunk.isEmpty {
             switch output {
             case .inherit: return
             case .tail(let tail): tail.append(chunk)
@@ -180,7 +181,7 @@ final class SandboxOutputTail: @unchecked Sendable {
     func append(_ chunk: Data) {
         lock.withLock {
             data.append(chunk)
-            if data.count > limit { data.removeFirst(data.count - limit) }
+            data.keepLast(limit)
         }
     }
 

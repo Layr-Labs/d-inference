@@ -345,6 +345,19 @@ struct ClusterStatusPlainTests {
         }
     }
 
+    @Test("a plan that serves without the speculative assistant says why, in one line under how it serves")
+    func speculationNoteLine() {
+        var serving = pair()
+        serving.state = .serving
+        serving.lines = ["Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel)."]
+        serving.speculationNote = "Qwen's speculative assistant could not be planned (the helper timed out); this plan serves without speculative decoding."
+        let lines = serving.clusterStatusLines
+        let serves = lines.firstIndex { $0.hasPrefix("Serves: ") }
+        #expect(serves.map { lines[$0 + 1] } == serving.speculationNote, "\(lines)")
+        serving.speculationNote = nil
+        #expect(!serving.clusterStatusLines.contains { $0.contains("speculative") })
+    }
+
     @Test("plain output: who leads, the model and its split, how it serves, the state in the screens' words, what to do")
     func plainLines() {
         var serving = pair()

@@ -10,6 +10,12 @@ import Foundation
 /// pays one sealed sum and one host read; every other step keeps its own exchange.
 enum QwenTensorParallelBatchWire {
     static let agreement = "qwen-tp-independent-history-batch-v2-folded-control"
+    /// Build-ahead (`QwenTensorParallelBatchDriver.serveAhead`): every folded
+    /// step's selection sum also carries both ranks' decision words for the
+    /// step two later, and decided continuations are built before the step
+    /// before them is read. A load-agreement field, so ranks of the two
+    /// protocols refuse each other before either loads a weight.
+    static let buildAheadAgreement = "qwen-tp-batch-build-ahead-v1"
     static let words = 4 + 2 * (QwenBatchWire.headerWords + QwenBatchWire.replyWords)
     private static let magic: Float = 0x515442
     /// A folded plan's decode input: the token its row selects in the step

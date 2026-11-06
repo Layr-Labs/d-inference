@@ -69,6 +69,11 @@ extension EngineV2Bridge {
     /// takes the engine's metrics lock; this adapter never reaches controller
     /// mutation or the inference loop.
     public func mtpStatusSnapshot() -> ProviderMTPStatusSnapshot {
+        // A cluster pair published with its resident assistant (`publishClusterPairSlot`): the counts rank 0's
+        // runtime reported request by request (`DistributedCBv2Engine.mtpTotalsSnapshot`).
+        if mtpActivationStatus.configured, let pair = ownedEngine as? DistributedCBv2Engine {
+            return ProviderMTPStatusSnapshot(pair: pair.mtpTotalsSnapshot(), placementDecodesWithHead: true)
+        }
         let metrics = (ownedEngine as? EngineV2)?.mtpMetricsSnapshot()
         return ProviderMTPStatusSnapshot(status: mtpActivationStatus, metrics: metrics)
     }

@@ -1,6 +1,6 @@
 # Identity binding
 
-> Last updated: 2026-10-19
+> Last updated: 2026-11-05
 
 How the coordinator binds a provider's process encryption key, account and
 verification credentials. Legacy MDM/APNs evidence and App Attest credentials
@@ -154,7 +154,8 @@ The security boundary is enforced by these provider-owned components:
 1. **Exact code and kernel peer.** `WorkerCodeIdentity` requires Developer ID
    team `SLDQ2GJ6TL`, identifier `io.darkbloom.provider`, hardened runtime and no
    ad-hoc/debug/library-validation/loader/JIT relaxations. Both sides compare
-   CodeDirectory identity and full executable SHA-256 at authentication. The
+   CodeDirectory identity and full executable SHA-256 at authentication, read
+   in 1 MiB chunks that are each released before the next read. The
    kernel `LOCAL_PEERTOKEN` audit token, including PID version, selects the
    running code; a peer-supplied PID/path or same team alone is insufficient.
    Subsequent exchanges recheck the captured audit/code identity

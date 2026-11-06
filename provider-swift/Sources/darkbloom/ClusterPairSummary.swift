@@ -65,6 +65,8 @@ struct ClusterPairSummary: Sendable, Equatable {
     var lines: [String] = []
     /// Not in a cluster, yet a cluster service runs or has a login agent here: left from an earlier pairing.
     var leftoverService: Bool = false
+    /// Why the leader's adopted plan serves without the model's speculative assistant (`ClusterOnboardingLeadership.speculationNote`).
+    var speculationNote: String?
 
     static let notPaired = ClusterPairSummary(paired: false, state: .notPaired)
 
@@ -550,6 +552,7 @@ extension ClusterPairSummary {
         }
         var out = ["Cluster: " + rolesWords, "Model: " + modelWords]
         out.append("Serves: " + servesWords + (localOnly ? " (API key: `\(Self.cli) local` on the Mac that serves it)" : ""))
+        if let speculationNote { out.append(speculationNote) }
         if let idle = startedButNotRunningLine {
             out.append(idle)
             out.append("Next: `\(Self.cli) start` serves this Mac alone; `\(Self.cli) cluster` starts the pair again.")

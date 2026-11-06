@@ -1,6 +1,7 @@
 import DarkbloomClusterProtocol
 import Foundation
 import MLX
+import MLXLMCommon
 
 final class QwenTensorParallelNativeBatchLane: QwenTensorParallelBatchLane {
     let session: QwenTensorParallelBatchSession
@@ -50,6 +51,11 @@ final class QwenTensorParallelNativeBatchLane: QwenTensorParallelBatchLane {
 final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParallelBatchReservation>: QwenTensorParallelBatchExecutor {
     typealias Lane = QwenTensorParallelNativeBatchLane
     let rank: Int
+    /// Submits plain decode rectangles without reading them (`submitDecode`),
+    /// for the driver's build-ahead (overlapping only on a paged host, whose
+    /// frontiers the host holds). Off by default:
+    /// the product turns it on with `QwenTensorParallelBatchSettings.buildsAhead`.
+    let buildsAhead: Bool
     private let model: QwenTensorParallelModel
     private let configuration: Data
     private let host: CBv2StageKVHost
@@ -95,7 +101,8 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
          openedLane: @escaping (UUID, String) -> Void = { _, _ in },
          completedSpeculation: @escaping (UUID, Int, QwenMTPStatistics) -> Void = { _, _, _ in },
          profiledRound: @escaping (QwenTensorParallelMTPRoundProfile) -> Void = { _ in },
-         cohortJoinsAhead: Bool = true, cohortBatchesDrafts: Bool = true) throws {
+         cohortJoinsAhead: Bool = true, cohortBatchesDrafts: Bool = true, buildsAhead: Bool = false) throws {
+        self.buildsAhead = buildsAhead
         guard case .shard(let rank, let size) = model.role, size == 2, rank == group.rank, size == group.size,
               sha256(configuration) == model.configurationSHA256,
               model.plan.vocabularySize < (1 << 24),
@@ -452,6 +459,30 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
     /// of them returns. Exact limbs plus zeros leave the selection words' bits.
     private func select(_ logits: MLXArray, lanes: [Lane], control: [Float]?,
                         check: () throws -> Void) throws -> (tokens: [Int], control: [Float]?) {
+        try readSelection(try buildSelection(logits, lanes: lanes, control: control, checksGatheredRows: true, check: check),
+                          lanes: lanes, check: check)
+    }
+
+    /// One decode rectangle's selection as graph nodes: the tokens, the
+    /// non-finite counts the read checks, the summed control words and, on
+    /// rank 0, each sampled row's lazy logprob gather.
+    struct Selection {
+        let selected: MLXArray
+        let nonfinite: MLXArray?
+        /// Sampled rows: the gathered rows' non-finite count, when not checked at build.
+        let gatheredNonfinite: MLXArray?
+        let summedControl: MLXArray?
+        let controlCount: Int?
+        let logprobs: [CBv2StepLogprobs?]
+        var roots: [MLXArray] { [selected] + [nonfinite, gatheredNonfinite, summedControl].compactMap { $0 } }
+    }
+
+    /// `checksGatheredRows`: sampled rows' gathered rows are evaluated and
+    /// checked before the draw (the read-then-build order); a submitted step
+    /// (build-ahead) defers that check to its read, which fails both ranks
+    /// alike before any history advances.
+    private func buildSelection(_ logits: MLXArray, lanes: [Lane], control: [Float]?, checksGatheredRows: Bool,
+                                check: () throws -> Void) throws -> Selection {
         let width = lanes.count
         guard (1...host.lanes).contains(width), logits.shape == [width, model.vocabularyRange.count],
               lanes.allSatisfy({ !$0.isClosed && $0.session.model === model }) else {
@@ -459,7 +490,8 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
         }
         let values = logits.asType(.float32)
         let selected: MLXArray
-        var nonfinite: MLXArray?, summedControl: MLXArray?
+        var nonfinite: MLXArray?, gatheredNonfinite: MLXArray?, summedControl: MLXArray?
+        var logprobs = [CBv2StepLogprobs?](repeating: nil, count: width)
         /// `own` words, then the control words, in one sealed sum.
         func sum(_ own: MLXArray) -> MLXArray {
             guard let control else { return group.allSum(own) }
@@ -478,17 +510,25 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
             pieces.append(values)
             if after > 0 { pieces.append(MLXArray.zeros([width, after], dtype: .float32)) }
             let full = group.allSum(pieces.count == 1 ? values : concatenated(pieces, axis: 1))
-            let gatheredNonfinite = (1 - isFinite(full).asType(.float32)).sum()
-            eval(full, gatheredNonfinite); try check()
-            guard full.shape == [width, model.plan.vocabularySize], gatheredNonfinite.item(Float.self) == 0 else {
+            let gathered = (1 - isFinite(full).asType(.float32)).sum()
+            guard full.shape == [width, model.plan.vocabularySize] else {
                 throw ProbeError("Qwen TP gathered sampling rows are invalid")
+            }
+            if checksGatheredRows {
+                eval(full, gathered); try check()
+                guard gathered.item(Float.self) == 0 else { throw ProbeError("Qwen TP gathered sampling rows are invalid") }
+            } else {
+                gatheredNonfinite = gathered
             }
             var choices = MLXArray.zeros([width], dtype: .float32)
             if rank == 0 {
                 let rows = lanes.enumerated().map { index, lane in
                     let row = full[index..<index + 1]
-                    return (lane.session.request.sampler?.sample(row) ?? argMax(row, axis: -1))
-                        .asType(.float32).reshaped([1])
+                    guard let sampler = lane.session.request.sampler else { return argMax(row, axis: -1).asType(.float32).reshaped([1]) }
+                    let drawn = sampler.sample(row)
+                    // Kept with this step: a step built ahead draws again before this one is read.
+                    logprobs[index] = sampler.takePendingStepLogprobs()
+                    return drawn.asType(.float32).reshaped([1])
                 }
                 choices = concatenated(rows, axis: 0)
             }
@@ -506,28 +546,92 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
             selected = which(both[0..., 3] .> both[0..., 0], both[0..., 4], both[0..., 1]).asType(.int32)
             nonfinite = both[0..., 2] + both[0..., 5]
         }
-        eval([selected] + (nonfinite.map { [$0] } ?? []) + (summedControl.map { [$0] } ?? [])); try check()
-        guard nonfinite?.asArray(Float.self).allSatisfy({ $0 == 0 }) ?? true else {
+        return Selection(selected: selected, nonfinite: nonfinite, gatheredNonfinite: gatheredNonfinite,
+                         summedControl: summedControl, controlCount: control?.count, logprobs: logprobs)
+    }
+
+    /// Reads a built selection: checks every row and the words, then (rank 0)
+    /// advances each sampled request's history and keeps its token's logprobs.
+    private func readSelection(_ selection: Selection, lanes: [Lane], check: () throws -> Void) throws -> (tokens: [Int], control: [Float]?) {
+        let width = lanes.count
+        eval(selection.roots); try check()
+        guard selection.gatheredNonfinite.map({ $0.item(Float.self) == 0 }) ?? true else {
+            throw ProbeError("Qwen TP gathered sampling rows are invalid")
+        }
+        guard selection.nonfinite?.asArray(Float.self).allSatisfy({ $0 == 0 }) ?? true else {
             throw ProbeError("Qwen TP selection rows have a non-finite logit")
         }
-        let tokens = selected.asArray(Int32.self).map(Int.init); try check()
+        let tokens = selection.selected.asArray(Int32.self).map(Int.init); try check()
         guard tokens.count == width, tokens.allSatisfy({ (0..<model.plan.vocabularySize).contains($0) }) else {
             throw ProbeError("Qwen TP selection produced an invalid token")
         }
-        let words = summedControl?.asArray(Float.self)
-        guard words.map({ $0.count == control?.count && $0.allSatisfy(\.isFinite) }) ?? (control == nil) else {
+        let words = selection.summedControl?.asArray(Float.self)
+        guard words.map({ $0.count == selection.controlCount && $0.allSatisfy(\.isFinite) }) ?? (selection.controlCount == nil) else {
             throw ProbeError("Qwen TP folded control words changed length or are not finite")
         }
         // No request history advances until every row and the collective
         // succeeded. Penalties and random streams remain request-local.
         if rank == 0 {
-            for (lane, token) in zip(lanes, tokens) {
+            for (index, (lane, token)) in zip(lanes, tokens).enumerated() {
                 if let sampler = lane.session.request.sampler {
-                    lane.pendingLogprobs = sampler.takePendingLogprobs(); sampler.commit(token)
+                    lane.pendingLogprobs = selection.logprobs[index].map(QwenStageTokenSampler.tokenLogprobs); sampler.commit(token)
                 }
             }
         }
         return (tokens, words)
+    }
+
+    // MARK: - Build-ahead (`QwenTensorParallelBatchDriver.serveAhead`)
+
+    /// A submitted, unread decode rectangle.
+    final class Submitted {
+        let lanes: [Lane]
+        let selection: Selection
+        init(lanes: [Lane], selection: Selection) { self.lanes = lanes; self.selection = selection }
+    }
+
+    /// Submits a plain decode rectangle (no assistant, nothing accepted) on
+    /// the host's tokens or the previous rectangle's unread selection: the
+    /// forward (`QwenTensorParallelBatchSession.submitDecode`), then `control`
+    /// once the forward committed, then the selection and its sum, all as
+    /// graph nodes. Nothing is read; `readDecode` reads it.
+    func submitDecode(_ lanes: [Lane], inputs: QwenBatchDecodeInputs<Submitted>, control: () throws -> [Float],
+                      check: () throws -> Void) throws -> Submitted {
+        guard buildsAhead, !lanes.isEmpty, lanes.count <= host.lanes,
+              Set(lanes.map { ObjectIdentifier($0) }).count == lanes.count,
+              lanes.allSatisfy({ $0.assistant == nil && $0.accepted.isEmpty && !$0.isClosed }) else {
+            throw ProbeError("Qwen TP build-ahead needs distinct plain lanes on an executor that builds ahead")
+        }
+        let tokens: MLXArray
+        switch inputs {
+        case .tokens(let values):
+            guard values.count == lanes.count, values.allSatisfy({ (0..<model.plan.vocabularySize).contains($0) }) else {
+                throw ProbeError("Qwen TP submitted decode tokens differ from its lanes")
+            }
+            tokens = MLXArray(values.map(Int32.init))
+        case .after(let previous, let rows):
+            guard rows.count == lanes.count, rows.allSatisfy({ previous.lanes.indices.contains($0) }),
+                  zip(rows, lanes).allSatisfy({ previous.lanes[$0.0] === $0.1 }) else {
+                throw ProbeError("Qwen TP build-ahead rows differ from the previous step's lanes")
+            }
+            tokens = rows == Array(previous.lanes.indices)
+                ? previous.selection.selected : take(previous.selection.selected, MLXArray(rows.map(Int32.init)))
+        }
+        return try GPU.withCommandBufferLimits(QwenTensorParallelBatchSession.decodeCommandBuffers) {
+            let logits = try QwenTensorParallelBatchSession.submitDecode(lanes.map(\.session), tokens: tokens, check: check)
+            completedDecode(lanes.count)
+            let words = try control()
+            let selection = try buildSelection(logits, lanes: lanes, control: words, checksGatheredRows: false, check: check)
+            asyncEval(selection.roots)
+            try check()
+            for lane in lanes { lane.selectedCount += 1 }
+            return Submitted(lanes: lanes, selection: selection)
+        }
+    }
+
+    func readDecode(_ submitted: Submitted, check: () throws -> Void) throws -> (tokens: [Int], control: [Float]) {
+        let result = try readSelection(submitted.selection, lanes: submitted.lanes, check: check)
+        return (result.tokens, result.control ?? [])
     }
 
     func takeLogprobs(_ lane: Lane) throws -> ClusterWorkerTokenLogprobs? {

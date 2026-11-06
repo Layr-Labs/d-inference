@@ -18,6 +18,58 @@ struct ClusterAPIParityTests {
         #expect(mismatches.isEmpty, "\(mismatches.count) differences:\n\(mismatches.joined(separator: "\n\n"))")
     }
 
+    /// A stream the shared pipeline rejects mid-generation (a named tool
+    /// choice answered with text, `toolChoiceViolation`) ends on a cluster with
+    /// the single-Mac endpoint's own failure frame, also while the pair is
+    /// still finishing the cancelled request: here the pair acknowledges
+    /// retirement only once the client has the whole answer, as a pair still
+    /// finishing a step does. The run above acknowledges at once, so it met
+    /// this order only intermittently (`tool-choice-named-stream`).
+    @Test(arguments: ["qwen3.8-27b", "qwen3.5-9b", "qwen3.5-35b-a3b", "bonsai-27b", "nemotron-3.5"])
+    func streamRejectedMidGenerationEndsWithTheSingleMacFailureFrameBeforeRetirement(_ name: String) async throws {
+        let family = try #require(ParityFamily.all.first { $0.name == name })
+        let testCase = try #require(ParityCase.all(family).first { $0.name == "tool-choice-named-stream" })
+        let tokens = testCase.script.tokens(family)
+        let directory = try family.makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let script = ParityScript()
+        script.set(tokens)
+        let solo = try await ParitySoloServer.start(family: family, directory: directory, script: script)
+        let cluster = try await ParityClusterServer.start(family: family, directory: directory)
+        let client = URLSession(configuration: .ephemeral)
+        do {
+            let single = try await paritySend(port: solo.port, testCase, session: client)
+            try #require(single.status == 200 && single.body.last?.contains(#""finish_reason":"error""#) == true,
+                         "\(name): the fixture no longer fails on a single Mac")
+            let owner = cluster.session.base
+            let bridge = try #require(await cluster.host.entry?.engineV2Bridge)
+            let retirement = LocalHostLatch(), stop = ParityStopFlag()
+            let driver = Task {
+                await cluster.drive(after: 0, script: tokens, failure: false, stop: stop, retirement: retirement)
+            }
+            let pair: ParityAnswer
+            do {
+                pair = try await paritySend(port: cluster.port, testCase, session: client)
+                // Answered while the pair still owns the request. The pipeline
+                // cancelled it (this lease takes no clean stop) and gave back its
+                // acquisition and HTTP hold; only its lane waits for retirement.
+                #expect(try await httpDeliveryEventually { owner.lease(0).cancelCount == 1 })
+                #expect(try await localHostEventually { await cluster.host.responses.activeResponseCount == 0 })
+                #expect(await cluster.host.pins.isEmpty)
+                #expect(owner.lease(0).releaseCount == 0)
+                #expect(await bridge.activeRequestCount() == 1)
+            } catch { retirement.complete(); stop.set(); await driver.value; throw error }
+            retirement.complete(); stop.set(); await driver.value
+            #expect(pair == single, "\(name):\n single-Mac: \(single)\n cluster:    \(pair)")
+            // Retirement releases the lease and frees the lane.
+            #expect(try await httpDeliveryEventually { owner.lease(0).releaseCount == 1 })
+            #expect(try await localHostEventually { await bridge.activeRequestCount() == 0 })
+        } catch {
+            client.invalidateAndCancel(); await cluster.stop(); await solo.stop(); throw error
+        }
+        client.invalidateAndCancel(); await cluster.stop(); await solo.stop()
+    }
+
     /// Every captured value in this three-token visible script must survive,
     /// in order, on both JSON and SSE paths. It ends by length, without an EOS
     /// or parser-only token whose metadata has no visible attachment boundary.

@@ -46,6 +46,11 @@ class ClusterTestPlanTests(unittest.TestCase):
             f"{module}.PrefixCacheContractTests/plannedFramesStartAtTheReusedPrefix()": "base",
             f"{module}.QwenBatchCancellationTests/testAcceptedStartStaysCharged": "base",
             f"{module}.QwenTensorParallelBatchSessionTestsMore/plainCase()": "base",
+            f"{module}.Gemma4TensorParallelTests/plainCase()": "base-gemma",
+            f"{module}/ResidentAdmissionGemma4Tests/Nested/plainCase()": "base-gemma",
+            f"{module}.Gemma4TensorParallelTestsMore/plainCase()": "base",
+            # A switched test of a Gemma suite runs only in its switch's selection.
+            f"{module}.Gemma4TensorParallelTests/diagnosticShardOperationsEqualWholeOperations()": "gemma-tp-diag",
         })
         for test_id, owner in cases.items():
             with self.subTest(test_id=test_id):
@@ -78,11 +83,18 @@ class ClusterTestPlanTests(unittest.TestCase):
     def test_order_dependent_selections_keep_their_process_and_order(self):
         # Some GPU and peer tests pass only after earlier work in the same
         # process or on the same Mac (PR 1745 runs 41692814231, 41700931534).
-        # Every base suite but the CPU batch-session suite runs in one process,
-        # so each model family shares a process.
+        # Each model family's base suites share one process: the CPU
+        # batch-session suite runs in its own, the Gemma family in its own and
+        # every other base suite in `base`.
         base = [selection for selection in plan.SELECTIONS if selection.base]
         self.assertEqual([(selection.name, selection.suites) for selection in base],
-                         [("base-batch-session", ("QwenTensorParallelBatchSessionTests",)), ("base", None)])
+                         [("base-batch-session", ("QwenTensorParallelBatchSessionTests",)), ("base", None),
+                          ("base-gemma", plan.GEMMA_SUITES)])
+        self.assertTrue(all("Gemma" in suite for suite in plan.GEMMA_SUITES))
+        gemma = next(selection for selection in base if selection.name == "base-gemma")
+        self.assertIsNone(gemma.group)
+        self.assertEqual([selection.name for selection in plan.SELECTIONS
+                          if (selection.lane, selection.shard) == ("blocking", gemma.shard)], ["base-gemma"])
         # `base`, the longest selection, and then the share probe have shard 1
         # and its Mac to themselves, one process at a time. The probe times
         # its share against a 1.5 s budget: it never shares a shard with the
@@ -117,8 +129,10 @@ class ClusterTestPlanTests(unittest.TestCase):
             plan.Selection("alone", "blocking", 1), plan.Selection("other-shard", "blocking", 2),
         )
         command = lambda selection, output: (ROOT, [sys.executable, "-c", script, selection.name, str(marks)])
+        # Group 2 starts 0.2 s after group 1 (CLUSTER_TEST_START_GAP), while
+        # group 1's first selection (0.4 s) still runs.
         with mock.patch.object(plan, "SELECTIONS", selections), mock.patch.object(plan, "command", command), \
-                mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": ""}):
+                mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": "", "CLUSTER_TEST_START_GAP": "0.2"}):
             self.assertEqual(plan.run("blocking", 1), 1)
         events = {}
         for line in marks.read_text().splitlines():
@@ -128,10 +142,12 @@ class ClusterTestPlanTests(unittest.TestCase):
                 events[("tmp", name)] = rest[0] if rest else None
         names = ("a1", "a2", "b1", "b2", "alone")
         self.assertEqual({name for kind, name in events if kind == "start"}, set(names))
-        # Each group keeps its order; the two groups overlap.
+        # Each group keeps its order; the two groups overlap, and the second
+        # starts one gap after the first, so their SwiftPM startups do not meet.
         self.assertLessEqual(events[("end", "a1")], events[("start", "a2")])
         self.assertLessEqual(events[("end", "b1")], events[("start", "b2")])
         self.assertLess(events[("start", "b1")], events[("end", "a1")])
+        self.assertGreaterEqual(events[("start", "b1")] - events[("start", "a1")], 0.2)
         # Each group has its own TMPDIR; the alone selection starts after all of them.
         self.assertEqual(events[("tmp", "a1")], events[("tmp", "a2")])
         self.assertNotEqual(events[("tmp", "a1")], events[("tmp", "b1")])
@@ -140,15 +156,19 @@ class ClusterTestPlanTests(unittest.TestCase):
     def test_a_grouped_selection_that_finds_the_build_database_locked_runs_once_more(self):
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         # The first run of "locked-once" finds build.db locked, as SwiftPM
-        # reports it, passes its tests and exits 1; "locked" always does;
-        # "locked-failing" finds it locked and a test fails; "failing" fails.
+        # reports it, passes its tests and exits 1; "locked-other-wording"
+        # does the same with SwiftPM's other wording (run 42057277814);
+        # "locked" always does; "locked-failing" finds it locked and a test
+        # fails; "failing" fails.
         script = ("import os, sys; name, root = sys.argv[1], sys.argv[2]\n"
                   "runs = os.path.join(root, name)\n"
                   "count = len(open(runs).read()) if os.path.exists(runs) else 0\n"
                   "open(runs, 'a').write('x')\n"
-                  "locked = name in ('locked', 'locked-failing') or (name == 'locked-once' and count == 0)\n"
-                  "if locked: print('error: unable to attach DB: error: accessing build database '\n"
-                  "                 '\"/x/.build/build.db\": database is locked', flush=True)\n"
+                  "locked = name in ('locked', 'locked-failing') or (name.startswith('locked-o') and count == 0)\n"
+                  "if locked and name == 'locked-other-wording':\n"
+                  "    print('error: error: accessing build database \"/x/.build/build.db\": database is locked', flush=True)\n"
+                  "elif locked: print('error: unable to attach DB: error: accessing build database '\n"
+                  "                   '\"/x/.build/build.db\": database is locked', flush=True)\n"
                   "print(f'run {count + 1}', flush=True)\n"
                   "if name == 'locked-failing': print('\u2718 Test run with 2 tests failed after 0.1 seconds.')\n"
                   "else: print('\u2714 Test run with 2 tests passed after 0.1 seconds.')\n"
@@ -156,15 +176,17 @@ class ClusterTestPlanTests(unittest.TestCase):
         selections = (plan.Selection("locked-once", "blocking", 1, group=1),
                       plan.Selection("locked", "blocking", 1, group=2),
                       plan.Selection("failing", "blocking", 1, group=3),
-                      plan.Selection("locked-failing", "blocking", 1, group=4))
+                      plan.Selection("locked-failing", "blocking", 1, group=4),
+                      plan.Selection("locked-other-wording", "blocking", 1, group=5))
         command = lambda selection, output: (ROOT, [sys.executable, "-c", script, selection.name, str(root)])
         with mock.patch.object(plan, "SELECTIONS", selections), mock.patch.object(plan, "command", command), \
-                mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": ""}), \
+                mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": "", "CLUSTER_TEST_START_GAP": "0"}), \
                 mock.patch.object(sys, "stdout", io.TextIOWrapper(io.BytesIO(), write_through=True)) as stdout:
             self.assertEqual(plan.run("blocking", 1), 1)
             printed = stdout.buffer.getvalue().decode()
         runs = {selection.name: len((root / selection.name).read_text()) for selection in selections}
-        self.assertEqual(runs, {"locked-once": 2, "locked": 2, "failing": 1, "locked-failing": 1})
+        self.assertEqual(runs, {"locked-once": 2, "locked": 2, "failing": 1, "locked-failing": 1,
+                                "locked-other-wording": 2})
         # The first attempt's log prints before the second's.
         once = printed.split("::group::locked-once (group 1)", 1)[1].split("::endgroup::", 1)[0]
         self.assertLess(once.index("Attempt 1's log"), once.index("run 1"))
@@ -174,6 +196,18 @@ class ClusterTestPlanTests(unittest.TestCase):
         with mock.patch.object(plan, "command", command):
             status, _ = plan.execute(plan.Selection("locked", "blocking", 1), root)
         self.assertEqual((status, len((root / "locked").read_text())), (1, 3))
+
+    def test_the_group_start_gap_defaults_to_the_provider_shards_and_refuses_text(self):
+        with mock.patch.dict(os.environ, {"CLUSTER_TEST_START_GAP": ""}):
+            self.assertEqual(plan.start_gap(), 15.0)
+        with mock.patch.dict(os.environ, {"CLUSTER_TEST_START_GAP": "2.5"}):
+            self.assertEqual(plan.start_gap(), 2.5)
+        for value in ("-1", "fifteen", "1e3"):
+            with self.subTest(value=value), mock.patch.dict(os.environ, {"CLUSTER_TEST_START_GAP": value}), \
+                    self.assertRaises(ValueError):
+                plan.start_gap()
+        # The workflow sets no gap, so shard 2 staggers by the default.
+        self.assertNotIn("CLUSTER_TEST_START_GAP", plan.WORKFLOW.read_text())
 
     def test_each_process_has_only_its_own_switches(self):
         switches = {name: "1" for selection in plan.SELECTIONS for name in selection.environment}
@@ -188,33 +222,47 @@ class ClusterTestPlanTests(unittest.TestCase):
                     self.assertEqual(own, selection.environment)
 
     def test_jobs_run_every_shard_of_their_lane(self):
-        jobs = {"test-cluster": "blocking", "test-cluster-gpu": "nonblocking"}
-        for job_id, lane in jobs.items():
+        jobs = {"test-cluster": ("blocking", "Run cluster runtime tests"),
+                "test-cluster-gpu": ("nonblocking", "Run non-blocking cluster GPU tests")}
+        for job_id, (lane, name) in jobs.items():
             with self.subTest(job=job_id):
                 job = self.jobs[job_id]
                 matrix = re.search(r"(?m)^        shard: \[([0-9, ]+)\]$", job).group(1)
                 self.assertEqual([int(shard) for shard in matrix.split(",")], plan.shards(lane))
+                # The blocking shards each read a Darkbloom lane of their own;
+                # the GPU shards are not routed: shard 2 needs more memory
+                # than any signed Darkbloom size.
                 for shard in plan.shards(lane):
-                    self.assertIn(f"        {job_id}-{shard} macos_arm64 ", self.jobs["route"])
-                steps = workflow.step_blocks(job)
-                build = next(step for step in steps if workflow.field(step, "uses") == workflow.BUILD_ACTION)
-                self.assertEqual(workflow.field(build, "lane", indent=10), "cluster")
-                run = steps[-1]
+                    routed = f"        {job_id}-{shard} macos_arm64 " in self.jobs["route"]
+                    self.assertEqual(routed, lane == "blocking")
+                if lane == "nonblocking":
+                    self.assertIn(f"    runs-on: {workflow.BLACKSMITH_MAC}\n", job)
+                    self.assertNotIn(f"        {job_id} ", self.jobs["route"])
+                steps = {workflow.field(step, "name", indent=6): step for step in workflow.step_blocks(job)}
+                products = steps["Download cluster test products"]
+                self.assertEqual(workflow.field(products, "uses"), workflow.PRODUCTS_ACTION)
+                self.assertEqual(workflow.field(products, "lane", indent=10), "cluster")
+                run = steps[name]
                 self.assertEqual(workflow.run_command(run), f'python3 scripts/cluster-test-plan.py run {lane} "$SHARD"')
                 self.assertEqual(workflow.field(run, "SHARD", indent=10), "${{ matrix.shard }}")
                 self.assertEqual(workflow.field(run, "if"), workflow.READY)
         self.assertEqual(plan.shards("focused"), [1])
-        focused = workflow.step_blocks(self.jobs["test-cluster-focused"])
-        self.assertEqual(workflow.run_command(focused[-1]), "python3 scripts/cluster-test-plan.py run focused 1")
+        focused = {workflow.field(step, "name", indent=6): step
+                   for step in workflow.step_blocks(self.jobs["test-cluster-focused"])}
+        self.assertEqual(workflow.run_command(focused["Run cluster focused checks"]),
+                         "python3 scripts/cluster-test-plan.py run focused 1")
+        self.assertIn("matrix.shard == 1 && ", workflow.field(focused["Run cluster focused checks"], "if"))
         self.assertIn("        test-cluster-focused macos_arm64 ", self.jobs["route"])
 
     def test_only_the_gpu_job_continues_after_a_failure_and_the_gate_requires_the_others(self):
-        self.assertIn("continue-on-error: true", workflow.step_blocks(self.jobs["test-cluster-gpu"])[-1])
+        # Besides the report-only resource samples.
+        self.assertEqual(workflow.continues_on_error(self.jobs["test-cluster-gpu"]),
+                         ["Run non-blocking cluster GPU tests", workflow.SAMPLER_STEPS[-1]])
         gate = workflow.field(self.jobs["provider-test-gate"], "needs", indent=4)
         needs = [name.strip() for name in gate.strip("[]").split(",")]
-        for job_id in ("test-cluster", "test-cluster-focused"):
+        for job_id in ("test-cluster", "test-cluster-focused", "cluster-release-checks"):
             with self.subTest(job=job_id):
-                self.assertNotIn("continue-on-error:", self.jobs[job_id])
+                self.assertEqual(workflow.continues_on_error(self.jobs[job_id]), [workflow.SAMPLER_STEPS[-1]])
                 self.assertIn(job_id, needs)
         self.assertNotIn("test-cluster-gpu", self.jobs["provider-test-gate"])
 

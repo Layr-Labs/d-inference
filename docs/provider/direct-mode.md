@@ -1,6 +1,6 @@
 # Direct mode: a local OpenAI-compatible endpoint
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-06
 
 Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
@@ -174,7 +174,13 @@ still cancels generation. Responses uses `response.failed` for late failures.
 The provider chat-upload interceptor selects the SDK service's HTTP framing
 policy (`LocalChatUploadResponder.respond` and `MLXOpenAIService.streamChatCompletionFrames`).
 A failed required tool call is still a failure; no argument repair or fabricated
-call is performed.
+call is performed. On a [two-Mac cluster](./two-mac-cluster.md) the leader's
+local API ends such a stream with the same error chunk. This holds also when
+the provider rejects the output mid-stream (a forced `tool_choice` answered
+with text, a streamed tool call that fails validation) while the pair is still
+finishing the cancelled request
+(`provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPEventStream.swift`,
+`DistributedHTTPEventStream`).
 
 ### Refused request shapes
 
@@ -337,6 +343,9 @@ names the worker build each Mac served the request with, and a plan or route
 uses a speed only for the build that served it, so speeds an earlier build
 served no longer steer the pair's plan after an update
 ([served speed records](../architecture/inference.md#served-speed-records-and-worker-builds)).
+Each record also says the request came through this local API (not
+Darkbloom) and whether Qwen's tensor assistant decoded it; a plan for serving
+through Darkbloom uses none of the local records.
 The HTTP API is unchanged. Source:
 `provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+Startup.swift`
 and `provider-swift/Sources/ProviderCore/Inference/Distributed/Observability/DistributedPairTelemetryRecorder.swift`.

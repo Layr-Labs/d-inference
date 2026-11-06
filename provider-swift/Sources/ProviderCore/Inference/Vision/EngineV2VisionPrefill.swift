@@ -936,7 +936,8 @@ public enum EngineV2VisionPrefill {
     static func clientFault(for error: Error) -> MultiModelBatchSchedulerEngineError? {
         if let readerFailure = error as? VideoReaderFailure {
             return readerFailure.isTransient
-                ? nil : .multimodalRejected("multimodal_rejected: the video could not be decoded")
+                ? nil
+                : .multimodalRejected("multimodal_rejected: the \(readerFailure.medium.rawValue) could not be decoded")
         }
         if let visionError = error as? EngineV2VisionPrefillError {
             switch visionError {

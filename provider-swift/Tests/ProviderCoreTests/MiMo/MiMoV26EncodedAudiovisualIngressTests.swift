@@ -1,3 +1,4 @@
+@preconcurrency import AVFoundation
 import Foundation
 import MLXLMServer
 import XCTest
@@ -122,6 +123,76 @@ final class MiMoV26EncodedAudiovisualIngressTests: XCTestCase {
         }
         do { try await task.value; XCTFail("cancelled request produced AV") }
         catch { XCTAssertTrue(error is CancellationError) }
+    }
+    /// In `decode`, reader 1 counts the video samples and reader 2 reads the audio
+    /// track. Reader 2 ends at its second read: a new reader reads the track again,
+    /// and the provider reports the failed pass once, as `audio_reader_failed`.
+    func testAFailedAudioReaderPassIsReadAgainAndReported() async throws {
+        let baseline = try await Self.decode(plan(MiMoAVFixture.movie(),allowAudio:true))
+        let reports = ReaderReports()
+        let ender = ReaderEnder(ending:[2],atRead:2)
+        let input = try await reports.reading(ending:ender) {
+            try await Self.decode(plan(MiMoAVFixture.movie(),allowAudio:true))
+        }
+        XCTAssertEqual(ender.ended,1)
+        XCTAssertEqual(reports.passes,[.init(operation:"audio_reader_failed",retrying:true,transient:false)])
+        guard case .audiovisual(let expected) = baseline.messages[0].content[1],
+              case .audiovisual(let actual) = input.messages[0].content[1] else {
+            return XCTFail("the audiovisual part was dropped")
+        }
+        XCTAssertEqual(actual.wholeAudio.samples.map(\.bitPattern),expected.wholeAudio.samples.map(\.bitPattern))
+        XCTAssertEqual(actual.wholeAudio.descriptor.sourceIdentity,expected.wholeAudio.descriptor.sourceIdentity)
+        XCTAssertEqual(actual.frames.map(\.planarRGB),expected.frames.map(\.planarRGB))
+        XCTAssertEqual(actual.timestamps.map(\.bitPattern),expected.timestamps.map(\.bitPattern))
+    }
+    /// Readers 2 and 3 (both audio passes) end at their second read. The reader
+    /// failure is not transient, so the provider refuses the media, as before.
+    func testAnAudioReaderThatFailsTwiceIsRefusedAsInvalidMedia() async throws {
+        let reports = ReaderReports()
+        let ender = ReaderEnder(ending:[2,3],atRead:2)
+        do {
+            _ = try await reports.reading(ending:ender) {
+                try await Self.decode(plan(MiMoAVFixture.movie(),allowAudio:true))
+            }
+            XCTFail("both audio passes failed but the clip decoded")
+        } catch let failure as VideoReaderFailure {
+            XCTAssertEqual(failure.medium,.audio)
+            XCTAssertEqual(failure.status,AVAssetReader.Status.cancelled.rawValue)
+            let refusal = MiMoV26EncodedMediaIngress.outwardFailure(failure)
+            XCTAssertEqual(refusal as? MultiModelBatchSchedulerEngineError,
+                .multimodalRejected("video audio requires contiguous mono24k LPCM16/Float32 without edits"))
+            let wire = ProviderLoop.sanitizedInferenceFailure(from:refusal,phase:.streamStart)
+            XCTAssertEqual(wire.code,.invalidMedia)
+            XCTAssertEqual(wire.statusCode,400)
+        }
+        XCTAssertEqual(ender.ended,2)
+        XCTAssertEqual(reports.passes,[
+            .init(operation:"audio_reader_failed",retrying:true,transient:false),
+            .init(operation:"audio_reader_failed",retrying:false,transient:false)])
+    }
+}
+
+/// The reader-failure events of the provider's own report, `VideoReaderFailureReport`.
+private final class ReaderReports: @unchecked Sendable {
+    struct Pass: Equatable {
+        let operation: String
+        let retrying, transient: Bool
+    }
+    private let lock = NSLock()
+    private var recorded: [Pass] = []
+    var passes: [Pass] { lock.withLock { recorded } }
+
+    func reading<Result>(ending ender: ReaderEnder, isolation: isolated (any Actor)? = #isolation,
+                         _ body: () async throws -> Result) async throws -> Result {
+        try await VideoReaderFailureReport.reporting(to:{ [self] event in
+            let fields = event.fields ?? [:]
+            let pass = Pass(operation:fields["operation"]?.value as? String ?? "",
+                retrying:fields["retrying"]?.value as? Bool ?? false,
+                transient:fields["transient"]?.value as? Bool ?? true)
+            lock.withLock { recorded.append(pass) }
+        }) {
+            try await VideoReaderRetry.$beforeReadForTesting.withValue(ender.hook,operation:body)
+        }
     }
 }
 

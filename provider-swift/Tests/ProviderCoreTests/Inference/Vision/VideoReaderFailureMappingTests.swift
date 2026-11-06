@@ -70,6 +70,40 @@ struct VideoReaderFailureMappingTests {
         #expect(isRetryable(SuperHTTPErrors.map(transient, media: true)))
     }
 
+    /// A MiMo audio pass that failed twice keeps the audiovisual decoder's refusal
+    /// text; its transient fault is retryable, and the report and the shared funnel
+    /// name the audio medium.
+    @Test func audioReaderFailures() {
+        func audio(_ code: AVError.Code) -> VideoReaderFailure {
+            VideoReaderFailure(status: AVAssetReader.Status.failed.rawValue,
+                               error: NSError(domain: AVFoundationErrorDomain, code: code.rawValue), medium: .audio)
+        }
+        let audioMedia = audio(.decodeFailed)
+        let audioTransient = audio(.decoderTemporarilyUnavailable)
+
+        let mimo = MiMoV26EncodedMediaIngress.outwardFailure(audioMedia)
+        #expect(mimo as? MultiModelBatchSchedulerEngineError
+            == .multimodalRejected("video audio requires contiguous mono24k LPCM16/Float32 without edits"))
+        #expect(wire(mimo) == (.invalidMedia, 400))
+        let retryable = MiMoV26EncodedMediaIngress.outwardFailure(audioTransient)
+        #expect(retryable as? MultiModelBatchSchedulerEngineError == .requestRejected(
+            "native media audio decoder fault (audio reader status 3: AVFoundationErrorDomain -11839); "
+                + "retry on another provider"))
+        #expect(wire(retryable) == (.capacity, 503))
+
+        #expect(EngineV2VisionPrefill.clientFault(for: audioMedia)
+            == .multimodalRejected("multimodal_rejected: the audio could not be decoded"))
+        #expect(EngineV2VisionPrefill.clientFault(for: audioTransient) == nil)
+
+        let event = VideoReaderFailureReport.event(audioTransient, retrying: false)
+        #expect(event.message == "audio reader pass failed again; the audio is refused")
+        #expect(event.fields?["operation"]?.value as? String == "audio_reader_failed")
+        #expect(event.fields?["reader_error"]?.value as? String
+            == "audio reader status 3: AVFoundationErrorDomain -11839")
+        #expect(VideoReaderFailureReport.event(audioMedia, retrying: true).message
+            == "audio reader pass failed; decoding again with a new reader")
+    }
+
     @Test func reportCarriesTheReaderStatusAndCodesOnly() {
         let event = VideoReaderFailureReport.event(transient, retrying: true)
         #expect(event.severity == .warn && event.kind == .engineHealth)
@@ -80,5 +114,6 @@ struct VideoReaderFailureMappingTests {
         #expect(fields["reader_status"]?.value as? Int == AVAssetReader.Status.failed.rawValue)
         #expect(fields["reader_error"]?.value as? String == "video reader status 3: AVFoundationErrorDomain -11839")
         #expect(VideoReaderFailureReport.event(media, retrying: false).fields?["transient"]?.value as? Bool == false)
+        #expect(event.message == "video reader pass failed; decoding again with a new reader")
     }
 }

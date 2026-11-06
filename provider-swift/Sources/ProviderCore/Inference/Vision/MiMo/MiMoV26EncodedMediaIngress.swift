@@ -62,6 +62,9 @@ enum MiMoV26EncodedMediaIngress {
     private static func refusal() -> MultiModelBatchSchedulerEngineError {
         .multimodalRejected("native media input is unsupported or exceeds its bound")
     }
+    private static func audiovisualRefusal() -> MultiModelBatchSchedulerEngineError {
+        .multimodalRejected("video audio requires contiguous mono24k LPCM16/Float32 without edits")
+    }
     static func outwardFailure(_ error: Error) -> Error {
         // These are request/device quota checks before vision execution, not
         // evidence that the loaded text engine or its KV budget is unhealthy.
@@ -81,18 +84,17 @@ enum MiMoV26EncodedMediaIngress {
             switch failure {
             case .limit, .arithmeticOverflow:
                 return MediaIngest.MediaError.mediaTooLarge("native audiovisual input bound")
-            default:
-                return MultiModelBatchSchedulerEngineError.multimodalRejected(
-                    "video audio requires contiguous mono24k LPCM16/Float32 without edits")
+            default: return audiovisualRefusal()
             }
         }
         // Both reader passes failed: a transient decoder fault can pass on another
-        // provider; any other failure is the media's.
+        // provider; any other failure is the media's, refused as its decoder refused it.
         if let failure = error as? VideoReaderFailure {
-            return failure.isTransient
-                ? MultiModelBatchSchedulerEngineError.requestRejected(
-                    "native media video decoder fault (\(failure)); retry on another provider")
-                : refusal()
+            guard !failure.isTransient else {
+                return MultiModelBatchSchedulerEngineError.requestRejected(
+                    "native media \(failure.medium.rawValue) decoder fault (\(failure)); retry on another provider")
+            }
+            return failure.medium == .audio ? audiovisualRefusal() : refusal()
         }
         if let failure = error as? MiMoV26EncodedVisualDecoder.Failure {
             switch failure {

@@ -50,34 +50,19 @@ extension ProviderUninstall {
         var number = 0
         func action(_ text: String) { number += 1; lines.append("  \(number). \(text)") }
         action("\(stopServingStep): drain accepted requests, as `\(plan.cli) stop`")
-        if let shared = plan.items.first(where: { $0.sharedWith != nil }), let other = shared.sharedWith {
-            switch plan.runningClusterService {
-            case let running? where running.owner == .thisInstall:
-                action("\(ownClusterStep): if it serves the pair, ask the pair to stop on both Macs, as `\(plan.cli) stop` does; "
-                    + "then stop it (pid \(running.pid), running from this install); "
-                    + (shared.ownClusterAgentPlist.map { "then remove \($0)" } ?? "it has no login agent")
-                    + "; the pairing and the cable port setup stay for \(other)")
-            case let running? where running.owner == .unknown:
-                action("\(ownClusterStep): refused, deleting nothing: \(stillRunningReason(running, cli: plan.cli))")
-            default:
-                action("\(ownClusterStep): \(shared.ownClusterAgentPlist ?? "this install has none"); the pair and \(other)'s "
-                    + "cluster service are left as they are")
-            }
-        } else {
-            let said = [plan.clusterService.isEmpty ? nil : plan.clusterService.joined(separator: ", "),
-                        plan.runningClusterService.map { unsharedStop($0, cli: plan.cli) }].compactMap { $0 }
-            action("\(clusterStep), as `\(plan.cli) cluster stop --service`: "
-                + (!said.isEmpty ? said.joined(separator: "; ")
-                    : plan.clusterServiceRunning
-                        ? "a cluster service is running on this Mac: this stops a `\(plan.cli) cluster service`, and nothing is deleted while any other runs"
-                    : "no cluster service on this Mac"))
-        }
+        let said = [plan.clusterService.isEmpty ? nil : plan.clusterService.joined(separator: ", "),
+                    plan.runningClusterService.map { clusterStop($0, cli: plan.cli) }].compactMap { $0 }
+        action("\(clusterStep), as `\(plan.cli) cluster stop --service`: "
+            + (!said.isEmpty ? said.joined(separator: "; ")
+                : plan.clusterServiceRunning
+                    ? "a cluster service is running on this Mac: this stops a `\(plan.cli) cluster service`, and nothing is deleted while any other runs"
+                : "no cluster service on this Mac"))
         for service in plan.services {
             action("Remove the \(service.name): \(service.path ?? "not installed")")
         }
         action("\(tokenStep), as `\(plan.cli) logout` does (best effort)")
-        if !plan.sharesCluster {
-            for peer in plan.pairing?.peers ?? [] { action("Forget the pairing with \(peer.name), as `\(plan.cli) cluster pair --forget`") }
+        for peer in plan.pairing?.peers ?? [] { action("Forget the pairing with \(peer.name), as `\(plan.cli) cluster pair --forget`") }
+        if plan.cableKeptFor == nil {
             action("\(cableStep), as `\(plan.cli) cluster link --remove` (macOS asks for an administrator's password)")
         }
         for item in plan.removed(mode) { action("Delete \(row(item))") }
@@ -91,7 +76,7 @@ extension ProviderUninstall {
     /// The summary after a run: each step with its status, what was kept and where, then the way back and the other Mac.
     public static func summary(_ report: Report, plan: Plan) -> [String] {
         var name = "Darkbloom"
-        if plan.sharesCluster, let this = BuildEnvironment.allCases.first(where: { $0.cliName == plan.cli }) {
+        if plan.cableKeptFor != nil, let this = BuildEnvironment.allCases.first(where: { $0.cliName == plan.cli }) {
             // Beside another install, "Darkbloom" alone would also mean the one that stays.
             name = installName(this).prefix(1).uppercased() + installName(this).dropFirst()
         }
@@ -118,17 +103,13 @@ extension ProviderUninstall {
                     + "`\(plan.cli) models location <folder>`.")
             }
         }
-        if let pairing = plan.pairing, !plan.sharesCluster { lines.append(otherMacLine(pairing, cli: plan.cli)) }
-        if report.steps.contains(where: { $0.name == ownClusterStep && $0.detail?.contains(pairNoAnswer) == true }) {
-            lines.append(otherMacNoAnswerLine(plan.pairing?.otherMacName, cli: plan.cli))
-        }
+        if let pairing = plan.pairing { lines.append(otherMacLine(pairing, cli: plan.cli)) }
         return lines
     }
 
-    /// What `cluster stop --service` does to the cluster service running here, with no other install on this Mac: it
-    /// stops one whose command is `<cli> cluster service`, wherever that runs from; anything else stays, and nothing
-    /// is deleted while it runs.
-    static func unsharedStop(_ running: RunningClusterService, cli: String) -> String {
+    /// What `cluster stop --service` does to the cluster service running here: it stops one whose command is
+    /// `<cli> cluster service`, wherever that runs from; anything else stays, and nothing is deleted while it runs.
+    static func clusterStop(_ running: RunningClusterService, cli: String) -> String {
         switch running.owner {
         case .thisInstall: return "\(running.described); this stops it"
         case .unknown where running.isThisCLI:
@@ -139,10 +120,10 @@ extension ProviderUninstall {
         }
     }
 
-    /// What option 1 removes on this Mac: no pairing while another install shares it, and no "all models" while some stay.
+    /// What option 1 removes on this Mac: no "all models" while some stay.
     static func everythingRemoves(_ plan: Plan) -> String {
         let models = plan.models.isEmpty ? nil : keepsModels(plan) ? "the models not kept below" : "all models"
-        let parts = ["The app", "settings"] + (plan.sharesCluster ? [] : ["pairing"]) + ["logs"] + (models.map { [$0] } ?? [])
+        let parts = ["The app", "settings", "pairing", "logs"] + (models.map { [$0] } ?? [])
         return parts.dropLast().joined(separator: ", ") + " and " + parts.last!
     }
 
@@ -171,20 +152,18 @@ extension ProviderUninstall {
             + "\(formatBytes(plan.modelBytes)), in \(folders.joined(separator: " and "))."
     }
 
-    /// What no option deletes: folders the person chose or outside Darkbloom's, Keychain keys, and what has its own
-    /// uninstall. A chosen models folder inside Darkbloom's own is named as kept.
+    /// What no option deletes: folders the person chose or outside Darkbloom's, the cable port setup another install
+    /// on this Mac may use, Keychain keys, and what has its own uninstall. A chosen models folder inside Darkbloom's
+    /// own is named as kept.
     static func neverTouched(_ plan: Plan) -> [String] {
         plan.kept.map { "\($0.keptInDarkbloomFolder ? "Kept" : "Never touched"): \($0.label) (\(formatBytes($0.bytes)), \($0.path)): "
-            + ($0.reason ?? "") } + [keychainLine] + plan.elsewhere
+            + ($0.reason ?? "") } + (plan.cableKeptFor.map { [cableKeptLine($0)] } ?? []) + [keychainLine] + plan.elsewhere
     }
 
-    /// Said before the pair's stop (`Operations.stopBothMacs`), which answers once both Macs have stopped, after their
-    /// accepted requests: the stop over the cable gives up after 330 s (`OnboardingLive.stop`).
-    public static let pairStopWaitLine = "Asking the pair to stop; accepted requests finish first (up to about 6 min)."
-
-    /// The last line when the other Mac did not answer the pair's stop: it may keep restarting its part.
-    static func otherMacNoAnswerLine(_ name: String?, cli: String) -> String {
-        "The other Mac\(name.map { " (\($0))" } ?? "") did not answer, so its part may keep restarting: run `\(cli) cluster stop` on it."
+    /// Beside another install: the cable port setup stays, and which uninstall undoes it.
+    static func cableKeptLine(_ other: BuildEnvironment) -> String {
+        "Kept: this Mac's cable port setup: \(installName(other)) on this Mac may use the same cable. Run `\(other.cliName) uninstall` "
+            + "there to undo it"
     }
 
     /// The last line on a paired Mac, about the other one.
@@ -281,23 +260,17 @@ extension ProviderUninstall {
     public static func dryRunDocument(_ plan: Plan, modes: [Mode]) -> DryRunDocument {
         let modePlans = modes.map { mode -> DryRunDocument.ModePlan in
             var actions = [DryRunDocument.Action(action: stopServingStep, path: nil, bytes: nil)]
-            if let shared = plan.items.first(where: { $0.sharedWith != nil }) {
-                actions.append(.init(action: ownClusterStep, path: shared.ownClusterAgentPlist, bytes: nil))
-            } else {
-                let clusterAgents: [String?] = plan.clusterService.isEmpty ? [nil] : plan.clusterService
-                actions += clusterAgents.map { .init(action: clusterStep, path: $0, bytes: nil) }
-            }
+            let clusterAgents: [String?] = plan.clusterService.isEmpty ? [nil] : plan.clusterService
+            actions += clusterAgents.map { .init(action: clusterStep, path: $0, bytes: nil) }
             actions += plan.services.map { .init(action: "Remove the \($0.name)", path: $0.path, bytes: nil) }
             actions.append(.init(action: tokenStep, path: nil, bytes: nil))
-            if !plan.sharesCluster {
-                actions += (plan.pairing?.peers ?? []).map { .init(action: "Forget the pairing with \($0.name)", path: nil, bytes: nil) }
-                actions.append(.init(action: cableStep, path: nil, bytes: nil))
-            }
+            actions += (plan.pairing?.peers ?? []).map { .init(action: "Forget the pairing with \($0.name)", path: nil, bytes: nil) }
+            if plan.cableKeptFor == nil { actions.append(.init(action: cableStep, path: nil, bytes: nil)) }
             actions += plan.removed(mode).map { .init(action: "Delete \(deletedLabel($0))", path: $0.path, bytes: $0.bytes) }
             let keptModels = mode == .keepModels ? plan.models : []
             return .init(mode: mode, actions: actions, frees: plan.frees(mode), kept: keptModels + plan.kept, refused: plan.refused)
         }
-        return .init(modes: modePlans, neverTouched: [keychainLine] + plan.elsewhere,
-                     otherMac: plan.sharesCluster ? nil : plan.pairing.map { otherMacLine($0, cli: plan.cli) })
+        return .init(modes: modePlans, neverTouched: (plan.cableKeptFor.map { [cableKeptLine($0)] } ?? []) + [keychainLine] + plan.elsewhere,
+                     otherMac: plan.pairing.map { otherMacLine($0, cli: plan.cli) })
     }
 }

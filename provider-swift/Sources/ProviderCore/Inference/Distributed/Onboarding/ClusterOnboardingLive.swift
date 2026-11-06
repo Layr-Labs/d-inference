@@ -564,6 +564,7 @@ final class OnboardingLive: @unchecked Sendable {
         let participant = ClusterPairingProvider.participant(identity: identity, chipName: chipName, interface: interface,
             store: pairingStore, clusterID: nil)
         var options = ClusterLinkPairing.Options(role: .listener, interface: interface)
+        options.port = ClusterCablePorts.current.pairing
         // Find a Mac waiting on the cable and join it; when none waits, wait here and lead.
         options.discovery = .find
         let callbacks = ClusterLinkPairing.Callbacks(progress: { progress in
@@ -719,7 +720,7 @@ final class OnboardingLive: @unchecked Sendable {
         (error as? ClusterOnboardingFailure)?.lines.joined(separator: " ") ?? "\(error)"
     }
 
-    /// Why the service runs for this session only, appended to its log (`~/.darkbloom/cluster-setup/service.log`,
+    /// Why the service runs for this session only, appended to its log (this install's `cluster-setup/service.log`,
     /// opened append-only because the running service writes there too).
     static func logLoginAgentReason(_ reason: String) {
         guard let log = try? ClusterService.paths().log else { return }
@@ -1242,7 +1243,7 @@ final class OnboardingLive: @unchecked Sendable {
         let started = Date()
         var lastBytes: Int64 = -1, lastChange = Date()
         let deadline = started.addingTimeInterval(120 + Double(model.totalBytes) / 50e6)
-        let staging = store.appendingPathComponent(".darkbloom-incoming-" + String(model.artifactSHA256.prefix(32)))
+        let staging = store.appendingPathComponent(ClusterModelStore.stagingName(aggregateSHA256: model.artifactSHA256))
         var lastCheck = Date.distantPast
         let reports = ClusterTransferReports(label: "Copying from \(thereShort)", send: progress)
         let publish = publishingBytes(.copying, toLeader: true)
@@ -1465,7 +1466,7 @@ final class OnboardingLive: @unchecked Sendable {
             return .failure(.init("A part did not stop within 5 minutes, so the cluster was not registered with the coordinator."))
         }
         let result = ClusterApprovalSync.run(fetched: .approvals([approval]), paths: context.paths,
-            providerConfiguration: providerConfiguration, pairingStore: .default(home: context.paths.homeDirectory),
+            providerConfiguration: providerConfiguration, pairingStore: .default(home: context.paths.homeDirectory, environment: context.paths.environment),
             scratch: store.paths.directory, now: Date().timeIntervalSince1970) { request in
             _ = try command(request, seconds: 180)
         }

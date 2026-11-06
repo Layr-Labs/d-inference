@@ -51,12 +51,12 @@ public struct ClusterObservabilitySnapshot: Codable, Sendable, Equatable {
         self.incidents = incidents; self.telemetry = telemetry; self.followers = followers; self.speedRecords = speedRecords
     }
 
-    /// Reads the three files under `homeDirectory/.darkbloom/cluster/`; the incidents are `install`'s, from its own file
-    /// (`ClusterIncidentLog.defaultFile(homeDirectory:install:)`).
-    public static func read(homeDirectory: URL, now: Double = Date().timeIntervalSince1970,
+    /// Reads the files in the install's `cluster/` folder (`installDirectory`: production's `~/.darkbloom`); the
+    /// incidents are `install`'s, from its own file (`ClusterIncidentLog.defaultFile(installDirectory:install:)`).
+    public static func read(installDirectory: URL, now: Double = Date().timeIntervalSince1970,
                             staleAfterSeconds: Double = ClusterLinkStatusBoard.defaultStaleAfterSeconds,
                             install: String? = nil) -> ClusterObservabilitySnapshot {
-        let file = ClusterIncidentLog.defaultFile(homeDirectory: homeDirectory, install: install)
+        let file = ClusterIncidentLog.defaultFile(installDirectory: installDirectory, install: install)
         let feed = ClusterIncidentLog(file: file, install: install).feed()
         let incidents: Incidents?
         if feed.epoch.isEmpty && feed.loadError == nil {
@@ -69,18 +69,18 @@ public struct ClusterObservabilitySnapshot: Codable, Sendable, Equatable {
             incidents = .init(epoch: feed.epoch, latestSeq: feed.latestSeq, open: open.count, total: feed.incidents.count,
                               loadError: feed.loadError, recent: recent, guidance: codes.compactMap(ClusterGuidance.guidance(code:)))
         }
-        let telemetry = ClusterPairTelemetryLog.read(ClusterPairTelemetryLog.defaultFile(homeDirectory: homeDirectory)).map {
+        let telemetry = ClusterPairTelemetryLog.read(ClusterPairTelemetryLog.defaultFile(installDirectory: installDirectory)).map {
             Telemetry(sessionID: $0.sessionID, updatedAt: $0.updatedAt, summary: $0.summary,
                       recent: Array($0.records.suffix(shownRequests).reversed()))
         }
-        let followers = ClusterLinkStatusBoardFile.read(ClusterLinkStatusBoardFile.defaultFile(homeDirectory: homeDirectory)).map { file in
+        let followers = ClusterLinkStatusBoardFile.read(ClusterLinkStatusBoardFile.defaultFile(installDirectory: installDirectory)).map { file in
             Followers(updatedAt: file.updatedAt, entries: file.entries.map { entry in
                 let age = max(0, now - entry.receivedAt)
                 return .init(status: entry.status, receivedAt: entry.receivedAt, stale: age > staleAfterSeconds,
                              ageSeconds: (age * 10).rounded() / 10)
             })
         }
-        let speed = ClusterServedSpeedFile.read(ClusterServedSpeedFile.defaultFile(homeDirectory: homeDirectory)).map { file in
+        let speed = ClusterServedSpeedFile.read(ClusterServedSpeedFile.defaultFile(installDirectory: installDirectory)).map { file in
             SpeedRecords(updatedAt: file.updatedAt, records: file.records.count,
                 byRoute: Dictionary(file.records.map { ($0.route ?? "pair", 1) }, uniquingKeysWith: +))
         }

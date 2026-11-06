@@ -6,7 +6,7 @@ import Foundation
 // Ported from the design of the owner's oMLX `omlx/cluster/incidents.py`
 // (Apache-2.0, multi-contributor upstream code; see ACKNOWLEDGEMENTS): every
 // abnormal end state of a cluster session becomes one durable, already
-// redacted record in `~/.darkbloom/cluster/incidents.json`. Readers poll with
+// redacted record in the install's `cluster/incidents.json`. Readers poll with
 // a `since` cursor and merge; nothing a reader does can erase a record.
 // Dismissal is the only removal path, and supersession ("launch #4 replaces
 // #3") flags the earlier record but keeps it.
@@ -188,32 +188,27 @@ public final class ClusterIncidentLog: @unchecked Sendable {
     /// The install of records written before records named theirs: production, the only install then.
     public static let unstampedInstall = "prod"
 
-    /// `~/.darkbloom/cluster/incidents.json` for this home directory: production's (another install's:
-    /// `defaultFile(homeDirectory:install:)`).
-    public static func defaultFile(homeDirectory: URL) -> URL {
-        homeDirectory.appendingPathComponent(".darkbloom/cluster/incidents.json")
+    /// `cluster/incidents.json` in an install's data folder (`installDirectory`: production's `~/.darkbloom`).
+    public static func defaultFile(installDirectory: URL) -> URL {
+        installDirectory.appendingPathComponent("cluster/incidents.json")
     }
 
-    /// This install's incident log under `homeDirectory`: production's (`install` nil or `unstampedInstall`) is
-    /// `incidents.json`; another install keeps its own, e.g. `incidents.dev.json`. A build from before installs had
-    /// their own files never reads or rewrites it (its rewrite of the shared file drops fields it doesn't know).
-    public static func defaultFile(homeDirectory: URL, install: String?) -> URL {
-        guard let install, install != unstampedInstall else { return defaultFile(homeDirectory: homeDirectory) }
+    /// This install's incident log in its data folder: production's (`install` nil or `unstampedInstall`) is
+    /// `incidents.json`; another install's is named after it, e.g. `incidents.dev.json` (in `~/.darkbloom-dev`).
+    public static func defaultFile(installDirectory: URL, install: String?) -> URL {
+        guard let install, install != unstampedInstall else { return defaultFile(installDirectory: installDirectory) }
         let name = String(install.map { $0.isASCII && ($0.isLetter || $0.isNumber) ? $0 : "_" })
-        return homeDirectory.appendingPathComponent(".darkbloom/cluster/incidents.\(name).json")
+        return installDirectory.appendingPathComponent("cluster/incidents.\(name).json")
     }
 
     public let file: URL
-    /// The files this log keeps on disk, in this order: the log, its lock sidecar, and the copy a corrupt log is moved
-    /// aside to. `darkbloom uninstall` removes an install's own with it.
-    public var files: [URL] { [file, lockFile, corruptCopy] }
     /// Where a corrupt log is moved aside, named after its file, so each install keeps its own.
     var corruptCopy: URL {
         file.deletingLastPathComponent().appendingPathComponent(file.deletingPathExtension().lastPathComponent + ".corrupt.json")
     }
     /// This install, stamped on each record it adds; its feed holds its own records and the older unstamped ones
     /// (`unstampedInstall`). Nil: every record, and the records it adds stay unstamped. Each install also keeps its own
-    /// file (`defaultFile(homeDirectory:install:)`); the stamp is the second check.
+    /// file (`defaultFile(installDirectory:install:)`); the stamp is the second check.
     public let install: String?
     private let lockFile: URL
     private let redact: @Sendable (String) -> String
@@ -413,7 +408,7 @@ public final class ClusterIncidentLog: @unchecked Sendable {
         ok = true
     }
 
-    /// Creates the directory (and `~/.darkbloom`) owner-only; refuses a symbolic link.
+    /// Creates the directory (and the install's folder above it) owner-only; refuses a symbolic link.
     static func makePrivateDirectory(_ directory: URL) throws {
         var info = stat()
         if lstat(directory.path, &info) == 0 {

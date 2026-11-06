@@ -246,6 +246,8 @@ public actor StandaloneServer {
         /// Deterministic suspension after an idle-eviction activity probe.
         /// Tests can replace/reserve the slot before selection is committed.
         let afterEvictionActivityProbe: (@Sendable (String) async -> Void)?
+        /// Stands in for `ClusterGPUHold.productionServesHere`, the load's production guard.
+        let productionServes: (@Sendable () -> String?)?
         let makeEngine: @Sendable (String, Int) throws -> any CBv2Engine
 
         init(
@@ -259,6 +261,7 @@ public actor StandaloneServer {
             onCacheEligibleWeightHash: (@Sendable (String?) -> Void)? = nil,
             clearMemoryCache: (@Sendable () -> Void)? = nil,
             afterEvictionActivityProbe: (@Sendable (String) async -> Void)? = nil,
+            productionServes: (@Sendable () -> String?)? = nil,
             makeEngine: @escaping @Sendable (String, Int) throws -> any CBv2Engine
         ) {
             self.physicalMemoryBytes = physicalMemoryBytes
@@ -271,6 +274,7 @@ public actor StandaloneServer {
             self.onCacheEligibleWeightHash = onCacheEligibleWeightHash
             self.clearMemoryCache = clearMemoryCache
             self.afterEvictionActivityProbe = afterEvictionActivityProbe
+            self.productionServes = productionServes
             self.makeEngine = makeEngine
         }
     }
@@ -1795,6 +1799,11 @@ public actor StandaloneServer {
 
         guard let modelInfo = models.first(where: { $0.id == modelId }) else {
             throw StandaloneServerError.modelNotFound(modelId)
+        }
+        // Outside production's build, no model loads beside production serving on this Mac (`ClusterGPUHold`): refused
+        // here, before any eviction, weight hash or load reservation. A loaded model keeps serving.
+        if let reason = (v2TestHooks?.productionServes ?? { ClusterGPUHold.productionServesHere() })() {
+            throw InferenceError.modelLoadFailed(reason)
         }
 
         // Loud insurance behind the init/setModels filter: a model without

@@ -272,6 +272,12 @@ extension ProviderLoop {
                 "Model '\(modelId)' not in advertised model list"
             )
         }
+        // Outside production's build, no model loads beside production serving on this Mac (`ClusterGPUHold`): refused
+        // here, before any eviction, weight hash or load reservation, as a transient 503. A loaded model keeps serving.
+        if let reason = (productionServesForTesting ?? { ClusterGPUHold.productionServesHere() })() {
+            recordModelLoadError(model: modelId, message: reason)
+            throw InferenceError.modelLoadFailed(reason)
+        }
         // GLM loads only the exact catalog build on qualifying hardware, bound
         // to GLM5NextCoordinatorServing.maximumContextLength, through its
         // managed native load. Refuse everything else before any reservation.

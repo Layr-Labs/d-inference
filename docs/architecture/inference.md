@@ -542,17 +542,82 @@ lists it under Local Network or in its firewall reads `ClusterService.appName`
 (`BuildEnvironment.current.appDisplayName`): the screens (through
 `ClusterOnboardingCommand.app`, including the pairing hint's firewall line and
 the line that asks to pair again after a reinstall) and the link follower's
-refusal. Both apps serve a pair's API on port 8000,
-so one of them serves a pair on a Mac at a time. Each keeps its own cluster
-incident log, owned by `DarkbloomClusterRemote`
-(`ClusterIncidentLog.defaultFile(homeDirectory:install:)`): production's is
-`~/.darkbloom/cluster/incidents.json`, another install's its own file, such as
-`incidents.dev.json`, which a build from before installs had their own files
-never reads or rewrites; a corrupt one is kept beside it under its own name
-(`incidents.corrupt.json`, `incidents.dev.corrupt.json`). `ClusterIncidentLog.files`
-names a log's files: the log, its lock sidecar and that corrupt copy.
-`darkbloom uninstall` removes an install's own with it while the shared folder
-stays for the other install; production's shared `incidents.json` stays. Every
+refusal.
+
+Each build keeps its own cluster state, in its own folders (`ClusterUserPaths`,
+from `BuildEnvironment.installDirectory` and `configDirectory`): the pairing
+store, the setup and service folder (the service's lock, pid, status, update
+request and logs, the screens' transcripts), the device folder (lease, journal,
+link records, the prefix cache's key), the observability files and the saved
+setups. Production's stay in `~/.darkbloom` and `~/.config/darkbloom`; DevNet's
+are in `~/.darkbloom-dev` and `~/.config/darkbloom-dev`. The cluster service's
+login job carries the build's prefix (`BuildEnvironment.clusterServiceLabelPrefix`),
+and a build lists, replaces and removes only its own jobs
+(`ClusterServiceAgentPlan.isOwnAgent`: a production-shaped job an older DevNet
+build wrote is DevNet's by its program). The per-user locks are named after the
+build's CLI (`ClusterConsoleInstanceLock.lockFileName`), the pair's prefix cache
+is in the build's cache namespace (`ClusterPrefixCacheSettings.rootDirectoryName`),
+and every port on the cable adds the build's `BuildEnvironment.clusterPortOffset`
+(`ClusterCablePorts`). Two builds' pairs on the same Macs therefore never read,
+stop or answer each other. Their device leases and journals are separate, but
+every build's device scope (a pair's owner session, a member's preparation, a
+GLM calibration) also takes one lock all builds share
+(`ClusterMachineDeviceLock`: `~/Library/Application Support/io.darkbloom.cluster/native-device.lock`,
+flock only, in a folder no app or build owns; `ClusterUserPaths.machineDeviceLock`),
+after its own lease. So one build's native session never runs on the GPU beside
+another's, and the refusal names the other app. A build other than production's
+also refuses while production serves here, so production wins by default
+(`ClusterMachineDeviceLock.productionServingHere`, read only, never
+production's locks): a serving process of production's own app runs
+(`productionServing`: `darkbloom start`, `cluster link-follower`, its worker
+owner or its worker, run from production's folder, from the process table),
+which covers production before 0.10.11 (it takes no lock), or production's
+cluster service published within two minutes that its pair serves here
+(`productionPairStatus`: its `service-status.json`, `serving` and `pairRunning`),
+which covers the seconds production's part restarts (an update, a crash). A
+fresh status it can't read or decode counts as serving (fail safe, said in the
+refusal); no status, an old one, or one dated ahead of the clock doesn't. That
+build's cluster service also steps a running part aside when production starts
+serving (both start at login, say): it fences the part's GPU work at once
+(SIGUSR1 to the worker owners the part started, `ClusterService.fenceOwners`,
+whose force-cancel hook ends each worker's requests and unloads it), then stops
+the part. No model of such a build loads for single-Mac serving while
+production serves here either (`ClusterGPUHold.productionServesHere`): both
+slot owners (`ProviderLoop.ensureModelLoaded`, `StandaloneServer.ensureModelLoaded`)
+refuse a cold load at its start, before any eviction, weight hash or load
+reservation, as a transient 503, and `ModelContainerLoading.loadServingContainer`
+refuses too, for any other caller; a model already loaded keeps serving. A
+cluster member whose start is refused that way prints the refusal's `Error:`
+line (which its cluster service waits on) and exits with
+`ClusterMemberRunEnd.gpuHeldExitCode` (76, reserved for that alone: a source
+check keeps every other path off it), so the developer `--always-on` supervisor
+waits for the hold (`ClusterGPUHold.now`) instead of spending its restart
+budget. The cluster service never starts its part
+into a hold: `ClusterMachineDeviceLock.heldByAnotherBuild`
+probes the lock shared and lets it go at once (a start at that moment retries
+for up to 100 ms, `ClusterDeviceExclusion.machineLockTries`), and the part
+waits (`ClusterOtherAppHold`), named in the status's `heldBack`. A part that
+ended on the refusal never counts toward the local-only fallback
+(`ClusterApprovalCheck.memberQuickEnds`), and the part starts on the first tick
+after the hold ends, with its backoff and any approval set aside as failing
+cleared (`blockerCleared`). Each
+build's model copies stage under its own name in the store both share
+(`ClusterModelStore.stagingPrefix`: production's `.darkbloom-incoming-<digest>`,
+DevNet's `.darkbloom-incoming-dev-<digest>`), and a copy short of disk reclaims
+only its own build's abandoned staging. They share the models, and the cable
+port setup, which `darkbloom uninstall` keeps while the other build is
+installed; `cluster link --remove` names another build whose link record still
+holds the port and asks at a terminal (`ClusterLinkRepair.otherInstallsUsingCable`).
+A port the other build set up is adopted with what its link record
+says that setup changed (its bridge slot and the services it turned off), read
+from that record and never written there
+(`ClusterLinkRepair.Environment.otherInstallsIsolationEntries`), so the build
+uninstalled last can still undo it all. Each
+keeps its own cluster incident log, owned by `DarkbloomClusterRemote`
+(`ClusterIncidentLog.defaultFile(installDirectory:install:)`): production's is
+`~/.darkbloom/cluster/incidents.json`, DevNet's `~/.darkbloom-dev/cluster/incidents.dev.json`;
+a corrupt one is kept beside it under its own name (`incidents.corrupt.json`,
+`incidents.dev.corrupt.json`). Every
 reader and writer opens this build's with
 `ClusterIncidentLog.forThisInstall`. Each record also names the install that
 wrote it (`ClusterIncident.install`), and a build reads only its own, counting
@@ -1633,6 +1698,24 @@ observation in each aggregate, current-posture or workload-bucket series.
 Rate averaging and sample counts still follow receipt consumption order;
 an older receipt cannot move freshness backward or create a false evidence gap
 for the next observation. A heartbeat snapshot alone never renews evidence.
+
+A cluster's engine (`DistributedCBv2Engine`) reports the same measurements from
+the requests the cluster serves (`DistributedCBv2Engine+Timing.swift`). Each
+request's terminal usage carries its timing in the engine contract's terms. The
+prompt runs from the owner's start, after every rank reserved, to the first
+committed token. Decode runs from the first committed token to the last, in MTP
+rounds when the ranks report them. The ranks report what they restored only at
+the finish, so the bridge fixes the prompt's overlap with other work and its
+date when the first committed token arrives (`EnginePrefillReceipt.freezeAtFirstToken`,
+`EngineV2Bridge.recordFirstToken`). At a clean finish (`stop` or `length`), the
+engine then reports the prompt observation once, with the final reuse. A
+prompt that ran alone is therefore isolated even when another request joins its
+decode, and a partly restored prompt is never measured as a cold one. A failed
+request reports none, and a request with media is never a text rate. The
+cluster's warmup canary submits as `startupWarmup`, so its few tokens never
+become the slot's rates. Before 0.10.10, a cluster's slot reported no
+measurements. The coordinator's first-content forecast of a cluster therefore
+stayed `unknown`, and a feasible single Mac always displaced the cluster.
 
 Owner-bound native MiMo submissions retain target-decoder prefill observations
 in the separate `native_media_prefill` workload phase. Its timer starts at the
@@ -3961,8 +4044,8 @@ part the same key with a different file (`ClusterServiceAgent.partHealthPath`,
 service's heartbeat and still waits for its registration as a supervised member.
 An empty or absent key is passed on unchanged.
 
-One cluster service runs per home: it holds an exclusive `flock` on
-`~/.darkbloom/cluster-setup/service.lock` while it runs, and `ClusterService.running`
+One cluster service runs per home and build: it holds an exclusive `flock` on
+`~/.darkbloom/cluster-setup/service.lock` (DevNet's in `~/.darkbloom-dev`) while it runs, and `ClusterService.running`
 reports whether one holds it. `darkbloom update --rollback` takes the same lock
 (`ClusterService.holdStopped`) while it swaps the installed release, so no cluster
 service starts on a release that is being replaced; a service that starts then
@@ -4827,6 +4910,12 @@ resident runtime's own request path instead of the SDK's legacy caches;
 `--layer-stride N` submits each decode step every N layers instead of the
 product's `decodeLayerStride` (1), so a pair can measure the stride before the
 product's changes (Qwen's measured choice is 8, `QwenTensorParallelLaunch`).
+`--prompt-parts N` (shard or tp, paged) runs each prompt chunk's work after
+attention in N row parts whose sums are issued as built
+(`Gemma4TensorParallelPromptParts`; the product keeps 1): bit-identical to the
+whole chunk on the GPU for two ranks while every op after attention is per-row,
+not on the CPU backend, not exact with more than two ranks, and not enforced,
+so it stays a bench option (two M5 Ultras: 4 parts, +13 % at 9,651 tokens).
 `tp-check gemma lanes` serves several requests together through the batch
 driver and checks each against itself alone.
 
@@ -4861,7 +4950,10 @@ stops, cancellations and retirements.
 - Prompt. Each chunk runs through the product's CBv2 entry
   (`Gemma4TextModel.cbv2Prefill`, whose last layer keeps only the row it
   projects) under the registered prompt policy (`Gemma4PrefillProjectionScope`),
-  on the request's chunk grid.
+  on the request's chunk grid. A rank computes the chunk's experts in one shared
+  dispatch per projection (`SwitchGLU.expertRowsByRow`: gathers never hinted as
+  sorted, so each (token, expert) pair stays the M=1 product its own call
+  computes) before the same packed collective of all 9 rows per token.
 - Decode. One evaluation per step, with 100-operation command buffers. The
   step is submitted layer by layer as the host builds it
   (`Gemma4LayerSubmission`; evaluation order only). Lanes decode in one
@@ -7163,13 +7255,19 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Ten
 ### Qwen27 tensor-parallel native context
 
 The registered Qwen3.8 27B row advertises the limits the single-Mac product
-serves: up to 262,143 prompt tokens and 32,768 output tokens within a 262,144-token
-context (the catalog's `max_context_length` and `max_output_length`;
-`QwenDenseRegisteredSpecification.nativeOutputTokens`,
-`QwenResidentContextLimits.Ceiling.native`). The worker profile, request
-validation on both ranks and every profile fingerprint use these limits. LOAD,
-the placement planner and every width quote still size the pair for the standard
-request, 32,768 prompt plus 32,768 output tokens
+serves: up to 262,143 prompt tokens and 65,536 output tokens within a 262,144-token
+context. These are the catalog's `max_context_length` and `max_output_length`
+(`QwenDenseRegisteredSpecification.nativeOutputTokens`,
+`QwenResidentContextLimits.Ceiling.native`). 65,536 is also the `max_tokens`
+that the coordinator gives a request that omits it. A single Mac takes any
+`max_tokens` whose sum with the prompt fits its context. Until 0.10.10 the pair
+refused every `max_tokens` above 32,768, so production's 18,774-token prompts
+that asked for 65,536 were refused. The output limit is 65,536, not the
+wire's 131,072. At the pair's measured 35 tokens a second, 65,536 output tokens
+take about 31 minutes, inside the 3,600-second request limit; 131,072 would
+not fit. The worker profile, request validation on both ranks and every profile
+fingerprint use these limits. LOAD, the placement planner and every width quote
+still size the pair for the standard request, 32,768 prompt plus 32,768 output tokens
 (`QwenResidentAdapterDefinition.memoryProfile`, `ClusterWorkerProfile.memoryScope`).
 No lane reserves KV for the native context in advance, and widths one through
 eight are planned and admitted as before. Every other Qwen row's profile is its

@@ -14,9 +14,16 @@ import MLXVLM
 import ProviderCoreFoundation
 
 enum ModelContainerLoading {
+    /// `productionServes`: outside production's build, why no model loads on this Mac now (`ClusterGPUHold`); tests
+    /// stand in.
     static func loadServingContainer(from directory: URL, modelID: String? = nil,
                                      nativeMiMoLoad: MiMoV26ServingLoad? = nil,
-                                     nativeGLM5Load: GLM5NextManagedLoad? = nil) async throws -> ProviderModelContainer {
+                                     nativeGLM5Load: GLM5NextManagedLoad? = nil,
+                                     productionServes: () -> String? = { ClusterGPUHold.productionServesHere() })
+        async throws -> ProviderModelContainer {
+        // No model of a build other than production's loads beside production serving on this Mac: two models don't
+        // fit one Mac's memory, and production wins. Its slot owner reports a transient refusal (503 to the coordinator).
+        if let reason = productionServes() { throw InferenceError.modelLoadFailed(reason) }
         if let nativeGLM5Load {
             guard nativeMiMoLoad == nil,
                 directory.standardizedFileURL == nativeGLM5Load.plan.weights.directory,

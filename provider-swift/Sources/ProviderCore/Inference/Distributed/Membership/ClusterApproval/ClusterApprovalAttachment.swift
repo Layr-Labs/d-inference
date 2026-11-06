@@ -56,7 +56,7 @@ enum ClusterApprovalAttachment {
     /// The link a member registers to the other Mac: the latest probe this Mac recorded for the pair (the serving
     /// leader records one per load), as `rdma`; nil when it has none.
     static func measuredEdge(peerPin: String, members: [String], homeDirectory: URL) -> ClusterEdge? {
-        guard let probe = ClusterLinkProbeHistory.read(ClusterLinkProbeHistory.defaultFile(homeDirectory: homeDirectory))?
+        guard let probe = ClusterLinkProbeHistory.read(ClusterLinkProbeHistory.defaultFile(installDirectory: BuildEnvironment.current.installDirectory(home: homeDirectory)))?
                 .pairs[ClusterLinkProbeHistory.key(members: members)]?.probe,
               probe.pointToPointLargeMicroseconds > 0, probe.pointToPointSmallMicroseconds > 0 else { return nil }
         let megabits = Double(probe.pointToPointLargeBytes) * 8 / Double(probe.pointToPointLargeMicroseconds)

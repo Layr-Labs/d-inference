@@ -75,6 +75,30 @@ struct SandboxStatusTests {
         ])
     }
 
+    @Test("status shows each work disk when the add-on uses an external drive, and what to do when one is offline")
+    func workDisks() throws {
+        let gib: Int64 = 1 << 30
+        let disks = #"""
+            "disks":[{"cache":true,"detail":null,"floor_bytes":1,"free_bytes":\#(812 * gib),"images":[],"path":"/Volumes/FastSSD","reason":null,"root_volume":false,"slots":{"linux":{"free":2,"total":2},"macos":{"free":1,"total":1}},"state":"online","volume_bytes":1},{"cache":false,"detail":"plug the disk in; its slots take jobs again once it is back","floor_bytes":null,"free_bytes":null,"images":[],"path":"/Volumes/Other","reason":"missing","root_volume":false,"slots":{"linux":{"free":0,"total":1},"macos":{"free":0,"total":0}},"state":"offline","volume_bytes":null},{"path":"/System/Volumes/Data","root_volume":true,"state":"online","detail":"ignored while online"},{"state":"online"}],
+            """#
+        let status = SandboxFixtures.status(SandboxFixtures.ready.replacingOccurrences(of: #"{"accepting""#,
+                                                                                       with: "{" + disks + #""accepting""#))
+        #expect(status.supportsWorkDisks)
+        #expect(status.disks.count == 3)
+        #expect(status.disks.first == .init(path: "/Volumes/FastSSD", rootVolume: false, state: "online", detail: nil,
+                                            freeBytes: 812 * gib, linuxSlots: 2, macOSSlots: 1))
+        let lines = SandboxStatusView.lines(status)
+        let images = try #require(lines.firstIndex(of: "  Images: Linux installed, macOS installed"))
+        #expect(Array(lines[(images + 1)...(images + 3)]) == [
+            "  Work disk: /Volumes/FastSSD: online, 812 GiB free; slots: Linux 2, macOS 1",
+            "  Work disk: /Volumes/Other: offline; slots: Linux 1 (plug the disk in; its slots take jobs again once it is back)",
+            "  Work disk: /System/Volumes/Data (internal): online",
+        ])
+        let internalOnly = #"{"disks":[{"path":"/System/Volumes/Data","root_volume":true,"state":"online"}],"accepting""#
+        #expect(SandboxStatusView.lines(SandboxFixtures.status(SandboxFixtures.ready.replacingOccurrences(
+            of: #"{"accepting""#, with: internalOnly))).allSatisfy { !$0.contains("Work disk") })
+    }
+
     @Test("each state says what it means for inference, or the add-on's own detail, and what to run next")
     func states() {
         func screen(_ json: String) -> [String] { SandboxStatusView.lines(SandboxFixtures.status(json)) }

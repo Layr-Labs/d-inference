@@ -1,6 +1,6 @@
 # Keep a cluster member always on
 
-> Last updated: 2026-11-04
+> Last updated: 2026-11-06
 
 `darkbloom cluster` on each Mac does all of this. Nothing below is needed: it
 explains what the onboarding sets up and how to check it.
@@ -43,8 +43,12 @@ the cluster comes back by itself, with no command run on either Mac (see
 - The label is `io.darkbloom.cluster-service.<12 hex digits>`, a digest of the
   installed app (`Darkbloom.app`, whether `darkbloom` runs from
   `Contents/MacOS`, `Contents/Helpers` or the `~/.darkbloom/bin` symlink) or of
-  the folder of a development build. One cluster service runs per user: a
-  newer install's agent replaces an older one's.
+  the folder of a development build. The DevNet app's is
+  `io.darkbloom.cluster-service.dev.<12 hex digits>`
+  (`BuildEnvironment.clusterServiceLabelPrefix`). One cluster service runs per
+  user and app: a newer install of the same app replaces the older one's
+  agent, and neither app starts, stops or removes the other's
+  (`ClusterServiceAgentPlan.isOwnAgent`).
 - The job's `AssociatedBundleIdentifiers` names the actual enclosing app from
   its `Info.plist`. macOS attributes Local Network access to that app after the
   setup terminal exits; the supervisor, service and follower use its approval.
@@ -460,6 +464,7 @@ it. It documents the developer route that runs `darkbloom start
 | Member exits or is killed (anything the supervisor did not ask for, a clean exit included) | Restarts it after 15 s, doubling to 300 s; a run of 120 s or more resets the wait |
 | Three runs in a row each shorter than 120 s | Stops restarting and parks, holding no memory, until `darkbloom restart` |
 | JACCL guard teardown (exit 75) | Restarts without counting a startup failure; six inside 120 s mean the link is flapping and it parks |
+| The other Darkbloom app holds this Mac's GPU, or (DevNet) production serves here: the member exits 76 | Waits without counting anything, says why once in the log and the status (`backoff`), and starts the member as soon as the hold ends (a hold already over: after 15 s) |
 | Member alive but its heartbeat is 75 s old (after a 180 s start grace) | Asks it to stop (SIGTERM), then restarts it; SIGKILL only if it ignored SIGTERM for 300 s |
 | The leader's pair engine stays wedged (its own watchdog's verdict) for 180 s | Same recycle |
 | An active request made no progress at all for `clamp(120, 120 + prompt tokens / 1000, 900)` s (when the member reports one) | Same recycle |

@@ -245,6 +245,9 @@ extension EngineV2Bridge {
             // changes unless aggregate capacity includes a profiled peer.
             deadlineWork: deadlineProfile == nil ? nil
                 : serviceBudget?.deadlineWork(modelID: modelId, epoch: performanceMeasurements.epoch),
+            // A cluster's slot says which request sizes the cluster serves, so
+            // the coordinator sends it none that it would refuse.
+            requestLimits: (ownedEngine as? DistributedCBv2Engine)?.requestLimits(),
             // Per-slot KV-backend discriminator. This is the RESOLVED kind
             // the engine was built with (post-veto, post-fallback), not the
             // operator's request, and it is reported on EVERY heartbeat —

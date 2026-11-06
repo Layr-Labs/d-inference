@@ -2,7 +2,7 @@ import Foundation
 import DarkbloomClusterProtocol
 
 /// Where the setup wizard keeps what only it knows, in an owner-only
-/// directory of its own: `~/.darkbloom/cluster-setup/`.
+/// directory of its own: `~/.darkbloom/cluster-setup/` (the install's own, `ClusterUserPaths.setupDirectory`).
 public struct ClusterSetupPaths: Sendable, Equatable {
     public let directory: URL
     /// The wizard's progress: the pair it was given, codes confirmed, setups sent, checks passed.
@@ -12,7 +12,7 @@ public struct ClusterSetupPaths: Sendable, Equatable {
     public var inboxCapability: URL { directory.appendingPathComponent("inbox-capability.json") }
 
     public init(paths: ClusterUserPaths) {
-        directory = paths.homeDirectory.appendingPathComponent(".darkbloom/cluster-setup", isDirectory: true)
+        directory = paths.setupDirectory
     }
 }
 

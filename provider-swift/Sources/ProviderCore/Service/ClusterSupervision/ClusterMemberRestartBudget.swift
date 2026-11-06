@@ -11,6 +11,9 @@ public enum ClusterMemberRunEnd: Equatable, Sendable {
     /// tore down a wedged collective and released its memory. A self-heal,
     /// budgeted separately from startup failures.
     case guardTeardown
+    /// The member exited with `gpuHeldExitCode`: another Darkbloom build holds this Mac's GPU (its pair or a model
+    /// check), or production serves here. A wait, never a failure.
+    case gpuHeld
     /// Any other exit, including a zero exit the supervisor did not ask for:
     /// an unrequested clean exit is a crash, not an operator stop.
     case failure(exitCode: Int32)
@@ -19,6 +22,12 @@ public enum ClusterMemberRunEnd: Equatable, Sendable {
 
     /// The JACCL progress guard's teardown exit code (guard v2, mlx#33).
     public static let guardTeardownExitCode: Int32 = 75
+    /// Reserved: 76 means only "another Darkbloom app holds this Mac's GPU" (or, outside production's build, production
+    /// serves here). Only the member's start refused for that exits with it (`ClusterMemberPreparation.gpuHoldRefusal`),
+    /// and the supervisor waits on it without counting anything, so another exit 76 would restart forever and never
+    /// park. When it was chosen, nothing in the provider, the cluster library, the SwiftPM dependencies or MLX exited 76
+    /// (it is `EX_PROTOCOL` in `sysexits.h`); the source check `exit76IsReservedForAGPUHold` keeps our sources so.
+    public static let gpuHeldExitCode: Int32 = 76
 
     /// Classify a finished child process. `stopRequested` is the
     /// supervisor's own flag; a signal is reported only when the child did
@@ -26,8 +35,11 @@ public enum ClusterMemberRunEnd: Equatable, Sendable {
     public static func classify(stopRequested: Bool, exitCode: Int32?, signal: Int32?) -> ClusterMemberRunEnd {
         if stopRequested { return .operatorStop }
         if let signal { return .signaled(signal) }
-        let code = exitCode ?? -1
-        return code == guardTeardownExitCode ? .guardTeardown : .failure(exitCode: code)
+        switch exitCode ?? -1 {
+        case guardTeardownExitCode: return .guardTeardown
+        case gpuHeldExitCode: return .gpuHeld
+        case let code: return .failure(exitCode: code)
+        }
     }
 }
 
@@ -41,7 +53,9 @@ public enum ClusterMemberRunEnd: Equatable, Sendable {
 /// - a JACCL guard teardown (exit 75) inside the window is a self-heal with its
 ///   own budget of six, and a seventh means the link is flapping;
 /// - a run of at least the window resets both counters and the backoff;
-/// - restarts wait 15 s, doubling to a 300 s cap.
+/// - restarts wait 15 s, doubling to a 300 s cap;
+/// - a member that found this Mac's GPU held by another Darkbloom build waits for that hold to end: it counts nothing
+///   and doubles nothing.
 ///
 /// Pure value type: the supervisor persists it for `darkbloom status`.
 public struct ClusterMemberRestartBudget: Codable, Equatable, Sendable {
@@ -88,6 +102,8 @@ public struct ClusterMemberRestartBudget: Codable, Equatable, Sendable {
         /// The budget is spent: stop restarting and say why. The supervisor
         /// parks (holding nothing) until the operator restarts it.
         case exhausted(reason: String)
+        /// Another Darkbloom build holds this Mac's GPU: wait until it lets go, then start again at once.
+        case waitForGPU
     }
 
     public private(set) var limits: Limits
@@ -111,6 +127,8 @@ public struct ClusterMemberRestartBudget: Codable, Equatable, Sendable {
     /// accounting, then the two breakers, then the backoff.
     public mutating func record(_ end: ClusterMemberRunEnd, runSeconds: Double) -> Decision {
         if end == .operatorStop { return .stop }
+        // A start refused for another build's hold on the GPU is no failure: nothing counts or doubles while it waits.
+        if end == .gpuHeld { return .waitForGPU }
         if runSeconds < limits.quickFailureWindowSeconds {
             if end == .guardTeardown { guardTeardowns += 1 } else { quickFailures += 1 }
         } else {

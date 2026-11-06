@@ -57,7 +57,9 @@ public enum ClusterWorkerOwnerService {
 
     /// `lanes`: requests the worker serves at once (the plan's batch lanes,
     /// which the worker's own load agreement binds); one by default.
+    /// `machineLock`: the Mac's device lock every build shares, held with this owner's lease for its session.
     public static func serveKeyed(input: Int32, output: Int32, clusterID: String, leaseDirectory: URL,
+                             machineLock: ClusterMachineDeviceLock? = nil,
                              bootstrapProfile: ClusterOwnerBootstrapProfile?,
                              authorizeNativeStart: (@Sendable (ClusterNativeAuthorizationStart) throws -> Void)? = nil,
                              lanes: Int = 1,
@@ -101,7 +103,7 @@ public enum ClusterWorkerOwnerService {
                   ownerBinding.executionPlanSHA256 == nativeStart.common.planSHA256.map({ String(format: "%02x", $0) }).joined(),
                   ownerBinding.identity.artifactSHA256 == nativeStart.common.artifactSHA256.map({ String(format: "%02x", $0) }).joined() else { throw OwnerWire.invalid("Configured native plan differs") }
         }
-        let lease = try ClusterDeviceLease(directoryURL: leaseDirectory)
+        let lease = try ClusterDeviceLease(directoryURL: leaseDirectory, machineLock: machineLock)
         let localNow = DispatchTime.now().uptimeNanoseconds
         var remaining = duration
         if let end = open.nativeLocalDeadline {

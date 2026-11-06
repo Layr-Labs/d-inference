@@ -477,6 +477,23 @@ extension ClusterLinkCheck {
         expect(adopted.message.contains("recorded") && adopted.message.contains("--remove"), "the message says so")
         expectNoAddress(compactJSON(adopted), "adopted JSON")
         expectEqual(byHand.fix().adopted, [], "a second run has nothing to adopt")
+        // Set up by the other app on this Mac (production beside DevNet): adopted with what that setup changed, read from
+        // the other app's record and never written there, so this app can undo it all once the other app is uninstalled.
+        let besideOther = FakeIsolationWorld(IsolationFixtures.macAIsolated())
+        let theirs = ClusterLinkIsolationRecord.Entry(interface: "en7", address: IsolationFixtures.macAAddress, hardwarePort: "Thunderbolt 6",
+            bridge: .init(bridge: "bridge0", index: 1), disabledServices: ["Thunderbolt 6", "Thunderbolt 2"])
+        besideOther.otherInstallRecord.set(theirs)
+        let otherRecordBefore = besideOther.otherInstallRecord
+        expectEqual(besideOther.fix().adopted, ["en7"], "adopted beside the other app's setup")
+        expectEqual(besideOther.isolationRecord.entry(on: "en7"), theirs, "with the other app's bridge slot and services")
+        expectEqual(besideOther.otherInstallRecord, otherRecordBefore, "the other app's record is only read")
+        // The other app's entry for another address is not this setup: what this Mac shows is recorded, as by hand.
+        let elsewhere = FakeIsolationWorld(IsolationFixtures.macAIsolated())
+        elsewhere.otherInstallRecord.set(.init(interface: "en7", address: IsolationFixtures.macBAddress, hardwarePort: "Thunderbolt 6",
+            bridge: .init(bridge: "bridge0", index: 1), disabledServices: ["Thunderbolt 2"]))
+        expectEqual(elsewhere.fix().adopted, ["en7"], "adopted")
+        expectEqual(elsewhere.isolationRecord.entry(on: "en7"), .init(interface: "en7", address: IsolationFixtures.macAAddress,
+            hardwarePort: "Thunderbolt 6", bridge: nil, disabledServices: ["Thunderbolt 6"]), "recorded from this Mac alone")
         let partial = FakeIsolationWorld(IsolationFixtures.macA)
         partial.isolationApproval = { _, world in
             // The service was made, then a later command failed.

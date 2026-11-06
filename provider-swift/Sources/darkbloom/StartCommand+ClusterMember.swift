@@ -74,6 +74,17 @@ extension Start {
         return (loop, prepared, installation != nil)
     }
 
+    /// What a member's start that failed with `error` ends with. Refused because another Darkbloom app holds this Mac's
+    /// GPU, or production serves here, it is a wait, never a failure: it says the refusal's `Error:` line (an `ExitCode`
+    /// prints nothing, and the cluster service waits on that line) and ends with the exit code reserved for it, which
+    /// the always-on supervisor waits on without spending its restart budget (`ClusterMemberPreparation.gpuHoldRefusal`).
+    /// Any other error is thrown as it is.
+    static func memberStartFailure(_ error: any Error, say: (String) -> Void = printError) -> any Error {
+        guard let refusal = ClusterMemberPreparation.gpuHoldRefusal(error) else { return error }
+        say(refusal.line)
+        return ExitCode(refusal.exitCode)
+    }
+
     func runClusterMember() async throws {
         let path = try configOptions.config.map {
             URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)
@@ -92,8 +103,13 @@ extension Start {
         // bootstrap directories), reported in this member's log.
         Self.sweepOrphans(phase: "start", waitForContract: true)
         defer { Self.sweepOrphans(phase: "end", waitForContract: true) }
-        let (loop, prepared, offered) = try await makeClusterMemberLoopAndPreparation(reference: factory.reference,
-                                                                                      answersUpdateDrain: true)
+        let made: (loop: ProviderLoop, prepared: ClusterMemberPreparation, offered: Bool)
+        do {
+            made = try await makeClusterMemberLoopAndPreparation(reference: factory.reference, answersUpdateDrain: true)
+        } catch {
+            throw Self.memberStartFailure(error)
+        }
+        let (loop, prepared, offered) = made
         heartbeat.attach(loop: loop)
         // A setup saved for coordinator pairing over the link serves the
         // pair's committed starts (S10): the leader hosts the link listener

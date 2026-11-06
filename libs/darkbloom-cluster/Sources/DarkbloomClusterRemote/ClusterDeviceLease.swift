@@ -5,7 +5,10 @@ import Foundation
 /// Service lifecycle guards remain authoritative for resolving this journal.
 @_spi(OwnerService) public final class ClusterDeviceLease {
     private let gate: ClusterDeviceExclusion
-    public init(directoryURL: URL) throws { gate = try ClusterDeviceExclusion(directoryURL: directoryURL) }
+    /// `machineLock`: the Mac's device lock every build shares (`ClusterMachineDeviceLock`), held with this lease.
+    public init(directoryURL: URL, machineLock: ClusterMachineDeviceLock? = nil) throws {
+        gate = try ClusterDeviceExclusion(directoryURL: directoryURL, machineLock: machineLock)
+    }
 
     func record(binding: ClusterOwnerBinding, launchID: UUID) throws {
         try record(clusterID: binding.route.clusterID, peerID: binding.route.ownerPeerID, rank: binding.rank,

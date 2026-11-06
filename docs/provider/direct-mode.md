@@ -1,6 +1,6 @@
 # Direct mode: a local OpenAI-compatible endpoint
 
-> Last updated: 2026-11-05
+> Last updated: 2026-11-06
 
 Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
@@ -174,7 +174,13 @@ still cancels generation. Responses uses `response.failed` for late failures.
 The provider chat-upload interceptor selects the SDK service's HTTP framing
 policy (`LocalChatUploadResponder.respond` and `MLXOpenAIService.streamChatCompletionFrames`).
 A failed required tool call is still a failure; no argument repair or fabricated
-call is performed.
+call is performed. On a [two-Mac cluster](./two-mac-cluster.md) the leader's
+local API ends such a stream with the same error chunk, also when the provider
+rejects the output mid-stream (a forced `tool_choice` answered with text, a
+streamed tool call that fails validation) before the pair has retired the
+cancelled request
+(`provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPEventStream.swift`,
+`DistributedHTTPEventStream`).
 
 ### Refused request shapes
 

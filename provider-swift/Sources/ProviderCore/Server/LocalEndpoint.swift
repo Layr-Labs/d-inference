@@ -71,7 +71,10 @@ public enum LocalEndpoint {
     /// The file holding exactly `token(forPort:)`, for tools that read the key from a file (OpenCode's `{file:}`,
     /// Hermes' `key_cmd`) instead of keeping a copy in their own config. Nil when no key file holds that key.
     public static func keyFile(forPort port: Int) -> URL? {
-        nil
+        guard let key = token(forPort: port) else { return nil }
+        return [clusterTokenPath(), tokenPath()].first { path in
+            (try? String(contentsOf: path, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) == key
+        }
     }
 
     /// The pair's key when this Mac has one; nil otherwise (nothing is created).

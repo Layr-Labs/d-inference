@@ -111,8 +111,8 @@ enum ToolIntegration {
 
     /// `~/…` for a path under `home`, else the absolute path: for the lines `start` prints.
     static func displayPath(_ url: URL, home: URL) -> String {
-        let path = url.standardizedFileURL.path
-        let homePath = home.standardizedFileURL.path
+        let path = url.path
+        let homePath = home.path
         if path == homePath { return "~" }
         return path.hasPrefix(homePath + "/") ? "~" + path.dropFirst(homePath.count) : path
     }

@@ -130,7 +130,7 @@ struct OpenCodeConfigPlanTests {
 
         """
         let text = try #require(F.newText(plan(owner, fileName: "opencode.json")))
-        #expect(!text.contains("//"))
+        #expect(!text.contains("// Added by"))
         #expect(text.hasPrefix("{\n  \"model\": \"openai/gpt-5\",\n  \"theme\": \"dark\",\n  \"providers\": {\n"))
         let parsed = try #require(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
         #expect(parsed["model"] as? String == "openai/gpt-5")

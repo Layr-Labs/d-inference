@@ -36,7 +36,11 @@ public enum AtomicFile {
                     offset += written
                 }
             }
+            // The creation mode passes through the umask; the target's mode is set exactly.
+            guard fchmod(descriptor, mode) == 0 else { throw failure("chmod \(sibling.lastPathComponent)") }
+            guard fsync(descriptor) == 0 else { throw failure("sync \(sibling.lastPathComponent)") }
         }
+        try beforeReplace()
         guard rename(sibling.path, url.path) == 0 else { throw failure("rename onto \(url.lastPathComponent)") }
         renamed = true
     }

@@ -113,7 +113,9 @@ public enum BoundedProcess {
             stderrPipe = pipe
             process.standardError = pipe
             pipe.fileHandleForReading.readabilityHandler = { handle in
-                let chunk = handle.availableData
+                // `availableData` returns autoreleased storage, and the
+                // handler's queue may run many callbacks before it drains.
+                let chunk = autoreleasepool { handle.availableData }
                 if chunk.isEmpty {
                     handle.readabilityHandler = nil
                     drained.signal()
@@ -200,7 +202,9 @@ private final class StderrTailBox: @unchecked Sendable {
         defer { lock.unlock() }
         buffer.append(chunk)
         if buffer.count > limit {
-            buffer.removeFirst(buffer.count - limit)
+            // A copy, not `removeFirst`: that slices, and a slice keeps every
+            // byte before it in its storage.
+            buffer = Data(buffer.suffix(limit))
         }
     }
 

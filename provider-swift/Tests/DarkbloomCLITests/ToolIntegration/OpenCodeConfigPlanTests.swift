@@ -180,6 +180,15 @@ struct OpenCodeConfigPlanTests {
         }
     }
 
+    @Test("Windows line breaks stay on every line, the added ones included, and a re-run changes nothing")
+    func crlfLineBreaks() throws {
+        let text = try #require(F.newText(plan("{\r\n  // mine\r\n  \"model\": \"x/y\"\r\n}\r\n")))
+        #expect(text.hasPrefix("{\r\n  // mine\r\n  \"model\": \"x/y\",\r\n  \"providers\": {\r\n"))
+        #expect(!text.replacingOccurrences(of: "\r\n", with: "").contains("\n"))
+        #expect(F.summary(plan(text))?.provider == .unchanged)
+        #expect(F.newText(plan(text)) == nil)
+    }
+
     @Test("an old darkbloom value is replaced whole, and its comments are counted as gone")
     func replacesTheOldValue() throws {
         let owner = """

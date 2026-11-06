@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 import ProviderCore
 
-/// The agent tools Darkbloom sets up as a provider: `darkbloom start --opencode` / `--hermes`.
+/// The agent tools Darkbloom sets up to use it as a provider (for the planned `start --opencode` / `--hermes`).
 enum IntegrationTool: String, CaseIterable, Sendable {
     case opencode
     case hermes
@@ -93,7 +93,7 @@ struct ToolIntegrationEnvironment: Sendable {
     }
 }
 
-/// The entry point for `start --opencode` / `--hermes`: finds the tool's config, plans the edit and makes it safely.
+/// What the start flags call for each tool: finds the tool's config, plans the edit and makes it safely.
 enum ToolIntegration {
     /// Points `tool` at `endpoint` with `models`. A dry run plans and writes nothing: no backup, no lock, no file.
     static func configure(

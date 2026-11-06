@@ -178,10 +178,10 @@ private struct HermesEdit {
             appended += ["model:", unit + providerLine, unit + defaultLine]
             return
         }
-        if section.value.isEmpty, let first = try children(of: section).first {
+        let children = section.value.isEmpty ? try children(of: section) : []
+        if let first = children.first {
             let indent = String(repeating: " ", count: lines[first.line].indent)
             var top: [String] = []
-            let children = try children(of: section)
             if !children.contains(where: { $0.key == "provider" }) { top.append(indent + providerLine) }
             if !children.contains(where: { $0.key == "default" || $0.key == "model" }) { top.append(indent + defaultLine) }
             if !top.isEmpty { edits.append((section.line + 1..<section.line + 1, top)) }
@@ -246,16 +246,16 @@ private struct HermesEdit {
         return lines.compactMap(Self.comment).filter { !text.contains($0) }.count
     }
 
-    /// The new text, or nil when it is the same as the file's.
+    /// The new text, or nil when it is the same as the file's. Edits apply from the end; an insertion and a
+    /// replacement at one line put the inserted lines first.
     func result() -> String? {
         var result = lines
         for edit in edits.sorted(by: { ($0.range.lowerBound, $0.range.upperBound) > ($1.range.lowerBound, $1.range.upperBound) }) {
             result.replaceSubrange(edit.range, with: edit.lines.map { YAMLLine(content: $0, ending: newline) })
         }
-        if !appended.isEmpty {
-            if let last = result.indices.last, result[last].ending.isEmpty { result[last].ending = newline }
-            result += appended.map { YAMLLine(content: $0, ending: newline) }
-        }
+        result += appended.map { YAMLLine(content: $0, ending: newline) }
+        // A file without a final line break: its last line gets one when lines now follow it.
+        for index in result.indices.dropLast() where result[index].ending.isEmpty { result[index].ending = newline }
         let text = result.map { $0.content + $0.ending }.joined()
         return text == lines.map({ $0.content + $0.ending }).joined() ? nil : text
     }

@@ -7,7 +7,7 @@ struct IntegrationModel: Equatable, Sendable {
     enum Location: Int, Comparable, Sendable {
         case thisMac
         case yourMacs
-        /// Other Darkbloom machines; listed only when the owner opted into "My Macs first".
+        /// Other Darkbloom machines: the local router lists them only when the owner opted into "My Macs first".
         case network
 
         var label: String {

@@ -195,6 +195,21 @@ struct HermesConfigPlanTests {
         #expect(F.summary(result)?.droppedComments == 1)
     }
 
+    @Test("a file without a final line break gets one before the lines Darkbloom adds after it")
+    func noFinalLineBreak() {
+        #expect(F.newText(plan("toolsets:\n  - hermes-cli\nproviders:"))
+            == "toolsets:\n  - hermes-cli\nproviders:\n" + added + block + mainModel)
+        #expect(F.newText(plan("model:")) == mainModel + "providers:\n" + added + block)
+        #expect(F.newText(plan("model: \"\"")) == mainModel + "providers:\n" + added + block)
+    }
+
+    @Test("Windows line breaks stay on every line, the added ones included")
+    func crlfLineBreaks() throws {
+        let text = try #require(F.newText(plan("# mine\r\nmodel: \"\"\r\ntoolsets:\r\n  - hermes-cli\r\n")))
+        #expect(text.hasPrefix("# mine\r\nmodel:\r\n  provider: \"custom:darkbloom\"\r\n"))
+        #expect(!text.replacingOccurrences(of: "\r\n", with: "").contains("\n"))
+    }
+
     @Test("Hermes' 64K floor: no model with at least 64,000 tokens of context refuses, naming the largest")
     func contextFloor() {
         let refusal = F.refusal(plan(nil, models: [F.gemma]))

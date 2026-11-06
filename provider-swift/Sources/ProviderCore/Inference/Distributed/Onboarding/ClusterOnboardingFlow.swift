@@ -292,8 +292,9 @@ public struct ClusterOnboardingModelChoice: Codable, Sendable, Equatable {
         let name = sameTitleElsewhere ? "\(title) (\(modelID ?? title))" : title
         let size = lines.first?.components(separatedBy: " · ").first.flatMap { $0.isEmpty ? nil : $0 }
         let move = provision.map { $0.leaderDownloads && !$0.fromOtherMac ? "download" : "copy" }
-        // Each mode it runs here, with no speed (an older leader sends only the planner's split).
-        let how = modes.flatMap(ClusterOnboardingMode.listWords) ?? ClusterOnboardingDeployment.shownMarker(split)
+        // Each mode it runs here, the recommended one first, with no speed (an older leader sends only the planner's split).
+        let how = modes.flatMap { ClusterOnboardingMode.listWords($0, recommended: modeAdvice?.mode) }
+            ?? ClusterOnboardingDeployment.shownMarker(split)
         return ([name] + [size, how, move].compactMap { $0 }).joined(separator: " · ")
     }
 }
@@ -363,7 +364,8 @@ public struct ClusterOnboardingMode: Codable, Sendable, Equatable {
     /// the other Mac 50%"); nil when not known.
     public var split: String?
     /// Decode tokens per second this pair served the model at in this mode with this build; nil: not measured with this
-    /// build yet (an earlier build's figure reaches only the recommendation: `ClusterOnboardingModeAdvice`).
+    /// build yet (an earlier build's figure reaches only the recommendation, `ClusterOnboardingModeAdvice`, which the
+    /// list's order and the default follow: `defaultIndex`).
     public var measuredTokensPerSecond: Double?
     /// Requests the pair serves at once in this mode, from the plan that loads (1: one at a time); nil when not known
     /// and from an older leader.
@@ -384,9 +386,14 @@ public struct ClusterOnboardingMode: Codable, Sendable, Equatable {
     /// not the one that loads.
     static let decidedWhenItLoads = "decided when it loads"
 
-    /// The default among `modes`: the fastest measured on this pair with this build, else the planner's (the first).
-    public static func defaultIndex(_ modes: [ClusterOnboardingMode]) -> Int {
-        modes.indices.filter { modes[$0].measuredTokensPerSecond != nil }
+    /// The default among `modes`: the mode recommended for these Macs when it is among them (`ClusterOnboardingModeAdvice`,
+    /// which also reads an earlier build's figures), else the fastest measured on this pair with this build, else the
+    /// planner's (the first). The list's order, a model named on the command line and the question's cursor all start
+    /// from it, so none of them contradicts the recommendation (pair-2's Gemma right after an update: the planner's
+    /// pipeline first, tensor parallel recommended from what an earlier build served).
+    public static func defaultIndex(_ modes: [ClusterOnboardingMode], recommended: String? = nil) -> Int {
+        if let recommended, let index = modes.firstIndex(where: { $0.mode == recommended }) { return index }
+        return modes.indices.filter { modes[$0].measuredTokensPerSecond != nil }
             .max { modes[$0].measuredTokensPerSecond! < modes[$1].measuredTokensPerSecond! } ?? 0
     }
 
@@ -415,12 +422,12 @@ public struct ClusterOnboardingMode: Codable, Sendable, Equatable {
         concurrentRequests.map { $0 <= 1 ? "serves one at a time" : "serves up to \($0) at once" }
     }
 
-    /// The list's words for a model's modes, the default first: "tensor parallel or pipeline". No speed, measured or
-    /// not (DevNet .118, pair-2: "Gemma 4 26B · tensor parallel 96 tok/s or pipeline (not measured on these Macs yet)"):
-    /// the mode question says which mode suits these Macs, and why, in words.
-    static func listWords(_ modes: [ClusterOnboardingMode]) -> String? {
+    /// The list's words for a model's modes, the default first (`defaultIndex`): "tensor parallel or pipeline". No speed,
+    /// measured or not (DevNet .118, pair-2: "Gemma 4 26B · tensor parallel 96 tok/s or pipeline (not measured on these
+    /// Macs yet)"): the mode question says which mode suits these Macs, and why, in words.
+    static func listWords(_ modes: [ClusterOnboardingMode], recommended: String? = nil) -> String? {
         guard !modes.isEmpty else { return nil }
-        let first = defaultIndex(modes)
+        let first = defaultIndex(modes, recommended: recommended)
         let ordered = [modes[first]] + modes.indices.filter { $0 != first }.map { modes[$0] }
         return ordered.map { $0.label.lowercased() }.joined(separator: " or ")
     }
@@ -505,11 +512,13 @@ public struct ClusterOnboardingModeAdvice: Codable, Sendable, Equatable {
         let mostLanes = lanesKnown ? open.max { lanes($0)! < lanes($1)! } : nil
         let lanesDiffer = lanesKnown && Set(open.map { lanes($0)! }).count > 1
         // What these Macs measured: this build's served speeds, or, while this build has served none of these modes, what
-        // they served with an earlier build. Every Darkbloom update starts a build with nothing served, and the planner's
-        // figures can rank the modes the other way round (pair-2, an M3 Ultra and an M5 Max, DevNet .118: right after the
-        // update the question said "Pipeline, faster here" for Gemma, from predictions, though these Macs had served its
-        // tensor parallel faster on every earlier build). The two are never ranked together: once one of these modes has
-        // served with this build, another's earlier figure, even a faster one, waits until that mode serves with it too.
+        // they served with an earlier build whose records say how they were served (`ClusterSetupPlanning.earlierFigures`:
+        // from #1819, provider 0.10.11, on; none after an update from 0.10.10). Every Darkbloom update starts a build
+        // with nothing served, and the planner's figures can rank the modes the other way round (pair-2, an M3 Ultra and
+        // an M5 Max, DevNet .118: right after the update the question said "Pipeline, faster here" for Gemma, from
+        // predictions, though these Macs had served its tensor parallel faster on every earlier build). The two are never
+        // ranked together: once one of these modes has served with this build, another's earlier figure, even a faster
+        // one, waits until that mode serves with it too.
         let servedWithThisBuild = open.contains { $0.measuredTokensPerSecond != nil }
         func measurement(_ option: Option) -> Double? {
             servedWithThisBuild ? option.measuredTokensPerSecond : option.earlierMeasuredTokensPerSecond
@@ -2648,12 +2657,13 @@ public enum ClusterOnboardingDriver {
             _ = provision(offer, title: choice.title, index: chosen!, operations, console)
             return 1
         }
-        // How both Macs split it, when it runs more than one way here: the fastest measured on this pair first, the
-        // other one keypress away (owner, 2026-11-04); the current model keeps the mode it serves in. A model named on
-        // the command line takes that default.
+        // How both Macs split it, when it runs more than one way here: the recommended mode first, else the fastest
+        // measured on this pair, the other one keypress away (owner, 2026-11-04); the current model keeps the mode it
+        // serves in. A model named on the command line takes that default.
         let keep = chosen == current || model != nil ? keepMode ?? pair?.servingMode : nil
         var mode = choice.modes.flatMap { modes in
-            modes.first { $0.mode == keep }?.mode ?? (modes.isEmpty ? nil : modes[ClusterOnboardingMode.defaultIndex(modes)].mode)
+            modes.first { $0.mode == keep }?.mode
+                ?? (modes.isEmpty ? nil : modes[ClusterOnboardingMode.defaultIndex(modes, recommended: choice.modeAdvice?.mode)].mode)
         }
         if model == nil, let modes = choice.modes, modes.count > 1 {
             console.say("  " + modeQuestion(model: choice.title))

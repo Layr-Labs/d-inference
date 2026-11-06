@@ -169,6 +169,7 @@ import Darwin
         // DevNet .118, pair-2 (2026-11-06): right after the update the question said "Pipeline, faster here" for Gemma,
         // from predictions, though these Macs had served its tensor parallel faster with every earlier build.
         modeAdviceFollowsTheseMacsMeasurementsAfterAnUpdate()
+        theListAndTheDefaultFollowTheRecommendation()
         // DevNet .118, pair-2 (2026-11-06): the list still quoted each mode's tok/s.
         modelListMarksTheCurrentModelAndQuotesNoSpeed()
         firstRunSaysWhatWillBeAsked()
@@ -4289,6 +4290,38 @@ import Darwin
         for line in [advice, both, pipelineFaster, asFast].map({ $0?.plainLine(model: "Gemma 4 26B") ?? "" }) {
             expect(!line.isEmpty && !line.contains("tok") && !line.contains("84") && !line.contains("57"), "after an update: no figure: \(line)")
         }
+    }
+
+    /// The recommendation can rest on what an earlier build served while this build has measured nothing, and the
+    /// planner's first mode may be the other one (pair-2's Gemma right after an update: the pipeline first, tensor
+    /// parallel recommended). The list's order and a model named on the command line follow the recommendation too, so
+    /// the list never reads "pipeline or tensor parallel" while the question recommends tensor parallel. (A model started
+    /// again keeps the mode it served in, as before: `chooseAndServe`'s `keepMode`.)
+    static func theListAndTheDefaultFollowTheRecommendation() {
+        let tp = "tensor_parallel_v1", pp = "pipeline_v1"
+        var gemma = ClusterOnboardingModelChoice(title: "Gemma 4 26B", lines: ["15.6 GB · pipeline · this Mac 6 layers / the other Mac 24 layers"],
+            blocker: nil, modelID: "gemma-4-26b-qat-4bit", validated: true, split: "pipeline",
+            modes: [.init(mode: pp, split: "this Mac 6 layers / the other Mac 24 layers", measuredTokensPerSecond: nil, concurrentRequests: 1),
+                    .init(mode: tp, split: "this Mac 50% / the other Mac 50%", measuredTokensPerSecond: nil, concurrentRequests: 1)])
+        expect(gemma.listLine(sameTitleElsewhere: false) == "Gemma 4 26B · 15.6 GB · pipeline or tensor parallel",
+               "no recommendation: the planner's first: \(gemma.listLine(sameTitleElsewhere: false))")
+        let unrecommended = gemma
+        gemma.modeAdvice = ClusterOnboardingModeAdvice(mode: tp, reason: "the only one measured on these Macs so far")
+        expect(gemma.listLine(sameTitleElsewhere: false) == "Gemma 4 26B · 15.6 GB · tensor parallel or pipeline",
+               "the recommended mode first: \(gemma.listLine(sameTitleElsewhere: false))")
+        expect(ClusterOnboardingMode.defaultIndex(gemma.modes!, recommended: "pipeline_mtp_v1") == 0,
+               "a recommendation the list doesn't hold changes nothing")
+        // Named on the command line (`darkbloom cluster local <model>`), so no question: the recommended mode loads.
+        func named(_ choice: ClusterOnboardingModelChoice) -> [String] {
+            let recorder = Recorder()
+            let resume = ClusterOnboardingResume(role: .leader, peerName: "Apple M3 Ultra, 256 GB")
+            let run = TerminalRun(operations(recorder, resume: resume, pairEvents: [], pairResult: .failed([]), choices: [choice]),
+                request: ClusterOnboardingRequest(scope: .localOnly(bind: ClusterServingScope.localOnlyDefaultBind), model: "Gemma 4 26B"))
+            _ = run.finish()
+            return recorder.all.filter { $0.hasPrefix("useMode") }
+        }
+        expect(named(gemma) == ["useMode 0 \(tp)"], "named: the recommended mode: \(named(gemma))")
+        expect(named(unrecommended) == ["useMode 0 \(pp)"], "named, no recommendation: the planner's first, as before")
     }
 
     /// R6-2 (M5 Ultra pair, DevNet branch.81): "… the other Mac 44 layers) · ser…" at 120 columns, and a window widened

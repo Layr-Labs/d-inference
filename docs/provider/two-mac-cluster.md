@@ -341,10 +341,12 @@ On the leader, the pair's model list follows, like `darkbloom start`'s picker:
   parallel to pipeline? It stops serving on both Macs while it loads again …").
   A stopped pair's last model starts again in the mode it served in.
 - Each model shows its size, where it is (copied or downloaded first), and the
-  modes it runs here ("tensor parallel or pipeline"), the fastest measured on
-  this pair first. The list shows no speed: neither the model list nor the mode
-  question quotes tokens per second. Models these Macs cannot serve are not
-  listed.
+  modes it runs here ("tensor parallel or pipeline"): the one the mode question
+  recommends first, else the fastest measured on this pair with this build,
+  else the planner's choice. A model named on the command line
+  (`darkbloom cluster local <model>`) starts in that same mode. The list shows
+  no speed: neither the model list nor the mode question quotes tokens per
+  second. Models these Macs cannot serve are not listed.
 - Under the models, **Switch to local only** (or **Switch to serving through
   Darkbloom**) serves the current model the other way; serving through Darkbloom
   checks both Macs' logins first, before the local API stops. **Start over
@@ -380,15 +382,25 @@ the same words:
   (`ClusterServedModes`). Right after an update nothing has, so until one of
   the modes serves with the new build, the question ranks them by what these
   Macs served with an earlier build, the same way (through Darkbloom or
-  locally, with or without Qwen's tensor assistant). The planner's prediction
-  decides only when no build has served them (pair-2, DevNet .118: right after
-  the update the question recommended Gemma's pipeline from predictions, though
-  these Macs had served its tensor parallel faster with every earlier build).
+  locally, with or without Qwen's tensor assistant). It counts only records
+  that say how they were served, which builds write from 0.10.11 on. So the
+  update from 0.10.10 to 0.10.11 still recommends from the planner's
+  prediction, until a mode has served with 0.10.11; the earlier-build ranking
+  first applies at the update after it. There is no safe way to read 0.10.10's
+  records: they name neither the way they were served nor Qwen's assistant,
+  and equal tensor-parallel shares are used through Darkbloom and locally
+  alike, so nothing in a record tells the two apart. The prediction decides
+  only when no such record exists (pair-2, DevNet .118: right after the update
+  the question recommended Gemma's pipeline from predictions; replayed with its
+  records, the one tensor-parallel record from .110 that says how it was served
+  recommends tensor parallel, "the only one measured on these Macs so far",
+  and .92's records, written before builds said how they served, are skipped).
 - Nothing fits, or there is no measured or predicted speed and no difference
   in requests at once: "No recommendation for <model> on these two Macs:
   <why>.", nothing is
   marked, and the cursor starts as before: the model serving now keeps its
-  mode, any other starts on the fastest measured mode (else the planner's).
+  mode, any other starts on the fastest measured mode with this build (else the
+  planner's).
 
 The modes:
 

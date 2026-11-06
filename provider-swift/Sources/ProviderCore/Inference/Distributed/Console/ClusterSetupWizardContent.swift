@@ -944,7 +944,7 @@ enum ClusterSetupContent {
             return ["The two Macs pair over the Thunderbolt cable with their Secure Enclave keys: no SSH, no address and no network setting.",
                     "The pairing code is the same six digits on both screens when the Mac that answered is the Mac in front of you. Confirm only when you have read both."]
         case .model:
-            return ["Each model folder found on this Mac, whether the other Mac has the same artifact, and the planner's choice from both Macs' memory now: which Mac holds which layers, the mode, the predicted speed against each Mac alone, and what each rank needs against what its Mac has free.",
+            return ["Each model folder found on this Mac, whether the other Mac has the same artifact, and the planner's choice from both Macs' memory now: which Mac holds which layers, the mode, whether each Mac could hold it alone, and what each rank needs against what its Mac has free.",
                     "Using a plan saves this Mac's setup and sends the other Mac its own; the other Mac approves it on its own screen. Nothing starts."]
         case .check:
             return ["A short end-to-end proof across the cable: both links, a start, both ranks loaded (\u{201C}0 of 2 ranks ready\u{201D} counts up), a few tokens through the local API, a stop, and the memory released on both Macs (journal empty, wired memory back under the idle baseline)."]

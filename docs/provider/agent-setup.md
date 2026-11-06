@@ -1,6 +1,6 @@
 # Set up Darkbloom with an AI agent
 
-> Last updated: 2026-11-04
+> Last updated: 2026-11-06
 
 This page is a setup prompt for an AI agent. The agent installs Darkbloom,
 logs in with the person's help, makes one Mac (or two Macs joined by one
@@ -439,12 +439,12 @@ Mac still holds an old pairing. See [troubleshooting](#troubleshooting).
 meanwhile; with `NO_COLOR=1` these working lines don't print), then shows a
 list. The list has only the models approved for clusters (GLM-5.3-Flash,
 Qwen3.8 27B, MiMo-V2.6-Flash and Gemma 4 26B QAT) that these two Macs can
-serve. Each line gives the name, the size, the mode or modes and their speed
-measured on these Macs:
+serve. Each line gives the name, the size and the mode or modes, the one
+recommended for these Macs first. No line shows a speed:
 
 ```text
-  1) gemma-4-26b-qat-4bit · 15.6 GB · pipeline or tensor parallel · not measured on these Macs yet
-  2) Qwen 3.8 27B · 16.3 GB · tensor parallel · not measured on these Macs yet
+  1) gemma-4-26b-qat-4bit · 15.6 GB · tensor parallel or pipeline
+  2) Qwen 3.8 27B · 16.3 GB · tensor parallel
   3) Z.ai: GLM-5.3-Flash · 181.8 GB · download · not enough free disk
 ```
 

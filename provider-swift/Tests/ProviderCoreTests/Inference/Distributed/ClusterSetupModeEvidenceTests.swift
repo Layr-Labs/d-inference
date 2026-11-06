@@ -9,8 +9,9 @@ import Testing
 /// served nothing with the new build, so the mode question compared the planner's predictions and said "Pipeline,
 /// faster here", although these Macs had served its tensor parallel faster with every earlier build (pipeline 57.2 tok/s
 /// on .92; tensor parallel 61.3 on .92 and 84 on .110). A plan of a new build reads no earlier build's served speeds
-/// (`ClusterServedSpeedRecords.servedBy`); the mode question reads them (`ClusterSetupPlanning.earlierFigures`) until this
-/// build has served one of the modes.
+/// (`ClusterServedSpeedRecords.servedBy`); the mode question reads those that say how they were served
+/// (`ClusterSetupPlanning.earlierFigures`) until this build has served one of the modes. Records say it from #1819 on
+/// (DevNet .100, provider 0.10.11): .92's don't, and neither do 0.10.10's.
 @Suite("Mode question: what these Macs served with an earlier build")
 struct ClusterSetupModeEvidenceTests {
     static let current = String(repeating: "c", count: 64)
@@ -31,9 +32,16 @@ struct ClusterSetupModeEvidenceTests {
         }
     }
 
-    /// Pair-2's Gemma through Darkbloom before .118: both modes with .92, tensor parallel again with .110.
+    /// A pair whose builds all said how they served: both modes through Darkbloom with one build, tensor parallel again
+    /// with a later one.
     static let history = served(pp, build: build92, serving: .darkbloom, decode: 57.2, at: 1_000)
         + served(tp, build: build92, serving: .darkbloom, decode: 61.3, at: 1_100)
+        + served(tp, build: build110, serving: .darkbloom, decode: 84, at: 2_000)
+
+    /// Pair-2's Gemma records as they were written before .118: .92 predates #1819 and names neither how it served nor
+    /// the assistant; .110 names both.
+    static let pair2 = served(pp, build: build92, serving: nil, assisted: nil, decode: 57.2, at: 1_000)
+        + served(tp, build: build92, serving: nil, assisted: nil, decode: 61.3, at: 1_100)
         + served(tp, build: build110, serving: .darkbloom, decode: 84, at: 2_000)
 
     static func earlier(_ entries: [ClusterServedSpeedRecords.Entry], serving: ClusterServedScope = .darkbloom,
@@ -64,6 +72,10 @@ struct ClusterSetupModeEvidenceTests {
         #expect(Self.earlier(Self.history + assistantUnnamed) == [.tensorParallel: 84, .pipeline: 70],
                 "a pipeline record that names its serving counts without naming the assistant")
         #expect(Self.earlier([]).isEmpty)
+        // Pair-2 as its records were written: .92's say nothing of how they were served, so only .110's count. No
+        // record from before #1819 (0.10.10 and earlier) ever counts: it may have been served the other way.
+        #expect(Self.earlier(Self.pair2) == [.tensorParallel: 84])
+        #expect(Self.earlier(Array(Self.pair2.prefix(6))).isEmpty, "only records from before #1819: nothing, the prediction decides")
     }
 
     @Test("pair-2 after the update: tensor parallel, as these Macs measured it, not the pipeline the planner predicts faster")
@@ -96,11 +108,11 @@ struct ClusterSetupModeEvidenceTests {
             try #require(ClusterSetupPlanning.modes(result, served: served, pair: pair, localMemberID: "mac-a", serving: .darkbloom,
                                                     tensorAssistant: false))
         }
-        let afterUpdate = try modes(Self.history)
+        let afterUpdate = try modes(Self.pair2)
         #expect(Set(afterUpdate.map(\.mode)) == [Self.tp, Self.pp], "Gemma runs both ways on these Macs: \(afterUpdate.map(\.mode))")
         #expect(afterUpdate.allSatisfy { $0.servedDecodeTokensPerSecond == nil }, "nothing served with this build yet")
         #expect(afterUpdate.first { $0.mode == Self.tp }?.earlierServedDecodeTokensPerSecond == 84)
-        #expect(afterUpdate.first { $0.mode == Self.pp }?.earlierServedDecodeTokensPerSecond == 57.2)
+        #expect(afterUpdate.first { $0.mode == Self.pp }?.earlierServedDecodeTokensPerSecond == nil, ".92's pipeline records name no scope")
         // The question's own plans, the planner predicting the pipeline faster (pair-2's figures: 56 against 52 tok/s).
         func plan(_ mode: String, decode: Double) -> ClusterSetupPlanSummary {
             .init(cut: 0, mode: mode, prefillSchedule: "serial", leaderID: "mac-a", ranks: [], promptTokens: 2_391, outputTokens: 256,
@@ -111,11 +123,15 @@ struct ClusterSetupModeEvidenceTests {
             OnboardingLive.modeAdvice(modes, listed: plan(Self.pp, decode: 56), families: [plan(Self.tp, decode: 52)],
                                       throughDarkbloom: true, serving: true)
         }
-        #expect(advice(afterUpdate) == .init(mode: Self.tp, reason: "faster here"))
-        // What .118 read: no earlier build's records, so the predictions decided.
+        #expect(advice(afterUpdate) == .init(mode: Self.tp, reason: "the only one measured on these Macs so far"))
+        // Both modes served with builds that said how: the faster as measured.
+        #expect(advice(try modes(Self.history)) == .init(mode: Self.tp, reason: "faster here"))
+        // What .118 read (no earlier build's records), and what an update from 0.10.10 reads (only records from before
+        // #1819): the predictions decide.
         #expect(advice(try modes([])) == .init(mode: Self.pp, reason: "faster here"))
+        #expect(advice(try modes(Array(Self.pair2.prefix(6)))) == .init(mode: Self.pp, reason: "faster here"))
         // Once tensor parallel served with this build (capture B, 09:38Z), this build's measurement decides.
-        let servedNow = try modes(Self.history + Self.served(Self.tp, build: Self.current, serving: .darkbloom, decode: 96.4, at: 9_000))
+        let servedNow = try modes(Self.pair2 + Self.served(Self.tp, build: Self.current, serving: .darkbloom, decode: 96.4, at: 9_000))
         #expect(servedNow.first { $0.mode == Self.tp }?.servedDecodeTokensPerSecond == 96.4)
         #expect(advice(servedNow) == .init(mode: Self.tp, reason: "the only one measured on these Macs so far"))
     }

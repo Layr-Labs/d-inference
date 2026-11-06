@@ -369,10 +369,10 @@ struct Gemma4TensorParallelTests {
         #expect(separate.payloads.count == forwards * 3 * layers + 4)
     }
 
-    /// Under the registered prompt policy (singleton tokens) and the scoped
-    /// batch decode (singleton rows), each rank packs every slice's expert
-    /// partials and the dense partial into ONE collective, and its expert
-    /// output and dense sum equal the split-sum oracle's slice-by-slice
+    /// Under the registered prompt policy (each token the bytes of its own
+    /// one-token call) and the scoped batch decode (singleton rows), each rank
+    /// packs every expert partial and the dense partial into ONE collective,
+    /// and its expert output and dense sum equal the split-sum oracle's
     /// forward bit for bit. A prompt chunk's tokens share one gate dispatch,
     /// never hinted as sorted (a sorted hint keeps CPU bytes but changes the
     /// GPU kernel route: `promptChunkExpertsEqualOneTokenCallsOnGPU`), from 2
@@ -383,8 +383,10 @@ struct Gemma4TensorParallelTests {
         let directory = try Self.synthetic(bits: 4)
         defer { try? FileManager.default.removeItem(at: directory) }
         let prompt = scope.hasPrefix("prompt")
-        let rows = prompt ? 1 : 3
-        let tokens = ["prompt": 6, "prompt-2": 2, "prompt-boundary": 16, "prompt-sorted": 24][scope] ?? 1
+        let geometry: [String: (rows: Int, tokens: Int)] = [
+            "prompt": (1, 6), "prompt-2": (1, 2), "prompt-boundary": (1, 16), "prompt-sorted": (1, 24), "batch": (3, 1),
+        ]
+        let (rows, tokens) = try #require(geometry[scope])
         let shape = [rows, tokens, 256]
         let expected: (experts: [UInt16], dense: [UInt16], indices: MLXArray, weights: MLXArray) = try Device.withDefaultDevice(.cpu) {
             let oracle = try Gemma4TensorParallelModel.load(modelDirectory: directory, role: .splitSum, reduction: nil)
@@ -447,9 +449,9 @@ struct Gemma4TensorParallelTests {
                     MLXRandom.seed(UInt64(tokens * 31 + bits))
                     let x = MLXRandom.normal([1, tokens, geometry.hidden]).asType(.bfloat16)
                     let scores = MLXRandom.uniform(low: 0, high: 1, [1, tokens, geometry.experts])
-                    let kth = geometry.experts - 8
+                    let kth = geometry.experts - Self.rankTopK
                     let indices = MLX.argPartition(scores, kth: kth, axis: -1)[.ellipsis, kth...].asType(.uint32)
-                    let weights = MLX.softmax(MLXRandom.normal([1, tokens, 8]), axis: -1).asType(.bfloat16)
+                    let weights = MLX.softmax(MLXRandom.normal([1, tokens, Self.rankTopK]), axis: -1).asType(.bfloat16)
                     let dense = MLXRandom.normal([1, tokens, geometry.hidden])
                     eval(x, indices, weights, dense)
                     gate.reset()
@@ -478,6 +480,9 @@ struct Gemma4TensorParallelTests {
         }
     }
 
+    /// The top-K of `rankExperts`, as the registered 26B routes.
+    private static let rankTopK = 8
+
     private static func bytes(_ value: MLXArray) -> Data {
         eval(value)
         return value.asData(access: .copy).data
@@ -493,7 +498,7 @@ struct Gemma4TensorParallelTests {
             "num_attention_heads": 2, "head_dim": 64, "num_key_value_heads": 1,
             "num_kv_shared_layers": 0, "hidden_size_per_layer_input": 0,
             "vocab_size": 128, "enable_moe_block": true, "num_experts": experts,
-            "top_k_experts": 8, "moe_intermediate_size": width, "sliding_window": 512,
+            "top_k_experts": rankTopK, "moe_intermediate_size": width, "sliding_window": 512,
             "layer_types": ["sliding_attention"], "use_double_wide_mlp": false,
         ]
         let config = try JSONDecoder().decode(

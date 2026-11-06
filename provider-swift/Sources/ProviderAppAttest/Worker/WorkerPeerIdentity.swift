@@ -78,7 +78,8 @@ struct WorkerCodeIdentity: Sendable, Equatable {
 
     /// Each 1 MiB read runs in its own autorelease pool: `read(upToCount:)`
     /// returns autoreleased storage, and the calling thread may drain no pool
-    /// until the whole executable is hashed.
+    /// until the whole executable is hashed. This is `readDrained` inline:
+    /// ProviderAppAttest does not depend on ProviderCoreFoundation.
     static func sha256Hex(of executable: URL) throws -> String {
         let file = try FileHandle(forReadingFrom: executable)
         defer { try? file.close() }

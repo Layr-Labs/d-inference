@@ -3326,8 +3326,8 @@ blocks and is not checked.
 Its restart line reads FileVault with `fdesetup isactive`
 (`OnboardingLive.fileVaultOn`): five seconds, then SIGTERM and two more, and no
 answer reads as unknown. The exit comes from `ProcessExitObserver`, which does not run the calling thread's run loop.
-A Mac hashes its worker again only when the worker's size, change time or
-inode moved (`LiveContext.workerSHA256`), in 4 MiB reads that each release
+A Mac hashes its worker again only when the worker's size, modification time
+or inode moved (`LiveContext.workerSHA256`), in 4 MiB reads that each release
 their buffer before the next.
 After a Darkbloom update changes a Mac's worker digest, the control leader's
 cluster service re-plans and re-adopts the same model by itself

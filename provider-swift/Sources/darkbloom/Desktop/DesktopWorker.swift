@@ -162,11 +162,7 @@ private final class DesktopOutputBuffer: @unchecked Sendable {
   func append(_ bytes: Data) {
     lock.withLock {
       data.append(bytes)
-      if data.count > 32_768 {
-        // A copy, not a slice: a slice keeps every byte before it in its storage.
-        data = Data(data.suffix(32_768))
-        didTruncate = true
-      }
+      if data.keepLast(32_768) { didTruncate = true }
     }
   }
   func markReadFailure() { lock.withLock { didFailRead = true } }

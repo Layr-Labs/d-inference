@@ -1,4 +1,5 @@
 import Foundation
+import ProviderCoreFoundation
 #if canImport(Darwin)
 import Darwin
 #endif
@@ -201,11 +202,7 @@ private final class StderrTailBox: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         buffer.append(chunk)
-        if buffer.count > limit {
-            // A copy, not `removeFirst`: that slices, and a slice keeps every
-            // byte before it in its storage.
-            buffer = Data(buffer.suffix(limit))
-        }
+        buffer.keepLast(limit)
     }
 
     func tail() -> String? {

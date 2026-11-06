@@ -188,10 +188,7 @@ struct DistributedQwenMediaIngressTests {
         #expect(await budget.outstandingReservedBytes() == DistributedQwenMediaHostMemory.wireBytes * 2)
         owner.leases[1].acknowledge()
         for await _ in streams[1] {}
-        for _ in 0..<1000 {
-            if await budget.outstandingReservedBytes() == DistributedQwenMediaHostMemory.wireBytes { break }
-            await Task.yield()
-        }
+        await bridge.awaitPumps(requestId: "media-1")
         #expect(await budget.outstandingReservedBytes() == DistributedQwenMediaHostMemory.wireBytes)
         #expect(!owner.leases[1].holdsWire && owner.leases[0].holdsWire)
         owner.leases[0].acknowledge()
@@ -234,6 +231,9 @@ struct DistributedQwenMediaIngressTests {
             #expect(text == "4,5,6,7")
             #expect(completionCount == 4)
             #expect(await releases.value == index + 1)
+            // The client's terminal comes before the bridge releases the
+            // media allowance at the native retirement.
+            await bridge.awaitPumps()
             #expect(await budget.outstandingReservedBytes() == 0)
             #expect(!owner.leases[index].holdsWire)
         }
@@ -298,10 +298,10 @@ struct DistributedQwenMediaIngressTests {
             request.responseFormat = format
             let task = Task { try await service.createChatCompletion(request: request) }
             let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-            while owner.leases.isEmpty && ContinuousClock.now < deadline {
+            while owner.leases.first?.isStarted != true && ContinuousClock.now < deadline {
                 try await Task.sleep(for: .milliseconds(5))
             }
-            guard let lease = owner.leases.first else {
+            guard let lease = owner.leases.first, lease.isStarted else {
                 task.cancel()
                 _ = await task.result
                 await bridge.shutdown()
@@ -332,6 +332,7 @@ struct DistributedQwenMediaIngressTests {
                 }
             }
             #expect(await releases.value == 1)
+            await bridge.awaitPumps()
             #expect(await budget.outstandingReservedBytes() == 0)
             #expect(!lease.holdsWire && lease.releases == 1)
             await bridge.shutdown()

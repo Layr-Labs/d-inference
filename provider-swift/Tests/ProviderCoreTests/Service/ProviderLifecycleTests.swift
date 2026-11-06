@@ -138,11 +138,14 @@ struct ProviderLifecycleTests {
         #expect(await loop.drainAndShutdown(timeoutSeconds: 1))
     }
 
+    /// Apple keeps the attestation until the test answers it, so the stop can
+    /// only return by giving up on Apple at the bound. Wall time is checked
+    /// from below only: a busy host can delay the stop, never hurry it.
     @Test(.timeLimit(.minutes(1)))
     func shutdownStopsWaitingForAppleAtTheBound() async throws {
         let (loop, root) = try await lifecycleLoop()
         defer { try? FileManager.default.removeItem(at: root) }
-        let apple = SlowAttestingApple(answerAfter: 2)
+        let apple = SlowAttestingApple(answerAfter: nil)
         let keys = LifecycleShadowKeys()
         let client = AppAttestShadowClient(scope: "test", service: AvailableAttestingApple(apple), storage: keys)
         let ready = await client.respond(to: lifecycleShadowRequest("prepare"), publicKey: lifecycleEndpoint)
@@ -154,9 +157,12 @@ struct ProviderLifecycleTests {
         let started = ContinuousClock.now
         let stop = await loop.drainForLifecycle(request: .init(target: identity, timeoutSeconds: 3))
         #expect(stop.outcome == .drained)
-        #expect(ContinuousClock.now - started < .seconds(1.5), "past the bound the stop proceeds")
-        #expect(apple.attestationsAnswered == 0)
-        // This process outlives the stop here, so Apple's answer is still kept.
+        #expect(ContinuousClock.now - started >= .milliseconds(200), "the stop gave Apple the bound")
+        // Apple still has the attestation: the stop ended at the bound, not at
+        // Apple's answer or at its 25 s callback deadline.
+        #expect(await !client.waitForOutstandingAttestation(atMostSeconds: 0), "the stop returned before Apple answered")
+        // This process outlives the stop here, so Apple's later answer is still kept.
+        apple.answerHeldAttestations()
         #expect(await waitFor { keys.load(scope: lifecycleKeyScope)?.pendingProof != nil })
         #expect(keys.load(scope: lifecycleKeyScope)?.keyID == key)
     }
@@ -419,22 +425,37 @@ private final class LifecycleShadowKeys: ShadowKeyStorage, @unchecked Sendable {
     func save(_ record: ShadowKeyRecord, scope: String) { lock.withLock { records[scope] = record } }
 }
 
-/// Apple's side: keys at once, each attestation `answerAfter` seconds after it starts.
+/// Apple's side: keys at once, each attestation `answerAfter` seconds after it
+/// starts. With nil, Apple answers only when the test calls `answerHeldAttestations`.
 private final class SlowAttestingApple: AppAttestCallbacks, @unchecked Sendable {
     private let lock = NSLock()
-    private let answerAfter: Double
+    private let answerAfter: Double?
     private var started = 0
     private var answered = 0
-    init(answerAfter: Double) { self.answerAfter = answerAfter }
+    private var heldAnswers: [@Sendable () -> Void] = []
+    init(answerAfter: Double?) { self.answerAfter = answerAfter }
     func generateKey(_ complete: @escaping @Sendable (Result<String, Error>) -> Void) {
         complete(.success(Data(repeating: 1, count: 32).base64EncodedString()))
     }
     func attestKey(_ id: String, hash: Data, complete: @escaping @Sendable (Result<Data, Error>) -> Void) {
-        lock.withLock { started += 1 }
-        DispatchQueue.global().asyncAfter(deadline: .now() + answerAfter) { [self] in
+        let answer: @Sendable () -> Void = { [self] in
             lock.withLock { answered += 1 }
             complete(.success(Data("attestation-\(id)".utf8)))
         }
+        lock.withLock {
+            started += 1
+            if answerAfter == nil { heldAnswers.append(answer) }
+        }
+        if let answerAfter {
+            DispatchQueue.global().asyncAfter(deadline: .now() + answerAfter, execute: answer)
+        }
+    }
+    func answerHeldAttestations() {
+        let answers = lock.withLock { () -> [@Sendable () -> Void] in
+            defer { heldAnswers = [] }
+            return heldAnswers
+        }
+        answers.forEach { $0() }
     }
     func generateAssertion(_ id: String, hash: Data, complete: @escaping @Sendable (Result<Data, Error>) -> Void) {
         complete(.success(Data("assertion".utf8)))

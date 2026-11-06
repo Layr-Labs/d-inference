@@ -409,12 +409,7 @@ extension ProviderLoop {
                     handleLoadModelRequest(modelId: modelId, send: send)
 
                 case .prefetchModel(let modelId, let priority):
-                    if isDraining {
-                        sendDrainingPrefetchFailure(modelId: modelId, send: send)
-                    } else {
-                        staleDesiredPrefetches.remove(modelId)
-                        await handlePrefetchModelRequest(modelId: modelId, priority: priority, send: send)
-                    }
+                    await handleCoordinatorPrefetch(modelId: modelId, priority: priority, send: send)
 
                 case .desiredModels(let entries):
                     await handleDesiredModels(entries, send: send)

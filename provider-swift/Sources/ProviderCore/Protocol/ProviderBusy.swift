@@ -6,6 +6,8 @@ import Foundation
 public enum ProviderBusyReason: String, Codable, Sendable, CaseIterable {
     /// A local add-on (for example the sandbox VM host) holds the Mac.
     case addon
+    /// Me first: the owner is using this Mac through its local API.
+    case owner
 }
 
 /// The optional busy fields of `register` and `heartbeat`, published as one
@@ -22,6 +24,11 @@ public struct ProviderBusy: Sendable, Equatable {
         self.reason = reason
         self.sinceMs = sinceMs
         self.addon = addon
+    }
+
+    /// The busy fields to publish.
+    static func publishing(addonHold: ProviderBusy?, ownerPause: ProviderBusy?) -> ProviderBusy? {
+        nil
     }
 }
 

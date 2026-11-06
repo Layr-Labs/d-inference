@@ -530,6 +530,18 @@ public actor ProviderLoop {
     /// Internal, nil in production: suspends the drain bound's cancellation
     /// pass where a release can interleave with it.
     internal var addonHoldBeforeCancellingStragglersForTesting: (@Sendable () async -> Void)?
+    /// Me first (`ProviderLoop+MeFirst`): the owner pause's state machine,
+    /// nil while me first is off; the one timer that ends the pause, armed
+    /// when the owner's idle time starts counting and gone once the pause
+    /// ends; and the wall clock (Unix milliseconds), a test seam.
+    internal var meFirst: MeFirstPolicy?
+    internal var meFirstResumeTimer: Task<Void, Never>?
+    internal var meFirstTimerGeneration: UInt64 = 0
+    internal var meFirstNowMs: @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000) }
+    /// Test seam, nil in production: replaces the capacity rebuild, which
+    /// reads MLX's Metal allocator, so loop tests on a serving Mac never open
+    /// the GPU.
+    internal var capacityRebuildForTesting: (@Sendable () async -> Void)?
     internal var lifecycleStatus = ProviderDrainStatus()
     internal var lastLifecycleTelemetry: ProviderDrainStatus?
     internal var lifecycleDrainTask: Task<ProviderDrainStatus, Never>?

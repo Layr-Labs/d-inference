@@ -122,6 +122,9 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// Add-on holds of a provider serving the add-on socket; nil for older
     /// or standalone providers (`darkbloom addon` requires it).
     public var addonHold: AddonHoldSnapshot?
+    /// Me first: whether Darkbloom work is paused for the owner, and until
+    /// when. Nil while me first is off, and for older daemons.
+    public var meFirst: MeFirstSnapshot?
 
     public struct Trust: Codable, Sendable, Equatable {
         public var trustLevel: String
@@ -394,9 +397,11 @@ public struct DaemonState: Codable, Sendable, Equatable {
         autopilot: ModelAutopilotSnapshot? = nil,
         autopilotPhase: String? = nil,
         autopilotOperation: AutopilotOperation? = nil,
-        addonHold: AddonHoldSnapshot? = nil
+        addonHold: AddonHoldSnapshot? = nil,
+        meFirst: MeFirstSnapshot? = nil
     ) {
         self.addonHold = addonHold
+        self.meFirst = meFirst
         self.schema = schema
         self.pid = pid
         self.processIdentity = processIdentity

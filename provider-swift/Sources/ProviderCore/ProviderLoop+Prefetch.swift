@@ -38,6 +38,17 @@ extension ProviderLoop {
         )
     }
 
+    /// A coordinator `prefetch_model`. While admission is closed it gets the
+    /// draining failure, which the coordinator retries later.
+    func handleCoordinatorPrefetch(modelId: String, priority: Int, send: SendHandle) async {
+        if isDraining {
+            sendDrainingPrefetchFailure(modelId: modelId, send: send)
+            return
+        }
+        staleDesiredPrefetches.remove(modelId)
+        await handlePrefetchModelRequest(modelId: modelId, priority: priority, send: send)
+    }
+
     /// Handle a coordinator `prefetch_model` request by delegating to the
     /// background prefetch coordinator. Non-blocking: returns as soon as the
     /// `.started` status is queued; the download runs on a low-priority task and

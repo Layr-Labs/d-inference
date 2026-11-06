@@ -213,6 +213,7 @@ public final class ProviderState: @unchecked Sendable {
     private var _publishedCapacity: BackendCapacity? = nil
     private var _capacitySeq: UInt64 = 0
     private var _refusingNewWork = false
+    private var _ownerPausesPublic = false
     private var _busy: ProviderBusy? = nil
     private var _modelAdmissionDrains: Set<String> = []
     private var _memberPairSlotModel: String? = nil
@@ -331,6 +332,11 @@ public final class ProviderState: @unchecked Sendable {
     public var refusingNewWork: Bool {
         get { lock.withLock { _refusingNewWork } }
         set { lock.withLock { _refusingNewWork = newValue } }
+    }
+
+    public var ownerPausesPublic: Bool {
+        get { lock.withLock { _ownerPausesPublic } }
+        set { lock.withLock { _ownerPausesPublic = newValue } }
     }
 
     /// The model of the pair slot a leader member serves (S09), nil when it

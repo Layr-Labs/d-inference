@@ -1,4 +1,3 @@
-import Cmlx
 import Foundation
 import MLX
 @testable import MLXLLM
@@ -12,8 +11,9 @@ import Testing
 /// the target's logits and every attention row are the unassisted wavefront's
 /// bytes, the step ends at the assistant's capture frontier, and the assistant
 /// takes each frame's rows in order, so its drafts and the tokens are those of
-/// one frame a step. Two in-process ranks on the CPU (contiguous KV), a
-/// hybrid model: each row's keys and values and every conv and SSM state.
+/// one frame a step. Two in-process ranks: attention layers on the CPU
+/// (contiguous KV); the 27B's hybrid layout on the GPU (paged KV, opt-in),
+/// whose conv and SSM states are compared too.
 @Suite(.serialized)
 struct QwenTensorParallelAssistedPromptWavefrontTests {
     private typealias Wire = QwenTensorParallelPromptWavefrontTests
@@ -39,14 +39,6 @@ struct QwenTensorParallelAssistedPromptWavefrontTests {
 
     private static func bytes(_ a: MLXArray) -> Data { eval(a); return a.asData(access: .copy).data }
 
-    /// MLX's process-default compile cache, emptied (a GPU test's traces would
-    /// replay on the GPU stream here).
-    private static func clearDefaultCompileCache() {
-        var cache = mlx_compile_cache_new()
-        defer { _ = mlx_compile_cache_free(cache) }
-        if mlx_detail_compile_cache(&cache) == 0 { _ = mlx_detail_compile_clear_cache(cache) }
-    }
-
     @Test func anAssistedPromptMergesFramesIntoTheUnassistedWavefront() throws { try verify(hybrid: false) }
 
     /// The 27B's hybrid layout on the GPU, then ten tokens of speculation:
@@ -56,9 +48,14 @@ struct QwenTensorParallelAssistedPromptWavefrontTests {
 
     private func verify(hybrid: Bool) throws {
         let device = hybrid ? Device.gpu : Device.cpu
-        Self.clearDefaultCompileCache()
-        defer { Self.clearDefaultCompileCache() }
-        let source = QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 4, heads: 4, kvHeads: 2, vocabulary: 256)
+        // Emptied before and after: a GPU test's compiled traces would replay on the GPU stream here.
+        QwenTensorParallelMTPSessionTests.clearDefaultCompileCache()
+        defer { QwenTensorParallelMTPSessionTests.clearDefaultCompileCache() }
+        // The random checkpoint is built on `device` too: built outside it, its
+        // weights would be drawn on the GPU in the CPU leg.
+        let source = Device.withDefaultDevice(device) {
+            QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 4, heads: 4, kvHeads: 2, vocabulary: 256)
+        }
         var root = try JSONSerialization.jsonObject(with: source.configuration) as! [String: Any]
         // On the CPU, attention layers only (the Gated DeltaNet prompt kernel and
         // a speculative window's recurrent capture need the GPU); `hybrid` is the 27B's layout.

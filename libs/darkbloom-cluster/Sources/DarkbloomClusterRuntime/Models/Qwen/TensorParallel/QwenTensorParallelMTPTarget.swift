@@ -5,12 +5,12 @@ import MLXLMCommon
 
 struct QwenTensorParallelMTPPromptResult {
     /// Each prompt frame's target hidden rows (`[1, frame tokens, hidden]`), in
-    /// order: one for a lone frame, one per frame of a merged prompt step.
-    let frames: [MLXArray]
+    /// order: one for a lone frame, one per frame of a merged prompt step. Each
+    /// is its own array, never a view of the whole step's rows: the carried
+    /// prompt row is a view of the last one, whose backing root
+    /// `QwenTensorParallelBatchMTPBudget` prices at one chunk's rows.
+    let hidden: [MLXArray]
     let logits: MLXArray?
-
-    init(frames: [MLXArray], logits: MLXArray?) { self.frames = frames; self.logits = logits }
-    init(hidden: MLXArray, logits: MLXArray?) { self.init(frames: [hidden], logits: logits) }
 }
 
 /// Speculation borrows the same request-owned target history used by ordinary

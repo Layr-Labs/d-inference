@@ -136,7 +136,7 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
         guard let hidden = result.hidden, hidden.count == count else {
             throw ProbeError("Qwen TP assistant prompt omitted target hidden")
         }
-        return .init(frames: hidden, logits: result.logits)
+        return .init(hidden: hidden, logits: result.logits)
     }
 
     private func prompt(capturingHidden: Bool, frames count: Int = 1,

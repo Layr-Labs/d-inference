@@ -10,7 +10,7 @@ final class QwenTensorParallelIssuedSums: @unchecked Sendable {
     var sums: [MLXArray] = []
 }
 
-/// Consecutive prompt frames of one plain text lane prefilled as one graph,
+/// Consecutive prompt frames of one text lane, assisted or not, prefilled as one graph,
 /// layer by layer (`Qwen35PromptWavefront`): a frame's mixer, its sealed sum
 /// submitted at once, the next frame's mixer while that sum crosses the link;
 /// then the MLPs the same way. At each layer a frame reads the attention rows
@@ -92,16 +92,9 @@ enum QwenTensorParallelPromptWavefront {
     /// `sumsInFlight` unfinished); returns what the last frame's own forward
     /// returns (its evaluation handle, or the final prompt row's logits from
     /// the whole frame's head, as `QwenTensorParallelBatchSession.prompt` keeps them).
-    static func forward(model: QwenTensorParallelModel, request: QwenLayerStageGenerationRequest,
-                        frames: [QwenLayerStageFrame], caches: [any CBv2AttendingLayerCache],
-                        evaluation: CBv2RecurrentStateEvaluation) -> MLXArray {
-        forward(model: model, request: request, frames: frames, caches: caches, evaluation: evaluation,
-            capturingHidden: false).output
-    }
-
-    /// `forward`, and with `capturingHidden` each frame's last decoder layer
-    /// rows (`[1, frame tokens, hidden]`, its own array) from the same graph:
-    /// an assisted lane's step, whose assistant takes each frame's rows.
+    /// With `capturingHidden` (an assisted lane's step), also each frame's last
+    /// decoder layer rows (`[1, frame tokens, hidden]`, its own array) from the
+    /// same graph, for its assistant's history.
     static func forward(model: QwenTensorParallelModel, request: QwenLayerStageGenerationRequest,
                         frames: [QwenLayerStageFrame], caches: [any CBv2AttendingLayerCache],
                         evaluation: CBv2RecurrentStateEvaluation,
@@ -120,7 +113,7 @@ enum QwenTensorParallelPromptWavefront {
             issued.sums.removeAll()
             while submitted.count > sumsInFlight { eval(submitted.removeFirst()) }
         }
-        let built: (outputs: [MLXArray], hidden: [MLXArray]?) = QwenTensorParallelRowLinear.$issuedSums.withValue(issued) {
+        let (outputs, hidden): ([MLXArray], [MLXArray]?) = QwenTensorParallelRowLinear.$issuedSums.withValue(issued) {
             let kv = caches.map { $0 as! any KVCache }
             guard capturingHidden else {
                 return (Qwen35PromptWavefront.prefill(model.model, chunks: chunks, finalChunk: final,
@@ -130,9 +123,8 @@ enum QwenTensorParallelPromptWavefront {
                 caches: kv, recurrentState: evaluation, phaseBuilt: phaseBuilt)
             return (step.outputs, step.hidden)
         }
-        let outputs = built.outputs
         // Earlier frames' last rows run too, as each frame's own output did; nothing reads them.
         asyncEval(Array(outputs.dropLast()))
-        return (final ? outputs[outputs.count - 1][0..., -1, 0...] : outputs[outputs.count - 1], built.hidden)
+        return (final ? outputs[outputs.count - 1][0..., -1, 0...] : outputs[outputs.count - 1], hidden)
     }
 }

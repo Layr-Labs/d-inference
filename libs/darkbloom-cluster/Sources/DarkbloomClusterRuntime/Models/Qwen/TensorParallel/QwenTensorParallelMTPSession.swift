@@ -73,7 +73,7 @@ final class QwenTensorParallelMTPSession: QwenTensorParallelMTPTarget {
                     if frame.finalPromptChunk { try self.validateLogits(output, count: frame.tokenCount) }
                 })
                 try schedule.commit(frame)
-                return PromptResult(hidden: hidden!, logits: frame.finalPromptChunk ? output[0..., -1, 0...] : nil)
+                return PromptResult(hidden: [hidden!], logits: frame.finalPromptChunk ? output[0..., -1, 0...] : nil)
             }
         } catch { failed = true; throw error }
     }

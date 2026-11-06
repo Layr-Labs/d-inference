@@ -41,7 +41,7 @@ final class QwenTensorParallelNativeBatchLane: QwenTensorParallelBatchLane {
         QwenTensorParallelPromptWavefront.step(promptFrames(limit: frames))
     }
     func promptStep(tokens: Int) -> QwenLayerStageFrame? {
-        promptFrameCount(tokens: tokens).flatMap { QwenTensorParallelPromptWavefront.step(Array(promptFrames(limit: $0))) }
+        promptFrameCount(tokens: tokens).flatMap(promptStep(frames:))
     }
     /// How many frames make the step of `tokens` tokens.
     func promptFrameCount(tokens: Int) -> Int? {
@@ -322,7 +322,7 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
     }
 
     func prefill(_ lane: Lane, frame: QwenLayerStageFrame, check: () throws -> Void) throws -> Int? {
-        guard lane.promptStep(tokens: frame.tokenCount) == frame, let frames = lane.promptFrameCount(tokens: frame.tokenCount) else {
+        guard let frames = lane.promptFrameCount(tokens: frame.tokenCount), lane.promptStep(frames: frames) == frame else {
             throw ProbeError("Qwen TP native prefill frame changed")
         }
         let output: MLXArray?

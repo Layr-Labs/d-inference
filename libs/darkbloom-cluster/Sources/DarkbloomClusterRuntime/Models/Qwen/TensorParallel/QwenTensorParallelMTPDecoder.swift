@@ -138,18 +138,18 @@ final class QwenTensorParallelMTPDecoder {
                 var start = target.state.committedTokens
                 let output = try target.prefillForMTP(frames: frames, check: checked)
                 let committed = target.state.committedTokens
-                guard output.frames.count == frames,
-                      start + output.frames.reduce(0, { $0 + $1.dim(1) }) == committed else {
+                guard output.hidden.count == frames,
+                      start + output.hidden.reduce(0, { $0 + $1.dim(1) }) == committed else {
                     throw ProbeError("Qwen TP assistant prompt step differs from its frames")
                 }
-                for (index, hidden) in output.frames.enumerated() {
+                for hidden in output.hidden {
                     let end = start + hidden.dim(1)
                     let tokens = MLXArray(request.promptTokenIDs[start..<end].map(Int32.init)).reshaped([1, end - start])
                     head.assistant.observeCommittedTarget(.init(tokens: tokens, hidden: hidden), requestState: state)
                     promptFrontier = hidden[0..., (end - start - 1)..<(end - start), 0...]
                     eval(head.assistant.evaluationTargets(for: state) + [promptFrontier!]); try checked()
                     if end == captureFrontier {
-                        guard captured == nil, index == output.frames.count - 1 else {
+                        guard captured == nil, end == committed else {
                             throw ProbeError("Qwen TP assistant prefix capture is not at its step's end")
                         }
                         captured = try .capture(target: target, assistant: head.assistant, requestState: state,

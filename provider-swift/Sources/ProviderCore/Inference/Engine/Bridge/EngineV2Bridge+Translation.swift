@@ -259,6 +259,15 @@ enum EngineV2Translation {
     /// before submit and production engines always run the contiguous
     /// backend, so these rejections indicate a provider-side gating bug and
     /// double as its loud signal.
+    ///
+    /// Media preparation also refuses with this marker
+    /// (`EngineV2VisionPrefill.clientFault(for:)`), but a video decode is not
+    /// deterministic by itself: the video reader can fail on a valid clip. So
+    /// a failed reader pass runs once more with a new reader (`VideoReaderRetry`)
+    /// before any refusal, and a reader that fails again with a transient
+    /// decoder or hardware fault (`VideoReaderFailure.isTransient`) refuses as
+    /// a retryable 503 (`.requestRejected`). Only a reader that fails twice
+    /// without one reaches this marker.
     static let multimodalRejectedPrefix = "multimodal_rejected"
 
     /// Canonical marker for a cluster pair's refusal of a request it can

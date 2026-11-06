@@ -100,9 +100,11 @@ actor NemotronSuperLocalImageBinding {
             let parsed = try Self.parseEncodedBody(body, modelID: owner.modelID)
             guard parsed.request.logprobs != true || logprobs != nil else { throw Failure.unsupportedCapability }
             if let video = parsed.video {
-                try await Self.executeEncodedVideo(video, body: body, templateBytes: templateBytes,
-                    request: parsed.request, owner: owner, gate: gate, mediaID: mediaID, requestID: id,
-                    cacheScope: cacheScope, logprobs: logprobs, onEvent: onEvent)
+                try await VideoReaderFailureReport.reporting(to: { TelemetryClient.shared.emit($0) }) {
+                    try await Self.executeEncodedVideo(video, body: body, templateBytes: templateBytes,
+                        request: parsed.request, owner: owner, gate: gate, mediaID: mediaID, requestID: id,
+                        cacheScope: cacheScope, logprobs: logprobs, onEvent: onEvent)
+                }
                 return
             }
             let plan = try Self.encodedPlan(parsed.images, contextLength: gate.contextLength)

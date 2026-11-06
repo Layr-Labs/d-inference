@@ -5,6 +5,7 @@
 // preparer. No model weights. The native builder itself is exercised by
 // `GLM5NextManagedLoadTests` on synthetic GLM weights.
 
+@preconcurrency import AVFoundation
 import CryptoKit
 import Foundation
 import MLX
@@ -228,6 +229,82 @@ private func preparedSubmission() -> EngineV2VisionPrefill.PreparedSubmission {
         positionState: nil, mediaKind: .image)
 }
 
+/// The scheduler's telemetry, for the reader-failure reports.
+private final class TelemetryCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [TelemetryEvent] = []
+    func record(_ event: TelemetryEvent) { lock.withLock { recorded.append(event) } }
+
+    private func events(_ operation: String) -> [[String: AnyCodableValue]] {
+        lock.withLock { recorded }.compactMap(\.fields).filter {
+            $0["operation"]?.value as? String == operation
+        }
+    }
+
+    /// Each failed reader pass: whether a second pass followed, and the reader's codes.
+    var readerFailures: [(retrying: Bool, error: String)] {
+        events("video_reader_failed").map {
+            ($0["retrying"]?.value as? Bool ?? false, $0["reader_error"]?.value as? String ?? "")
+        }
+    }
+
+    var refusalErrors: [String] {
+        events("engine_v2_vision_refusal").map { $0["error"]?.value as? String ?? "" }
+    }
+}
+
+/// Grid rows and placement span lengths of the MP4 readiness clip.
+private let readinessMP4Prepared = [[5, 52, 92], Array(repeating: 52 * 92 / 4, count: 5)]
+
+/// The MP4 readiness clip through the scheduler with GLM's request
+/// normalization and processor, its in-memory asset created under `fault`.
+private func readinessMP4(under fault: VideoDataRequestFault, telemetry: TelemetryCapture)
+    async throws -> (submitted: Int, prepared: [[Int]], failure: InferenceFailure?)
+{
+    let mp4 = try openRouterVideo(
+        "input-video-url.mp4", sha256: "dc11648bd3546cd0a37ecc1077ccc426d42c409fe4822ece0354eb250804431e")
+    let engine = GLMScriptedEngine()
+    let bridge = EngineV2Bridge(
+        engine: engine, modelId: "test/glm-stub", tokenizer: TokenizerHandle(GLMStubTokenizer()),
+        eosTokenIds: [2], kvBytesPerToken: 0)
+    let prepared = PreparedCapture()
+    let plumbing = EngineV2VisionPlumbing(
+        prepare: { _, request, controls in
+            let input = try await EngineV2VisionPrefill.glm5NextUserInput(request: request, controls: controls)
+            let processor = try GLM5NextProcessor(configuration: .init(), tokenizer: GLMMediaMarkerTokenizer())
+            do {
+                let output = try await processor.prepareDetailed(input: input)
+                prepared.record(
+                    (output.input.video?.frames ?? []).map { [$0.t, $0.h, $0.w] }
+                        + [output.placements.map(\.tokenRange.count)])
+            } catch let error as GLM5NextVisionError {
+                throw EngineV2VisionPrefill.glm5NextInputError(error)
+            }
+            return preparedSubmission()
+        }, emitTelemetry: { telemetry.record($0) })
+    let request = imageRequest([
+        .text("What's in this video?"), .videoURL("data:video/mp4;base64," + mp4.base64EncodedString()),
+    ])
+    let failure = await VideoDataRequestFault.$current.withValue(fault) { () async -> InferenceFailure? in
+        do {
+            for try await _ in try await router(bridge: bridge, plumbing: plumbing)
+                .streamChatCompletion(request: request) {}
+            return nil
+        } catch {
+            return ProviderLoop.sanitizedInferenceFailure(from: error, phase: .streamStart)
+        }
+    }
+    return (engine.submitted.count, prepared.values, failure)
+}
+
+/// The clip keeps `moov` after `mdat`, so its middle byte is sample data that
+/// only a full reader pass requests.
+private func midMP4Fault(failures: Int, error: any Error & Sendable) throws -> VideoDataRequestFault {
+    let mp4 = try openRouterVideo(
+        "input-video-url.mp4", sha256: "dc11648bd3546cd0a37ecc1077ccc426d42c409fe4822ece0354eb250804431e")
+    return VideoDataRequestFault(offset: mp4.count / 2, failures: failures, error: error)
+}
+
 @Suite("GLM5Next media routing")
 struct GLM5NextMediaRoutingTests {
     @Test func imageReachesTheEngineAsCausalPositionFreeSpansFromTheOriginalRequest() async throws {
@@ -374,9 +451,11 @@ struct GLM5NextMediaRoutingTests {
         }
     }
 
-    /// The readiness requests through the scheduler with GLM's actual request
-    /// normalization, shared ingest and processor at the published budgets.
-    /// The variable-frame-rate QuickTime clip was refused as `invalid_media`.
+    /// OpenRouter's two readiness videos through the scheduler with GLM's actual
+    /// request normalization, shared ingest and processor at the published
+    /// budgets: `input-video-base64.mov` (QuickTime, variable frame rate), once
+    /// refused as `invalid_media`, and `input-video-url.mp4` (MP4, constant
+    /// 24 fps), whose video reader once failed in CI (Layr-Labs/d-inference#1847).
     @Test(
         .disabled(
             "Issue #1847: intermittent video decoding failed on the MP4 readiness clip (input-video-url.mp4); David 2026-11-06"
@@ -430,6 +509,52 @@ struct GLM5NextMediaRoutingTests {
             let spans = Array(repeating: grid[1] * grid[2] / 4, count: grid[0])
             #expect(prepared.values == [grid, spans], "\(label)")
         }
+    }
+
+    /// One data request fails partway through the MP4: the reader pass fails,
+    /// a second pass decodes the same frames, and the provider reports the
+    /// first pass with the reader's codes.
+    @Test func aFailedDataRequestPartwayThroughTheMP4IsDecodedAgain() async throws {
+        let fault = try midMP4Fault(failures: 1, error: MemoryBackedVideoAssetError.invalidRange)
+        let telemetry = TelemetryCapture()
+        let run = try await readinessMP4(under: fault, telemetry: telemetry)
+        #expect(run.failure == nil, "\(String(describing: run.failure))")
+        #expect(run.submitted == 1)
+        #expect(run.prepared == readinessMP4Prepared)
+        #expect(fault.injected == 1)
+        let failures = telemetry.readerFailures
+        #expect(failures.map { $0.retrying } == [true])
+        #expect(failures.allSatisfy { $0.error.hasPrefix("video reader status 3: ") && !$0.error.hasSuffix("no error") },
+                "\(failures)")
+    }
+
+    /// A resource that ends partway (the loader refuses every range past it) is
+    /// the media's fault on both passes: the deterministic `invalid_media` 400.
+    @Test func aVideoTruncatedForBothPassesStaysInvalidMedia() async throws {
+        let fault = try midMP4Fault(failures: .max, error: MemoryBackedVideoAssetError.invalidRange)
+        let telemetry = TelemetryCapture()
+        let run = try await readinessMP4(under: fault, telemetry: telemetry)
+        #expect(run.submitted == 0)
+        #expect(run.failure?.code == .invalidMedia && run.failure?.statusCode == 400,
+                "\(String(describing: run.failure))")
+        #expect(telemetry.readerFailures.map { $0.retrying } == [true, false])
+        #expect(telemetry.refusalErrors.isEmpty)
+    }
+
+    /// An interrupted decoder on both passes is the machine's fault: a
+    /// retryable 503 that the coordinator sends to another provider.
+    @Test func aTransientDecoderFaultOnBothPassesIsARetryableRefusal() async throws {
+        let interrupted = NSError(domain: AVFoundationErrorDomain, code: AVError.Code.operationInterrupted.rawValue)
+        let fault = try midMP4Fault(failures: .max, error: interrupted)
+        let telemetry = TelemetryCapture()
+        let run = try await readinessMP4(under: fault, telemetry: telemetry)
+        #expect(run.submitted == 0)
+        #expect(run.failure?.code == .capacity && run.failure?.statusCode == 503,
+                "\(String(describing: run.failure)); \(telemetry.readerFailures)")
+        #expect(telemetry.readerFailures.map { $0.retrying } == [true, false])
+        #expect(telemetry.refusalErrors.count == 1
+                && telemetry.refusalErrors.allSatisfy { $0.contains("AVFoundationErrorDomain -11847") },
+                "\(telemetry.refusalErrors)")
     }
 
     @Test func processorRefusalsAreDeterministicClientFaults() {

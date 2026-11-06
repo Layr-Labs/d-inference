@@ -124,9 +124,10 @@ struct Gemma4TensorParallelRuntimeTests {
     /// layers take one attention and one feed-forward collective per part, and
     /// the link carries the same rows in all.
     @Test(arguments: [2, 4]) func promptPartsKeepEveryBitAndSplitEachChunksCollectives(parts: Int) throws {
-        let directory = try Self.synthetic()
+        let topK = 4, chunk = 16
+        let directory = try Self.synthetic(topK: topK)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let prompt = Self.prompt, topK = 4
+        let prompt = Self.prompt
         func run(_ parts: Int) throws -> (ranks: [Gemma4TensorParallelModel.Generation], payloads: [[Int]]) {
             let pair = Pair()
             let models = Box(try (0 ..< 2).map {
@@ -135,7 +136,7 @@ struct Gemma4TensorParallelRuntimeTests {
             })
             let ranks = try Pair.run(device: .gpu) { rank in
                 try Gemma4TensorParallelModel.withPromptParts(parts) {
-                    try models.value[rank].generatePaged(prompt: prompt, outputCount: 6, chunk: 16, recordTop: 4)
+                    try models.value[rank].generatePaged(prompt: prompt, outputCount: 6, chunk: chunk, recordTop: 4)
                 }
             }
             return (ranks, pair.payloads)
@@ -148,12 +149,13 @@ struct Gemma4TensorParallelRuntimeTests {
             #expect(Self.bits(a.topLogprobs) == Self.bits(b.topLogprobs), "rank \(rank): log probabilities")
             #expect(a.finalLogits.map { $0.map(\.bitPattern) } == b.finalLogits.map { $0.map(\.bitPattern) }, "rank \(rank)")
         }
-        // Rows of hidden width a collective carries: an attention sum's [1, S, H], a feed-forward's [S * K + S, H].
+        // Rows of hidden width a collective carries: an attention sum's [1, S, H], a feed-forward's [S * K + S, H]
+        // (K: the model's `topK` experts per token).
         func rows(_ payloads: [[Int]]) -> Set<Int> { Set(payloads.filter { $0.count > 1 }.map { $0.dropLast().reduce(1, *) }) }
-        let part = 16 / parts, wholeRows = rows(whole.payloads), splitRows = rows(split.payloads)
-        #expect(wholeRows.isSuperset(of: [16, 16 * topK + 16]), "\(wholeRows.sorted())")
+        let part = chunk / parts, wholeRows = rows(whole.payloads), splitRows = rows(split.payloads)
+        #expect(wholeRows.isSuperset(of: [chunk, chunk * topK + chunk]), "\(wholeRows.sorted())")
         #expect(splitRows.isSuperset(of: [part, part * topK + part]), "\(parts) parts: \(splitRows.sorted())")
-        #expect(splitRows.isDisjoint(with: [16, 16 * topK + 16]), "\(parts) parts: \(splitRows.sorted())")
+        #expect(splitRows.isDisjoint(with: [chunk, chunk * topK + chunk]), "\(parts) parts: \(splitRows.sorted())")
         func elements(_ payloads: [[Int]]) -> Int { payloads.reduce(0) { $0 + $1.reduce(1, *) } }
         #expect(elements(split.payloads) == elements(whole.payloads))
     }

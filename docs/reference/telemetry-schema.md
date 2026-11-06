@@ -196,7 +196,7 @@ field allowlist.
 | Key | Values | Presence and meaning | Code |
 |---|---|---|---|
 | `mtp_acceptance` | `exact`, `typical` | Present when `ProviderMTPStatusSnapshot.acceptance` supplies the installed rule; otherwise omitted. Distinguishes the rule from `mtp_acceptance_rate`: typical deliberately keeps more drafts, so a higher ratio alone is not a better-drafter claim. | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MTP.swift`, `emitSlotPostureTelemetry` |
-| `mtp_depth_steps` | string, `depth=steps` pairs in depth order, e.g. `0=812,2=16,4=24` | Cumulative planned decode steps by draft depth, depth zero (ordinary decode) included (`CBv2MTPMetrics.depthSelections`). Omitted when no step was planned. | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MTP.swift`, `emitSlotPostureTelemetry` |
+| `mtp_depth_steps` | string, `depth=steps` pairs in depth order, e.g. `0=812,2=16,4=24` | Cumulative planned decode steps by final draft depth, depth zero (ordinary decode) included; each plan is counted once after its last clamp, so values never decrease (`CBv2MTPMetrics.plannedDepthSteps`). Omitted when no step was planned. | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MTP.swift`, `emitSlotPostureTelemetry` |
 | `mtp_probes_won`, `mtp_probes_lost`, `mtp_probes_measuring` | int | Request-probe mode (Gemma QAT): cumulative completed probe windows followed by a speculative depth, by ordinary decode, or by a window that measures a depth's round cost (`CBv2MTPMetrics.probeOutcomes`). Each key is omitted until its count is nonzero. | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MTP.swift`, `emitSlotPostureTelemetry` |
 
 ## External Emitter

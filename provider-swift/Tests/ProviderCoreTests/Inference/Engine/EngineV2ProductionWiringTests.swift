@@ -328,12 +328,13 @@ struct EngineV2SlotBuildTests {
     /// Gemma QAT on native live KV with a stateless assistant; every other case keeps today's values.
     @Test("the slot factory builds request-probe mode only for exact Gemma QAT on native live KV")
     func slotFactoryBuildsRequestProbeModeOnlyForGemmaQAT() {
-        func build(_ modelID: String, stateful: Bool = false, benchmark: Bool = false, quantizedKV: Bool = false)
-            -> CBv2MTPConfig
-        {
+        func build(
+            _ modelID: String, stateful: Bool = false, benchmark: Bool = false,
+            kv: EngineV2KVQuantizationSelection = .native
+        ) -> CBv2MTPConfig {
             EngineV2SlotFactory.productionMTPConfig(
                 hasAssistant: true, usesRequestStatefulDrafter: stateful, modelID: modelID,
-                hasBenchmarkVerificationOverride: benchmark, quantizedLiveKV: quantizedKV,
+                hasBenchmarkVerificationOverride: benchmark, liveKVPrecision: kv,
                 verification: (.automatic, 8), acceptance: .exact)
         }
         let qat = build("gemma-4-26b-qat-4bit")
@@ -341,9 +342,11 @@ struct EngineV2SlotBuildTests {
         #expect(qat.maxDraftTokens == 4 && qat.fixedDraftTokens == nil)
         #expect(qat.verificationMode == .automatic && qat.maxAutomaticRectangularTokens == 8)
         // Quantized live KV has no ordinary-decode chaining: the adaptive controller at depth one, as before.
-        let quantized = build("gemma-4-26b-qat-4bit", quantizedKV: true)
-        #expect(quantized.requestProbeDepth == nil)
-        #expect(quantized.maxDraftTokens == 1 && quantized.fixedDraftTokens == nil)
+        for kv in EngineV2KVQuantizationSelection.allCases where kv != .native {
+            let quantized = build("gemma-4-26b-qat-4bit", kv: kv)
+            #expect(quantized.requestProbeDepth == nil, "\(kv)")
+            #expect(quantized.maxDraftTokens == 1 && quantized.fixedDraftTokens == nil, "\(kv)")
+        }
         // Other stateless Gemma and explicit offline verification controls: fixed depth one.
         for config in [build("gemma-4-26b-8bit"), build("gemma-4-26b-qat-4bit", benchmark: true)] {
             #expect(config.requestProbeDepth == nil)
@@ -355,7 +358,7 @@ struct EngineV2SlotBuildTests {
         #expect(qwen.maxDraftTokens == CBv2MTPConfig.testedMaxDraftTokens && qwen.fixedDraftTokens == nil)
         #expect(!EngineV2SlotFactory.productionMTPConfig(
             hasAssistant: false, usesRequestStatefulDrafter: false, modelID: "gemma-4-26b-qat-4bit",
-            hasBenchmarkVerificationOverride: false, quantizedLiveKV: false,
+            hasBenchmarkVerificationOverride: false, liveKVPrecision: .native,
             verification: (.automatic, 8), acceptance: .exact).enabled)
     }
 

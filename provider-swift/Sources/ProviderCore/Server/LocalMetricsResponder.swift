@@ -84,10 +84,11 @@ enum MTPPrometheusRenderer {
         family("mtp_tokens_accepted_total", "counter") {
             "mtp_tokens_accepted_total{\(label($0))} \($0.snapshot.acceptedDraftTokens)"
         }
-        // The controller's chosen depth: planned decode steps by draft depth,
-        // depth zero (ordinary decode) included.
+        // The controller's chosen depth: planned decode steps by final draft
+        // depth, depth zero (ordinary decode) included. Each plan is counted
+        // once after its last clamp, so the counter never decreases.
         family("mtp_depth_steps_total", "counter") { sample in
-            let depths = sample.snapshot.depthSelections.sorted { $0.key < $1.key }
+            let depths = sample.snapshot.plannedDepthSteps.sorted { $0.key < $1.key }
             guard !depths.isEmpty else { return nil }
             return depths.map { "mtp_depth_steps_total{\(label(sample)),depth=\"\($0.key)\"} \($0.value)" }
                 .joined(separator: "\n")

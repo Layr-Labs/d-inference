@@ -173,7 +173,7 @@ struct MTPPostureTelemetryTests {
         metrics.rounds = 40
         metrics.draftedTokens = 90
         metrics.acceptedTokens = 30
-        metrics.depthSelections = [0: 812, 2: 16, 4: 24]
+        metrics.plannedDepthSteps = [0: 812, 2: 16, 4: 24]
         metrics.probeOutcomes = ["won": 3, "lost": 5]
         let telemetry = PostureTelemetrySink()
         let bridge = makePostureBridge(

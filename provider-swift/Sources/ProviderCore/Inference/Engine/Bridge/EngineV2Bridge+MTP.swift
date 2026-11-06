@@ -87,7 +87,7 @@ extension EngineV2Bridge {
             .map { "\($0.key)=\($0.value)" }.joined(separator: ",")
         let controller = snapshot.controllerFallbacks.sorted { $0.key < $1.key }
             .map { "\($0.key)=\($0.value)" }.joined(separator: ",")
-        let depths = snapshot.depthSelectionsText
+        let depths = snapshot.plannedDepthStepsText
         let probes = snapshot.probeOutcomes.sorted { $0.key < $1.key }
             .map { "\($0.key)=\($0.value)" }.joined(separator: ",")
         Self.mtpLogger.info(
@@ -199,8 +199,8 @@ extension EngineV2Bridge {
         // Cumulative, like the counters above. Planned steps by draft depth as
         // `depth=steps` pairs (depth zero included), and request-probe mode's
         // completed probe windows; omitted when nothing was planned or probed.
-        if !snapshot.depthSelections.isEmpty {
-            fields["mtp_depth_steps"] = .string(snapshot.depthSelectionsText)
+        if !snapshot.plannedDepthSteps.isEmpty {
+            fields["mtp_depth_steps"] = .string(snapshot.plannedDepthStepsText)
         }
         for (outcome, key) in [("won", "mtp_probes_won"), ("lost", "mtp_probes_lost"),
             ("measuring", "mtp_probes_measuring")]

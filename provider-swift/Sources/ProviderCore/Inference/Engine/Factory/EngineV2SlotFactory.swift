@@ -300,7 +300,7 @@ enum EngineV2SlotFactory {
             usesRequestStatefulDrafter: assistantHandle?.drafter is any CBv2MTPRequestStatefulDrafter,
             modelID: modelId,
             hasBenchmarkVerificationOverride: assemblyOverrides.gemmaMTPVerification != nil,
-            quantizedLiveKV: kvPrecision != .native,
+            liveKVPrecision: kvPrecision,
             verification: mtpVerification,
             acceptance: mtpAcceptance.acceptance)
         if let verification = assemblyOverrides.gemmaMTPVerification {
@@ -704,10 +704,11 @@ extension EngineV2SlotFactory {
     /// sampled acceptance rule.
     static func productionMTPConfig(
         hasAssistant: Bool, usesRequestStatefulDrafter: Bool, modelID: String,
-        hasBenchmarkVerificationOverride: Bool, quantizedLiveKV: Bool,
+        hasBenchmarkVerificationOverride: Bool, liveKVPrecision: EngineV2KVQuantizationSelection,
         verification: (mode: CBv2MTPVerificationMode, automaticRectangularTokens: Int),
         acceptance: CBv2MTPAcceptance
     ) -> CBv2MTPConfig {
+        let quantizedLiveKV = liveKVPrecision != .native
         let depth = MTPAutomaticVerificationPolicy.draftDepthPolicy(
             usesRequestStatefulDrafter: usesRequestStatefulDrafter, modelID: modelID,
             hasBenchmarkVerificationOverride: hasBenchmarkVerificationOverride,

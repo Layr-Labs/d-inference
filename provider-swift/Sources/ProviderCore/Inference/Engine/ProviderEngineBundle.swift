@@ -28,8 +28,9 @@ public struct ProviderMTPStatusSnapshot: Sendable, Equatable {
     public let acceptanceByPosition: [Int]
     public let skippedRows: [String: Int]
     public let controllerFallbacks: [String: Int]
-    /// Planned steps by draft depth, depth zero included (`CBv2MTPMetrics.depthSelections`).
-    public let depthSelections: [Int: Int]
+    /// Planned decode steps by final draft depth, depth zero included; monotonic
+    /// (`CBv2MTPMetrics.plannedDepthSteps`).
+    public let plannedDepthSteps: [Int: Int]
     /// Request-probe mode's completed probe windows by outcome: `won`, `lost`, `measuring`.
     public let probeOutcomes: [String: Int]
 
@@ -84,13 +85,13 @@ public struct ProviderMTPStatusSnapshot: Sendable, Equatable {
         self.acceptanceByPosition = metrics?.perPositionAccepted ?? []
         self.skippedRows = metrics?.skippedRows ?? [:]
         self.controllerFallbacks = metrics?.controllerFallbacks ?? [:]
-        self.depthSelections = metrics?.depthSelections ?? [:]
+        self.plannedDepthSteps = metrics?.plannedDepthSteps ?? [:]
         self.probeOutcomes = metrics?.probeOutcomes ?? [:]
     }
 
     /// `depth=steps` pairs in depth order, e.g. `0=812,1=40,2=16`; empty when no step was planned.
-    var depthSelectionsText: String {
-        depthSelections.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")
+    var plannedDepthStepsText: String {
+        plannedDepthSteps.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")
     }
 }
 

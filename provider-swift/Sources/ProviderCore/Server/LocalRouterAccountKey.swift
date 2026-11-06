@@ -45,15 +45,47 @@ public struct KeychainLocalRouterAccountKeyStore: LocalRouterAccountKeyStore {
     }
 
     public func load() throws -> String? {
-        nil
+        try withKeychain { dataProtection in
+            var query = identity(dataProtection: dataProtection)
+            query[kSecReturnData as String] = true
+            query[kSecMatchLimit as String] = kSecMatchLimitOne
+            var result: CFTypeRef?
+            let status = SecItemCopyMatching(query as CFDictionary, &result)
+            switch status {
+            case errSecSuccess:
+                guard let data = result as? Data, let key = String(data: data, encoding: .utf8), !key.isEmpty else {
+                    return .done(nil)
+                }
+                return .done(key)
+            case errSecItemNotFound:
+                return .done(nil)
+            default:
+                return .failed(status)
+            }
+        } operation: { "read" }
     }
 
     public func save(_ key: String) throws {
-
+        try withKeychain { dataProtection in
+            let query = identity(dataProtection: dataProtection)
+            let data = Data(key.utf8)
+            var status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+            if status == errSecItemNotFound {
+                var item = query
+                item[kSecValueData as String] = data
+                item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+                item[kSecAttrLabel as String] = "Darkbloom account API key (local router)"
+                status = SecItemAdd(item as CFDictionary, nil)
+            }
+            return status == errSecSuccess ? .done(()) : .failed(status)
+        } operation: { "save" }
     }
 
     public func remove() throws {
-
+        try withKeychain { dataProtection in
+            let status = SecItemDelete(identity(dataProtection: dataProtection) as CFDictionary)
+            return status == errSecSuccess || status == errSecItemNotFound ? .done(()) : .failed(status)
+        } operation: { "remove" }
     }
 
     private func identity(dataProtection: Bool) -> [String: Any] {
@@ -106,6 +138,14 @@ public enum LocalRouterAccountKeyFormat {
 
     /// Why `key` cannot be an account key, in plain words; nil when it can be one.
     public static func refusal(_ key: String) -> String? {
-        nil
+        if key.isEmpty { return "no key was given" }
+        if key.count > maximumLength { return "that is longer than any Darkbloom API key" }
+        if key.unicodeScalars.contains(where: { $0.value <= 0x20 || $0.value >= 0x7F }) {
+            return "an API key has no spaces, line breaks or non-ASCII characters"
+        }
+        if key.hasPrefix(LocalEndpoint.tokenPrefix) {
+            return "that is this Mac's local API key; use an account API key from the Darkbloom console"
+        }
+        return nil
     }
 }

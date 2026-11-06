@@ -90,23 +90,96 @@ struct RouteKeyFlow {
     private var cli: String { BuildEnvironment.current.cliName }
 
     func save(_ rawKey: String) async -> Int32 {
-        1
+        let key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let refusal = LocalRouterAccountKeyFormat.refusal(key) {
+            say("✗ Not saved: \(refusal).")
+            return 1
+        }
+        let checked = await check(key)
+        if case .refused(let message) = checked {
+            say("✗ Darkbloom refused this key (\(message)). Nothing was saved.")
+            return 1
+        }
+        do {
+            try store.save(key)
+        } catch {
+            say("✗ Not saved: \(error).")
+            return 1
+        }
+        switch checked {
+        case .accepted(let models):
+            say("✓ Account key saved in this Mac's Keychain. Darkbloom accepted it; your Macs serve "
+                + (models == 1 ? "1 model" : "\(models) models") + " now.")
+        case .unchecked(let reason):
+            say("✓ Account key saved in this Mac's Keychain. It couldn't be checked with Darkbloom now (\(reason)).")
+        case .refused:
+            break
+        }
+        for line in Self.routeLines(savedRoute: savedRoute, keySaved: true) { say(line) }
+        say("A running local API uses it from its next request that needs it; no restart is needed.")
+        return 0
     }
 
     func remove() -> Int32 {
-        1
+        do {
+            try store.remove()
+        } catch {
+            say("✗ The key could not be removed: \(error).")
+            return 1
+        }
+        say("✓ Account key removed from this Mac's Keychain.")
+        for line in Self.routeLines(savedRoute: savedRoute, keySaved: false) { say(line) }
+        return 0
     }
 
     /// Where requests go with this route and key, in the iPhone app's words. Never a speed.
     static func routeLines(savedRoute: LocalSettings.Route?, keySaved: Bool) -> [String] {
-        []
+        let route = LocalSettings(route: savedRoute).resolvedRoute(accountKeySaved: keySaved)
+        switch (route, keySaved) {
+        case (.thisMac, true):
+            return ["Your requests: this Mac only ([local] route = \"this-mac\"). The key is used once you choose your Macs."]
+        case (_, false):
+            return ["Your requests: this Mac only, until an account key is saved again."]
+        case (.myMacs, true):
+            return ["Your requests: this Mac first, then your other Macs (free)."]
+        case (.myMacsFirst, true):
+            return ["Your requests: this Mac first, then your other Macs (free), then the Darkbloom network (billed to "
+                        + "your balance; the network needs a positive balance).",
+                    "With a self-route-only key, Darkbloom answers only from your Macs, even with My Macs first."]
+        }
     }
 
     /// `GET /v1/models` with the key and `X-Darkbloom-Route: self`: the owner's live models.
     static func checkWithDarkbloom(key: String, upstream: URL,
                                    transport: any LocalRouterTransport = URLSessionLocalRouterTransport()) async
         -> RouteKeyCheck {
-        .unchecked("not implemented")
+        let request = LocalRouterUpstreamRequest(
+            url: URL(string: upstream.absoluteString + "/v1/models") ?? upstream, method: "GET",
+            headers: ["Authorization": "Bearer " + key, LocalRouterPolicy.routeHeader.rawName: "self",
+                      "Accept": "application/json", "Accept-Encoding": "identity"],
+            body: nil, connectTimeout: .seconds(10), idleTimeout: .seconds(10))
+        let response: LocalRouterUpstreamResponse
+        do {
+            response = try await transport.send(request)
+        } catch {
+            return .unchecked((error as? LocalRouterUpstreamError)?.description ?? "Darkbloom could not be reached")
+        }
+        var body = Data()
+        do {
+            for try await chunk in response.body where body.count < 4 * 1024 * 1024 { body.append(contentsOf: chunk.readableBytesView) }
+        } catch {
+            return .unchecked("Darkbloom's answer was cut off")
+        }
+        let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+        switch response.status {
+        case 200:
+            return .accepted(models: (object?["data"] as? [Any])?.count ?? 0)
+        case 401, 403:
+            let message = (object?["error"] as? [String: Any])?["message"] as? String
+            return .refused((message ?? "HTTP \(response.status)").replacingOccurrences(of: key, with: "[key]"))
+        default:
+            return .unchecked("Darkbloom answered HTTP \(response.status)")
+        }
     }
 
     static func firstLine(of data: Data) -> String {

@@ -56,7 +56,11 @@ public struct LocalRouterConfig: Sendable {
 
     /// The route in effect now, and the key it uses. Without a saved key nothing can go upstream, whatever the route.
     func effectiveRoute() -> (route: LocalSettings.Route, accountKey: String?) {
-        (.thisMac, nil)
+        if settings.route == .thisMac { return (.thisMac, nil) }
+        let key = (try? accountKeys.load()).flatMap { $0.isEmpty ? nil : $0 }
+        let route = settings.resolvedRoute(accountKeySaved: key != nil)
+        guard let key, route != .thisMac else { return (.thisMac, nil) }
+        return (route, key)
     }
 }
 
@@ -79,20 +83,44 @@ public enum LocalRouterPolicy {
     /// The coordinator's HTTP base: `[coordinator] url` or `--coordinator-url` with `ws` → `http`, `wss` → `https` and
     /// the provider socket path dropped (`ws://h:8080/ws/provider` → `http://h:8080`); the build's coordinator otherwise.
     public static func upstreamBaseURL(coordinatorURL: String?) -> URL {
-        URL(string: BuildEnvironment.current.coordinatorHTTPURL)!
+        let fallback = URL(string: BuildEnvironment.current.coordinatorHTTPURL)!
+        let httpSchemes = ["ws": "http", "wss": "https", "http": "http", "https": "https"]
+        guard let raw = coordinatorURL?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty,
+              var components = URLComponents(string: raw),
+              let scheme = components.scheme.flatMap({ httpSchemes[$0.lowercased()] }),
+              components.host?.isEmpty == false
+        else { return fallback }
+        components.scheme = scheme
+        var path = components.path
+        while path.hasSuffix("/") { path.removeLast() }
+        if path.hasSuffix("/ws/provider") { path.removeLast("/ws/provider".count) }
+        while path.hasSuffix("/") { path.removeLast() }
+        components.path = path
+        components.query = nil
+        components.fragment = nil
+        return components.url ?? fallback
     }
 
     /// The coordinator path for a local inference path this router may pass on; nil for every other path, which
     /// only this Mac serves (models, health, tokenizer utilities, embeddings, batches, stored responses).
     public static func upstreamPath(forLocalPath path: String) -> String? {
-        nil
+        switch path {
+        case "/v1/chat/completions", "/chat/completions": return "/v1/chat/completions"
+        case "/v1/completions", "/completions": return "/v1/completions"
+        case "/v1/responses", "/responses": return "/v1/responses"
+        default: return nil
+        }
     }
 
     public static func isModelsPath(_ path: String) -> Bool { path == "/v1/models" || path == "/models" }
 
     /// The upstream hops of a route, in order.
     public static func hops(for route: LocalSettings.Route) -> [LocalRouterUpstreamRoute] {
-        []
+        switch route {
+        case .thisMac: return []
+        case .myMacs: return [.mine]
+        case .myMacsFirst: return [.mine, .prefer]
+        }
     }
 
     /// This Mac's answer passes the request on only when this Mac can't serve it, before any byte reached the client:
@@ -100,13 +128,13 @@ public enum LocalRouterPolicy {
     /// an add-on hold or a refused load). Client errors (400, 413, 422), a bad local key (401, answered before the
     /// router), a cancel (499) and engine failures (5xx but 503) stay this Mac's answer.
     public static func passesOn(localStatus status: HTTPResponse.Status) -> Bool {
-        false
+        status == .notFound || status == .tooManyRequests || status == .serviceUnavailable
     }
 
     /// After `self`, `my-macs-first` tries `prefer` when no Mac of the owner's took the request: none linked (409),
     /// none online, none serving the model or none able to take its shape (503), or all busy (429, `machine_busy`).
     public static func triesNextHop(after status: Int) -> Bool {
-        false
+        status == 409 || status == 429 || status == 503
     }
 
     /// `X-Darkbloom-Served-By` of this Mac's own answers.

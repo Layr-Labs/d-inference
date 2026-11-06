@@ -19,7 +19,15 @@ public struct LocalRouterResponder<Inner: HTTPResponder>: HTTPResponder where In
     }
 
     public func respond(to request: Request, context: Context) async throws -> Response {
-        try await inner.respond(to: request, context: context)
+        guard let router else { return try await inner.respond(to: request, context: context) }
+        let path = request.uri.path
+        if request.method == .get, LocalRouterPolicy.isModelsPath(path) {
+            return try await router.models(request, context: context, inner: inner)
+        }
+        guard request.method == .post, let upstreamPath = LocalRouterPolicy.upstreamPath(forLocalPath: path) else {
+            return try await inner.respond(to: request, context: context)
+        }
+        return try await router.route(request, upstreamPath: upstreamPath, context: context, inner: inner)
     }
 }
 

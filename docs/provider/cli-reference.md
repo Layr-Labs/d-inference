@@ -659,6 +659,26 @@ Exit 1 (and `{}` in JSON mode) when no live local server is recorded
 A server bound to `0.0.0.0` or `::` also prints a `network:` line with this
 Mac's Bonjour (`.local`) URL (`Local.networkURL`).
 
+### `darkbloom route key`
+
+| Flag | Type | Default | Effect |
+|---|---|---|---|
+| `--stdin` | flag | `false` | Read the account API key from standard input (its first line) instead of hidden input at the terminal |
+| `--remove` | flag | `false` | Remove the saved key; requests then stay on this Mac |
+| `-c`, `--config` | path | the default config | The `provider.toml` whose `[coordinator] url` checks the key and whose `[local] route` the summary names |
+
+`--stdin` and `--remove` can't be combined. The key is refused before any
+check when it is empty, has spaces, line breaks or non-ASCII characters, is
+over 512 characters, or is this Mac's local key (`dk-local-…`)
+(`LocalRouterAccountKeyFormat`). It is then checked once with
+`GET /v1/models` and `X-Darkbloom-Route: self`: a `401` or `403` saves nothing
+and exits 1; an unreachable coordinator saves it with a note. It is kept in the
+Keychain (service `<keychain prefix>.route`, account `account-api-key`; the
+data-protection Keychain in signed builds, the login keychain otherwise) and
+never printed (`RouteKeyFlow`, `provider-swift/Sources/darkbloom/RouteCommand.swift`;
+`KeychainLocalRouterAccountKeyStore`). See
+[the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router).
+
 ### Cluster placement request metadata
 
 The native helper accepts
@@ -2749,6 +2769,20 @@ darkbloom local [--json]
 
 `darkbloom local` reads `~/.darkbloom/local.json`, but only advertises it if the
 recorded server process is still alive.
+
+## `darkbloom route`
+
+Where your requests go when this Mac's local API can't take them: this Mac
+only, your other Macs (free), or your Macs first and then the Darkbloom network
+(billed), from `[local] route` and a saved account API key.
+
+```bash
+darkbloom route key            # ask for the key with hidden input, check it, save it in the Keychain
+darkbloom route key --stdin    # read it from standard input
+darkbloom route key --remove   # remove it: requests stay on this Mac
+```
+
+No output line contains the key. Flags: [`darkbloom route key`](#darkbloom-route-key).
 
 ## `darkbloom logs`
 

@@ -79,7 +79,35 @@ public final class URLSessionLocalRouterTransport: LocalRouterTransport, @unchec
     deinit { session.invalidateAndCancel() }
 
     public func send(_ request: LocalRouterUpstreamRequest) async throws -> LocalRouterUpstreamResponse {
-        throw LocalRouterUpstreamError.unreachable("not implemented")
+        var urlRequest = URLRequest(url: request.url)
+        urlRequest.httpMethod = request.method
+        urlRequest.timeoutInterval = Self.seconds(request.idleTimeout)
+        for (name, value) in request.headers { urlRequest.setValue(value, forHTTPHeaderField: name) }
+        if let body = request.body { urlRequest.httpBody = Data(buffer: body) }
+
+        let handler = UpstreamTaskHandler()
+        let task = session.dataTask(with: urlRequest)
+        task.delegate = handler
+        handler.task = task
+        let hasBody = request.body.map { $0.readableBytes > 0 } ?? false
+        let connectTimeout = request.connectTimeout
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                handler.headContinuation = continuation
+                task.resume()
+                // URLSession has no connect timeout of its own, and its idle timer must allow `self`'s queueing.
+                // A request whose body has not left this Mac by then never reached the coordinator.
+                Task { [weak task, weak handler] in
+                    try? await Task.sleep(for: connectTimeout)
+                    guard let task, let handler, !handler.receivedHead,
+                          !hasBody || task.countOfBytesSent == 0 else { return }
+                    handler.fail(LocalRouterUpstreamError.connectTimedOut)
+                    task.cancel()
+                }
+            }
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     private static func seconds(_ duration: Duration) -> TimeInterval {

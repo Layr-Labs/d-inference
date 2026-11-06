@@ -112,7 +112,7 @@ QWEN_TP_MTP_GPU_TESTS = (
 GEMMA_SUITES = (
     "Gemma4BatchArithmeticAgreementTests", "Gemma4BatchDecodeTests", "Gemma4StagePagedSyntheticTests",
     "Gemma4TensorParallelPrefixTests", "Gemma4TensorParallelRuntimeTests", "Gemma4TensorParallelSpeculationTests",
-    "Gemma4TensorParallelTests",
+    "Gemma4TensorParallelTests", "Gemma4TensorParallelAssistantChunkTests",
     "GemmaPrefillArithmeticTests", "GemmaPrefixChunkTests", "ResidentAdmissionGemma4Tests",
 )
 

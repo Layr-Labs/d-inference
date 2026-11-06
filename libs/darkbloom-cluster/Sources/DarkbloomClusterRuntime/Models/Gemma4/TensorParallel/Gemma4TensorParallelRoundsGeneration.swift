@@ -41,6 +41,18 @@ extension Gemma4TensorParallelModel {
         public var acceptedByPosition: [Int]
     }
 
+    /// The request `generateRounds` serves (greedy, no stop token). A chunk
+    /// longer than the prompt is the prompt, as the plain path prefills it.
+    func roundsRequest(prompt: [Int], outputCount: Int, chunk requested: Int) throws -> QwenLayerStageGenerationRequest {
+        let chunk = min(requested, prompt.count)
+        let profile = try QwenLayerStageGenerationProfile(identifier: "gemma4-tp-rounds", vocabularySize: plan.vocabularySize,
+            hiddenSize: plan.hiddenSize, activationDType: String(describing: activationDType),
+            maximumPromptTokens: prompt.count, maximumChunkTokens: chunk, maximumOutputTokens: outputCount,
+            maximumContextTokens: prompt.count + outputCount, logitsDType: "float32")
+        return try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(),
+            promptTokenIDs: prompt, chunkSize: chunk, outputCount: outputCount, stopTokenIDs: [])
+    }
+
     /// Greedy generation of `outputCount` tokens through the resident
     /// runtime's request loop in speculative rounds of `depth` proposals from
     /// `assistant` (`Gemma4TensorParallelRequestLoop.runRounds`), on a paged
@@ -56,12 +68,7 @@ extension Gemma4TensorParallelModel {
         let host = try pagedHost(lanes: 1, maximumTokens: prompt.count + outputCount, chunkTokens: chunk)
         let session = try Gemma4TensorParallelPagedSession(model: self, host: host, promptCount: prompt.count,
             outputCount: outputCount)
-        let profile = try QwenLayerStageGenerationProfile(identifier: "gemma4-tp-rounds", vocabularySize: plan.vocabularySize,
-            hiddenSize: plan.hiddenSize, activationDType: String(describing: activationDType),
-            maximumPromptTokens: prompt.count, maximumChunkTokens: chunk, maximumOutputTokens: outputCount,
-            maximumContextTokens: prompt.count + outputCount, logitsDType: "float32")
-        let request = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(),
-            promptTokenIDs: prompt, chunkSize: chunk, outputCount: outputCount, stopTokenIDs: [])
+        let request = try roundsRequest(prompt: prompt, outputCount: outputCount, chunk: chunk)
         let choice = Gemma4TensorParallelChoice(selection: selection, sampler: nil, rank: rank)
         var result = Generation()
         var report: RoundsReport?

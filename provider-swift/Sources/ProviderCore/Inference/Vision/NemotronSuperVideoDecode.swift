@@ -48,12 +48,17 @@ enum NemotronSuperVideoDecode {
     /// The wall time `Frames` may spend waiting on the decoder for `frames`
     /// frames of `codedPixels`: five seconds, then 2 ms a frame and 4 ns a
     /// coded pixel (ten times the 0.2 ms a frame and 0.4 ns a pixel an M3
-    /// Ultra measured decoding H.264 and HEVC to BGRA), two minutes at most.
-    /// Normalization and the tower do not count.
+    /// Ultra measured decoding H.264 and HEVC to BGRA), at most
+    /// `maximumDecodeAllowance`. Normalization and the tower do not count.
+    /// This is wall time, so a loaded machine spends it faster than the
+    /// decoder's work alone does.
     static func decodeAllowance(frames: Int, codedPixels: Int) -> Duration {
         let perFrame = Duration.milliseconds(2) + .nanoseconds(4) * codedPixels
-        return min(.seconds(120), .seconds(5) + perFrame * frames)
+        return min(maximumDecodeAllowance, .seconds(5) + perFrame * frames)
     }
+
+    /// The longest decoder wait any plan is allowed: two minutes.
+    static let maximumDecodeAllowance = Duration.seconds(120)
 
     /// Tests only: runs once for each reader, right after it is cancelled,
     /// with that reader, so a test can count stops and watch the reader be

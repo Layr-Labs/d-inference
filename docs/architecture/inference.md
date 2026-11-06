@@ -749,8 +749,11 @@ the reader's one cancellation, runs in order on the reader's own serial queue
 while the pulling thread waits for the sample, so the reader is never
 cancelled during a read. Waiting on the decoder is bounded by
 `NemotronSuperVideoDecode.decodeAllowance` (5 s, then 2 ms a frame and 4 ns a
-coded pixel, at most 120 s): when it is spent the wait ends and the video is
-refused. Cancelling the request, as the binding's `drain` does, ends the wait
+coded pixel, at most `maximumDecodeAllowance`, 120 s): when it is spent the
+wait ends and the video is refused. The allowance is wall time, so a loaded
+machine spends it faster than the decoder's work alone. A spent allowance
+stops the reader; it is not a reader failure and is not decoded again.
+Cancelling the request, as the binding's `drain` does, ends the wait
 at once. Either way the reader is cancelled once the read in progress
 returns, and that read's sample is dropped.
 `NemotronSuperVideoFeatures.prepare` runs

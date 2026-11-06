@@ -82,7 +82,10 @@ struct NemotronSuperOpenRouterVideoTests {
 
     /// Each clip plans at its reference sampling and grid, renders in the
     /// pinned template's media slot, reserves within the policy's video bound
-    /// and decodes every sampled frame at the grid.
+    /// and decodes every sampled frame at the grid. The frames decode under
+    /// the longest decode allowance: the plan's own allowance is wall time,
+    /// which a loaded CI machine can spend before these clips finish
+    /// decoding. `NemotronSuperVideoDecodeTests` tests the allowance.
     @Test(.timeLimit(.minutes(3))) func bothClipsPlanAndDecodeAtTheirGrid() async throws {
         for clip in Self.clips {
             let uri = try Self.uri(clip)
@@ -110,7 +113,8 @@ struct NemotronSuperOpenRouterVideoTests {
                                                          templateBytes: Policy.pinnedTemplateBytes)
             #expect(ingress + plan.totalBytes <= (Policy.videoMediaChargeBytes ?? 0), "\(clip.file)")
 
-            let frames = try await NemotronSuperVideoDecode.Frames(video)
+            let frames = try await NemotronSuperVideoDecode.Frames(
+                video, decodeAllowance: NemotronSuperVideoDecode.maximumDecodeAllowance)
             let decoded = try await frames.withCancellableReader { () throws -> [[Float]] in
                 var decoded: [[Float]] = []
                 while let frame = try frames.next() { decoded.append(frame) }

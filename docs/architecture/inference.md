@@ -4151,12 +4151,29 @@ away; mixed pairs are first-class).
 - **Measured speed:** `ClusterServedModes.figures` over this build's served
   records of this model on these Macs (`ClusterServedSpeedRecords.servedBy`), as
   the planner reads them: a figure from 3 served requests on. Never a
-  prediction; without one the model list says "not measured on these Macs yet".
-  The mode question uses these figures (else the planner's predictions) only
-  to rank the modes: its recommendation and its mode lines quote no tokens per
-  second (owner, 2026-11-05), and a re-plan's "Planned in the mode chosen" line
-  gives the size, mode and shares without the planner's predicted speed
-  (`ClusterOnboardingModeAdvice.fasterWords`, `OnboardingLive.localPlanModels`).
+  prediction. Beside it, each mode carries the rate the latest other build
+  served it at (`ClusterSetupPlanning.earlierFigures`; an earlier build, or a
+  newer one after a rollback), from records that name how they were served and
+  were served the way the plan will serve (through Darkbloom or locally;
+  tensor parallel with Qwen's tensor assistant exactly when the plan decodes
+  with it). Records name it from #1819 on (provider 0.10.11, DevNet .100):
+  0.10.10's never count, so the update from 0.10.10 to 0.10.11 still ranks by
+  the planner's predictions until a mode serves with 0.10.11. No safe scope can
+  be read from a record that names none: equal tensor-parallel shares serve
+  through Darkbloom and locally alike. The mode question ranks the modes by this
+  build's figures, else, while this build has served none of them (every
+  update starts there), by the other builds', else by the planner's
+  predictions (`ClusterOnboardingModeAdvice.advise`). The planner itself still
+  reads only this build's records. The list puts the recommended mode first,
+  and a model named on the command line starts in it
+  (`ClusterOnboardingMode.defaultIndex`), so neither contradicts the
+  recommendation. No screen quotes these figures (owner, 2026-11-05: "the
+  model and mode choice never quote tok/s"): the model list names the modes
+  (`ClusterOnboardingMode.listWords`);
+  the recommendation and the mode lines say why in words; a re-plan's "Planned
+  in the mode chosen" line gives the size, mode and shares
+  (`ClusterOnboardingDeployment.choiceLine`); and the six-step developer
+  wizard's model step and check show no speed (`ClusterSetupContent`).
 - **The current model:** on a set-up pair the list preselects the model serving
   now (or the last one used); it keeps the mode the saved setup served in when
   the plan still lists it (`keepMode`, from `ClusterOnboardingResume.servingMode`),
@@ -4169,8 +4186,13 @@ away; mixed pairs are first-class).
   alone. A chosen tensor parallel is the family a tensor quote prices, so the
   singleton and assistant quotes accept it (`applySingleton`, the planner's
   assistant guard).
-- **Default:** the fastest measured family, else the planner's
-  (`ClusterOnboardingMode.defaultIndex`).
+- **Default:** the recommended family when it is listed, else the fastest
+  measured with this build, else the planner's
+  (`ClusterOnboardingMode.defaultIndex`). The list names it first and a model
+  named on the command line starts in it. The question's cursor starts on the
+  recommendation, else on the mode the pair serves in, else on the default; a
+  model started again the other way (local only or through Darkbloom) keeps
+  its mode.
 - **Local Network truth:** the follower the service runs is the process that
   dials the other Mac, so its last dial decides (`ClusterService.followerRefusal`:
   the refusal macOS gave it, or a link it opened since, or a dial that failed

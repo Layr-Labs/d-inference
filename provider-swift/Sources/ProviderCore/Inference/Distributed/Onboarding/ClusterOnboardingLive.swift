@@ -839,7 +839,8 @@ final class OnboardingLive: @unchecked Sendable {
 
     /// The mode question's recommendation (`ClusterOnboardingModeAdvice.advise`) from the plans the list made: each mode's
     /// own plan (the listed one for its family, else its family plan) says whether it fits now and its predicted speed;
-    /// the mode says its measured speed, its requests at once and whether Darkbloom serves it publicly.
+    /// the mode says its measured speed (this build's, and an earlier build's), its requests at once and whether
+    /// Darkbloom serves it publicly.
     static func modeAdvice(_ modes: [ClusterSetupPlanSummary.Mode], listed: ClusterSetupPlanSummary, families: [ClusterSetupPlanSummary],
                            throughDarkbloom: Bool, serving: Bool) -> ClusterOnboardingModeAdvice? {
         func family(_ raw: String) -> ClusterForcedMode? { ClusterGenerationMode(rawValue: raw).flatMap { m in ClusterForcedMode.allCases.first { $0.admits(m) } } }
@@ -847,6 +848,7 @@ final class OnboardingLive: @unchecked Sendable {
             let own = family(mode.mode).flatMap { f in ([listed] + families).first { family($0.mode) == f } }
             return .init(mode: mode.mode, planned: own != nil && !mode.shares.isEmpty, fitsNow: own?.fitsNow == true,
                          measuredTokensPerSecond: mode.servedDecodeTokensPerSecond,
+                         earlierMeasuredTokensPerSecond: mode.earlierServedDecodeTokensPerSecond,
                          predictedTokensPerSecond: own.flatMap { $0.absolute ? $0.decodeTokensPerSecond : nil },
                          concurrentRequests: mode.concurrentRequests, publicTraffic: mode.publicTraffic)
         }
@@ -913,10 +915,10 @@ final class OnboardingLive: @unchecked Sendable {
                                  validated: approved(option.model.artifactSHA256))
                 }
                 let offer = option.onOtherMac != false ? nil : copyOffer(model: option.model, peer: peer)
-                // One line: size, how it is split (the planner's choice) and each Mac's share; no predicted speed
+                // One line: size, how it is split (the planner's choice) and each Mac's share; no speed
                 // (owner, 2026-11-05: the model and mode choice never quote tok/s).
                 let line = ClusterOnboardingDeployment.choiceLine(size: gigabytes, mode: plan.mode,
-                    shares: planShares(plan.ranks, localName: localName, perspective: true), speed: nil)
+                    shares: planShares(plan.ranks, localName: localName, perspective: true))
                 // Recorded and carried by the start for both Macs, so each Mac is named by its hardware.
                 let deployment = ClusterOnboardingDeployment.line(model: title, mode: plan.mode, shares: planShares(plan.ranks, localName: localName))
                 keys.append((option.model.folder, ClusterSetupState.planKey(option.model, plan), modelID, plan.alone.filter(\.holds).map(\.memberID),

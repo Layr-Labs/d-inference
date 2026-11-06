@@ -53,7 +53,7 @@ public struct LocalSettings: Sendable, Equatable, Codable {
         self.bind = bind
     }
 
-    enum CodingKeys: String, CodingKey, CaseIterable {
+    enum CodingKeys: String, CodingKey {
         case mode
         case meFirst = "me_first"
         case meFirstIdleMinutes = "me_first_idle_minutes"
@@ -279,6 +279,9 @@ extension ConfigManager {
         // The raw table, not a re-encoded ProviderConfig, so keys this build does not know keep their values.
         // Comments and layout may change.
         let table: TOMLTable = try original.map { try TOMLTable(string: $0) } ?? TOMLEncoder().encode(fallbackConfig)
+        // `local` is a section here or absent: `parseValidating` refused anything else, and the encoder writes one. An
+        // existing section is edited in place, since TOMLKit hands out the table's own node. A new one always gets a
+        // key: `after` differs from `before`, which is empty without a section.
         if let section = table["local"]?.table {
             after.write(over: before, into: section)
             if section.isEmpty { table.remove(at: "local") }

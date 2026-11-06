@@ -1,4 +1,5 @@
 import DarkbloomClusterPlacement
+import DarkbloomClusterProcess
 import DarkbloomClusterRemote
 import DarkbloomClusterRuntime
 import DarkbloomClusterSecurity
@@ -269,6 +270,86 @@ struct ClusterInstallIsolationTests {
         let elsewhere = ClusterLinkRepair.adoptionEntry(interface: "en7", address: .derived(machineIdentifier: "ANOTHER-MACHINE", interface: "en7"),
             hardwarePort: "Thunderbolt 6", disabledHere: ["Thunderbolt 6"], others: [setUp])
         #expect(elsewhere.bridge == nil && elsewhere.disabledServices == ["Thunderbolt 6"])
+    }
+
+    /// Review of #1846: with a lease each, a DevNet pair could start beside production's and push it out of memory.
+    /// Each build's scope also takes the one device lock every build shares, in no build's folder.
+    @Test("one build's pair never starts on the GPU beside another build's, and the refusal names the other app")
+    func devicesAreLockedAcrossBuilds() throws {
+        let home = try NativePairMemberFixture.privateRoot()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let production = try ClusterUserPaths(homeDirectory: home, environment: .prod)
+        let devnet = try ClusterUserPaths(homeDirectory: home, environment: .dev)
+        for (paths, app) in [(production, "Darkbloom.app"), (devnet, "Darkbloom Dev.app")] {
+            try FileManager.default.createDirectory(at: paths.installDirectory.appendingPathComponent(app), withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: paths.deviceDirectory, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+        }
+        let lock = home.appendingPathComponent("Library/Application Support/Darkbloom/cluster-native-device.lock")
+        #expect(production.machineDeviceLock.file == lock && devnet.machineDeviceLock.file == lock)
+        var productionScope: ClusterDeviceExclusion? = try ClusterDeviceExclusion(directoryURL: production.deviceDirectory,
+                                                                                   machineLock: production.machineDeviceLock)
+        do {
+            _ = try ClusterDeviceExclusion(directoryURL: devnet.deviceDirectory, machineLock: devnet.machineDeviceLock)
+            Issue.record("DevNet's pair started on the GPU beside production's")
+        } catch {
+            #expect("\(error)" == "The production Darkbloom on this Mac is running its pair (or a model check) on this Mac's GPU, "
+                + "and two pairs don't fit one Mac's memory. Run `darkbloom cluster stop` to stop it, then start this pair again.")
+        }
+        productionScope = nil
+        let devnetScope = try ClusterDeviceExclusion(directoryURL: devnet.deviceDirectory, machineLock: devnet.machineDeviceLock)
+        do {
+            _ = try ClusterDeviceExclusion(directoryURL: production.deviceDirectory, machineLock: production.machineDeviceLock)
+            Issue.record("production's pair started on the GPU beside DevNet's")
+        } catch { #expect("\(error)".hasPrefix("Darkbloom Dev on this Mac is running its pair") && "\(error)".contains("`darkbloom-dev cluster stop`")) }
+        withExtendedLifetime((productionScope, devnetScope)) {}
+        // The lock is in neither build's folder, and holds nothing.
+        for paths in [production, devnet] { #expect(!lock.path.hasPrefix(paths.installDirectory.path + "/")) }
+        #expect(try Data(contentsOf: lock).isEmpty)
+    }
+
+    /// Review of #1846: `darkbloom-dev cluster link --remove` took away a port production's pair still uses.
+    @Test("a build sees which other build's link records still hold a cable port, read only")
+    func otherBuildsUsingTheCableAreSeen() throws {
+        let home = try NativePairMemberFixture.privateRoot()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let production = try ClusterUserPaths(homeDirectory: home, environment: .prod)
+        let devnet = try ClusterUserPaths(homeDirectory: home, environment: .dev)
+        #expect(ClusterLinkRepair.otherInstallsUsingCable(paths: devnet).isEmpty)
+        try FileManager.default.createDirectory(at: production.deviceDirectory, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let entry = ClusterLinkIsolationRecord.Entry(interface: "en7", address: .derived(machineIdentifier: "FIXTURE-MACHINE", interface: "en7"),
+            hardwarePort: "Thunderbolt 6", bridge: nil, disabledServices: [])
+        try ClusterLinkIsolationStore(paths: production).update { $0.set(entry) }
+        let record = try Data(contentsOf: production.linkIsolationRecordFile)
+        #expect(ClusterLinkRepair.otherInstallsUsingCable(paths: devnet) == [.prod])
+        #expect(ClusterLinkRepair.otherInstallsUsingCable(paths: devnet, device: "rdma_en7") == [.prod])
+        #expect(ClusterLinkRepair.otherInstallsUsingCable(paths: devnet, device: "rdma_en6").isEmpty, "another port")
+        #expect(ClusterLinkRepair.otherInstallsUsingCable(paths: production).isEmpty, "never its own")
+        #expect(try Data(contentsOf: production.linkIsolationRecordFile) == record, "production's record is only read")
+    }
+
+    /// Every place the provider takes a device scope also takes the Mac's device lock (`ClusterUserPaths.machineDeviceLock`).
+    @Test("every device scope the provider takes also takes the device lock every build shares")
+    func everyDeviceScopeTakesTheMachineLock() throws {
+        let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources", isDirectory: true)
+        var offenders: [String] = [], scopes = 0
+        let walker = try #require(FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil))
+        for case let url as URL in walker where url.pathExtension == "swift" {
+            let lines = try String(contentsOf: url, encoding: .utf8).split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            for (index, line) in lines.enumerated() where !line.trimmingCharacters(in: .whitespaces).hasPrefix("//")
+                && ["ClusterDeviceExclusion(directoryURL:", "ClusterDeviceLease(directoryURL:", "ClusterWorkerOwnerService.serveKeyed("]
+                    .contains(where: line.contains) {
+                scopes += 1
+                if !lines[index..<min(lines.count, index + 3)].contains(where: { $0.contains("machineLock:") }) {
+                    offenders.append("\(url.lastPathComponent):\(index + 1)")
+                }
+            }
+        }
+        #expect(scopes >= 6, "the provider's device scopes were found (\(scopes))")
+        #expect(offenders.isEmpty, "a device scope without the Mac's device lock at \(offenders.joined(separator: ", "))")
     }
 
     @Test("one build's open console screen does not lock the other build's out")

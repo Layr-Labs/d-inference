@@ -24,7 +24,7 @@ public struct ClusterMemberPreparation: Sendable {
     public static func prepare(reference: ClusterConfigurationReference,
                                localChipClass: ClusterChipClass?) throws -> Self {
         let paths = try ClusterUserPaths()
-        let gate = try ClusterDeviceExclusion(directoryURL: paths.deviceDirectory)
+        let gate = try ClusterDeviceExclusion(directoryURL: paths.deviceDirectory, machineLock: paths.machineDeviceLock)
         return try withExtendedLifetime(gate) {
             let validation = try DistributedInstalledValidation.validate(reference: reference,
                 paths: paths, deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)

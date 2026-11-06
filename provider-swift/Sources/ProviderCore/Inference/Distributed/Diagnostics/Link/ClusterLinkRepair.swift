@@ -322,6 +322,27 @@ public enum ClusterLinkRepair {
             otherInstallsIsolationEntries: { otherInstallsIsolationEntries(interface: $0, paths: paths) })
     }
 
+    /// The other installs on this Mac whose link records still hold a cable port Darkbloom set up (`device`'s port
+    /// only, when given), read and never written: `cluster link --remove` here takes that port away from their pair too.
+    public static func otherInstallsUsingCable(paths: ClusterUserPaths, device: String? = nil) -> [BuildEnvironment] {
+        let interface = device.flatMap(ClusterLinkName.interface(ofDevice:))
+        return BuildEnvironment.allCases.filter { $0 != paths.environment }.filter { other in
+            guard let theirs = try? ClusterUserPaths(homeDirectory: paths.homeDirectory, environment: other) else { return false }
+            let isolated = (try? ClusterLinkIsolationStore(paths: theirs).load().entries.map(\.interface)) ?? []
+            let aliased = (try? ClusterLinkAliasStore(paths: theirs).load().aliases.map(\.interface)) ?? []
+            return (isolated + aliased).contains { interface == nil || $0 == interface }
+        }
+    }
+
+    /// What `cluster link --remove` says before it removes a port another install on this Mac still uses.
+    public static func otherInstallsUsingCableLines(_ others: [BuildEnvironment]) -> [String] {
+        others.map { other in
+            let name = other == .prod ? "The production Darkbloom" : other.appDisplayName
+            return "\(name) on this Mac also uses this cable port for its own pair: removing the port's setup stops that "
+                + "pair too, until `\(other.cliName) cluster link --fix` sets the port up again."
+        }
+    }
+
     /// The other installs' entries for `interface` on this Mac (`Environment.otherInstallsIsolationEntries`), read from
     /// their records and never written; an absent, unsafe or malformed record gives none.
     static func otherInstallsIsolationEntries(interface: String, paths: ClusterUserPaths) -> [ClusterLinkIsolationRecord.Entry] {

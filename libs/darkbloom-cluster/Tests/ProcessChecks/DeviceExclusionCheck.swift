@@ -121,6 +121,28 @@ import Darwin
         }
         try require(try Data(contentsOf: insertedFile) == record, "Late journal was cleared")
         try refused { _ = try ClusterDeviceExclusion(directoryURL: inserted) }
-        print("Device exclusion: 10 actual-file/child groups passed; no native model or network")
+
+        // Two builds' device scopes, each in its own lease folder, share one machine lock: while one build holds its
+        // scope, the other's is refused with the lock's own words and lets its lease go; then the other takes both.
+        let machine = ClusterMachineDeviceLock(file: root.appendingPathComponent("shared/cluster-native-device.lock"),
+                                               heldElsewhere: "the other build's pair holds this Mac's GPU")
+        let production = root.appendingPathComponent("production/device", isDirectory: true)
+        let devnet = root.appendingPathComponent("devnet/device", isDirectory: true)
+        var first: ClusterDeviceExclusion? = try ClusterDeviceExclusion(directoryURL: production, machineLock: machine)
+        do {
+            _ = try ClusterDeviceExclusion(directoryURL: devnet, machineLock: machine)
+            throw Failure(message: "A second build's device scope started beside the first build's")
+        } catch let error as ClusterDeviceExclusionError {
+            try require(error == .invalid(machine.heldElsewhere), "The refusal is not the machine lock's words: \(error)")
+        }
+        _ = try ClusterDeviceExclusion(directoryURL: devnet) // the refused scope let its own lease go
+        first = nil
+        let second = try ClusterDeviceExclusion(directoryURL: devnet, machineLock: machine)
+        try refused { _ = try ClusterDeviceExclusion(directoryURL: production, machineLock: machine) }
+        var lockInformation = stat()
+        try require(lstat(machine.file.path, &lockInformation) == 0 && lockInformation.st_size == 0
+                    && lockInformation.st_mode & 0o777 == 0o600, "The machine lock is not an empty owner-only file")
+        withExtendedLifetime((first, second)) {}
+        print("Device exclusion: 11 actual-file/child groups passed; no native model or network")
     }
 }

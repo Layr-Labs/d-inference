@@ -6,6 +6,17 @@ public enum ClusterDeviceExclusionError: Error, Equatable, CustomStringConvertib
     public var description: String { switch self { case .invalid(let message): return message } }
 }
 
+/// The device lock every Darkbloom build on a Mac takes with its own device scope (`ClusterDeviceExclusion`), so one
+/// build's native session (a pair's part, a member's preparation, a GLM calibration) never runs on the GPU beside
+/// another build's: each build keeps its own lease and journal, and two pairs don't fit one Mac's memory. Flock only:
+/// the file holds nothing, and it lies in no build's own folder.
+public struct ClusterMachineDeviceLock: Sendable, Equatable {
+    public let file: URL
+    /// The refusal while another build holds it: which build, and how to stop its pair.
+    public let heldElsewhere: String
+    public init(file: URL, heldElsewhere: String) { self.file = file; self.heldElsewhere = heldElsewhere }
+}
+
 /// One process's exclusive local device scope. Solo callers retain this object
 /// through actual in-process engine teardown. A cluster leader/daemon launcher
 /// must not hold it: the native owner child acquires its own scope.
@@ -26,14 +37,18 @@ public final class ClusterDeviceExclusion: @unchecked Sendable {
     private var recorded = false
     private var recordedBytes: Data?
     private var resolved = false
+    /// The machine lock's descriptor while this scope holds it; -1 without one.
+    private var machineDescriptor: Int32 = -1
 
-    public convenience init(directoryURL: URL) throws {
-        try self.init(directoryURL: directoryURL, beforeFinalValidation: {})
+    /// `machineLock`: also taken, after this scope, for as long as this object lives (the product passes its Mac's);
+    /// held by another process, this scope is let go and the lock's `heldElsewhere` is thrown.
+    public convenience init(directoryURL: URL, machineLock: ClusterMachineDeviceLock? = nil) throws {
+        try self.init(directoryURL: directoryURL, machineLock: machineLock, beforeFinalValidation: {})
     }
 
     // Internal deterministic filesystem-race seam; production always uses the
     // public initializer above, with no callback or path replacement.
-    init(directoryURL: URL, beforeFinalValidation: () throws -> Void) throws {
+    init(directoryURL: URL, machineLock: ClusterMachineDeviceLock? = nil, beforeFinalValidation: () throws -> Void) throws {
         let dir = try Self.openDirectory(directoryURL)
         var dirStat = stat()
         guard fstat(dir, &dirStat) == 0, dirStat.st_uid == geteuid(),
@@ -62,6 +77,35 @@ public final class ClusterDeviceExclusion: @unchecked Sendable {
         guard fstat(descriptor, &value) == 0, value.st_size == 0 else {
             throw ClusterDeviceExclusionError.invalid("Native ownership journal appeared during device acquisition")
         }
+        // After this build's own scope, so a second process of the same build is refused by its lease, never told
+        // that another build holds the Mac. A throw here lets the lease go with this object.
+        if let machineLock { machineDescriptor = try Self.lockMachine(machineLock) }
+    }
+
+    /// Opens (creating it empty and owner-only) and takes the machine lock; `heldElsewhere` while another process
+    /// holds it. Its folder is made owner-only when missing, and must be this user's and not writable by others.
+    private static func lockMachine(_ machineLock: ClusterMachineDeviceLock) throws -> Int32 {
+        let folder = try openDirectory(machineLock.file.deletingLastPathComponent())
+        defer { Darwin.close(folder) }
+        var folderStat = stat()
+        guard fstat(folder, &folderStat) == 0, folderStat.st_uid == geteuid(), folderStat.st_mode & S_IFMT == S_IFDIR,
+              folderStat.st_mode & 0o022 == 0 else {
+            throw ClusterDeviceExclusionError.invalid("The machine device lock's folder must be owned and not writable by others")
+        }
+        let name = machineLock.file.lastPathComponent
+        let fd = openat(folder, name, O_RDONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0o600)
+        guard fd >= 0 else { throw ClusterDeviceExclusionError.invalid("Cannot open the machine device lock") }
+        var value = stat()
+        guard fstat(fd, &value) == 0, value.st_uid == geteuid(), value.st_mode & S_IFMT == S_IFREG, value.st_nlink == 1,
+              value.st_mode & 0o022 == 0 else {
+            Darwin.close(fd); throw ClusterDeviceExclusionError.invalid("The machine device lock is unsafe")
+        }
+        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+            let held = errno == EWOULDBLOCK
+            Darwin.close(fd)
+            throw ClusterDeviceExclusionError.invalid(held ? machineLock.heldElsewhere : "The machine device lock is unavailable")
+        }
+        return fd
     }
 
     @_spi(OwnerService) public func recordNativeOwnership(_ data: Data) throws {
@@ -173,5 +217,8 @@ public final class ClusterDeviceExclusion: @unchecked Sendable {
         } catch { Darwin.close(fd); throw error }
     }
 
-    deinit { Darwin.close(descriptor); Darwin.close(directory) }
+    deinit {
+        if machineDescriptor >= 0 { Darwin.close(machineDescriptor) }
+        Darwin.close(descriptor); Darwin.close(directory)
+    }
 }

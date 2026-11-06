@@ -16,6 +16,8 @@ final class GLM5NextCalibrationInstalledOwnerResources {
     struct Environment {
         let providerLock: URL
         let deviceDirectory: URL
+        /// The Mac's device lock every build shares, held with the lease; none in the CPU fixture.
+        var machineLock: ClusterMachineDeviceLock?
         let orphanCheck: () throws -> Void
         let linkReady: (String) throws -> Void
         let requirePhysicalInterface: (String, String) throws -> Void
@@ -29,7 +31,7 @@ final class GLM5NextCalibrationInstalledOwnerResources {
             guard ProcessLifecycle.defaultPIDFile().appendingPathExtension("lock") == lock else {
                 throw GLM5NextCalibrationDocument.invalid("Finite owner requires the canonical provider lock")
             }
-            return Self(providerLock: lock, deviceDirectory: paths.deviceDirectory,
+            return Self(providerLock: lock, deviceDirectory: paths.deviceDirectory, machineLock: paths.machineDeviceLock,
                 orphanCheck: { try ClusterOrphanWiredGuard.check(role: "glm-finite-owner") },
                 linkReady: { try ClusterLinkLaunchReadiness.waitForLink(device: $0) },
                 requirePhysicalInterface: { device, interface in
@@ -46,7 +48,7 @@ final class GLM5NextCalibrationInstalledOwnerResources {
                                   orphanCheck: @escaping () throws -> Void,
                                   linkReady: @escaping (String) throws -> Void,
                                   requirePhysicalInterface: @escaping (String, String) throws -> Void) -> Self {
-            Self(providerLock: providerLock, deviceDirectory: deviceDirectory,
+            Self(providerLock: providerLock, deviceDirectory: deviceDirectory, machineLock: nil,
                 orphanCheck: orphanCheck, linkReady: linkReady,
                 requirePhysicalInterface: requirePhysicalInterface)
         }
@@ -78,7 +80,7 @@ final class GLM5NextCalibrationInstalledOwnerResources {
         providerFile = try DistributedInstalledFiles.verify(environment.providerLock,
             expectedSHA256: Self.hash(bytes), maximumBytes: 4096, deadline: deadline)
         try ClusterConfigurationFiles.ensureDirectory(environment.deviceDirectory, create: true, privateMode: true)
-        let device = try ClusterDeviceLease(directoryURL: environment.deviceDirectory)
+        let device = try ClusterDeviceLease(directoryURL: environment.deviceDirectory, machineLock: environment.machineLock)
         self.provider = provider; self.device = device
         try requireHeld()
         try environment.orphanCheck()

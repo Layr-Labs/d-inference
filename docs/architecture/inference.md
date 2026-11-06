@@ -559,11 +559,21 @@ build's CLI (`ClusterConsoleInstanceLock.lockFileName`), the pair's prefix cache
 is in the build's cache namespace (`ClusterPrefixCacheSettings.rootDirectoryName`),
 and every port on the cable adds the build's `BuildEnvironment.clusterPortOffset`
 (`ClusterCablePorts`). Two builds' pairs on the same Macs therefore never read,
-stop or answer each other. Their device leases are separate too, so one
-build's pair no longer keeps the other's from starting: two pairs running at
-once share the Macs' memory and cable. They share the models, and the cable
+stop or answer each other. Their device leases and journals are separate, but
+every build's device scope (a pair's owner session, a member's preparation, a
+GLM calibration) also takes one lock all builds share
+(`ClusterMachineDeviceLock`: `~/Library/Application Support/Darkbloom/cluster-native-device.lock`,
+flock only, in no build's folder; `ClusterUserPaths.machineDeviceLock`), after
+its own lease. So one build's native session never runs on the GPU beside
+another's, and the refusal names the other app and its stop command. Each
+build's model copies stage under its own name in the store both share
+(`ClusterModelStore.stagingPrefix`: production's `.darkbloom-incoming-<digest>`,
+DevNet's `.darkbloom-incoming-dev-<digest>`), and a copy short of disk reclaims
+only its own build's abandoned staging. They share the models, and the cable
 port setup, which `darkbloom uninstall` keeps while the other build is
-installed. A port the other build set up is adopted with what its link record
+installed; `cluster link --remove` names another build whose link record still
+holds the port and asks at a terminal (`ClusterLinkRepair.otherInstallsUsingCable`).
+A port the other build set up is adopted with what its link record
 says that setup changed (its bridge slot and the services it turned off), read
 from that record and never written there
 (`ClusterLinkRepair.Environment.otherInstallsIsolationEntries`), so the build

@@ -1243,7 +1243,7 @@ final class OnboardingLive: @unchecked Sendable {
         let started = Date()
         var lastBytes: Int64 = -1, lastChange = Date()
         let deadline = started.addingTimeInterval(120 + Double(model.totalBytes) / 50e6)
-        let staging = store.appendingPathComponent(".darkbloom-incoming-" + String(model.artifactSHA256.prefix(32)))
+        let staging = store.appendingPathComponent(ClusterModelStore.stagingName(aggregateSHA256: model.artifactSHA256))
         var lastCheck = Date.distantPast
         let reports = ClusterTransferReports(label: "Copying from \(thereShort)", send: progress)
         let publish = publishingBytes(.copying, toLeader: true)

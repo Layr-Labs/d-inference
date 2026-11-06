@@ -7170,9 +7170,8 @@ that asked for 65,536 were refused. The output limit is 65,536, not the
 wire's 131,072. At the pair's measured 35 tokens a second, 65,536 output tokens
 take about 31 minutes, inside the 3,600-second request limit; 131,072 would
 not fit. The worker profile, request validation on both ranks and every profile
-fingerprint use these limits. LOAD,
-the placement planner and every width quote still size the pair for the standard
-request, 32,768 prompt plus 32,768 output tokens
+fingerprint use these limits. LOAD, the placement planner and every width quote
+still size the pair for the standard request, 32,768 prompt plus 32,768 output tokens
 (`QwenResidentAdapterDefinition.memoryProfile`, `ClusterWorkerProfile.memoryScope`).
 No lane reserves KV for the native context in advance, and widths one through
 eight are planned and admitted as before. Every other Qwen row's profile is its

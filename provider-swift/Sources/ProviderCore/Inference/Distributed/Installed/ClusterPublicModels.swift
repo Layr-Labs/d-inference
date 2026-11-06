@@ -152,12 +152,12 @@ public enum ClusterPublicModels {
     /// enforces in that placement's mode (`profile`: what the mode serves of
     /// the worker's runtime profile; a longer prompt or a larger `max_tokens`
     /// is refused), so the coordinator sends a larger public request to a
-    /// single Mac instead of to a refusal; and, when the
-    /// placement serves media at all (`servesMedia`: both declared models'
-    /// tensor-parallel paths take media as the single-Mac product does,
-    /// `ClusterGLMMedia` and `ClusterQwenMedia`; a pipeline is text only),
-    /// media as the model's catalog entry in the release's environment lists it
-    /// (`image` for vision, `video` as well for video).
+    /// single Mac instead of to a refusal; and, when the placement serves media
+    /// at all (`servesMedia`: both declared models' tensor-parallel paths take
+    /// media as the single-Mac product does, `ClusterGLMMedia` and
+    /// `ClusterQwenMedia`; a pipeline is text only), media as the model's
+    /// catalog entry in the release's environment lists it (`image` for vision,
+    /// `video` as well for video).
     public static func requestEnvelope(inputModalities: [String], servesMedia: Bool,
                                        profile: ClusterWorkerProfile) -> ClusterRequestEnvelope {
         let vision = servesMedia && inputModalities.contains("image")

@@ -543,12 +543,12 @@ request: 32,768 prompt and 32,768 output tokens in a 65,536-token context. A
 pipeline's ranks refuse any reservation beyond that request. The leader refuses
 any request outside these limits before it asks either rank.
 
-A change of `serving_context_tokens` is a material capacity change, so it sends
-an event heartbeat (`CapacityHeartbeatMateriality`). The coordinator drops the
-whole object when a required value is not positive, when one is above
-1,048,576, or when the context is below the prompt or output limit. It caps
-`serving_context_tokens` at the context. It then holds every request routed to
-the pair to these limits.
+Any change of `request_limits`, such as `serving_context_tokens` moving while
+the pair idles, is a material capacity change, so it sends an event heartbeat
+(`CapacityHeartbeatMateriality`). The coordinator drops the whole object when a
+required value is not positive, when one is above 1,048,576, or when the
+context is below the prompt or output limit. It caps `serving_context_tokens`
+at the context. It then holds every request routed to the pair to these limits.
 
 #### `slots[].prefix_cache`
 

@@ -37,9 +37,9 @@ struct CoordinatorInboundControlFrameTests {
         // No data and no control opcode: the peer dropped the transport.
         #expect(CoordinatorClient.inboundFrame(data: nil, opcode: nil) == .transportClosed)
         #expect(CoordinatorClient.inboundFrame(data: Data(), opcode: .text) == .transportClosed)
-        let heartbeatAck = Data(#"{"type":"drain_ack","id":"x"}"#.utf8)
-        #expect(CoordinatorClient.inboundFrame(data: heartbeatAck, opcode: .text) == .message(heartbeatAck))
-        #expect(CoordinatorClient.inboundFrame(data: heartbeatAck, opcode: nil) == .message(heartbeatAck))
+        let drainAck = Data(#"{"type":"drain_ack","id":"x"}"#.utf8)
+        #expect(CoordinatorClient.inboundFrame(data: drainAck, opcode: .text) == .message(drainAck))
+        #expect(CoordinatorClient.inboundFrame(data: drainAck, opcode: nil) == .message(drainAck))
     }
 }
 

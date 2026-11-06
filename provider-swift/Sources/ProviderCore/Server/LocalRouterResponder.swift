@@ -31,11 +31,13 @@ public struct LocalRouterResponder<Inner: HTTPResponder>: HTTPResponder where In
     }
 }
 
-/// The router's state and its two paths: this Mac (in process, the engine's response returned as it is) and passing
-/// a request on (`LocalRouterPolicy`).
+/// The router's state and its paths: this Mac (in process, the engine's response returned as it is), passing a
+/// request on (`LocalRouterPolicy`), and the merged `/v1/models`.
 public final class LocalRouter: Sendable {
     public struct Timing: Sendable {
+        /// To put a passed-on request on the wire.
         public var connect: Duration = .seconds(10)
+        /// The longest wait for a byte of a passed-on request's answer: `self` may queue for 120 s before its head.
         public var idle: Duration = .seconds(300)
         /// The whole of a model-list read: `/v1/models` never waits long on an unreachable coordinator.
         public var list: Duration = .seconds(5)
@@ -72,10 +74,14 @@ public final class LocalRouter: Sendable {
 
     // MARK: - Inference
 
-    func route<Inner: HTTPResponder>(_ original: Request, upstreamPath: String, context: Inner.Context,
+    /// This Mac first: its engine's answer, streamed or not, is returned as it is with one header added, unless this
+    /// Mac can't take the request (`LocalRouterPolicy.passesOn`) and the route dials out.
+    func route<Inner: HTTPResponder>(_ request: Request, upstreamPath: String, context: Inner.Context,
                                      inner: Inner) async throws -> Response {
-        var request = original
-        // Kept for a pass-on. The engine collects the body anyway; a collected body is handed down without a copy.
+        var request = request
+        // Collected once, kept for a pass-on, within the engine's own ceilings (32 MiB for chat, 2 MiB otherwise).
+        // The engine collects the body anyway: it is handed this same buffer, with no copy, and nothing on this Mac's
+        // path parses it.
         let limit = upstreamPath == "/v1/chat/completions" ? localInferenceMaxUploadBytes : 2 * 1024 * 1024
         let body: ByteBuffer
         do {
@@ -85,26 +91,22 @@ public final class LocalRouter: Sendable {
                 message: "request body exceeds the \(limit / (1024 * 1024)) MiB local endpoint limit")
         }
         var local = try await inner.respond(to: request, context: context)
-        guard LocalRouterPolicy.passesOn(localStatus: local.status) else {
-            local.headers[LocalRouterPolicy.servedByHeader] = LocalRouterPolicy.thisMac
-            return local
-        }
+        local.headers[LocalRouterPolicy.servedByHeader] = LocalRouterPolicy.thisMac
+        guard LocalRouterPolicy.passesOn(localStatus: local.status) else { return local }
+        // Only a request this Mac can't take reads the account key; without one, this Mac's answer stands.
         let (route, key) = config.effectiveRoute()
-        guard let key else {
-            local.headers[LocalRouterPolicy.servedByHeader] = LocalRouterPolicy.thisMac
-            return local
-        }
-        return try await passOn(body: body, clientHeaders: original.headers, upstreamPath: upstreamPath,
+        guard let key else { return local }
+        return try await passOn(body: body, clientHeaders: request.headers, upstreamPath: upstreamPath,
                                 hops: LocalRouterPolicy.hops(for: route), key: key, local: local)
     }
 
     private func passOn(body: ByteBuffer, clientHeaders: HTTPFields, upstreamPath: String,
                         hops: [LocalRouterUpstreamRoute], key: String, local: Response) async throws -> Response {
         var hops = hops
-        let model = LocalRouterRequestBody.model(in: body)
+        let model = Self.model(in: body)
+        // A `self` hop that could only come back to this Mac is not sent: the coordinator can't leave one Mac out of a
+        // `self` request, and would queue it here, where it can't be taken now, for 120 s before `machine_busy`.
         if hops.first == .mine, let model, await selfHopWouldReturnHere(model: model, key: key) {
-            // The coordinator can't leave one Mac out, and a `self` request to this Mac while it can't take work
-            // waits 120 s for `machine_busy`.
             hops.removeFirst()
             guard !hops.isEmpty else {
                 log("this Mac can't take the request and is the only one of your Macs serving its model; not passed on")
@@ -132,11 +134,20 @@ public final class LocalRouter: Sendable {
             if index < hops.count - 1, LocalRouterPolicy.triesNextHop(after: upstream.status) { continue }
             return relayError(upstream, body: errorBody, hop: hop, key: key)
         }
-        return thisMacOnly(local, model: model ?? "this model")
+        // Not reached: a route that dials out has a hop, and its last hop always answers.
+        return local
+    }
+
+    /// The request's `model`, for the checks before a `self` hop; nil when the body isn't a JSON object naming one.
+    /// Read only from a request this Mac can't take.
+    private static func model(in body: ByteBuffer) -> String? {
+        let object = (try? JSONSerialization.jsonObject(with: Data(buffer: body), options: [])) as? [String: Any]
+        return object?["model"] as? String
     }
 
     /// Whether a `self` request could land on this Mac: it takes coordinator work, it serves the model (or a build of
-    /// the alias the request names), and the coordinator counts no other Mac of the owner's serving it.
+    /// the alias the request names), and the coordinator counts no other Mac of the owner's serving it. A count the
+    /// coordinator can't give counts as none, so the `self` hop is skipped (fail closed).
     private func selfHopWouldReturnHere(model: String, key: String) async -> Bool {
         guard config.takesCoordinatorWork else { return false }
         let local = Set(await localModels())
@@ -162,6 +173,8 @@ public final class LocalRouter: Sendable {
     private func baseHeaders(key: String?) -> [String: String] {
         var headers = ["Accept-Encoding": "identity",
                        "User-Agent": "\(BuildEnvironment.current.cliName)-local-router/\(ProviderCore.version)"]
+        // The one place the account key leaves its store: this header, to the configured coordinator only (the
+        // transport follows no redirect).
         if let key { headers["Authorization"] = "Bearer " + key }
         return headers
     }
@@ -207,6 +220,7 @@ public final class LocalRouter: Sendable {
 
     private func relayedHeaders(_ upstream: LocalRouterUpstreamResponse, hop: LocalRouterUpstreamRoute) -> HTTPFields {
         var headers = HTTPFields()
+        // Never the coordinator's `X-Provider-Id`: the answer names no Mac.
         for name in ["content-type", "cache-control", "retry-after", "x-request-id", "x-inference-job-id"] {
             if let value = upstream.headers[name], let field = HTTPField.Name(name) { headers[field] = value }
         }
@@ -238,11 +252,11 @@ public final class LocalRouter: Sendable {
         var catalog: LocalRouterCatalog?
         let (route, key) = config.effectiveRoute()
         if let key {
-            let views: [UpstreamView] = route == .myMacsFirst ? [.mine, .network] : [.mine]
             async let catalogRead = self.catalog()
-            async let lists = upstreamModels(views: views, key: key)
+            async let mine = upstreamModels(view: .mine, key: key)
+            async let network = route == .myMacsFirst ? upstreamModels(view: .network, key: key) : []
             catalog = await catalogRead
-            upstream = await lists
+            upstream = [(LocalRouterPolicy.myMacs, await mine), (LocalRouterPolicy.darkbloom, await network)]
         }
         let merged = LocalRouterModelMerge.merge(local: list.data, upstream: upstream, localLimits: localLimits,
                                                  catalog: catalog)
@@ -251,35 +265,20 @@ public final class LocalRouter: Sendable {
                         body: .init(byteBuffer: ByteBuffer(data: encoded)))
     }
 
+    /// The coordinator's model lists the router merges after this Mac's.
     enum UpstreamView: Sendable {
-        /// The owner's live models (`self`): `owned_by: my-macs`.
+        /// The owner's live models, read with `X-Darkbloom-Route: self`: listed as `my-macs`.
         case mine
-        /// The public list, which `prefer` falls back to: `owned_by: darkbloom`.
+        /// The public list, which `prefer` falls back to: listed as `darkbloom`, with `my-macs-first` only.
         case network
-
-        var ownedBy: String { self == .mine ? "my-macs" : LocalRouterPolicy.darkbloom }
-    }
-
-    private func upstreamModels(views: [UpstreamView], key: String)
-        async -> [(ownedBy: String, entries: [LocalRouterModelEntry])] {
-        await withTaskGroup(of: (Int, [LocalRouterModelEntry]).self) { group in
-            for (index, view) in views.enumerated() {
-                group.addTask { (index, await self.upstreamModels(view: view, key: key)) }
-            }
-            var lists = Array(repeating: [LocalRouterModelEntry](), count: views.count)
-            for await (index, entries) in group { lists[index] = entries }
-            return zip(views, lists).map { (ownedBy: $0.ownedBy, entries: $1) }
-        }
     }
 
     /// The coordinator's model list for the owner (`self`) or the public one, cached for `listTTL`.
     private func upstreamModels(view: UpstreamView, key: String) async -> [LocalRouterModelEntry] {
         let cacheKey = "\(view)|" + Self.fingerprint(key)
         return await state.lists.value(for: cacheKey, ttl: timing.listTTL, failureTTL: timing.failureTTL) {
-            var headers = self.baseHeaders(key: key)
-            headers["Accept"] = "application/json"
-            if view == .mine { headers[LocalRouterPolicy.routeHeader.rawName] = LocalRouterUpstreamRoute.mine.rawValue }
-            guard let data = await self.get("/v1/models", headers: headers),
+            let read = self.modelsRequest("/v1/models", key: key, route: view == .mine ? .mine : nil)
+            guard let data = await self.get(read),
                   let list = try? JSONDecoder().decode(LocalRouterModelList.self, from: Data(buffer: data))
             else { return nil }
             return list.data
@@ -289,9 +288,8 @@ public final class LocalRouter: Sendable {
     /// The Darkbloom catalog's limits and aliases (keyless), cached for `catalogTTL`. Read only when the route dials out.
     private func catalog() async -> LocalRouterCatalog? {
         await state.catalog.value(for: "catalog", ttl: timing.catalogTTL, failureTTL: timing.failureTTL) {
-            var headers = self.baseHeaders(key: nil)
-            headers["Accept"] = "application/json"
-            guard let data = await self.get("/v1/models/catalog?include_aliases=1", headers: headers) else { return nil }
+            guard let data = await self.get(self.modelsRequest("/v1/models/catalog?include_aliases=1", key: nil))
+            else { return nil }
             return LocalRouterCatalog.decode(Data(buffer: data))
         }
     }
@@ -300,13 +298,9 @@ public final class LocalRouter: Sendable {
     /// paused for its owner counts); 0 when none does; nil when the coordinator could not say.
     private func ownedProviderCount(model: String, key: String) async -> Int? {
         guard let escaped = model.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else { return nil }
-        var headers = baseHeaders(key: key)
-        headers["Accept"] = "application/json"
-        headers[LocalRouterPolicy.routeHeader.rawName] = LocalRouterUpstreamRoute.mine.rawValue
         let transport = await state.transport(makeTransport)
-        guard let response = try? await transport.send(LocalRouterUpstreamRequest(
-            url: upstreamURL("/v1/models/" + escaped), method: "GET", headers: headers, body: nil,
-            connectTimeout: timing.list, idleTimeout: timing.list)) else { return nil }
+        guard let response = try? await transport.send(modelsRequest("/v1/models/" + escaped, key: key, route: .mine))
+        else { return nil }
         let body = await Self.collect(response.body, limit: 1024 * 1024)
         if response.status == 404 { return 0 }
         guard response.status == 200, let body,
@@ -314,11 +308,20 @@ public final class LocalRouter: Sendable {
         return entry.providerCount
     }
 
-    /// A small GET to the coordinator, whole within `timing.list`; nil unless it answered 200.
-    private func get(_ pathAndQuery: String, headers: [String: String]) async -> ByteBuffer? {
+    /// A GET of one of the coordinator's model views, with `timing.list` to connect and between bytes: the account
+    /// key (none for the keyless catalog) and, for the owner's own view, `X-Darkbloom-Route: self`.
+    private func modelsRequest(_ pathAndQuery: String, key: String?, route: LocalRouterUpstreamRoute? = nil)
+        -> LocalRouterUpstreamRequest {
+        var headers = baseHeaders(key: key)
+        headers["Accept"] = "application/json"
+        if let route { headers[LocalRouterPolicy.routeHeader.rawName] = route.rawValue }
+        return LocalRouterUpstreamRequest(url: upstreamURL(pathAndQuery), method: "GET", headers: headers, body: nil,
+                                          connectTimeout: timing.list, idleTimeout: timing.list)
+    }
+
+    /// The body of a small GET when the coordinator answered 200, whole within `timing.list`; nil otherwise.
+    private func get(_ request: LocalRouterUpstreamRequest) async -> ByteBuffer? {
         let transport = await state.transport(makeTransport)
-        let request = LocalRouterUpstreamRequest(url: upstreamURL(pathAndQuery), method: "GET", headers: headers,
-                                                 body: nil, connectTimeout: timing.list, idleTimeout: timing.list)
         let deadline = timing.list
         return await withTaskGroup(of: ByteBuffer?.self) { group in
             group.addTask {

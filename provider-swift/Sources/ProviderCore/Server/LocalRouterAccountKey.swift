@@ -45,7 +45,7 @@ public struct KeychainLocalRouterAccountKeyStore: LocalRouterAccountKeyStore {
     }
 
     public func load() throws -> String? {
-        try withKeychain { dataProtection in
+        try withKeychain(operation: "read") { dataProtection in
             var query = identity(dataProtection: dataProtection)
             query[kSecReturnData as String] = true
             query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -62,11 +62,11 @@ public struct KeychainLocalRouterAccountKeyStore: LocalRouterAccountKeyStore {
             default:
                 return .failed(status)
             }
-        } operation: { "read" }
+        }
     }
 
     public func save(_ key: String) throws {
-        try withKeychain { dataProtection in
+        try withKeychain(operation: "save") { dataProtection in
             let query = identity(dataProtection: dataProtection)
             let data = Data(key.utf8)
             var status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
@@ -78,14 +78,14 @@ public struct KeychainLocalRouterAccountKeyStore: LocalRouterAccountKeyStore {
                 status = SecItemAdd(item as CFDictionary, nil)
             }
             return status == errSecSuccess ? .done(()) : .failed(status)
-        } operation: { "save" }
+        }
     }
 
     public func remove() throws {
-        try withKeychain { dataProtection in
+        try withKeychain(operation: "remove") { dataProtection in
             let status = SecItemDelete(identity(dataProtection: dataProtection) as CFDictionary)
             return status == errSecSuccess || status == errSecItemNotFound ? .done(()) : .failed(status)
-        } operation: { "remove" }
+        }
     }
 
     private func identity(dataProtection: Bool) -> [String: Any] {
@@ -105,17 +105,17 @@ public struct KeychainLocalRouterAccountKeyStore: LocalRouterAccountKeyStore {
     }
 
     /// The data-protection Keychain first; the login keychain when this build lacks the entitlement for it.
-    private func withKeychain<T>(_ body: (Bool) -> Outcome<T>, operation: () -> String) throws -> T {
+    private func withKeychain<T>(operation: String, _ body: (Bool) -> Outcome<T>) throws -> T {
         switch body(true) {
         case .done(let value):
             return value
         case .failed(let status) where status == errSecMissingEntitlement:
             switch body(false) {
             case .done(let value): return value
-            case .failed(let status): throw LocalRouterAccountKeyError.keychain(operation: operation(), status: status)
+            case .failed(let status): throw LocalRouterAccountKeyError.keychain(operation: operation, status: status)
             }
         case .failed(let status):
-            throw LocalRouterAccountKeyError.keychain(operation: operation(), status: status)
+            throw LocalRouterAccountKeyError.keychain(operation: operation, status: status)
         }
     }
 }

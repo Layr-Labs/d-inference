@@ -55,6 +55,8 @@ public struct LocalRouterConfig: Sendable {
     }
 
     /// The route in effect now, and the key it uses. Without a saved key nothing can go upstream, whatever the route.
+    /// The key is read from the store on every call, so a key saved or removed with `route key` counts from the next
+    /// request; a saved `this-mac` never reads the Keychain.
     func effectiveRoute() -> (route: LocalSettings.Route, accountKey: String?) {
         if settings.route == .thisMac { return (.thisMac, nil) }
         let key = (try? accountKeys.load()).flatMap { $0.isEmpty ? nil : $0 }
@@ -137,8 +139,11 @@ public enum LocalRouterPolicy {
         status == 409 || status == 429 || status == 503
     }
 
-    /// `X-Darkbloom-Served-By` of this Mac's own answers.
+    /// `X-Darkbloom-Served-By` of this Mac's own answers, and `owned_by` of the models this Mac serves.
     public static let thisMac = "this-mac"
-    /// `X-Darkbloom-Served-By` of an upstream answer. Whether a `prefer` answer came from an owned Mac isn't known.
+    /// `owned_by` of the models the owner's other Macs serve (the coordinator's `self` list).
+    public static let myMacs = "my-macs"
+    /// `X-Darkbloom-Served-By` of an upstream answer, and `owned_by` of the network's models. Whether a `prefer` answer
+    /// came from an owned Mac isn't known, so it isn't claimed.
     public static let darkbloom = "darkbloom"
 }

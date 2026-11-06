@@ -111,7 +111,8 @@ QWEN_TP_MTP_GPU_TESTS = (
 # shares one process; `audit` checks that every Gemma suite is listed.
 GEMMA_SUITES = (
     "Gemma4BatchArithmeticAgreementTests", "Gemma4BatchDecodeTests", "Gemma4StagePagedSyntheticTests",
-    "Gemma4TensorParallelPrefixTests", "Gemma4TensorParallelRuntimeTests", "Gemma4TensorParallelTests",
+    "Gemma4TensorParallelPrefixTests", "Gemma4TensorParallelRuntimeTests", "Gemma4TensorParallelSpeculationTests",
+    "Gemma4TensorParallelTests", "Gemma4TensorParallelAssistantChunkTests",
     "GemmaPrefillArithmeticTests", "GemmaPrefixChunkTests", "ResidentAdmissionGemma4Tests",
 )
 

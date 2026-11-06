@@ -101,4 +101,44 @@ extension Gemma4TensorParallelModel {
         try JSONSerialization.data(withJSONObject: index, options: [.sortedKeys, .prettyPrinted])
             .write(to: directory.appendingPathComponent("model.safetensors.index.json"))
     }
+
+    /// Writes a tiny random Gemma 4 assistant checkpoint (`config.json`,
+    /// `model.safetensors`) whose geometry matches `writeSyntheticCheckpoint`'s
+    /// target: four KV-shared layers (three sliding, one full) reading the
+    /// target's last sliding and full layers. Proposals of random weights:
+    /// for equality checks of speculative rounds, never an acceptance figure.
+    public static func writeSyntheticAssistant(directory: URL, seed: UInt64 = 11) throws {
+        let root = syntheticAssistantConfiguration()
+        let data = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys, .prettyPrinted])
+        let configuration = try JSONDecoder().decode(Gemma4AssistantConfiguration.self, from: data)
+        let arrays: [String: MLXArray] = try withRandomState(MLXRandom.RandomState(seed: seed)) {
+            let model = try Gemma4AssistantDraftModel(config: configuration)
+            let flat = Dictionary(uniqueKeysWithValues: model.parameters().flattened().map { ($0.0, $0.1.asType(.bfloat16)) })
+            eval(Array(flat.values))
+            return flat
+        }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try data.write(to: directory.appendingPathComponent("config.json"))
+        try save(arrays: arrays, url: directory.appendingPathComponent("model.safetensors"))
+    }
+
+    static func syntheticAssistantConfiguration() -> [String: Any] {
+        let text: [String: Any] = [
+            "model_type": "gemma4_text", "hidden_size": 64, "intermediate_size": 128, "num_hidden_layers": 4,
+            "layer_types": ["sliding_attention", "sliding_attention", "sliding_attention", "full_attention"],
+            "num_attention_heads": 16, "num_key_value_heads": 8, "num_global_key_value_heads": 2,
+            "head_dim": 256, "global_head_dim": 512, "sliding_window": 16, "vocab_size": 512,
+            "vocab_size_per_layer_input": 0, "hidden_size_per_layer_input": 0, "num_kv_shared_layers": 4,
+            "attention_k_eq_v": true, "enable_moe_block": false, "tie_word_embeddings": true,
+            "use_double_wide_mlp": false, "attention_bias": false, "rms_norm_eps": 1e-6,
+            "max_position_embeddings": 4096, "hidden_activation": "gelu_pytorch_tanh",
+            "rope_parameters": [
+                "sliding_attention": ["rope_type": "default", "rope_theta": 10000.0],
+                "full_attention": ["rope_type": "proportional", "rope_theta": 1_000_000.0, "partial_rotary_factor": 0.25],
+            ],
+        ]
+        return ["model_type": "gemma4_assistant", "backbone_hidden_size": 256, "use_ordered_embeddings": false,
+                "num_centroids": 64, "centroid_intermediate_top_k": 8, "text_config": text,
+                "architectures": ["Gemma4AssistantForCausalLM"], "tie_word_embeddings": true]
+    }
 }

@@ -11,6 +11,7 @@ import MLXLLM
 import MLXLMCommon
 import MLXLMServer
 import MLXVLM
+import NIOCore
 #if canImport(os)
 import os
 #endif
@@ -26,13 +27,53 @@ import os
 /// registry / load path without loosening their access for the whole module.
 extension ProviderLoop {
     /// Start the local endpoint (idempotent). Runs the shared HTTP app in a
-    /// child task; its registry closures reach back into this actor.
+    /// child task; its registry closures reach back into this actor. Me first
+    /// is on before the endpoint can take a request.
     func startLocalEndpoint(_ cfg: LocalInferenceHTTPConfig) {
         guard localServerTask == nil else { return }
+        enableMeFirstIfConfigured()
+        // Fires only once OUR server has actually bound the socket — the
+        // authoritative bind signal. We publish discovery here (never from a
+        // best-effort HTTP probe that a foreign process on the same port
+        // could answer). If the bind fails, runService throws below and this
+        // never runs, so no stale/foreign discovery record is written.
+        let app = makeLocalEndpointApplication(cfg, onServerRunning: { [weak self] _ in
+            await self?.onLocalEndpointBound(cfg)
+        })
+        let log = logger
+        localServerTask = Task {
+            do {
+                try await app.runService(gracefulShutdownSignals: [])
+            } catch is CancellationError {
+                // expected on shutdown
+            } catch {
+                // A bind failure (e.g. port already in use) lands here. We do NOT
+                // kill the provider — coordinator serving must stay up — but make
+                // the local-endpoint failure loud and operator-actionable.
+                log.error("Local OpenAI endpoint did NOT bind on \(cfg.host):\(cfg.port) (port already in use?): \(error.localizedDescription). Coordinator serving is unaffected; restart with a free --port to enable the local endpoint.")
+            }
+        }
+    }
+
+    /// Turns me first on where the owner's settings want it
+    /// (`ProviderLoopConfig.meFirstIdle`): the endpoint's requests are then
+    /// owner use (`acquireModelForLocal`, `releaseLocalReservation`).
+    func enableMeFirstIfConfigured() {
+        guard let idle = loopConfig.meFirstIdle else { return }
+        enableMeFirst(idle: idle)
+    }
+
+    /// The local endpoint's application over this loop's models. Its registry
+    /// closures reach back into this actor; `onServerRunning` fires once the
+    /// socket is bound.
+    func makeLocalEndpointApplication(
+        _ cfg: LocalInferenceHTTPConfig,
+        onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in }
+    ) -> LocalInferenceApplication {
         // One partition for this local application's Super prefix reuse,
         // separate from every authenticated coordinator scope.
         let superCacheScope = "local-super-" + UUID().uuidString
-        let app = makeLocalInferenceApplication(
+        return makeLocalInferenceApplication(
             config: cfg,
             defaultMaxTokens: Self.schedulerDefaultMaxTokens,
             acquire: { [weak self] modelId in
@@ -51,15 +92,8 @@ extension ProviderLoop {
                 guard let self else { return [] }
                 return await self.mtpSlotMetricsSamplesForLocal()
             },
-            // Fires only once OUR server has actually bound the socket — the
-            // authoritative bind signal. We publish discovery here (never from a
-            // best-effort HTTP probe that a foreign process on the same port
-            // could answer). If the bind fails, runService throws below and this
-            // never runs, so no stale/foreign discovery record is written.
             responseTracker: localResponseTracker,
-            onServerRunning: { [weak self] _ in
-                await self?.onLocalEndpointBound(cfg)
-            },
+            onServerRunning: onServerRunning,
             modelTypeProvider: { [weak self] modelId in
                 await self?.localModelTypeForAudioAdmission(modelId)
             },
@@ -72,19 +106,6 @@ extension ProviderLoop {
                     }, logprobs: logprobs)
             }
         )
-        let log = logger
-        localServerTask = Task {
-            do {
-                try await app.runService(gracefulShutdownSignals: [])
-            } catch is CancellationError {
-                // expected on shutdown
-            } catch {
-                // A bind failure (e.g. port already in use) lands here. We do NOT
-                // kill the provider — coordinator serving must stay up — but make
-                // the local-endpoint failure loud and operator-actionable.
-                log.error("Local OpenAI endpoint did NOT bind on \(cfg.host):\(cfg.port) (port already in use?): \(error.localizedDescription). Coordinator serving is unaffected; restart with a free --port to enable the local endpoint.")
-            }
-        }
     }
 
     /// Resident identity wins during a catalog/slot transition; no load occurs.

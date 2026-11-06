@@ -92,7 +92,7 @@ struct ProductionModelCalibrationTests {
         #expect(!(await bridge.shapeWarmupCompletedTest()))
         #expect(!(await bridge.startShapeWarmupIfNeeded(requireNominalPosture: false)),
             "preemption backs off before a retry")
-        await bridge.waitForPumpRetirement(requestId: "foreground-preemption")
+        await bridge.awaitPumps(requestId: "foreground-preemption")
         #expect(await bridge.startShapeWarmupIfNeeded(requireNominalPosture: false, now: .now + .seconds(3_600)))
         await bridge.awaitProductionCalibration()
         #expect(await bridge.shapeWarmupCompletedTest())
@@ -407,7 +407,6 @@ private extension EngineV2Bridge {
         (modelCalibration.shaderCacheCold, modelCalibration.shaderCacheProbeRuns.count)
     }
     func scheduledShapeWarmupTest() -> Bool { modelCalibration.task != nil }
-    func waitForPumpRetirement(requestId: String) async { await pumpTasks[requestId]?.value }
     func productionCalibrationWorkCounters() -> [Int64] {
         [prefillTokensTotal, prefillRequestsTotal, generatedTokensTotal, generationRequestsTotal]
     }

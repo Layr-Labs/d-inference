@@ -1803,15 +1803,16 @@ MoE Qwens, and standalone `CBv2NativeBlockEngine` slots run an excluded
 128-token warmup followed by two uncached solo probes
 of at most 512 prompt tokens and 32 output tokens. Completed calibration seeds
 prefill/decode evidence without requiring a customer job and runs once per loaded
-engine. A probe's prompt sample passes the same filters as a serving sample
+engine. A probe's prompt sample must pass the same filters as a serving sample
 (`EngineV2Bridge.classifyPrefillSample`): a computation window of at least 1 ms
-and at most 20,000 tokens per second (`maxPlausiblePrefillTps`, equal to the
-coordinator's
+and a rate of at most 20,000 tokens per second (`maxPlausiblePrefillTps`). This
+ceiling is equal to the coordinator's
 [`MaxPrefillTPS`](https://github.com/Layr-Labs/darkbloom-platform/blob/d7de2162f2097fc9f47ae469e7933db1121482b2/coordinator/internal/registry/capacityvalue/normalize.go#L17),
-above which it drops a published rate). A probe
-that prefills faster publishes no prefill sample but still trains decode. One
-counted probe completes the bootstrap, and its rate is the estimate; with none
-the bootstrap fails. Failure backs off for 120 seconds; interruption backs off for 30 seconds.
+and the coordinator drops a published rate above it. A probe that prefills
+faster gives no prefill sample, but its decode sample still counts. One counted
+probe is enough to complete the bootstrap. If no probe counts and no fresh
+serving rate exists, the bootstrap fails. Failure backs off for 120 seconds;
+interruption backs off for 30 seconds.
 An unfinished bootstrap retries when that backoff expires even if its completed
 probes left fresh partial rates. Fresh serving samples from an early request do
 not suppress an unfinished first bootstrap either. Only completed native MiMo

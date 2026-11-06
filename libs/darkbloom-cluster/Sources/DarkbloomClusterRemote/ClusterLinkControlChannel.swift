@@ -209,6 +209,14 @@ final class LinkConnection: @unchecked Sendable {
         socket.shutdown()
     }
 
+    /// A newer session took over: no more writes, and only the sending side
+    /// is shut down, so the reader still reads what the peer sent before the
+    /// takeover, up to its goodbye or the end of the stream.
+    func supersede() {
+        lock.withLock { if endReason == nil { endReason = .superseded } }
+        socket.shutdownWrite()
+    }
+
     var reason: ClusterLinkControlDisconnect? { lock.withLock { endReason } }
     var isOpen: Bool { lock.withLock { !closed && endReason == nil } }
 
@@ -282,6 +290,11 @@ public final class ClusterLinkControlPeer: @unchecked Sendable {
     private var inbox = LinkInbox()
     private var knownPeerIncarnation: UUID?
     private var connection: LinkConnection?
+    /// Sessions a newer one superseded whose readers have not ended yet.
+    private var supersededSessions: [LinkConnection] = []
+    /// Testing: runs on a session's reader thread before each frame read,
+    /// with the session's number on this peer (1 for the first).
+    private var frameReadHookForTesting: (@Sendable (UInt64) -> Void)?
     private var closed = false
     private var lastSentAt: UInt64 = 0
     private var pendingAckDeadline: UInt64?
@@ -400,6 +413,11 @@ public final class ClusterLinkControlPeer: @unchecked Sendable {
         state.withLock { connection }?.end(.transportError)
     }
 
+    /// Testing: applies to sessions attached after the call.
+    func setFrameReadHookForTesting(_ hook: @escaping @Sendable (_ session: UInt64) -> Void) {
+        state.withLock { frameReadHookForTesting = hook }
+    }
+
     // MARK: Sending
 
     private func sendSequenced(kind: LinkFrameKind, body: Data, timeout: Duration?) throws -> UInt64 {
@@ -503,7 +521,10 @@ public final class ClusterLinkControlPeer: @unchecked Sendable {
         knownPeerIncarnation = resume.incarnation
         let previous = connection
         connection = new
+        if let previous { supersededSessions.append(previous) }
         sessions += 1
+        let session = sessions
+        let beforeEachRead: (@Sendable () -> Void)? = frameReadHookForTesting.map { hook in { @Sendable in hook(session) } }
         let pending = Array(outbox.pending)
         retransmitted += UInt64(pending.count)
         pendingAckDeadline = nil; deliveredSinceAck = 0
@@ -520,8 +541,10 @@ public final class ClusterLinkControlPeer: @unchecked Sendable {
         }
         state.broadcast()
         state.unlock()
-        previous?.end(.superseded)
-        let reader = Thread { [weak self] in self?.readLoop(new) }
+        // The old reader still reads to the old session's goodbye or end of
+        // stream, so its end is reported with the reason (`connectionEnded`).
+        previous?.supersede()
+        let reader = Thread { [weak self] in self?.readLoop(new, beforeEachRead: beforeEachRead) }
         reader.name = "darkbloom.link-control.reader"
         reader.qualityOfService = .userInteractive
         reader.start()
@@ -535,12 +558,13 @@ public final class ClusterLinkControlPeer: @unchecked Sendable {
         return true
     }
 
-    private func readLoop(_ current: LinkConnection) {
+    private func readLoop(_ current: LinkConnection, beforeEachRead: (@Sendable () -> Void)?) {
         let reader = LinkReader(socket: current.socket)
         let silence = edge.limits.silenceTimeout.clusterLinkNanoseconds
         var reason: ClusterLinkControlDisconnect = .transportError
         do {
             while true {
+                beforeEachRead?()
                 let frame = try current.readFrame(reader: reader, idleDeadline: linkNow() &+ silence)
                 if let ended = try process(frame, on: current) { reason = ended; break }
             }
@@ -583,8 +607,11 @@ public final class ClusterLinkControlPeer: @unchecked Sendable {
         var ackNow = false
         var completed: PingWaiter?
         var goodbye: LinkGoodbyeReason?
+        let said: LinkGoodbyeReason? = frame.kind == .goodbye ? LinkGoodbyeReason(rawValue: frame.body[frame.body.startIndex]) ?? .shutdown : nil
         try state.withLock {
-            guard connection === current else { return } // superseded: drop silently
+            // Superseded: drop the frame, but keep a goodbye's reason for the
+            // session's end.
+            guard connection === current else { goodbye = said; return }
             if frame.ackThrough > 0 || frame.kind == .ack {
                 let removed = try outbox.acknowledge(through: frame.ackThrough)
                 if removed > 0 { state.broadcast() }
@@ -600,7 +627,7 @@ public final class ClusterLinkControlPeer: @unchecked Sendable {
                     completed = waiter
                 }
             case .goodbye:
-                goodbye = LinkGoodbyeReason(rawValue: frame.body[frame.body.startIndex]) ?? .shutdown
+                goodbye = said
             case .message, .opaque:
                 switch inbox.verdict(for: frame.messageID) {
                 case .gap: throw ClusterLinkControlError.protocolViolation
@@ -647,7 +674,10 @@ public final class ClusterLinkControlPeer: @unchecked Sendable {
         return nil
     }
 
-    /// Reader thread, once per connection.
+    /// Reader thread, once per connection: exactly one disconnect per session.
+    /// A superseded session's comes after the newer session's `connected`, so
+    /// it states no loss: `rekey` when it ended as a rollover (this side's
+    /// record budget, or the peer's goodbye), `superseded` otherwise.
     func connectionEnded(_ current: LinkConnection, reason: ClusterLinkControlDisconnect) {
         current.end(reason)
         writeLock.lock()
@@ -658,6 +688,8 @@ public final class ClusterLinkControlPeer: @unchecked Sendable {
                 lastDisconnect = current.reason ?? reason
                 failPingWaitersLocked()
                 state.broadcast()
+            } else {
+                supersededSessions.removeAll { $0 === current }
             }
             return match
         }
@@ -665,7 +697,12 @@ public final class ClusterLinkControlPeer: @unchecked Sendable {
         current.socket.close()
         current.markClosed()
         writeLock.unlock()
-        if wasCurrent { enqueueLifecycle(.disconnected(edgeID: edgeID, reason: current.reason ?? reason)) }
+        if wasCurrent {
+            enqueueLifecycle(.disconnected(edgeID: edgeID, reason: current.reason ?? reason))
+        } else {
+            let rollover = current.reason == .rekey || reason == .rekey
+            enqueueLifecycle(.disconnected(edgeID: edgeID, reason: rollover ? .rekey : .superseded))
+        }
         current.ended.signal()
     }
 
@@ -726,14 +763,15 @@ public final class ClusterLinkControlPeer: @unchecked Sendable {
         }
     }
 
-    /// Ends the session with a goodbye and stops the edge for good.
+    /// Ends the session with a goodbye, ends superseded sessions still
+    /// reading, and stops the edge for good.
     func close() {
         writeLock.lock()
-        let current: LinkConnection? = state.withLock {
+        let (current, superseded): (LinkConnection?, [LinkConnection]) = state.withLock {
             closed = true
             failPingWaitersLocked()
             state.broadcast()
-            return connection
+            return (connection, supersededSessions)
         }
         if let current, current.isOpen {
             try? current.write(LinkFrame(kind: .goodbye, messageID: 0, ackThrough: 0,
@@ -741,6 +779,7 @@ public final class ClusterLinkControlPeer: @unchecked Sendable {
         }
         writeLock.unlock()
         current?.end(.localShutdown)
+        for session in superseded { session.end(.localShutdown) }
     }
 }
 

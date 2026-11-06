@@ -47,6 +47,34 @@ final class LinkEventLog: @unchecked Sendable {
     }
 }
 
+/// Parks a session's reader before its next frame read until opened.
+final class LinkReaderGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var shut = false
+    private var parked = false
+
+    func close() { condition.withLock { shut = true } }
+    func open() { condition.withLock { shut = false; condition.broadcast() } }
+
+    /// Reader thread. Bounded, so a failed test never strands the reader.
+    func pass() {
+        condition.lock(); defer { condition.unlock() }
+        let deadline = Date(timeIntervalSinceNow: 10)
+        while shut {
+            parked = true; condition.broadcast()
+            guard condition.wait(until: deadline) else { break }
+        }
+        parked = false
+    }
+
+    func waitUntilParked(seconds: Double = 5) -> Bool {
+        let deadline = Date(timeIntervalSinceNow: seconds)
+        condition.lock(); defer { condition.unlock() }
+        while !parked { guard condition.wait(until: deadline) else { return parked } }
+        return true
+    }
+}
+
 /// A hand-driven connector over loopback, for replay and malformed-input cases.
 final class RawLinkConnector: @unchecked Sendable {
     let socket: LinkSocket
@@ -403,11 +431,84 @@ final class ClusterLinkControlChannelTests: XCTestCase {
         XCTAssertTrue(serverLog.wait { _ in serverLog.messages.count == 400 })
         XCTAssertEqual(serverLog.messages.map(\.0), Array(1...400))
         XCTAssertGreaterThanOrEqual(client.peer.status.sessions, 6)
-        // The client's record budget ran out, so its own sessions end as a
-        // rekey, queued before it dials the next one. The listener's need not:
-        // a next session that arrives before its reader reaches the goodbye
-        // supersedes the old one, which then ends without an event.
+        // Both ends report the rollover: the listener also when the next
+        // session supersedes the old one before its reader reads the goodbye.
+        XCTAssertTrue(serverLog.wait { _ in serverLog.disconnects.contains(.rekey) })
         XCTAssertTrue(clientLog.wait { _ in clientLog.disconnects.contains(.rekey) })
+    }
+
+    func testSupersededSessionStillReportsThePeersRekeyOnce() throws {
+        let serverLog = LinkEventLog(), clientLog = LinkEventLog()
+        // Slow heartbeats: the listener writes nothing to the first session
+        // between the connector's goodbye and the takeover. A write there
+        // would meet a reset and end the session fully before it is superseded.
+        let edge = try makeEdge(limits: limits {
+            $0.maximumRecordsPerConnection = 64
+            $0.heartbeatInterval = .seconds(2); $0.silenceTimeout = .seconds(5)
+        })
+        let (listener, port) = try makeListener(serverLog, edge: edge)
+        defer { listener.stop() }
+        let gate = LinkReaderGate()
+        defer { gate.open() }
+        try XCTUnwrap(listener.peer(for: edgeID)).setFrameReadHookForTesting { session in
+            if session == 1 { gate.pass() }
+        }
+        let client = try makeClient(clientLog, port: port, edge: edge)
+        defer { client.stop() }
+        XCTAssertTrue(client.peer.waitUntilConnected(timeout: .seconds(3)))
+        for index in 0..<16 { try client.peer.send(status(UInt16(index))) }
+        try client.peer.waitUntilAcknowledged(timeout: .seconds(3))
+
+        // Park the listener's first reader after the next frame, then send
+        // until the connector's record budget runs out: its goodbye stays
+        // unread on the listener.
+        gate.close()
+        try client.peer.send(status(16))
+        XCTAssertTrue(gate.waitUntilParked())
+        var sent = 17
+        while client.peer.status.connected, client.peer.status.sessions == 1, sent < 64 {
+            try client.peer.send(status(UInt16(sent))); sent += 1
+        }
+        XCTAssertTrue(clientLog.wait { _ in clientLog.disconnects == [.rekey] })
+
+        // The connector's next session supersedes the first one before the
+        // first reader reads the goodbye.
+        XCTAssertTrue(serverLog.wait { events in events.filter { if case .connected = $0 { return true }; return false }.count == 2 })
+        XCTAssertTrue(serverLog.disconnects.isEmpty)
+        gate.open()
+        XCTAssertTrue(serverLog.wait { _ in !serverLog.disconnects.isEmpty })
+        XCTAssertTrue(serverLog.wait { _ in serverLog.messages.count == sent })
+        XCTAssertEqual(serverLog.messages.map(\.0), Array(1...UInt64(sent)))
+        XCTAssertEqual(serverLog.disconnects, [.rekey])
+        let events = serverLog.all
+        let connects = events.indices.filter { if case .connected = events[$0] { return true }; return false }
+        let disconnect = events.firstIndex { if case .disconnected = $0 { return true }; return false }
+        XCTAssertEqual(connects.count, 2)
+        XCTAssertGreaterThan(try XCTUnwrap(disconnect), try XCTUnwrap(connects.last), "the superseded reader reported it")
+        XCTAssertEqual(listener.peer(for: edgeID)?.status.sessions, 2)
+    }
+
+    func testSupersededSessionWithoutGoodbyeEndsOnceWhenTheEdgeStops() throws {
+        let serverLog = LinkEventLog()
+        // Silence cannot end the first session within the test; only the stop can.
+        let edge = try makeEdge(limits: limits { $0.silenceTimeout = .seconds(60) })
+        let (listener, port) = try makeListener(serverLog, edge: edge)
+        defer { listener.stop() }
+        let first = try RawLinkConnector(port: port)
+        _ = try first.handshake(edge: edge)
+        XCTAssertTrue(serverLog.wait { events in events.contains { if case .connected = $0 { return true }; return false } })
+        let second = try RawLinkConnector(port: port)
+        _ = try second.handshake(edge: edge)
+        XCTAssertTrue(serverLog.wait { events in events.filter { if case .connected = $0 { return true }; return false }.count == 2 })
+
+        // The listener stops sending on the first session, and its reader
+        // still waits for a goodbye that the first connector never sends.
+        XCTAssertTrue(first.closedByPeer(seconds: 2))
+        XCTAssertTrue(serverLog.disconnects.isEmpty)
+        listener.stop()
+        XCTAssertTrue(serverLog.wait { _ in serverLog.disconnects.count == 2 })
+        XCTAssertEqual(Set(serverLog.disconnects), [.superseded, .localShutdown])
+        first.socket.close(); second.socket.close()
     }
 
     func testFullOutboxIsBackpressure() throws {

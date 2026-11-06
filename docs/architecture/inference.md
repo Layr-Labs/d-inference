@@ -4134,6 +4134,34 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/C
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupLinkExchange.swift`
 (`ClusterSetupLinkExchange.Responder`).
 
+## Link control session ends
+
+A link control edge has one live session at a time. When the connector
+authenticates a new session, the new session supersedes the previous one.
+Each session's end gives exactly one `disconnected` event on the edge's serial
+event queue.
+
+A session can end before its reader reads the other Mac's goodbye. This
+occurs when the connector's record budget runs out: the connector says goodbye
+with `rekey`, dials again at once, and its next session can arrive first. The
+listener then shuts down only the sending side of the superseded session. A
+full shutdown on Darwin discards the bytes that the reader did not read. The
+old reader reads what the other Mac sent before, up to its goodbye or the end
+of the stream, and drops each frame. It keeps only the goodbye's reason.
+
+The superseded session's event comes after the newer session's `connected`.
+Its reason is `rekey` when the session ended as a rollover (this side's record
+budget, or the other Mac's goodbye), and `superseded` for all other ends. The
+newer session is up, so the event never gives a loss reason. Peer liveness
+(`ClusterLinkPeerLiveness`) and the leader's link observability ignore both
+reasons. When the edge stops, it also ends each superseded session that is
+still reading.
+
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterLinkControlChannel.swift`
+(`ClusterLinkControlPeer.attach`, `connectionEnded`, `close`; `LinkConnection.supersede`) and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterLinkControlSocket.swift`
+(`LinkSocket.shutdownWrite`).
+
 ## Mode choice on a set-up pair
 
 `darkbloom cluster` offers every mode family the planner could place for these

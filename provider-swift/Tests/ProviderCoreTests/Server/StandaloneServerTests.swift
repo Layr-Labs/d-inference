@@ -1200,6 +1200,34 @@ private func expectPrometheusShapedLines(
     #expect(MTPPrometheusRenderer.render([]).isEmpty)
 }
 
+/// The controller's chosen depth and request-probe mode's probe outcomes: one counter sample per depth and per
+/// outcome; slots without them (no planned step, no probe mode) carry no line.
+@Test func mtpPrometheusRendererEmitsDepthStepsAndProbeWindows() {
+    var metrics = CBv2MTPMetrics()
+    metrics.active = true
+    metrics.rounds = 40
+    metrics.depthSelections = [0: 812, 2: 16, 4: 24]
+    metrics.probeOutcomes = ["won": 3, "lost": 5, "measuring": 2]
+    let status = MTPActivationStatus(
+        configured: true, active: true, reason: nil, source: .inline,
+        revision: "inline-test", artifactBytes: 1024, assistantBytes: 512)
+    let probing = ProviderMTPStatusSnapshot(status: status, metrics: metrics)
+    let plain = stubActiveMTPSnapshot(rounds: 0, proposed: 0, accepted: 0)
+    let text = MTPPrometheusRenderer.render([
+        .init(model: "gemma-4-26b-qat-4bit", snapshot: probing), .init(model: "other", snapshot: plain),
+    ])
+    #expect(text.contains("# TYPE mtp_depth_steps_total counter"))
+    #expect(text.contains(#"mtp_depth_steps_total{model="gemma-4-26b-qat-4bit",depth="0"} 812"#))
+    #expect(text.contains(#"mtp_depth_steps_total{model="gemma-4-26b-qat-4bit",depth="4"} 24"#))
+    #expect(text.contains("# TYPE mtp_probe_windows_total counter"))
+    #expect(text.contains(#"mtp_probe_windows_total{model="gemma-4-26b-qat-4bit",outcome="won"} 3"#))
+    #expect(text.contains(#"mtp_probe_windows_total{model="gemma-4-26b-qat-4bit",outcome="lost"} 5"#))
+    #expect(text.contains(#"mtp_probe_windows_total{model="gemma-4-26b-qat-4bit",outcome="measuring"} 2"#))
+    #expect(!text.contains(#"mtp_depth_steps_total{model="other""#))
+    #expect(!text.contains(#"mtp_probe_windows_total{model="other""#))
+    expectPrometheusShapedLines(text)
+}
+
 @Test func metricsBodyJoinGuaranteesNewlineBetweenUpstreamAndMTPBlock() {
     let snapshot = stubActiveMTPSnapshot(rounds: 1, proposed: 2, accepted: 1)
     let mtp = MTPPrometheusRenderer.render([.init(model: "m", snapshot: snapshot)])

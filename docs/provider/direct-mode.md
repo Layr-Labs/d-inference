@@ -1,6 +1,6 @@
 # Direct mode: a local OpenAI-compatible endpoint
 
-> Last updated: 2026-11-05
+> Last updated: 2026-11-06
 
 Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
@@ -149,7 +149,7 @@ the upstream `MLXLMServer` router
 |---|---|---|
 | GET | `/health`, `/v1/health` | Unauthenticated |
 | GET | `/models`, `/v1/models` | Advertised catalog, not just resident models |
-| GET | `/props`, `/metrics` | `/metrics` adds per-slot MTP and serving-posture lines (`provider-swift/Sources/ProviderCore/Server/LocalMetricsResponder.swift`); see [SSD cache observations](../reference/ssd-kv-cache.md#verification) for `prefix_cache_status` |
+| GET | `/props`, `/metrics` | `/metrics` adds per-slot MTP and serving-posture lines (`provider-swift/Sources/ProviderCore/Server/LocalMetricsResponder.swift`), including `mtp_depth_steps_total{depth}` (planned decode steps by draft depth) and, in request-probe mode, `mtp_probe_windows_total{outcome="won"\|"lost"\|"measuring"}`; see [SSD cache observations](../reference/ssd-kv-cache.md#verification) for `prefix_cache_status` |
 | POST | `/v1/chat/completions`, `/chat/completions` | Streaming and non-streaming; inline media; body capped at `localInferenceMaxUploadBytes` |
 | POST | `/v1/chat/completions/batch` | Same cap |
 | POST | `/v1/completions`, `/completions`, `/completion` | Text; upstream 2 MiB body ceiling |

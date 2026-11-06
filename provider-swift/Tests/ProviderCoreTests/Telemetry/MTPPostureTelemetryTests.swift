@@ -166,6 +166,38 @@ struct MTPPostureTelemetryTests {
         await bridge.shutdown()
     }
 
+    @Test("posture carries the depth histogram and probe outcomes, omitted when absent")
+    func postureCarriesDepthStepsAndProbeOutcomes() async {
+        var metrics = CBv2MTPMetrics()
+        metrics.active = true
+        metrics.rounds = 40
+        metrics.draftedTokens = 90
+        metrics.acceptedTokens = 30
+        metrics.depthSelections = [0: 812, 2: 16, 4: 24]
+        metrics.probeOutcomes = ["won": 3, "lost": 5]
+        let telemetry = PostureTelemetrySink()
+        let bridge = makePostureBridge(
+            engine: PagedPoolStubEngine(kvBytesInUse: 0, poolBytes: 1 << 30),
+            kvBackendKind: .paged, telemetry: telemetry)
+        await bridge.emitSlotPostureTelemetry(
+            ProviderMTPStatusSnapshot(status: activatedStatus(), metrics: metrics))
+        let event = telemetry.posture
+        #expect(field(event, "mtp_depth_steps") == "0=812,2=16,4=24")
+        #expect(field(event, "mtp_probes_won") == "3")
+        #expect(field(event, "mtp_probes_lost") == "5")
+        #expect(event?.fields?["mtp_probes_measuring"] == nil)
+        let quiet = PostureTelemetrySink()
+        let other = makePostureBridge(
+            engine: PagedPoolStubEngine(kvBytesInUse: 0, poolBytes: 1 << 30),
+            kvBackendKind: .paged, telemetry: quiet)
+        await other.emitSlotPostureTelemetry(
+            ProviderMTPStatusSnapshot(status: activatedStatus(), metrics: CBv2MTPMetrics()))
+        #expect(quiet.posture?.fields?["mtp_depth_steps"] == nil)
+        #expect(quiet.posture?.fields?["mtp_probes_won"] == nil)
+        await bridge.shutdown()
+        await other.shutdown()
+    }
+
     @Test("inert is distinct from engine_inactive")
     func inertIsNotEngineInactive() {
         var inert = CBv2MTPMetrics()

@@ -8,11 +8,14 @@ public enum MTPAutomaticVerificationPolicy {
     /// Exact Gemma QAT adapts between ordinary decode and `gemmaQATMaximumDepth`
     /// draft tokens per request (`requestProbeDepth`); all other stateless
     /// assistants retain fixed depth one. Explicit offline verification
-    /// controls retain fixed depth one for comparable measurements.
+    /// controls retain fixed depth one for comparable measurements. Quantized
+    /// live KV turns off ordinary-decode chaining, which request-probe mode
+    /// needs, so Gemma QAT there keeps the adaptive controller at depth one.
     static func draftDepthPolicy(
         usesRequestStatefulDrafter: Bool,
         modelID: String? = nil,
-        hasBenchmarkVerificationOverride: Bool = false
+        hasBenchmarkVerificationOverride: Bool = false,
+        quantizedLiveKV: Bool = false
     ) -> (maximum: Int, fixed: Int?) {
         if usesRequestStatefulDrafter {
             if Bonsai9BModelPolicy.matchesModelID(modelID) {
@@ -23,7 +26,7 @@ public enum MTPAutomaticVerificationPolicy {
             return (CBv2MTPConfig.testedMaxDraftTokens, nil)
         }
         if modelID == gemmaQATModelID, !hasBenchmarkVerificationOverride {
-            return (gemmaQATMaximumDepth, nil)
+            return (quantizedLiveKV ? 1 : gemmaQATMaximumDepth, nil)
         }
         return (CBv2MTPConfig.testedMaxDraftTokens, initialDraftTokens)
     }
@@ -40,12 +43,15 @@ public enum MTPAutomaticVerificationPolicy {
     /// Gemma QAT opens each request with a depth-2 window, then follows the
     /// request's own acceptance against this engine's measured cost of a round
     /// at each depth, so chat stays near ordinary decode while tools and code
-    /// go deep. nil keeps the incremental controller (every other model, and
-    /// explicit offline verification controls).
+    /// go deep. nil keeps the incremental controller (every other model,
+    /// explicit offline verification controls, and quantized live KV).
     static func requestProbeDepth(
-        usesRequestStatefulDrafter: Bool, modelID: String?, hasBenchmarkVerificationOverride: Bool = false
+        usesRequestStatefulDrafter: Bool, modelID: String?, hasBenchmarkVerificationOverride: Bool = false,
+        quantizedLiveKV: Bool = false
     ) -> Int? {
-        guard !usesRequestStatefulDrafter, modelID == gemmaQATModelID, !hasBenchmarkVerificationOverride else {
+        guard !usesRequestStatefulDrafter, modelID == gemmaQATModelID, !hasBenchmarkVerificationOverride,
+            !quantizedLiveKV
+        else {
             return nil
         }
         return 2

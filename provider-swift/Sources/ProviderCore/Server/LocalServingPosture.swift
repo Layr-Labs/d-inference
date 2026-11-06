@@ -75,6 +75,8 @@ extension ProviderMTPStatusSnapshot {
         acceptanceByPosition = []
         skippedRows = [:]
         controllerFallbacks = [:]
+        depthSelections = [:]
+        probeOutcomes = [:]
     }
 }
 

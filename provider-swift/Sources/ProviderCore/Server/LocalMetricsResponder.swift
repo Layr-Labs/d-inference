@@ -84,6 +84,22 @@ enum MTPPrometheusRenderer {
         family("mtp_tokens_accepted_total", "counter") {
             "mtp_tokens_accepted_total{\(label($0))} \($0.snapshot.acceptedDraftTokens)"
         }
+        // The controller's chosen depth: planned decode steps by draft depth,
+        // depth zero (ordinary decode) included.
+        family("mtp_depth_steps_total", "counter") { sample in
+            let depths = sample.snapshot.depthSelections.sorted { $0.key < $1.key }
+            guard !depths.isEmpty else { return nil }
+            return depths.map { "mtp_depth_steps_total{\(label(sample)),depth=\"\($0.key)\"} \($0.value)" }
+                .joined(separator: "\n")
+        }
+        // Request-probe mode only: completed probe windows by outcome.
+        family("mtp_probe_windows_total", "counter") { sample in
+            let outcomes = sample.snapshot.probeOutcomes.sorted { $0.key < $1.key }
+            guard !outcomes.isEmpty else { return nil }
+            return outcomes.map {
+                "mtp_probe_windows_total{\(label(sample)),outcome=\"\(escapeLabel($0.key))\"} \($0.value)"
+            }.joined(separator: "\n")
+        }
         // Present whenever MTP is not PRODUCTIVELY running — the same
         // omitted-when-healthy contract as the telemetry field, and the line
         // that makes a silently-disabled drafter (`inline_artifact_invalid`,

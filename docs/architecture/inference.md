@@ -2346,8 +2346,9 @@ M3/M4/M5 and `4` on M1/M2/unknown, lowered only by
 (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`).
 Gemma uses bounded rectangular target verification: one target traversal scores
 its seed and draft columns, while ordered attention and speculative transactions
-preserve causal visibility and discard rejected suffixes. In request-probe mode (Gemma QAT), the controller opens each request
-with one eight-round window at depth 2. After each completed window it decodes
+preserve causal visibility and discard rejected suffixes. In request-probe mode (Gemma QAT), the controller opens each change of the
+decoding set (a request joining or leaving) with one eight-round window at
+depth 2. After each completed window it decodes
 at the depth with the highest expected goodput: the request's own committed
 tokens per round (its acceptance by position, positions beyond the measured
 ones at the last measured rate) over this engine's measured cost of one round
@@ -2359,8 +2360,16 @@ depth 2 after 128 tokens, doubling after each losing probe up to 512, and back
 to 128 after a winning one. The probe, the measuring windows and the chosen
 depth stay within the plan's automatic verification envelope (depth 3 with two
 rows and depth 1 with three or four on M3-M5; depth 3 alone and depth 1 with two
-on M1/M2); a plan the envelope keeps at depth 0 decodes ordinarily and leaves the
-probe schedule as it was. Greedy rows equal ordinary decode at every depth.
+on M1/M2); a plan the envelope keeps at depth 0 decodes ordinarily
+(`automatic_envelope_plain`; `automatic_rectangular_limit` is only the driver's
+clamp) and leaves the probe schedule as it was. Completed probe windows are
+counted as won, lost or measuring (`CBv2MTPMetrics.probeOutcomes`, `/metrics`
+`mtp_probe_windows_total`, posture `mtp_probes_*`). The first-token deadline
+projection charges request-probe mode as the adaptive depth-1 controller, one
+draft token per decoding row (`CBv2MTPRoundDriver.projectionDraftTokenUpperBound`),
+and admission prices a projected step at the measured mean step. Quantized live
+KV has no ordinary-decode chaining, so Gemma QAT there keeps the adaptive
+controller at depth 1 without request-probe mode. Greedy rows equal ordinary decode at every depth.
 Sampled rows keep the acceptance rule `mtp_acceptance` names, and only how
 many drafts a round proposes changes
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPDepthController.swift`).

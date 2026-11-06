@@ -283,16 +283,6 @@ enum EngineV2SlotFactory {
         let mtpVerification = providerMTPVerificationPolicy(
             for: assistantHandle?.drafter,
             automaticRectangularTokens: automaticRectangularTokens)
-        let usesRequestStatefulDrafter = assistantHandle?.drafter is any CBv2MTPRequestStatefulDrafter
-        let hasBenchmarkVerificationOverride = assemblyOverrides.gemmaMTPVerification != nil
-        let draftDepth = MTPAutomaticVerificationPolicy.draftDepthPolicy(
-            usesRequestStatefulDrafter: usesRequestStatefulDrafter,
-            modelID: modelId,
-            hasBenchmarkVerificationOverride: hasBenchmarkVerificationOverride)
-        let requestProbeDepth = MTPAutomaticVerificationPolicy.requestProbeDepth(
-            usesRequestStatefulDrafter: usesRequestStatefulDrafter,
-            modelID: modelId,
-            hasBenchmarkVerificationOverride: hasBenchmarkVerificationOverride)
         let mtpAcceptance = MTPAcceptancePolicy.resolve(
             global: mtpAcceptanceConfig, byModel: mtpAcceptanceConfigByModel, modelID: modelId)
         if let unrecognized = mtpAcceptance.unrecognized {
@@ -305,14 +295,14 @@ enum EngineV2SlotFactory {
                 "engine_v2: \(modelId) MTP acceptance typical delta=\(delta) "
                     + "(sampled output is not distribution-exact; greedy rows unchanged)")
         }
-        var mtpConfig = CBv2MTPConfig(
-            enabled: assistantHandle != nil,
-            maxDraftTokens: draftDepth.maximum,
-            fixedDraftTokens: draftDepth.fixed,
-            verificationMode: mtpVerification.mode,
-            maxAutomaticRectangularTokens: mtpVerification.automaticRectangularTokens,
-            acceptance: mtpAcceptance.acceptance,
-            requestProbeDepth: requestProbeDepth)
+        var mtpConfig = Self.productionMTPConfig(
+            hasAssistant: assistantHandle != nil,
+            usesRequestStatefulDrafter: assistantHandle?.drafter is any CBv2MTPRequestStatefulDrafter,
+            modelID: modelId,
+            hasBenchmarkVerificationOverride: assemblyOverrides.gemmaMTPVerification != nil,
+            quantizedLiveKV: kvPrecision != .native,
+            verification: mtpVerification,
+            acceptance: mtpAcceptance.acceptance)
         if let verification = assemblyOverrides.gemmaMTPVerification {
             mtpConfig = try verification.applying(
                 to: mtpConfig, target: servingModel, drafter: assistantHandle?.drafter)
@@ -704,5 +694,34 @@ enum EngineV2SlotFactory {
             // Only a resolved PAGED backend has pages whose dtype can
             // widen the rate; a contiguous build ignores the knob.
             pagedPoolDType: resolvedKind == .paged ? pagedPoolDType : nil)
+    }
+}
+
+extension EngineV2SlotFactory {
+    /// The MTP configuration a production slot builds before any explicit
+    /// offline verification override: the depth policy and request-probe mode
+    /// (`MTPAutomaticVerificationPolicy`), the verification envelope and the
+    /// sampled acceptance rule.
+    static func productionMTPConfig(
+        hasAssistant: Bool, usesRequestStatefulDrafter: Bool, modelID: String,
+        hasBenchmarkVerificationOverride: Bool, quantizedLiveKV: Bool,
+        verification: (mode: CBv2MTPVerificationMode, automaticRectangularTokens: Int),
+        acceptance: CBv2MTPAcceptance
+    ) -> CBv2MTPConfig {
+        let depth = MTPAutomaticVerificationPolicy.draftDepthPolicy(
+            usesRequestStatefulDrafter: usesRequestStatefulDrafter, modelID: modelID,
+            hasBenchmarkVerificationOverride: hasBenchmarkVerificationOverride,
+            quantizedLiveKV: quantizedLiveKV)
+        return CBv2MTPConfig(
+            enabled: hasAssistant,
+            maxDraftTokens: depth.maximum,
+            fixedDraftTokens: depth.fixed,
+            verificationMode: verification.mode,
+            maxAutomaticRectangularTokens: verification.automaticRectangularTokens,
+            acceptance: acceptance,
+            requestProbeDepth: MTPAutomaticVerificationPolicy.requestProbeDepth(
+                usesRequestStatefulDrafter: usesRequestStatefulDrafter, modelID: modelID,
+                hasBenchmarkVerificationOverride: hasBenchmarkVerificationOverride,
+                quantizedLiveKV: quantizedLiveKV))
     }
 }

@@ -56,10 +56,44 @@ struct Gemma4TensorParallelRequestBudget: Equatable {
     let logitsBytes: Int
     /// The request's prompt-prefix capture at its deepest boundary.
     let prefixCaptureBytes: Int
+    /// Speculative rounds' own state (`speculativeBytes`); 0 without the assistant.
+    var speculativeBytes = 0
     let allowance: ClusterTensorParallelRequestAllowance
 
     /// What one request of `contextTokens` reserves on a rank.
-    var requestBytes: Int { stateBytes + transientBytes + partialBytes + logitsBytes + prefixCaptureBytes }
+    var requestBytes: Int { stateBytes + transientBytes + partialBytes + logitsBytes + prefixCaptureBytes + speculativeBytes }
+
+    /// Positions of the prompt mirror's exchange pieces (`Gemma4TensorParallelRounds.start`).
+    static let mirrorExchangePositions = 1024
+
+    /// What speculative rounds of `depth` proposals add to one request of
+    /// `contextTokens` on a rank, at the allocator's bound:
+    /// - the drafter's mirror of every KV head of the two source layers (the
+    ///   full layer's every token, the sliding layer's window and margin),
+    ///   twice: a round's append builds the next mirror before the last is freed;
+    /// - one piece of the prompt mirror's exchange (both ranks' slots in FP32,
+    ///   the sum and the joined heads);
+    /// - the window's whole-vocabulary FP32 rows (a sampled round gathers each
+    ///   column's row; the split head's halves and the choice beside them).
+    /// The window's own activations are within a prompt chunk's (at most five
+    /// rows against the chunk's), which `transientBytes` and `partialBytes` price.
+    static func speculativeBytes(depth: Int, contextTokens: Int, allocationBound: (Int) throws -> Int) throws -> Int {
+        typealias G = Gemma4StageGeometry
+        guard depth > 0 else { return 0 }
+        let sum = QwenLongPrefillCheckedBytes.sum, product = QwenLongPrefillCheckedBytes.product
+        func bound(_ logical: Int, count: Int = 1) throws -> Int {
+            let allocated = try allocationBound(logical)
+            guard logical > 0, allocated >= logical else { throw ProbeError("Gemma speculative allocator bound is invalid") }
+            return try product([allocated, count])
+        }
+        // Keys and values in BF16, every head.
+        let full = try product([contextTokens, G.fullKVHeads, G.fullHeadDimension, 2, 2])
+        let sliding = try product([min(contextTokens, G.slidingWindow + 128), G.slidingKVHeads, G.slidingHeadDimension, 2, 2])
+        let ownPerPosition = (G.fullKVHeads * G.fullHeadDimension + G.slidingKVHeads * G.slidingHeadDimension) * 2 / ranks
+        let piece = try product([min(contextTokens, mirrorExchangePositions), ownPerPosition, 4, ranks])
+        let rows = try product([depth + 1, G.vocabularySize, 4])
+        return try sum([bound(full, count: 2), bound(sliding, count: 2), bound(piece, count: 3), bound(rows, count: 2)])
+    }
     /// What a rank holds once beside every request it serves.
     var rankBytes: Int { Self.activationFloorBytes + Self.freedBufferCacheBytes + allowance.collectiveScratchBytes }
 
@@ -87,7 +121,7 @@ struct Gemma4TensorParallelRequestBudget: Equatable {
     /// nil: `contextTokens - 1`. `keepsPrefixes` false charges no prefix
     /// capture (the load's cache off, or the request's).
     static func derive(contextTokens: Int, chunkTokens: Int, promptTokens: Int? = nil, keepsPrefixes: Bool = true,
-                       allocationBound: (Int) throws -> Int) throws -> Self {
+                       speculativeDepth: Int = 0, allocationBound: (Int) throws -> Int) throws -> Self {
         typealias G = Gemma4StageGeometry
         let sum = QwenLongPrefillCheckedBytes.sum, product = QwenLongPrefillCheckedBytes.product
         let chunk = min(contextTokens, chunkTokens)
@@ -117,13 +151,15 @@ struct Gemma4TensorParallelRequestBudget: Equatable {
         let logits = try bound(product([G.vocabularySize, 4]), count: 3)
         let payload = try product([chunk, maximumPartialBytesPerToken])
         let frame = try sum([payload, QwenTensorParallelSealCodec.frameOverhead])
-        let request = try sum([state, bound(transientLogical), partials, logits, capture])
+        let speculative = try speculativeBytes(depth: speculativeDepth, contextTokens: contextTokens,
+                                               allocationBound: allocationBound)
+        let request = try sum([state, bound(transientLogical), partials, logits, capture, speculative])
         let allowance = try ClusterTensorParallelRequestAllowance(maximumContextTokens: contextTokens,
             maximumChunkTokens: chunk,
             requestBytesExcludingCollectives: sum([request, activationFloorBytes, freedBufferCacheBytes]),
             maximumCollectivePayloadBytes: payload, maximumCollectiveFrameBytes: frame, allocationBound: allocationBound)
         return .init(contextTokens: contextTokens, chunkTokens: chunk, stateBytes: state,
             transientBytes: try bound(transientLogical), partialBytes: partials, logitsBytes: logits,
-            prefixCaptureBytes: capture, allowance: allowance)
+            prefixCaptureBytes: capture, speculativeBytes: speculative, allowance: allowance)
     }
 }

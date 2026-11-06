@@ -147,6 +147,7 @@ import Foundation
                 } ?? NativeWorkerRuntime(configuration.load, family: family, attachment: attachment,
                         generationMode: configuration.generationMode, speculativeTerms: configuration.speculativeTerms,
                         tensorAssistantPolicy: configuration.tensorAssistantPolicy,
+                        gemmaAssistant: configuration.gemmaAssistant,
                         qualification: qualification, dataPlane: dataPlane, prefixSSDKey: prefixSSDKey,
                         tensorShares: configuration.tensorShares)
             }

@@ -114,6 +114,7 @@ GEMMA_SUITES = (
     "Gemma4TensorParallelPrefixTests", "Gemma4TensorParallelRuntimeTests", "Gemma4TensorParallelSpeculationTests",
     "Gemma4TensorParallelTests",
     "GemmaPrefillArithmeticTests", "GemmaPrefixChunkTests", "ResidentAdmissionGemma4Tests",
+    "Gemma4TensorParallelAssistantLoadTests",
 )
 
 SELECTIONS = (

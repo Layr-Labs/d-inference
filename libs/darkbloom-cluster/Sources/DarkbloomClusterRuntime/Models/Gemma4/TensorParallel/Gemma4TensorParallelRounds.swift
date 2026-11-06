@@ -127,7 +127,9 @@ final class Gemma4TensorParallelRounds {
     }
 
     /// After the prompt (cold or restored): every rank's heads of the two
-    /// source layers at the committed frontier, in one exchange.
+    /// source layers at the committed frontier, exchanged in pieces of at most
+    /// `Gemma4TensorParallelRequestBudget.mirrorExchangePositions` positions
+    /// (the sliding window rides the first), each evaluated before the next.
     func start(check: () throws -> Void) throws {
         let state = session.state
         guard let fullRow = state.rows[fullLayer], let slidingRow = state.rows[slidingLayer],
@@ -139,16 +141,29 @@ final class Gemma4TensorParallelRounds {
         guard full.offset == frontier, sliding.offset == frontier, full.keys.dim(2) == frontier else {
             throw ProbeError("Gemma draft mirror rows differ from the committed frontier")
         }
-        let own = [full.keys, full.values, sliding.keys, sliding.values]
-        let width = own.reduce(0) { $0 + $1.size }
-        let all = exchange(Self.flat(own))
-        var offsets: [[Int]] = [[], [], [], []]
-        for r in 0 ..< ranks {
-            var at = r * width
-            for (index, part) in own.enumerated() { offsets[index].append(at); at += part.size }
+        let piece = Gemma4TensorParallelRequestBudget.mirrorExchangePositions
+        var keys: [MLXArray] = [], values: [MLXArray] = []
+        var slidingWhole: [MLXArray] = []
+        for from in stride(from: 0, to: frontier, by: piece) {
+            let to = min(frontier, from + piece)
+            var own = [full.keys[0..., 0..., from ..< to], full.values[0..., 0..., from ..< to]]
+            if from == 0 { own += [sliding.keys, sliding.values] }
+            let width = own.reduce(0) { $0 + $1.size }
+            let all = exchange(Self.flat(own))
+            var offsets = [[Int]](repeating: [], count: own.count)
+            for r in 0 ..< ranks {
+                var at = r * width
+                for (index, part) in own.enumerated() { offsets[index].append(at); at += part.size }
+            }
+            let whole = own.indices.map { wholeHeads(own: own[$0], all: all, offsets: offsets[$0]) }
+            try MLX.withError { error in eval(whole); try error.check() }
+            try check()
+            keys.append(whole[0]); values.append(whole[1])
+            if from == 0 { slidingWhole = [whole[2], whole[3]] }
         }
-        let whole = own.indices.map { wholeHeads(own: own[$0], all: all, offsets: offsets[$0]) }
-        mirror.start(full: (whole[0], whole[1]), sliding: (whole[2], whole[3]), frontier: frontier)
+        let fullKeys = keys.count == 1 ? keys[0] : concatenated(keys, axis: 2)
+        let fullValues = values.count == 1 ? values[0] : concatenated(values, axis: 2)
+        mirror.start(full: (fullKeys, fullValues), sliding: (slidingWhole[0], slidingWhole[1]), frontier: frontier)
         eval(mirror.evaluationTargets); try check()
     }
 

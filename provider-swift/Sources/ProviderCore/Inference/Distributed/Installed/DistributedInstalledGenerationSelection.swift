@@ -1,4 +1,5 @@
 import DarkbloomClusterProtocol
+import Foundation
 
 /// The saved generation mode as worker arguments, beside the prefill schedule.
 ///
@@ -28,7 +29,24 @@ enum DistributedInstalledGenerationSelection {
             arguments += ["--mtp-depth", String(assistant.depth),
                 ClusterQwenTensorAssistantPolicy.inventoryArgument, assistant.inventorySHA256] + assistant.verificationArguments
         }
+        if mode == .tensorParallel, let gemma = ClusterPublicModels.gemmaTensorAssistant(for: capability) {
+            arguments += try gemmaAssistantArguments(gemma, locate: { SpecDecStore.publishedDirectory(aggregateSHA256: $0) })
+        }
         return arguments
+    }
+
+    /// Gemma tensor parallel's rounds with the assistant this build declares
+    /// public (`ClusterPublicModels.gemmaTensorAssistant`): both members launch
+    /// with its depth and aggregate, each from its own verified copy of the
+    /// catalog artifact. A member without the copy refuses to start, rather
+    /// than start plain against a peer that speculates.
+    static func gemmaAssistantArguments(_ assistant: ClusterPublicGemmaTensorAssistant,
+                                        locate: (String) -> URL?) throws -> [String] {
+        guard let directory = locate(assistant.aggregateSHA256) else {
+            throw ClusterConfigurationError.invalid("Gemma's assistant (catalog artifact \(assistant.aggregateSHA256.prefix(12))) is not downloaded on this Mac yet")
+        }
+        return try ClusterGemmaTensorAssistant.workerArguments(depth: assistant.depth, directory: directory.path,
+                                                               aggregateSHA256: assistant.aggregateSHA256)
     }
 
     /// MiMo tensor parallel's rounds, launched only where the worker's record declares them for the mode.
@@ -76,6 +94,11 @@ struct DistributedInstalledSpeculation: Equatable, Sendable {
     init(configuration: ClusterConfiguration, capability: ClusterRuntimeCapability) {
         if DistributedInstalledGenerationSelection.mimoTensorParallelRounds(mode: configuration.selectedGenerationMode,
                                                                            capability: capability) {
+            self.init(enabled: true, offReason: Self.enabledReason)
+            return
+        }
+        if configuration.selectedGenerationMode == .tensorParallel,
+           ClusterPublicModels.gemmaTensorAssistant(for: capability) != nil {
             self.init(enabled: true, offReason: Self.enabledReason)
             return
         }

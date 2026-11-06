@@ -22,6 +22,10 @@ public struct ClusterPublicModel: Sendable, Equatable {
     /// tensor-parallel placement; nil keeps a setup saved for coordinator
     /// pairing without one.
     public var tensorAssistant: ClusterPublicTensorAssistant? = nil
+    /// Gemma 4's assistant drafter the owner declared public for this
+    /// artifact's tensor-parallel placement (`ClusterPublicGemmaTensorAssistant`);
+    /// nil decodes that placement plain.
+    public var gemmaTensorAssistant: ClusterPublicGemmaTensorAssistant? = nil
 
     /// The evidence placement's ranks: how many, each on one GPU architecture
     /// and macOS version.
@@ -67,6 +71,39 @@ public struct ClusterPublicTensorAssistant: Sendable, Equatable {
         [ClusterQwenTensorAssistantPolicy.schemaName, "depth=\(policy.depth)",
          "\(ClusterQwenTensorAssistantPolicy.inventoryArgument)=\(policy.inventorySHA256)",
          "verification=\(policy.verification.rawValue)", "evidence=\(evidenceSHA256)"]
+    }
+}
+
+/// Gemma 4's assistant drafter declared public for one model's tensor-parallel
+/// placement: the round depth, the pinned assistant artifact (the catalog's
+/// `spec_dec` artifact of the row, by its manifest aggregate) and the evidence
+/// document it rests on, as `ClusterPublicTensorAssistant` declares Qwen's.
+/// Every member of a pair of this build launches both workers with it
+/// (`ClusterGemmaTensorAssistant.workerArguments`, its own local copy of the
+/// artifact), so a coordinator's approval, through the resource policy, names it.
+public struct ClusterPublicGemmaTensorAssistant: Sendable, Equatable {
+    public let depth: Int
+    public let aggregateSHA256: String
+    public let evidenceDocument: String
+    public let evidenceSHA256: String
+    /// RFC 3339: when the evidence was recorded.
+    public let qualifiedAt: String
+
+    public init(depth: Int, aggregateSHA256: String, evidenceDocument: String, evidenceSHA256: String,
+                qualifiedAt: String) throws {
+        guard ClusterGemmaTensorAssistant.depths.contains(depth), ClusterConfigurationSyntax.hash(aggregateSHA256),
+              ClusterConfigurationSyntax.hash(evidenceSHA256), evidenceDocument.hasPrefix("docs/reports/"),
+              evidenceDocument.hasSuffix(".md"), ClusterPairApproval.unixNanoseconds(rfc3339: qualifiedAt) != nil else {
+            throw ClusterConfigurationError.invalid("A public Gemma assistant names its depth, artifact, evidence report, its digest and when it was qualified")
+        }
+        self.depth = depth; self.aggregateSHA256 = aggregateSHA256; self.evidenceDocument = evidenceDocument
+        self.evidenceSHA256 = evidenceSHA256; self.qualifiedAt = qualifiedAt
+    }
+
+    /// What the declaration adds to the resource policy (`DistributedInstalledNativeStart.resourcePolicySHA256`).
+    var resourcePolicyFields: [String] {
+        [ClusterGemmaTensorAssistant.schemaName, "depth=\(depth)",
+         "\(ClusterGemmaTensorAssistant.aggregateArgument)=\(aggregateSHA256)", "evidence=\(evidenceSHA256)"]
     }
 }
 
@@ -195,6 +232,24 @@ public enum ClusterPublicModels {
     /// `tensorAssistant` of a capability record's model and artifact.
     static func tensorAssistant(for capability: ClusterRuntimeCapability) -> ClusterPublicTensorAssistant? {
         tensorAssistant(runtimeModelID: capability.runtimeModelID, artifactSHA256: capability.artifactSHA256)
+    }
+
+    /// The Gemma assistant `models` declare public for a runtime model's
+    /// installed artifact, with tensor parallel among its declared families;
+    /// nil for any other model, artifact or a model declared without one.
+    static func gemmaTensorAssistant(runtimeModelID: String, artifactSHA256: String,
+                                     in models: [ClusterPublicModel] = current) -> ClusterPublicGemmaTensorAssistant? {
+        guard ClusterGemmaTensorAssistant.runtimeModelIDs.contains(runtimeModelID),
+              let model = models.first(where: { $0.runtimeModelID == runtimeModelID }),
+              model.families.contains(.tensorParallel),
+              ClusterPairServingGrants.qualifyingArtifact(for: artifactSHA256, runtimeModelID: runtimeModelID)
+                == model.artifactSHA256 else { return nil }
+        return model.gemmaTensorAssistant
+    }
+
+    /// `gemmaTensorAssistant` of a capability record's model and artifact.
+    static func gemmaTensorAssistant(for capability: ClusterRuntimeCapability) -> ClusterPublicGemmaTensorAssistant? {
+        gemmaTensorAssistant(runtimeModelID: capability.runtimeModelID, artifactSHA256: capability.artifactSHA256)
     }
 }
 

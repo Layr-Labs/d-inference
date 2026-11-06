@@ -34,7 +34,9 @@ import MLXLMCommon
 /// restores the deepest boundary both ranks hold after a sealed vote and
 /// confirmation, or neither does (`Gemma4TensorParallelPrefix`).
 ///
-/// Not yet: speculative decoding and media.
+/// Speculative rounds (`Gemma4TensorParallelRounds`) when launched with the
+/// pinned assistant (`Gemma4TensorParallelAssistantLaunch`), one lane only:
+/// each verified token is the plain loop's. Not yet: media.
 public final class Gemma4TensorParallelResidentRuntime {
     static let planName = Gemma4TensorParallelPlan.name
     /// Bytes the worker keeps for MLX's freed-buffer cache once ready under
@@ -73,6 +75,8 @@ public final class Gemma4TensorParallelResidentRuntime {
     public var capturesLogprobs: Bool { true }
     /// This rank's prompt prefixes, in memory and on its SSD tier.
     let prefix: Gemma4TensorParallelPrefix
+    /// The assistant a request decodes in rounds with; nil decodes plain.
+    let assistant: Gemma4TensorParallelAssistant?
 
     struct Reserved {
         let request: QwenLayerStageGenerationRequest
@@ -94,7 +98,8 @@ public final class Gemma4TensorParallelResidentRuntime {
     public static func load(_ configuration: QwenResidentLoadConfiguration,
                             qualification: QwenResidentQualificationSwitches = .refused,
                             dataPlane credential: ClusterDataPlaneCredential,
-                            prefixSSDKey: Data? = nil) throws -> Gemma4TensorParallelResidentRuntime {
+                            prefixSSDKey: Data? = nil,
+                            assistant launch: Gemma4TensorParallelAssistantLaunch? = nil) throws -> Gemma4TensorParallelResidentRuntime {
         let environment = ProcessInfo.processInfo.environment
         try qualification.admit(environment: environment)
         let kvQuantization = try PagedKVQuantizationSelection.clusterLive(environment)
@@ -120,10 +125,15 @@ public final class Gemma4TensorParallelResidentRuntime {
         guard configuration.prefillSchedule == .serial else {
             throw ProbeError("Gemma tensor parallel prefills every chunk together: the serial schedule only")
         }
+        guard launch == nil || (lanes == 1 && ClusterGemmaTensorAssistant.runtimeModelIDs.contains(admission.runtimeModelID)
+                                && ClusterGemmaTensorAssistant.depths.contains(launch!.depth)) else {
+            throw ProbeError("Gemma tensor-parallel speculative rounds serve one lane of the registered QAT row, depth 1...4")
+        }
         let control = QwenResidentControl(deadline: configuration.deadlineUptimeNanoseconds, lease: configuration.lease)
         try QwenResidentProcessLease.shared.acquire()
         var loadedModel: Gemma4TensorParallelModel?
         var loadedHost: CBv2StageKVHost?
+        var loadedAssistant: Gemma4TensorParallelAssistant?
         weak var retired: Gemma4TensorParallelModel?
         do {
             try control.check(); try QwenResidentResourceEnvironment.require()
@@ -134,7 +144,7 @@ public final class Gemma4TensorParallelResidentRuntime {
             try admission.jaccl.requireInitialized(rank: collective.rank, worldSize: collective.size,
                 transport: collective.transport)
             let terms = Gemma4TensorParallelLoadAgreement(lanes: lanes, kv: kv, kvQuantization: kvQuantization,
-                prefixCache: keepsPrefixes)
+                prefixCache: keepsPrefixes, assistant: launch?.agreementFields ?? [])
             let loadAgreement = try terms.fingerprint(admission: try admission.loadAgreementFingerprint())
             try ClusterDataPlaneAgreement.establish(collective: collective, credential: credential,
                 loadAgreement: loadAgreement, tamper: nil, tensorParallelSeal: true, check: { try control.check() })
@@ -167,11 +177,19 @@ public final class Gemma4TensorParallelResidentRuntime {
                 // capture included) and the rank's own reserve (activation floor, freed-buffer cache,
                 // sealed frames) beside it: the planner's quote.
                 let budget = try requestBudget(contextTokens: profile.maximumContextTokens, admission: admission,
-                    keepsPrefixes: keepsPrefixes)
+                    keepsPrefixes: keepsPrefixes, speculativeDepth: launch?.depth ?? 0)
                 let request = budget.requestBytes
+                // The pinned assistant, verified before its weights are read; its
+                // weights are resident beside the shard's.
+                let drafter = try launch.map { try Gemma4AssistantCheckpoint.loadVerified($0, check: checked) }
                 let value = try autoreleasepool {
                     try Gemma4TensorParallelVerifiedLoad.load(admission, rank: collective.rank, reduction: reduction,
-                        additionalResidentBytes: budget.allowance.reservedBytes, check: checked)
+                        additionalResidentBytes: QwenLongPrefillCheckedBytes.sum([budget.allowance.reservedBytes,
+                            drafter?.payloadBytes ?? 0]), check: checked)
+                }
+                if let drafter, let launch {
+                    loadedAssistant = try Gemma4TensorParallelAssistant(assistant: drafter.model, model: value.model,
+                                                                        depth: launch.depth)
                 }
                 loadedModel = value.model; retired = value.model; receipt = value.receipt
                 value.model.model.freeze()
@@ -212,7 +230,8 @@ public final class Gemma4TensorParallelResidentRuntime {
                     + " shard_bytes=\(value.receipt.shardBytes) source_bytes=\(value.receipt.sourceBytes)"
                     + " tensors=\(value.receipt.sourceTensors) load_ns=\(value.receipt.loadNanoseconds) sealed=1"
                     + " buffer_cache=\(bufferCacheBytes) lanes=\(lanes) paged_kv=\(CBv2PagedDefaults.pageSize)"
-                    + " kv_heads=\(value.model.plan.kvHeadsPerRank.map(String.init).joined(separator: "-"))")
+                    + " kv_heads=\(value.model.plan.kvHeadsPerRank.map(String.init).joined(separator: "-"))"
+                    + " assistant_depth=\(launch?.depth ?? 0) assistant_bytes=\(drafter?.payloadBytes ?? 0)")
                 return request
             }
             guard let model = loadedModel, let host = loadedHost, let receipt else {
@@ -245,10 +264,10 @@ public final class Gemma4TensorParallelResidentRuntime {
                 load: loadAgreement, diskPlanScope: diskPlanScope)
             return Gemma4TensorParallelResidentRuntime(admission: admission, control: control, collective: collective,
                 group: group, codec: codec, model: model, host: host, loadAgreement: loadAgreement, capacity: capacity,
-                linkProbe: probe, shareProbe: shareProbe, lanes: lanes, prefix: prefix)
+                linkProbe: probe, shareProbe: shareProbe, lanes: lanes, prefix: prefix, assistant: loadedAssistant)
         } catch {
             let primary = error
-            control.fail(); loadedHost = nil; loadedModel = nil
+            control.fail(); loadedHost = nil; loadedModel = nil; loadedAssistant = nil
             do {
                 try MLX.withError { nativeError in
                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); Memory.clearCache(); try nativeError.check()
@@ -265,11 +284,12 @@ public final class Gemma4TensorParallelResidentRuntime {
     /// at the allocator's own bound; `keepsPrefixes` charges the prompt-prefix
     /// capture of a prompt of `promptTokens` (the profile's longest by default).
     static func requestBudget(contextTokens: Int, admission: Gemma4ResidentAdmission, chunkTokens: Int? = nil,
-                              promptTokens: Int? = nil, keepsPrefixes: Bool = true) throws -> Gemma4TensorParallelRequestBudget {
+                              promptTokens: Int? = nil, keepsPrefixes: Bool = true,
+                              speculativeDepth: Int = 0) throws -> Gemma4TensorParallelRequestBudget {
         try Gemma4TensorParallelRequestBudget.derive(contextTokens: contextTokens,
             chunkTokens: chunkTokens ?? admission.profile.maximumChunkTokens,
             promptTokens: promptTokens ?? admission.profile.maximumPromptTokens, keepsPrefixes: keepsPrefixes,
-            allocationBound: QwenResidentResourceEnvironment.allocationBound)
+            speculativeDepth: speculativeDepth, allocationBound: QwenResidentResourceEnvironment.allocationBound)
     }
 
     /// What one request of `contextTokens` reserves on a rank: its own KV
@@ -297,9 +317,22 @@ public final class Gemma4TensorParallelResidentRuntime {
     /// its charged part.
     func prefixCharge(_ request: QwenLayerStageGenerationRequest) throws -> (charge: Int, captureLimit: Int, beyond: Int) {
         let budget = try Self.requestBudget(contextTokens: request.maximumTokens, admission: admission,
-            chunkTokens: request.chunkSize, promptTokens: request.promptCount, keepsPrefixes: prefix.scopes(request) != nil)
+            chunkTokens: request.chunkSize, promptTokens: request.promptCount, keepsPrefixes: prefix.scopes(request) != nil,
+            speculativeDepth: assistant?.depth ?? 0)
         let limit = prefix.captureLimit(request, chargedBytes: budget.prefixCaptureBytes)
         return (budget.requestBytes, limit, max(0, limit - budget.prefixCaptureBytes))
+    }
+
+    /// The request log's speculation fields; none for a plain request.
+    static func roundsFields(_ rounds: Gemma4TensorParallelRounds?) -> String {
+        guard let rounds else { return "" }
+        let s = rounds.statistics, depth = rounds.assistant.depth
+        let examined = s.proposedByPosition.prefix(depth).map(String.init).joined(separator: ",")
+        let accepted = s.acceptedByPosition.prefix(depth).map(String.init).joined(separator: ",")
+        var line = " mtp_depth=\(depth) mtp_rounds=\(s.rounds) mtp_plain_rounds=\(s.plainRounds)"
+        line += " mtp_proposed=\(s.proposed) mtp_accepted=\(s.accepted)"
+        line += " mtp_examined_by_position=\(examined) mtp_accepted_by_position=\(accepted)"
+        return line
     }
 
     /// The host memory gate's decision for `bytes` more, as the resident families take it.
@@ -317,10 +350,12 @@ public final class Gemma4TensorParallelResidentRuntime {
     private init(admission: Gemma4ResidentAdmission, control: QwenResidentControl, collective: Collective,
                  group: QwenTensorParallelGroup, codec: QwenTensorParallelSealCodec, model: Gemma4TensorParallelModel,
                  host: CBv2StageKVHost, loadAgreement: String, capacity: Int, linkProbe: ClusterWorkerLinkProbe?,
-                 shareProbe: ClusterWorkerShareProbe?, lanes: Int, prefix: Gemma4TensorParallelPrefix) {
+                 shareProbe: ClusterWorkerShareProbe?, lanes: Int, prefix: Gemma4TensorParallelPrefix,
+                 assistant: Gemma4TensorParallelAssistant?) {
         self.admission = admission; self.control = control; self.collective = collective; self.group = group
         self.codec = codec; self.model = model; self.host = host; self.loadAgreement = loadAgreement
         self.linkProbe = linkProbe; self.shareProbe = shareProbe; self.lanes = lanes; self.prefix = prefix
+        self.assistant = assistant
         baseReady = .init(identity: admission.configuration.identity, rank: collective.rank,
             profile: admission.wireProfile, executionPlanSHA256: admission.plan.fingerprint,
             requestCapacityBytes: capacity, dataPlane: collective.workerDataPlane, linkProbe: linkProbe,
@@ -549,7 +584,9 @@ public final class Gemma4TensorParallelResidentRuntime {
                 }
                 return false
             })
-        let ended = try loop.run(channel: channel, check: checked)
+        let rounds = try assistant.map { try Gemma4TensorParallelRounds(session: session, assistant: $0, choice: choice) }
+        let ended = try rounds.map { try loop.runRounds($0, channel: channel, check: checked) }
+            ?? loop.run(channel: channel, check: checked)
         let tokens = ended.tokens, finish = ended.finish
         try control.check(deadline: deadline)
         if finish == .clientStop && !ended.clientStopped && rank == 0 {
@@ -559,7 +596,8 @@ public final class Gemma4TensorParallelResidentRuntime {
             + " prompt=\(prompt.count) output=\(tokens.count) finish=\(finish.rawValue) sampled=\(choice.gathersRow ? 1 : 0)"
             + " logprobs=\(request.sampler?.wire.capturedLogprobs ?? 0) frames=\(codec.sealedFrames)"
             + " key_generation=\(codec.keyGeneration) kv_tokens=\(session.state.reservedTokens)"
-            + " kv_refused=\(ended.pagesRefused ? 1 : 0) reused=\(session.reusedPrefixTokens)")
+            + " kv_refused=\(ended.pagesRefused ? 1 : 0) reused=\(session.reusedPrefixTokens)"
+            + Self.roundsFields(rounds))
         return QwenResidentGenerationCompletion(requestID: request.requestID, finishReason: finish,
             selectedTokenIDs: tokens, completedFrames: tokens.count, committedTokens: prompt.count + tokens.count,
             tokenChainSHA256: sha256(try canonicalJSONData(tokens.map { String($0) })), bothRequestStatesRetired: true)

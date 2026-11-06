@@ -53,6 +53,23 @@ enum SpecDecStore {
         root.appendingPathComponent(key(forR2Prefix: r2Prefix), isDirectory: true)
     }
 
+    /// The published artifact under `root` whose manifest names `aggregateSHA256`
+    /// (a cluster worker verifies every file before it reads one); nil when none
+    /// is published here. Staging directories and symlinks are skipped.
+    static func publishedDirectory(aggregateSHA256: String, root: URL = defaultRoot()) -> URL? {
+        guard let entries = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isSymbolicLinkKey],
+            options: [.skipsHiddenFiles]) else { return nil }
+        for entry in entries.sorted(by: { $0.path < $1.path }) {
+            guard (try? entry.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true,
+                  let data = try? Data(contentsOf: entry.appendingPathComponent(manifestFileName)),
+                  data.count <= SpecDecLimits.maximumManifestBytes,
+                  let manifest = try? ModelCatalogClient.manifestDecoder.decode(ModelManifest.self, from: data),
+                  manifest.aggregateSHA256.lowercased() == aggregateSHA256 else { continue }
+            return entry
+        }
+        return nil
+    }
+
     static func stagingDirectory(root: URL, r2Prefix: String) -> URL {
         root.appendingPathComponent(
             ".staging-\(key(forR2Prefix: r2Prefix))-\(UUID().uuidString)",

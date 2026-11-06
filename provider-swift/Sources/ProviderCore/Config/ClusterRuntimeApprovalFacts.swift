@@ -296,10 +296,12 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
         // The member's own start computes the same digest from the same declaration (`DistributedInstalledNativeStart`).
         let assistant = ClusterPublicModels.tensorAssistant(runtimeModelID: capability.runtimeModelID,
             artifactSHA256: capability.artifactSHA256, in: publicModels)
+        let gemmaAssistant = ClusterPublicModels.gemmaTensorAssistant(runtimeModelID: capability.runtimeModelID,
+            artifactSHA256: capability.artifactSHA256, in: publicModels)
         return Described(entry: Model(model: artifact.modelID, artifactSHA256: capability.artifactSHA256,
             capabilitySHA256: ClusterConfigurationCodec.sha256(bytes), profileSHA256: capability.profileFingerprint,
             resourcePolicySHA256: NativePairMemberPolicy.hex(DistributedInstalledNativeStart.resourcePolicySHA256(capability,
-                assistant: assistant)),
+                assistant: assistant, gemmaAssistant: gemmaAssistant)),
             pairServingGrant: grant,
             parityQualifications: declared.map { parityQualifications($0, metallibSHA256: metallibSHA256, inputModalities: inputModalities,
                 layers: layerCount(configuration),
@@ -341,10 +343,15 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
             }
             let envelope = ClusterPublicModels.requestEnvelope(inputModalities: inputModalities, servesMedia: servesMedia(placement.mode))
             return declared.schedules.sorted().map { schedule in
-                let assistant = family == .tensorParallel && schedule == Self.assistantSchedule ? declared.tensorAssistant : nil
+                let assisted = family == .tensorParallel && schedule == Self.assistantSchedule
+                let assistant = assisted ? declared.tensorAssistant : nil
+                // Gemma's tensor parallel runs the serial schedule only; its rounds rest on their own evidence.
+                let gemma = assisted ? declared.gemmaTensorAssistant : nil
                 return ParityQualification(schedule: schedule, numericsClasses: classes, cuts: placement.cuts, mode: placement.mode,
-                    promotable: true, diverged: false, evidenceSHA256: assistant?.evidenceSHA256 ?? ClusterPublicModels.evidenceSHA256,
-                    qualifiedAt: assistant?.qualifiedAt ?? ClusterPublicModels.qualifiedAt, requestEnvelope: envelope)
+                    promotable: true, diverged: false,
+                    evidenceSHA256: assistant?.evidenceSHA256 ?? gemma?.evidenceSHA256 ?? ClusterPublicModels.evidenceSHA256,
+                    qualifiedAt: assistant?.qualifiedAt ?? gemma?.qualifiedAt ?? ClusterPublicModels.qualifiedAt,
+                    requestEnvelope: envelope)
             }
         }
     }

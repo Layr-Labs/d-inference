@@ -25,6 +25,9 @@ struct WorkerConfiguration {
     /// Installed policy pins the header inventory before payload reads. Nil
     /// retains the explicit diagnostic depth path without claiming saved policy.
     let tensorAssistantPolicy: ClusterQwenTensorAssistantPolicy?
+    /// Gemma tensor parallel's assistant (`ClusterGemmaTensorAssistant`): its
+    /// local directory and pinned aggregate, with `--mtp-depth`. Nil decodes plain.
+    let gemmaAssistant: (directory: URL, aggregateSHA256: String)?
     /// `--qualification-switches yes`: the explicit test flag without which a
     /// qualification switch in the environment stops the worker at startup.
     /// A private unqualified media owner passes it with its exact profile.
@@ -63,7 +66,8 @@ struct WorkerConfiguration {
         let optionalNames: Set<String> = ["--prefill-schedule", "--evidence-directory", "--startup-deadline-uptime-nanoseconds",
             "--generation-mode", "--qualification-switches", "--keep-warm", "--mtp-depth", "--data-plane",
             "--prefix-ssd-key", "--tensor-shares", "--glm-qualification", "--runtime-profile",
-            ClusterQwenTensorAssistantPolicy.inventoryArgument, ClusterQwenTensorAssistantPolicy.verificationArgument]
+            ClusterQwenTensorAssistantPolicy.inventoryArgument, ClusterQwenTensorAssistantPolicy.verificationArgument,
+            ClusterGemmaTensorAssistant.directoryArgument, ClusterGemmaTensorAssistant.aggregateArgument]
         let bootstrapCounts = [0, WorkerBootstrapConfiguration.names.count, WorkerBootstrapConfiguration.names.count + 1]
         let counts = bootstrapCounts.map { names.count + $0 }.flatMap { required in
             (0...optionalNames.count).map { (required + $0) * 2 }
@@ -182,7 +186,12 @@ struct WorkerConfiguration {
             // MiMo tensor parallel's speculative rounds (the trained heads replicated on both ranks).
             let mimoTensorParallelRounds = generationMode == .tensorParallel && registered?.family == .mimoV26
                 && dataPlaneEncrypted && fields["--runtime-profile"] == nil
-            guard generationMode.usesSpeculativeHead || tensorAssistant || mimoTensorParallelRounds,
+            // Gemma tensor parallel's rounds with the pinned assistant artifact.
+            let gemmaTensorParallelRounds = generationMode == .tensorParallel
+                && fields["--model-id"].map(ClusterGemmaTensorAssistant.runtimeModelIDs.contains) == true
+                && fields[ClusterGemmaTensorAssistant.directoryArgument] != nil && dataPlaneEncrypted
+                && fields["--runtime-profile"] == nil
+            guard generationMode.usesSpeculativeHead || tensorAssistant || mimoTensorParallelRounds || gemmaTensorParallelRounds,
                   let depth = Int(text), String(depth) == text,
                   let terms = try? QwenMTPTerms(depth: depth) else {
                 throw WorkerFailure.invalid("--mtp-depth takes 1...\(QwenMTPTerms.maximumDepth) and only with keyed Qwen TP on a row with an inline head or a speculative generation mode ("
@@ -212,6 +221,21 @@ struct WorkerConfiguration {
                 throw WorkerFailure.invalid("Tensor assistant verification requires its pinned inventory")
             }
             tensorAssistantPolicy = nil
+        }
+        if let directory = fields[ClusterGemmaTensorAssistant.directoryArgument] {
+            let components = directory.split(separator: "/", omittingEmptySubsequences: false)
+            guard let depth = speculativeTerms?.depth, ClusterGemmaTensorAssistant.depths.contains(depth),
+                  generationMode == .tensorParallel, fields[ClusterGemmaTensorAssistant.aggregateArgument] != nil,
+                  directory.hasPrefix("/"), components.dropFirst().allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+                  !directory.utf8.contains(where: { $0 < 32 || $0 == 127 }) else {
+                throw WorkerFailure.invalid("A Gemma tensor assistant requires keyed Gemma TP, --mtp-depth 1...4, its pinned aggregate and a normalized absolute directory")
+            }
+            gemmaAssistant = (URL(fileURLWithPath: directory, isDirectory: true), try hash(ClusterGemmaTensorAssistant.aggregateArgument))
+        } else {
+            guard fields[ClusterGemmaTensorAssistant.aggregateArgument] == nil else {
+                throw WorkerFailure.invalid("A Gemma tensor assistant aggregate requires its directory")
+            }
+            gemmaAssistant = nil
         }
         if let text = fields["--tensor-shares"] {
             let weights = text.split(separator: ":", omittingEmptySubsequences: false).compactMap { Int($0) }

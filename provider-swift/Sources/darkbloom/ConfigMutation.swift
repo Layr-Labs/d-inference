@@ -17,6 +17,15 @@ func withMutableConfig<Result>(
     }
 }
 
+@discardableResult
+func setLocalSettings(
+    configPath: String?,
+    _ change: (inout LocalSettings) -> Void
+) throws -> (path: URL, changed: Bool) {
+    let loaded = try loadRuntimeConfiguration(configPath: configPath)
+    return (loaded.configPath, false)
+}
+
 /// Whether TOML `content` materially sets `key` inside `[section]`.
 ///
 /// Line-oriented: tracks the current table header and matches `key = ...`

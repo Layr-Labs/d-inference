@@ -541,6 +541,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
     public var schedule: ScheduleConfig?
     public var gemmaOptimizations: GemmaOptimizationSettings
     public var cache: CacheSettings
+    public var local: LocalSettings?
 
     public init(
         provider: ProviderSettings,
@@ -549,7 +550,8 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         schedule: ScheduleConfig? = nil,
         gemmaOptimizations: GemmaOptimizationSettings = GemmaOptimizationSettings(),
         cache: CacheSettings = CacheSettings(),
-        cluster: ClusterConfigurationReference? = nil
+        cluster: ClusterConfigurationReference? = nil,
+        local: LocalSettings? = nil
     ) {
         self.provider = provider
         self.backend = backend
@@ -558,6 +560,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         self.gemmaOptimizations = gemmaOptimizations
         self.cache = cache
         self.cluster = cluster
+        self.local = local
     }
 
     enum CodingKeys: String, CodingKey {
@@ -568,6 +571,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         case gemmaOptimizations = "gemma_optimizations"
         case cache
         case cluster
+        case local
     }
 
     public init(from decoder: Decoder) throws {

@@ -357,9 +357,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // first-token or request budget: those start when the queue lets go.
         let origin = acquired.queueExitedAt.map { exited in distributedRequestOrigin.map { max($0, exited) } ?? exited }
             ?? distributedRequestOrigin
-        return try await prepareAcquiredCompletion(
-            request: request, templateControls: templateControls, requestUsage: requestUsage,
-            distributedRequestOrigin: origin, acquired: acquired)
+        // Preparation, on this task or the lease's child task, decodes media.
+        return try await VideoReaderFailureReport.reporting(to: (engineV2Vision ?? .production).emitTelemetry) {
+            try await prepareAcquiredCompletion(
+                request: request, templateControls: templateControls, requestUsage: requestUsage,
+                distributedRequestOrigin: origin, acquired: acquired)
+        }
     }
 
     /// Keep registry/acquisition snapshots out of the parent preparation frame.

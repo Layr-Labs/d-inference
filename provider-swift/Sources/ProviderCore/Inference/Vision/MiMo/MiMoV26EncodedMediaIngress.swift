@@ -86,6 +86,14 @@ enum MiMoV26EncodedMediaIngress {
                     "video audio requires contiguous mono24k LPCM16/Float32 without edits")
             }
         }
+        // Both reader passes failed: a transient decoder fault can pass on another
+        // provider; any other failure is the media's.
+        if let failure = error as? VideoReaderFailure {
+            return failure.isTransient
+                ? MultiModelBatchSchedulerEngineError.requestRejected(
+                    "native media video decoder fault (\(failure)); retry on another provider")
+                : refusal()
+        }
         if let failure = error as? MiMoV26EncodedVisualDecoder.Failure {
             switch failure {
             case .limit,.arithmeticOverflow:

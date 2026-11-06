@@ -56,6 +56,12 @@ extension ProviderLoop {
     func setClusterPairLocalQueueForTesting(maximumWaiting: Int) {
         clusterPairLocalLanes = .init(limits: .init(maximumWaiting: maximumWaiting))
     }
+
+    /// Stops the periodic capacity refresh, one of the events that wakes waiters.
+    func stopClusterPairCapacityRefreshForTesting() {
+        clusterPairCapacityTask?.cancel()
+        clusterPairCapacityTask = nil
+    }
 }
 
 /// A leader member with no coordinator, the way `run()` prepares it, hosting its pair's slot.
@@ -403,6 +409,29 @@ struct ClusterPairLocalTests {
         catch { #expect(localStatus(error) == 503, "\(error)") }
         _ = try? await failing.value
         #expect(await clusterPairWait { await loop.clusterPairSlotSnapshot.id == nil })
+        #expect(await loop.clusterPairLocalCounts == (0, 0, 0))
+    }
+
+    /// A drain (a stop or an update) refuses the waiting local requests at
+    /// once, as it refuses new ones, while the request holding the lane
+    /// finishes. The capacity refresh is off here: the drain alone wakes them.
+    @Test func aDrainRefusesWaitingLocalRequestsAtOnce() async throws {
+        let loop = try await pairLeaderLoop()
+        let owner = ScriptedPairOwner()
+        try await loop.publishClusterPairSlot(clusterPairSpecification(owner), owner: owner)
+        await loop.stopClusterPairCapacityRefreshForTesting()
+        let holder = try await loop.acquireModelForLocal(clusterPairFixtureModel)
+        let waiter = PendingAcquisition(loop)
+        #expect(await clusterPairWait { await loop.clusterPairLocalWaitingCount == 1 })
+        let started = ContinuousClock.now
+        await loop.beginServingDrain(owner: .lifecycle)
+        let refused = await clusterPairWait(.milliseconds(500)) { waiter.finished.value }
+        #expect(refused && ContinuousClock.now - started < .seconds(1), "the drain refuses the waiter itself")
+        if !refused { waiter.task.cancel() }
+        do { _ = try await waiter.task.value; Issue.record("a drain admitted a waiting request") }
+        catch { #expect(localStatus(error) == 429, "\(error)") }
+        #expect(await loop.clusterPairLocalCounts == (0, 1, 1))
+        await holder.releaseToken.fire()
         #expect(await loop.clusterPairLocalCounts == (0, 0, 0))
     }
 

@@ -547,7 +547,7 @@ struct SandboxSetupTests {
             print("== SECOND")
             try await SandboxSetupFlow(options: SandboxSetupOptions(server: "https://sandbox.invalid"),
                                        confirmed: false, addon: .live(), interactiveInput: false,
-                                       terminal: false, color: false).run()
+                                       terminal: false, color: false, waitlist: .approved).run()
             print("== END")
         }
         let output = decodedText(result.standardOutputContent)
@@ -666,7 +666,7 @@ struct SandboxSetupTests {
                     sandbox.remove()
                 }
                 try await SandboxSetupFlow(options: options, confirmed: confirmed, addon: .live(),
-                                           interactiveInput: answer != nil, terminal: false, color: false).run()
+                                           interactiveInput: answer != nil, terminal: false, color: false, waitlist: .approved).run()
             }
         }
         return decodedText(result.standardOutputContent)
@@ -810,7 +810,7 @@ struct SandboxSetupTests {
                                          at: sandbox.sandboxAddonRoot)
             try await SandboxSetupFlow(options: SandboxSetupOptions(server: "https://sandbox.invalid"),
                                        confirmed: false, addon: .live(), interactiveInput: false,
-                                       terminal: false, color: false).run()
+                                       terminal: false, color: false, waitlist: .approved).run()
         }
         #expect(decodedText(result.standardOutputContent).hasSuffix(Self.changeHint
             + "Could not check whether this Mac now fits other slot counts: Could not download the Darkbloom Sandbox "

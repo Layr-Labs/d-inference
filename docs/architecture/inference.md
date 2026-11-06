@@ -4843,7 +4843,10 @@ stops, cancellations and retirements.
 - Prompt. Each chunk runs through the product's CBv2 entry
   (`Gemma4TextModel.cbv2Prefill`, whose last layer keeps only the row it
   projects) under the registered prompt policy (`Gemma4PrefillProjectionScope`),
-  on the request's chunk grid.
+  on the request's chunk grid. A rank computes the chunk's experts in one shared
+  dispatch per projection (`SwitchGLU.expertRowsByRow`: gathers never hinted as
+  sorted, so each (token, expert) pair stays the M=1 product its own call
+  computes) before the same packed collective of all 9 rows per token.
 - Decode. One evaluation per step, with 100-operation command buffers. The
   step is submitted layer by layer as the host builds it
   (`Gemma4LayerSubmission`; evaluation order only). Lanes decode in one

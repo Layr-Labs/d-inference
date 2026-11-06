@@ -1,0 +1,54 @@
+--- a/Gemma4BenchmarkEntry.swift
++++ b/Gemma4BenchmarkEntry.swift
+@@ -6,17 +6,24 @@
+ @_spi(ClusterTesting) public enum GemmaResidentBenchmark {
+     public static func run(arguments: [String]) throws -> Data {
+         guard arguments.count == 2, ["--describe", "--check-arguments", "--execute", "--qualify-mtp-state",
+-            "--describe-local-mtp", "--execute-local-mtp", "--qualify-mtp-conditioning"].contains(arguments[0]) else {
++            "--describe-local-mtp", "--execute-local-mtp", "--qualify-mtp-conditioning",
++            "--describe-remote-mtp", "--execute-remote-mtp"].contains(arguments[0]) else {
+             throw ProbeError("Use --describe|--check-arguments|--execute with one Gemma resident benchmark job")
+         }
++        let remote: Gemma4RemoteMTPInput?
++        if ["--describe-remote-mtp", "--execute-remote-mtp"].contains(arguments[0]) {
++            remote = try Gemma4RemoteMTPInput(url:URL(fileURLWithPath:arguments[1]))
++        } else { remote = nil }
+         let local: Gemma4LocalMTPInput?
+         if ["--describe-local-mtp", "--execute-local-mtp", "--qualify-mtp-conditioning"].contains(arguments[0]) {
+             local = try Gemma4LocalMTPInput(url: URL(fileURLWithPath: arguments[1]),
+                 qualifyConditioning: arguments[0] == "--qualify-mtp-conditioning")
+         } else { local = nil }
+         let input: Gemma4BenchmarkInput
+-        if let local { input = local.benchmark }
++        if let remote { input = remote.benchmark }
++        else if let local { input = local.benchmark }
+         else { input = try Gemma4BenchmarkInput(job: Gemma4BenchmarkJob.read(URL(fileURLWithPath: arguments[1]))) }
++        if arguments[0] == "--describe-remote-mtp" { return try remote!.description() }
+         if arguments[0] == "--describe-local-mtp" { return try local!.description() }
+         if ["--describe", "--check-arguments"].contains(arguments[0]) { return try input.description() }
+         let (deadline, overflow) = DispatchTime.now().uptimeNanoseconds.addingReportingOverflow(
+@@ -47,6 +54,13 @@
+             do {
+                 try freshCheck()
+                 let bytes: Data = try autoreleasepool {
++                    if let remote {
++                        let group = try Collective(transport:.jaccl)
++                        releasedGroup = group
++                        let sidecars = try Gemma4BenchmarkSidecars(directory:input.job.outputDirectory)
++                        return try Gemma4RemoteMTPRuntime.execute(remote,deadline:deadline,group:group,sidecars:sidecars,
++                            guardMetrics:guardMetrics,check:check)
++                    }
+                     if let local {
+                         let sidecars = try Gemma4BenchmarkSidecars(directory: input.job.outputDirectory)
+                         return try Gemma4LocalMTPRuntime.execute(local, deadline: deadline, sidecars: sidecars,
+@@ -71,8 +85,8 @@
+                       var report = try JSONSerialization.jsonObject(with: bytes) as? [String: Any] else {
+                     throw ProbeError("Gemma benchmark release/report validation failed")
+                 }
+-                report["collectiveCreated"] = input.job.rank != nil
+-                report["collectiveReleased"] = input.job.rank != nil
++                report["collectiveCreated"] = remote != nil || input.job.rank != nil
++                report["collectiveReleased"] = remote != nil || input.job.rank != nil
+                 report["nativeCacheBytesAfterRelease"] = Memory.cacheMemory
+                 report["guardMetrics"] = try JSONSerialization.jsonObject(with: canonicalJSONData(guardMetrics.snapshot()))
+                 report["guardObservationPolicy"] = Gemma4BenchmarkGuardInvocation.schema

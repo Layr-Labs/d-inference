@@ -1,0 +1,52 @@
+--- a/build_binding.py
++++ b/build_binding.py
+@@ -14,6 +14,25 @@
+     raw=path.read_bytes();sha=hashlib.sha256(raw).hexdigest()
+     if wanted is not None:require(sha==pin(wanted),'Receipt SHA256 changed')
+     return parse(raw),dict(path=str(path),bytes=len(raw),sha256=sha)
++
++def source_package(packages,name,reference):
++    require(type(packages) is list and len(packages)<=100,'Bounded source package list')
++    require(all(type(row) is dict and type(row.get('name')) is str for row in packages),'Source package records')
++    names=[row['name'] for row in packages]
++    require(len(names)==len(set(names)),'Duplicate source package name')
++    matched=[row for row in packages if row['name']==name]
++    require(len(matched)==1,'Required expert package identity')
++    row=matched[0]
++    require(set(row) in ({'name','integrationSHA256'},{'name','integrationSHA256','manifestSHA256'}),
++            'Unexpected source package metadata')
++    require(row['integrationSHA256']==reference['sha256'],'Expert integration identity')
++    if 'manifestSHA256' in row:
++        require(row['manifestSHA256']==reference.get('manifestSHA256'),'Expected expert manifest identity')
++        manifest,_=read(Path(reference['path']).parent/'manifest.json',row['manifestSHA256'])
++        require(type(manifest.get('files')) is list,'Expert source manifest members')
++        member=[item for item in manifest['files'] if item.get('path')==Path(reference['path']).name]
++        require(len(member)==1 and member[0]['sha256']==reference['sha256']
++                and member[0]['bytes']==Path(reference['path']).stat().st_size,'Manifest must bind exact integration')
+ 
+ def compose(axis,rdma,sources):
+     inputs,_=read(ROOT/'binding-inputs.json')
+@@ -40,7 +59,7 @@
+         same(by_path.get(path),row,'Actual composed expert source binding')
+     packages=source['sourcePackages']
+     for key,name,_ in overlays:
+-        require(dict(name=name,integrationSHA256=inputs[key]['sha256']) in packages,'Expert package identity')
++        source_package(packages,name,inputs[key])
+     products=[]
+     for name,reference in zip(inputs['products'],[axis,rdma]):
+         receipt,receipt_pin=read(reference['path'],reference['sha256'])
+--- a/binding-inputs.json
++++ b/binding-inputs.json
+@@ -1,10 +1,12 @@
+ {
+   "binaryDirectory": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/darkbloom-cluster-worker/.build-native-worker/arm64-apple-macosx/release",
+   "descriptionSource": {
++    "manifestSHA256": "ed9ee5cfa7e0357d6f003c9553204425d40c6ac8fabaf5656dcdda0ede13748e",
+     "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-expert-prefill-description-20260920/integration.json",
+     "sha256": "59115464bb9906de761210243baf9dfa044a2104daf3528eafcf61966132490c"
+   },
+   "prefillSource": {
++    "manifestSHA256": "96b09205616dc075d0efb09c6962a630f7e88ba14ee8a7b76e6613fe34b44a06",
+     "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-expert-prefill-bound-20260920/integration.json",
+     "sha256": "13b9d67c161a84c58dda2472d4a61b6019376d132aebac7bae6d47b517d4bc6e"
+   },

@@ -1,0 +1,55 @@
+{
+  "schema": "gemma4_o128_description_correction_sources_v1",
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 2824,
+      "sha256": "82158f031db95449ebc697f7d09303b393f0de46952447415b55e50466fc2f42"
+    },
+    {
+      "path": "Runtime/Gemma4BenchmarkInput.swift",
+      "bytes": 9873,
+      "sha256": "a1f8641abfbbd6e4fb71bcd8cc094cf6dff144ab693680c8e79c7f555542ac56"
+    },
+    {
+      "path": "Tests/Gemma4ForwardTarget.swift",
+      "bytes": 83,
+      "sha256": "fdddb123f659c5e4b9020ef9d686b9189b2626186d65b60b7bb8cdd704141e24"
+    },
+    {
+      "path": "Tests/SelectionChecks.swift",
+      "bytes": 2095,
+      "sha256": "0da329ce86b5ad0b0428c423779537a864b3c7757e864a3c15d077b8aff2537a"
+    },
+    {
+      "path": "Tests/selection.txt",
+      "bytes": 144,
+      "sha256": "fa38b653374fa4a0137a99bbae36525c614c4f98ae38bff83b3a05da95eca950"
+    },
+    {
+      "path": "compose.py",
+      "bytes": 3937,
+      "sha256": "075b34c884e4c3e6d9a32e2b16edb10d0b999e34302a278027ca74b6587f660a"
+    },
+    {
+      "path": "expected-sources.json",
+      "bytes": 26757,
+      "sha256": "a33e73657b659137b2505e0837020399541843f39b4de179cb6f086e1d50c87a"
+    },
+    {
+      "path": "integration.json",
+      "bytes": 2753,
+      "sha256": "7b752d811513dc14621812da1f12758fdfa2d9dd00404532d65b48118271d9b0"
+    },
+    {
+      "path": "preimages/Gemma4BenchmarkInput.swift",
+      "bytes": 9613,
+      "sha256": "88462d3838ad45d3207f744ecfc85c23bbec40a01bdc8956543764e6a49df07f"
+    },
+    {
+      "path": "runtime.patch",
+      "bytes": 985,
+      "sha256": "7af82bf93cdb8e1870c54bebef06d8c568b64252fde3301d52ea8cefeeb65c8b"
+    }
+  ]
+}

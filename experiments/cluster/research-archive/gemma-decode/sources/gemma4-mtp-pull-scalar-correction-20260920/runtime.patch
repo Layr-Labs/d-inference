@@ -1,0 +1,17 @@
+--- a/Gemma4MTPPullQualificationSupport.swift
++++ b/Gemma4MTPPullQualificationSupport.swift
+@@ -35,10 +35,10 @@
+         // Integer-valued BF16 roots give an independent exact comparison after
+         // the actual seven transfers, including full-head concatenations.
+         return .init(frontier:frontier,hidden:MLXArray.ones([1,1,2816],dtype:.bfloat16),
+-            fullKeys:MLXArray.full([1,2,frontier,512],values:2,dtype:.bfloat16),
+-            fullValues:MLXArray.full([1,2,frontier,512],values:3,dtype:.bfloat16),
+-            slidingKeys:MLXArray.full([1,8,min(frontier,1024),256],values:4,dtype:.bfloat16),
+-            slidingValues:MLXArray.full([1,8,min(frontier,1024),256],values:5,dtype:.bfloat16))
++            fullKeys:MLXArray.full([1,2,frontier,512],values:MLXArray(2),dtype:.bfloat16),
++            fullValues:MLXArray.full([1,2,frontier,512],values:MLXArray(3),dtype:.bfloat16),
++            slidingKeys:MLXArray.full([1,8,min(frontier,1024),256],values:MLXArray(4),dtype:.bfloat16),
++            slidingValues:MLXArray.full([1,8,min(frontier,1024),256],values:MLXArray(5),dtype:.bfloat16))
+     }
+     static func requireContents(_ capture: Gemma4OwnedMTPConditioning, check: () throws -> Void) throws {
+         for (array,value) in zip(capture.evaluationRoots,[1,2,3,4,5]) {

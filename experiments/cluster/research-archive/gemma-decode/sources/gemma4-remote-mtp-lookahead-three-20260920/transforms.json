@@ -1,0 +1,149 @@
+{
+  "schema": "gemma4_producer_credit_three_transforms_v1",
+  "files": {
+    "AsyncMTPProposalLedger.swift": [
+      {
+        "before": "    let maximumDraftTokens: Int\n",
+        "after": "    let maximumDraftTokens: Int\n    let maximumProducerGrantTokens: Int\n"
+      },
+      {
+        "before": "        return min(maximumDraftTokens, maximumBufferedProposals - branch.proposals.count,\n",
+        "after": "        return min(maximumProducerGrantTokens, maximumBufferedProposals - branch.proposals.count,\n"
+      },
+      {
+        "before": "         maximumDraftTokens: Int, maximumInputFrontier: Int, vocabularySize: Int) throws {\n",
+        "after": "         maximumDraftTokens: Int, maximumInputFrontier: Int, vocabularySize: Int,\n         maximumProducerGrantTokens: Int? = nil) throws {\n        let producerLimit = maximumProducerGrantTokens ?? maximumDraftTokens\n"
+      },
+      {
+        "before": "        guard hashes.allSatisfy(Self.isSHA), [2, 4, 8].contains(maximumDraftTokens),\n",
+        "after": "        guard hashes.allSatisfy(Self.isSHA), [2, 4, 8].contains(maximumDraftTokens),\n              producerLimit == maximumDraftTokens || (maximumDraftTokens == 2 && producerLimit == 3),\n"
+      },
+      {
+        "before": "        self.maximumDraftTokens = maximumDraftTokens; self.vocabularySize = vocabularySize\n",
+        "after": "        self.maximumDraftTokens = maximumDraftTokens; self.vocabularySize = vocabularySize\n        self.maximumProducerGrantTokens = producerLimit\n"
+      }
+    ],
+    "Gemma4RemoteMTPInput.swift": [
+      {
+        "before": "    let schema: String, role: String\n",
+        "after": "    let schema: String, role: String\n    let producerCreditPolicy: String?\n"
+      },
+      {
+        "before": "        guard schema == \"gemma4_remote_mtp_cohort_job_v1\", [\"target\",\"assistant\"].contains(role),\n",
+        "after": "        guard schema == \"gemma4_remote_mtp_cohort_job_v1\", [\"target\",\"assistant\"].contains(role),\n              producerCreditPolicy == nil || producerCreditPolicy == Gemma4MTPProducerCreditPolicy.threeForDepthTwo.rawValue,\n"
+      },
+      {
+        "before": "    let verificationDepth: Gemma4RemoteMTPDepth\n",
+        "after": "    let verificationDepth: Gemma4RemoteMTPDepth\n    let producerCreditPolicy: Gemma4MTPProducerCreditPolicy\n"
+      },
+      {
+        "before": "        self.verificationDepth = verificationDepth\n",
+        "after": "        self.verificationDepth = verificationDepth\n        let producerCreditPolicy = try Gemma4MTPProducerCreditPolicy(explicit:job.producerCreditPolicy,verificationDepth:verificationDepth.maximumDraftTokens)\n        self.producerCreditPolicy = producerCreditPolicy\n"
+      },
+      {
+        "before": "            + (local.targetProjectionPolicy.map",
+        "after": "            + producerCreditPolicy.scopeComponents\n            + (local.targetProjectionPolicy.map"
+      },
+      {
+        "before": "        if let policy = local.targetProjectionPolicy { report[\"targetProjectionPolicy\"] = policy }\n",
+        "after": "        if let policy = local.targetProjectionPolicy { report[\"targetProjectionPolicy\"] = policy }\n        if producerCreditPolicy == .threeForDepthTwo {\n            report[\"producerCreditPolicy\"] = producerCreditPolicy.rawValue\n            report[\"maximumProducerCredit\"] = 3\n            report[\"maximumNativeProducerBatch\"] = 2\n            report[\"threeCreditBatchSequence\"] = [2,1]\n        }\n"
+      }
+    ],
+    "Gemma4RemoteMTPDriver.swift": [
+      {
+        "before": "                    initialSeed:selected.last!,maximumInputFrontier:request.finalCommittedTokens)\n",
+        "after": "                    initialSeed:selected.last!,maximumInputFrontier:request.finalCommittedTokens,\n                    producerCreditPolicy:input.producerCreditPolicy)\n"
+      }
+    ],
+    "Gemma4MTPPullTarget.swift": [
+      {
+        "before": "    private let channel: Gemma4MTPPullChannel\n",
+        "after": "    private let channel: Gemma4MTPPullChannel\n    private let producerCreditPolicy: Gemma4MTPProducerCreditPolicy\n"
+      },
+      {
+        "before": "         initialFrontier: Int, initialSeed: Int, maximumInputFrontier: Int) throws {\n",
+        "after": "         initialFrontier: Int, initialSeed: Int, maximumInputFrontier: Int,\n         producerCreditPolicy: Gemma4MTPProducerCreditPolicy = .legacy) throws {\n"
+      },
+      {
+        "before": "            inputFrontier:initialFrontier,seed:initialSeed,maximumInputFrontier:maximumInputFrontier)\n",
+        "after": "            inputFrontier:initialFrontier,seed:initialSeed,maximumInputFrontier:maximumInputFrontier,\n            maximumProducerGrantTokens:producerCreditPolicy.maximumProducerGrantTokens)\n"
+      },
+      {
+        "before": "        self.channel = channel; ledger = mirror.ledger; highestProduced = initialFrontier\n",
+        "after": "        self.channel = channel; ledger = mirror.ledger; highestProduced = initialFrontier\n        self.producerCreditPolicy = producerCreditPolicy\n"
+      },
+      {
+        "before": "                if ledger.proposalCredit > 0 { try grant(min(2,ledger.proposalCredit),check:checked) }\n",
+        "after": "                if ledger.proposalCredit > 0 {\n                    try grant(producerCreditPolicy.lookaheadCount(availableCredit:ledger.proposalCredit),check:checked)\n                }\n"
+      }
+    ],
+    "Gemma4MTPPullAssistant.swift": [
+      {
+        "before": "    private let channel: Gemma4MTPPullChannel\n",
+        "after": "    private let channel: Gemma4MTPPullChannel\n    private let producerCreditPolicy: Gemma4MTPProducerCreditPolicy\n"
+      },
+      {
+        "before": "         conditioning: Gemma4MTPConditioning, auxiliary: Gemma4MTPAuxiliaryOwner) throws {\n",
+        "after": "         conditioning: Gemma4MTPConditioning, auxiliary: Gemma4MTPAuxiliaryOwner,\n         producerCreditPolicy: Gemma4MTPProducerCreditPolicy = .legacy) throws {\n"
+      },
+      {
+        "before": "        worker = try .init(assistant:assistant,conditioning:conditioning,auxiliary:auxiliary)\n",
+        "after": "        self.producerCreditPolicy = producerCreditPolicy\n        worker = try .init(assistant:assistant,conditioning:conditioning,auxiliary:auxiliary,producerCreditPolicy:producerCreditPolicy)\n"
+      },
+      {
+        "before": "                            inputFrontier:initialFrontier,seed:command.seed,maximumInputFrontier:auxiliary.budget.maximumFrontier)\n",
+        "after": "                            inputFrontier:initialFrontier,seed:command.seed,maximumInputFrontier:auxiliary.budget.maximumFrontier,\n                            maximumProducerGrantTokens:producerCreditPolicy.maximumProducerGrantTokens)\n"
+      }
+    ],
+    "Gemma4RemoteMTPAssistantRuntime.swift": [
+      {
+        "before": "                        initialFrontier:request.promptCount+1,assistant:assistant.model,conditioning:conditioning,auxiliary:auxiliary)\n",
+        "after": "                        initialFrontier:request.promptCount+1,assistant:assistant.model,conditioning:conditioning,auxiliary:auxiliary,\n                        producerCreditPolicy:input.producerCreditPolicy)\n"
+      }
+    ],
+    "Gemma4MTPPullMirror.swift": [
+      {
+        "before": "         maximumInputFrontier: Int) throws {\n",
+        "after": "         maximumInputFrontier: Int, maximumProducerGrantTokens: Int = 2) throws {\n"
+      },
+      {
+        "before": "            maximumDraftTokens: 2, maximumInputFrontier: maximumInputFrontier, vocabularySize: 262_144)\n",
+        "after": "            maximumDraftTokens: 2, maximumInputFrontier: maximumInputFrontier, vocabularySize: 262_144,\n            maximumProducerGrantTokens:maximumProducerGrantTokens)\n"
+      }
+    ],
+    "Gemma4MTPPullBatchOwner.swift": [
+      {
+        "before": "import Cmlx\n",
+        "after": "import Cmlx\nimport Foundation\n"
+      },
+      {
+        "before": "    private let auxiliary: Gemma4MTPAuxiliaryOwner\n",
+        "after": "    private let auxiliary: Gemma4MTPAuxiliaryOwner\n    private let producerCreditPolicy: Gemma4MTPProducerCreditPolicy\n    private var finalBatchCount: Int?\n    private var expectedTokenCount = 0\n"
+      },
+      {
+        "before": "         auxiliary: Gemma4MTPAuxiliaryOwner) throws {\n",
+        "after": "         auxiliary: Gemma4MTPAuxiliaryOwner, producerCreditPolicy: Gemma4MTPProducerCreditPolicy = .legacy) throws {\n"
+      },
+      {
+        "before": "        self.assistant = assistant; self.conditioning = conditioning; self.auxiliary = auxiliary\n",
+        "after": "        self.assistant = assistant; self.conditioning = conditioning; self.auxiliary = auxiliary\n        self.producerCreditPolicy = producerCreditPolicy\n"
+      },
+      {
+        "before": "        try check(); try auxiliary.requireGrant(count:grant.count,capture:capture)\n        pending = try branch.build(grantedCount:grant.count)\n",
+        "after": "        let batches = try producerCreditPolicy.nativeBatchCounts(for:grant.count)\n        expectedTokenCount = grant.count; finalBatchCount = batches.count == 2 ? batches[1] : nil\n        try check(); try auxiliary.requireGrant(count:batches[0],capture:capture)\n        pending = try branch.build(grantedCount:batches[0])\n"
+      },
+      {
+        "before": "    func execute(check: () throws -> Void) throws -> [Int] {\n",
+        "after": "    func execute(check: () throws -> Void) throws -> [Int] {\n        // All ordinary <=2 credits keep the original execution body unchanged.\n        guard expectedTokenCount == 3 else { return try executeSingle(check:check) }\n        do {\n            guard producerCreditPolicy == .threeForDepthTwo, finalBatchCount == 1,\n                  pending?.count == 2, !failed, !submitted, !completed else {\n                throw ProbeError(\"Remote split credit has no exact first batch\")\n            }\n            // Only CPU IDs leave this autorelease scope. The branch deliberately\n            // retains its now-evaluated last token/hidden as continuation inputs.\n            var tokens = try autoreleasepool { try executeSingle(check:check) }\n            guard completed, tokens.count == 2, let branch, let capture else {\n                throw ProbeError(\"Remote first sub-batch did not complete exactly\")\n            }\n            // executeSingle has joined both streams, checked C status, read back\n            // IDs, and freed its C vector. Drop its owned concat before build(1).\n            pending = nil; submitted = false; completed = false; finalBatchCount = nil\n            try check(); try auxiliary.requireGrant(count:1,capture:capture)\n            pending = try branch.build(grantedCount:1)\n            try check()\n            tokens += try autoreleasepool { try executeSingle(check:check) }\n            guard completed, tokens.count == expectedTokenCount else {\n                throw ProbeError(\"Remote split result differs from exact credit\")\n            }\n            return tokens\n        } catch { failed = true; auxiliary.poison(); throw error }\n    }\n    private func executeSingle(check: () throws -> Void) throws -> [Int] {\n"
+      },
+      {
+        "before": "        pending = nil; submitted = false; completed = false\n",
+        "after": "        pending = nil; submitted = false; completed = false\n        finalBatchCount = nil; expectedTokenCount = 0\n"
+      },
+      {
+        "before": "        pending = nil; branch = nil; capture = nil; identity = nil\n        submitted = false; completed = false\n",
+        "after": "        pending = nil; branch = nil; capture = nil; identity = nil\n        submitted = false; completed = false\n        finalBatchCount = nil; expectedTokenCount = 0\n"
+      }
+    ]
+  }
+}

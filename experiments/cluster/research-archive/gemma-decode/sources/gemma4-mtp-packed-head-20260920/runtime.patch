@@ -1,0 +1,146 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/GemmaSmallDenseQMV.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/GemmaSmallDenseQMV.swift
+@@ -32,6 +32,25 @@
+             grid:(64,g.n/8,1),threadGroup:(64,1,1),
+             outputShapes:[[x.dim(0),g.n]],outputDTypes:[x.dtype])[0]
+     }
++    /// Separate registered-head experiment. It does NOT extend `geometries`
++    /// or the qualified108-case primitive fixture. The original target owner
++    /// already owns these exact loaded weights and head/metadata allowances.
++    /// Reuses the unchanged packed M1 dot/lane order; full model rows and state
++    /// must qualify independently before this mode may serve as an MTP policy.
++    static func projectRegisteredTiedHead(_ x: MLXArray, weight: MLXArray,
++                                         scales: MLXArray, biases: MLXArray) throws -> MLXArray {
++        let g = Geometry(k:2816,n:262_144,bits:4)
++        guard x.ndim == 2, (2...3).contains(x.dim(0)), x.dim(1) == g.k,
++              [DType.bfloat16,.float32].contains(x.dtype), weight.dtype == .uint32,
++              scales.dtype == x.dtype, biases.dtype == x.dtype,
++              weight.shape == [g.n,352], scales.shape == [g.n,44],
++              biases.shape == scales.shape else { throw ProbeError("Packed tied-head scope differs") }
++        return kernel([x,weight,scales,biases],
++            template:[("T",x.dtype),("K",g.k),("N",g.n),("M",x.dim(0)),
++                      ("VPT",g.valuesPerLane),("Bits",g.bits),("TokenRows",false)],
++            grid:(64,g.n/8,1),threadGroup:(64,1,1),
++            outputShapes:[[x.dim(0),g.n]],outputDTypes:[x.dtype])[0]
++    }
+     static func ordinary(_ x: MLXArray, weight: MLXArray, scales: MLXArray,
+                          biases: MLXArray, bits: Int) -> MLXArray {
+         quantizedMM(x,weight,scales:scales,biases:biases,transpose:true,
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPDenseProjection.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPDenseProjection.swift
+@@ -8,8 +8,12 @@
+ /// owns no model, request, cache, allocator or transport lifetime.
+ final class Gemma4MTPDenseProjection {
+     static let policy = "gemma4_verification_packed_m1_dense_serial_head_v1"
++    static let packedHeadPolicy = "gemma4_verification_packed_m1_dense_packed_head_v1"
++    enum HeadPolicy: Equatable { case serialM1, packedM1 }
++    private let headPolicy: HeadPolicy
++    var activePolicy: String { headPolicy == .serialM1 ? Self.policy : Self.packedHeadPolicy }
+     struct Summary: Encodable {
+-        let policy = Gemma4MTPDenseProjection.policy
++        let policy: String
+         let expectedDenseModules: Int
+         let expectedTiedHeads = 1
+         let serialHeadLogicalBytes = 4 * 1_048_576
+@@ -20,10 +24,12 @@
+     private let resources: Gemma4MTPRemoteTargetResources
+     private let denseModules: Set<ObjectIdentifier>
+     private let tiedHead: ObjectIdentifier
+-    var summary: Summary { .init(expectedDenseModules: denseModules.count) }
++    var summary: Summary { .init(policy: activePolicy, expectedDenseModules: denseModules.count) }
+ 
+-    init(model: Gemma4Model, resources: Gemma4MTPRemoteTargetResources) throws {
++    init(model: Gemma4Model, resources: Gemma4MTPRemoteTargetResources,
++         headPolicy: HeadPolicy = .serialM1) throws {
+         try resources.requireSerialTargetHead()
++        self.headPolicy = headPolicy
+         let leaves = model.textModel.leafModules().flattened().map { $0.1 }
+         let dense = leaves.compactMap { $0 as? QuantizedLinear }
+         let heads = leaves.compactMap { $0 as? QuantizedEmbedding }
+@@ -86,6 +92,13 @@
+                 // than creating width copies of each 262144x44 F32 array.
+                 let headScales = request.scales.asType(input.dtype)
+                 let headBiases = biases.asType(input.dtype)
++                if self.headPolicy == .packedM1 {
++                    // Keep every original head/cast/partial-row reservation.
++                    // Only this separately named experiment changes projection.
++                    return try GemmaSmallDenseQMV.projectRegisteredTiedHead(input,
++                        weight: request.weight, scales: headScales, biases: headBiases)
++                        .reshaped([1,width,262_144])
++                }
+                 let rows = (0..<width).map { index in
+                     quantizedMM(input[index..<(index+1),0...], request.weight,
+                         scales: headScales, biases: headBiases, transpose: true,
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4TargetWidthIsolation.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4TargetWidthIsolation.swift
+@@ -218,7 +218,7 @@
+                 let evidence = Gemma4TargetWidthIsolationEvidence(ordinal: input.ordinal,
+                     requestID: input.request.requestID.uuidString.lowercased(), ordinaryRequestScopeSHA256: input.scopeSHA256, mode: mode,
+                     projectionPolicy: denseProjection == nil ? nil :
+-                        (mode == .ordinary || mode == .verificationOne ? "ordinary_m1_bypass" : Gemma4MTPDenseProjection.policy),
++                        (mode == .ordinary || mode == .verificationOne ? "ordinary_m1_bypass" : denseProjection!.activePolicy),
+                     requestSHA256: input.request.fingerprint, forcedInputSequence: Array(reference.prefix(15)),
+                     actualTargetArgmax: actual, expectedGreedyIDs: reference,
+                     allArgmaxMatchReference: actual == reference, checkpointFrontier: 132,
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4TargetWidthRuntime.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4TargetWidthRuntime.swift
+@@ -47,11 +47,13 @@
+         }
+     }
+ 
+-    static func execute(_ input: Gemma4BenchmarkInput, denseProjectionEnabled: Bool = false, deadline: UInt64,
++    static func execute(_ input: Gemma4BenchmarkInput, denseProjectionEnabled: Bool = false,
++        packedHeadEnabled: Bool = false, deadline: UInt64,
+         sidecars: Gemma4BenchmarkSidecars, guardMetrics: Gemma4BenchmarkGuardMetrics,
+         check: (Gemma4BenchmarkGuardObservation?) throws -> Void
+     ) throws -> Data {
+         try validate(input)
++        guard !packedHeadEnabled || denseProjectionEnabled else { throw ProbeError("Packed head requires explicit dense scope") }
+         weak var releasedModel: Module?
+         return try withoutActuallyEscaping(check) { borrowedCheck in
+             try MLX.withError { native in
+@@ -114,7 +116,8 @@
+                         let denseProjection: Gemma4MTPDenseProjection?
+                         if denseProjectionEnabled {
+                             guard case .full(let full) = loaded.model else { throw ProbeError("Dense scope requires full target") }
+-                            denseProjection = try Gemma4MTPDenseProjection(model: full, resources: extra)
++                            denseProjection = try Gemma4MTPDenseProjection(model: full, resources: extra,
++                                headPolicy: packedHeadEnabled ? .packedM1 : .serialM1)
+                         } else { denseProjection = nil }
+                         projectionSummary = denseProjection?.summary
+                         var samples: [Gemma4TargetWidthIsolationEvidence] = []
+@@ -188,7 +191,7 @@
+                         "reference=" + reference.requestSHA256, "tokens=" + tokenHash,
+                         "checkpoint=132", "assistant=false", "performance=false"]
+                         + modes.map(\.rawValue)
+-                        + (denseProjectionEnabled ? [Gemma4MTPDenseProjection.policy] : [])).joined(separator: "\n").utf8))
++                        + (projectionSummary.map { [$0.policy] } ?? [])).joined(separator: "\n").utf8))
+                     return try canonicalJSONData(Gemma4TargetWidthCohortReport(benchmarkJob: input.job,
+                         ordinaryInputScopeSHA256: input.scopeSHA256, scopeSHA256: scope,
+                         planSHA256: input.plan.fingerprint, sourceLoad: execution.0,
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkEntry.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkEntry.swift
+@@ -5,7 +5,7 @@
+ /// Private bounded benchmark only. No Provider registration or serving catalog.
+ @_spi(ClusterTesting) public enum GemmaResidentBenchmark {
+     public static func run(arguments: [String]) throws -> Data {
+-        guard arguments.count == 2, ["--describe", "--check-arguments", "--execute", "--qualify-mtp-state", "--qualify-mtp-target-width", "--qualify-mtp-target-width-dense",
++        guard arguments.count == 2, ["--describe", "--check-arguments", "--execute", "--qualify-mtp-state", "--qualify-mtp-target-width", "--qualify-mtp-target-width-dense", "--qualify-mtp-target-width-dense-head",
+             "--describe-local-mtp", "--execute-local-mtp", "--qualify-mtp-conditioning", "--qualify-small-qmv",
+             "--describe-remote-mtp", "--execute-remote-mtp", "--qualify-remote-mtp"].contains(arguments[0]) else {
+             throw ProbeError("Use --describe|--check-arguments|--execute with one Gemma resident benchmark job")
+@@ -77,11 +77,12 @@
+                         return try Gemma4LocalMTPRuntime.execute(local, deadline: deadline, sidecars: sidecars,
+                             guardMetrics: guardMetrics, check: check)
+                     }
+-                    if ["--qualify-mtp-target-width", "--qualify-mtp-target-width-dense"].contains(arguments[0]) {
++                    if ["--qualify-mtp-target-width", "--qualify-mtp-target-width-dense", "--qualify-mtp-target-width-dense-head"].contains(arguments[0]) {
+                         try Gemma4TargetWidthRuntime.validate(input)
+                         let sidecars = try Gemma4BenchmarkSidecars(directory: input.job.outputDirectory)
+                         return try Gemma4TargetWidthRuntime.execute(input,
+-                            denseProjectionEnabled: arguments[0] == "--qualify-mtp-target-width-dense",
++                            denseProjectionEnabled: ["--qualify-mtp-target-width-dense", "--qualify-mtp-target-width-dense-head"].contains(arguments[0]),
++                            packedHeadEnabled: arguments[0] == "--qualify-mtp-target-width-dense-head",
+                             deadline: deadline, sidecars: sidecars,
+                             guardMetrics: guardMetrics, check: check)
+                     }

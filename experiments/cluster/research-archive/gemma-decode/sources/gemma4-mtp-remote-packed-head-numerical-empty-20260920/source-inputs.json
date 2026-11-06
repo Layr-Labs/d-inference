@@ -1,0 +1,60 @@
+{
+  "schema": "gemma4_remote_mtp_numerical_source_v1",
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 4043,
+      "sha256": "60c74c41b2d78b27a59a9452058b49e40c117ddae664ea354d864261b3a38aa5"
+    },
+    {
+      "path": "Tests/run.py",
+      "bytes": 1635,
+      "sha256": "f4765096d4061ae1a95d88474d3e4eea3dd1cb4a4ebdc6f2f8adba666f23314b"
+    },
+    {
+      "path": "Tests/test_join.py",
+      "bytes": 4098,
+      "sha256": "3ade5243697544439c479b124f254772ceaddcb73afb373ed27f259b0d370c52"
+    },
+    {
+      "path": "check_sources.py",
+      "bytes": 885,
+      "sha256": "9bc26dcf88eafa30434d0147aec48f403f84d4bd81a6d090a7073ad533c788e5"
+    },
+    {
+      "path": "compare.py",
+      "bytes": 13551,
+      "sha256": "749c90ff8dd2efaf053c5dc08559647cc46543c6038d4abe27a0e4efedf37543"
+    },
+    {
+      "path": "correction.json",
+      "bytes": 542,
+      "sha256": "ba8c69e13c14914e317b770bfd9b092ce9fe4ecd50980851a08542f5c2b9447b"
+    },
+    {
+      "path": "correction.patch",
+      "bytes": 743,
+      "sha256": "bac282ec3193dc91ae59f819016ca0e508f7bc8cb67b9ba40e0f9bcd92f528ad"
+    },
+    {
+      "path": "inputs.json",
+      "bytes": 2224,
+      "sha256": "718e2a040dec159971ed60055b8aef55054c27cb063a2f69e7a63a2db1fee478"
+    },
+    {
+      "path": "numeric_reader.py",
+      "bytes": 27959,
+      "sha256": "f4cca74ba3836faf0ae519aefa890e9bb887430b23ee5a39b81e1f7f4ff9425c"
+    },
+    {
+      "path": "recorded_math.py",
+      "bytes": 3097,
+      "sha256": "f166a6a27c20021c30c62e6966e63583b9ecab955a3b23af64869cd821f25914"
+    },
+    {
+      "path": "snapshot.py",
+      "bytes": 1300,
+      "sha256": "46dfa5689fba4358412c6c4ce03a759ca71d5c30bcde9df995a46c4aad97873b"
+    }
+  ]
+}

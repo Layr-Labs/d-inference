@@ -1,0 +1,93 @@
+{
+  "schema": "gemma4_remote_target_sum_cache_source_freeze_v1",
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 3250,
+      "sha256": "e0487852d6b1fef4d8c464548ba00d7c896942f62895eae381fb4ddf26f62e0f"
+    },
+    {
+      "path": "Runtime/Gemma4MTPRemoteTargetResources.swift",
+      "bytes": 6603,
+      "sha256": "e580909aaf283898ba55bb1963c2a8867371b0731acd47215f1514fa2151c6d7"
+    },
+    {
+      "path": "Tests/ResourceMetadataFixtures.swift",
+      "bytes": 1623,
+      "sha256": "8c94cdffd089a547d7420e7c5db71d578f108ca0cec085484cf70a75fbe63d60"
+    },
+    {
+      "path": "Tests/ResourceSumChecks.swift",
+      "bytes": 4788,
+      "sha256": "a6ffdef8c071caa4e79f7b378112e2e0c1c98d8e2f10efdd59a376d6444e694d"
+    },
+    {
+      "path": "Tests/UncachedRemoteTargetResources.swift",
+      "bytes": 6439,
+      "sha256": "affe08b13d188dc3d04e8ad8b7f7e36682369d648a0413963f7c4f7bcd5305bc"
+    },
+    {
+      "path": "Tests/dependencies/CheckedBytes.swift",
+      "bytes": 1179,
+      "sha256": "c74f6bd831ac5450da539e8c4ffbae05d1db4e7ba8a5cb84e1d0b9e0dd085982"
+    },
+    {
+      "path": "Tests/dependencies/ClusterRuntimeError.swift",
+      "bytes": 265,
+      "sha256": "1344ac5e10936fbc894220f7b5e91862bb522920ea00e7fdb8a647660be27865"
+    },
+    {
+      "path": "Tests/dependencies/InvocationAllocationBoundMemo.swift",
+      "bytes": 552,
+      "sha256": "90cf9a41a64ee2b8f91fb04ea122577f1907dcd5f8fd30d4e76a259b6bda1d20"
+    },
+    {
+      "path": "Tests/expected-checks.json",
+      "bytes": 347,
+      "sha256": "919b4ba0a943bd0048ec16eadaf645dc402a74ce93c78cad6fbd9bade31141eb"
+    },
+    {
+      "path": "base-inputs.json",
+      "bytes": 1427,
+      "sha256": "8c485fedb9f00cd0d197e6fa41848f4e22ecb126801176ff1769423196e76e70"
+    },
+    {
+      "path": "commands.json",
+      "bytes": 1874,
+      "sha256": "a95d6d5de4f0cbb3458baebedb62ff0d7d5af2d0bdbf5961f4b9360df306cc5a"
+    },
+    {
+      "path": "compose.py",
+      "bytes": 6044,
+      "sha256": "5c3f1e9e5ee9df265ecf55a4615b376c04576eb3998471f758a1b40fd7a5b7a8"
+    },
+    {
+      "path": "expected-sources.json",
+      "bytes": 26533,
+      "sha256": "4d797b9e62de2c47a9d6cdadbc2c4646df12294415d3e2ac03b71835db14d920"
+    },
+    {
+      "path": "integration.json",
+      "bytes": 3148,
+      "sha256": "5a6392b053810c2299a34c9674a172ee96faf954ba020e2f279f1ea598f37956"
+    },
+    {
+      "path": "preimages/Gemma4MTPRemoteTargetResources.swift",
+      "bytes": 6442,
+      "sha256": "29d7a26191705c322d96a412160b20144cced3f1c47dd46dcc33b021a8e99fe2"
+    },
+    {
+      "path": "runtime.patch",
+      "bytes": 2450,
+      "sha256": "242f68c62debfc2e6aa8386c729046693313a2228155ab95f8f45c34de9feb1d"
+    },
+    {
+      "path": "source-work-counts.json",
+      "bytes": 724,
+      "sha256": "b6a3c5eacb93a670dba1359e1ba0cda942f7775d53aa3a30599616c1b0785d18"
+    }
+  ],
+  "sourceOnly": true,
+  "changes": 1,
+  "sourceMembers": 121
+}

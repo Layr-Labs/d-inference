@@ -1,0 +1,42 @@
+{
+  "schema": "gemma4_mtp_pull_receive_lifetime_v1",
+  "baseManifest": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-mtp-remote-pull-draft-20260920/manifest.json",
+    "sha256": "38cee7c080922dadcaf73a6c1e742da35d39b1d2d763a0ff2a5eb2a504f23ee8",
+    "bytes": 2621
+  },
+  "targetLifetimeManifest": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-mtp-remote-pull-lifetime-v2-20260920/manifest.json",
+    "sha256": "a4a3c1fbb041e3012335737c950ae6de7a7f9c08a7dedb081687ec2ae2f3dde5",
+    "bytes": 655
+  },
+  "changes": [
+    {
+      "before": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-mtp-remote-pull-draft-20260920/Runtime/Gemma4MTPPullSnapshot.swift",
+        "sha256": "a96106a375dd838e3b119176ccb17dc20c51960d605f2d1e346f76c311d1499b",
+        "bytes": 3954
+      },
+      "after": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-mtp-remote-pull-receive-lifetime-20260920/Runtime/Gemma4MTPPullSnapshot.swift",
+        "sha256": "4f0996875d4e39f12223d2e1384597c87b6861ddecb327c03b0fb50ba986252a",
+        "bytes": 4786
+      },
+      "runtimePath": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullSnapshot.swift"
+    },
+    {
+      "before": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-mtp-remote-pull-draft-20260920/Runtime/Gemma4MTPPullAssistant.swift",
+        "sha256": "24e8fa6390b54182f52186e90723192e34eda7a5750e173d7cb2814b555c85a0",
+        "bytes": 5123
+      },
+      "after": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-mtp-remote-pull-receive-lifetime-20260920/Runtime/Gemma4MTPPullAssistant.swift",
+        "sha256": "4a8942fd540fb33dcd99be1b42e6e4461dc2aaeeda328cf0da563ba6fa48f301",
+        "bytes": 5445
+      },
+      "runtimePath": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullAssistant.swift"
+    }
+  ],
+  "sourceOnly": true
+}

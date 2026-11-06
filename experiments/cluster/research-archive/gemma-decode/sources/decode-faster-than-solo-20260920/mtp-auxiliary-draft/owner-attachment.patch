@@ -1,0 +1,67 @@
+--- a/Gemma4BenchmarkResourceOwner.swift
++++ b/Gemma4BenchmarkResourceOwner.swift
+@@ -41,6 +41,9 @@
+     private var observations = 0, minimumFree = Int.max, maximumActive = 0, maximumPeak = 0
+     private var constructorCount = 0, constructorLazyQuantizedCount = 0
+     private var constructorActive = 0, constructorPeak = 0
++    // BEGIN MTP auxiliary attachment
++    private var mtpAuxiliary: Gemma4MTPAuxiliaryOwner?
++    // END MTP auxiliary attachment
+ 
+     init(plan: Gemma4LayerStagePlan, target: Gemma4ForwardTarget,
+          requests: [QwenLayerStageGenerationRequest], residualDType: DType, captureEvidence: Bool,
+@@ -65,6 +68,19 @@
+         progress = .init(expected: budget.selected)
+         try check()
+     }
++
++    // BEGIN MTP auxiliary attachment
++    func attachMTPAuxiliary(_ auxiliary: Gemma4MTPAuxiliaryOwner) throws {
++        do {
++            guard phase == .source, mtpAuxiliary == nil else {
++                throw ProbeError("Assistant auxiliary must attach before original target construction")
++            }
++            try auxiliary.attachToPrimary(deadline: deadline, requestSHA256: budget.requestSHA256)
++            mtpAuxiliary = auxiliary
++            try check()
++        } catch { phase = .failed; progress.poison(); auxiliary.poison(); throw error }
++    }
++    // END MTP auxiliary attachment
+ 
+     func check(observation supplied: Gemma4BenchmarkGuardObservation? = nil) throws {
+         let owned = supplied == nil ? Gemma4BenchmarkGuardObservation(mode: .owner, deadline: deadline) : nil
+@@ -105,15 +121,32 @@
+             let host = staging.hostBytes
+             let copy = staging.nativeCopyBytes
+             let scratch = hasRead ? CheckpointAlignedReadPlan.maximumScratchAllocationBytes : 0
+-            let free = max(QwenDenseStageLoadPolicy.minimumActualFreeBytes,
++            var free = max(QwenDenseStageLoadPolicy.minimumActualFreeBytes,
+                 try sum([remaining, host, copy, scratch, budget.namedNativeBytes,
+                     budget.hostEvidenceBytes, QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
+-            let allocator = try sum([native.activeBytes, native.cacheBytes, remaining, copy,
++            var allocator = try sum([native.activeBytes, native.cacheBytes, remaining, copy,
+                 budget.namedNativeBytes, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
++            // BEGIN MTP auxiliary attachment
++            let auxiliaryReservation = try mtpAuxiliary?.reservation()
++            if let auxiliaryReservation {
++                free = max(QwenDenseStageLoadPolicy.minimumActualFreeBytes,
++                    try sum([remaining, host, copy, scratch, budget.namedNativeBytes,
++                        budget.hostEvidenceBytes, QwenDenseStageLoadPolicy.loadingHeadroomBytes,
++                        auxiliaryReservation.nativeBytes, auxiliaryReservation.hostBytes]))
++                allocator = try sum([native.activeBytes, native.cacheBytes, remaining, copy,
++                    budget.namedNativeBytes, QwenDenseStageLoadPolicy.allocatorHeadroomBytes,
++                    auxiliaryReservation.nativeBytes])
++            }
++            // END MTP auxiliary attachment
+             guard os.actualFreeBytes >= free, os.physicalMemoryBytes >= free,
+                   native.allocatorLimitBytes >= allocator else {
+                 throw ProbeError("Gemma resources refused: completed=\(progress.completed)/\(budget.selected.count), pending=\(progress.pending.map(String.init) ?? "none"), actualFree=\(os.actualFreeBytes), requiredFree=\(free), active=\(native.activeBytes), cache=\(native.cacheBytes), requiredAllocator=\(allocator), allocatorLimit=\(native.allocatorLimitBytes)")
+             }
++            // BEGIN MTP auxiliary attachment
++            if let auxiliaryReservation {
++                try mtpAuxiliary!.acceptedObservation(auxiliaryReservation, os: os, native: native)
++            }
++            // END MTP auxiliary attachment
+             observations = try sum([observations, 1]); minimumFree = min(minimumFree, os.actualFreeBytes)
+             maximumActive = max(maximumActive, native.activeBytes); maximumPeak = max(maximumPeak, native.peakBytes)
+             guard DispatchTime.now().uptimeNanoseconds < deadline else { throw ProbeError("Gemma deadline expired during observation") }

@@ -1,0 +1,28 @@
+{
+  "baselineNativeSHA256": "d7859728bbda3c1b4a0d65766e1bc44b964143d6e7b493e944fb05d3e09ca769",
+  "changes": [
+    {
+      "afterSHA256": "d668e73c39b4a45da25753f12be2584b5b84b830fd220a37d7763be805ca0207",
+      "beforeSHA256": "62ccc2ae5ca03f4eaa2059a5fd7b579bd32442ab7c1e17df8dcfe4c23ceb077e",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Collective.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Collective.swift"
+    },
+    {
+      "afterSHA256": "e5c24b76f4dd3a947a0cafe7df2809011114a054ab508a01784314d08ad3dccc",
+      "beforeSHA256": "5ec2749839feec80425e83e847c61ed49632c4758361f7101b5d1eb6c3b9dff8",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectivePointToPoint.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectivePointToPoint.swift"
+    },
+    {
+      "afterSHA256": "7565a9c1b413813f694e1b02f228b2fee52d39311ec2aa221d5e5a9363ee521c",
+      "beforeSHA256": "6418fa6c7549a2a72b27f5e3e857bedd448f21c561d06245bbf6c2b27e89cc9e",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkWire.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkWire.swift"
+    }
+  ],
+  "checksRemoved": false,
+  "compilerExecuted": false,
+  "nativeExecuted": false,
+  "resourceTermsChanged": false,
+  "schema": "gemma4_cpu_control_fence_source_v1"
+}

@@ -1,0 +1,251 @@
+--- a/compare.py
++++ b/compare.py
+@@ -9,8 +9,10 @@
+ from binding_common import parse, require
+ from local_mtp_contract import validate_result
+ from solo_contract import validate_result as validate_solo_result
++from target_width_contract import validate_result as validate_target_width_result
++from target_width_compare import compare_sidecars
+ 
+-REMOTE='/Users/developer/DarkbloomDev/gemma4-local-mtp-20260920-v2'
++REMOTE='/Users/developer/DarkbloomDev/gemma4-target-width-20260920-v1'
+ 
+ 
+ def completion_join(completion, terminal_raw, remote):
+@@ -69,7 +71,7 @@
+     job_raw=inputs.raw(case/'full.json');job=parse(job_raw)
+     require(job['promptCount'] in (128,4096) and (job['mode'],job['chunkSize'],job['outputCount'],job['cut'],job['prefillPolicy'])
+         ==('full',64,16,7,'serial') and type(job['captureEvidence']) is bool
+-        and (operation=='execute-solo' or job['captureEvidence'] is False)
++        and (operation in ('execute-solo','qualify-mtp-target-width') or job['captureEvidence'] is False)
+         and job['buildIdentitySHA256']==activation['nativeSHA256'],'Metadata workload changed')
+     description_lines=inputs.raw(ROOT/'root-actions'/('metadata-'+CASE)/'stdout').splitlines()
+     require(description_lines and all(x.startswith(b'owned-child pid ') for x in description_lines[:-1]),'Metadata output framing')
+@@ -109,7 +111,10 @@
+     config_sha=hashlib.sha256(config_raw).hexdigest()
+     require(inputs.raw(returned/'local-mtp.json')==config_raw
+         and terminal['localMTPConfigSHA256']==config_sha and terminal['nativeOperation']==operation,'Collected local config/operation differs')
+-    if operation=='execute-solo':
++    if operation=='qualify-mtp-target-width':
++        result=validate_target_width_result(terminal['result'],job)
++        require(result['ordinaryInputScopeSHA256']==description['scopeSHA256'],'Width ordinary input scope differs')
++    elif operation=='execute-solo':
+         result=validate_solo_result(terminal['result'],job)
+         require(result['scopeSHA256']==description['scopeSHA256'],'Ordinary input scope differs')
+     else:
+@@ -138,6 +143,20 @@
+     if not config['captureEvidence']:
+         require((returned/'sidecars').is_dir() and not any((returned/'sidecars').iterdir()),'Unexpected model sidecars')
+     inputs.recheck();require(verify_source()==source_sha,'Harness source changed')
++    if operation=='qualify-mtp-target-width':
++        numerical=compare_sidecars(returned,result,job)
++        inputs.recheck();require(verify_source()==source_sha,'Harness source changed after numerical replay')
++        return dict(schema='gemma4_target_width_physical_numerical_comparison_v1',
++            status='passed' if numerical['exactNumericsPassed'] else 'failed',nativeOperation=operation,
++            nativeSHA256=activation['nativeSHA256'],sourceSHA256=activation['sourcesSHA256'],
++            buildReceiptSHA256=activation['buildReceiptSHA256'],activationSHA256=activation_sha,
++            sourceManifestSHA256=source_sha,packageSHA256=package_pin['sha256'],
++            nativeScopeSHA256=result['scopeSHA256'],configSHA256=config_sha,
++            physicalExecutionPassed=True,physicalResources=resource,originalProcessRetired=True,
++            sameEmptyLeaseInode=True,aliasUsed=False,protocolReleaseACKClaimed=False,
++            numerical=numerical,modelNumericalCorrectnessQualified=numerical['exactNumericsPassed'],
++            remoteExecutionQualified=False,longContextQualified=False,performanceQualified=False,
++            throughputMeasured=False,retainedInputPins=[x[3] for x in inputs.saved])
+     generation=[x if operation=='execute-solo' else x['generation'] for x in result['samples']]
+     generation=[x for x in generation if not x['warmup']]
+     prefill=sum(job['promptCount'] for x in generation)*1e9/sum(x['prefillNanoseconds'] for x in generation)
+@@ -165,4 +184,5 @@
+     require(args.case and all(c.isalnum() or c in '-_' for c in args.case),'Case name')
+     value=compare(args.case)
+     with args.output.open('x') as f:json.dump(value,f,indent=2,allow_nan=False);f.write('\n')
+-    print(json.dumps(dict(status='passed',output=str(args.output))))
++    print(json.dumps(dict(status=value['status'],output=str(args.output))))
++    raise SystemExit(0 if value['status']=='passed' else 1)
+--- a/deploy.py
++++ b/deploy.py
+@@ -11,7 +11,7 @@
+ from parent_settings import SSH
+ 
+ ROOT=Path(__file__).resolve().parent
+-REMOTE='/Users/developer/DarkbloomDev/gemma4-local-mtp-20260920-v2'
++REMOTE='/Users/developer/DarkbloomDev/gemma4-target-width-20260920-v1'
+ PRODUCT='GemmaResidentBenchmark'
+ SOURCES=Path('/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/bound/sources.json')
+ 
+@@ -24,7 +24,7 @@
+ INSTALL=r'''
+ import hashlib,json,os,pathlib,stat,sys,tarfile
+ root=pathlib.Path(sys.argv[1]);wanted=sys.argv[2]
+-assert root==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-local-mtp-20260920-v2')
++assert root==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-target-width-20260920-v1')
+ assert not root.exists() and root.parent.resolve()==root.parent
+ fs=os.statvfs(root.parent);assert fs.f_bavail*fs.f_frsize>7*1024**3
+ os.umask(0o077);root.mkdir(mode=0o700)
+--- a/package/gemma_inputs.py
++++ b/package/gemma_inputs.py
+@@ -3,7 +3,7 @@
+ import os
+ from pathlib import Path
+ 
+-REMOTE = Path('/Users/developer/DarkbloomDev/gemma4-local-mtp-20260920-v2')
++REMOTE = Path('/Users/developer/DarkbloomDev/gemma4-target-width-20260920-v1')
+ PRODUCT = 'GemmaResidentBenchmark'
+ 
+ def write_json(path, value):
+--- a/package/native_gate.py
++++ b/package/native_gate.py
+@@ -51,7 +51,7 @@
+     same(snapshot(job,16384)['sha256'],launch['jobSHA256'],'Job changed before gate')
+     config=path.parent/'local-mtp.json'
+     same(snapshot(config,16384)['sha256'],launch['localMTPConfigSHA256'],'Local MTP config changed before gate')
+-    require(launch['nativeOperation'] in ('execute-solo','execute-local-mtp','qualify-mtp-conditioning'),'Native cohort operation')
++    require(launch['nativeOperation'] in ('execute-solo','execute-local-mtp','qualify-mtp-conditioning','qualify-mtp-target-width'),'Native cohort operation')
+     fd, record=acquire(device_directory())
+     try:
+         processes=observe(time.monotonic()+4)
+@@ -64,7 +64,9 @@
+         s2=binary.lstat();same((s2.st_dev,s2.st_ino,s2.st_mode,s2.st_size,s2.st_mtime_ns,s2.st_ctime_ns),tuple(launch['binaryIdentity']),'Executable changed before exec')
+         same(snapshot(config,16384)['sha256'],launch['localMTPConfigSHA256'],'Local MTP config changed before exec')
+         same(snapshot(job,16384)['sha256'],launch['jobSHA256'],'Job changed before exec')
+-        if launch['nativeOperation']=='execute-solo':
++        if launch['nativeOperation']=='qualify-mtp-target-width':
++            arguments=[str(binary),'--qualify-mtp-target-width',str(job)]
++        elif launch['nativeOperation']=='execute-solo':
+             arguments=[str(binary),'--execute',str(job)]
+         else:
+             arguments=[str(binary),'--'+launch['nativeOperation'],str(config)]
+--- a/package/run_benchmark.py
++++ b/package/run_benchmark.py
+@@ -16,6 +16,7 @@
+ from worker_processes import PipeWorkers, cleanup_error_text
+ from local_mtp_contract import validate_result
+ from solo_contract import validate_result as validate_solo_result
++from target_width_contract import validate_result as validate_target_width_result
+ 
+ def main():
+     parser=argparse.ArgumentParser(allow_abbrev=False)
+@@ -23,7 +24,7 @@
+     parser.add_argument('--job',type=Path,required=True)
+     parser.add_argument('--job-sha256',required=True)
+     parser.add_argument('--local-mtp-config-sha256',required=True)
+-    parser.add_argument('--native-operation',choices=['execute-solo','execute-local-mtp','qualify-mtp-conditioning'],required=True)
++    parser.add_argument('--native-operation',choices=['execute-solo','execute-local-mtp','qualify-mtp-conditioning','qualify-mtp-target-width'],required=True)
+     args=parser.parse_args(); os.umask(0o077)
+     started=time.monotonic(); deadline=started+315
+     require(args.job.parent.parent==REMOTE/'runs' and args.job.name=='job.json','Job path')
+@@ -35,13 +36,15 @@
+     require(job['timeoutSeconds']==300,'Native lifetime must fit parent fence')
+     require(job['promptCount'] in (128,4096) and (job['chunkSize'],job['outputCount'],job['cut'],job['prefillPolicy'])
+             ==(64,16,7,'serial') and type(job['captureEvidence']) is bool, 'Local target workload')
+-    require(args.native_operation=='execute-solo' or job['captureEvidence'] is False, 'MTP ordinary job capture must stay false')
++    require(args.native_operation in ('execute-solo','qualify-mtp-target-width') or job['captureEvidence'] is False, 'MTP ordinary job capture must stay false')
+     config_path=run/'local-mtp.json'
+     require(digest(config_path)==args.local_mtp_config_sha256,'Local MTP config identity')
+     config=parse(config_path.read_bytes())
+     require(config['benchmarkJob']==str(args.job) and config['benchmarkJobSHA256']==args.job_sha256,'Local MTP parent job identity')
+     require(type(config['captureEvidence']) is bool, 'Config evidence policy')
+-    require(args.native_operation!='execute-solo' or job['captureEvidence'] is config['captureEvidence'], 'Solo job/config evidence policy')
++    require(args.native_operation not in ('execute-solo','qualify-mtp-target-width') or job['captureEvidence'] is config['captureEvidence'], 'Solo job/config evidence policy')
++    if args.native_operation=='qualify-mtp-target-width':
++        require(job['promptCount']==128 and job['captureEvidence'] is True,'Width qualifier exact capture workload')
+     require(job['outputDirectory']==str(run/'sidecars'),'Output path')
+     require(job['metadataDirectory']==str(REMOTE/'metadata'),'Metadata path')
+     require(job['modelDirectory']=='/Users/developer/DarkbloomDev/models/Gemma4-26B','Model path')
+@@ -96,7 +99,8 @@
+         def result(_,raw):
+             value=parse(raw)
+             require(isinstance(value,dict),'Native result must be an object')
+-            if args.native_operation=='execute-solo':validate_solo_result(value,job)
++            if args.native_operation=='qualify-mtp-target-width':validate_target_width_result(value,job)
++            elif args.native_operation=='execute-solo':validate_solo_result(value,job)
+             else:validate_result(value,job,config,args.local_mtp_config_sha256,args.native_operation)
+             return value
+         record['result']=pipes.collect('benchmark',result)[0]
+--- a/remote_metadata.py
++++ b/remote_metadata.py
+@@ -14,7 +14,7 @@
+ REMOTE_BODY = r'''
+ import hashlib,json,os,pathlib,stat,sys,time
+ root=pathlib.Path(sys.argv[1]);package_sha,job_sha,name,operation=sys.argv[2:]
+-assert str(root)=='/Users/developer/DarkbloomDev/gemma4-local-mtp-20260920-v2'
++assert str(root)=='/Users/developer/DarkbloomDev/gemma4-target-width-20260920-v1'
+ assert operation in ('--describe','--check-arguments')
+ assert name and all(c.isalnum() or c in '-_' for c in name)
+ sys.path.insert(0,str(root))
+--- a/root_run.py
++++ b/root_run.py
+@@ -26,7 +26,7 @@
+     p.add_argument('--case')
+     p.add_argument('--prompt',type=int,choices=[128,4096],default=4096)
+     p.add_argument('--depth',type=int,choices=[1,2],default=2)
+-    p.add_argument('--native-operation',choices=['execute-solo','execute-local-mtp','qualify-mtp-conditioning'],default='execute-local-mtp')
++    p.add_argument('--native-operation',choices=['execute-solo','execute-local-mtp','qualify-mtp-conditioning','qualify-mtp-target-width'],default='execute-local-mtp')
+     p.add_argument('--capture',action='store_true')
+     p.add_argument('--binary',type=Path);p.add_argument('--build-receipt',type=Path);p.add_argument('--sources',type=Path)
+     args=p.parse_args()
+--- a/run_case.py
++++ b/run_case.py
+@@ -26,7 +26,7 @@
+ CREATE=r'''
+ import hashlib,json,os,pathlib,sys
+ payload=json.load(sys.stdin);job=payload['job'];config=payload['config'];root=pathlib.Path(job['outputDirectory']).parent
+-assert root.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-local-mtp-20260920-v2/runs')
++assert root.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-target-width-20260920-v1/runs')
+ os.umask(0o077);root.parent.mkdir(mode=0o700,exist_ok=True);root.mkdir(mode=0o700)
+ raw=(json.dumps(job,sort_keys=True,separators=(',',':'))+'\n').encode()
+ assert config['benchmarkJob']==str(root/'job.json') and config['benchmarkJobSHA256']==hashlib.sha256(raw).hexdigest()
+@@ -35,7 +35,7 @@
+ '''
+ QUIESCENT=r'''
+ import json,pathlib,sys,time
+-root=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-local-mtp-20260920-v2')
++root=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-target-width-20260920-v1')
+ sys.path.insert(0,str(root))
+ from mtp_journal import device_directory,observe,require_empty
+ from target_processes import observe as processes
+@@ -46,7 +46,7 @@
+ CANCEL=r'''
+ import hashlib,json,os,pathlib,sys
+ job=pathlib.Path(sys.argv[1]);wanted=sys.argv[2]
+-assert job.name=='job.json' and job.parent.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-local-mtp-20260920-v2/runs')
++assert job.name=='job.json' and job.parent.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-target-width-20260920-v1/runs')
+ assert hashlib.sha256(job.read_bytes()).hexdigest()==wanted
+ path=job.parent/'cancellation.json'
+ value={'schema':'gemma4_benchmark_cancellation_v1','jobSHA256':wanted}
+@@ -58,7 +58,8 @@
+ 
+ def prepare(name,count,cut,capture,chunk,policy,match,depth,operation):
+     assert count in (128,4096) and (cut,chunk,policy,match)==(7,64,'serial',None)
+-    assert depth in (1,2) and operation in ('execute-solo','execute-local-mtp','qualify-mtp-conditioning')
++    assert depth in (1,2) and operation in ('execute-solo','execute-local-mtp','qualify-mtp-conditioning','qualify-mtp-target-width')
++    if operation=='qualify-mtp-target-width':assert count==128 and capture is True
+     directory=ROOT/'cases'/name;directory.mkdir(mode=0o700,parents=True)
+     requests=[str(uuid.uuid4()) for _ in range(4)]
+     common=dict(schema='gemma4_resident_benchmark_v1',modelDirectory='/Users/developer/DarkbloomDev/models/Gemma4-26B',
+@@ -66,7 +67,7 @@
+                 promptFileSHA256=digest(ROOT/'prompts'/f'prompt-{count}.json'),
+                 requestIDs=requests,membershipEpoch=str(uuid.uuid4()),
+                 buildIdentitySHA256=digest(ROOT/'deployment/bundle'/PRODUCT),residualDType='bfloat16',
+-                promptCount=count,chunkSize=chunk,outputCount=16,timeoutSeconds=300,captureEvidence=capture if operation=='execute-solo' else False,cut=cut)
++                promptCount=count,chunkSize=chunk,outputCount=16,timeoutSeconds=300,captureEvidence=capture if operation in ('execute-solo','qualify-mtp-target-width') else False,cut=cut)
+     if match is not None:
+         assert match and all(c.isalnum() or c in '-_' for c in match)
+         prior=json.loads((ROOT/'cases'/match/'full.json').read_bytes())
+@@ -145,7 +146,7 @@
+     package_sha=digest(ROOT/'deployment/package.json')
+     config=json.loads((directory/'local-mtp.json').read_bytes())
+     operation=json.loads((directory/'operation.json').read_bytes())['operation']
+-    assert operation in ('execute-solo','execute-local-mtp','qualify-mtp-conditioning')
++    assert operation in ('execute-solo','execute-local-mtp','qualify-mtp-conditioning','qualify-mtp-target-width')
+     for mode,host in selected:
+         raw=(directory/(mode+'.json')).read_bytes()
+         p=ssh(host,['/usr/bin/python3','-c',CREATE],input=json.dumps(dict(job=json.loads(raw),config=config)).encode(),timeout=15)
+@@ -235,7 +236,7 @@
+     p.add_argument('--match',help='Existing case with exactly the same workload and native build')
+     p.add_argument('--capture',action='store_true')
+     p.add_argument('--depth',type=int,choices=[1,2],default=2)
+-    p.add_argument('--native-operation',choices=['execute-solo','execute-local-mtp','qualify-mtp-conditioning'],default='execute-local-mtp')
++    p.add_argument('--native-operation',choices=['execute-solo','execute-local-mtp','qualify-mtp-conditioning','qualify-mtp-target-width'],default='execute-local-mtp')
+     a=p.parse_args()
+     assert a.name and all(c.isalnum() or c in '-_' for c in a.name)
+     if a.action=='prepare':prepare(a.name,a.prompt,a.cut,a.capture,a.chunk,a.policy,a.match,a.depth,a.native_operation);return 0

@@ -1,0 +1,309 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisBank.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisBank.swift
+@@ -1,6 +1,6 @@
+ import Foundation
+ import MLX
+-import MLXLMCommon
++@_spi(ExpertParallel) import MLXLMCommon
+ import MLXNN
+ 
+ /// Whole-expert W4/G64 storage; neither projection's inner dimension is split.
+@@ -97,12 +97,17 @@
+     /// Prepared/validated local IDs are owned by ExpertAxisPreparedDispatch.
+     /// This graph construction does no CPU tensor read, eval, synchronization,
+     /// normalization or host I/O. Empty local work is handled by the caller.
+-    func project(_ input: MLXArray, localIDs: MLXArray) throws -> MLXArray {
++    func project(_ input: MLXArray, localIDs: MLXArray, policy: ExpertAxisProjectionPolicy) throws -> MLXArray {
+         guard input.ndim == 2, input.dim(0) > 0, input.dim(1) == geometry.hidden,
+               [.bfloat16, .float32].contains(input.dtype), localIDs.dtype == .uint32,
+-              localIDs.shape == [input.dim(0), 1] else {
++              localIDs.shape == [input.dim(0), 1], input.dim(0) == policy.executedAssignments,
++              policy.localAssignments > 0, policy.globalExperts == geometry.experts,
++              policy.ownedExperts == globalExpertIDs.count else {
+             throw ProbeError("Expert-axis projection input contract differs")
+         }
+-        return module(input, localIDs).reshaped(input.dim(0), geometry.hidden)
++        let projected = module.callAsPartition(input, localIDs,
++            sortAssignments: policy.sortAssignments, sortedProjection: policy.sortedProjection)
++            .reshaped(input.dim(0), geometry.hidden)
++        return policy.paddedAssignments == 0 ? projected : projected[..<policy.localAssignments, 0...]
+     }
+ }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisCheckCases.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisCheckCases.swift
+@@ -129,6 +129,7 @@
+         return .init(label: label, inputDType: String(describing: input.dtype),
+             tokenCount: dispatch.plan.tokenCount, topK: dispatch.plan.topK,
+             assignmentCounts: dispatch.plan.assignmentCountsByRank, selectedGlobalIDs: selected,
++            projectionPolicies: dispatch.projectionPolicies,
+             routingWeightsSHA256: sha256(before), expertOutputs: outputs, weighted: combined, postNorm: normalized)
+     }
+ }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisCheckComparison.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisCheckComparison.swift
+@@ -35,6 +35,7 @@
+     let label: String, inputDType: String
+     let tokenCount: Int, topK: Int, assignmentCounts: [Int]
+     let selectedGlobalIDs: [[Int]]
++    let projectionPolicies: [ExpertAxisProjectionPolicy]
+     let routingWeightsSHA256: String
+     let expertOutputs: ExpertAxisDifference, weighted: ExpertAxisDifference
+     let postNorm: ExpertAxisDifference?
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisCheckResources.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisCheckResources.swift
+@@ -29,12 +29,30 @@
+         ]
+         let arrays = try shapes.map { try QwenResidentResourceEnvironment.allocationBound(
+             QwenLongPrefillCheckedBytes.product($0)) }
++        // Each nonempty selected rank executes <= global assignments <=264.
++        // Reserve an additional FULL padded local graph for every rank, even
++        // when no padding is needed; do not subtract any original allowance.
++        // Round each input/sorted-input/down/unsort, gate/up/activation and
++        // token/index/sort tensor separately rather than rounding their sum.
++        var paddingArrays: [Int] = []
++        for _ in ownership.globalIDsByRank {
++            let paddingShapes = Array(repeating: [assignments, geometry.hidden, 4], count: 4)
++                + Array(repeating: [assignments, geometry.intermediate, 4], count: 3)
++                + Array(repeating: [assignments, 4], count: 6)
++            paddingArrays += try paddingShapes.map { try QwenResidentResourceEnvironment.allocationBound(
++                QwenLongPrefillCheckedBytes.product($0)) }
++        }
++        // CPU padded records (six Int fields, plus concatenation temporary),
++        // two UInt32 index-construction arrays and bounded policy bookkeeping.
++        let paddingHost = try QwenLongPrefillCheckedBytes.sum([65_536,
++            QwenLongPrefillCheckedBytes.product([ownership.rankCount, assignments,
++                2 * MemoryLayout<ExpertAssignment>.stride + 2 * MemoryLayout<UInt32>.stride])])
+         // Router/norm weights, index tensors and packet/reference structures are
+         // small in this closed scope. These fixed diagnostic reserves do not
+         // replace the unchanged 4 GiB graph/workspace and 2 GiB allocator guards.
+-        reservedNativeBytes = try QwenLongPrefillCheckedBytes.sum([banks, 16 * 1024 * 1024] + arrays)
++        reservedNativeBytes = try QwenLongPrefillCheckedBytes.sum([banks, 16 * 1024 * 1024] + arrays + paddingArrays)
+         hostReserveBytes = try QwenLongPrefillCheckedBytes.sum([largestHost, largestHost,
+-            CheckpointAlignedReadPlan.maximumScratchAllocationBytes, 16 * 1024 * 1024])
++            CheckpointAlignedReadPlan.maximumScratchAllocationBytes, 16 * 1024 * 1024, paddingHost])
+     }
+ 
+     func check(native: () throws -> Void) throws {
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisPreparedDispatch.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisPreparedDispatch.swift
+@@ -8,6 +8,7 @@
+     let ownership: ExpertIDOwnership
+     let plan: ExpertDispatchPlan
+     let globalIDs: MLXArray
++    let projectionPolicies: [ExpertAxisProjectionPolicy]
+     private let tokenRows: [MLXArray?]
+     private let localIDs: [MLXArray?]
+     private let originalOrder: MLXArray
+@@ -20,12 +21,21 @@
+             maxAssignments: 33 * 8)
+         let permutation = try plan.reassemblyIndices(returnedByRank: plan.assignmentsByRank)
+         self.ownership = ownership; self.plan = plan
++        let policies = try ownership.globalIDsByRank.indices.map { rank in
++            try ExpertAxisProjectionPolicy(globalAssignments: plan.tokenCount * plan.topK,
++                globalExperts: ownership.expertCount, ownedExperts: ownership.globalIDsByRank[rank].count,
++                localAssignments: plan.assignmentCountsByRank[rank])
++        }
++        projectionPolicies = policies
+         self.globalIDs = MLXArray(selectedGlobalIDs.flatMap { $0 }.map(UInt32.init))
+             .reshaped(plan.tokenCount, plan.topK)
+-        self.tokenRows = plan.assignmentsByRank.map { rows in
++        let projectedRows = try plan.assignmentsByRank.enumerated().map { rank, rows in
++            try policies[rank].padded(rows)
++        }
++        self.tokenRows = projectedRows.map { rows in
+             rows.isEmpty ? nil : MLXArray(rows.map { UInt32($0.tokenIndex) })
+         }
+-        self.localIDs = plan.assignmentsByRank.map { rows in
++        self.localIDs = projectedRows.map { rows in
+             rows.isEmpty ? nil : MLXArray(rows.map { UInt32($0.localExpertID) }).reshaped(rows.count, 1)
+         }
+         self.originalOrder = MLXArray(permutation.map(UInt32.init))
+@@ -46,12 +56,23 @@
+         }
+         var outputs: [MLXArray] = []
+         for rank in banks.indices {
+-            guard let rows = tokenRows[rank], let ids = localIDs[rank] else { continue }
+-            outputs.append(try banks[rank].project(input.take(rows, axis: 0), localIDs: ids))
++            if let local = try localUnweighted(input, rank: rank, bank: banks[rank]) { outputs.append(local) }
+         }
+         guard !outputs.isEmpty else { throw ProbeError("Expert-axis dispatch has no output") }
+         let joined = outputs.count == 1 ? outputs[0] : concatenated(outputs, axis: 0)
+         return joined.take(originalOrder, axis: 0).reshaped(plan.tokenCount, plan.topK, input.dim(1))
++    }
++
++    /// Shared by local qualification and RDMA; all padding indices were
++    /// prepared/evaluated before this graph-only call. Empty ranks stay empty.
++    func localUnweighted(_ input: MLXArray, rank: Int, bank: ExpertAxisBank) throws -> MLXArray? {
++        guard ownership.globalIDsByRank.indices.contains(rank),
++              bank.globalExpertIDs == ownership.globalIDsByRank[rank], bank.geometry.experts == ownership.expertCount,
++              input.shape == [plan.tokenCount, bank.geometry.hidden] else {
++            throw ProbeError("Expert local projection differs from authoritative owned dispatch")
++        }
++        guard let rows = tokenRows[rank], let ids = localIDs[rank] else { return nil }
++        return try bank.project(input.take(rows, axis: 0), localIDs: ids, policy: projectionPolicies[rank])
+     }
+ 
+     func weighted(_ outputs: MLXArray, weights: MLXArray) throws -> MLXArray {
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisProjectionPolicy.swift
+@@ -0,0 +1,48 @@
++import Foundation
++
++/// Source-bound selection of the SAME full-bank SwitchGLU/GatherQMM route.
++/// CPU route metadata only. No numerical tolerance or tensor observation.
++struct ExpertAxisProjectionPolicy: Encodable, Equatable {
++    let globalAssignments: Int, globalExperts: Int, ownedExperts: Int, localAssignments: Int
++    let sortAssignments: Bool, sortedProjection: Bool
++    let executedAssignments: Int
++    var paddedAssignments: Int { executedAssignments - localAssignments }
++
++    init(globalAssignments: Int, globalExperts: Int, ownedExperts: Int, localAssignments: Int) throws {
++        guard (1...264).contains(globalAssignments), (2...128).contains(globalExperts),
++              (1...globalExperts).contains(ownedExperts), (0...globalAssignments).contains(localAssignments) else {
++            throw ProbeError("Expert projection policy geometry is outside the bounded route")
++        }
++        self.globalAssignments = globalAssignments; self.globalExperts = globalExperts
++        self.ownedExperts = ownedExperts; self.localAssignments = localAssignments
++        sortAssignments = globalAssignments >= 64
++        // Pinned GatherQMM: M=1, B>=16, sorted hint, integer B/E>=4.
++        sortedProjection = sortAssignments && globalAssignments / globalExperts >= 4
++        guard localAssignments > 0, sortedProjection else {
++            executedAssignments = localAssignments; return
++        }
++        // Pinned NAX sorted-RHS tile: BM32 if M/E<64, otherwise BM64.
++        // Match its row-alignment specialization too (also fixes legacy BM16).
++        let tile = globalAssignments / globalExperts < 64 ? 32 : 64
++        let minimum = max(localAssignments, max(16, max(4 * ownedExperts,
++                          tile == 64 ? 64 * ownedExperts : 0)))
++        let padding = (globalAssignments % tile - minimum % tile + tile) % tile
++        let executed = minimum + padding
++        guard executed <= globalAssignments,
++              (executed / ownedExperts < 64 ? 32 : 64) == tile else {
++            throw ProbeError("Owned expert density cannot retain the full-bank sorted kernel tile")
++        }
++        executedAssignments = executed
++    }
++
++    /// Repeats only this rank's final genuine assignment; these discarded
++    /// projection rows never enter a returned packet or top-k reduction.
++    func padded<T>(_ original: [T]) throws -> [T] {
++        guard original.count == localAssignments else {
++            throw ProbeError("Expert policy does not match the actual local assignment count")
++        }
++        guard paddedAssignments > 0 else { return original }
++        guard let last = original.last else { throw ProbeError("Empty expert rank cannot be padded") }
++        return original + Array(repeating: last, count: paddedAssignments)
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisRDMACase.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisRDMACase.swift
+@@ -80,6 +80,7 @@
+             let value = ExpertAxisCaseResult(label: "checkpoint-layer-\(job.layer)/two-rank/\(job.ownership)",
+                 inputDType: "bfloat16", tokenCount: rows, topK: 8,
+                 assignmentCounts: dispatch.base.plan.assignmentCountsByRank, selectedGlobalIDs: packet.selectedGlobalIDs,
++                projectionPolicies: dispatch.base.projectionPolicies,
+                 routingWeightsSHA256: packet.weightsSHA256, expertOutputs: outputs, weighted: weighted, postNorm: postNorm)
+             comparison = value
+             var terminal = ExpertAxisRDMAControl(event: "result", caseIndex: index, rows: rows)
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisRDMADispatch.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisRDMADispatch.swift
+@@ -6,16 +6,13 @@
+ final class ExpertAxisRDMADispatch {
+     let base: ExpertAxisPreparedDispatch
+     let rank: Int
+-    private let tokenRows: MLXArray?, localIDs: MLXArray?, originalOrder: MLXArray
++    private let originalOrder: MLXArray
+     init(ownership: ExpertIDOwnership, selected: [[Int]], rank: Int, check: () throws -> Void) throws {
+         guard ownership.rankCount == 2, (0...1).contains(rank) else { throw ExpertDispatchError.invalidRank }
+         base = try .init(ownership: ownership, selectedGlobalIDs: selected, check: check)
+         self.rank = rank
+-        let rows = base.plan.assignmentsByRank[rank]
+-        tokenRows = rows.isEmpty ? nil : MLXArray(rows.map { UInt32($0.tokenIndex) })
+-        localIDs = rows.isEmpty ? nil : MLXArray(rows.map { UInt32($0.localExpertID) }).reshaped(rows.count, 1)
+         originalOrder = MLXArray(try base.plan.reassemblyIndices(returnedByRank: base.plan.assignmentsByRank).map(UInt32.init))
+-        eval([originalOrder] + [tokenRows, localIDs].compactMap { $0 }); try check()
++        eval(originalOrder); try check()
+     }
+     func localUnweighted(_ input: MLXArray, bank: ExpertAxisBank) throws -> MLXArray? {
+         guard bank.globalExpertIDs == base.ownership.globalIDsByRank[rank], bank.geometry.experts == 128,
+@@ -23,8 +20,7 @@
+               input.shape == [base.plan.tokenCount, 2816], input.dtype == .bfloat16 else {
+             throw ProbeError("Expert RDMA local projection does not match its original assignment/bank")
+         }
+-        guard let tokenRows, let localIDs else { return nil }
+-        return try bank.project(input.take(tokenRows, axis: 0), localIDs: localIDs)
++        return try base.localUnweighted(input, rank: rank, bank: bank)
+     }
+     func reassemble(_ outputs: [MLXArray?]) throws -> MLXArray {
+         guard outputs.count == 2 else { throw ExpertDispatchError.invalidReturnedMapping }
+--- a/libs/mlx-swift-lm/Libraries/MLXLMCommon/SwitchLayers.swift
++++ b/libs/mlx-swift-lm/Libraries/MLXLMCommon/SwitchLayers.swift
+@@ -616,10 +616,12 @@
+     }
+ 
+     private func projectExperts(
+-        _ x: MLXArray, _ indices: MLXArray
++        _ x: MLXArray, _ indices: MLXArray,
++        sortAssignments: Bool? = nil, sortedProjection: Bool? = nil
+     ) -> (output: MLXArray, inverseOrder: MLXArray?, sorted: Bool) {
+         var x = MLX.expandedDimensions(x, axes: [-2, -3])
+-        let doSort = indices.size >= 64
++        let doSort = sortAssignments ?? (indices.size >= 64)
++        let projectionHint = sortedProjection ?? doSort
+ 
+         var idx = indices
+         var inverseOrder = MLXArray()
+@@ -630,15 +632,15 @@
+         let xGate: MLXArray
+         let xUp: MLXArray
+         if let gateUpProj {
+-            let xGateUp = gateUpProj(x, idx, sortedIndices: doSort)
++            let xGateUp = gateUpProj(x, idx, sortedIndices: projectionHint)
+             xGate = xGateUp[.ellipsis, ..<hiddenDims]
+             xUp = xGateUp[.ellipsis, hiddenDims...]
+         } else {
+             guard let gateProj, let upProj else {
+                 preconditionFailure("SwitchGLU requires gate_up_proj or gate_proj/up_proj")
+             }
+-            xUp = upProj(x, idx, sortedIndices: doSort)
+-            xGate = gateProj(x, idx, sortedIndices: doSort)
++            xUp = upProj(x, idx, sortedIndices: projectionHint)
++            xGate = gateProj(x, idx, sortedIndices: projectionHint)
+         }
+ 
+         let activated: MLXArray
+@@ -652,7 +654,7 @@
+             activated = activation(xGate) * xUp
+         }
+ 
+-        x = downProj(activated, idx, sortedIndices: doSort)
++        x = downProj(activated, idx, sortedIndices: projectionHint)
+         return (x, doSort ? inverseOrder : nil, doSort)
+     }
+ 
+@@ -714,6 +716,25 @@
+ 
+     public func callAsFunction(_ x: MLXArray, _ indices: MLXArray) -> MLXArray {
+         var projected = projectExperts(x, indices)
++        if let inverseOrder = projected.inverseOrder {
++            projected.output = scatterUnsort(
++                x: projected.output, invOrder: inverseOrder, shape: indices.shape)
++        }
++        return MLX.squeezed(projected.output, axis: -2)
++    }
++
++    /// Explicit private whole-expert partition entry. The caller derives the
++    /// policy from the authoritative unpartitioned route and preserves local
++    /// assignment order. A sorted projection hint requires the actual sort.
++    /// Ordinary callAsFunction and weighted-reduction policies are unchanged.
++    @_spi(ExpertParallel) public func callAsPartition(
++        _ x: MLXArray, _ indices: MLXArray,
++        sortAssignments: Bool, sortedProjection: Bool
++    ) -> MLXArray {
++        precondition(sortAssignments || !sortedProjection,
++                     "A sorted expert projection must have sorted assignments")
++        var projected = projectExperts(x, indices, sortAssignments: sortAssignments,
++                                       sortedProjection: sortedProjection)
+         if let inverseOrder = projected.inverseOrder {
+             projected.output = scatterUnsort(
+                 x: projected.output, invOrder: inverseOrder, shape: indices.shape)

@@ -1,0 +1,172 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisCheckCases.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisCheckCases.swift
+@@ -24,7 +24,7 @@
+         }
+         try negativeControls(geometry: geometry, ownership: ownership, banks: banks, check: check)
+         var results: [ExpertAxisCaseResult] = []
+-        for rows in [1, 7, 8, 9, 33] {
++        for rows in ExpertAxisQualificationLimits.cases(experts: geometry.experts) {
+             if let router {
+                 let result = try autoreleasepool {
+                     let residual = input(rows: rows, hidden: geometry.hidden, dtype: .bfloat16)
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisCheckResources.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisCheckResources.swift
+@@ -20,16 +20,17 @@
+                     QwenResidentResourceEnvironment.allocationBound(bytes)])
+             }
+         }
+-        let assignments = 33 * 8
++        let tokens = geometry.experts == 128 ? ExpertAxisQualificationLimits.maximumTokens : 33
++        let assignments = tokens * 8
+         let shapes = [
+             [6, assignments, geometry.intermediate, 4], // both projection paths' GLU intermediates
+             [8, assignments, geometry.hidden, 4], // inputs, outputs, reassembly and comparison copies
+-            [6, 33, geometry.hidden, 4], // residual, normalized, weighted and postnorm values
+-            [4, 33, geometry.experts, 4], // router logits/selection/normalization temporaries
++            [6, tokens, geometry.hidden, 4], // residual, normalized, weighted and postnorm values
++            [4, tokens, geometry.experts, 4], // router logits/selection/normalization temporaries
+         ]
+         let arrays = try shapes.map { try QwenResidentResourceEnvironment.allocationBound(
+             QwenLongPrefillCheckedBytes.product($0)) }
+-        // Each nonempty selected rank executes <= global assignments <=264.
++        // Each nonempty selected rank executes <= global assignments <=1024 for the real Gemma geometry.
+         // Reserve an additional FULL padded local graph for every rank, even
+         // when no padding is needed; do not subtract any original allowance.
+         // Round each input/sorted-input/down/unsort, gate/up/activation and
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisPreparedDispatch.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisPreparedDispatch.swift
+@@ -14,11 +14,11 @@
+     private let originalOrder: MLXArray
+ 
+     init(ownership: ExpertIDOwnership, selectedGlobalIDs: [[Int]], check: () throws -> Void) throws {
+-        guard selectedGlobalIDs.count <= 33, (selectedGlobalIDs.first?.count ?? 0) <= 8 else {
+-            throw ProbeError("Expert-axis primitive requires at most33 tokens and top8")
++        guard selectedGlobalIDs.count <= ExpertAxisQualificationLimits.maximumTokens, (selectedGlobalIDs.first?.count ?? 0) <= 8 else {
++            throw ProbeError("Expert-axis primitive requires at most128 tokens and top8")
+         }
+         let plan = try ExpertDispatchPlan(ownership: ownership, selectedGlobalIDs: selectedGlobalIDs,
+-            maxAssignments: 33 * 8)
++            maxAssignments: ExpertAxisQualificationLimits.maximumAssignments)
+         let permutation = try plan.reassemblyIndices(returnedByRank: plan.assignmentsByRank)
+         self.ownership = ownership; self.plan = plan
+         let policies = try ownership.globalIDsByRank.indices.map { rank in
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisProjectionPolicy.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisProjectionPolicy.swift
+@@ -9,7 +9,7 @@
+     var paddedAssignments: Int { executedAssignments - localAssignments }
+ 
+     init(globalAssignments: Int, globalExperts: Int, ownedExperts: Int, localAssignments: Int) throws {
+-        guard (1...264).contains(globalAssignments), (2...128).contains(globalExperts),
++        guard (1...ExpertAxisQualificationLimits.maximumAssignments).contains(globalAssignments), (2...128).contains(globalExperts),
+               (1...globalExperts).contains(ownedExperts), (0...globalAssignments).contains(localAssignments) else {
+             throw ProbeError("Expert projection policy geometry is outside the bounded route")
+         }
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisQualificationLimits.swift
+@@ -0,0 +1,16 @@
++import Foundation
++
++/// Closed qualification envelope, not a serving capacity/admission policy.
++/// Gemma E128 reaches the sorted-RHS path at64 prompt rows; both64 and128
++/// are compared to the unchanged full-bank operator before any serving claim.
++enum ExpertAxisQualificationLimits {
++    static let maximumTokens = 128
++    static let maximumAssignments = maximumTokens * 8
++    static let baseCases = [1, 7, 8, 9, 33]
++    static let extendedCases = baseCases + [64, 128]
++    static func cases(experts: Int) -> [Int] {
++        // Small synthetic cardinalities retain their qualified domain. Their
++        // extreme local density can cross a different kernel tile threshold.
++        experts == 128 ? extendedCases : baseCases
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisRDMAContract.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisRDMAContract.swift
+@@ -9,8 +9,8 @@
+         let path = URL(fileURLWithPath: modelDirectory)
+         guard schema == "gemma4_expert_rdma_check_v1", (0...1).contains(rank), (0..<30).contains(layer),
+               ["contiguous48_80", "strided43_85"].contains(ownership),
+-              !tokenCounts.isEmpty, tokenCounts.count <= 5, tokenCounts == tokenCounts.sorted(),
+-              Set(tokenCounts).count == tokenCounts.count, tokenCounts.allSatisfy({ [1,7,8,9,33].contains($0) }),
++              !tokenCounts.isEmpty, tokenCounts.count <= ExpertAxisQualificationLimits.extendedCases.count, tokenCounts == tokenCounts.sorted(),
++              Set(tokenCounts).count == tokenCounts.count, tokenCounts.allSatisfy({ ExpertAxisQualificationLimits.extendedCases.contains($0) }),
+               (1...300).contains(timeoutSeconds), qwenStageWireIsSHA256(buildIdentitySHA256),
+               [membershipEpoch, requestID].allSatisfy({ UUID(uuidString: $0)?.uuidString.lowercased() == $0 }),
+               modelDirectory.hasPrefix("/"), modelDirectory.utf8.count <= 2048, !modelDirectory.contains("\0"),
+@@ -65,7 +65,7 @@
+ }
+ 
+ enum ExpertAxisRDMACodec {
+-    static let controlLimit = 32_768, payloadLimit = 2_097_152, recordLimit = 128
++    static let controlLimit = 32_768, payloadLimit = 8_388_608, recordLimit = 128
+     static func decode(_ bytes: Data, scope: String, sender: Int, ordinal: Int) throws -> ExpertAxisRDMAControl {
+         guard (1...controlLimit).contains(bytes.count), (0...1).contains(sender),
+               (0..<recordLimit).contains(ordinal), qwenStageWireIsSHA256(scope) else {
+@@ -91,6 +91,6 @@
+             throw ProbeError("Expert RDMA route differs from local admitted case")
+         }
+         return try ExpertDispatchPlan(ownership: job.expertOwnership(), selectedGlobalIDs: value.selectedGlobalIDs,
+-                                      maxAssignments: 33 * 8)
++                                      maxAssignments: ExpertAxisQualificationLimits.maximumAssignments)
+     }
+ }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisRDMALocalChecks.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisRDMALocalChecks.swift
+@@ -8,7 +8,7 @@
+         let job = ExpertAxisRDMAJob(schema: "gemma4_expert_rdma_check_v1", modelDirectory: "/fixture/gemma",
+             membershipEpoch: "a7d2c7ab-cc2f-4d16-93d4-bd820c3e27a1", requestID: "6bdacda5-714b-45d0-a9f9-e9a790506102",
+             buildIdentitySHA256: String(repeating: "a", count: 64), ownership: "contiguous48_80",
+-            rank: 0, layer: 0, tokenCounts: [1,7,8,9,33], timeoutSeconds: 300)
++            rank: 0, layer: 0, tokenCounts: ExpertAxisQualificationLimits.extendedCases, timeoutSeconds: 300)
+         let encodedJob = try canonicalJSONData(job)
+         let decoded = try ExpertAxisRDMAJob.decode(encodedJob)
+         guard decoded.scopeSHA256 == job.scopeSHA256 else { throw ProbeError("Expert local job roundtrip differs") }
+@@ -29,7 +29,7 @@
+             throw ProbeError("Expert ownership is not bound")
+         }
+         groups.append("canonical-common-scope-and-both-ownerships")
+-        let invalidJobs: [[String: Any]] = [["rank": 2], ["layer": 30], ["tokenCounts": [34]], ["tokenCounts": [1,1]],
++        let invalidJobs: [[String: Any]] = [["rank": 2], ["layer": 30], ["tokenCounts": [34]], ["tokenCounts": [129]], ["tokenCounts": [1,1]],
+             ["timeoutSeconds": 301], ["ownership": "balanced"], ["modelDirectory": "/fixture/../gemma"],
+             ["buildIdentitySHA256": "unsigned"], ["ignored": true]]
+         for changed in invalidJobs {
+@@ -50,10 +50,10 @@
+             guard order.map({ returned[$0].globalExpertID }) == ids else { throw ProbeError("Expert original top-k order changed") }
+         }
+         groups.append("empty-ranks-and-mixed-original-slot-order")
+-        let selected = (0..<33).map { row in (0..<8).map { (row*7+$0*3)%128 } }
+-        let maximum = try route(selected, index: 4)
+-        let maximumPlan = try ExpertAxisRDMACodec.validateRoute(maximum, job: job, index: 4)
+-        guard maximumPlan.assignmentCount == 264, 264*2816*2 <= ExpertAxisRDMACodec.payloadLimit else {
++        let selected = (0..<128).map { row in (0..<8).map { (row*7+$0*3)%128 } }
++        let maximum = try route(selected, index: 6)
++        let maximumPlan = try ExpertAxisRDMACodec.validateRoute(maximum, job: job, index: 6)
++        guard maximumPlan.assignmentCount == 1024, 1024*2816*2 <= ExpertAxisRDMACodec.payloadLimit else {
+             throw ProbeError("Expert maximum route/transfer does not fit closed bound")
+         }
+         groups.append("maximum-real-assignment-envelope")
+@@ -61,9 +61,9 @@
+         try refuse { _ = try ExpertAxisRDMACodec.validateRoute(route([[0,1,2,3,4,5,6,128]], index: 0), job: job, index: 0) }
+         try refuse { _ = try ExpertAxisRDMACodec.validateRoute(maximum, job: job, index: 0) }
+         var badDigest = maximum; badDigest.routeSHA256 = String(repeating: "d", count: 64)
+-        try refuse { _ = try ExpertAxisRDMACodec.validateRoute(badDigest, job: job, index: 4) }
++        try refuse { _ = try ExpertAxisRDMACodec.validateRoute(badDigest, job: job, index: 6) }
+         var badWeights = maximum; badWeights.weightsSHA256 = ""
+-        try refuse { _ = try ExpertAxisRDMACodec.validateRoute(badWeights, job: job, index: 4) }
++        try refuse { _ = try ExpertAxisRDMACodec.validateRoute(badWeights, job: job, index: 6) }
+         groups.append("malformed-route-substitution-and-stale-case")
+         let packet = try canonicalJSONData(ExpertAxisRDMAPacket(schema: "gemma4_expert_rdma_wire_v1",
+             scopeSHA256: job.scopeSHA256, senderRank: 0, ordinal: 3, value: maximum))
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisRDMAResources.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisRDMAResources.swift
+@@ -5,8 +5,8 @@
+ /// diagnostic budget. Actual rank ownership is smaller; no discount is taken.
+ final class ExpertAxisRDMAResources {
+     let base: ExpertAxisCheckResources
+-    static let extraNativeBytes = 16 * 1_048_576
+-    static let extraHostBytes = 16 * 1_048_576
++    static let extraNativeBytes = 32 * 1_048_576
++    static let extraHostBytes = 32 * 1_048_576
+     init(geometry: ExpertAxisGeometry, ownership: ExpertIDOwnership, deadline: UInt64) throws {
+         base = try .init(geometry: geometry, ownership: ownership, deadline: deadline)
+     }

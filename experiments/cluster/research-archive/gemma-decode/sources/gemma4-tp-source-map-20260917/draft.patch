@@ -1,0 +1,174 @@
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/GemmaAttentionPartition.swift
+@@ -0,0 +1,97 @@
++import Foundation
++import MLXLLM
++import MLXLMCommon
++
++/// Prospective metadata helper only; no caller, model allocation or admission.
++/// Compose after GemmaPartitionPlan's original-config/quantization validation.
++/// Unlike Qwen's gated query projection, Gemma stores exactly Q * D query rows.
++struct GemmaAttentionPartition {
++    let hidden: Int
++    let queryHeads: Int
++    let slidingKVHeads: Int
++    let fullKVHeads: Int
++    let slidingHeadDim: Int
++    let fullHeadDim: Int
++    let fullKeqV: Bool
++    let layerTypes: [String]
++
++    var configurationUpdates: [String: Int] {
++        ["num_attention_heads": queryHeads / 2,
++         "num_key_value_heads": slidingKVHeads / 2,
++         "num_global_key_value_heads": fullKVHeads / 2,
++         "head_dim": slidingHeadDim, "global_head_dim": fullHeadDim]
++    }
++
++    init(config: Gemma4TextConfiguration) throws {
++        let fullKV = config.numGlobalKeyValueHeads ?? config.numKeyValueHeads
++        let sizes = [config.hiddenSize, config.numAttentionHeads,
++                     config.numKeyValueHeads, fullKV, config.headDim, config.globalHeadDim]
++        guard sizes.allSatisfy({ (1...1_048_576).contains($0) }),
++              config.hiddenSize.isMultiple(of: 64),
++              config.numAttentionHeads.isMultiple(of: 2),
++              config.numKeyValueHeads.isMultiple(of: 2), fullKV.isMultiple(of: 2),
++              config.numAttentionHeads.isMultiple(of: config.numKeyValueHeads),
++              config.numAttentionHeads.isMultiple(of: fullKV),
++              (1...4096).contains(config.numHiddenLayers),
++              config.layerTypes.count == config.numHiddenLayers,
++              config.layerTypes.allSatisfy({ ["sliding_attention", "full_attention"].contains($0) }),
++              config.numKvSharedLayers == 0 else {
++            throw ProbeError("Gemma head TP requires whole two-rank GQA groups and non-shared layer caches")
++        }
++        for dimension in [config.headDim, config.globalHeadDim] {
++            let query = try Self.width(config.numAttentionHeads, dimension)
++            guard (query / 2).isMultiple(of: 64) else {
++                throw ProbeError("Gemma o_proj rank inputs must cover complete G64 groups")
++            }
++        }
++        _ = try Self.width(config.numKeyValueHeads, config.headDim)
++        _ = try Self.width(fullKV, config.globalHeadDim)
++        hidden = config.hiddenSize; queryHeads = config.numAttentionHeads
++        slidingKVHeads = config.numKeyValueHeads; fullKVHeads = fullKV
++        slidingHeadDim = config.headDim; fullHeadDim = config.globalHeadDim
++        fullKeqV = config.attentionKeqV; layerTypes = config.layerTypes
++    }
++
++    func selection(layer: Int, relativeName: String, shape: [Int], rank: Int,
++                   quantization: BaseConfiguration.Quantization?) throws -> TensorSelection {
++        guard layerTypes.indices.contains(layer), (0..<2).contains(rank) else {
++            throw ProbeError("Invalid Gemma attention layer or rank")
++        }
++        let full = layerTypes[layer] == "full_attention"
++        let dimension = full ? fullHeadDim : slidingHeadDim
++        if ["q_norm.weight", "k_norm.weight"].contains(relativeName) {
++            guard shape == [dimension], quantization == nil else {
++                throw ProbeError("Gemma attention norm is an unquantized, replicated per-head vector")
++            }
++            return .all
++        }
++        let parts = relativeName.split(separator: ".").map(String.init)
++        guard parts.count == 2, ["q_proj", "k_proj", "v_proj", "o_proj"].contains(parts[0]),
++              ["weight", "scales", "biases"].contains(parts[1]),
++              !(full && fullKeqV && parts[0] == "v_proj"),
++              let policy = quantization, policy.mode == .affine,
++              [4, 8].contains(policy.bits), policy.groupSize == 64 else {
++            throw ProbeError("Unsupported Gemma attention tensor or affine W4/W8 G64 policy")
++        }
++        let packing = parts[1] == "weight" ? 32 / policy.bits : 64
++        let queryWidth = try Self.width(queryHeads, dimension)
++        let kvWidth = try Self.width(full ? fullKVHeads : slidingKVHeads, dimension)
++        let output = parts[0] == "o_proj"
++        let rows = output ? hidden : (parts[0] == "q_proj" ? queryWidth : kvWidth)
++        let columns = (output ? queryWidth : hidden) / packing
++        let axis = output ? 1 : 0
++        guard shape == [rows, columns], shape[axis].isMultiple(of: 2) else {
++            throw ProbeError("Gemma attention packed source shape differs from the original full geometry")
++        }
++        let half = shape[axis] / 2
++        return .axis(axis, [(rank * half)..<((rank + 1) * half)])
++    }
++
++    private static func width(_ heads: Int, _ dimension: Int) throws -> Int {
++        let product = heads.multipliedReportingOverflow(by: dimension)
++        guard !product.overflow, product.partialValue <= Int(Int32.max) else {
++            throw ProbeError("Gemma attention projection width overflow")
++        }
++        return product.partialValue
++    }
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/GemmaAttentionPartitionChecks.swift
+@@ -0,0 +1,71 @@
++import Foundation
++import MLXLLM
++import MLXLMCommon
++
++/// Staged metadata checks, not executed. Call with the exact retained 26B config.
++/// This entry deliberately allocates no model or MLXArray and performs no I/O.
++func checkGemmaAttentionPartition(configuration: Data) throws {
++    guard let root = try JSONSerialization.jsonObject(with: configuration) as? [String: Any],
++          let text = root["text_config"] as? [String: Any] else {
++        throw ProbeError("Expected the exact wrapped Gemma26B metadata fixture")
++    }
++    func decoded(_ value: [String: Any]) throws -> Gemma4TextConfiguration {
++        try JSONDecoder().decode(Gemma4TextConfiguration.self,
++            from: JSONSerialization.data(withJSONObject: value))
++    }
++    func require(_ condition: Bool) throws {
++        guard condition else { throw ProbeError("Gemma attention metadata check failed") }
++    }
++    func refuse(_ operation: () throws -> Void) throws {
++        do { try operation() } catch is ProbeError { return }
++        throw ProbeError("Gemma attention metadata check accepted a refused case")
++    }
++    func policy(bits: Int = 4, group: Int = 64) throws -> BaseConfiguration.Quantization {
++        try JSONDecoder().decode(BaseConfiguration.Quantization.self,
++            from: Data("{\"bits\":\(bits),\"group_size\":\(group),\"mode\":\"affine\"}".utf8))
++    }
++    let plan = try GemmaAttentionPartition(config: decoded(text))
++    try require(plan.configurationUpdates == ["num_attention_heads": 8,
++        "num_key_value_heads": 4, "num_global_key_value_heads": 1,
++        "head_dim": 256, "global_head_dim": 512])
++    let w4 = try policy(), w8 = try policy(bits: 8)
++    func selected(_ layer: Int, _ name: String, _ shape: [Int], _ rank: Int,
++                  _ quantization: BaseConfiguration.Quantization? = nil) throws -> TensorSelection {
++        try plan.selection(layer: layer, relativeName: name, shape: shape,
++                           rank: rank, quantization: quantization)
++    }
++    // Hand-assembled global stored shapes, not computed by the selection helper.
++    let cases: [(Int, String, [Int], Int, Range<Int>)] = [
++        (0, "q_proj.weight", [4096, 352], 0, 0..<2048),
++        (0, "k_proj.scales", [2048, 44], 0, 0..<1024),
++        (0, "v_proj.biases", [2048, 44], 0, 0..<1024),
++        (0, "o_proj.weight", [2816, 512], 1, 0..<256),
++        (0, "o_proj.scales", [2816, 64], 1, 0..<32),
++        (5, "q_proj.weight", [8192, 352], 0, 0..<4096),
++        (5, "k_proj.weight", [1024, 352], 0, 0..<512),
++        (5, "o_proj.biases", [2816, 128], 1, 0..<64),
++    ]
++    for (layer, name, shape, axis, first) in cases {
++        try require(selected(layer, name, shape, 0, w4) == .axis(axis, [first]))
++        try require(selected(layer, name, shape, 1, w4)
++            == .axis(axis, [first.upperBound..<shape[axis]]))
++    }
++    try require(selected(0, "q_norm.weight", [256], 1) == .all)
++    try require(selected(5, "k_norm.weight", [512], 0) == .all)
++    try require(selected(0, "q_proj.weight", [4096, 704], 0, w8) == .axis(0, [0..<2048]))
++    try require(selected(5, "o_proj.weight", [2816, 2048], 1, w8) == .axis(1, [1024..<2048]))
++    try refuse { _ = try selected(0, "q_proj.weight", [8192, 352], 0, w4) } // Qwen layout
++    try refuse { _ = try selected(5, "v_proj.weight", [1024, 352], 0, w4) } // K=V
++    try refuse { _ = try selected(0, "q_norm.weight", [512], 0) }
++    try refuse { _ = try selected(0, "q_proj.weight", [4096, 352], 2, w4) }
++    try refuse { _ = try selected(30, "q_proj.weight", [4096, 352], 0, w4) }
++    try refuse { _ = try selected(0, "q_proj.bias", [4096], 0, w4) }
++    try refuse { _ = try selected(0, "q_proj.weight", [4096, 352], 0) }
++    try refuse { _ = try selected(0, "q_proj.weight", [4096, 352], 0, policy(bits: 2)) }
++    try refuse { _ = try selected(0, "q_proj.weight", [4096, 352], 0, policy(group: 32)) }
++    for (field, value) in [("num_global_key_value_heads", 1), ("num_kv_shared_layers", 1),
++                           ("head_dim", 258), ("num_attention_heads", 15)] {
++        var changed = text; changed[field] = value
++        try refuse { _ = try GemmaAttentionPartition(config: decoded(changed)) }
++    }
++}

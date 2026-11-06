@@ -1,0 +1,54 @@
+{
+  "schema": "gemma4_remote_dense_numerical_source_v2",
+  "predecessor": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-mtp-remote-dense-numerical-20260920/source-inputs.json",
+    "sha256": "ee64ef7a96338261d5e17acecf699ba4cff669145f6a271755e2956bcd722435"
+  },
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 3317,
+      "sha256": "4d3852e7712b851c981cd31039d3a1063287d9d79bd80241cee96fb199de7ad9"
+    },
+    {
+      "path": "Tests/run.py",
+      "bytes": 1635,
+      "sha256": "f4765096d4061ae1a95d88474d3e4eea3dd1cb4a4ebdc6f2f8adba666f23314b"
+    },
+    {
+      "path": "Tests/test_join.py",
+      "bytes": 4098,
+      "sha256": "3ade5243697544439c479b124f254772ceaddcb73afb373ed27f259b0d370c52"
+    },
+    {
+      "path": "check_sources.py",
+      "bytes": 885,
+      "sha256": "9bc26dcf88eafa30434d0147aec48f403f84d4bd81a6d090a7073ad533c788e5"
+    },
+    {
+      "path": "compare.py",
+      "bytes": 13466,
+      "sha256": "8795f7f138b7faa4d96b4a488bfc0a9684497074a50d5ca0317cf0a2c5412e77"
+    },
+    {
+      "path": "inputs.json",
+      "bytes": 2249,
+      "sha256": "8e639188abef70d7c72dd20a82357694d10eebcc22a17d745f2d7a0d41d33e7d"
+    },
+    {
+      "path": "numeric_reader.py",
+      "bytes": 27959,
+      "sha256": "f4cca74ba3836faf0ae519aefa890e9bb887430b23ee5a39b81e1f7f4ff9425c"
+    },
+    {
+      "path": "recorded_math.py",
+      "bytes": 3097,
+      "sha256": "f166a6a27c20021c30c62e6966e63583b9ecab955a3b23af64869cd821f25914"
+    },
+    {
+      "path": "snapshot.py",
+      "bytes": 1300,
+      "sha256": "46dfa5689fba4358412c6c4ce03a759ca71d5c30bcde9df995a46c4aad97873b"
+    }
+  ]
+}

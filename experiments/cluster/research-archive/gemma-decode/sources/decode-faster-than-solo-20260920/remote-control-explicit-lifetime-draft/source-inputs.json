@@ -1,0 +1,30 @@
+{
+  "schema": "gemma4_control_explicit_lifetime_sources_v1",
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 1060,
+      "sha256": "ccd1eeb7d35bc5bee7cb2fc0d00a7f7d9704cc69fd0757c7dd027c9f7c2441e1"
+    },
+    {
+      "path": "Runtime/Gemma4MTPControlOperation.swift",
+      "bytes": 2740,
+      "sha256": "177a28b017b14bc46714a5cee29b138ba43b33a8862c0647f3d64ff1853dd4be"
+    },
+    {
+      "path": "integration.json",
+      "bytes": 1079,
+      "sha256": "058434028317d98a12b28ae298318662c85d81ae936c7e777d1f191af7f5ac42"
+    },
+    {
+      "path": "preimages/Gemma4MTPControlOperation.swift",
+      "bytes": 2488,
+      "sha256": "fd746ee857df0a29fb4867cbbd69885f94dd09c132e193bab7297b89bab94eaa"
+    },
+    {
+      "path": "runtime.patch",
+      "bytes": 1760,
+      "sha256": "49419f1146740ef2a618f8fee258eaeb3bb6e825dd6fbf3ca16516d278f6e146"
+    }
+  ]
+}

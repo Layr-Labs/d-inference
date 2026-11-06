@@ -1,0 +1,3 @@
+# Final capture lifetime correction
+
+Compose this target file over core38cee and retain first correction98f585a1. The first correction retains pendingCapture through exact seeded ACK or failure. This addition requires explicit successful C GPU+CPU status fences after session.cancel() before clearing the capture, including an already-closed target session. Failure retains the root in the original owner. No runtime/fixture execution. Target-only resource/cohort successor must retain the adapter through these joins or original process retirement. Required native negatives: failed send, failed stream completion, wrong seeded ACK, already-closed target cancellation, expired check prevents reuse. Existing Foundation controls establish scalar protocol behavior only.

@@ -1,0 +1,21 @@
+{
+  "schema": "gemma4_target_phase_timer_overlay_v1",
+  "arithmeticChanged": false,
+  "extraNativeEvaluations": 0,
+  "overlays": [
+    {
+      "source": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/local-mtp-target-phase-profile/Gemma4OwnedMTPVerification.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4OwnedMTPVerification.swift",
+      "preimageSHA256": "d3675aa3594708c4acbb7abe009960e4eb85defb8e672e31748472883944d50a",
+      "sha256": "f89e3dea0e87037138ef2723702cbe4248d52a3b3a0d74ebcb157d4cb0766133",
+      "bytes": 9409
+    },
+    {
+      "source": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/local-mtp-target-phase-profile/Gemma4LocalMTPDriver.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4LocalMTPDriver.swift",
+      "preimageSHA256": "533f1640a808ea1e8f9b3777a35329e812903f618679cc1072d7badef7e0be4b",
+      "sha256": "2753cff08e87fefba422200995cbd7fb6e74a2277be1a5bbac08282577ee6e68",
+      "bytes": 11124
+    }
+  ]
+}

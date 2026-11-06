@@ -1,0 +1,155 @@
+--- a/jobs.py
++++ b/jobs.py
+@@ -1,4 +1,4 @@
+-"""Exact role-bound P128/P4096 C64 O16/depth2 jobs with fresh request IDs."""
++"""Exact role-bound P128/P4096 C64 O16/chosen-depth1-or-2 jobs with fresh request IDs."""
+ from pathlib import Path
+ import hashlib,json,re,uuid
+ from activation import recheck
+@@ -7,7 +7,8 @@
+ ROLES=[('assistant','darkbloom-24'),('target','darkbloom-48')]
+ def encode(value):return (json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False)+'\n').encode()
+ def hash_bytes(value):return hashlib.sha256(value).hexdigest()
+-def prepare(name,count,capture,embedding):
++def prepare(name,count,capture,embedding,depth=2):
++    assert type(depth) is int and depth in (1,2)
+     assert count in [128,4096] and type(capture) is bool and re.fullmatch('[0-9a-f]{64}',embedding)
+     from registered_embedding import verify
+     assert embedding==verify()
+@@ -22,9 +23,9 @@
+             timeoutSeconds=300,captureEvidence=False,cut=7,prefillPolicy='serial',outputDirectory=remote+'/sidecars')
+         local=dict(schema='gemma4_local_mtp_cohort_job_v1',benchmarkJob=remote+'/job.json',benchmarkJobSHA256=hash_bytes(encode(job)),
+             assistantModelDirectory='/Users/developer/DarkbloomDev/models/Gemma4-26B-assistant-bb94eae1',assistantMetadataDirectory=REMOTE+'/assistant-metadata',
+-            maximumDraftTokens=2,captureEvidence=capture)
++            maximumDraftTokens=depth,captureEvidence=capture)
+         wrapper=dict(schema='gemma4_remote_mtp_cohort_job_v1',role=role,localMTPJob=remote+'/local-mtp.json',localMTPJobSHA256=hash_bytes(encode(local)),
+             targetNativeSHA256=activation['nativeSHA256'],assistantNativeSHA256=activation['nativeSHA256'],embeddingIdentitySHA256=embedding)
+         for filename,value in [('job.json',job),('local-mtp.json',local),('remote-mtp.json',wrapper)]:
+             with (folder/filename).open('xb') as f:f.write(encode(value))
+-    print(json.dumps(dict(status='prepared',case=name,promptCount=count,depth=2,capture=capture,embeddingIdentitySHA256=embedding)))
++    print(json.dumps(dict(status='prepared',case=name,promptCount=count,depth=depth,capture=capture,embeddingIdentitySHA256=embedding)))
+--- a/prepare_case.py
++++ b/prepare_case.py
+@@ -1,6 +1,6 @@
+ import argparse
+ from jobs import prepare
+ p=argparse.ArgumentParser(allow_abbrev=False);p.add_argument('--case',required=True);p.add_argument('--prompt',type=int,choices=[128,4096],required=True)
+-p.add_argument('--capture',action='store_true');p.add_argument('--embedding-sha256',required=True);a=p.parse_args()
++p.add_argument('--depth',type=int,choices=[1,2],default=2);p.add_argument('--capture',action='store_true');p.add_argument('--embedding-sha256',required=True);a=p.parse_args()
+ assert a.case and all(c.isalnum() or c in '-_' for c in a.case)
+-prepare(a.case,a.prompt,a.capture,a.embedding_sha256)
++prepare(a.case,a.prompt,a.capture,a.embedding_sha256,a.depth)
+--- a/root_run.py
++++ b/root_run.py
+@@ -20,6 +20,7 @@
+     p=argparse.ArgumentParser(allow_abbrev=False)
+     p.add_argument('action',choices=['deploy-prepare','install','case-prepare','metadata','run','compare'])
+     p.add_argument('--host',choices=['darkbloom-24','darkbloom-48']);p.add_argument('--case')
++    p.add_argument('--depth',type=int,choices=[1,2],default=2)
+     p.add_argument('--prompt',type=int,choices=[128,4096],default=128);p.add_argument('--capture',action='store_true');p.add_argument('--embedding-sha256')
+     for name in ['binary','build-receipt','sources','tiny-qualification']:p.add_argument('--'+name,type=Path)
+     a=p.parse_args();assert a.case is None or (a.case and all(c.isalnum() or c in '-_' for c in a.case))
+@@ -35,7 +36,7 @@
+             if a.action=='install':command=['deploy.py','install','--host',a.host];timeout=150
+             elif a.action=='case-prepare':
+                 assert a.embedding_sha256
+-                command=['prepare_case.py','--case',a.case,'--prompt',str(a.prompt),'--embedding-sha256',a.embedding_sha256]
++                command=['prepare_case.py','--case',a.case,'--prompt',str(a.prompt),'--depth',str(a.depth),'--embedding-sha256',a.embedding_sha256]
+                 if a.capture:command.append('--capture')
+                 timeout=30
+             elif a.action=='metadata':command=['remote_metadata.py','--case',a.case];timeout=110
+--- a/remote_metadata.py
++++ b/remote_metadata.py
+@@ -14,7 +14,7 @@
+ from benchmark_package import verify,digest
+ from mtp_journal import device_directory,observe,require_empty
+ from target_processes import observe as processes
+-from remote_mtp_contract import validate_inputs
++from remote_mtp_contract import validate_inputs,validate_metadata_depth
+ from dense_contract import metadata_policy
+ verify(package_sha);require_empty(observe(device_directory()));assert not processes(time.monotonic()+4)['prohibited']
+ raw=sys.stdin.buffer.read(65537);assert len(raw)<=65536 and hashlib.sha256(raw).hexdigest()==payload_sha
+@@ -41,7 +41,8 @@
+  assert value['schema']=='gemma4_remote_mtp_cohort_capability_v1' and value['job']==wrapper and value['role']==role
+  assert value['rank']==(1 if role=='target' else 0) and value['metadataOnly'] is True
+  metadata_policy(value,job)
+- assert value['runtimeExecutionAuthorized'] is False and value['servingEnabled'] is False and value['maximumDraftTokens']==2 and value['maximumBufferedProposals']==5
++ assert value['runtimeExecutionAuthorized'] is False and value['servingEnabled'] is False
++ validate_metadata_depth(value,local)
+  assert not pathlib.Path(job['outputDirectory']).exists()
+  verify(package_sha);require_empty(observe(device_directory()));assert not processes(time.monotonic()+4)['prohibited']
+  receipt.update(status='passed',description=value)
+--- a/package/remote_mtp_contract.py
++++ b/package/remote_mtp_contract.py
+@@ -8,6 +8,25 @@
+ def sha(raw):return hashlib.sha256(raw).hexdigest()
+ def digest(value):return type(value) is str and re.fullmatch('[0-9a-f]{64}',value) is not None
+ 
++def verification_depth(local):
++    depth=local['maximumDraftTokens']
++    require(type(depth) is int and depth in (1,2),'Chosen verification depth must be one or two')
++    return depth
++
++def validate_metadata_depth(value,local):
++    require(type(value['maximumDraftTokens']) is int
++        and value['maximumDraftTokens']==verification_depth(local)
++        and type(value['maximumBufferedProposals']) is int and value['maximumBufferedProposals']==5,
++        'Metadata chosen depth/producer queue differs')
++
++def validate_verification_widths(widths,local):
++    # The producer may still grant two and retain five proposals at chosen depth
++    # one. This bounds actual target verification, not producer credit capacity.
++    depth=verification_depth(local)
++    require(type(widths) is list and widths and widths[0]==1
++        and all(type(w) is int and 1<=w<=depth+1 for w in widths),
++        'Verification widths exceed the chosen depth')
++
+ def validate_inputs(job,local,wrapper,job_sha,local_sha,run):
+     require(set(wrapper)=={'schema','role','localMTPJob','localMTPJobSHA256','targetNativeSHA256','assistantNativeSHA256','embeddingIdentitySHA256'},'Remote job fields')
+     role=wrapper['role'];require(role in ('target','assistant'),'Physical role')
+@@ -17,7 +36,8 @@
+     require(all(digest(wrapper[k]) for k in ['targetNativeSHA256','assistantNativeSHA256','embeddingIdentitySHA256']),'Native/embedding digest')
+     require(set(local)=={'schema','benchmarkJob','benchmarkJobSHA256','assistantModelDirectory','assistantMetadataDirectory','maximumDraftTokens','captureEvidence'},'Local input fields')
+     require(local['schema']=='gemma4_local_mtp_cohort_job_v1' and local['benchmarkJob']==str(run/'job.json') and local['benchmarkJobSHA256']==job_sha
+-        and local['maximumDraftTokens']==2 and type(local['captureEvidence']) is bool,'Depth/local input')
++        and type(local['captureEvidence']) is bool,'Depth/local input')
++    verification_depth(local)
+     require(local['assistantModelDirectory']=='/Users/developer/DarkbloomDev/models/Gemma4-26B-assistant-bb94eae1'
+         and local['assistantMetadataDirectory']==str(REMOTE/'assistant-metadata'),'Registered assistant directories')
+     require(set(job)=={'schema','mode','modelDirectory','metadataDirectory','promptFile','promptFileSHA256','outputDirectory',
+@@ -76,13 +96,14 @@
+             require(s['originalServiceReleased'] is True and s['branchRootsReleased'] is True and s['targetTokensIndependentlyVerified'] is False
+                 and s['physicalOwnerRetirementEstablished'] is False and digest(s['wireScopeSHA256']),'Assistant release evidence');continue
+         require(s['warmup'] is (index==0) and s['requestStateRetired'] is True and digest(s['scopeSHA256']),'Target request lifecycle')
+-        require(s['maximumDraftTokens']==2 and s['maximumBufferedProposals']==5 and s['mtpEnabled'] is True and s['remoteAssistant'] is True,'Depth/queue')
++        require(s['maximumDraftTokens']==2 and s['maximumBufferedProposals']==5 and s['mtpEnabled'] is True and s['remoteAssistant'] is True,'Producer depth/queue envelope')
+         require(s['targetBatchNumericsQualified'] is False and s['physicalOwnerRetirementEstablished'] is False,'Target quality claim')
+         tokens=s['selectedTokenIDs'];token_sets.append(tokens)
+         require(len(tokens)==16 and all(type(x) is int and 0<=x<262144 for x in tokens)
+             and s['selectedTokenIDsSHA256']==sha(','.join(map(str,tokens)).encode()),'Actual selected tokens')
+         widths=s['verificationWidths'];accepted=s['acceptedPrefixes']
+-        require(widths and widths[0]==1 and len(widths)==len(accepted) and all(type(w) is int and 1<=w<=3 for w in widths)
++        validate_verification_widths(widths,local)
++        require(len(widths)==len(accepted)
+             and all(type(a) is int and 0<=a<w for a,w in zip(accepted,widths)) and len(widths)+sum(accepted)==15
+             and s['committedTokens']==job['promptCount']+15,'Accepted-prefix/frontier accounting')
+         require(s['offeredProposals']==sum(w-1 for w in widths) and s['acceptedProposals']==sum(accepted)
+--- a/compare.py
++++ b/compare.py
+@@ -7,7 +7,7 @@
+ from root_run import verify_source
+ from evidence import Inputs,action,journal,processes,resources
+ from binding_common import parse,require
+-from remote_mtp_contract import validate_inputs,validate_result
++from remote_mtp_contract import validate_inputs,validate_result,validate_metadata_depth
+ from dense_contract import POLICY,metadata_policy
+ from jaccl_startup_stderr import validate_retained
+ from jobs import ROLES
+@@ -109,6 +109,7 @@
+             and meta['nativeSHA256']==activation['nativeSHA256'] and meta['packageSHA256']==package_sha and meta['jobSHA256']==job_sha
+             and meta['localMTPConfigSHA256']==local_sha and meta['remoteMTPConfigSHA256']==wrapper_sha,'Actual metadata prerequisite differs')
+         metadata_policy(meta['description'],job)
++        validate_metadata_depth(meta['description'],local)
+         desc=meta['description'];require(desc['job']==wrapper and desc['scopeSHA256']==result['scopeSHA256'] and desc['runtimeExecutionAuthorized'] is False,'Metadata/result scope')
+         before=inputs.read(returned/'journal-before.json');after=inputs.read(returned/'journal-after.json');journal(before);journal(after,before)
+         final=[x for x in launch['quiescence'] if x['host']==host];require(len(final)==1,'Missing exact quiescence host')

@@ -1,0 +1,35 @@
+{
+  "schema": "gemma4_o128_budget_correction_v1",
+  "baseSources": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/build/remote-control-composition-1/sources.json",
+    "bytes": 85742,
+    "sha256": "2e5d0419c5cce1abaec52526e269ea289e58e86bad3282e9231f67f6d4425e7f"
+  },
+  "workspace": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace",
+  "files": [
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceBudget.swift",
+      "before": {
+        "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceBudget.swift",
+        "bytes": 10887,
+        "sha256": "08d9d57da1779f756002b349c412fc37e1eadad0a1d381b3496e3ece1bea4fae"
+      },
+      "source": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/mtp-o128-budget-correction/Runtime/Gemma4BenchmarkResourceBudget.swift",
+        "bytes": 11224,
+        "sha256": "fa09e49a4cb230f0934d747b39f51d3cdd20a15d47cbb5846d59460d33fd99e9"
+      }
+    }
+  ],
+  "helper": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkOutputEnvelope.swift",
+    "bytes": 609,
+    "sha256": "f7b72b3252c0c8b35725923c6b5100fb878c6605b0a3d436607888d75453e679"
+  },
+  "failedMetadata": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-local-mtp-o128-v1/root-actions/metadata-p128-o128-solo-capture-1/receipt.json",
+    "bytes": 968,
+    "sha256": "c673b2c65918c8628dae188ffedebceca3be68dd70f2d39e38bc677f2d989e7c"
+  },
+  "nativeExecuted": false
+}

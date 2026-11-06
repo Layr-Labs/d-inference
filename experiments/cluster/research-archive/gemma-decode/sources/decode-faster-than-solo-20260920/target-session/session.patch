@@ -1,0 +1,28 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4OwnedForwardSession.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4OwnedForwardSession.swift
+@@ -8,12 +8,13 @@
+ /// chronology, native evaluation, snapshots and retirement are the same core.
+ /// This low-level owner does not authorize registered memory use or transport.
+ final class Gemma4OwnedForwardSession {
+-    private let loaded: Gemma4LoadedForwardModel
+-    private let state: CBv2OwnedRequestState
++    let loaded: Gemma4LoadedForwardModel
++    let state: CBv2OwnedRequestState
+     private let probe: Gemma4ForwardProbe
+     private let residualDType: DType
+     let request: QwenLayerStageGenerationRequest
+-    private var schedule: QwenLayerStageGenerationSchedule
++    var schedule: QwenLayerStageGenerationSchedule
++    var activeMTPWindow: Gemma4OwnedMTPWindow?
+ 
+     var committedTokens: Int { state.committedTokens }
+     var isClosed: Bool { state.isClosed }
+@@ -163,7 +164,7 @@
+ 
+     private func retire(failed: Bool) throws {
+         try MLX.withError { native in
+-            do { try state.retire(failed: failed); try native.check() }
++            do { try state.retire(failed: failed); try native.check(); activeMTPWindow = nil }
+             catch { try native.check(); throw error }
+         }
+     }

@@ -1,0 +1,120 @@
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ForwardDType.swift
+@@ -0,0 +1,30 @@
++import Foundation
++
++/// Raw safetensors labels remain in artifact identities. Native parameter
++/// names are projected explicitly; neither projection predicts activation/KV types.
++enum Gemma4ForwardDType: String {
++    case uint32 = "U32", float32 = "F32", float16 = "F16", bfloat16 = "BF16"
++
++    init(safetensorsName: String) throws {
++        guard let value = Self(rawValue: safetensorsName) else {
++            throw ProbeError("Unsupported Gemma safetensors dtype")
++        }
++        self = value
++    }
++
++    var nativeSourceName: String {
++        switch self {
++        case .uint32: return "uint32"
++        case .float32: return "float32"
++        case .float16: return "float16"
++        case .bfloat16: return "bfloat16"
++        }
++    }
++
++    var nativeLoadedName: String { self == .float16 ? "bfloat16" : nativeSourceName }
++    var requiresFloat32ParameterCast: Bool { self == .float16 || self == .bfloat16 }
++
++    func acceptsConstructor(nativeName: String) -> Bool {
++        self == .uint32 ? nativeName == "uint32" : ["float16", "bfloat16", "float32"].contains(nativeName)
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ForwardModel.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ForwardModel.swift
+@@ -130,7 +130,7 @@
+         }
+         for tensor in selected {
+             guard let value = actual[tensor.localName], value.shape == tensor.source.layout.shape,
+-                  (value.dtype == .uint32) == (tensor.source.layout.sourceDType == "uint32") else {
++                  tensor.dtype.acceptsConstructor(nativeName: String(describing: value.dtype)) else {
+                 throw ProbeError("Registered Gemma constructor packed shape/class differs")
+             }
+         }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ForwardSelection.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ForwardSelection.swift
+@@ -8,8 +8,13 @@
+ struct Gemma4SelectedTensor {
+     let source: LayerStageSourceTensor
+     let localName: String
+-    var loadedDType: String {
+-        source.layout.sourceDType == "float16" ? "bfloat16" : source.layout.sourceDType
++    let dtype: Gemma4ForwardDType
++    var sourceDType: String { dtype.nativeSourceName }
++    var loadedDType: String { dtype.nativeLoadedName }
++
++    init(source: LayerStageSourceTensor, localName: String) throws {
++        self.source = source; self.localName = localName
++        dtype = try Gemma4ForwardDType(safetensorsName: source.layout.sourceDType)
+     }
+ }
+ 
+@@ -20,14 +25,14 @@
+         switch target {
+         case .fullReference:
+             let excluded = Set(plan.artifact.excludedSourceNames)
+-            result = plan.artifact.sources.filter { !excluded.contains($0.layout.canonicalName) }.map {
+-                .init(source: $0, localName: $0.layout.canonicalName)
++            result = try plan.artifact.sources.filter { !excluded.contains($0.layout.canonicalName) }.map {
++                try .init(source: $0, localName: $0.layout.canonicalName)
+             }
+         case .stage(let rank):
+             guard plan.stages.indices.contains(rank) else { throw ProbeError("Unknown Gemma stage") }
+-            result = plan.mappings.flatMap { mapping in
+-                mapping.destinations.filter { $0.rank == rank }.map {
+-                    Gemma4SelectedTensor(source: mapping.source, localName: $0.localName)
++            result = try plan.mappings.flatMap { mapping in
++                try mapping.destinations.filter { $0.rank == rank }.map {
++                    try Gemma4SelectedTensor(source: mapping.source, localName: $0.localName)
+                 }
+             }
+         }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RegisteredMaterialization.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RegisteredMaterialization.swift
+@@ -59,7 +59,7 @@
+                         var array = read.array
+                         try checked()
+                         guard array.shape == selected.source.layout.shape,
+-                              String(describing: array.dtype) == selected.source.layout.sourceDType else {
++                              String(describing: array.dtype) == selected.sourceDType else {
+                             throw ProbeError("Registered Gemma source array differs")
+                         }
+                         // Registered artifact is already canonical split-expert
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RegisteredSource.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RegisteredSource.swift
+@@ -32,11 +32,12 @@
+             throw ProbeError("Registered Gemma verified source coverage differs")
+         }
+         for source in artifact.sources {
++            let dtype = try Gemma4ForwardDType(safetensorsName: source.layout.sourceDType)
+             guard let descriptor = actual[source.layout.canonicalName],
+                   descriptor.file.path == source.sourceFile,
+                   descriptor.offset == source.sourceOffset,
+                   descriptor.shape == source.layout.shape,
+-                  String(describing: descriptor.dtype) == source.layout.sourceDType,
++                  String(describing: descriptor.dtype) == dtype.nativeSourceName,
+                   descriptor.byteCount == source.layout.byteCount else {
+                 throw ProbeError("Registered Gemma verified source descriptor differs")
+             }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortResourceBudget.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortResourceBudget.swift
+@@ -60,7 +60,7 @@
+         // Embedding head conversions are temporary but receive the same charge.
+         var casts = 0
+         for item in selected where (item.localName.hasSuffix(".scales") || item.localName.hasSuffix(".biases"))
+-            && ["float16", "bfloat16"].contains(item.source.layout.sourceDType) {
++            && item.dtype.requiresFloat32ParameterCast {
+             let embedding = item.localName.hasPrefix("language_model.model.embed_tokens.")
+             if embedding && !ownsHead { continue }
+             let bytes = try product(item.source.layout.shape + [4])

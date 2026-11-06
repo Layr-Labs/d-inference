@@ -1,0 +1,15 @@
+{
+  "after": {
+    "bytes": 7628,
+    "sha256": "5670ad7ae5bce2528a0391721ab37b2eec0b4b0908641def21feafbf572bc893"
+  },
+  "before": {
+    "bytes": 7548,
+    "sha256": "c9bb7528980bbacb159ba744faf2ae2ece60d34e4b9fc5f22dbfb73613d46f03"
+  },
+  "originalManifest": "96f99cd4486a49decd786b59a600e7e729f171a62805a4fff9ad5f97157a7f1f",
+  "reason": "Explicitly retain owned staging tensor through consumed ACK, beyond already safe native send completion.",
+  "source": "/Users/developer/DarkbloomDev/cluster-research/gemma4-expert-rdma-20260920/Runtime/ExpertAxisRDMAWire.swift",
+  "sourceOnly": true,
+  "testsChanged": false
+}

@@ -1,0 +1,16 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/AttentionTargetVerificationCheck.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/AttentionTargetVerificationCheck.swift
+@@ -3,11 +3,11 @@
+ import MLX
+ 
+ @_spi(ClusterTesting) public enum AttentionTargetVerificationCheck {
+-    public static func run() throws -> Data {
++    public static func run(check outerCheck: @escaping () throws -> Void = {}) throws -> Data {
+         try MLX.withError { native in
+             let start = DispatchTime.now().uptimeNanoseconds, baseline = Memory.activeMemory
+             func check() throws {
+-                try native.check()
++                try native.check(); try outerCheck(); try native.check()
+                 guard DispatchTime.now().uptimeNanoseconds - start < 55_000_000_000,
+                       Memory.activeMemory <= baseline + 64 * 1024 * 1024 else {
+                     throw ProbeError("Rectangular attention fixture exceeds lifetime or native-active allowance")

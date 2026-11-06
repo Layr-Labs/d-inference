@@ -36,10 +36,11 @@ enum QwenTensorParallelPromptWavefront {
     @TaskLocal static var enabledOverride: Bool?
     static var isEnabled: Bool { enabledOverride ?? enabled }
 
-    /// Both ranks plan and validate merged prompt steps alike, or the pair refuses to load.
+    /// Both ranks plan and validate merged prompt steps alike, or the pair refuses to load
+    /// (`assisted-merge`: assisted lanes merge too, ending at their assistant's capture frontier).
     static var agreementFields: [String] {
         ["qwen-tensor-parallel-prompt-wavefront-v1",
-         isEnabled ? "frames-\(maximumFrames)-beside-decoding-\(framesBesideDecoding)" : "off"]
+         isEnabled ? "frames-\(maximumFrames)-beside-decoding-\(framesBesideDecoding)-assisted-merge" : "off"]
     }
 
     /// The frames one prompt step runs from frame `sequence`: consecutive
@@ -94,6 +95,17 @@ enum QwenTensorParallelPromptWavefront {
     static func forward(model: QwenTensorParallelModel, request: QwenLayerStageGenerationRequest,
                         frames: [QwenLayerStageFrame], caches: [any CBv2AttendingLayerCache],
                         evaluation: CBv2RecurrentStateEvaluation) -> MLXArray {
+        forward(model: model, request: request, frames: frames, caches: caches, evaluation: evaluation,
+            capturingHidden: false).output
+    }
+
+    /// `forward`, and with `capturingHidden` each frame's last decoder layer
+    /// rows (`[1, frame tokens, hidden]`, its own array) from the same graph:
+    /// an assisted lane's step, whose assistant takes each frame's rows.
+    static func forward(model: QwenTensorParallelModel, request: QwenLayerStageGenerationRequest,
+                        frames: [QwenLayerStageFrame], caches: [any CBv2AttendingLayerCache],
+                        evaluation: CBv2RecurrentStateEvaluation,
+                        capturingHidden: Bool) -> (output: MLXArray, hidden: [MLXArray]?) {
         let chunks = frames.map { frame in
             MLXArray(request.promptTokenIDs[frame.tokenOffset ..< (frame.tokenOffset + frame.tokenCount)]
                 .map(Int32.init)).reshaped([1, frame.tokenCount])
@@ -101,18 +113,26 @@ enum QwenTensorParallelPromptWavefront {
         let final = frames.last?.finalPromptChunk ?? false
         let issued = QwenTensorParallelIssuedSums()
         var submitted: [MLXArray] = []
-        let outputs = QwenTensorParallelRowLinear.$issuedSums.withValue(issued) {
-            Qwen35PromptWavefront.prefill(model.model, chunks: chunks, finalChunk: final,
-                caches: caches.map { $0 as! any KVCache }, recurrentState: evaluation) {
-                    guard !issued.sums.isEmpty else { return }
-                    asyncEval(issued.sums)
-                    submitted += issued.sums
-                    issued.sums.removeAll()
-                    while submitted.count > sumsInFlight { eval(submitted.removeFirst()) }
-                }
+        func phaseBuilt() {
+            guard !issued.sums.isEmpty else { return }
+            asyncEval(issued.sums)
+            submitted += issued.sums
+            issued.sums.removeAll()
+            while submitted.count > sumsInFlight { eval(submitted.removeFirst()) }
         }
+        let built: (outputs: [MLXArray], hidden: [MLXArray]?) = QwenTensorParallelRowLinear.$issuedSums.withValue(issued) {
+            let kv = caches.map { $0 as! any KVCache }
+            guard capturingHidden else {
+                return (Qwen35PromptWavefront.prefill(model.model, chunks: chunks, finalChunk: final,
+                    caches: kv, recurrentState: evaluation, phaseBuilt: phaseBuilt), nil)
+            }
+            let step = Qwen35PromptWavefront.prefillWithHidden(model.model, chunks: chunks, finalChunk: final,
+                caches: kv, recurrentState: evaluation, phaseBuilt: phaseBuilt)
+            return (step.outputs, step.hidden)
+        }
+        let outputs = built.outputs
         // Earlier frames' last rows run too, as each frame's own output did; nothing reads them.
         asyncEval(Array(outputs.dropLast()))
-        return final ? outputs[outputs.count - 1][0..., -1, 0...] : outputs[outputs.count - 1]
+        return (final ? outputs[outputs.count - 1][0..., -1, 0...] : outputs[outputs.count - 1], built.hidden)
     }
 }

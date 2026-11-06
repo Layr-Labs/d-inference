@@ -7101,8 +7101,14 @@ Invariants:
    same order on both ranks. They stay sealed FP32 all-sums: no BF16 partial,
    no TF32 change.
 3. Only text lanes of dense models on native KV rows merge
-   (`QwenTensorParallelPromptWavefront.merges`). Assisted (MTP) lanes, media
-   lanes, packed KV and routed-expert models run one frame a step.
+   (`QwenTensorParallelPromptWavefront.merges`). Media lanes, packed KV and
+   routed-expert models run one frame a step. An assisted (MTP) lane merges too:
+   its step also ends at its assistant's capture frontier, runs the same
+   wavefront (`Qwen35PromptWavefront.prefillWithHidden` also returns each
+   frame's last-layer rows), and its assistant then takes each frame's rows in
+   order as after a lone frame (`QwenTensorParallelMTPDecoder.prefill(frames:)`;
+   `QwenTensorParallelAssistedPromptWavefrontTests`: the unassisted wavefront's
+   logits and rows, and the one-frame assistant state, bit for bit).
 4. A step's further frames in flight are charged:
    `QwenTensorParallelPromptWavefront.inFlightBytes` (per further frame, five
    frames' FP32 collective payload: two partials, two sums and the BF16

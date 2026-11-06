@@ -116,31 +116,55 @@ final class QwenTensorParallelMTPDecoder {
         statistics = .init(depth: depth)
     }
 
-    func prefill(check: () throws -> Void) throws -> MLXArray? {
+    /// The assistant's request state (history, head K/V) and the carried
+    /// prompt row, for tests comparing what two prompt schedules left.
+    var assistantStateArrays: [MLXArray] {
+        head.assistant.evaluationTargets(for: state) + (promptFrontier.map { [$0] } ?? [])
+    }
+
+    /// Prompt boundaries a merged prompt step must end at: the capture
+    /// frontier, whose checkpoint reads the target state there.
+    var promptStepFrontiers: [Int] { captureFrontier > 0 ? [captureFrontier] : [] }
+
+    /// The next `frames` prompt frames as one target step (1: a lone frame).
+    /// The assistant then takes each frame's rows in order, exactly as it
+    /// takes a lone frame's: observe, evaluate, capture at the capture
+    /// frontier (which ends a step), flush complete history blocks.
+    func prefill(frames: Int = 1, check: () throws -> Void) throws -> MLXArray? {
         do {
             return try MLX.withError { error in
                 func checked() throws { try error.check(); try check() }
                 guard !retired, !failed, selectedCount == 0 else { throw ProbeError("Qwen TP MTP prompt is closed") }
-                let start = target.state.committedTokens
-                let output = try target.prefillForMTP(check: checked)
-                let end = target.state.committedTokens
-                let tokens = MLXArray(request.promptTokenIDs[start..<end].map(Int32.init)).reshaped([1, end - start])
-                head.assistant.observeCommittedTarget(.init(tokens: tokens, hidden: output.hidden), requestState: state)
-                promptFrontier = output.hidden[0..., (end - start - 1)..<(end - start), 0...]
-                eval(head.assistant.evaluationTargets(for: state) + [promptFrontier!]); try checked()
-                if end == captureFrontier {
-                    guard captured == nil else { throw ProbeError("Qwen TP assistant prefix is already captured") }
-                    captured = try .capture(target: target, assistant: head.assistant, requestState: state,
-                        frontier: captureFrontier, limitBytes: captureLimitBytes,
-                        allocationBound: allocationBound, check: checked)
+                var start = target.state.committedTokens
+                let output = try target.prefillForMTP(frames: frames, check: checked)
+                let committed = target.state.committedTokens
+                guard output.frames.count == frames,
+                      start + output.frames.reduce(0, { $0 + $1.dim(1) }) == committed else {
+                    throw ProbeError("Qwen TP assistant prompt step differs from its frames")
                 }
-                // Past any prompt checkpoint, move the leading complete history
-                // blocks the first round would flush first into head K/V now,
-                // so a long prompt does not hold its whole trusted history.
-                if flushesHistoryDuringPrompt, captureFrontier == 0 || end >= captureFrontier {
-                    if head.assistant.flushCompleteHistoryBlocks(requestState: state) > 0 {
-                        eval(head.assistant.evaluationTargets(for: state)); try checked()
+                for (index, hidden) in output.frames.enumerated() {
+                    let end = start + hidden.dim(1)
+                    let tokens = MLXArray(request.promptTokenIDs[start..<end].map(Int32.init)).reshaped([1, end - start])
+                    head.assistant.observeCommittedTarget(.init(tokens: tokens, hidden: hidden), requestState: state)
+                    promptFrontier = hidden[0..., (end - start - 1)..<(end - start), 0...]
+                    eval(head.assistant.evaluationTargets(for: state) + [promptFrontier!]); try checked()
+                    if end == captureFrontier {
+                        guard captured == nil, index == output.frames.count - 1 else {
+                            throw ProbeError("Qwen TP assistant prefix capture is not at its step's end")
+                        }
+                        captured = try .capture(target: target, assistant: head.assistant, requestState: state,
+                            frontier: captureFrontier, limitBytes: captureLimitBytes,
+                            allocationBound: allocationBound, check: checked)
                     }
+                    // Past any prompt checkpoint, move the leading complete history
+                    // blocks the first round would flush first into head K/V now,
+                    // so a long prompt does not hold its whole trusted history.
+                    if flushesHistoryDuringPrompt, captureFrontier == 0 || end >= captureFrontier {
+                        if head.assistant.flushCompleteHistoryBlocks(requestState: state) > 0 {
+                            eval(head.assistant.evaluationTargets(for: state)); try checked()
+                        }
+                    }
+                    start = end
                 }
                 return output.logits
             }

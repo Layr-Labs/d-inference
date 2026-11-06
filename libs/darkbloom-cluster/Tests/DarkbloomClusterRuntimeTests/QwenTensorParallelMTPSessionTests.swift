@@ -612,7 +612,7 @@ struct QwenTensorParallelMTPSessionTests {
             while owners[0].session.schedule.committedPromptTokens < request.promptCount {
                 try parallel(owners) { owner in
                     let output = try owner.session.prefill(check: {})
-                    #expect(output.hidden.shape[0] == 1 && output.hidden.shape[2] == 256)
+                    #expect(output.frames.count == 1 && output.frames[0].shape[0] == 1 && output.frames[0].shape[2] == 256)
                     if let logits = output.logits { #expect(logits.shape == [1, 128] && all(isFinite(logits)).item(Bool.self)) }
                 }
             }

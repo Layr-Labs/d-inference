@@ -78,8 +78,9 @@ final class QwenTensorParallelMTPSession: QwenTensorParallelMTPTarget {
         } catch { failed = true; throw error }
     }
 
-    func prefillForMTP(check: () throws -> Void) throws -> PromptResult {
-        try prefill(check: check)
+    func prefillForMTP(frames: Int, check: () throws -> Void) throws -> PromptResult {
+        guard frames == 1 else { throw ProbeError("Qwen TP MTP session prefills one frame a step") }
+        return try prefill(check: check)
     }
 
     func beginWindow(tokens: MLXArray, offset: Int) throws -> (outputs: [MLXArray], roots: [MLXArray]) {

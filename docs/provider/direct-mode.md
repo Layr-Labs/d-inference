@@ -354,13 +354,14 @@ copy of the stream (`provider-swift/Sources/ProviderCore/ProviderLoop+ClusterPai
 | A model the pair does not serve | HTTP `404` | `acquireClusterPairForLocal` |
 | Every lane busy | Waits in arrival order with at most `DARKBLOOM_CLUSTER_QUEUE_WAITING` (default `64`) others; `429` when the queue is full; `503` after waiting longer than `requestTimeout * ((waiting + lanes) / lanes)` (`DistributedRequestQueue.Limits.waitCeiling`); a client that goes away leaves the queue | `ClusterPairLocalLanes` |
 | The pair's warm-up request is running | Waits until admission opens; `503` if the slot retires instead | `ProviderLoop.publishClusterPairSlot` |
-| A lost rank or a stop | Waiting requests get `503`; running ones end with their terminal, and a stop lets them finish first | `ProviderLoop.retireClusterPairSlot` |
+| A stop or an update drain | Waiting requests get `429` at once, as new ones do; running ones finish before the slot retires | `ProviderLoop.beginServingDrain` |
+| A lost rank | Waiting requests get `503`; running ones end with their terminal | `ProviderLoop.retireClusterPairSlot` |
 
 A waiting request costs nothing: it is parked, not polled, until a local
 request releases a lane, a Darkbloom request ends (the capacity refresh that
-follows it), admission opens or the slot retires. A request that finds a lane
-free and nobody waiting takes it at once. Darkbloom requests never wait for
-this queue, and their path through the pair is unchanged.
+follows it), admission opens, a drain begins or the slot retires. A request
+that finds a lane free and nobody waiting takes it at once. Darkbloom requests
+never wait for this queue, and their path through the pair is unchanged.
 
 ### Speed records of cluster requests
 

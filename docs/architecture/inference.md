@@ -7560,8 +7560,9 @@ flowchart LR
 3. Waiters are parked continuations (`ClusterPairLocalLanes.park`), never
    polled. A released local lane (`releaseClusterPairLane`), each Darkbloom
    request's end and the periodic capacity refresh (`refreshClusterPairCapacity`
-   calls `wakeClusterPairLocalWaiters`), admission opening and retirement wake
-   them; cancellation and the queue's ceiling refuse them.
+   calls `wakeClusterPairLocalWaiters`), admission opening, a drain beginning
+   (`beginServingDrain`) and retirement wake them; cancellation and the
+   queue's ceiling refuse them.
 4. Local admission opens only once the warmup canary passed
    (`clusterPairAdmissionOpenSlotID`, set in `publishClusterPairSlot`) and
    closes when retirement starts (`retireClusterPairSlot`).

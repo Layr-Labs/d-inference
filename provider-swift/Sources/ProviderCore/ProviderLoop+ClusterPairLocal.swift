@@ -7,11 +7,11 @@ import Foundation
 // bridge and its lanes. No process, copy or buffer is added. A local request
 // that finds every lane busy waits in arrival order, bounded as `cluster
 // local`'s queue is (`DistributedRequestQueue`). A waiter costs nothing: it is
-// parked until something that can free a lane wakes it (a local request
-// released one, the capacity refresh that follows every Darkbloom request's
-// end, admission opening after the warmup canary, the slot retiring), its
-// client goes away or its ceiling passes. Nothing polls, and a Darkbloom
-// request's path is unchanged: it never waits for this queue.
+// parked until something that can free a lane or refuse it wakes it (a local
+// request released one, the capacity refresh that follows every Darkbloom
+// request's end, admission opening after the warmup canary, a drain, the slot
+// retiring), its client goes away or its ceiling passes. Nothing polls, and a
+// Darkbloom request's path is unchanged: it never waits for this queue.
 
 /// The owner's use of the pair through this Mac's local API began or ended.
 enum ClusterPairLocalUse { case began, ended }

@@ -18,15 +18,29 @@ into your Darkbloom balance.
   you. The first job of a platform also needs that platform's VM images
   (Linux 4 GiB, macOS 46 GiB, nothing once installed). Each Linux job needs a
   30 GiB scratch disk and each macOS job 40 GiB.
-- A Darkbloom account that Darkbloom approved to host sandboxes. An account not
-  approved yet joins a waitlist, and the Mac enrolls once it is approved.
+- A Darkbloom account that Darkbloom approved for Darkbloom Sandbox from its
+  waitlist, and this Mac linked to it with `darkbloom login`. `darkbloom sandbox
+  setup` installs nothing until the account is approved (step 1).
 - The Mac plugged in, never sleeping on its power adapter, and logged in at the
   desktop, where the add-on runs. Ethernet works better than Wi-Fi.
 - Outbound HTTPS to `api-sandbox.darkbloom.dev`.
 
 ## Steps
 
-1. Check this Mac and set it up:
+1. Join the Darkbloom Sandbox waitlist, then wait for Darkbloom to approve your
+   account:
+
+   ```bash
+   darkbloom waitlist sandbox
+   ```
+
+   The waitlist is for your account, not for this Mac: the command puts your
+   account on it, sending nothing about this Mac, and prints your place in line.
+   Run it again to see where you stand; it keeps your place. Darkbloom reviews
+   accounts in the order they joined. `darkbloom sandbox setup` also offers to
+   join when your account is not on the waitlist, and stops until it is approved.
+
+2. Check this Mac and set it up:
 
    ```bash
    darkbloom sandbox setup
@@ -48,16 +62,16 @@ into your Darkbloom balance.
    or pick the drive when setup asks; see
    [Use an external drive](#use-an-external-drive).
 
-2. Approve this Mac in your browser. The installer opens the approval page with
+3. Approve this Mac in your browser. The installer opens the approval page with
    the code filled in, and setup prints the link and code as well. Sign in with
    the Darkbloom account that should receive the earnings and approve. Your
    `darkbloom login` session cannot approve a Mac. To approve from another
-   device, add `--no-browser` to step 1 and open the printed link there.
+   device, add `--no-browser` to step 2 and open the printed link there.
 
-3. Let the VM images download. After enrollment the add-on starts and downloads
+4. Let the VM images download. After enrollment the add-on starts and downloads
    its VM images in the background, the sizes setup showed under Disk. The Mac
    takes jobs once an image is installed. To keep setup open until then, add
-   `--wait-ready` to step 1.
+   `--wait-ready` to step 2.
 
 ## Use an external drive
 
@@ -138,6 +152,18 @@ While jobs run, setup skips the check. The
 
 ## Troubleshooting
 
+- **`You're on the Darkbloom Sandbox waitlist: #N in line`** (setup exits 1).
+  Darkbloom has not approved your account for Darkbloom Sandbox yet; nothing
+  was installed. Run setup again once `darkbloom waitlist sandbox` says your
+  account is approved.
+- **`Link this Mac to your Darkbloom account first`**. The waitlist needs your
+  account: run `darkbloom login`, then setup again.
+- **`Darkbloom revoked your account's access to Darkbloom Sandbox`**. Joining
+  again does not restore it; contact Darkbloom.
+- **`Could not reach the Darkbloom Sandbox waitlist at …`** (setup exits 1).
+  Setup could not learn whether your account is approved, so it checked and
+  installed nothing. Fix the reason it names, such as this Mac's connection,
+  then run setup again.
 - **`Free up N GiB of disk for one Linux job`.** No job fits in the free disk.
   The disk rules are under [Prerequisites](#prerequisites). Free the space it
   names, then run setup again.
@@ -185,5 +211,6 @@ While jobs run, setup skips the check. The
 ## Related
 
 - [CLI reference: `darkbloom sandbox`](./cli-reference.md#darkbloom-sandbox): flags, eligibility rules and the installer and add-on contracts
+- [CLI reference: waitlists](./cli-reference.md#darkbloom-waitlist): the waitlist commands and the request they make
 - [Add-on hold](../architecture/addon-hold.md): how the provider pauses inference for jobs
 - [Configuration](../reference/configuration.md#darkbloom-sandbox-cli): bounds and the test override

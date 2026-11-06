@@ -8,10 +8,11 @@ extension Sandbox {
         static let configuration = CommandConfiguration(
             abstract: "Check this Mac, then install the add-on and enroll this Mac. Safe to run again.",
             discussion: """
-            Checks this Mac, then downloads the add-on's installer from the Darkbloom Sandbox service over \
-            HTTPS and asks it for the add-on's plan: how many jobs this Mac can run at a time and the disk \
-            they take. It explains what changes and asks before installing anything. The installer then \
-            verifies the release, installs it in ~/DarkbloomSandbox, and enrolls this Mac once you approve \
+            Checks that Darkbloom approved your account from the Darkbloom Sandbox waitlist (and offers to \
+            join it) and checks this Mac. It then downloads the add-on's installer from the Darkbloom Sandbox \
+            service over HTTPS and asks it for the add-on's plan: how many jobs this Mac can run at a time and \
+            the disk they take. It explains what changes and asks before installing anything. The installer \
+            then verifies the release, installs it in ~/DarkbloomSandbox, and enrolls this Mac once you approve \
             it in your browser.
 
             Running it again reports the current state, continues an unfinished setup, repairs or updates \
@@ -160,6 +161,9 @@ struct SandboxSetupFlow {
     /// Turns ownership on for the drive mounted there (`sudo diskutil
     /// enableOwnership`) on this terminal; true when it did.
     var enableOwnership: @Sendable (String) -> Bool = { SandboxWorkDisk.enableOwnership(mountPoint: $0) }
+    /// The coordinator's waitlists; a first setup requires the account to be
+    /// approved from the Darkbloom Sandbox waitlist.
+    var waitlist: FeatureWaitlistAccess = .live()
 
     private var cli: String { Sandbox.cli }
 
@@ -178,6 +182,7 @@ struct SandboxSetupFlow {
             }
             try await withInstaller { try await install($0, script: $1, options: options) }
         case .fresh:
+            try await requireApproval()
             let eligibility = try await checkMac()
             try await withInstaller { installer, script in
                 let chosen = try chooseWorkDisk(script: script)
@@ -269,6 +274,25 @@ struct SandboxSetupFlow {
         SandboxTerminal.write(note)
         defer { SandboxTerminal.write("\r\u{1B}[2K") }
         return try await body()
+    }
+
+    // MARK: - Waitlist
+
+    /// The Darkbloom Sandbox waitlist's id in the coordinator's catalog.
+    static let waitlistFeature = "sandbox"
+    /// Names the waitlist when the coordinator gave no answer; an answer
+    /// brings the coordinator's own title.
+    static let waitlistTitle = "Darkbloom Sandbox"
+
+    /// Darkbloom Sandbox is open to the accounts Darkbloom approves from its
+    /// waitlist, so a first setup goes on only as `FeatureWaitlistGate` lets
+    /// it; nothing is installed until Darkbloom approves the account.
+    private func requireApproval() async throws {
+        try await FeatureWaitlistGate(
+            feature: Self.waitlistFeature, fallbackTitle: Self.waitlistTitle, setupCommand: "\(cli) sandbox setup",
+            unchanged: "Nothing was installed.", access: waitlist, joinWithoutAsking: confirmed,
+            ask: interactiveInput ? { SandboxTerminal.confirm($0) } : nil
+        ).require()
     }
 
     // MARK: - Check and confirm

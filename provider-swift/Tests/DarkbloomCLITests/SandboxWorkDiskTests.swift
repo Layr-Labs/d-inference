@@ -194,7 +194,7 @@ struct SandboxWorkDiskTests {
                     options: SandboxSetupOptions(server: "https://sandbox.invalid", disks: ["/Volumes/FastSSD"]),
                     confirmed: true, addon: .live(), interactiveInput: false, terminal: false, color: false,
                     probe: { _ in .mac(cores: 16, memoryGiB: 128) },
-                    workDiskVolume: { _ in Self.ownershipOff }).run()
+                    workDiskVolume: { _ in Self.ownershipOff }, waitlist: .approved).run()
             }
         }
         #expect(decodedText(result.standardOutputContent).hasSuffix("""
@@ -223,7 +223,7 @@ struct SandboxWorkDiskTests {
                 try await SandboxSetupFlow(
                     options: SandboxSetupOptions(server: "https://sandbox.invalid", disks: ["/Volumes/FastSSD"]),
                     confirmed: true, addon: .live(), interactiveInput: false, terminal: false, color: false,
-                    probe: { _ in .mac(cores: 16, memoryGiB: 128) }, workDiskVolume: { _ in Self.ready }).run()
+                    probe: { _ in .mac(cores: 16, memoryGiB: 128) }, workDiskVolume: { _ in Self.ready }, waitlist: .approved).run()
             }
         }
         #expect(decodedText(result.standardOutputContent).hasSuffix(
@@ -243,7 +243,7 @@ struct SandboxWorkDiskTests {
             try await SandboxSetupFlow(
                 options: SandboxSetupOptions(server: "https://sandbox.invalid", disks: ["/Volumes/FastSSD"]),
                 confirmed: true, addon: .live(), interactiveInput: false, terminal: false, color: false,
-                probe: { _ in .mac(cores: 16, memoryGiB: 128) }, workDiskVolume: { _ in Self.ready }).run()
+                probe: { _ in .mac(cores: 16, memoryGiB: 128) }, workDiskVolume: { _ in Self.ready }, waitlist: .approved).run()
             for (marker, file) in [("== PLAN", "plan-arguments"), ("== INSTALL", "installer-arguments")] {
                 print(marker)
                 print(try String(contentsOf: sandbox.sandboxAddonRoot.appendingPathComponent(file), encoding: .utf8),
@@ -276,7 +276,7 @@ struct SandboxWorkDiskTests {
                 try await SandboxSetupFlow(
                     options: SandboxSetupOptions(server: "https://sandbox.invalid", disks: ["/Volumes/FastSSD"]),
                     confirmed: true, addon: .live(), interactiveInput: false, terminal: false, color: false,
-                    probe: { _ in .mac(cores: 16, memoryGiB: 128) }, workDiskVolume: { _ in Self.ready }).run()
+                    probe: { _ in .mac(cores: 16, memoryGiB: 128) }, workDiskVolume: { _ in Self.ready }, waitlist: .approved).run()
             }
         }
         #expect(decodedText(result.standardOutputContent).hasSuffix("""
@@ -301,7 +301,7 @@ struct SandboxWorkDiskTests {
             try await SandboxSetupFlow(
                 options: SandboxSetupOptions(server: "https://sandbox.invalid", disks: ["/Volumes/FastSSD"]),
                 confirmed: false, addon: .live(), interactiveInput: false, terminal: false, color: false,
-                workDiskVolume: { _ in Self.ready }).run()
+                workDiskVolume: { _ in Self.ready }, waitlist: .approved).run()
             print("== INSTALL")
             print(try String(contentsOf: sandbox.sandboxAddonRoot.appendingPathComponent("installer-arguments"),
                              encoding: .utf8), terminator: "")
@@ -331,7 +331,7 @@ struct SandboxWorkDiskTests {
                 options: SandboxSetupOptions(server: "https://sandbox.invalid"),
                 confirmed: false, addon: .live(), interactiveInput: true, terminal: false, color: false,
                 probe: { _ in .mac(cores: 16, memoryGiB: 128) }, workDiskVolume: { _ in Self.ready },
-                workDiskCandidates: { [offered] in [offered] }).run()
+                workDiskCandidates: { [offered] in [offered] }, waitlist: .approved).run()
             print("== PLAN")
             print(try String(contentsOf: sandbox.sandboxAddonRoot.appendingPathComponent("plan-arguments"),
                              encoding: .utf8), terminator: "")
@@ -372,7 +372,7 @@ struct SandboxWorkDiskTests {
                 probe: { _ in .mac(cores: 16, memoryGiB: 128) },
                 workDiskVolume: { _ in FileManager.default.fileExists(atPath: marker) ? Self.ready : Self.ownershipOff },
                 workDiskCandidates: { [] },
-                enableOwnership: { FileManager.default.createFile(atPath: marker, contents: Data($0.utf8)) }).run()
+                enableOwnership: { FileManager.default.createFile(atPath: marker, contents: Data($0.utf8)) }, waitlist: .approved).run()
             let enabled = try String(contentsOfFile: marker, encoding: .utf8)
             print("enabled on \(enabled)")
         }
@@ -399,7 +399,7 @@ struct SandboxWorkDiskTests {
                     options: SandboxSetupOptions(server: "https://sandbox.invalid", disks: ["/Volumes/FastSSD"]),
                     confirmed: false, addon: .live(), interactiveInput: true, terminal: false, color: false,
                     probe: { _ in .mac(cores: 16, memoryGiB: 128) }, workDiskVolume: { _ in Self.ownershipOff },
-                    enableOwnership: { _ in false }).run()
+                    enableOwnership: { _ in false }, waitlist: .approved).run()
             }
         }
         #expect(decodedText(result.standardOutputContent).hasSuffix("""
@@ -423,7 +423,7 @@ struct SandboxWorkDiskTests {
                 // No installer to download: the report and its hints only.
                 try await SandboxSetupFlow(options: SandboxSetupOptions(server: "https://sandbox.invalid"),
                                            confirmed: false, addon: .live(), interactiveInput: false,
-                                           terminal: false, color: false).run()
+                                           terminal: false, color: false, waitlist: .approved).run()
             }
             let output = decodedText(result.standardOutputContent)
             #expect(output.contains("--linux-slots <n> --macos-slots <n>\n"

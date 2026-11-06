@@ -104,6 +104,7 @@ QWEN_TP_MTP_GPU_TESTS = (
     "oneRankFailingMidChainFailsBothAndRetires",
     "deferredRangeCheckKeepsTheWindowAndItsHistory",
     "wholeAndLayeredWindowsAreBitwise",
+    "anAssistedHybridPromptMergesFramesAndSpeculatesAlikeOnGPU",
 )
 
 # The Gemma 4 suites: 592 of the base tests' 970 s (run 41992571131, job

@@ -47,6 +47,11 @@ final class LinkEventLog: @unchecked Sendable {
     }
 }
 
+private extension ClusterLinkControlEvent {
+    var isConnected: Bool { if case .connected = self { return true }; return false }
+    var isDisconnected: Bool { if case .disconnected = self { return true }; return false }
+}
+
 /// Parks a session's reader before its next frame read until opened.
 final class LinkReaderGate: @unchecked Sendable {
     private let condition = NSCondition()
@@ -290,7 +295,7 @@ final class ClusterLinkControlChannelTests: XCTestCase {
         let second = try RawLinkConnector(port: port)
         let secondRecords = try second.handshake(edge: edge)
         _ = secondRecords
-        XCTAssertTrue(serverLog.wait { events in events.filter { if case .connected = $0 { return true }; return false }.count == 2 })
+        XCTAssertTrue(serverLog.wait { $0.filter(\.isConnected).count == 2 })
         try second.write(record)
         XCTAssertTrue(serverLog.wait { _ in serverLog.disconnects.filter { $0 == .authenticationFailed }.count == 2 })
         XCTAssertEqual(serverLog.messages.count, 1)
@@ -473,7 +478,7 @@ final class ClusterLinkControlChannelTests: XCTestCase {
 
         // The connector's next session supersedes the first one before the
         // first reader reads the goodbye.
-        XCTAssertTrue(serverLog.wait { events in events.filter { if case .connected = $0 { return true }; return false }.count == 2 })
+        XCTAssertTrue(serverLog.wait { $0.filter(\.isConnected).count == 2 })
         XCTAssertTrue(serverLog.disconnects.isEmpty)
         gate.open()
         XCTAssertTrue(serverLog.wait { _ in !serverLog.disconnects.isEmpty })
@@ -481,8 +486,8 @@ final class ClusterLinkControlChannelTests: XCTestCase {
         XCTAssertEqual(serverLog.messages.map(\.0), Array(1...UInt64(sent)))
         XCTAssertEqual(serverLog.disconnects, [.rekey])
         let events = serverLog.all
-        let connects = events.indices.filter { if case .connected = events[$0] { return true }; return false }
-        let disconnect = events.firstIndex { if case .disconnected = $0 { return true }; return false }
+        let connects = events.indices.filter { events[$0].isConnected }
+        let disconnect = events.firstIndex(where: \.isDisconnected)
         XCTAssertEqual(connects.count, 2)
         XCTAssertGreaterThan(try XCTUnwrap(disconnect), try XCTUnwrap(connects.last), "the superseded reader reported it")
         XCTAssertEqual(listener.peer(for: edgeID)?.status.sessions, 2)
@@ -496,10 +501,10 @@ final class ClusterLinkControlChannelTests: XCTestCase {
         defer { listener.stop() }
         let first = try RawLinkConnector(port: port)
         _ = try first.handshake(edge: edge)
-        XCTAssertTrue(serverLog.wait { events in events.contains { if case .connected = $0 { return true }; return false } })
+        XCTAssertTrue(serverLog.wait { $0.contains(where: \.isConnected) })
         let second = try RawLinkConnector(port: port)
         _ = try second.handshake(edge: edge)
-        XCTAssertTrue(serverLog.wait { events in events.filter { if case .connected = $0 { return true }; return false }.count == 2 })
+        XCTAssertTrue(serverLog.wait { $0.filter(\.isConnected).count == 2 })
 
         // The listener stops sending on the first session, and its reader
         // still waits for a goodbye that the first connector never sends.

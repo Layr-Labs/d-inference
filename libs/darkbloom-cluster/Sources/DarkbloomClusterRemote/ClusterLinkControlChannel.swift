@@ -203,9 +203,9 @@ final class LinkConnection: @unchecked Sendable {
         self.socket = socket; self.records = records; self.peerIncarnation = peerIncarnation; self.limits = limits
     }
 
-    /// First reason wins; shuts the socket down so blocked IO returns.
+    /// Shuts the socket down so blocked IO returns.
     func end(_ reason: ClusterLinkControlDisconnect) {
-        lock.withLock { if endReason == nil { endReason = reason } }
+        noteEnd(reason)
         socket.shutdown()
     }
 
@@ -213,8 +213,13 @@ final class LinkConnection: @unchecked Sendable {
     /// is shut down, so the reader still reads what the peer sent before the
     /// takeover, up to its goodbye or the end of the stream.
     func supersede() {
-        lock.withLock { if endReason == nil { endReason = .superseded } }
+        noteEnd(.superseded)
         socket.shutdownWrite()
+    }
+
+    /// First reason wins.
+    private func noteEnd(_ reason: ClusterLinkControlDisconnect) {
+        lock.withLock { if endReason == nil { endReason = reason } }
     }
 
     var reason: ClusterLinkControlDisconnect? { lock.withLock { endReason } }
@@ -607,11 +612,12 @@ public final class ClusterLinkControlPeer: @unchecked Sendable {
         var ackNow = false
         var completed: PingWaiter?
         var goodbye: LinkGoodbyeReason?
-        let said: LinkGoodbyeReason? = frame.kind == .goodbye ? LinkGoodbyeReason(rawValue: frame.body[frame.body.startIndex]) ?? .shutdown : nil
+        let peerGoodbye: LinkGoodbyeReason? = frame.kind == .goodbye
+            ? LinkGoodbyeReason(rawValue: frame.body[frame.body.startIndex]) ?? .shutdown : nil
         try state.withLock {
             // Superseded: drop the frame, but keep a goodbye's reason for the
             // session's end.
-            guard connection === current else { goodbye = said; return }
+            guard connection === current else { goodbye = peerGoodbye; return }
             if frame.ackThrough > 0 || frame.kind == .ack {
                 let removed = try outbox.acknowledge(through: frame.ackThrough)
                 if removed > 0 { state.broadcast() }
@@ -627,7 +633,7 @@ public final class ClusterLinkControlPeer: @unchecked Sendable {
                     completed = waiter
                 }
             case .goodbye:
-                goodbye = said
+                goodbye = peerGoodbye
             case .message, .opaque:
                 switch inbox.verdict(for: frame.messageID) {
                 case .gap: throw ClusterLinkControlError.protocolViolation

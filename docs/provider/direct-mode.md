@@ -175,10 +175,10 @@ The provider chat-upload interceptor selects the SDK service's HTTP framing
 policy (`LocalChatUploadResponder.respond` and `MLXOpenAIService.streamChatCompletionFrames`).
 A failed required tool call is still a failure; no argument repair or fabricated
 call is performed. On a [two-Mac cluster](./two-mac-cluster.md) the leader's
-local API ends such a stream with the same error chunk, also when the provider
-rejects the output mid-stream (a forced `tool_choice` answered with text, a
-streamed tool call that fails validation) before the pair has retired the
-cancelled request
+local API ends such a stream with the same error chunk. This holds also when
+the provider rejects the output mid-stream (a forced `tool_choice` answered
+with text, a streamed tool call that fails validation) while the pair is still
+finishing the cancelled request
 (`provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPEventStream.swift`,
 `DistributedHTTPEventStream`).
 

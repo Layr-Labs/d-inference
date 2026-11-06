@@ -21,8 +21,10 @@ A separate unsupported-profile case requires HTTP 400 before reservation and
 successful text afterward. The parity run's fabricated pair acknowledges
 retirement at once; a forced-order case holds that acknowledgment until the
 client has the answer, so a named `tool_choice` stream the shared pipeline
-rejects mid-generation must end with the single-Mac failure frame before the
-pair retires the cancelled request. Run
+rejects mid-generation must end with the single-Mac failure frame while the
+pair is still finishing the cancelled request. It also requires that the
+request was cancelled and its acquisition and HTTP hold freed by then, and its
+lane after retirement. Run
 `swift test --package-path provider-swift --filter ClusterAPIParityTests` with
 the [provider build prerequisites](build.md). These CPU checks prove API wiring,
 not native model capabilities, numerical parity or hardware qualification.

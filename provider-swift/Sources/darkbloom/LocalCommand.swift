@@ -37,7 +37,7 @@ struct Local: AsyncParsableCommand {
                     printError("The cluster's API key (the same on both Macs; `\(BuildEnvironment.current.cliName) cluster` shows where the API is):")
                     printError("  \(key)")
                 } else {
-                    printError("Start one with:  \(BuildEnvironment.current.cliName) start --local")
+                    for line in Self.notRunningHint { printError(line) }
                 }
             }
             throw ExitCode.failure
@@ -63,6 +63,11 @@ struct Local: AsyncParsableCommand {
             print("  API key:  \(info.apiKey)")
         }
         print("  pid:      \(info.pid)")
+        let route = (try? savedLocalSettings(configPath: nil))??.route
+        for line in Self.servingLines(info: info, state: DaemonStateFile.read(), route: route,
+                                      accountKeySaved: { Start.accountKeySaved() }) {
+            print(line)
+        }
         print()
         print("Use it with any OpenAI client:")
         print("  export OPENAI_BASE_URL=\(info.baseURL)")
@@ -77,6 +82,12 @@ struct Local: AsyncParsableCommand {
         print("    -H 'Content-Type: application/json' \\")
         print("    -d '{\"model\":\"<id>\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'")
     }
+
+    /// Red skeleton: nothing about how the server serves yet.
+    static func servingLines(info: LocalEndpoint.Info, state: DaemonState?, route: LocalSettings.Route?,
+                             accountKeySaved: () -> Bool) -> [String] { [] }
+
+    static var notRunningHint: [String] { ["Start one with:  \(BuildEnvironment.current.cliName) start --local"] }
 
     /// For a server listening on every interface: this Mac's Bonjour (`.local`) URL, which other computers on the
     /// same network can dial; nil for a loopback or specific-address server, or when the Mac has no local host name.

@@ -43,7 +43,8 @@ extension EngineV2Bridge {
         guard usage.timing.visionChunks == 0 || receipt.nativeCausalMedia,
             saved > 0 ? usage.prefixCacheOutcome == .hit : Self.isColdPrefillSample(usage: usage),
             let seconds = EngineV2NativeBlockTiming.prefillSeconds(usage.timing),
-            let tps = Self.classifyPrefillSample(prefilledTokens: work, prefillSeconds: seconds)
+            let tps = Self.classifyPrefillSample(prefilledTokens: work, prefillSeconds: seconds,
+                ceiling: prefillRateCeiling)
         else { return }
         if receipt.nativeCausalMedia {
             // Native media features are fully prepared before submission.

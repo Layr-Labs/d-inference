@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-05
+> Last updated: 2026-11-06
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -18,7 +18,13 @@ association, empty-text holdback, parser flushes, terminal failures, cancellatio
 collected completeness and the 4096-entry pending bound. Reasoning/tool source
 spans remain unclassified; those entries retain the existing next-content policy.
 A separate unsupported-profile case requires HTTP 400 before reservation and
-successful text afterward. Run
+successful text afterward. The parity run's fabricated pair acknowledges
+retirement at once; a forced-order case holds that acknowledgment until the
+client has the answer, so a named `tool_choice` stream the shared pipeline
+rejects mid-generation must end with the single-Mac failure frame while the
+pair is still finishing the cancelled request. It also requires that the
+request was cancelled and its acquisition and HTTP hold freed by then, and its
+lane after retirement. Run
 `swift test --package-path provider-swift --filter ClusterAPIParityTests` with
 the [provider build prerequisites](build.md). These CPU checks prove API wiring,
 not native model capabilities, numerical parity or hardware qualification.

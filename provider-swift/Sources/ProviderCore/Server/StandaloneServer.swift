@@ -92,6 +92,8 @@ public struct StandaloneServerConfig: Sendable {
     public let mtpAcceptance: String?
     public let mtpAcceptanceByModel: [String: String]
     public let coordinatorURL: String
+    /// The local router (`LocalRouter`); nil serves this Mac's engine only.
+    public let router: LocalRouterConfig?
 
     public init(
         port: UInt16 = BuildEnvironment.current.defaultLocalPort,
@@ -112,8 +114,10 @@ public struct StandaloneServerConfig: Sendable {
         mtpDrafterPath: String? = nil,
         mtpAcceptance: String? = nil,
         mtpAcceptanceByModel: [String: String] = [:],
-        coordinatorURL: String = CoordinatorSettings().url
+        coordinatorURL: String = CoordinatorSettings().url,
+        router: LocalRouterConfig? = nil
     ) {
+        self.router = router
         self.port = port
         self.host = host
         self.maxCachedModels = max(1, maxCachedModels)

@@ -11,7 +11,12 @@ extension DistributedLocalServer {
             onServerRunning: { await self.didBind($0) },
             modelTypeProvider: { [binding] in $0 == binding.publicModelID ? binding.modelType : nil },
             clusterStatus: { try await self.clusterStatus(nonce: $0) },
-            distributedResponses: responseRouter)
+            distributedResponses: responseRouter,
+            modelLimits: { [binding] in
+                $0 == binding.publicModelID
+                    ? LocalModelLimits(contextLength: binding.maxContextTokens, maxOutputLength: binding.maxOutputTokens)
+                    : nil
+            })
     }
 
     func clusterStatus(nonce: String) throws -> ClusterLiveStatus {

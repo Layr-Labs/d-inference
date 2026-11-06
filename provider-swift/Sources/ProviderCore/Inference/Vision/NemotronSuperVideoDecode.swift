@@ -60,11 +60,6 @@ enum NemotronSuperVideoDecode {
     /// released. Read when the reader is set up.
     @TaskLocal static var readerCancelledForTesting: (@Sendable (AVAssetReader) -> Void)?
 
-    /// Tests only: runs on the reader's queue before each sample read, with
-    /// that reader, so a test can end a reader partway. Read when the reader
-    /// is set up.
-    @TaskLocal static var beforeReadForTesting: (@Sendable (AVAssetReader) -> Void)?
-
     struct Plan: Sendable {
         let sourceFrames: Int
         let sourceFPS: Double
@@ -476,7 +471,8 @@ private final class SerialReader: @unchecked Sendable {
         self.reopen = reopen
         self.source = source
         cancelledForTesting = NemotronSuperVideoDecode.readerCancelledForTesting
-        beforeReadForTesting = NemotronSuperVideoDecode.beforeReadForTesting
+        // The reads run on `queue`, so the task's hook is read here.
+        beforeReadForTesting = VideoReaderRetry.beforeReadForTesting
         remaining = allowance.map(Self.nanoseconds)
     }
 

@@ -2,7 +2,6 @@
 
 @preconcurrency import AVFoundation
 import Foundation
-import MLXLMCommon
 
 /// An `AVURLAsset` whose bytes are served from memory, for the Super video
 /// reader. The SDK's `MemoryBackedVideoAsset` validates the same bytes in
@@ -27,8 +26,7 @@ final class NemotronSuperVideoAsset: @unchecked Sendable {
         guard let url = URL(string: "darkbloom-super-video://\(token)/asset.\(contentType == .mov ? "mov" : "mp4")")
         else { throw NemotronSuperVideoDecode.Failure.invalidVideo }
         self.contentType = contentType
-        loader = NemotronSuperVideoResourceLoader(data: data, url: url, contentType: contentType.rawValue,
-                                                  fault: VideoDataRequestFault.current)
+        loader = NemotronSuperVideoResourceLoader(data: data, url: url, contentType: contentType.rawValue)
         queue = DispatchQueue(label: "ai.darkbloom.super-video.\(token)", qos: .userInitiated)
         asset = AVURLAsset(url: url, options: [
             AVURLAssetPreferPreciseDurationAndTimingKey: true,
@@ -102,14 +100,11 @@ private final class NemotronSuperVideoResourceLoader: NSObject, AVAssetResourceL
     let data: Data
     private let url: URL
     private let contentType: String
-    /// Tests only; see `VideoDataRequestFault`.
-    private let fault: VideoDataRequestFault?
 
-    init(data: Data, url: URL, contentType: String, fault: VideoDataRequestFault?) {
+    init(data: Data, url: URL, contentType: String) {
         self.data = data
         self.url = url
         self.contentType = contentType
-        self.fault = fault
         super.init()
     }
 
@@ -140,21 +135,12 @@ private final class NemotronSuperVideoResourceLoader: NSObject, AVAssetResourceL
             loadingRequest.finishLoading(with: NemotronSuperVideoDecode.Failure.invalidVideo)
             return true
         }
-        let range = Int(start) ..< Int(max(start, end))
-        if let injected = fault?.intercept(range) {
-            respond(request, with: injected.served)
-            loadingRequest.finishLoading(with: injected.error)
-            return true
+        if start < end {
+            let lower = data.index(data.startIndex, offsetBy: Int(start))
+            let upper = data.index(data.startIndex, offsetBy: Int(end))
+            request.respond(with: data[lower ..< upper])
         }
-        respond(request, with: range)
         loadingRequest.finishLoading()
         return true
-    }
-
-    private func respond(_ request: AVAssetResourceLoadingDataRequest, with range: Range<Int>) {
-        guard !range.isEmpty else { return }
-        let lower = data.index(data.startIndex, offsetBy: range.lowerBound)
-        let upper = data.index(data.startIndex, offsetBy: range.upperBound)
-        request.respond(with: data[lower ..< upper])
     }
 }

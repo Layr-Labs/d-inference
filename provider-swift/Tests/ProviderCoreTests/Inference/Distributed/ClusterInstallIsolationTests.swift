@@ -442,13 +442,118 @@ struct ClusterInstallIsolationTests {
         #expect(devnet.machineDeviceLock.otherHolder?() == words, "a DevNet build's lock says it in the same words")
         #expect(production.machineDeviceLock.otherHolder == nil, "production's own build reads nothing of the kind")
         try publish(serving: true, pairRunning: nil)
-        #expect(ClusterMachineDeviceLock.productionPairServes(home: home) != nil, "a build before 0.10.9: its intent decides")
+        #expect(ClusterMachineDeviceLock.productionPairStatus(home: home) == .serves(servicePID: 4321),
+                "a build before 0.10.9: its intent decides")
         try publish(serving: false, pairRunning: false)
-        #expect(ClusterMachineDeviceLock.productionPairServes(home: home) == nil, "production's pair is stopped")
+        #expect(ClusterMachineDeviceLock.productionPairStatus(home: home) == .none, "production's pair is stopped")
         try publish(serving: true, pairRunning: false)
-        #expect(ClusterMachineDeviceLock.productionPairServes(home: home) == nil, "production gave its pair up on this Mac")
+        #expect(ClusterMachineDeviceLock.productionPairStatus(home: home) == .none, "production gave its pair up on this Mac")
         try publish(serving: true, pairRunning: true, secondsAgo: ClusterMachineDeviceLock.publishedWithinSeconds + 60)
-        #expect(ClusterMachineDeviceLock.productionPairServes(home: home) == nil, "no service has written it for minutes")
+        #expect(ClusterMachineDeviceLock.productionPairStatus(home: home) == .none, "no service has written it for minutes")
+        // Final review of #1846: a status dated ahead of this Mac's clock (the clock was set back since a service that
+        // no longer runs wrote it) counted as fresh until the clock caught up.
+        try publish(serving: true, pairRunning: true, secondsAgo: -600)
+        #expect(ClusterMachineDeviceLock.productionPairStatus(home: home) == .none, "a status dated ten minutes ahead")
+        #expect(ClusterMachineDeviceLock.productionServingHere(home: home) == nil)
+    }
+
+    /// Final review of #1846: a fresh production status that couldn't be read or decoded let a DevNet build go ahead.
+    /// It now waits and says why (fail safe). No status at all (production isn't installed, or never served) and an old
+    /// one still hold nothing back; the process check is unchanged.
+    @Test("a production status that can't be read holds a DevNet build back, and says why")
+    func anUnreadableProductionStatusHoldsDevnetBack() throws {
+        let home = try NativePairMemberFixture.privateRoot()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let production = try ClusterUserPaths(homeDirectory: home, environment: .prod)
+        let devnet = try ClusterUserPaths(homeDirectory: home, environment: .dev)
+        let file = production.setupDirectory.appendingPathComponent("service-status.json")
+        #expect(ClusterMachineDeviceLock.productionServingHere(home: home) == nil, "production isn't installed: go ahead")
+        try FileManager.default.createDirectory(at: production.setupDirectory, withIntermediateDirectories: true)
+        #expect(ClusterMachineDeviceLock.productionServingHere(home: home) == nil, "production never served: go ahead")
+        func expectHeld(_ why: String, _ what: String) {
+            let words = ClusterMachineDeviceLock.productionServingHere(home: home)
+            #expect(words?.contains("its cluster service's status can't be read") == true, "\(what): \(String(describing: words))")
+            #expect(words?.contains(why) == true && ClusterMachineDeviceLock.isRefusal(words), "\(what): \(String(describing: words))")
+            #expect(devnet.machineDeviceLock.otherHolder?() == words, "\(what): the DevNet lock refuses the same way")
+        }
+        try Data("{\"serving\": tru".utf8).write(to: file)
+        expectHeld("is not a status this build can read", "a fresh status cut short")
+        #expect(chmod(file.path, 0) == 0)
+        expectHeld("Permission denied", "a fresh status this user can't open")
+        #expect(chmod(file.path, 0o600) == 0)
+        try FileManager.default.removeItem(at: file)
+        try FileManager.default.createDirectory(at: file, withIntermediateDirectories: false)
+        expectHeld("is not a file", "a fresh status that is a folder")
+        try FileManager.default.removeItem(at: file)
+        // An old one holds nothing back: a production service that stopped for good two minutes ago or more.
+        try Data("not a status".utf8).write(to: file)
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-ClusterMachineDeviceLock.publishedWithinSeconds - 60)],
+                                              ofItemAtPath: file.path)
+        #expect(ClusterMachineDeviceLock.productionServingHere(home: home) == nil, "an old status that can't be read")
+    }
+
+    /// Final review of #1846: a DevNet part stepping aside for production drained for up to 300 s, so production before
+    /// 0.10.11 (no lock) could load beside it. Its GPU work is now fenced at once: SIGUSR1 to the worker owners the part
+    /// started, which carry the force-cancel hook because they run the part's own executable. Nothing else is signalled.
+    @Test("a part stepping aside fences only its own worker owners")
+    func steppingAsideFencesOnlyThePartsOwnOwners() {
+        let devnet = "/Users/someone/.darkbloom-dev/Darkbloom Dev.app/Contents/MacOS/darkbloom-dev"
+        let production = "/Users/someone/.darkbloom/Darkbloom.app/Contents/MacOS/darkbloom"
+        let worker = "/Users/someone/.darkbloom-dev/Darkbloom Dev.app/Contents/Helpers/darkbloom-cluster-worker"
+        let images: [Int32: String] = [100: devnet, 101: devnet, 102: worker, 103: production, 104: devnet, 105: devnet,
+                                       200: devnet, 201: devnet, 300: production, 301: production]
+        func entry(_ pid: Int32, _ parent: Int32, _ arguments: [String]) -> ClusterProcessTable.Entry {
+            .init(processIdentifier: pid, arguments: arguments, parentProcessIdentifier: parent,
+                  executableName: images[pid].map { URL(fileURLWithPath: $0).lastPathComponent })
+        }
+        let owner = ["cluster", "worker-owner", "--stdio"]
+        let processes = [
+            entry(100, 1, [devnet, "start", "--foreground", "--cluster-member"]),  // this service's part
+            entry(101, 100, [devnet] + owner),                                     // its owner: fenced
+            entry(102, 101, [worker, "--membership-epoch", UUID().uuidString]),    // its worker: fenced by its owner
+            entry(103, 100, [production] + owner),                                 // another image: would die of SIGUSR1
+            entry(104, 100, [devnet, "cluster", "link-follower"]),                 // not an owner
+            entry(105, 104, [devnet] + owner),                                     // an owner further down: fenced
+            entry(200, 1, [devnet, "cluster", "service"]), entry(201, 200, [devnet] + owner),  // another tree
+            entry(300, 1, [production, "start", "--foreground", "--cluster-member"]), entry(301, 300, [production] + owner),
+        ]
+        #expect(ClusterService.fenceTargets(processes: processes, partPID: 100, image: { images[$0] }) == [101, 105])
+        #expect(ClusterService.fenceTargets(processes: processes, partPID: 999, image: { images[$0] }).isEmpty, "a part gone")
+    }
+
+    /// Final review of #1846: single-Mac serving of a build other than production's had no production guard. No model of
+    /// such a build loads while production serves on this Mac: the one loader both slot owners use refuses with the
+    /// reason, which the provider reports to its coordinator as a transient refusal (503), so the request goes elsewhere.
+    @Test("no model of a DevNet build loads on this Mac while production serves here")
+    func singleMacLoadsWaitWhileProductionServes() async throws {
+        let empty = try NativePairMemberFixture.privateRoot()
+        defer { try? FileManager.default.removeItem(at: empty) }
+        let words = "The production Darkbloom on this Mac holds this Mac's GPU: it is serving (process 4242), and two models"
+        do {
+            _ = try await ModelContainerLoading.loadServingContainer(from: empty, modelID: "fixture", productionServes: { words })
+            Issue.record("a model load went ahead while production served here")
+        } catch InferenceError.modelLoadFailed(let reason) {
+            #expect(reason == words)
+        } catch {
+            Issue.record("not production's refusal: \(error)")
+        }
+        #expect(ProviderLoop.loadErrorStatusCode(for: InferenceError.modelLoadFailed(words)) == 503)
+
+        // The words come from production's processes and its published status, read only, in a build other than
+        // production's; production's own build reads nothing.
+        let home = try NativePairMemberFixture.privateRoot()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let production = try ClusterUserPaths(homeDirectory: home, environment: .prod)
+        try FileManager.default.createDirectory(at: production.setupDirectory, withIntermediateDirectories: true)
+        #expect(ClusterGPUHold.productionServesHere(environment: .dev, home: home) == nil, "production doesn't serve here")
+        try Data("{\"serving\":true,\"sessionLeader\":false,\"child\":{\"running\":true,\"starts\":1},\"servicePID\":4321}".utf8)
+            .write(to: production.setupDirectory.appendingPathComponent("service-status.json"))
+        let devnet = try #require(ClusterGPUHold.productionServesHere(environment: .dev, home: home))
+        #expect(devnet.contains("its pair is set to serve here (its cluster service, process 4321)"), "\(devnet)")
+        #expect(devnet.contains("no model of this build loads here until production stops serving"), "\(devnet)")
+        #expect(ClusterMachineDeviceLock.isRefusal(devnet) && !devnet.contains("cluster stop"))
+        #expect(ClusterGPUHold.productionServesHere(environment: .staging, home: home) == devnet)
+        #expect(ClusterGPUHold.productionServesHere(environment: .prod, home: home) == nil)
     }
 
     /// Review of #1846: `darkbloom-dev cluster link --remove` took away a port production's pair still uses.
@@ -470,6 +575,77 @@ struct ClusterInstallIsolationTests {
         #expect(ClusterLinkRepair.otherInstallsUsingCable(paths: devnet, device: "rdma_en6").isEmpty, "another port")
         #expect(ClusterLinkRepair.otherInstallsUsingCable(paths: production).isEmpty, "never its own")
         #expect(try Data(contentsOf: production.linkIsolationRecordFile) == record, "production's record is only read")
+    }
+
+    /// #1857 review: nothing tested that a production member refused for the other app's hold on the GPU says the `Error:`
+    /// line its cluster service waits on, and exits 76, which the always-on supervisor waits on. A real refusal: DevNet
+    /// holds this Mac's GPU lock in a private home, and production's member takes its device scope.
+    @Test("a production member refused for DevNet's hold on the GPU says why and exits 76, and both its supervisors wait")
+    func aProductionMemberRefusedForTheOtherAppsHoldSaysWhyAndExits76() throws {
+        let home = try NativePairMemberFixture.privateRoot()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let production = try ClusterUserPaths(homeDirectory: home, environment: .prod)
+        let devnet = try ClusterUserPaths(homeDirectory: home, environment: .dev)
+        for paths in [production, devnet] {
+            try FileManager.default.createDirectory(at: paths.installDirectory.appendingPathComponent(paths.environment.appBundleName),
+                                                    withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: paths.deviceDirectory, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+        }
+        let held = try ClusterDeviceExclusion(directoryURL: devnet.deviceDirectory, machineLock: devnet.machineDeviceLock)
+        defer { withExtendedLifetime(held) {} }
+        var refused: (any Error)?
+        do { _ = try ClusterDeviceExclusion(directoryURL: production.deviceDirectory, machineLock: production.machineDeviceLock) }
+        catch { refused = error }
+        let refusal = try #require(refused, "production's member took the GPU DevNet holds")
+        let ending = try #require(ClusterMemberPreparation.gpuHoldRefusal(refusal))
+        #expect(ending.exitCode == 76 && ending.exitCode == ClusterMemberRunEnd.gpuHeldExitCode)
+        #expect(ending.line == "Error: \(refusal)", "ArgumentParser's own form of the error")
+        #expect(ending.line.hasPrefix("Error: Darkbloom Dev on this Mac holds this Mac's GPU for its pair"), "\(ending.line)")
+        // The always-on supervisor waits on the code, counting nothing.
+        #expect(ClusterMemberRunEnd.classify(stopRequested: false, exitCode: ending.exitCode, signal: nil) == .gpuHeld)
+        // The cluster service reads the line as its part's last error, knows the refusal and waits: never counted.
+        let log = home.appendingPathComponent("rank.log")
+        try Data(("2026-11-06T12:00:00Z cluster-member start: orphan sweep found nothing\n" + ending.line + "\n").utf8).write(to: log)
+        let lastError = try #require(ClusterService.lastError(in: log, preferStopReason: false))
+        #expect(lastError.hasPrefix("Darkbloom Dev on this Mac holds this Mac's GPU"), "\(lastError)")
+        #expect(ClusterMachineDeviceLock.isRefusal(lastError))
+        #expect(ClusterApprovalCheck.memberQuickEnds(after: 2, ranSeconds: 1, lastError: lastError) == 2)
+        // Any other failure ends the start as before: thrown as it is, exit 1.
+        #expect(ClusterMemberPreparation.gpuHoldRefusal(ClusterDeviceExclusionError.invalid("Device lease unavailable or unsafe")) == nil)
+    }
+
+    /// #1857 review: exit 76 is reserved for "another Darkbloom app holds this Mac's GPU" (`ClusterMemberRunEnd.gpuHeldExitCode`).
+    /// The always-on supervisor waits on it without counting anything, so another exit 76 would restart forever and never
+    /// park. Nothing in the provider or the cluster library exits 76 another way, and only the GPU refusal uses the code.
+    @Test("exit 76 means only that another Darkbloom app holds this Mac's GPU")
+    func exit76IsReservedForAGPUHold() throws {
+        let provider = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let roots = [provider.appendingPathComponent("Sources", isDirectory: true),
+                     provider.deletingLastPathComponent().appendingPathComponent("libs/darkbloom-cluster/Sources", isDirectory: true)]
+        let literal = try NSRegularExpression(pattern: #"\b(?:_?exit|ExitCode)\s*\(\s*(?:rawValue:\s*)?76\s*\)"#)
+        let declared = try NSRegularExpression(pattern: #"[Ee]xit[A-Za-z]*\s*(?::\s*Int32)?\s*=\s*76\b"#)
+        var literals: [String] = [], declarations: [String] = [], users: Set<String> = [], files = 0
+        for root in roots {
+            let walker = try #require(FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil))
+            for case let url as URL in walker where url.pathExtension == "swift" {
+                files += 1
+                let lines = try String(contentsOf: url, encoding: .utf8).split(separator: "\n", omittingEmptySubsequences: false)
+                for (index, line) in lines.enumerated() where !line.trimmingCharacters(in: .whitespaces).hasPrefix("//") {
+                    let text = String(line), range = NSRange(text.startIndex..., in: text)
+                    if literal.firstMatch(in: text, range: range) != nil { literals.append("\(url.lastPathComponent):\(index + 1)") }
+                    if declared.firstMatch(in: text, range: range) != nil { declarations.append("\(url.lastPathComponent):\(index + 1)") }
+                    if text.contains("gpuHeldExitCode") { users.insert(url.lastPathComponent) }
+                }
+            }
+        }
+        #expect(files > 1_500, "the provider's and the cluster library's sources were read (\(files))")
+        #expect(literals.isEmpty, "something else exits 76: \(literals.joined(separator: ", "))")
+        #expect(declarations.count == 1 && declarations.first?.hasPrefix("ClusterMemberRestartBudget.swift:") == true,
+                "another exit code is 76: \(declarations.joined(separator: ", "))")
+        #expect(users == ["ClusterMemberRestartBudget.swift", "ClusterMemberPreparation.swift", "ClusterMemberSupervisor.swift"],
+                "the reserved code is used outside the GPU refusal: \(users.sorted())")
     }
 
     /// Every place the provider takes a device scope also takes the Mac's device lock (`ClusterUserPaths.machineDeviceLock`).

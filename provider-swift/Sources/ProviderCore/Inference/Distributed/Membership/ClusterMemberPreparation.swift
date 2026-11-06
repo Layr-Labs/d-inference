@@ -13,6 +13,15 @@ public struct ClusterMemberPreparation: Sendable {
     public let model: ModelInfo
     let validation: DistributedInstalledValidation
 
+    /// How a member's start ends when it is refused because another Darkbloom app holds this Mac's GPU, or production
+    /// serves here (`ClusterGPUHold.refused`): the `Error:` line it prints (ArgumentParser's own form for any error),
+    /// which the cluster service reads as its part's last error and waits on (`ClusterService.lastError`,
+    /// `ClusterMachineDeviceLock.isRefusal`), and the exit code reserved for it, which the always-on supervisor waits on
+    /// (`ClusterMemberRunEnd.gpuHeldExitCode`). Nil for any other error.
+    public static func gpuHoldRefusal(_ error: any Error) -> (line: String, exitCode: Int32)? {
+        ClusterGPUHold.refused(error) ? ("Error: \(error)", ClusterMemberRunEnd.gpuHeldExitCode) : nil
+    }
+
     /// `localChipClass` is this Mac's own class
     /// (`ClusterChipClass.local()`): the rank this Mac runs must not be a
     /// rank-shape that diverged on that class, and the model must have a

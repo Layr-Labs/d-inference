@@ -84,6 +84,13 @@ struct ClusterApprovalServiceStartTests {
         ((try? FileManager.default.contentsOfDirectory(atPath: parts.path)) ?? []).filter { $0.hasPrefix(role + "-") && $0.hasSuffix(suffix) }.count
     }
 
+    /// The process numbers of those parts (the fixture names each record `<role>-<pid><suffix>`).
+    private func pids(_ parts: URL, _ role: String, _ suffix: String) -> [Int32] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: parts.path)) ?? [])
+            .filter { $0.hasPrefix(role + "-") && $0.hasSuffix(suffix) }
+            .compactMap { Int32($0.dropFirst(role.count + 1).dropLast(suffix.count)) }
+    }
+
     private func run(_ service: ClusterService, parts: URL, until predicate: () -> Bool) -> (Bool, [String]) {
         let stop = DispatchSemaphore(value: 0), done = DispatchSemaphore(value: 0)
         let lines = ClusterApprovalRecorder<String>()
@@ -183,19 +190,23 @@ struct ClusterApprovalServiceStartTests {
             var held: ClusterDeviceExclusion? = try ClusterDeviceExclusion(
                 directoryURL: parts.appendingPathComponent("lease-other-app", isDirectory: true),
                 machineLock: .init(file: parts.appendingPathComponent("gpu.lock"), heldElsewhere: "the other app holds it"))
-            var mostQuickEnds = 0, polled = Date.distantPast, releasedAt: Date?, startedAt: Date?
+            var mostQuickEnds = 0, polled = Date.distantPast, releasedAt: Date?, startedAt: Date?, refusedEnd: String?
             let (reached, lines) = run(service, parts: parts) {
                 if Date().timeIntervalSince(polled) >= 0.2 {
                     polled = Date()
                     mostQuickEnds = max(mostQuickEnds, service.status().memberQuickEnds ?? 0)
                 }
-                // Four refusals: the service has seen at least three of them end.
-                if held != nil, count(parts, "member", ".refused") >= 4 { held = nil; releasedAt = Date() }
+                // Four refusals: the service has seen at least three of them end, each as the member ends (exit 76).
+                if held != nil, count(parts, "member", ".refused") >= 4 {
+                    refusedEnd = service.status().child.lastEnd
+                    held = nil; releasedAt = Date()
+                }
                 if releasedAt != nil, started(parts, "member") { startedAt = Date(); return true }
                 return false
             }
             #expect(count(parts, "member", ".refused") >= 4, "the part was not refused for the GPU again and again: \(lines)")
             #expect(mostQuickEnds == 0, "a refusal for the GPU counted as a failing part: \(lines)")
+            #expect(refusedEnd == "exit \(ClusterMemberRunEnd.gpuHeldExitCode)", "the refused member's end: \(String(describing: refusedEnd))")
             #expect(try service.store.readRecord().approvalSetAside == nil, "the approval was set aside as failing")
             #expect(try macs.saved(macs.leader).configuration.nativeMember?.clusterApproval != nil, "the pair stopped being offered")
             #expect(reached, "the part did not start once the GPU was let go: \(lines)")
@@ -247,12 +258,16 @@ struct ClusterApprovalServiceStartTests {
     /// Re-review of #1846: production before 0.10.11 takes no GPU lock, so outside production's build this Mac's part
     /// steps aside once production serves here (its pair started after this one, both at login say). The part stops,
     /// nothing counts, the status names production, and the part starts again once production stops serving here.
+    /// Final review: the part's GPU work is fenced at once, before the part's own stop (which could take 300 s).
     @Test func aPartStepsAsideWhileProductionServesAndStartsAgainOnceItStops() throws {
         let (macs, service, parts) = try setUp(endsIn: 14 * 86_400)
         try withExtendedLifetime(macs) {
             let production = ClusterApprovalRecorder<Bool>()
             let words = ClusterMachineDeviceLock.productionServes("it is serving (process 4242)")
             service.productionServes = { production.values.last == true ? words : nil }
+            let fenced = ClusterApprovalRecorder<Int32>()
+            service.fenceGPUWork = { part in fenced.append(part); return 1 }
+            var fencedBeforeTheStop: [Int32]?, askedToStop: [Int32]?
             var phase = 0, heldBack: String?, polled = Date.distantPast, servingSince: Date?, stoppedAt: Date?, startedAt: Date?
             var restartedWhileServing = false
             let (reached, lines) = run(service, parts: parts) {
@@ -260,8 +275,10 @@ struct ClusterApprovalServiceStartTests {
                 case 0:  // this Mac's part runs; then production starts serving here
                     guard started(parts, "member") else { return false }
                     production.append(true); phase = 1
-                case 1:  // the service asks the part to stop; the fixture then ends
+                case 1:  // the service fences the part's GPU work and asks it to stop; the fixture then ends
                     guard count(parts, "member", ".term") >= 1 else { return false }
+                    fencedBeforeTheStop = fenced.values
+                    askedToStop = pids(parts, "member", ".term")
                     try? Data().write(to: parts.appendingPathComponent("release-member"))
                     servingSince = Date(); phase = 2
                 case 2:  // the part stays stopped while production serves; then production stops
@@ -277,6 +294,9 @@ struct ClusterApprovalServiceStartTests {
                 return false
             }
             #expect(phase >= 2, "this Mac's part did not step aside for production: \(lines)")
+            #expect(fencedBeforeTheStop != nil && fencedBeforeTheStop == askedToStop,
+                    "the part's GPU work was not fenced before its stop: \(String(describing: fencedBeforeTheStop))")
+            #expect(lines.contains { $0.contains("asked this part's worker owner to release the GPU now") }, "\(lines)")
             #expect(!restartedWhileServing, "this Mac's part started again while production served: \(lines)")
             #expect(heldBack == words, "the status did not name production: \(String(describing: heldBack))")
             #expect(lines.contains { $0.contains("This Mac's part stops and waits for it.") }, "\(lines)")

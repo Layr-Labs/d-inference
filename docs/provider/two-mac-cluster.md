@@ -289,7 +289,8 @@ as a failing pair, so the production app never falls back to its local API for
 it. The production app wins: the DevNet app also waits while the production
 app serves on that Mac (even a production version from before the lock) or its
 pair is set to serve there, also while it restarts for an update, and its
-running pair stops within seconds when production starts serving there. Its
+running pair releases the GPU at once and stops when production starts serving
+there. Its
 pair's API takes 8000 too, or the lowest free port up to 8020 when the
 production app's pair holds it; its card and hints name `darkbloom-dev`.
 

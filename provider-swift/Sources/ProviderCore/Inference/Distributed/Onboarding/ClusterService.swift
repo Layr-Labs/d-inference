@@ -113,6 +113,9 @@ public final class ClusterService: @unchecked Sendable {
     /// Production serving on this Mac, in words (`ClusterMachineDeviceLock.productionServingHere`): this build's check,
     /// nil in production's own build; tests stand in.
     var productionServes: (@Sendable () -> String?)?
+    /// Fences the GPU work of this Mac's part (`partPID`) at once when it steps aside for production, and says how many
+    /// worker owners it asked (`fenceOwners`); tests stand in.
+    var fenceGPUWork: @Sendable (_ partPID: Int32) -> Int = { ClusterService.fenceOwners(of: $0) }
     /// A step aside of single-Mac serving runs (`stepAsideIfUnchosen`), and the process it was for.
     private var steppingAside = false
     private var steppedAsidePID: Int32?
@@ -1609,6 +1612,36 @@ public final class ClusterService: @unchecked Sendable {
     /// this Mac's part waits instead of starting, being refused and counting as failing: said once, and named in the
     /// status. It starts on the first tick after the hold ends, with its restart backoff and any approval set aside as
     /// failing cleared (`blockerCleared`).
+    /// SIGUSR1 to the worker owners the part `partPID` started: their force-cancel hook (`ClusterOwnerForceCancel`) fences
+    /// each one's worker, which cancels its requests, releases its model and exits by itself, the protocol's own drain.
+    /// Its owner journals and reports that end, so nothing of the part's own state is left behind. Returns how many
+    /// were asked.
+    static func fenceOwners(of partPID: Int32) -> Int {
+        let image: (Int32) -> String? = { ClusterProcessTable.executablePath(of: $0) }
+        let targets = fenceTargets(processes: ClusterProcessTable.running(), partPID: partPID, image: image)
+        return targets.filter { kill($0, SIGUSR1) == 0 }.count
+    }
+
+    /// The worker owners among `partPID`'s descendants that run the part's own executable (`image`), so they carry the
+    /// force-cancel hook: any other process would die of SIGUSR1, and no other build's process is ever one of them.
+    static func fenceTargets(processes: [ClusterProcessTable.Entry], partPID: Int32, image: (Int32) -> String?) -> [Int32] {
+        guard let own = image(partPID) else { return [] }
+        var lineage: Set<Int32> = [partPID]
+        var grew = true
+        while grew {
+            grew = false
+            for entry in processes where !lineage.contains(entry.processIdentifier) {
+                guard let parent = entry.parentProcessIdentifier, lineage.contains(parent) else { continue }
+                lineage.insert(entry.processIdentifier)
+                grew = true
+            }
+        }
+        return processes.filter {
+            $0.processIdentifier != partPID && lineage.contains($0.processIdentifier)
+                && ClusterOrphanReaper.role(of: $0) == .owner && image($0.processIdentifier) == own
+        }.map(\.processIdentifier).sorted()
+    }
+
     private func holdsBackForOtherApp(say: @escaping @Sendable (String) -> Void) -> Bool {
         let now = ClusterMachineDeviceLock.heldByAnotherBuild(context.paths, otherHolder: productionServes)
         let before = lock.withLock { () -> String? in defer { otherAppHolds = now }; return otherAppHolds }
@@ -1837,11 +1870,14 @@ public final class ClusterService: @unchecked Sendable {
             return
         }
         // Outside production's build, this Mac's part steps aside once production serves here: production before 0.10.11
-        // takes no GPU lock, so its pair started after this one (both start at login, say) would load beside it. The part
-        // stops, never counted as failing, and waits (`holdsBackForOtherApp`) until production stops serving here.
-        if running != nil, setup?.hasPrefix("cluster:") == true, let reason = productionServes?() {
+        // takes no GPU lock, so its pair started after this one (both start at login, say) would load beside it. The part's
+        // GPU work is fenced at once, not drained (`fenceGPUWork`); the part then stops, never counted as failing, and
+        // waits (`holdsBackForOtherApp`) until production stops serving here.
+        if let part = running, setup?.hasPrefix("cluster:") == true, let reason = productionServes?() {
             lock.withLock { otherAppHolds = reason }
             say(reason + " This Mac's part stops and waits for it.")
+            let fenced = fenceGPUWork(part.processIdentifier)
+            if fenced > 0 { say("asked this part's \(fenced == 1 ? "worker owner" : "\(fenced) worker owners") to release the GPU now") }
             _ = stopChild(say: say, seconds: 300)
             return
         }

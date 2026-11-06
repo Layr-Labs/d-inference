@@ -8,7 +8,7 @@ import Foundation
 /// What one Mac's cluster service reports to its leader.
 public struct ClusterServiceStatus: Codable, Sendable, Equatable {
     /// The file each cluster service publishes its status in every tick, in its setup folder (`ClusterService`); another
-    /// build reads production's, read only (`ClusterMachineDeviceLock.productionPairServes`).
+    /// build reads production's, read only (`ClusterMachineDeviceLock.productionPairStatus`).
     static let fileName = "service-status.json"
     public struct Child: Codable, Sendable, Equatable {
         public var running: Bool

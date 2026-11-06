@@ -92,8 +92,16 @@ extension Start {
         // bootstrap directories), reported in this member's log.
         Self.sweepOrphans(phase: "start", waitForContract: true)
         defer { Self.sweepOrphans(phase: "end", waitForContract: true) }
-        let (loop, prepared, offered) = try await makeClusterMemberLoopAndPreparation(reference: factory.reference,
-                                                                                      answersUpdateDrain: true)
+        let made: (loop: ProviderLoop, prepared: ClusterMemberPreparation, offered: Bool)
+        do {
+            made = try await makeClusterMemberLoopAndPreparation(reference: factory.reference, answersUpdateDrain: true)
+        } catch let error where ClusterGPUHold.refused(error) {
+            // Another Darkbloom build holds this Mac's GPU, or production serves here: a wait, never a failure. The exit
+            // code of its own lets the always-on supervisor wait without spending its restart budget.
+            printError("Error: \(error)")
+            throw ExitCode(ClusterMemberRunEnd.gpuHeldExitCode)
+        }
+        let (loop, prepared, offered) = made
         heartbeat.attach(loop: loop)
         // A setup saved for coordinator pairing over the link serves the
         // pair's committed starts (S10): the leader hosts the link listener

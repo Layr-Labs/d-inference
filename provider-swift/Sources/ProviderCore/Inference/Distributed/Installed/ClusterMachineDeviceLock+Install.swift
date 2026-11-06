@@ -56,13 +56,20 @@ extension ClusterMachineDeviceLock {
 
     /// Production serving on this Mac, in words, for another build (read only, never production's locks): a serving
     /// process of production's own app (`productionServing`), or production's cluster service saying its pair serves
-    /// here (`productionPairServes`), which also covers the seconds its part restarts (a crash, an update) and its wait
-    /// for the GPU. Production wins by default.
-    static func productionServingHere(home: URL) -> String? {
-        if let pid = productionServing(home: home) { return productionServes("it is serving (process \(pid))") }
-        guard let status = productionPairServes(home: home) else { return nil }
-        return productionServes("its pair is set to serve here (its cluster service"
-            + (status.servicePID.map { ", process \($0)" } ?? "") + ")")
+    /// here (`productionPairStatus`), which also covers the seconds its part restarts (a crash, an update) and its wait
+    /// for the GPU. A status that can't be read counts as serving (fail safe). Production wins by default.
+    static func productionServingHere(home: URL) -> String? { productionServingCause(home: home).map(productionServes) }
+
+    /// How production serves here, in words (`productionServingHere`), for a refusal to say; nil when it doesn't.
+    static func productionServingCause(home: URL) -> String? {
+        if let pid = productionServing(home: home) { return "it is serving (process \(pid))" }
+        switch productionPairStatus(home: home) {
+        case .none: return nil
+        case .serves(let pid):
+            return "its pair is set to serve here (its cluster service" + (pid.map { ", process \($0)" } ?? "") + ")"
+        case .unreadable(let why):
+            return "its cluster service's status can't be read (\(why)), so this build takes it that production serves here"
+        }
     }
 
     /// How recently production's cluster service must have published its status to count: it writes it every second
@@ -70,20 +77,45 @@ extension ClusterMachineDeviceLock {
     /// counting two minutes later.
     static let publishedWithinSeconds: Double = 120
 
-    /// Production's cluster service's published status (`ClusterServiceStatus.fileName` in production's setup folder,
-    /// read only) when it says production's pair serves here: written within `publishedWithinSeconds`, the intent on,
-    /// and the pair not given up on this Mac (`pairRunning`; nil from a build before 0.10.9).
-    static func productionPairServes(home: URL, now: Date = Date()) -> ClusterServiceStatus? {
-        guard let production = try? ClusterUserPaths(homeDirectory: home, environment: .prod) else { return nil }
+    /// What production's cluster service's published status says about this Mac, for another build.
+    enum ProductionPairStatus: Equatable {
+        /// No status (production isn't installed here, or its cluster service never ran), an old one (written two
+        /// minutes ago or more, or dated ahead of this Mac's clock), or one saying production's pair doesn't serve here.
+        case none
+        /// Production's pair serves here, as the cluster service `servicePID` published within two minutes.
+        case serves(servicePID: Int32?)
+        /// A fresh status this build can't read or decode, and why: production may serve here, so the other build
+        /// waits (fail safe) and says so.
+        case unreadable(String)
+    }
+
+    /// Production's cluster service's published status (`ClusterServiceStatus.fileName` in production's setup folder),
+    /// read only: never locked or written, and opened only as a regular file. Fresh: written within
+    /// `publishedWithinSeconds` before `now` (when it was looked at). It says the pair serves while its intent is on and
+    /// the pair isn't given up on this Mac (`pairRunning`; nil from a build before 0.10.9).
+    static func productionPairStatus(home: URL, now: Date? = nil) -> ProductionPairStatus {
+        guard let production = try? ClusterUserPaths(homeDirectory: home, environment: .prod) else { return .none }
         let file = production.setupDirectory.appendingPathComponent(ClusterServiceStatus.fileName)
-        guard let written = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.modificationDate] as? Date,
-              now.timeIntervalSince(written) < publishedWithinSeconds,
-              let handle = FileHandle(forReadingAtPath: file.path) else { return nil }
-        defer { try? handle.close() }
+        let shown = "~/\(BuildEnvironment.prod.installDirectoryName)/cluster-setup/\(ClusterServiceStatus.fileName)"
+        var info = stat()
+        guard lstat(file.path, &info) == 0 else {
+            let code = errno
+            return code == ENOENT || code == ENOTDIR ? .none : .unreadable("\(shown): \(String(cString: strerror(code)))")
+        }
+        let written = Double(info.st_mtimespec.tv_sec) + Double(info.st_mtimespec.tv_nsec) / 1e9
+        guard (0..<publishedWithinSeconds).contains((now ?? Date()).timeIntervalSince1970 - written) else { return .none }
+        guard info.st_mode & S_IFMT == S_IFREG else { return .unreadable("\(shown) is not a file") }
+        let descriptor = open(file.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            let code = errno
+            return .unreadable("\(shown): \(String(cString: strerror(code)))")
+        }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
         guard let data = try? handle.read(upToCount: 1 << 20),
-              let status = try? JSONDecoder().decode(ClusterServiceStatus.self, from: data),
-              status.serving, status.pairRunning != false else { return nil }
-        return status
+              let status = try? JSONDecoder().decode(ClusterServiceStatus.self, from: data) else {
+            return .unreadable("\(shown) is not a status this build can read")
+        }
+        return status.serving && status.pairRunning != false ? .serves(servicePID: status.servicePID) : .none
     }
 
     /// Whether a part's last error is one of these refusals (`ClusterApprovalCheck.memberQuickEnds`).
@@ -182,4 +214,26 @@ extension ClusterUserPaths {
     /// member preparation and GLM calibration holds it with this build's own device scope, so one build's pair never
     /// starts on the GPU beside another's.
     public var machineDeviceLock: ClusterMachineDeviceLock { .forInstall(self) }
+}
+
+/// Another Darkbloom build's hold on this Mac's GPU, for single-Mac serving and the `darkbloom` command.
+public enum ClusterGPUHold {
+    /// Why no model of this build loads on this Mac now (single-Mac serving): production serves here, in words
+    /// (`ClusterMachineDeviceLock.productionServingCause`). Production's own build reads nothing and gets nil.
+    public static func productionServesHere(environment: BuildEnvironment = .current,
+                                            home: URL = FileManager.default.homeDirectoryForCurrentUser) -> String? {
+        guard environment != .prod, let cause = ClusterMachineDeviceLock.productionServingCause(home: home) else { return nil }
+        return "The production Darkbloom on this Mac \(ClusterMachineDeviceLock.refusalMarker): \(cause), and two models don't "
+            + "fit one Mac's memory: no model of this build loads here until production stops serving. Production serves "
+            + "here: ask its owner before stopping it."
+    }
+
+    /// Whether `error` refused a start because another build holds this Mac's GPU, or production serves here.
+    public static func refused(_ error: any Error) -> Bool { ClusterMachineDeviceLock.isRefusal("\(error)") }
+
+    /// Why this build's pair can't take this Mac's GPU now (`ClusterMachineDeviceLock.heldByAnotherBuild`); nil when
+    /// nothing of another build holds it.
+    public static func now() -> String? {
+        (try? ClusterUserPaths()).flatMap { ClusterMachineDeviceLock.heldByAnotherBuild($0) }
+    }
 }

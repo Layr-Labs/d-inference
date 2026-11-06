@@ -160,7 +160,8 @@ page with these names ([dev build identity](../operations/provider-release.md#de
   starts by itself once the other app's pair stops, and a wait never counts as
   a failing pair. A DevNet build also waits while the production app serves on
   that Mac, whatever production's version, and its running pair stops when
-  production starts serving there. **STOP** when a DevNet build says
+  production starts serving there. Its single-Mac serving loads no model while
+  production serves there either. **STOP** when a DevNet build says
   that the production Darkbloom holds the GPU or is serving: production serves
   on that Mac, so never stop it yourself; tell the human and wait. `cluster
   link --remove` in one app names the other app when that app still uses the

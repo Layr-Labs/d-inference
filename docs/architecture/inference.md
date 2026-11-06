@@ -573,10 +573,21 @@ production's locks): a serving process of production's own app runs
 owner or its worker, run from production's folder, from the process table),
 which covers production before 0.10.11 (it takes no lock), or production's
 cluster service published within two minutes that its pair serves here
-(`productionPairServes`: its `service-status.json`, `serving` and `pairRunning`),
-which covers the seconds production's part restarts (an update, a crash). That
-build's cluster service also stops its running part when production starts
-serving (both start at login, say). The cluster service never starts its part
+(`productionPairStatus`: its `service-status.json`, `serving` and `pairRunning`),
+which covers the seconds production's part restarts (an update, a crash). A
+fresh status it can't read or decode counts as serving (fail safe, said in the
+refusal); no status, an old one, or one dated ahead of the clock doesn't. That
+build's cluster service also steps a running part aside when production starts
+serving (both start at login, say): it fences the part's GPU work at once
+(SIGUSR1 to the worker owners the part started, `ClusterService.fenceOwners`,
+whose force-cancel hook ends each worker's requests and unloads it), then stops
+the part. No model of such a build loads for single-Mac serving while
+production serves here either: `ModelContainerLoading.loadServingContainer`,
+the one loader both slot owners use, refuses (`ClusterGPUHold.productionServesHere`),
+which the provider reports as a transient 503. A cluster member that ends on a
+refusal exits with `ClusterMemberRunEnd.gpuHeldExitCode` (76), so the
+developer `--always-on` supervisor waits for the hold (`ClusterGPUHold.now`)
+instead of spending its restart budget. The cluster service never starts its part
 into a hold: `ClusterMachineDeviceLock.heldByAnotherBuild`
 probes the lock shared and lets it go at once (a start at that moment retries
 for up to 100 ms, `ClusterDeviceExclusion.machineLockTries`), and the part

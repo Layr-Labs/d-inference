@@ -16,9 +16,15 @@ public enum ClusterMemberRunEnd: Equatable, Sendable {
     case failure(exitCode: Int32)
     /// Killed by a signal the supervisor did not send.
     case signaled(Int32)
+    /// The member exited with `gpuHeldExitCode`: another Darkbloom build holds this Mac's GPU (its pair or a model
+    /// check), or production serves here. A wait, never a failure.
+    case gpuHeld
 
     /// The JACCL progress guard's teardown exit code (guard v2, mlx#33).
     public static let guardTeardownExitCode: Int32 = 75
+    /// The member's exit code when its start found this Mac's GPU held by another Darkbloom build
+    /// (`ClusterGPUHold.refused`).
+    public static let gpuHeldExitCode: Int32 = 76
 
     /// Classify a finished child process. `stopRequested` is the
     /// supervisor's own flag; a signal is reported only when the child did
@@ -27,6 +33,7 @@ public enum ClusterMemberRunEnd: Equatable, Sendable {
         if stopRequested { return .operatorStop }
         if let signal { return .signaled(signal) }
         let code = exitCode ?? -1
+        if code == gpuHeldExitCode { return .gpuHeld }
         return code == guardTeardownExitCode ? .guardTeardown : .failure(exitCode: code)
     }
 }
@@ -41,7 +48,9 @@ public enum ClusterMemberRunEnd: Equatable, Sendable {
 /// - a JACCL guard teardown (exit 75) inside the window is a self-heal with its
 ///   own budget of six, and a seventh means the link is flapping;
 /// - a run of at least the window resets both counters and the backoff;
-/// - restarts wait 15 s, doubling to a 300 s cap.
+/// - restarts wait 15 s, doubling to a 300 s cap;
+/// - a member that found this Mac's GPU held by another Darkbloom build waits for that hold to end: it counts nothing
+///   and doubles nothing.
 ///
 /// Pure value type: the supervisor persists it for `darkbloom status`.
 public struct ClusterMemberRestartBudget: Codable, Equatable, Sendable {
@@ -88,6 +97,8 @@ public struct ClusterMemberRestartBudget: Codable, Equatable, Sendable {
         /// The budget is spent: stop restarting and say why. The supervisor
         /// parks (holding nothing) until the operator restarts it.
         case exhausted(reason: String)
+        /// Another Darkbloom build holds this Mac's GPU: wait until it lets go, then start again at once.
+        case waitForGPU
     }
 
     public private(set) var limits: Limits
@@ -111,6 +122,8 @@ public struct ClusterMemberRestartBudget: Codable, Equatable, Sendable {
     /// accounting, then the two breakers, then the backoff.
     public mutating func record(_ end: ClusterMemberRunEnd, runSeconds: Double) -> Decision {
         if end == .operatorStop { return .stop }
+        // The member waited for another build's hold on the GPU; it did not fail.
+        if end == .gpuHeld { return .waitForGPU }
         if runSeconds < limits.quickFailureWindowSeconds {
             if end == .guardTeardown { guardTeardowns += 1 } else { quickFailures += 1 }
         } else {

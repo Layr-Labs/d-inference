@@ -5,9 +5,10 @@ public enum MTPAutomaticVerificationPolicy {
     public static let initialDraftTokens = 1
 
     /// Qwen retains its request-stateful controller and drafter-owned cap.
-    /// Exact Gemma QAT can alternate ordinary decode with one draft token;
-    /// all other stateless assistants retain fixed depth one. Explicit offline
-    /// verification controls retain fixed depth one for comparable measurements.
+    /// Exact Gemma QAT adapts between ordinary decode and `gemmaQATMaximumDepth`
+    /// draft tokens per request (`requestProbeDepth`); all other stateless
+    /// assistants retain fixed depth one. Explicit offline verification
+    /// controls retain fixed depth one for comparable measurements.
     static func draftDepthPolicy(
         usesRequestStatefulDrafter: Bool,
         modelID: String? = nil,
@@ -21,10 +22,33 @@ public enum MTPAutomaticVerificationPolicy {
             }
             return (CBv2MTPConfig.testedMaxDraftTokens, nil)
         }
-        if modelID == "gemma-4-26b-qat-4bit", !hasBenchmarkVerificationOverride {
-            return (1, nil)
+        if modelID == gemmaQATModelID, !hasBenchmarkVerificationOverride {
+            return (gemmaQATMaximumDepth, nil)
         }
         return (CBv2MTPConfig.testedMaxDraftTokens, initialDraftTokens)
+    }
+
+    static let gemmaQATModelID = "gemma-4-26b-qat-4bit"
+    /// Gemma QAT's deepest round. Whether a request uses it is the adaptive
+    /// controller's measurement on this Mac (`requestProbeDepth`); the
+    /// automatic verification envelope (`maxRectangularTokens`) still clamps a
+    /// batch's depth. Exactness was measured for B1/L2...L8 on M5
+    /// (`docs/design/gemma4-cbv2-mtp.md`).
+    static let gemmaQATMaximumDepth = 4
+
+    /// The adaptive controller's request-probe depth (`CBv2MTPConfig.requestProbeDepth`):
+    /// Gemma QAT opens each request with a depth-2 window, then follows the
+    /// request's own acceptance against this engine's measured cost of a round
+    /// at each depth, so chat stays near ordinary decode while tools and code
+    /// go deep. nil keeps the incremental controller (every other model, and
+    /// explicit offline verification controls).
+    static func requestProbeDepth(
+        usesRequestStatefulDrafter: Bool, modelID: String?, hasBenchmarkVerificationOverride: Bool = false
+    ) -> Int? {
+        guard !usesRequestStatefulDrafter, modelID == gemmaQATModelID, !hasBenchmarkVerificationOverride else {
+            return nil
+        }
+        return 2
     }
 
     public static func maxRectangularTokens(

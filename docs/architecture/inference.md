@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-05
+> Last updated: 2026-11-06
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -2337,7 +2337,8 @@ memory-ineligible assistants preserve target-only serving; explicit `off` and
 `MTPAutomaticVerificationPolicy`: `initialDraftTokens = 1`;
 `fixedDraftTokens = nil` for request-stateful drafters (controller bounded by
 the assistant: Qwen 0…4, Nemotron 0…7)
-and exact stateless `gemma-4-26b-qat-4bit` (controller bounded to 0…1).
+and exact stateless `gemma-4-26b-qat-4bit` (controller bounded to 0…4, in
+request-probe mode: `CBv2MTPConfig.requestProbeDepth = 2`, below).
 Other stateless assistants and explicit offline Gemma verification controls
 retain fixed depth `1`; `maxRectangularTokens = 8` on
 M3/M4/M5 and `4` on M1/M2/unknown, lowered only by
@@ -2345,7 +2346,25 @@ M3/M4/M5 and `4` on M1/M2/unknown, lowered only by
 (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`).
 Gemma uses bounded rectangular target verification: one target traversal scores
 its seed and draft columns, while ordered attention and speculative transactions
-preserve causal visibility and discard rejected suffixes. The depth controller
+preserve causal visibility and discard rejected suffixes. In request-probe mode (Gemma QAT), the controller opens each request
+with one eight-round window at depth 2. After each completed window it decodes
+at the depth with the highest expected goodput: the request's own committed
+tokens per round (its acceptance by position, positions beyond the measured
+ones at the last measured rate) over this engine's measured cost of one round
+at that depth. A depth must beat the current one by 5 %, and ordinary decode
+wins unless a depth beats it. A depth whose round cost was never measured on
+this engine is run for one window first. Round costs are kept across requests,
+since they belong to the Mac; acceptance is not. Ordinary decode re-probes at
+depth 2 after 128 tokens, doubling after each losing probe up to 512, and back
+to 128 after a winning one. The probe, the measuring windows and the chosen
+depth stay within the plan's automatic verification envelope (depth 3 with two
+rows and depth 1 with three or four on M3-M5; depth 3 alone and depth 1 with two
+on M1/M2); a plan the envelope keeps at depth 0 decodes ordinarily and leaves the
+probe schedule as it was. Greedy rows equal ordinary decode at every depth.
+Sampled rows keep the acceptance rule `mtp_acceptance` names, and only how
+many drafts a round proposes changes
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPDepthController.swift`).
+Otherwise the depth controller
 compares ordinary decode's chained commit intervals with actual committed output
 across bounded eight-round MTP learning windows. Each round streams immediately
 and retains the ordinary cancellation, output-budget and capacity gates. Adaptive

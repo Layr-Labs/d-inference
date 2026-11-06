@@ -953,8 +953,9 @@ jobs:
     # source closure and runs on retained fixtures (no GPU, no model load, no
     # weights; every runner runs even after another fails). Shard 1 runs the
     # runner scripts under libs/darkbloom-cluster/Tests
-    # (scripts/cluster-test-plan.py focused lane); shard 2 runs the stage
-    # metadata, provisioning and onboarding runners. They need no test
+    # (scripts/cluster-test-plan.py focused lane) and the pairing runner;
+    # shard 2 runs the stage metadata, provisioning, onboarding and console
+    # runners. They need no test
     # products. Both shards read the one lane test-cluster-focused, which the
     # route requests for 2 jobs (provider-plan.yml).
     name: Cluster Focused Checks (shard ${{ matrix.shard }})
@@ -1027,6 +1028,12 @@ jobs:
       - name: Run cluster onboarding checks
         if: ${{ !cancelled() && matrix.shard == 2 && steps.toolchain.outcome == 'success' }}
         run: bash provider-swift/Tests/ClusterOnboardingChecks/run.sh
+      - name: Run cluster console checks
+        if: ${{ !cancelled() && matrix.shard == 2 && steps.toolchain.outcome == 'success' }}
+        run: bash provider-swift/Tests/ClusterConsoleChecks/run.sh
+      - name: Run cluster pairing checks
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.toolchain.outcome == 'success' }}
+        run: bash provider-swift/Tests/ClusterPairingChecks/run.sh
       - name: Run cluster focused checks
         if: ${{ !cancelled() && matrix.shard == 1 && steps.toolchain.outcome == 'success' }}
         timeout-minutes: 40

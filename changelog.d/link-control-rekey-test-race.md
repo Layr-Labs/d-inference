@@ -1,0 +1,4 @@
+### Link control rekey test waits for the connector's rekey event
+
+- `testRecordBudgetRollsOverToFreshKeys` failed on a busy CI Mac (master push run 42258366869) although all 400 messages arrived in order over at least 6 sessions. It read the listener's event log at once for a `.rekey` disconnect. The listener records no event for a session that its next session supersedes, and that happens when the connector dials again before the listener's reader reaches the goodbye. The test now waits, with the log's normal 5 s timeout, for the `.rekey` disconnect on the connector's log. The connector's record budget ran out, so its session always ends as a rekey, and the event is queued before it dials again.
+- `testReconnectResumesExactlyOnceInOrder` waits for the client's resumed `.connected` event instead of reading the client log at once after a wait on the server log.

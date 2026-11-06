@@ -366,7 +366,8 @@ final class ClusterLinkControlChannelTests: XCTestCase {
         let status = client.peer.status
         XCTAssertGreaterThanOrEqual(status.sessions, 8)
         XCTAssertEqual(status.peerRestarts, 0)
-        XCTAssertTrue(clientLog.all.contains { if case .connected(_, _, true, _) = $0 { return true }; return false })
+        // The client's events are recorded on its own queue, not the server's.
+        XCTAssertTrue(clientLog.wait { $0.contains { if case .connected(_, _, true, _) = $0 { return true }; return false } })
     }
 
     func testListenerRestartIsReportedAndTrafficContinues() throws {
@@ -390,11 +391,11 @@ final class ClusterLinkControlChannelTests: XCTestCase {
     }
 
     func testRecordBudgetRollsOverToFreshKeys() throws {
-        let serverLog = LinkEventLog()
+        let serverLog = LinkEventLog(), clientLog = LinkEventLog()
         let edge = try makeEdge(limits: limits { $0.maximumRecordsPerConnection = 64 })
         let (listener, port) = try makeListener(serverLog, edge: edge)
         defer { listener.stop() }
-        let client = try makeClient(LinkEventLog(), port: port, edge: edge)
+        let client = try makeClient(clientLog, port: port, edge: edge)
         defer { client.stop() }
         XCTAssertTrue(client.peer.waitUntilConnected(timeout: .seconds(3)))
         for index in 0..<400 { try client.peer.send(status(UInt16(index))) }
@@ -402,7 +403,11 @@ final class ClusterLinkControlChannelTests: XCTestCase {
         XCTAssertTrue(serverLog.wait { _ in serverLog.messages.count == 400 })
         XCTAssertEqual(serverLog.messages.map(\.0), Array(1...400))
         XCTAssertGreaterThanOrEqual(client.peer.status.sessions, 6)
-        XCTAssertTrue(serverLog.disconnects.contains(.rekey))
+        // The client's record budget ran out, so its own sessions end as a
+        // rekey, queued before it dials the next one. The listener's need not:
+        // a next session that arrives before its reader reaches the goodbye
+        // supersedes the old one, which then ends without an event.
+        XCTAssertTrue(clientLog.wait { _ in clientLog.disconnects.contains(.rekey) })
     }
 
     func testFullOutboxIsBackpressure() throws {

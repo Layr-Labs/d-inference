@@ -73,14 +73,15 @@ public struct ClusterSetupLinkAnswer: Codable, Sendable, Equatable {
 /// The other Mac is found on the cable by the pairing's discovery datagrams on
 /// the exchange's own port: no address is typed and no SSH is used.
 public enum ClusterSetupLinkExchange {
-    public static let port: UInt16 = 47_422
+    /// This install's (`ClusterCablePorts`): production's 47422.
+    public static let port = ClusterCablePorts.current.exchange
     /// The control leader's lease (derived leadership, `ClusterControlNode`) on a listener of its own, keyed apart
     /// from the setup exchange: a renewal never supersedes a `darkbloom cluster` session on the exchange's listener,
-    /// and never waits behind one.
-    public static let controlPort: UInt16 = 47_423
+    /// and never waits behind one. Production's 47423.
+    public static let controlPort = ClusterCablePorts.current.control
     public static let exchangeLabel = "darkbloom-cluster-setup-exchange-v1"
     public static let controlLabel = "darkbloom-cluster-control-lease-v1"
-    static let controlLockName = "darkbloom-cluster-control.lock"
+    static let controlLockName = ClusterConsoleInstanceLock.lockFileName("control")
     static let askTag: UInt16 = 0x5E01
     static let answerTag: UInt16 = 0x5E02
     static let deliverTag: UInt16 = 0x5E03
@@ -245,7 +246,7 @@ public enum ClusterSetupLinkExchange {
 
     // MARK: - Asking (the Mac that plans)
 
-    static let requestLockName = "darkbloom-cluster-exchange.lock"
+    static let requestLockName = ClusterConsoleInstanceLock.lockFileName("exchange")
 
     /// One request at a time from this user to the paired Mac. Its listener keeps one live session per edge and a
     /// newer session supersedes the older, whose answer then goes to the newer one and is lost: two processes on

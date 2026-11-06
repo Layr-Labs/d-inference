@@ -108,7 +108,7 @@ public enum GLM5NextCalibrationInstalledQuote {
                          placement: GLM5NextCalibrationPlacement.Selection? = nil) throws -> Completed {
         let paths = try ClusterUserPaths()
         return try complete(input: input, installedExecutable: installedExecutable,
-            deviceDirectory: paths.deviceDirectory, placement: placement,
+            deviceDirectory: paths.deviceDirectory, machineLock: paths.machineDeviceLock, placement: placement,
             loadPair: { try GLM5NextCalibrationInstalledPair.load(clusterID: $0, peerPin: $1) })
     }
 
@@ -116,6 +116,7 @@ public enum GLM5NextCalibrationInstalledQuote {
     /// files, signs with a validated explicit pair, spawns/reaps the real child,
     /// and strictly validates its response. Never accepts an injected Response.
     static func complete(input: URL, installedExecutable: URL, deviceDirectory: URL,
+                         machineLock: ClusterMachineDeviceLock? = nil,
                          placement: GLM5NextCalibrationPlacement.Selection? = nil,
                          quoteTimeoutNanoseconds: UInt64 = 300_000_000_000,
                          loadPair: (String, String) throws -> GLM5NextCalibrationInstalledPair) throws -> Completed {
@@ -170,7 +171,7 @@ public enum GLM5NextCalibrationInstalledQuote {
                 expectedSHA256: file.sha256, maximumBytes: 32 << 20, deadline: deadline)
         }
         try ClusterConfigurationFiles.ensureDirectory(deviceDirectory, create: true, privateMode: true)
-        let resources = try Resources(device: ClusterDeviceLease(directoryURL: deviceDirectory))
+        let resources = try Resources(device: ClusterDeviceLease(directoryURL: deviceDirectory, machineLock: machineLock))
         let currentSelection = {
             try placement?.requireCurrent(input: data)
             try pair.requireUnchanged()

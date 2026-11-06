@@ -369,18 +369,24 @@ struct Gemma4TensorParallelTests {
         #expect(separate.payloads.count == forwards * 3 * layers + 4)
     }
 
-    /// Under the registered prompt policy (singleton tokens) and the scoped
-    /// batch decode (singleton rows), each rank packs every slice's expert
-    /// partials and the dense partial into ONE collective, and its expert
-    /// output and dense sum equal the split-sum oracle's slice-by-slice
-    /// forward bit for bit. A prompt chunk of 24 tokens has 96 routes, past
-    /// the 64 at which the experts' gather sorts its rows: its tokens share one
-    /// expert dispatch per chunk and still keep each row's one-row bytes.
-    @Test(arguments: ["prompt", "prompt-sorted", "batch"]) func scopedSlicesPackIntoOneCollective(scope: String) throws {
+    /// Under the registered prompt policy (each token the bytes of its own
+    /// one-token call) and the scoped batch decode (singleton rows), each rank
+    /// packs every expert partial and the dense partial into ONE collective,
+    /// and its expert output and dense sum equal the split-sum oracle's
+    /// forward bit for bit. A prompt chunk's tokens share one gate dispatch,
+    /// never hinted as sorted (a sorted hint keeps CPU bytes but changes the
+    /// GPU kernel route: `promptChunkExpertsEqualOneTokenCallsOnGPU`), from 2
+    /// tokens up, at the gather's sort threshold (16 x 4 = 64 routes) and past
+    /// it (24 x 4); independent decode rows keep one dispatch each.
+    @Test(arguments: ["prompt", "prompt-2", "prompt-boundary", "prompt-sorted", "batch"])
+    func scopedSlicesPackIntoOneCollective(scope: String) throws {
         let directory = try Self.synthetic(bits: 4)
         defer { try? FileManager.default.removeItem(at: directory) }
         let prompt = scope.hasPrefix("prompt")
-        let rows = prompt ? 1 : 3, tokens = scope == "prompt-sorted" ? 24 : prompt ? 6 : 1
+        let geometry: [String: (rows: Int, tokens: Int)] = [
+            "prompt": (1, 6), "prompt-2": (1, 2), "prompt-boundary": (1, 16), "prompt-sorted": (1, 24), "batch": (3, 1),
+        ]
+        let (rows, tokens) = try #require(geometry[scope])
         let shape = [rows, tokens, 256]
         let expected: (experts: [UInt16], dense: [UInt16], indices: MLXArray, weights: MLXArray) = try Device.withDefaultDevice(.cpu) {
             let oracle = try Gemma4TensorParallelModel.load(modelDirectory: directory, role: .splitSum, reduction: nil)
@@ -401,30 +407,120 @@ struct Gemma4TensorParallelTests {
                                                    reduction: pair.reduction(rank: rank))
             }
         })
+        let gates = Box(try models.value.map { try ObservedGate.install(in: $0.textModel.model.layers[0]) })
         let inputs = Box((expected.indices, expected.weights))
-        let results = try Pair.run(device: .cpu) { rank -> ([UInt16], [UInt16], Int) in
+        let results = try Pair.run(device: .cpu) { rank -> ([UInt16], [UInt16]) in
             let layer = models.value[rank].textModel.model.layers[0]
             let x = withRandomState(MLXRandom.RandomState(seed: 31)) { MLXRandom.normal(shape).asType(.bfloat16) }
-            let forwards = TensorParallelSwitchLinear.ForwardCount()
-            let (experts, dense) = TensorParallelSwitchLinear.$forwards.withValue(forwards) {
-                Self.scoped(scope, rows: rows, tokens: tokens) {
-                    layer.experts!.tensorParallelCall(x, topKIndices: inputs.value.0, topKWeights: inputs.value.1,
-                        isExpertPrefill: true, carrying: layer.mlp.tensorParallelPartial(x))
-                }
+            let (experts, dense) = Self.scoped(scope, rows: rows, tokens: tokens) {
+                layer.experts!.tensorParallelCall(x, topKIndices: inputs.value.0, topKWeights: inputs.value.1,
+                    isExpertPrefill: true, carrying: layer.mlp.tensorParallelPartial(x))
             }
             let rounded = dense.asType(.bfloat16)
             eval(experts, rounded)
             return (experts.asType(.float32).asArray(Float.self).map { UInt16($0.bitPattern >> 16) },
-                    rounded.asType(.float32).asArray(Float.self).map { UInt16($0.bitPattern >> 16) }, forwards.value)
+                    rounded.asType(.float32).asArray(Float.self).map { UInt16($0.bitPattern >> 16) })
         }
         for (rank, result) in results.enumerated() {
             #expect(result.0 == expected.experts, "rank \(rank): \(scope) expert output differs from the oracle")
             #expect(result.1 == expected.dense, "rank \(rank): \(scope) dense sum differs from the oracle")
-            // A prompt chunk's tokens share one expert dispatch; independent decode rows keep one each.
-            #expect(result.2 == (prompt ? 1 : rows), "rank \(rank): \(scope): \(result.2) expert down projections")
+            // A prompt chunk's tokens share one gate dispatch, never hinted as sorted; decode rows keep one each.
+            let gate = gates.value[rank]
+            #expect(gate.sorted == Array(repeating: false, count: prompt ? 1 : rows), "rank \(rank): \(scope): \(gate.sorted)")
         }
         // One collective: every slice's top-4 expert rows, then the dense rows.
         #expect(pair.payloads == [[rows * tokens * 4 + rows * tokens, 256]])
+    }
+
+    /// A rank's prompt chunk through `tensorParallelCall` on the GPU against the
+    /// same rank's one-token calls, bit for bit (expert output and dense rows):
+    /// a small geometry whose gather sorts from 8 tokens and a rank of the
+    /// registered 26B (2,816 hidden, 384 stored expert columns, 128 experts,
+    /// top-8; sorts from 8 tokens x 8 routes = 64). One gate dispatch per chunk,
+    /// never hinted as sorted: a sorted hint takes MLX's `gather_qmm_rhs` route
+    /// on the GPU and changes these bytes.
+    @Test(arguments: [4, 8]) func promptChunkExpertsEqualOneTokenCallsOnGPU(bits: Int) throws {
+        let geometries = [(hidden: 768, width: 192, experts: 16), (hidden: 2816, width: 384, experts: 128)]
+        try Device.withDefaultDevice(.gpu) {
+            for geometry in geometries {
+                let (module, gate) = try Self.rankExperts(bits: bits, hidden: geometry.hidden, width: geometry.width,
+                                                          experts: geometry.experts)
+                for tokens in [2, 7, 8, 9, 63, 64, 65, 512] {
+                    MLXRandom.seed(UInt64(tokens * 31 + bits))
+                    let x = MLXRandom.normal([1, tokens, geometry.hidden]).asType(.bfloat16)
+                    let scores = MLXRandom.uniform(low: 0, high: 1, [1, tokens, geometry.experts])
+                    let kth = geometry.experts - Self.rankTopK
+                    let indices = MLX.argPartition(scores, kth: kth, axis: -1)[.ellipsis, kth...].asType(.uint32)
+                    let weights = MLX.softmax(MLXRandom.normal([1, tokens, Self.rankTopK]), axis: -1).asType(.bfloat16)
+                    let dense = MLXRandom.normal([1, tokens, geometry.hidden])
+                    eval(x, indices, weights, dense)
+                    gate.reset()
+                    let (chunk, chunkDense) = Gemma4PrefillProjectionScope.withPrefillFrame(
+                        tokens: MLXArray.zeros([1, tokens], dtype: .int32), enabled: true
+                    ) {
+                        module.tensorParallelCall(x, topKIndices: indices, topKWeights: weights, isExpertPrefill: true,
+                                                  carrying: dense)
+                    }
+                    eval(chunk, chunkDense)
+                    let label = "bits=\(bits) hidden=\(geometry.hidden) experts=\(geometry.experts) tokens=\(tokens)"
+                    #expect(gate.sorted == [false], "\(label): \(gate.sorted)")
+                    var rows: [MLXArray] = [], denseRows: [MLXArray] = []
+                    for token in 0 ..< tokens {
+                        let (row, denseRow) = module.tensorParallelCall(
+                            x[0..., token ..< token + 1], topKIndices: indices[0..., token ..< token + 1],
+                            topKWeights: weights[0..., token ..< token + 1], isExpertPrefill: true,
+                            carrying: dense[0..., token ..< token + 1])
+                        eval(row, denseRow)
+                        rows.append(row); denseRows.append(denseRow)
+                    }
+                    #expect(Self.bytes(chunk) == Self.bytes(concatenated(rows, axis: 1)), "\(label): expert output")
+                    #expect(Self.bytes(chunkDense) == Self.bytes(concatenated(denseRows, axis: 1)), "\(label): dense rows")
+                }
+            }
+        }
+    }
+
+    /// The top-K of `rankExperts`, as the registered 26B routes.
+    private static let rankTopK = 8
+
+    private static func bytes(_ value: MLXArray) -> Data {
+        eval(value)
+        return value.asData(access: .copy).data
+    }
+
+    /// A Gemma 4 expert block as one rank holds it: packed random gate/up
+    /// banks of the rank's stored width (the gate observed) and a
+    /// `TensorParallelSwitchLinear` down projection whose sum is the identity.
+    private static func rankExperts(bits: Int, hidden: Int, width: Int, experts: Int) throws
+        -> (Gemma4Experts, ObservedGate) {
+        let values: [String: Any] = [
+            "hidden_size": hidden, "num_hidden_layers": 1, "intermediate_size": 128,
+            "num_attention_heads": 2, "head_dim": 64, "num_key_value_heads": 1,
+            "num_kv_shared_layers": 0, "hidden_size_per_layer_input": 0,
+            "vocab_size": 128, "enable_moe_block": true, "num_experts": experts,
+            "top_k_experts": rankTopK, "moe_intermediate_size": width, "sliding_window": 512,
+            "layer_types": ["sliding_attention"], "use_double_wide_mlp": false,
+        ]
+        let config = try JSONDecoder().decode(
+            Gemma4TextConfiguration.self, from: JSONSerialization.data(withJSONObject: values))
+        let module = Gemma4Experts(config)
+        MLXRandom.seed(UInt64(4099 + bits + hidden))
+        func bank(_ outputs: Int, _ inputs: Int) throws -> QuantizedSwitchLinear {
+            let groups = [experts, outputs, inputs / 64]
+            return try QuantizedSwitchLinear(
+                inputDims: inputs, outputDims: outputs, numExperts: experts,
+                weight: MLXRandom.randInt(Int32(0) ..< Int32.max, [experts, outputs, inputs * bits / 32]).asType(.uint32),
+                scales: MLXRandom.uniform(low: 0.001, high: 0.01, groups).asType(.bfloat16),
+                biases: MLXRandom.uniform(low: -0.02, high: 0.02, groups).asType(.bfloat16),
+                groupSize: 64, bits: bits)
+        }
+        let gate = try ObservedGate(observing: try bank(width, hidden))
+        let down = try TensorParallelSwitchLinear(try bank(hidden, width), allSum: { $0 })
+        module.switchGLU.update(modules: .unflattened([
+            "gate_proj": gate, "up_proj": try bank(width, hidden), "down_proj": down,
+        ]))
+        eval(module)
+        return (module, gate)
     }
 
     /// `body` under the registered prompt policy or the scoped batch decode.
@@ -613,5 +709,33 @@ struct Gemma4TensorParallelTests {
             Int(MLXRandom.categorical(selection.gather(local) * (1 / Float(0.8)), key: key).item(Int32.self))
         }
         #expect(gathered == [product, product])
+    }
+}
+
+/// An expert gate projection that records the sorted hint of every dispatch
+/// (the gathers of a prompt chunk must never be told their rows are sorted).
+/// Bound on one thread; not synchronized.
+private final class ObservedGate: QuantizedSwitchLinear, @unchecked Sendable {
+    private(set) var sorted: [Bool] = []
+    func reset() { sorted = [] }
+
+    init(observing gate: QuantizedSwitchLinear) throws {
+        try super.init(
+            inputDims: gate.shape.inputDims, outputDims: gate.shape.outputDims, numExperts: gate.shape.numExperts,
+            weight: gate.weight, scales: gate.scales, biases: try #require(gate.biases), groupSize: gate.groupSize, bits: gate.bits)
+    }
+
+    /// Installs an observer in place of `layer`'s expert gate projection.
+    static func install(in layer: Gemma4DecoderLayer) throws -> ObservedGate {
+        let switchGLU = try #require(layer.experts?.switchGLU)
+        let current = switchGLU.leafModules().flattened().first { $0.0 == "gate_proj" }?.1
+        let gate = try ObservedGate(observing: try #require(current as? QuantizedSwitchLinear))
+        switchGLU.update(modules: .unflattened(["gate_proj": gate]))
+        return gate
+    }
+
+    override func callAsFunction(_ x: MLXArray, _ indices: MLXArray, sortedIndices: Bool = false) -> MLXArray {
+        sorted.append(sortedIndices)
+        return super.callAsFunction(x, indices, sortedIndices: sortedIndices)
     }
 }

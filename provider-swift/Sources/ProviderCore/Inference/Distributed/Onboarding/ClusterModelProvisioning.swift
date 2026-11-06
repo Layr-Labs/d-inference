@@ -168,8 +168,31 @@ public enum ClusterModelHolding: Sendable, Equatable, Codable {
 }
 
 public enum ClusterModelStore {
+    /// This build's staging folders, in the store both apps on a Mac share: production's `.darkbloom-incoming-<digest>`,
+    /// as always; another build's carry its name (`.darkbloom-incoming-dev-<digest>`), so one app's copy never resumes,
+    /// writes into or reclaims the other app's.
+    #if SWIFT_PACKAGE
+    public static let stagingPrefix = stagingPrefix(install: BuildEnvironment.current == .prod ? nil : BuildEnvironment.current.rawValue)
+    #else
+    public static let stagingPrefix = stagingPrefix(install: nil)
+    #endif
+    static func stagingPrefix(install: String?) -> String { ".darkbloom-incoming-" + (install.map { $0 + "-" } ?? "") }
+
     /// Staging folders are hidden from every listing: a folder appears only after its last byte is verified.
-    public static func stagingName(_ artifact: ClusterCatalogArtifact) -> String { ".darkbloom-incoming-" + String(artifact.aggregateSHA256.prefix(32)) }
+    public static func stagingName(_ artifact: ClusterCatalogArtifact, prefix: String = stagingPrefix) -> String {
+        stagingName(aggregateSHA256: artifact.aggregateSHA256, prefix: prefix)
+    }
+    public static func stagingName(aggregateSHA256: String, prefix: String = stagingPrefix) -> String {
+        prefix + String(aggregateSHA256.prefix(32))
+    }
+
+    /// Whether `name` is a staging folder of the build whose prefix is `prefix`: that prefix and the digest's 32 hex
+    /// digits, nothing else. Another build's (`.darkbloom-incoming-dev-…` beside production's) never is.
+    static func isStaging(_ name: String, prefix: String) -> Bool {
+        guard name.hasPrefix(prefix) else { return false }
+        let digest = name.dropFirst(prefix.count)
+        return digest.count == 32 && digest.allSatisfy(\.isHexDigit)
+    }
 
     /// The folders of `store` whose manifest names this catalog entry (model ID, version, aggregate digest) with the
     /// same files under the same names (the aggregate digest does not cover names: a folder whose manifest renames the
@@ -484,6 +507,8 @@ public final class ClusterModelReceiver: @unchecked Sendable {
     public let store: URL
     public let folder: String
     let staging: URL
+    /// This build's staging prefix (`ClusterModelStore.stagingPrefix`); the checks name another build's.
+    let stagingPrefix: String
     let diskSpace: @Sendable (URL) -> ClusterDiskSpace?
     let stagedCheck: ((URL) -> String?)?
     private var current: (index: Int, fd: Int32, hasher: SHA256, written: Int64)?
@@ -504,7 +529,8 @@ public final class ClusterModelReceiver: @unchecked Sendable {
     public init(artifact: ClusterCatalogArtifact, store: URL, folder: String, expectedAggregate: String?,
                 trust: ((ClusterCatalogArtifact) -> String?)? = nil,
                 stagedCheck: ((URL) -> String?)? = nil, diskCheckBytes: Int64 = 256 << 20,
-                diskSpace: @escaping @Sendable (URL) -> ClusterDiskSpace? = { ClusterModelStore.diskSpace(at: $0) }) throws {
+                diskSpace: @escaping @Sendable (URL) -> ClusterDiskSpace? = { ClusterModelStore.diskSpace(at: $0) },
+                stagingPrefix: String = ClusterModelStore.stagingPrefix) throws {
         guard let safe = ClusterCatalogArtifact.safeFolder(folder) else { throw ClusterModelProvisioningError("the model folder name is not safe") }
         if let expectedAggregate, expectedAggregate != artifact.aggregateSHA256 {
             throw ClusterModelProvisioningError("the model offered is not the catalog's \(artifact.modelID) \(artifact.version) (its digest differs)")
@@ -512,7 +538,8 @@ public final class ClusterModelReceiver: @unchecked Sendable {
         if let refusal = trust?(artifact) { throw ClusterModelProvisioningError(refusal) }
         self.artifact = artifact; self.store = store; self.folder = safe; self.diskSpace = diskSpace; self.stagedCheck = stagedCheck
         self.diskCheckBytes = max(1, diskCheckBytes)
-        staging = store.appendingPathComponent(ClusterModelStore.stagingName(artifact))
+        self.stagingPrefix = stagingPrefix
+        staging = store.appendingPathComponent(ClusterModelStore.stagingName(artifact, prefix: stagingPrefix))
     }
 
     deinit { if let current { close(current.fd) } }
@@ -706,13 +733,14 @@ public final class ClusterModelReceiver: @unchecked Sendable {
         return unexpected
     }
 
-    /// Removes the hidden staging of copies of OTHER artifacts (abandoned: one copy runs at a time on a Mac), so
-    /// hidden bytes never starve the disk; this artifact's own staging stays for its resume. True when one went.
+    /// Removes the hidden staging this app's copies of OTHER artifacts left (abandoned: one copy runs at a time in an
+    /// app), so hidden bytes never starve the disk; this artifact's own staging stays for its resume, and the other
+    /// app's staging (a copy of its own, perhaps under way) is never touched. True when one went.
     private func reclaimAbandonedStaging() -> Bool {
         let own = staging.lastPathComponent
         var reclaimed = false
         for name in (try? FileManager.default.contentsOfDirectory(atPath: store.path)) ?? []
-        where name.hasPrefix(".darkbloom-incoming-") && name != own {
+        where ClusterModelStore.isStaging(name, prefix: stagingPrefix) && name != own {
             let url = store.appendingPathComponent(name)
             var info = stat()
             guard lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid() else { continue }

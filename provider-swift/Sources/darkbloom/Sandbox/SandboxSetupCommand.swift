@@ -8,16 +8,24 @@ extension Sandbox {
         static let configuration = CommandConfiguration(
             abstract: "Check this Mac, then install the add-on and enroll this Mac. Safe to run again.",
             discussion: """
-            Checks this Mac, then downloads the add-on's installer from the Darkbloom Sandbox service over \
-            HTTPS and asks it for the add-on's plan: how many jobs this Mac can run at a time and the disk \
-            they take. It explains what changes and asks before installing anything. The installer then \
-            verifies the release, installs it in ~/DarkbloomSandbox, and enrolls this Mac once you approve \
+            Checks that Darkbloom approved your account from the Darkbloom Sandbox waitlist (and offers to \
+            join it) and checks this Mac. It then downloads the add-on's installer from the Darkbloom Sandbox \
+            service over HTTPS and asks it for the add-on's plan: how many jobs this Mac can run at a time and \
+            the disk they take. It explains what changes and asks before installing anything. The installer \
+            then verifies the release, installs it in ~/DarkbloomSandbox, and enrolls this Mac once you approve \
             it in your browser.
 
             Running it again reports the current state, continues an unfinished setup, repairs or updates \
-            the add-on, or applies new slot counts. On a Mac that is set up, it asks the installer's plan \
-            again and offers the add-on's slot counts when they differ from the installed ones; with --yes \
-            or without a terminal it applies them only when they add slots and remove none.
+            the add-on, or applies new slot counts or work disks. On a Mac that is set up, it asks the \
+            installer's plan again and offers the add-on's slot counts when they differ from the installed \
+            ones; with --yes or without a terminal it applies them only when they add slots and remove none.
+
+            With --disk, the VM images and jobs go on that drive instead of the internal disk; the add-on, \
+            its settings and logs stay in ~/DarkbloomSandbox. Without --disk, at a prompt, setup lists the \
+            external APFS drives with room for jobs and asks which one to use (Enter keeps the internal \
+            disk). The drive must be APFS with ownership on: setup checks both first. When ownership is off \
+            it prints the command and, at a prompt, offers to run it (sudo asks for your password). Setup \
+            never formats a drive. Work disks need add-on \(SandboxWorkDisk.minimumAddonVersion) or later.
             """)
 
         @Flag(name: .shortAndLong, help: "Don't ask for confirmation.")
@@ -31,6 +39,12 @@ extension Sandbox {
 
         @Option(name: .customLong("macos-slots"), help: "macOS jobs to run at a time (0-2). Default: what fits this Mac.")
         var macOSSlots: Int?
+
+        @Option(name: .customLong("disk"), help: ArgumentHelp(
+            "A drive for the VM images and jobs, such as /Volumes/FastSSD (APFS, ownership on). Repeat for "
+                + "more drives; add ~ to keep using the internal disk too.",
+            valueName: "volume"))
+        var disks: [String] = []
 
         @Flag(help: "Wait until the VM images are downloaded and this Mac is ready for jobs.")
         var waitReady = false
@@ -51,11 +65,15 @@ extension Sandbox {
             if linuxSlots == 0, macOSSlots == 0 {
                 throw ValidationError("--linux-slots 0 with --macos-slots 0 leaves nothing to run")
             }
+            if disks.contains(where: \.isEmpty) {
+                throw ValidationError("--disk needs a drive, such as /Volumes/FastSSD")
+            }
         }
 
         var options: SandboxSetupOptions {
             SandboxSetupOptions(server: server, noBrowser: noBrowser, waitReady: waitReady,
-                                linuxSlots: linuxSlots, macOSSlots: macOSSlots)
+                                linuxSlots: linuxSlots, macOSSlots: macOSSlots,
+                                disks: disks.map { SandboxWorkDisk.absolutePath($0) })
         }
 
         mutating func run() async throws {
@@ -87,7 +105,9 @@ enum SandboxSetupPlan: Equatable, Sendable {
     /// A first setup: check eligibility and ask first.
     case fresh
 
-    static func decide(_ query: SandboxAddonQuery, changingSlots: Bool) -> SandboxSetupPlan {
+    static func decide(_ query: SandboxAddonQuery, changingSlots: Bool, changingDisks: Bool = false)
+        -> SandboxSetupPlan
+    {
         let repair = "running the installer again to repair it"
         let capitalizedRepair = "Running the installer again to repair it"
         switch query {
@@ -107,7 +127,9 @@ enum SandboxSetupPlan: Equatable, Sendable {
                 guard let detail = status.detail else { return .rerun("The add-on reports an error; \(repair).") }
                 return .rerun("The add-on reports an error: \(detail). \(capitalizedRepair).")
             case .ready, .running, .paused, .downloadingImages, .updating, .unknown:
-                return changingSlots ? .rerun("Applying the new slot counts.") : .alreadySetUp(status)
+                let changes = [changingSlots ? "slot counts" : nil, changingDisks ? "work disks" : nil].compactMap { $0 }
+                return changes.isEmpty ? .alreadySetUp(status)
+                    : .rerun("Applying the new \(changes.joined(separator: " and ")).")
             }
         case .outdated:
             return .rerun("Updating the add-on: this version is older than the CLI expects.")
@@ -132,23 +154,41 @@ struct SandboxSetupFlow {
     var probe: @Sendable (SandboxAddon) async -> SandboxHostFacts = {
         await SandboxHostProbe.live(addon: $0, imagesInstalled: false)
     }
+    /// The volume of each `--disk`.
+    var workDiskVolume: @Sendable (String) -> SandboxWorkDisk.Volume? = SandboxWorkDisk.volume(at:)
+    /// The drives to offer when the owner gives no `--disk`.
+    var workDiskCandidates: @Sendable () -> [SandboxWorkDisk.Volume] = { SandboxWorkDisk.candidates() }
+    /// Turns ownership on for the drive mounted there (`sudo diskutil
+    /// enableOwnership`) on this terminal; true when it did.
+    var enableOwnership: @Sendable (String) -> Bool = { SandboxWorkDisk.enableOwnership(mountPoint: $0) }
+    /// The coordinator's waitlists; a first setup requires the account to be
+    /// approved from the Darkbloom Sandbox waitlist.
+    var waitlist: FeatureWaitlistAccess = .live()
 
     private var cli: String { Sandbox.cli }
 
     func run() async throws {
         let existing = addon.queryStatus(timeout: Sandbox.statusTimeout)
         let changingSlots = options.linuxSlots != nil || options.macOSSlots != nil
-        switch SandboxSetupPlan.decide(existing, changingSlots: changingSlots) {
+        switch SandboxSetupPlan.decide(existing, changingSlots: changingSlots, changingDisks: !options.disks.isEmpty) {
         case .alreadySetUp(let status):
             try await reportAndRecheckSizing(status)
         case .rerun(let reason):
             print(reason)
+            if !options.disks.isEmpty {
+                print("")
+                print(DoctorTerminalStyle.heading("Checking the work disks", color: color))
+                try checkWorkDisks(options.disks)
+            }
             try await withInstaller { try await install($0, script: $1, options: options) }
         case .fresh:
+            try await requireApproval()
             let eligibility = try await checkMac()
             try await withInstaller { installer, script in
-                guard try await sizeAndConfirm(eligibility, installer: installer, script: script) else { return }
-                try await install(installer, script: script, options: options)
+                let chosen = try chooseWorkDisk(script: script)
+                guard try await sizeAndConfirm(eligibility, installer: installer, script: script, options: chosen)
+                else { return }
+                try await install(installer, script: script, options: chosen)
             }
         }
     }
@@ -157,6 +197,14 @@ struct SandboxSetupFlow {
 
     private static let changeCountsHint = "To change how many jobs run at a time: \(Sandbox.cli) sandbox setup "
         + "--linux-slots <n> --macos-slots <n>"
+
+    /// The ways to change the install: the slot counts, and work disks
+    /// only when the installed add-on takes them.
+    private func printChangeHints(_ status: SandboxAddonStatus) {
+        print(Self.changeCountsHint)
+        guard status.supportsWorkDisks else { return }
+        print("To put the VM images and jobs on an external drive: \(cli) sandbox setup --disk /Volumes/<name>")
+    }
 
     /// Reports the install, then asks the installer's `--plan` how many jobs
     /// this Mac fits now and offers what differs. Changes nothing unless the
@@ -169,21 +217,21 @@ struct SandboxSetupFlow {
         SandboxStatusView.lines(status, color: color).forEach { print($0) }
         print("")
         guard status.jobsRunning == 0 else {
-            print(Self.changeCountsHint)
+            printChangeHints(status)
             print("Jobs are running, so setup did not check whether this Mac now fits other slot counts. Run "
                 + "`\(cli) sandbox setup` again once they finish; `\(cli) sandbox pause` keeps new ones from starting.")
             return
         }
         try await withInstaller(ifUnavailable: { failure in
-            print(Self.changeCountsHint)
+            printChangeHints(status)
             print("Could not check whether this Mac now fits other slot counts: \(failure)")
         }) { installer, script in
             let plan = try await withTransientNote("Checking how many jobs this Mac fits now…") {
-                try await requestAddonPlan(installer, script: script)
+                try await requestAddonPlan(installer, script: script, options: options)
             }
             // The same counts (or no plan to compare) keep today's report exactly.
             guard let plan, let change = SandboxSlotChange(installed: status, plan: plan) else {
-                print(Self.changeCountsHint)
+                printChangeHints(status)
                 return
             }
             guard offer(change, plan: plan) else { return }
@@ -228,6 +276,25 @@ struct SandboxSetupFlow {
         return try await body()
     }
 
+    // MARK: - Waitlist
+
+    /// The Darkbloom Sandbox waitlist's id in the coordinator's catalog.
+    static let waitlistFeature = "sandbox"
+    /// Names the waitlist when the coordinator gave no answer; an answer
+    /// brings the coordinator's own title.
+    static let waitlistTitle = "Darkbloom Sandbox"
+
+    /// Darkbloom Sandbox is open to the accounts Darkbloom approves from its
+    /// waitlist, so a first setup goes on only as `FeatureWaitlistGate` lets
+    /// it; nothing is installed until Darkbloom approves the account.
+    private func requireApproval() async throws {
+        try await FeatureWaitlistGate(
+            feature: Self.waitlistFeature, fallbackTitle: Self.waitlistTitle, setupCommand: "\(cli) sandbox setup",
+            unchanged: "Nothing was installed.", access: waitlist, joinWithoutAsking: confirmed,
+            ask: interactiveInput ? { SandboxTerminal.confirm($0) } : nil
+        ).require()
+    }
+
     // MARK: - Check and confirm
 
     /// Prints the checks setup makes itself; throws, before anything is
@@ -243,14 +310,93 @@ struct SandboxSetupFlow {
             print(DoctorTerminalStyle.verdict("Not eligible: \(refusal)", level: .fail, color: color))
             throw ExitCode.failure
         }
+        try checkWorkDisks(options.disks)
         return eligibility
+    }
+
+    /// Prints a `Work disk` line per disk; throws, before anything is
+    /// installed, when one is not ready. At a prompt it offers to turn
+    /// ownership on (sudo asks for the password), then checks that disk
+    /// again; the other fixes are the owner's. Setup never formats a drive.
+    private func checkWorkDisks(_ disks: [String]) throws {
+        var ready = true
+        for path in disks {
+            let volume = workDiskVolume(path)
+            let check = SandboxWorkDisk.check(path: path, volume: volume)
+            printChecks([check])
+            guard check.level == .fail else { continue }
+            if let mount = ownershipToTurnOn(path, on: volume), turnOnOwnership(mount) {
+                let again = SandboxWorkDisk.check(path: path, volume: workDiskVolume(path))
+                printChecks([again])
+                if again.level != .fail { continue }
+            }
+            ready = false
+        }
+        guard !ready else { return }
+        print("")
+        print(DoctorTerminalStyle.verdict("A work disk is not ready: follow the fix above, then run setup again. "
+            + "Nothing changed.", level: .fail, color: color))
+        throw ExitCode.failure
+    }
+
+    /// The mount point of the drive at `path` (on `volume`) when its one
+    /// problem is ownership off and there is a prompt to offer the fix at.
+    private func ownershipToTurnOn(_ path: String, on volume: SandboxWorkDisk.Volume?) -> String? {
+        guard !confirmed, interactiveInput, let volume,
+              SandboxWorkDisk.problem(path: path, volume: volume) == .ownershipOff else { return nil }
+        return volume.mountPoint
+    }
+
+    /// Asks, then runs the fix for ownership off; true when it ran and exited 0.
+    private func turnOnOwnership(_ mount: String) -> Bool {
+        guard SandboxTerminal.confirm("Turn ownership on for \(mount) now? Setup runs the command above; sudo asks "
+            + "for your password.") else { return false }
+        guard enableOwnership(mount) else {
+            print("Ownership is still off on \(mount).")
+            return false
+        }
+        return true
+    }
+
+    /// Without `--disk`, at a prompt, and from a release with work disks:
+    /// lists the external drives that could take the VM images and jobs and
+    /// asks which one to use. Enter (or no drive to offer) keeps the internal
+    /// disk. Returns the options with the chosen drive, checked.
+    private func chooseWorkDisk(script: Data) throws -> SandboxSetupOptions {
+        guard options.disks.isEmpty, !confirmed, interactiveInput, SandboxInstaller.supportsDisks(script) else {
+            return options
+        }
+        let drives = workDiskCandidates()
+        guard !drives.isEmpty else { return options }
+        print("")
+        print(DoctorTerminalStyle.heading("Where the VM images and jobs go", color: color))
+        print("  1) This Mac's internal disk")
+        for (index, drive) in drives.enumerated() {
+            let note = drive.ignoresOwnership ? "; ownership is off, setup can turn it on" : ""
+            print("  \(index + 2)) \(drive.mountPoint): \(drive.freeBytes / SandboxEligibility.gib) GiB free\(note)")
+        }
+        print("  Use an external drive only if it is a Thunderbolt or USB4 NVMe SSD that stays connected: a job on "
+            + "a drive that goes away is stopped and not paid.")
+        let choice = SandboxTerminal.choose(count: drives.count + 1)
+        var chosen = options
+        if choice > 1 {
+            chosen.disks = [drives[choice - 2].mountPoint]
+            print("")
+            print(DoctorTerminalStyle.heading("Checking the work disks", color: color))
+            try checkWorkDisks(chosen.disks)
+        }
+        // The plan's lines follow; they no longer sit under "Checking this Mac".
+        print("")
+        print(DoctorTerminalStyle.heading("The add-on's plan for this Mac", color: color))
+        return chosen
     }
 
     /// Prints the add-on's plan (else the fallback estimate) and the
     /// trade-off, then asks. False when the owner declines; throws when no job
     /// fits.
-    private func sizeAndConfirm(_ eligibility: SandboxEligibility, installer: URL, script: Data) async throws -> Bool {
-        let reportedPlan = try await requestAddonPlan(installer, script: script)
+    private func sizeAndConfirm(_ eligibility: SandboxEligibility, installer: URL, script: Data,
+                                options: SandboxSetupOptions) async throws -> Bool {
+        let reportedPlan = try await requestAddonPlan(installer, script: script, options: options)
         let plan: SandboxSizingPlan
         if let reportedPlan {
             plan = reportedPlan
@@ -294,20 +440,34 @@ struct SandboxSetupFlow {
     /// release and sizes this Mac without installing anything. Nil, for the
     /// fallback, from an installer without plan mode (it names no `--plan`),
     /// a failed run or one without a `plan` event.
-    private func requestAddonPlan(_ installer: URL, script: Data) async throws -> SandboxSizingPlan? {
+    private func requestAddonPlan(_ installer: URL, script: Data, options: SandboxSetupOptions) async throws
+        -> SandboxSizingPlan?
+    {
         guard SandboxInstaller.supportsPlan(script) else { return nil }
         let output = SandboxOutputTail()
+        let errors = SandboxOutputTail()
         let exit = try await SandboxChildProcess.run(
             Self.shell, [installer.path] + SandboxInstaller.planArguments(options),
             currentDirectory: installer.deletingLastPathComponent(), closeStandardInput: true,
-            standardOutput: .tail(output), standardError: .tail(SandboxOutputTail()))
+            standardOutput: .tail(output), standardError: .tail(errors))
         // Ctrl-C or a signal stops setup; it never goes on to install.
         if exit.interrupted || exit.signal != nil {
             print("")
             print("Setup stopped. Nothing changed.")
             throw ExitCode(exit.interrupted ? 130 : 1)
         }
-        guard exit.succeeded else { return nil }
+        guard exit.succeeded else {
+            // The CLI's estimate knows no work disks, and the installer
+            // refuses a disk it cannot use (exit 2) with the fix on stderr.
+            guard options.disks.isEmpty else {
+                print("")
+                errors.lastLines(5).forEach { print("  \($0)") }
+                print(DoctorTerminalStyle.verdict("The installer's plan failed with these work disks; fix what it "
+                    + "says above, then run setup again. Nothing changed.", level: .fail, color: color))
+                throw ExitCode(exit.status > 0 ? exit.status : 1)
+            }
+            return nil
+        }
         return output.lastLines(.max).compactMap(SandboxSizingPlan.init(line:)).last
     }
 
@@ -341,6 +501,12 @@ struct SandboxSetupFlow {
         } catch let failure as SandboxInstaller.Failure {
             if let ifUnavailable { return ifUnavailable(failure) }
             printError("\(failure) Check this Mac's connection, then run `\(cli) sandbox setup` again.")
+            throw ExitCode.failure
+        }
+        guard options.disks.isEmpty || SandboxInstaller.supportsDisks(script) else {
+            printError("The add-on release that \(options.server) offers does not support --disk: work disks need "
+                + "add-on \(SandboxWorkDisk.minimumAddonVersion) or later. Nothing changed. Run "
+                + "`\(cli) sandbox setup` without --disk, or with it once that release is available.")
             throw ExitCode.failure
         }
         let installer = try SandboxInstaller.stage(script)

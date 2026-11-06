@@ -477,6 +477,25 @@ struct ClusterPairClusterCommandsTests {
         }
     }
 
+    /// Review of #1846: `darkbloom-dev cluster link --remove` took production's cable port setup away with no word.
+    @Test("`cluster link --remove` beside the other app that still uses the port names it and asks; --yes never answers for it")
+    func linkRemoveBesideTheOtherApp() {
+        typealias Link = Cluster.Link
+        let others = ["The production Darkbloom on this Mac also uses this cable port for its own pair: removing the port's "
+            + "setup stops that pair too, until `darkbloom cluster link --fix` sets the port up again."]
+        #expect(ClusterLinkRepair.otherInstallsUsingCableLines([.prod]) == others)
+        let refused = others + ["Nothing changed. --yes doesn't answer for the other app: run it in a terminal and confirm there."]
+        // Not paired here, with --yes: still asked at a terminal, refused without one or with --json.
+        #expect(Link.removalGate(.notPaired, yes: true, dryRun: false, json: false, terminal: true, otherApps: others) == .ask(others))
+        #expect(Link.removalGate(.notPaired, yes: true, dryRun: false, json: false, terminal: false, otherApps: others) == .refuse(refused))
+        #expect(Link.removalGate(.notPaired, yes: false, dryRun: false, json: true, terminal: true, otherApps: others) == .refuse(refused))
+        // On a paired Mac: this pair's warning, then the other app's, one question.
+        #expect(Link.removalGate(pair(), yes: false, dryRun: false, json: false, terminal: true, otherApps: others)
+            == .ask(pair().linkRemoveWarning + others))
+        // A dry run changes nothing, so it asks nothing.
+        #expect(Link.removalGate(pair(), yes: false, dryRun: true, json: false, terminal: false, otherApps: others) == .proceed)
+    }
+
     @Test("`cluster link --remove` on a paired Mac says what it undoes and asks once; --yes for scripts")
     func linkRemoveWarns() throws {
         let warning = [

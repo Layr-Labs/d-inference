@@ -46,8 +46,9 @@ private final class Calls: @unchecked Sendable {
     func count(_ prefix: String) -> Int { all.filter { $0.hasPrefix(prefix) }.count }
 }
 
-/// The cluster service holding this Mac's lock, as the run reads it (`Operations.runningClusterService`). A stop is
-/// written to `log`, the same log the deletions go to, and ends it unless it is told not to.
+/// The cluster service holding this install's lock, as the run reads it (`Operations.runningClusterService`).
+/// `cluster stop --service` (step 2) stops it when it is this install's or runs this build's command, as the real
+/// stop does, unless it is told not to stop; a stop is written to `log`, the same log the deletions go to.
 private final class FakeClusterService: @unchecked Sendable {
     private let lock = NSLock()
     private var current: ProviderUninstall.RunningClusterService?
@@ -60,9 +61,10 @@ private final class FakeClusterService: @unchecked Sendable {
 
     var running: ProviderUninstall.RunningClusterService? { lock.withLock { current } }
 
-    func stop(_ pid: Int32) {
-        log.add("stop cluster service \(pid)")
-        if stops { lock.withLock { current = nil } }
+    func clusterStop() {
+        guard stops, let running, running.owner == .thisInstall || running.isThisCLI else { return }
+        log.add("stop cluster service \(running.pid)")
+        lock.withLock { current = nil }
     }
 }
 
@@ -173,7 +175,7 @@ private struct Fixture {
 
     func operations(drainFails: Bool = false, clusterFails: Bool = false, linkFails: Bool = false,
                     tokenUnconfirmed: Bool = false, providerRunning: Bool = true,
-                    cluster: FakeClusterService? = nil) -> ProviderUninstall.Operations {
+                    cluster: FakeClusterService? = nil, install: BuildEnvironment = .current) -> ProviderUninstall.Operations {
         let calls = calls, desktop = desktopPlist
         let free = Calls()
         return .init(
@@ -185,7 +187,8 @@ private struct Fixture {
             stopClusterPart: {
                 calls.add("cluster stop")
                 if clusterFails { throw ProviderUninstall.StepFailure("the other Mac did not acknowledge the stop") }
-                return try ClusterServiceAgent.uninstall().isEmpty ? .skipped("no cluster service on this Mac") : .done()
+                cluster?.clusterStop()
+                return try ClusterServiceAgent.uninstall(environment: install).isEmpty ? .skipped("no cluster service on this Mac") : .done()
             },
             removeServices: [
                 ("Remove the provider service", {
@@ -221,17 +224,16 @@ private struct Fixture {
                 free.add("measured")
                 return free.count("measured") == 1 ? 1_000_000_000 : 1_250_000_000
             },
-            runningClusterService: { cluster?.running },
-            stopClusterService: { cluster?.stop($0) })
+            runningClusterService: { cluster?.running })
     }
 
     /// Runs with the fake home and the fake launchctl.
     func run(_ mode: ProviderUninstall.Mode, items: [ProviderUninstallItem]? = nil, pairing: ProviderUninstallPairing? = nil,
-             operations: ProviderUninstall.Operations? = nil) async -> ProviderUninstall.Report {
+             cableKeptFor: BuildEnvironment? = nil, operations: ProviderUninstall.Operations? = nil) async -> ProviderUninstall.Report {
         await LaunchctlControl.$homeDirectoryForTesting.withValue(home) {
             await LaunchctlControl.$runnerForTesting.withValue({ try launchd.run($0) }) {
                 await ProviderUninstall.run(mode, items: items ?? ProviderUninstall.inventory(paths), pairing: pairing,
-                                            operations: operations ?? self.operations())
+                                            cableKeptFor: cableKeptFor, operations: operations ?? self.operations())
             }
         }
     }
@@ -249,9 +251,11 @@ private func transcript(_ name: String, _ lines: [String], _ fixture: Fixture) {
     try? text.write(toFile: directory + "/" + name + ".txt", atomically: true, encoding: .utf8)
 }
 
-/// The owner's Mac: the production and the DevNet app, each with its command, and the cluster files every install reads
-/// (`ClusterUserPaths`, the pairing store, the setup wizard) in ~/.darkbloom and ~/.config/darkbloom. Returns those files.
-private func installBoth(_ fixture: Fixture) throws -> [URL] {
+/// The owner's Mac: the production and the DevNet app, each with its command, its own cluster files (pairing, setup,
+/// device records, observability, saved setups) in its own folders, and its own cluster service agent, loaded. Returns
+/// each install's cluster files and agent label.
+private func installBoth(_ fixture: Fixture) throws -> [BuildEnvironment: (files: [URL], agent: String)] {
+    var installed: [BuildEnvironment: (files: [URL], agent: String)] = [:]
     for install in [BuildEnvironment.prod, .dev] {
         let folder = install.installDirectory(home: fixture.home)
         let binary = folder.appendingPathComponent("\(install.appBundleName)/Contents/MacOS/\(install.cliName)")
@@ -259,18 +263,28 @@ private func installBoth(_ fixture: Fixture) throws -> [URL] {
         let bin = folder.appendingPathComponent("bin/\(install.cliName)")
         if !fixture.exists(bin) { try fixture.link(bin, to: "../\(install.appBundleName)/Contents/MacOS/\(install.cliName)") }
         try fixture.write(folder.appendingPathComponent("provider.log"))
+        let paths = try ClusterUserPaths(homeDirectory: fixture.home, environment: install)
+        let files = [paths.pairingDirectory.appendingPathComponent("pairings.json"), paths.setupDirectory.appendingPathComponent("wizard.json"),
+                     paths.deviceDirectory.appendingPathComponent("link-alias.json"),
+                     paths.observabilityDirectory.appendingPathComponent("device-index.json"),
+                     paths.configurationsDirectory.appendingPathComponent("0123.cluster.json")]
+        for file in files { try fixture.write(file) }
+        // The agent `install`'s `darkbloom cluster` writes: its label, and its program in its own app.
+        let agent = ClusterServiceAgentPlan.label(executablePath: binary.path, environment: install)
+        let plist = try ClusterServiceAgentPlan.encoded(ClusterServiceAgentPlan.propertyList(
+            label: agent, programArguments: ClusterServiceAgentPlan.programArguments(executablePath: binary.path, serviceOptions: []),
+            logPath: paths.setupDirectory.appendingPathComponent("service.log").path, environment: [:]))
+        try FileManager.default.createDirectory(at: fixture.agents, withIntermediateDirectories: true)
+        try plist.write(to: fixture.agents.appendingPathComponent("\(agent).plist"))
+        fixture.launchd.load(agent)
+        installed[install] = (files, agent)
     }
-    let shared = [".darkbloom/cluster-pairing/pairings.json", ".darkbloom/cluster-setup/wizard.json",
-                  ".darkbloom/cluster-device/link-alias.json", ".darkbloom/cluster/device-index.json",
-                  ".config/darkbloom/clusters/0123.cluster.json"].map { fixture.home.appendingPathComponent($0) }
-    for file in shared { try fixture.write(file) }
-    return shared
+    return installed
 }
 
-/// The cluster service agent `install`'s app installs (`ClusterServiceAgentPlan.label` of its app).
-private func clusterAgent(_ install: BuildEnvironment, _ fixture: Fixture) -> String {
-    ClusterServiceAgentPlan.label(executablePath: install.installDirectory(home: fixture.home)
-        .appendingPathComponent("\(install.appBundleName)/Contents/MacOS/\(install.cliName)").path)
+/// Each of `files` with its bytes (empty when it is gone), to tell "untouched" from "rewritten" or "deleted".
+private func contents(_ files: [URL]) -> [String: Data] {
+    Dictionary(uniqueKeysWithValues: files.map { ($0.path, (try? Data(contentsOf: $0)) ?? Data()) })
 }
 
 @Suite("darkbloom uninstall")
@@ -342,7 +356,7 @@ struct ProviderUninstallTests {
         #expect(fixture.calls.count("link remove") == 1)
         #expect(fixture.calls.all.firstIndex(of: "forget \(Fixture.pin)")! < fixture.calls.all.firstIndex(of: "link remove")!,
                 "the other Mac is told over the cable before the cable's setup is undone")
-        #expect(report.steps.last?.name == "Delete " + ProviderUninstall.installFolderLabel(fixture.paths),
+        #expect(report.steps.last?.name == "Delete " + ProviderUninstall.installFolderLabel,
                 "the folder with the running app goes last")
         let summary = ProviderUninstall.summary(report, plan: plan)
         transcript("everything-summary-leader", summary, fixture)
@@ -542,49 +556,87 @@ struct ProviderUninstallTests {
         #expect(fixture.exists(store))
     }
 
-    @Test("B12: beside the other install, the pairing, cable port setup and shared cluster files stay, both ways")
-    func sharedClusterStateStaysWithTheOtherInstall() async throws {
+    @Test("beside the other install, only this install's pairing, setup, files and cluster service go; the other's and the cable port setup stay, both ways")
+    func besideTheOtherInstallOnlyItsOwnClusterGoes() async throws {
         for (this, other) in [(BuildEnvironment.dev, BuildEnvironment.prod), (.prod, .dev)] {
             let fixture = try Fixture.make()
             defer { fixture.remove() }
-            let shared = try installBoth(fixture)
+            let installed = try installBoth(fixture)
+            let own = try #require(installed[this]), theirs = try #require(installed[other])
+            let before = contents(theirs.files)
             let paths = ProviderUninstallPaths(home: fixture.home, environment: this,
                                                commandLinkDirectory: fixture.paths.commandLink.deletingLastPathComponent())
-            let plan = ProviderUninstall.Plan(cli: this.cliName, services: [], items: ProviderUninstall.inventory(paths),
-                                              pairing: fixture.pairing)
-            let otherName = other == .prod ? "the production Darkbloom" : other.appDisplayName
-            let kept = "Kept: This Mac's pairing, cluster setup and cable port setup"
+            #expect(paths.otherEnvironment == other, "\(this)")
+            let ownPlist = fixture.agents.appendingPathComponent("\(own.agent).plist").path
+            let plan = LaunchctlControl.$homeDirectoryForTesting.withValue(fixture.home) {
+                ProviderUninstall.Plan(cli: this.cliName, clusterService: ClusterServiceAgent.installedLabels(environment: this)
+                                           .map { ClusterServiceAgent.plistPath(label: $0).path },
+                                       services: [], items: ProviderUninstall.inventory(paths), pairing: fixture.pairing,
+                                       cableKeptFor: paths.otherEnvironment)
+            }
+            #expect(plan.clusterService.contains(ownPlist), "\(this): its own agent is listed")
+            #expect(!plan.clusterService.contains { $0.hasSuffix("\(theirs.agent).plist") }, "\(this): the other's agent is not")
+            let otherName = ProviderUninstall.installName(other)
+            let cable = "Kept: this Mac's cable port setup: \(otherName) on this Mac may use the same cable. Run `\(other.cliName) uninstall` there to undo it"
             let screen = ProviderUninstall.screen(plan), dryRun = ProviderUninstall.dryRun(plan, mode: .everything)
             transcript("screen-\(this.rawValue)-beside-\(other.rawValue)", screen + [ProviderUninstall.choicePrompt], fixture)
             transcript("dry-run-\(this.rawValue)-beside-\(other.rawValue)", dryRun, fixture)
-            for lines in [screen, dryRun] {
-                #expect(lines.contains { $0.contains(kept) && $0.contains("\(otherName) on this Mac also uses them")
-                    && $0.contains("Run `\(other.cliName) uninstall` there to remove them") }, "\(this)")
-            }
-            #expect(!dryRun.contains { $0.contains("Forget the pairing") || $0.contains(ProviderUninstall.cableStep) }, "\(this)")
-            let document = ProviderUninstall.dryRunDocument(plan, modes: [.everything]).modes[0]
-            #expect(document.kept.contains { $0.label.hasPrefix("This Mac's pairing") }, "\(this): the JSON keeps it too")
-            #expect(!document.actions.contains { $0.action.hasPrefix("Forget the pairing") || $0.action == ProviderUninstall.cableStep },
-                    "\(this)")
+            #expect(screen.contains("  \(cable)") && dryRun.contains("  \(cable)"), "\(this)")
+            #expect(screen[3].hasPrefix("     The app, settings, pairing and logs"), "\(this): its own pairing goes")
+            #expect(dryRun.contains { $0.contains("Forget the pairing with M3 Ultra, 512 GB") }, "\(this)")
+            #expect(dryRun.contains { $0.contains(ProviderUninstall.clusterStep) && $0.contains(ownPlist) }, "\(this)")
+            #expect(!dryRun.contains { $0.contains(ProviderUninstall.cableStep) }, "\(this): the cable step does not run")
+            let document = ProviderUninstall.dryRunDocument(plan, modes: [.everything])
+            #expect(document.neverTouched.contains(cable) && document.otherMac != nil, "\(this)")
+            #expect(document.modes[0].actions.contains { $0.action.hasPrefix("Forget the pairing") }
+                    && !document.modes[0].actions.contains { $0.action == ProviderUninstall.cableStep }, "\(this)")
 
-            let report = await fixture.run(.everything, items: plan.items, pairing: fixture.pairing)
-            #expect(!fixture.calls.all.contains { $0.hasPrefix("forget") || $0 == "link remove" }, "\(this): the shared steps never run")
-            for file in shared { #expect(fixture.exists(file), "\(this): \(file.path) stays") }
-            let own = this.installDirectory(home: fixture.home)
-            #expect(!fixture.exists(own.appendingPathComponent(this.appBundleName)) && !fixture.exists(own.appendingPathComponent("bin")),
-                    "\(this): its own app and command go")
+            let report = await fixture.run(.everything, items: plan.items, pairing: fixture.pairing, cableKeptFor: plan.cableKeptFor,
+                                           operations: fixture.operations(install: this))
+            #expect(fixture.calls.all.contains("cluster stop") && fixture.calls.all.contains("forget \(Fixture.pin)"),
+                    "\(this): its own pair stops and its own pairing is forgotten")
+            #expect(!fixture.calls.all.contains("link remove"), "\(this): the cable port setup stays")
+            #expect(fixture.launchd.bootedOut.contains(own.agent) && !fixture.exists(URL(fileURLWithPath: ownPlist)), "\(this)")
+            #expect(!fixture.launchd.bootedOut.contains(theirs.agent)
+                    && fixture.exists(fixture.agents.appendingPathComponent("\(theirs.agent).plist")),
+                    "\(this): the other install's agent stays loaded and installed")
+            for file in own.files { #expect(!fixture.exists(file), "\(this): its own \(file.lastPathComponent) goes") }
+            #expect(contents(theirs.files) == before, "\(this): the other install's cluster files are untouched")
             #expect(fixture.exists(other.installDirectory(home: fixture.home).appendingPathComponent(other.appBundleName)), "\(this)")
             #expect(!report.failed && !report.incomplete, "\(this): \(report.steps)")
             let summary = ProviderUninstall.summary(report, plan: plan)
             transcript("\(this.rawValue)-summary-beside-\(other.rawValue)", summary, fixture)
             let thisName = this == .prod ? "The production Darkbloom" : this.appDisplayName
             #expect(summary.first == "\(thisName) is removed from this Mac.", "\(this)")
-            #expect(summary.contains { $0.hasPrefix(kept) }, "\(this)")
-            #expect(!summary.contains { $0.hasPrefix("The other Mac") }, "\(this): the pair still works, through the other install")
-            #expect(document.kept.count > 0 && ProviderUninstall.dryRunDocument(plan, modes: [.everything]).otherMac == nil, "\(this)")
-            for step in ["Forget this Mac's pairing", ProviderUninstall.cableStep] {
-                #expect(summary.contains("  skipped  \(step): kept: \(otherName) on this Mac also uses it"), "\(this): \(step)")
-            }
+            #expect(summary.contains("  skipped  \(ProviderUninstall.cableStep): kept: \(otherName) on this Mac may use the same cable"),
+                    "\(this)")
+            #expect(summary.contains(cable), "\(this)")
+            #expect(summary.last?.hasPrefix("The other Mac (M3 Ultra, 512 GB) followed this one: run `\(this.cliName) uninstall` there too")
+                    == true, "\(this): its pair is gone, so the other Mac is told")
+        }
+    }
+
+    @Test("an agent of production's shape is DevNet's only when an older DevNet wrote it, and then never production's")
+    func legacyAgentsAreToldApartByTheirProgram() async throws {
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+        _ = try installBoth(fixture)
+        // The label an older DevNet build gave its own job: production's prefix, digest of DevNet's app, program in DevNet's app.
+        let devBinary = BuildEnvironment.dev.installDirectory(home: fixture.home).appendingPathComponent("Darkbloom Dev.app/Contents/MacOS/darkbloom-dev")
+        let legacy = ClusterServiceAgentPlan.label(executablePath: devBinary.path, environment: .prod)
+        let plist = try ClusterServiceAgentPlan.encoded(ClusterServiceAgentPlan.propertyList(
+            label: legacy, programArguments: ClusterServiceAgentPlan.programArguments(executablePath: devBinary.path, serviceOptions: []),
+            logPath: "/dev/null", environment: [:]))
+        try plist.write(to: fixture.agents.appendingPathComponent("\(legacy).plist"))
+        fixture.launchd.load(legacy)
+        // A job of production's shape whose program can't be read stays production's, as before; never DevNet's.
+        let unreadable = BuildEnvironment.prod.clusterServiceLabelPrefix + "0123456789ac"
+        try fixture.write(fixture.agents.appendingPathComponent("\(unreadable).plist"))
+        LaunchctlControl.$homeDirectoryForTesting.withValue(fixture.home) {
+            #expect(ClusterServiceAgent.installedLabels(environment: .dev).contains(legacy), "DevNet's older job is DevNet's")
+            #expect(!ClusterServiceAgent.installedLabels(environment: .prod).contains(legacy), "and never production's")
+            #expect(ClusterServiceAgent.installedLabels(environment: .prod).contains(unreadable))
+            #expect(!ClusterServiceAgent.installedLabels(environment: .dev).contains(unreadable))
         }
     }
 
@@ -597,88 +649,8 @@ struct ProviderUninstallTests {
                 + (running ? "a cluster service is running on this Mac: this stops a `darkbloom cluster service`, and nothing is deleted "
                     + "while any other runs" : "no cluster service on this Mac"))
         }
-        let dev = ProviderUninstallPaths(home: FileManager.default.temporaryDirectory.appendingPathComponent("no-such-home"), environment: .dev)
-        #expect(ProviderUninstall.installFolderLabel(dev) == "Darkbloom folder: the app and logs",
-                "the pairing and cluster setup are in ~/.darkbloom, not in ~/.darkbloom-dev")
-    }
-
-    @Test("R-6: beside the other install, this install's own incident log goes; the shared one and the other's stay")
-    func ownIncidentLogGoesBesideTheOtherInstall() async throws {
-        for (this, other) in [(BuildEnvironment.dev, BuildEnvironment.prod), (.prod, .dev)] {
-            let fixture = try Fixture.make()
-            defer { fixture.remove() }
-            let shared = try installBoth(fixture)
-            // Each install's incident log as the log itself names it (`ClusterIncidentLog.defaultFile`), with its lock
-            // and the copy a corrupt log is moved aside to.
-            func incidentFiles(_ install: BuildEnvironment) -> [URL] {
-                let log = ClusterIncidentLog.defaultFile(homeDirectory: fixture.home, install: install.rawValue)
-                let folder = log.deletingLastPathComponent()
-                return [log, folder.appendingPathComponent(log.lastPathComponent + ".lock"),
-                        folder.appendingPathComponent(log.deletingPathExtension().lastPathComponent + ".corrupt.json")]
-            }
-            for file in incidentFiles(this) + incidentFiles(other) { try fixture.write(file) }
-            let paths = ProviderUninstallPaths(home: fixture.home, environment: this,
-                                               commandLinkDirectory: fixture.paths.commandLink.deletingLastPathComponent())
-            let plan = ProviderUninstall.Plan(cli: this.cliName, services: [], items: ProviderUninstall.inventory(paths),
-                                              pairing: fixture.pairing)
-            let report = await fixture.run(.keepModels, items: plan.items, pairing: fixture.pairing)
-            let summary = ProviderUninstall.summary(report, plan: plan)
-            transcript("\(this.rawValue)-summary-beside-\(other.rawValue)-incidents", summary, fixture)
-            for file in shared { #expect(fixture.exists(file), "\(this): \(file.lastPathComponent) stays") }
-            for file in incidentFiles(other) { #expect(fixture.exists(file), "\(this): the other install's \(file.lastPathComponent) stays") }
-            #expect(!report.failed && !report.incomplete, "\(this): \(report.steps)")
-            if this == .prod {
-                // Production's own log is the shared folder's `incidents.json`, which an older build of the other install
-                // still writes: it stays with the shared folder.
-                for file in incidentFiles(this) { #expect(fixture.exists(file), "prod: \(file.lastPathComponent) stays") }
-            } else {
-                for file in incidentFiles(this) { #expect(!fixture.exists(file), "\(this): its own \(file.lastPathComponent) goes") }
-                #expect(summary.contains { $0.hasPrefix("  done     Delete This install's incident log") }, "\(this): named")
-            }
-        }
-    }
-
-    @Test("B12 step 2: beside the other install, only this install's cluster agent goes; the pair and the other's agent stay")
-    func stepTwoRemovesOnlyThisInstallsClusterAgent() async throws {
-        for (this, other) in [(BuildEnvironment.dev, BuildEnvironment.prod), (.prod, .dev)] {
-            let fixture = try Fixture.make()
-            defer { fixture.remove() }
-            _ = try installBoth(fixture)
-            let own = clusterAgent(this, fixture), theirs = clusterAgent(other, fixture)
-            for label in [own, theirs] {
-                try fixture.write(fixture.agents.appendingPathComponent("\(label).plist"))
-                fixture.launchd.load(label)
-            }
-            let paths = ProviderUninstallPaths(home: fixture.home, environment: this,
-                                               commandLinkDirectory: fixture.paths.commandLink.deletingLastPathComponent())
-            let plan = ProviderUninstall.Plan(cli: this.cliName, services: [], items: ProviderUninstall.inventory(paths),
-                                              pairing: fixture.pairing)
-            let otherName = other == .prod ? "the production Darkbloom" : other.appDisplayName
-            let ownPlist = fixture.agents.appendingPathComponent("\(own).plist")
-            let dryRun = ProviderUninstall.dryRun(plan, mode: .everything)
-            transcript("dry-run-\(this.rawValue)-beside-\(other.rawValue)-step2", dryRun, fixture)
-            #expect(dryRun.contains("  2. Remove this install's cluster service: \(ownPlist.path); the pair and \(otherName)'s "
-                + "cluster service are left as they are"), "\(this)")
-            #expect(!dryRun.contains { $0.contains(ProviderUninstall.clusterStep) }, "\(this): the pair is not stopped")
-            let actions = ProviderUninstall.dryRunDocument(plan, modes: [.everything]).modes[0].actions
-            #expect(actions.contains { $0.action == "Remove this install's cluster service" && $0.path == ownPlist.path }, "\(this)")
-            #expect(!actions.contains { $0.action == ProviderUninstall.clusterStep }, "\(this)")
-
-            let report = await fixture.run(.everything, items: plan.items, pairing: fixture.pairing)
-            #expect(!fixture.calls.all.contains("cluster stop"), "\(this): the pair is never stopped")
-            #expect(fixture.launchd.bootedOut.contains(own) && !fixture.exists(ownPlist), "\(this): its own agent goes")
-            for kept in [theirs, Fixture.clusterLabel] {
-                #expect(!fixture.launchd.bootedOut.contains(kept), "\(this): \(kept) is not booted out")
-                #expect(fixture.exists(fixture.agents.appendingPathComponent("\(kept).plist")), "\(this): \(kept) stays installed")
-            }
-            #expect(!report.failed && !report.incomplete, "\(this): \(report.steps)")
-            let summary = ProviderUninstall.summary(report, plan: plan)
-            transcript("\(this.rawValue)-summary-beside-\(other.rawValue)-step2", summary, fixture)
-            #expect(summary.contains("  done     Remove this install's cluster service: removed \(own); the pair and \(otherName)'s "
-                + "cluster service are left as they are"), "\(this)")
-            #expect(summary.contains { $0.hasPrefix("Kept: This Mac's pairing") && $0.contains("the pair and its cluster service are left as they are") },
-                    "\(this)")
-        }
+        #expect(ProviderUninstall.installFolderLabel == "Darkbloom folder: the app, logs, pairing and cluster setup",
+                "every install keeps its own pairing and cluster setup in its own folder")
     }
 
     @Test("F3: a models folder that is ~/.darkbloom itself keeps the app, and the summary says Darkbloom is not fully removed")
@@ -706,132 +678,27 @@ struct ProviderUninstallTests {
             && $0.contains(advice) }, "the summary says what to do")
     }
 
-    @Test("B16: beside the other install, this install's session cluster service is stopped before anything is deleted")
-    func runningSessionServiceIsStoppedBeforeDeleting() async throws {
+    @Test("B16: this install's cluster service, one a session started too, stops at step 2 before anything is deleted")
+    func thisInstallsRunningServiceStopsBeforeDeleting() async throws {
         for (this, other) in [(BuildEnvironment.dev, BuildEnvironment.prod), (.prod, .dev)] {
             let fixture = try Fixture.make()
             defer { fixture.remove() }
-            let shared = try installBoth(fixture)
+            _ = try installBoth(fixture)
             let paths = ProviderUninstallPaths(home: fixture.home, environment: this,
                                                commandLinkDirectory: fixture.paths.commandLink.deletingLastPathComponent())
             // `darkbloom-dev cluster service` started from a session, with no launchd agent, as on the c3 member.
             let binary = this.installDirectory(home: fixture.home).appendingPathComponent("\(this.appBundleName)/Contents/MacOS/\(this.cliName)")
-            let running = ProviderUninstall.RunningClusterService(
-                pid: 4242, executable: binary.path, owner: ProviderUninstall.owner(ofExecutable: binary.path, paths: paths))
+            let running = ProviderUninstall.RunningClusterService(pid: 4242, executable: binary.path,
+                owner: ProviderUninstall.owner(ofExecutable: binary.path, paths: paths), isThisCLI: true)
             #expect(running.owner == .thisInstall, "\(this)")
-            let service = FakeClusterService(running, log: fixture.deletes)
-            let plan = ProviderUninstall.Plan(cli: this.cliName, runningClusterService: running, services: [],
-                                              items: ProviderUninstall.inventory(paths), pairing: fixture.pairing)
-            let otherName = other == .prod ? "the production Darkbloom" : other.appDisplayName
-            let dryRun = ProviderUninstall.dryRun(plan, mode: .keepModels)
-            transcript("dry-run-\(this.rawValue)-beside-\(other.rawValue)-session-service", dryRun, fixture)
-            #expect(dryRun.contains("  2. Remove this install's cluster service: if it serves the pair, ask the pair to stop on both "
-                + "Macs, as `\(this.cliName) stop` does; then stop it (pid 4242, running from this install); it has no login agent; "
-                + "the pairing and the cable port setup stay for \(otherName)"), "\(this)")
-
-            let report = await fixture.run(.keepModels, items: plan.items, pairing: fixture.pairing,
-                                           operations: fixture.operations(providerRunning: false, cluster: service))
+            let report = await fixture.run(.keepModels, items: ProviderUninstall.inventory(paths), pairing: fixture.pairing, cableKeptFor: other,
+                                           operations: fixture.operations(providerRunning: false,
+                                                                          cluster: FakeClusterService(running, log: fixture.deletes), install: this))
             let log = fixture.deletes.all
-            let stop = log.firstIndex(of: "stop cluster service 4242")
-            #expect(stop == 0 && log.count > 1, "\(this): the service is stopped before the first deletion: \(log)")
-            #expect(!fixture.calls.all.contains("cluster stop"), "\(this): the pair's stop is not asked for")
-            for file in shared { #expect(fixture.exists(file), "\(this): \(file.lastPathComponent) stays") }
-            #expect(fixture.exists(other.installDirectory(home: fixture.home).appendingPathComponent(other.appBundleName)))
+            #expect(log.first == "stop cluster service 4242" && log.count > 1, "\(this): stopped before the first deletion: \(log)")
+            #expect(fixture.exists(other.installDirectory(home: fixture.home).appendingPathComponent(other.appBundleName)), "\(this)")
             #expect(!report.failed, "\(this): \(report.steps)")
-            let summary = ProviderUninstall.summary(report, plan: plan)
-            transcript("\(this.rawValue)-summary-beside-\(other.rawValue)-session-service", summary, fixture)
-            #expect(summary.contains("  skipped  Stop serving on this Mac: the provider service was not running; "
-                + "this install's cluster service is running (pid 4242)"), "\(this): step 1 says what serves here")
-            #expect(summary.contains("  done     Remove this install's cluster service: stopped it (pid 4242), so this Mac's part "
-                + "ended cleanly; the pairing and the cable port setup stay for \(otherName)"), "\(this)")
         }
-    }
-
-    @Test("P2-16: a serving member's uninstall beside the other install stops the pair first, then its service")
-    func servingMemberStopsThePairFirst() async throws {
-        let noAnswer = "the other Mac's cluster service did not answer on the cable"
-        for answer in [ProviderUninstall.PairStopOutcome.stopped, .noAnswer(noAnswer)] {
-            let fixture = try Fixture.make()
-            defer { fixture.remove() }
-            _ = try installBoth(fixture)
-            let paths = ProviderUninstallPaths(home: fixture.home, environment: .dev,
-                                               commandLinkDirectory: fixture.paths.commandLink.deletingLastPathComponent())
-            let binary = BuildEnvironment.dev.installDirectory(home: fixture.home).appendingPathComponent("Darkbloom Dev.app/Contents/MacOS/darkbloom-dev")
-            let running = ProviderUninstall.RunningClusterService(pid: 4242, executable: binary.path, owner: .thisInstall, isThisCLI: true)
-            let plan = ProviderUninstall.Plan(cli: "darkbloom-dev", runningClusterService: running, services: [],
-                                              items: ProviderUninstall.inventory(paths), pairing: fixture.pairing)
-            let log = fixture.deletes
-            var operations = fixture.operations(providerRunning: false, cluster: FakeClusterService(running, log: log))
-            operations.stopBothMacs = { log.add("ask the pair to stop"); return answer }
-            let report = await fixture.run(.keepModels, items: plan.items, pairing: fixture.pairing, operations: operations)
-            let order = log.all
-            #expect(Array(order.prefix(2)) == ["ask the pair to stop", "stop cluster service 4242"] && order.count > 2,
-                    "the pair stops, then this Mac's service, then the files: \(order)")
-            #expect(!report.failed, "\(report.steps)")
-            let summary = ProviderUninstall.summary(report, plan: plan)
-            let stays = "stopped it (pid 4242), so this Mac's part ended cleanly; the pairing and the cable port setup stay for the production Darkbloom"
-            if answer == .stopped {
-                transcript("dev-summary-member-pair-stopped", summary, fixture)
-                #expect(summary.contains("  done     Remove this install's cluster service: asked the pair to stop first, and both Macs "
-                    + "stopped serving; " + stays))
-                #expect(!summary.contains { $0.hasPrefix("The other Mac") }, "the pair still works through the other install")
-            } else {
-                transcript("dev-summary-member-no-answer", summary, fixture)
-                #expect(summary.contains("  done     Remove this install's cluster service: the other Mac (M3 Ultra, 512 GB) did not answer "
-                    + "the stop (\(noAnswer)); " + stays))
-                #expect(summary.last == "The other Mac (M3 Ultra, 512 GB) did not answer, so its part may keep restarting: run "
-                    + "`darkbloom-dev cluster stop` on it.")
-            }
-        }
-    }
-
-    @Test("P2-16: the pair is not asked to stop for the other install's service, nor on the path that asks already")
-    func pairIsAskedOnlyForThisInstallsService() async throws {
-        let fixture = try Fixture.make()
-        defer { fixture.remove() }
-        _ = try installBoth(fixture)
-        let paths = ProviderUninstallPaths(home: fixture.home, environment: .dev,
-                                           commandLinkDirectory: fixture.paths.commandLink.deletingLastPathComponent())
-        let binary = BuildEnvironment.prod.installDirectory(home: fixture.home).appendingPathComponent("Darkbloom.app/Contents/MacOS/darkbloom")
-        let theirs = ProviderUninstall.RunningClusterService(pid: 777, executable: binary.path,
-                                                             owner: ProviderUninstall.owner(ofExecutable: binary.path, paths: paths))
-        var operations = fixture.operations(providerRunning: false, cluster: FakeClusterService(theirs, log: fixture.deletes))
-        let asked = Calls()
-        operations.stopBothMacs = { asked.add("ask"); return .stopped }
-        _ = await fixture.run(.keepModels, items: ProviderUninstall.inventory(paths), pairing: fixture.pairing, operations: operations)
-        #expect(asked.all.isEmpty, "the other install's pair is left as it is")
-
-        // One install: step 2 is `cluster stop --service`, which asks the leader itself.
-        let single = try Fixture.make()
-        defer { single.remove() }
-        var alone = single.operations()
-        alone.stopBothMacs = { asked.add("ask"); return .stopped }
-        _ = await single.run(.everything, pairing: single.pairing, operations: alone)
-        #expect(asked.all.isEmpty && single.calls.all.contains("cluster stop"))
-    }
-
-    @Test("B16: the other install's running cluster service is left running, and said so")
-    func otherInstallsRunningServiceIsLeft() async throws {
-        let fixture = try Fixture.make()
-        defer { fixture.remove() }
-        _ = try installBoth(fixture)
-        let paths = ProviderUninstallPaths(home: fixture.home, environment: .dev,
-                                           commandLinkDirectory: fixture.paths.commandLink.deletingLastPathComponent())
-        let binary = BuildEnvironment.prod.installDirectory(home: fixture.home).appendingPathComponent("Darkbloom.app/Contents/MacOS/darkbloom")
-        let running = ProviderUninstall.RunningClusterService(
-            pid: 777, executable: binary.path, owner: ProviderUninstall.owner(ofExecutable: binary.path, paths: paths))
-        #expect(running.owner == .otherInstall("the production Darkbloom"))
-        let plan = ProviderUninstall.Plan(cli: "darkbloom-dev", runningClusterService: running, services: [],
-                                          items: ProviderUninstall.inventory(paths), pairing: fixture.pairing)
-        let report = await fixture.run(.keepModels, items: plan.items, pairing: fixture.pairing,
-                                       operations: fixture.operations(providerRunning: false, cluster: FakeClusterService(running, log: fixture.deletes)))
-        #expect(!fixture.deletes.all.contains { $0.hasPrefix("stop cluster service") }, "it is not stopped")
-        #expect(!fixture.exists(paths.installDirectory.appendingPathComponent(paths.appBundleName)), "this install's app goes")
-        #expect(!report.failed, "\(report.steps)")
-        #expect(ProviderUninstall.summary(report, plan: plan).contains {
-            $0.hasPrefix("  skipped  Remove this install's cluster service: the cluster service running here (pid 777) is the production "
-                + "Darkbloom's, and keeps running")
-        })
     }
 
     @Test("B16: a running cluster service that can't be told apart, or that did not stop, keeps every file; exit 1")
@@ -848,14 +715,16 @@ struct ProviderUninstallTests {
         #expect(unknown.owner == .unknown)
         #expect(ProviderUninstall.owner(ofExecutable: nil, paths: paths) == .unknown)
         let plan = ProviderUninstall.Plan(cli: "darkbloom-dev", runningClusterService: unknown, services: [],
-                                          items: ProviderUninstall.inventory(paths), pairing: fixture.pairing)
-        let report = await fixture.run(.everything, items: plan.items, pairing: fixture.pairing,
-                                       operations: fixture.operations(cluster: FakeClusterService(unknown, log: fixture.deletes)))
+                                          items: ProviderUninstall.inventory(paths), pairing: fixture.pairing, cableKeptFor: .prod)
+        let report = await fixture.run(.everything, items: plan.items, pairing: fixture.pairing, cableKeptFor: .prod,
+                                       operations: fixture.operations(cluster: FakeClusterService(unknown, log: fixture.deletes), install: .dev))
         #expect(fixture.deletes.all.isEmpty, "nothing is stopped or deleted: \(fixture.deletes.all)")
         #expect(report.failed)
         let refusal = "nothing is deleted while it runs. Stop it first with `darkbloom-dev cluster stop --service`, then run `darkbloom-dev uninstall` again"
         #expect(ProviderUninstall.summary(report, plan: plan).contains { $0.contains("failed") && $0.contains("pid 999") }, "\(report.steps)")
-        #expect(ProviderUninstall.dryRun(plan, mode: .everything).contains { $0.contains("refused, deleting nothing") && $0.contains(refusal) })
+        #expect(ProviderUninstall.stillRunningReason(unknown, cli: "darkbloom-dev").hasSuffix(refusal))
+        #expect(ProviderUninstall.dryRun(plan, mode: .everything).contains {
+            $0.contains("under another name, is running (pid 999); this does not stop it, and nothing is deleted while it runs") })
 
         // One install: `cluster stop --service` ran, but this install's service still holds the lock.
         let single = try Fixture.make()
@@ -945,8 +814,6 @@ struct ProviderUninstallTests {
         #expect(stale?.described == "the cluster service lock is held, but pid \(getpid()) from its pid file is not a cluster service")
         let elsewhere = read(isService: true)
         #expect(elsewhere?.owner == .unknown && elsewhere?.isThisCLI == true, "this CLI's service from outside both apps")
-        // m2: the stop itself signals only a cluster service; this test process is none, so it is refused unsignalled.
-        #expect(throws: ProviderUninstall.StepFailure.self) { try ProviderUninstall.liveStopClusterService(pid: getpid()) }
     }
 
     @Test("m4: with no other install, the dry run says what `cluster stop --service` does to the service running here")
@@ -969,20 +836,6 @@ struct ProviderUninstallTests {
                 + "this does not stop it, and nothing is deleted while it runs")
         #expect(step2(.init(pid: 0, executable: nil, owner: .unknown, note: ProviderUninstall.unreadableLockNote))
             == prefix + ProviderUninstall.unreadableLockNote + "; this does not stop it, and nothing is deleted while it runs")
-    }
-
-    @Test("B21: beside the other install, option 1 does not promise the pairing or models it keeps")
-    func optionLinesSayWhatEachChoiceDoesHere() throws {
-        let fixture = try Fixture.make()
-        defer { fixture.remove() }
-        _ = try installBoth(fixture)
-        let paths = ProviderUninstallPaths(home: fixture.home, environment: .dev,
-                                           commandLinkDirectory: fixture.paths.commandLink.deletingLastPathComponent())
-        let plan = ProviderUninstall.Plan(cli: "darkbloom-dev", services: [], items: ProviderUninstall.inventory(paths), pairing: fixture.pairing)
-        let screen = ProviderUninstall.screen(plan)
-        transcript("screen-dev-beside-prod-options", screen + [ProviderUninstall.choicePrompt], fixture)
-        #expect(screen[3] == "     The app, settings and logs · frees \(ProviderUninstall.formatBytes(plan.frees(.everything)))")
-        #expect(screen[5] == "     Removes everything else; the models stay either way (below)")
     }
 
     @Test("a disk mounted at a folder is told from one that is not")
@@ -1146,7 +999,7 @@ struct ProviderUninstallTests {
         let retry = "kept, so the uninstall can run again and undo the cable port setup (it holds the app and the cable records)"
         let kept = report.steps.filter { $0.status == .skipped && $0.detail == retry }.map(\.name)
         #expect(kept == ["Delete The `\(fixture.paths.commandLink.lastPathComponent)` command link",
-                         "Delete " + ProviderUninstall.installFolderLabel(fixture.paths)])
+                         "Delete " + ProviderUninstall.installFolderLabel])
         let summary = ProviderUninstall.summary(report, plan: plan)
         transcript("everything-summary-link-declined", summary, fixture)
         #expect(summary.contains("  failed   Undo the cable port setup: the macOS prompt was declined; nothing was changed "

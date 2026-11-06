@@ -13,6 +13,7 @@ xcrun swiftc -swift-version 6 -warnings-as-errors \
   -o "$task_build/libDarkbloomClusterProtocol.dylib"
 xcrun swiftc -swift-version 6 -warnings-as-errors \
   "$task_config/ClusterConfigurationFiles.swift" "$task_config/ClusterConfigurationPaths.swift" \
+  "$task_provider"/Sources/ProviderBuildEnvironment/*.swift \
   "$task_fixtures/ConfigurationFilesCheck.swift" -o "$task_build/files-check"
 "$task_build/files-check"
 xcrun swiftc -swift-version 6 -warnings-as-errors \
@@ -25,6 +26,7 @@ xcrun swiftc -swift-version 6 -warnings-as-errors \
   -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol \
   -Xlinker -rpath -Xlinker "$task_build" \
   "$task_config/ClusterConfigurationFiles.swift" "$task_config/ClusterConfigurationPaths.swift" \
+  "$task_provider"/Sources/ProviderBuildEnvironment/*.swift \
   "$task_config/ClusterConfiguration.swift" "$task_config/ClusterConfigurationCodec.swift" \
   "$task_config/ClusterGenerationSelection.swift" "$task_config/ClusterCapabilityRecord.swift" \
   "$task_config/ClusterNativeMemberAttachment.swift" "$task_config/ClusterLinkControlAttachment.swift" "$task_config/ClusterPairApproval.swift" \

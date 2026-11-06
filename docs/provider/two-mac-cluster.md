@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-05
+> Last updated: 2026-11-06
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -46,6 +46,33 @@ still answered on the Mac's own screen). `darkbloom cluster link --fix` and
 `--remove` say the same before they start and try no prompt, and
 `darkbloom uninstall` over SSH stops before it changes anything when a cable
 port setup is left to undo.
+
+## The cluster waitlist
+
+Darkbloom approves accounts for clusters from a waitlist. The waitlist is for
+your account, not for each Mac: join it once, from either Mac linked to your
+account with `darkbloom login`:
+
+```bash
+darkbloom waitlist cluster
+```
+
+It puts your account on the waitlist, sending nothing about your Macs, and
+prints your place in line; Darkbloom reviews accounts in the order they joined
+and approves them by hand. Run it again to see where you stand: it keeps your
+place, and once you are approved it says so and names the command that starts
+a cluster. `darkbloom waitlist` alone lists every waitlist and where you stand
+on each.
+
+A new pair that serves through Darkbloom needs that approval: on a Mac that is
+not paired yet, `darkbloom cluster` checks the waitlist before it starts.
+Serving on your own Macs only (`darkbloom cluster local`) needs no approval and
+no connection to Darkbloom. Not on it, it offers
+to join; waitlisted, it shows your place and sets nothing up ("Nothing was set
+up. Run `darkbloom cluster` again once Darkbloom approves your account.").
+Macs that are already paired are never asked: a pair you set up before the
+waitlist keeps working as it did, through updates and restarts. Details:
+[CLI reference: waitlists](./cli-reference.md#darkbloom-waitlist).
 
 ## The steps, once
 
@@ -251,9 +278,20 @@ doesn't say. On a Mac named there, `darkbloom cluster` turns its service on
 again. With a build whose cluster service lives only as long as its window, the
 card says to keep that window open instead, or both windows when neither Mac's
 starts at login.
-Darkbloom Dev, the DevNet app, serves a pair's API on the same port, 8000, so
-only one of the two apps can serve a pair on a Mac at a time; its card and
-hints name `darkbloom-dev`.
+Darkbloom Dev, the DevNet app, keeps its own pair: its own pairing, cluster
+setup, cluster service and ports on the cable, so its pair and the production
+app's never answer each other. Only one app's pair runs on a Mac at a time: both
+apps take one device lock
+(`~/Library/Application Support/io.darkbloom.cluster/native-device.lock`), so
+the second app's pair waits, and its status names the app that holds the Mac.
+It starts by itself as soon as that app's pair stops, and a wait never counts
+as a failing pair, so the production app never falls back to its local API for
+it. The production app wins: the DevNet app also waits while the production
+app serves on that Mac (even a production version from before the lock) or its
+pair is set to serve there, also while it restarts for an update, and its
+running pair stops within seconds when production starts serving there. Its
+pair's API takes 8000 too, or the lowest free port up to 8020 when the
+production app's pair holds it; its card and hints name `darkbloom-dev`.
 
 Served on the local API only (asked for, or a coordinator without cluster
 support), the block says `✓ Serving <model> on this Mac's local API only`. It
@@ -918,14 +956,24 @@ allowance, clamped to the model and remaining context; an explicit
 at its stop token. Requests above the output ceiling receive HTTP 400 `output_too_long`;
 requests that exceed the admitted combined context are refused before generation.
 Qwen3.8 27B on a tensor-parallel pair accepts its native context, as a single
-Mac serving it does: prompts up to 262,143 tokens and up to 32,768 output tokens,
-within 262,144 combined. The pair is still loaded and planned for the
-32,768 + 32,768-token request, at any number of lanes. A longer request is
-admitted on its own when both Macs' memory holds it at that moment. If it does
-not fit, it alone receives HTTP 503 with the context the pair serves now, and
-other requests keep running. The 27B's pipeline modes keep the 65,536-token
-ceiling. See
+Mac serving it does: prompts up to 262,143 tokens and up to 65,536 output tokens
+(the catalog's output limit, which the coordinator also gives a request that
+omits `max_tokens`), within 262,144 combined. The pair is still loaded and
+planned for the 32,768 + 32,768-token request, at any number of lanes. A longer
+request is admitted on its own when both Macs' memory holds it at that moment.
+If it does not fit, it alone receives HTTP 503 with the context the pair serves
+now, and other requests keep running. The pipeline modes of a model with a
+native context (GLM-5.3-Flash, and the 27B where its policy allows them) keep
+the 32,768 + 32,768-token request. Their leader refuses a longer request itself,
+before either rank is asked. See
 [native context](../architecture/inference.md#qwen27-tensor-parallel-native-context).
+
+The leader's heartbeat tells the coordinator these limits for its pair's slot
+(`request_limits`): the prompt, output and context limits of the mode it serves,
+and the context both Macs' memory admits now. The coordinator sends the pair
+only requests within them; it sends any other request to a single Mac. From the
+first request it serves, the pair's slot also reports its measured prefill and
+decode speeds, as a single Mac's slot does. The warmup canary is not counted.
 
 After updating, let the normal cluster setup refresh both worker capabilities
 and the derived request deadline before serving. For adapters such as GLM that
@@ -1527,9 +1575,11 @@ isn't the way back.
 
 ## Pairing again
 
-Pair the Macs again after either Mac moves between the Darkbloom and DevNet apps,
-after the official installer reinstalls Darkbloom ("Secure Enclave ✓ (P-256 key
-generated)"), or when one Mac was reset or replaced. Each app keeps its own
+Pair the Macs again after the official installer reinstalls Darkbloom ("Secure
+Enclave ✓ (P-256 key generated)"), after either Mac moves between a local build
+and the signed release, or when one Mac was reset or replaced. The DevNet app
+keeps a pairing of its own: pairing it never changes the production app's, and
+it is paired once on its own. Each app keeps its own
 Secure Enclave key, and the pair's roster names the keys the Macs paired with,
 so a pairing made with another key cannot register: every start of its part ends
 with "This Mac's Secure Enclave key is not the one it paired with; pair again."
@@ -1609,8 +1659,9 @@ reinstall `darkbloom cluster` pairs again and uses them without copying or
 downloading. **Remove everything** deletes them too, after asking once more. A
 models folder you chose, and the cluster model store beside it, stay with either
 choice. Run it as yourself, not with `sudo`. On a Mac with both the production
-Darkbloom and Darkbloom Dev, uninstalling one keeps the pairing, cluster setup and cable
-port setup the other uses.
+Darkbloom and Darkbloom Dev, uninstalling one removes only its own pairing,
+cluster setup and cluster service, and keeps the cable port setup the other may
+use.
 
 When the other Mac does not answer, this Mac stops only its own part, as
 `darkbloom cluster stop --local-only`. The other Mac keeps its own pairing, so

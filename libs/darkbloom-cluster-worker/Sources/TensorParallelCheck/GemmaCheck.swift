@@ -13,8 +13,9 @@ import MLX
 //       [--record-top K] [--backend ring|socket|jaccl] [--reduction native|sealed-bench] [--shard-rank R]
 //       [--pack yes|no] [--path legacy|paged] [--prefix none|repeat] [--deadline-seconds S]
 //       [--layer-stride N (paged path, full/shard/tp: decode submitted every N layers, 0 = whole step; default the product's)]
-//       [--prompt-parts N (paged path, shard/tp: each prompt chunk's work after attention in N row parts, each part's sums
-//        issued as built; values unchanged; default the product's)]
+//       [--prompt-parts N (paged path, shard/tp, --pack yes: each prompt chunk's work after attention in N row parts,
+//        each part's sums issued as built; bit-identical on the GPU for two ranks only, not on the CPU; the product
+//        keeps 1 (off))]
 //   darkbloom-cluster-tp-check gemma compare --reference FILE --candidate FILE [--bitwise yes|no] [--near-tie-ulps U]
 //   darkbloom-cluster-tp-check gemma allsum [--backend ring|socket|jaccl] [--count N]
 //   darkbloom-cluster-tp-check gemma lanes --mode simulated|tp --model-dir DIR --report FILE [--lanes N] [--outputs N]

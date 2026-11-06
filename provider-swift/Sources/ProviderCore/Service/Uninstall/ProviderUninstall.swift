@@ -64,12 +64,13 @@ public enum ProviderUninstall {
         }
     }
 
-    /// A cluster service that holds this Mac's service lock: launchd's, or one a session started (`darkbloom cluster`
+    /// A cluster service that holds this install's service lock: launchd's, or one a session started (`darkbloom cluster`
     /// when launchd did not take the agent, development builds). Its files must not go while it runs.
     public struct RunningClusterService: Sendable, Equatable {
         public enum Owner: Sendable, Equatable {
             case thisInstall
-            /// The other install on this Mac, by name ("the production Darkbloom").
+            /// The other install on this Mac, by name ("the production Darkbloom"): only a DevNet service from before
+            /// installs had their own folders still holds production's lock.
             case otherInstall(String)
             /// Neither, or its executable could not be read.
             case unknown

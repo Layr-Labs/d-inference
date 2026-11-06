@@ -248,7 +248,8 @@ struct ClusterObservabilityTests {
         let observability = ClusterObservability(homeDirectory: home, hostNames: [], userNames: [])
         observability.recordFailure(.sessionFailed, source: "leader", error: "rank 1 ended: its owner exited with status 75",
                                     facts: nil)
-        let snapshot = ClusterObservabilitySnapshot.read(installDirectory: BuildEnvironment.current.installDirectory(home: home))
+        let snapshot = ClusterObservabilitySnapshot.read(installDirectory: BuildEnvironment.current.installDirectory(home: home),
+                                                         install: BuildEnvironment.current.rawValue)
         #expect(snapshot.incidents?.open == 1 && snapshot.incidents?.recent.first?.reasonCode == "collective_stall")
         #expect(snapshot.lines.contains { $0.contains("collective_stall") })
         let encoded = String(decoding: try JSONEncoder().encode(snapshot), as: UTF8.self)

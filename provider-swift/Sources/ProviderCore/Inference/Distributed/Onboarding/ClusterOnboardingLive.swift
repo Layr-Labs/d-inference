@@ -720,7 +720,7 @@ final class OnboardingLive: @unchecked Sendable {
         (error as? ClusterOnboardingFailure)?.lines.joined(separator: " ") ?? "\(error)"
     }
 
-    /// Why the service runs for this session only, appended to its log (`~/.darkbloom/cluster-setup/service.log`,
+    /// Why the service runs for this session only, appended to its log (this install's `cluster-setup/service.log`,
     /// opened append-only because the running service writes there too).
     static func logLoginAgentReason(_ reason: String) {
         guard let log = try? ClusterService.paths().log else { return }

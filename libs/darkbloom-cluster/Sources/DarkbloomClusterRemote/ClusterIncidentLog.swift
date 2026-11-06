@@ -202,9 +202,6 @@ public final class ClusterIncidentLog: @unchecked Sendable {
     }
 
     public let file: URL
-    /// The files this log keeps on disk, in this order: the log, its lock sidecar, and the copy a corrupt log is moved
-    /// aside to. `darkbloom uninstall` removes an install's own with it.
-    public var files: [URL] { [file, lockFile, corruptCopy] }
     /// Where a corrupt log is moved aside, named after its file, so each install keeps its own.
     var corruptCopy: URL {
         file.deletingLastPathComponent().appendingPathComponent(file.deletingPathExtension().lastPathComponent + ".corrupt.json")

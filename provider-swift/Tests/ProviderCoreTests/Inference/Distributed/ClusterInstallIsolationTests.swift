@@ -233,6 +233,44 @@ struct ClusterInstallIsolationTests {
         }
     }
 
+    /// Refactor pass M1: the cable port setup is this Mac's, but each build records its own undo. A port production set
+    /// up is adopted by DevNet with production's record of the change (bridge slot, services turned off), read and never
+    /// written, so DevNet, uninstalled last, still puts the port back after production's folder is gone.
+    @Test("a port the other build set up keeps its whole undo after that build is uninstalled")
+    func cableUndoSurvivesTheOtherBuildsUninstall() throws {
+        let home = try NativePairMemberFixture.privateRoot()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let production = try ClusterUserPaths(homeDirectory: home, environment: .prod)
+        let devnet = try ClusterUserPaths(homeDirectory: home, environment: .dev)
+        for paths in [production, devnet] {
+            try FileManager.default.createDirectory(at: paths.deviceDirectory, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+        }
+        let address = ClusterLinkClusterAddress.derived(machineIdentifier: "FIXTURE-MACHINE", interface: "en7")
+        let setUp = ClusterLinkIsolationRecord.Entry(interface: "en7", address: address, hardwarePort: "Thunderbolt 6",
+            bridge: .init(bridge: "bridge0", index: 1), disabledServices: ["Thunderbolt 6", "Thunderbolt 2"])
+        try ClusterLinkIsolationStore(paths: production).update { $0.set(setUp) }
+        let productionRecord = try Data(contentsOf: production.linkIsolationRecordFile)
+        // DevNet adopts the port production isolated, with production's undo, in its own record.
+        let others = ClusterLinkRepair.otherInstallsIsolationEntries(interface: "en7", paths: devnet)
+        #expect(others == [setUp])
+        #expect(ClusterLinkRepair.otherInstallsIsolationEntries(interface: "en6", paths: devnet).isEmpty)
+        let adopted = ClusterLinkRepair.adoptionEntry(interface: "en7", address: address, hardwarePort: "Thunderbolt 6",
+                                                      disabledHere: ["Thunderbolt 6"], others: others)
+        #expect(adopted == setUp)
+        try ClusterLinkIsolationStore(paths: devnet).update { $0.set(adopted) }
+        #expect(try Data(contentsOf: production.linkIsolationRecordFile) == productionRecord, "production's record is only read")
+        #expect(ClusterLinkRepair.otherInstallsIsolationEntries(interface: "en7", paths: production) == [adopted],
+                "a build never reads its own record as the other's")
+        // Production is uninstalled: its folder, and its record, go. DevNet still has the bridge slot and the services.
+        try FileManager.default.removeItem(at: production.installDirectory)
+        #expect(try ClusterLinkIsolationStore(paths: devnet).load().entry(on: "en7") == setUp)
+        // Another address on the port is not that setup: only what this Mac shows now is recorded.
+        let elsewhere = ClusterLinkRepair.adoptionEntry(interface: "en7", address: .derived(machineIdentifier: "ANOTHER-MACHINE", interface: "en7"),
+            hardwarePort: "Thunderbolt 6", disabledHere: ["Thunderbolt 6"], others: [setUp])
+        #expect(elsewhere.bridge == nil && elsewhere.disabledServices == ["Thunderbolt 6"])
+    }
+
     @Test("one build's open console screen does not lock the other build's out")
     func screenLocksDoNotCross() throws {
         let directory = try NativePairMemberFixture.privateRoot()

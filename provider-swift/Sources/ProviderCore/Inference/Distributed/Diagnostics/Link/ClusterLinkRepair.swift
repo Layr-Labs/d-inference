@@ -85,6 +85,9 @@ public enum ClusterLinkRepair {
         /// Writes an owner-only script of the commands an approval would run
         /// (name, body) and returns the path to show; nil when not written.
         var writeManualScript: (String, String) -> String? = { _, _ in nil }
+        /// The entries the other installs on this Mac keep for a port (their records, read and never written): the
+        /// cable port setup is this Mac's, so a port one app isolated and the other adopts gets the same undo in both.
+        var otherInstallsIsolationEntries: (String) -> [ClusterLinkIsolationRecord.Entry] = { _ in [] }
     }
 
     /// The GID follows the address within moments. This many probes, one
@@ -315,6 +318,16 @@ public enum ClusterLinkRepair {
             pause: { usleep(verificationIntervalMicroseconds) }, readsIsolation: true,
             requestIsolationApproval: { cannotPrompt ? .unavailable : ClusterLinkApproval.request(isolation: $0) },
             loadIsolationRecord: isolationStore.load, updateIsolationRecord: isolationStore.update,
-            writeManualScript: { isolationStore.writeScript(name: $0, body: $1) })
+            writeManualScript: { isolationStore.writeScript(name: $0, body: $1) },
+            otherInstallsIsolationEntries: { otherInstallsIsolationEntries(interface: $0, paths: paths) })
+    }
+
+    /// The other installs' entries for `interface` on this Mac (`Environment.otherInstallsIsolationEntries`), read from
+    /// their records and never written; an absent, unsafe or malformed record gives none.
+    static func otherInstallsIsolationEntries(interface: String, paths: ClusterUserPaths) -> [ClusterLinkIsolationRecord.Entry] {
+        BuildEnvironment.allCases.filter { $0 != paths.environment }.compactMap { other in
+            (try? ClusterUserPaths(homeDirectory: paths.homeDirectory, environment: other))
+                .flatMap { try? ClusterLinkIsolationStore(paths: $0).load().entry(on: interface) }
+        }
     }
 }

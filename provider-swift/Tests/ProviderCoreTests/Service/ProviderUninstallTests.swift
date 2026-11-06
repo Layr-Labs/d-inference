@@ -282,7 +282,7 @@ private func installBoth(_ fixture: Fixture) throws -> [BuildEnvironment: (files
     return installed
 }
 
-/// Every file under the folders that hold `files`, with its bytes, to tell "untouched" from "rewritten".
+/// Each of `files` with its bytes (empty when it is gone), to tell "untouched" from "rewritten" or "deleted".
 private func contents(_ files: [URL]) -> [String: Data] {
     Dictionary(uniqueKeysWithValues: files.map { ($0.path, (try? Data(contentsOf: $0)) ?? Data()) })
 }
@@ -629,12 +629,14 @@ struct ProviderUninstallTests {
             logPath: "/dev/null", environment: [:]))
         try plist.write(to: fixture.agents.appendingPathComponent("\(legacy).plist"))
         fixture.launchd.load(legacy)
+        // A job of production's shape whose program can't be read stays production's, as before; never DevNet's.
+        let unreadable = BuildEnvironment.prod.clusterServiceLabelPrefix + "0123456789ac"
+        try fixture.write(fixture.agents.appendingPathComponent("\(unreadable).plist"))
         LaunchctlControl.$homeDirectoryForTesting.withValue(fixture.home) {
             #expect(ClusterServiceAgent.installedLabels(environment: .dev).contains(legacy), "DevNet's older job is DevNet's")
             #expect(!ClusterServiceAgent.installedLabels(environment: .prod).contains(legacy), "and never production's")
-            // A job of production's shape whose program can't be read stays production's, as before; never DevNet's.
-            #expect(ClusterServiceAgent.installedLabels(environment: .prod).contains(Fixture.clusterLabel))
-            #expect(!ClusterServiceAgent.installedLabels(environment: .dev).contains(Fixture.clusterLabel))
+            #expect(ClusterServiceAgent.installedLabels(environment: .prod).contains(unreadable))
+            #expect(!ClusterServiceAgent.installedLabels(environment: .dev).contains(unreadable))
         }
     }
 

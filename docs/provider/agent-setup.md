@@ -154,9 +154,11 @@ page with these names ([dev build identity](../operations/provider-release.md#de
   pairing, **Start over**, `darkbloom-dev cluster stop --service` or
   `darkbloom-dev uninstall` leave the production app's pair as it is, and the
   reverse. **Shared:** the models and the cable port setup (one cable, one
-  network setup). A DevNet app updated from a build that shared the pairing
-  shows the Mac as not paired: update both Macs, then pair the DevNet app
-  again (step 5).
+  network setup). Neither app's pair keeps the other's from starting, so two
+  pairs running at once share the Macs' memory: stop one app's pair before
+  starting the other's. A DevNet app updated from a build that shared the
+  pairing shows the Mac as not paired: update both Macs, then pair the DevNet
+  app again (step 5).
 - **The DevNet installer** adds a `PATH` line to `~/.zshrc` and, where
   `/usr/local/bin` is writable, links `/usr/local/bin/darkbloom-dev`.
   `darkbloom-dev login` prints DevNet's own URL. A test request needs an API

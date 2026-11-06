@@ -253,9 +253,10 @@ card says to keep that window open instead, or both windows when neither Mac's
 starts at login.
 Darkbloom Dev, the DevNet app, keeps its own pair: its own pairing, cluster
 setup, cluster service and ports on the cable, so its pair and the production
-app's never answer each other. Its pair's API takes 8000 too, or the lowest
-free port up to 8020 when the production app's pair holds it; its card and
-hints name `darkbloom-dev`.
+app's never answer each other or keep each other from starting. Two pairs
+running at once share the Macs' memory, so stop one before starting the other.
+Its pair's API takes 8000 too, or the lowest free port up to 8020 when the
+production app's pair holds it; its card and hints name `darkbloom-dev`.
 
 Served on the local API only (asked for, or a coordinator without cluster
 support), the block says `✓ Serving <model> on this Mac's local API only`. It

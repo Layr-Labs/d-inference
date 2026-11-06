@@ -625,12 +625,12 @@ final class DistributedAutomaticBatchPlannerTests {
         let probe = ClusterWorkerLinkProbe(transport: "jaccl", keyed: true, pointToPointSmallBytes: 64, pointToPointSmallMicroseconds: 167,
             pointToPointLargeBytes: 4_194_304, pointToPointLargeMicroseconds: 2_622, allSumSmallBytes: 20_480,
             allSumSmallMicroseconds: 38, allSumLargeBytes: 10_485_760, allSumLargeMicroseconds: 1_296)
-        let directory = home.appendingPathComponent(".darkbloom/cluster", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let file = ClusterLinkProbeHistory.defaultFile(installDirectory: BuildEnvironment.current.installDirectory(home: home))
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
         let measuredAt = now - 3_600
         let old: [String: Any] = ["schema": "darkbloom_cluster_link_probes_v1", "pairs": ["a|b": ["measuredAt": measuredAt,
             "probe": try JSONSerialization.jsonObject(with: JSONEncoder().encode(probe))]]]
-        let file = ClusterLinkProbeHistory.defaultFile(installDirectory: BuildEnvironment.current.installDirectory(home: home))
         try JSONSerialization.data(withJSONObject: old).write(to: file)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         let utc = ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: measuredAt))

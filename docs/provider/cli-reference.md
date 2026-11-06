@@ -1783,6 +1783,14 @@ What no choice deletes (the summary lists them):
   Kept: this Mac's cable port setup: the production Darkbloom on this Mac may use the same cable. Run `darkbloom uninstall` there to undo it
   ```
 
+  The other install's uninstall undoes all of it once that install's
+  `cluster` has used the cable on this Mac: it then records a port this
+  install set up with what the setup changed, read from this install's link
+  record (`ClusterLinkRepair.Environment.otherInstallsIsolationEntries`). An
+  install that never used the cable here removes Darkbloom's network service
+  from the port; the port's other network services, and its place in Thunderbolt
+  Bridge, are then turned back on in System Settings → Network.
+
 - Keychain items (Secure Enclave and App Attest keys); a new install replaces them;
 - the fan helper (`sudo darkbloom fan uninstall`), Darkbloom Sandbox
   (`darkbloom sandbox uninstall`), a legacy MDM profile (`darkbloom unenroll`) and

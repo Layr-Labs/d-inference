@@ -1,13 +1,19 @@
 import Foundation
 
-/// One canonical device namespace for this user's clusters. The input document
-/// cannot select a different lease directory to evade an unresolved allocation.
+/// One canonical device namespace for this user's clusters of this build. Neither
+/// the input document nor a public caller can select a different lease directory
+/// (another build's included) to evade an unresolved allocation.
 ///
 /// Every cluster file of an install lives in that install's own folders
 /// (`BuildEnvironment.installDirectory` and `configDirectory`): production's in
 /// `~/.darkbloom` and `~/.config/darkbloom`, DevNet's in `~/.darkbloom-dev` and
 /// `~/.config/darkbloom-dev`. Two installs on one Mac share no pairing, setup,
-/// service lock or device lease, and neither reads the other's.
+/// service lock or device lease, and neither writes the other's. So the device
+/// lease no longer keeps the two installs' native sessions apart: each install's
+/// pair can hold this Mac's GPU and cable port while the other's does. The one
+/// read across installs is the cable port setup's record, which is this Mac's:
+/// a port the other install set up is adopted with what that setup changed
+/// (`ClusterLinkRepair.Environment.otherInstallsIsolationEntries`).
 public struct ClusterUserPaths: Sendable, Equatable {
     public let homeDirectory: URL
     public let environment: BuildEnvironment
@@ -28,11 +34,12 @@ public struct ClusterUserPaths: Sendable, Equatable {
     /// The observability files: incidents, pair telemetry, follower status, served speeds and the planner's probes.
     public var observabilityDirectory: URL { Self.observabilityDirectory(home: homeDirectory, environment: environment) }
 
-    public init(environment: BuildEnvironment = .current) throws {
-        try self.init(homeDirectory: FileManager.default.homeDirectoryForCurrentUser, environment: environment)
+    /// This user's, for the running build: no public caller opens another build's folders.
+    public init() throws {
+        try self.init(homeDirectory: FileManager.default.homeDirectoryForCurrentUser, environment: .current)
     }
 
-    // Internal fixture seam; public callers cannot choose another device gate.
+    // Internal fixture seam; public callers cannot choose another home, build or device gate.
     init(homeDirectory: URL, environment: BuildEnvironment = .current) throws {
         guard homeDirectory.isFileURL else { throw ClusterConfigurationError.invalid("Expected a local home directory") }
         try ClusterConfigurationFiles.requireAbsolute(homeDirectory.path)

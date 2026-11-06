@@ -186,7 +186,7 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
         say(rule)
     }
 
-    /// "Full log: ~/.darkbloom/cluster-setup/screens/…".
+    /// "Full log: ~/.darkbloom/cluster-setup/screens/…" (in this install's folder).
     static func logLine(_ path: String) -> String { "Full log: " + path }
 
     /// Counts `line` in the current step (a colour window's fold) and writes it to the log, plain.

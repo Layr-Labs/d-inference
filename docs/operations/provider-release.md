@@ -380,8 +380,10 @@ two-Mac cluster: each install keeps its own pairing, cluster setup, service
 lock and observability files in its own folders (`ClusterUserPaths`), its
 cluster service's login job carries `clusterServiceLabelPrefix`, its per-user
 cluster locks are named after `cliName`, and the ports its pair uses on the
-cable add `clusterPortOffset` (`ClusterCablePorts`); only the models and the
-cable port setup are shared. The table is a generated copy of
+cable add `clusterPortOffset` (`ClusterCablePorts`). Shared on purpose: the
+models, the cable port setup, the sweep of cluster processes whose parent is
+gone, and the range the pair's local API port is chosen from (8000 to 8020). The
+table is a generated copy of
 `provider-swift/identity/provider-identity.json`, the only declaration of these
 values:
 

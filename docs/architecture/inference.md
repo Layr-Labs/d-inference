@@ -559,14 +559,20 @@ build's CLI (`ClusterConsoleInstanceLock.lockFileName`), the pair's prefix cache
 is in the build's cache namespace (`ClusterPrefixCacheSettings.rootDirectoryName`),
 and every port on the cable adds the build's `BuildEnvironment.clusterPortOffset`
 (`ClusterCablePorts`). Two builds' pairs on the same Macs therefore never read,
-stop or answer each other. They share the models, and the cable port setup,
-which `darkbloom uninstall` keeps while the other build is installed. Each
+stop or answer each other. Their device leases are separate too, so one
+build's pair no longer keeps the other's from starting: two pairs running at
+once share the Macs' memory and cable. They share the models, and the cable
+port setup, which `darkbloom uninstall` keeps while the other build is
+installed. A port the other build set up is adopted with what its link record
+says that setup changed (its bridge slot and the services it turned off), read
+from that record and never written there
+(`ClusterLinkRepair.Environment.otherInstallsIsolationEntries`), so the build
+uninstalled last can still undo it all. Each
 keeps its own cluster incident log, owned by `DarkbloomClusterRemote`
 (`ClusterIncidentLog.defaultFile(installDirectory:install:)`): production's is
 `~/.darkbloom/cluster/incidents.json`, DevNet's `~/.darkbloom-dev/cluster/incidents.dev.json`;
 a corrupt one is kept beside it under its own name (`incidents.corrupt.json`,
-`incidents.dev.corrupt.json`). `ClusterIncidentLog.files` names a log's files:
-the log, its lock sidecar and that corrupt copy. Every
+`incidents.dev.corrupt.json`). Every
 reader and writer opens this build's with
 `ClusterIncidentLog.forThisInstall`. Each record also names the install that
 wrote it (`ClusterIncident.install`), and a build reads only its own, counting

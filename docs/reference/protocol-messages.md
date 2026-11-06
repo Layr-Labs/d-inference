@@ -523,32 +523,35 @@ routing on them.
 #### `slots[].request_limits`
 
 Optional `SlotRequestLimits` ([coordinator/protocol/slot_request_limits.go](https://github.com/Layr-Labs/darkbloom-platform/blob/e7d0a03f1cab0bf4a8b8b6a0b61f49490760bd90/coordinator/protocol/slot_request_limits.go),
-`provider-swift/Sources/ProviderCore/Protocol/SlotRequestLimits.swift`). Only the
-leader of a cluster pair sends it, on its pair's slot, in every heartbeat. Every
-value is a token count.
+`provider-swift/Sources/ProviderCore/Protocol/SlotRequestLimits.swift`). It
+describes the whole cluster, every member included. Only the member that serves
+the cluster (its leader) sends it, on the cluster's slot, in every heartbeat.
+Every value is a token count.
 
 | JSON key | Presence | Meaning |
 |---|---|---|
-| `max_prompt_tokens` | req | The pair refuses a longer prompt (`prompt_too_long`) |
-| `max_output_tokens` | req | The pair refuses a larger `max_tokens` (`output_too_long`) |
-| `max_context_tokens` | req | The pair refuses a larger prompt plus `max_tokens` (`context_too_long`) |
-| `serving_context_tokens` | opt | The longest prompt plus `max_tokens` that both ranks' memory admits now, at most `max_context_tokens`. Both ranks work it out again while the pair is idle. A longer request is refused for capacity (`request_exceeds_node_budget`). Omitted, never `0`, when neither rank states one |
+| `max_prompt_tokens` | req | The cluster refuses a longer prompt (`prompt_too_long`) |
+| `max_output_tokens` | req | The cluster refuses a larger `max_tokens` (`output_too_long`) |
+| `max_context_tokens` | req | The cluster refuses a larger prompt plus `max_tokens` (`context_too_long`) |
+| `serving_context_tokens` | opt | The longest prompt plus `max_tokens` that every member's memory admits now: the minimum over the ranks (`ClusterWorkerPair.servingContextTokens`), at most `max_context_tokens`. Each rank works its own out again while idle. A longer request is refused for capacity (`request_exceeds_node_budget`). Omitted, never `0`, when the owner states none; a ready cluster always states one |
 
-The first three are what the pair serves in its generation mode
+The first three are what the cluster serves in its generation mode
 (`DistributedResidentExecutionProfile.served`,
 `ClusterModelFeaturePolicy.servedProfile`). In tensor parallel, that is the
 worker's whole profile: for Qwen3.8 27B, 262,143 prompt tokens, 65,536 output
 tokens and a 262,144-token context. In any other mode, it is the memory plan's
 request: 32,768 prompt and 32,768 output tokens in a 65,536-token context. A
 pipeline's ranks refuse any reservation beyond that request. The leader refuses
-any request outside these limits before it asks either rank.
+any request outside these limits before it asks any rank.
 
-Any change of `request_limits`, such as `serving_context_tokens` moving while
-the pair idles, is a material capacity change, so it sends an event heartbeat
-(`CapacityHeartbeatMateriality`). The coordinator drops the whole object when a
-required value is not positive, when one is above 1,048,576, or when the
-context is below the prompt or output limit. It caps `serving_context_tokens`
-at the context. It then holds every request routed to the pair to these limits.
+A change of `request_limits` is a material capacity change
+(`CapacityHeartbeatMateriality`): the next capacity rebuild, when a request
+starts or ends, sends it at once as an event heartbeat. A serving context that
+moves while the cluster idles rides the next 5-second baseline heartbeat. The
+coordinator drops the whole object when a required value is not positive, when
+one is above 1,048,576, or when the context is below the prompt or output limit.
+It caps `serving_context_tokens` at the context. It then holds every request
+routed to the cluster to these limits.
 
 #### `slots[].prefix_cache`
 

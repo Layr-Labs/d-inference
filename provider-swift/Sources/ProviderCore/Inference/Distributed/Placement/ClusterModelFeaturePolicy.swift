@@ -41,7 +41,7 @@ enum ClusterModelFeaturePolicy {
             || adapter.servesQwenTensorLanes(runtimeModelID: capability.runtimeModelID)
     }
 
-    /// The requests a pair serving `mode` takes within the capability's
+    /// The requests a cluster serving `mode` takes within the capability's
     /// profile, as its resident runtime admits them: the whole profile in
     /// tensor parallel, which charges a request beyond the memory plan at its
     /// own context when a rank reserves it; the memory plan's request

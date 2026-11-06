@@ -523,7 +523,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
     public var performanceMeasurements: PerformanceMeasurements?
     public var deadlineWork: DeadlineWork?
     /// The request sizes this slot serves (`SlotRequestLimits`); a cluster
-    /// pair leader's slot only. nil ⇒ omitted.
+    /// leader's slot only, for the whole cluster. nil ⇒ omitted.
     public var requestLimits: SlotRequestLimits?
 
     /// The KV-cache backend this slot's engine was actually built with:

@@ -190,6 +190,53 @@ struct DistributedPairMeasurementTests {
         await bridge.shutdown()
     }
 
+    /// A prompt that ran alone is an isolated prompt even when another request
+    /// joins its decode, and it is dated at its first committed token. The
+    /// ranks report what they restored only at the finish, so the bridge fixes
+    /// the prompt's overlap and date when its first token arrives. Before, a
+    /// prompt was filed as contended whenever anything overlapped its decode,
+    /// and dated at the finish, so a busy cluster's prompts read as fast.
+    @Test func aPromptThatRanAloneIsIsolatedEvenIfAnotherRequestJoinsItsDecode() async throws {
+        let owner = DistributedTestOwner()
+        owner.lanes = 2
+        let bridge = try DistributedEngineFactory.makeBridge(
+            owner: owner, expectedIdentity: owner.identity, profile: distributedTestProfile(),
+            tokenizer: TokenizerHandle(DistributedTestTokenizer()), eosTokenIDs: [99])
+        let alone = await bridge.submitTokenized(
+            promptTokens: Array(repeating: 1, count: 512),
+            request: ChatCompletionRequest(model: owner.identity.modelID, messages: [], temperature: 0, max_tokens: 3),
+            requestId: "prompt-alone", cacheEnabled: false)
+        try #require(owner.reserveCount == 1)
+        let first = owner.lease(0)
+        try await Task.sleep(for: .milliseconds(60))
+        first.send(.token(4)) // its whole prompt ran alone
+        try await Task.sleep(for: .milliseconds(20))
+        let joined = await bridge.submitTokenized(
+            promptTokens: Array(repeating: 1, count: 256),
+            request: ChatCompletionRequest(model: owner.identity.modelID, messages: [], temperature: 0, max_tokens: 2),
+            requestId: "joins-the-decode", cacheEnabled: false)
+        try #require(owner.reserveCount == 2)
+        let second = owner.lease(1)
+        try await Task.sleep(for: .milliseconds(150)) // a decode beside the second request
+        first.send(.token(5))
+        first.send(.token(6))
+        first.acknowledge()
+        for await _ in alone {}
+        let capacity = await bridge.backendSlotCapacity()
+        let measured = try #require(capacity.performanceMeasurements)
+        let prefill = try #require(measured.isolatedPrefill,
+            "a prompt that ran alone was filed as \(String(describing: measured.contendedPrefill))")
+        #expect(measured.contendedPrefill == nil)
+        #expect(prefill.sampleCount == 1)
+        // Dated at its first token, before the 150 ms of decode, not at the finish.
+        #expect(prefill.sampleAgeMs >= 150)
+        second.send(.token(4))
+        second.send(.token(5))
+        second.acknowledge()
+        for await _ in joined {}
+        await bridge.shutdown()
+    }
+
     /// The pair's warmup canary measures first use, not the pair's speed: its
     /// few tokens never become the slot's rates.
     @Test func theWarmupCanaryNeverBecomesTheSlotsRates() async throws {

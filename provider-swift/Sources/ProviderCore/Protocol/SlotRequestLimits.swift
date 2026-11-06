@@ -1,11 +1,12 @@
 import Foundation
 
-/// The requests a slot serves, by size, as its engine enforces them: a cluster
-/// pair leader's slot reports its pair's limits so the coordinator sends it
-/// only requests it can serve. Tokens throughout. A solo slot omits it.
+/// The requests a slot serves, by size, as its engine enforces them. The
+/// member that serves a cluster (its leader) reports the cluster's limits, for
+/// every member, so the coordinator sends it only requests the cluster can
+/// serve. Tokens throughout. A single Mac's slot omits it.
 ///
 /// Mirrors Go `protocol.SlotRequestLimits` (`request_limits` on a slot):
-/// `servingContextTokens` is omitted when no rank derives one, never zero.
+/// `servingContextTokens` is omitted, never zero, when the owner states none.
 public struct SlotRequestLimits: Codable, Sendable, Equatable {
     /// A longer prompt is refused (`prompt_too_long`).
     public var maxPromptTokens: Int
@@ -13,8 +14,9 @@ public struct SlotRequestLimits: Codable, Sendable, Equatable {
     public var maxOutputTokens: Int
     /// Prompt plus `max_tokens` above this is refused (`context_too_long`).
     public var maxContextTokens: Int
-    /// The longest prompt plus `max_tokens` every rank's memory gate admits
-    /// now, re-derived while idle. A longer request is refused for capacity.
+    /// The longest prompt plus `max_tokens` that every member's memory gate
+    /// admits now (the minimum over the ranks), re-derived while idle. A
+    /// longer request is refused for capacity.
     public var servingContextTokens: Int?
 
     public init(maxPromptTokens: Int, maxOutputTokens: Int, maxContextTokens: Int, servingContextTokens: Int? = nil) {

@@ -54,8 +54,8 @@ public enum DistributedEngineFactory {
         // request and advertises the frontiers both peers hold.
         // Product parity: the artifact's sampling defaults for the families
         // the product honours them for (legacy greedy defaults otherwise);
-        // an omitted `max_tokens` is the product's 32,768 (the pair's output
-        // limit), cut to the context left after the prompt.
+        // an omitted `max_tokens` is the cluster default (32,768, at most the
+        // profile's output limit), cut to the context left after the prompt.
         let samplingDefaults = EngineV2SamplingDefaults.resolve(
             modelId: modelID, modelType: modelType, modelDirectory: modelDirectory)
         var draftMiMoImageConfiguration: Data?

@@ -148,7 +148,7 @@ public enum ClusterPublicModels {
     }
 
     /// The request shape a placement of a declared model serves publicly:
-    /// sampling and tools, prompts and outputs up to the limits the pair
+    /// sampling and tools, prompts and outputs up to the limits the cluster
     /// enforces in that placement's mode (`profile`: what the mode serves of
     /// the worker's runtime profile; a longer prompt or a larger `max_tokens`
     /// is refused), so the coordinator sends a larger public request to a

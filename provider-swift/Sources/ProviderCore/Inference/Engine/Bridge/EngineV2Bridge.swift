@@ -92,6 +92,10 @@ public actor EngineV2Bridge {
     /// Native block engines report generation from completed prefill, including
     /// their first block; ordinary AR/MTP timing remains unchanged.
     let usesNativeBlockTiming: Bool
+    /// A cluster's engine reports each prompt only when its request ends, once
+    /// the ranks report what they restored; its prompt receipt is frozen at
+    /// the first committed token (`EnginePrefillReceipt.freezeAtFirstToken`).
+    let promptReportedAtFinish: Bool
     /// Actual serving backend. Contiguous requests reserve worst-case bytes
     /// through the shared budget; paged engines own native process-ledger
     /// charges. Segmented paged storage follows runtime grant changes; only
@@ -444,6 +448,7 @@ public actor EngineV2Bridge {
         self.calibrationPosturePermitsWork = calibrationPosturePermitsWork
         self.admissionFixes = admissionFixes ?? DeadlineAdmissionFixes.enabled
         self.usesNativeBlockTiming = engine is CBv2NativeBlockEngine
+        self.promptReportedAtFinish = engine is DistributedCBv2Engine
         self.tokenizer = tokenizer
         self.kvBackendKind = kvBackendKind
         self.kvQuantization = kvQuantization

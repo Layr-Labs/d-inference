@@ -82,9 +82,10 @@ extension DistributedCBv2Engine {
         return snapshot
     }
 
-    /// The request sizes this pair serves, as `validate` enforces them: what
-    /// the selected mode serves of the profile (`served`), and the context
-    /// both ranks' memory admits now when the owner states one. Read from any
+    /// The request sizes this cluster serves, as `validate` enforces them:
+    /// what the selected mode serves of the profile (`served`), and the
+    /// context every rank's memory admits now (the owner's minimum over its
+    /// ranks) when the owner states one. Read from any
     /// thread without waiting for the queue, like `capacity()`.
     public func requestLimits() -> SlotRequestLimits {
         let served = profile.served

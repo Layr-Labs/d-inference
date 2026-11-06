@@ -1634,19 +1634,23 @@ Rate averaging and sample counts still follow receipt consumption order;
 an older receipt cannot move freshness backward or create a false evidence gap
 for the next observation. A heartbeat snapshot alone never renews evidence.
 
-A cluster pair's engine (`DistributedCBv2Engine`) reports the same measurements
-from the requests the pair serves (`DistributedCBv2Engine+Timing.swift`). Each
+A cluster's engine (`DistributedCBv2Engine`) reports the same measurements from
+the requests the cluster serves (`DistributedCBv2Engine+Timing.swift`). Each
 request's terminal usage carries its timing in the engine contract's terms. The
-prompt runs from the owner's start, after both ranks reserved, to the first
+prompt runs from the owner's start, after every rank reserved, to the first
 committed token. Decode runs from the first committed token to the last, in MTP
-rounds when the ranks report them. At a clean finish (`stop` or `length`), the
-engine reports the prompt observation once, after both ranks have reported what
-they restored, so a partly restored prompt is never measured as a cold one. A
-failed request reports none, and a request with media is never a text rate.
-The pair's warmup canary submits as `startupWarmup`, so its few tokens never
-become the slot's rates. Before 0.10.10, a pair's slot reported no
-measurements. The coordinator's first-content forecast of a pair therefore stayed
-`unknown`, and a feasible single Mac always displaced the pair.
+rounds when the ranks report them. The ranks report what they restored only at
+the finish, so the bridge fixes the prompt's overlap with other work and its
+date when the first committed token arrives (`EnginePrefillReceipt.freezeAtFirstToken`,
+`EngineV2Bridge.recordFirstToken`). At a clean finish (`stop` or `length`), the
+engine then reports the prompt observation once, with the final reuse. A
+prompt that ran alone is therefore isolated even when another request joins its
+decode, and a partly restored prompt is never measured as a cold one. A failed
+request reports none, and a request with media is never a text rate. The
+cluster's warmup canary submits as `startupWarmup`, so its few tokens never
+become the slot's rates. Before 0.10.10, a cluster's slot reported no
+measurements. The coordinator's first-content forecast of a cluster therefore
+stayed `unknown`, and a feasible single Mac always displaced the cluster.
 
 Owner-bound native MiMo submissions retain target-decoder prefill observations
 in the separate `native_media_prefill` workload phase. Its timer starts at the

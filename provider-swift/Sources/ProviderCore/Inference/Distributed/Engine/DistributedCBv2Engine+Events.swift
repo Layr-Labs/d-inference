@@ -232,9 +232,10 @@ extension DistributedCBv2Engine {
            !state.storedPromptFrontiers.isEmpty {
             residentPrefixPublication?(receipt, state.storedPromptFrontiers)
         }
-        // The prompt's measurement, once its reuse is known: both ranks report
+        // The prompt's measurement, once its reuse is known: the ranks report
         // what they restored only after the last token, so the observation
-        // comes at a clean finish, before the terminal reaches the bridge.
+        // comes at a clean finish, before the terminal reaches the bridge. The
+        // bridge fixed the prompt's overlap and date at its first token.
         if reason == .stop || reason == .length, state.firstTokenAt != nil {
             state.request.onPrefillCompleted?(usage)
         }

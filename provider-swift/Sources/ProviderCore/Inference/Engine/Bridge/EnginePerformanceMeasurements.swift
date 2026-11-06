@@ -65,6 +65,9 @@ final class EnginePrefillReceipt: @unchecked Sendable {
     let nativeRateEvidence: NativeMediaRateEvidence?
     private let lock = NSLock()
     private var sample: Sample?
+    /// The prompt's overlap and date, fixed at its first committed token by an
+    /// engine that reports the prompt only when the request ends.
+    private var frozen: (overlap: EngineMeasurementActivity.Overlap, at: ContinuousClock.Instant)?
     private var consumed = false
     private var ended = false
     private var retirementOwned = false
@@ -85,12 +88,25 @@ final class EnginePrefillReceipt: @unchecked Sendable {
         activityID = activity.begin(model: model)
     }
 
+    /// For an engine that learns a prompt's reuse only when the request ends
+    /// (a cluster's: its ranks report what they restored at the finish): fixes
+    /// the prompt's overlap and date at its first committed token, so the
+    /// later `complete` files the prompt as it ran, not as the whole request
+    /// did. The first call counts; a completed receipt ignores it.
+    func freezeAtFirstToken() {
+        let overlap = self.overlap
+        lock.withLock {
+            guard sample == nil, frozen == nil else { return }
+            frozen = (overlap, .now)
+        }
+    }
+
     func complete(_ usage: CBv2Usage) {
         var overlap = activity.snapshot(activityID)
         if isolationGuard?.isValid == false { overlap.contended = true }
         lock.withLock {
             guard sample == nil else { return }
-            sample = Sample(usage: usage, at: .now, overlap: overlap,
+            sample = Sample(usage: usage, at: frozen?.at ?? .now, overlap: frozen?.overlap ?? overlap,
                 deadlineRateEvidence: deadlineRateEvidence?.currentEpoch() == nil ? nil : deadlineRateEvidence,
                 nativeMediaRateEpoch: nativeRateEvidence?.completedEpoch())
         }

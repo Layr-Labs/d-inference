@@ -56,7 +56,7 @@ public struct DistributedResidentExecutionProfile: Sendable {
     /// The prompt, output and context the selected generation mode serves
     /// within the limits above (`ClusterModelFeaturePolicy.servedProfile`):
     /// all of them in tensor parallel, the memory plan's request in a
-    /// pipeline. A longer request is refused before either rank is asked, and
+    /// pipeline. A longer request is refused before any rank is asked, and
     /// the pair's slot reports these (`SlotRequestLimits`).
     public let served: (promptTokens: Int, outputTokens: Int, contextTokens: Int)
     public let requestTimeout: Duration

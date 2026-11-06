@@ -2,10 +2,10 @@ import Foundation
 import MLXLMCommon
 
 extension DistributedCBv2Engine {
-    /// A pair request's timing in the engine contract's terms, so the bridge
-    /// measures the pair's prefill and decode exactly as it measures a single
+    /// A cluster request's timing in the engine contract's terms, so the bridge
+    /// measures the cluster's prefill and decode exactly as it measures a single
     /// Mac's (`EngineV2Bridge+Measurements`). Offsets count from the start of
-    /// its admission. Its prompt runs from the owner's start (after both ranks
+    /// its admission. Its prompt runs from the owner's start (after every rank
     /// reserved) to the first committed token; its decode from the first to the
     /// last committed token, in MTP rounds when the ranks report them. A
     /// request with media is marked so, and its prefill never counts as a text

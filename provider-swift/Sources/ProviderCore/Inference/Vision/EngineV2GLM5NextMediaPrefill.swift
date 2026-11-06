@@ -70,8 +70,8 @@ extension EngineV2VisionPrefill {
     }
 
     /// Serving media preparation for a loaded GLM root and its processor.
-    /// Deterministic input faults map to `unsupportedMedia` (HTTP 400); tower
-    /// and MLX faults keep the retriable refusal mapping.
+    /// Deterministic input faults map to `unsupportedMedia` (HTTP 400); tower,
+    /// MLX and transient video decoder faults keep the retriable refusal mapping.
     static func prepareGLM5NextMedia(
         container: ModelContainer, request: OpenAIChatCompletionRequest,
         templateControls: ChatTemplateControls
@@ -102,10 +102,16 @@ extension EngineV2VisionPrefill {
 
     /// Processor refusals are properties of the request (geometry, counts,
     /// budgets), identical on every provider. Their details are code literals.
+    /// A video whose reader failed on both passes is the media's fault unless
+    /// the reader reported a transient decoder fault, which leaves as the
+    /// `VideoReaderFailure` itself: a retriable refusal another provider can serve.
     static func glm5NextInputError(_ error: GLM5NextVisionError) -> Error {
         switch error {
         case .invalidInput(let detail), .budgetExceeded(let detail), .unsupported(let detail):
             return EngineV2VisionPrefillError.unsupportedMedia("GLM media input: \(detail)")
+        case .videoReader(let failure):
+            return failure.isTransient
+                ? failure : EngineV2VisionPrefillError.unsupportedMedia("GLM media input: video decoding failed")
         case .invalidWeights, .weightsNotLoaded:
             return error
         }

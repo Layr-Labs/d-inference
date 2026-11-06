@@ -575,13 +575,12 @@ enum ClusterSetupContent {
             let selected = index == state.selectedModel
             let name = String(displayName(option.model).prefix(nameWidth)).padding(toLength: nameWidth, withPad: " ", startingAt: 0)
             let size = ClusterSetupScreen.gib(Int(clamping: option.model.totalBytes)).padding(toLength: 9, withPad: " ", startingAt: 0)
+            // No speed on the choice (owner, 2026-11-05: the model and mode choice never quote tok/s).
             var tail: [Span]
             if let blocker = option.blocker {
                 tail = [.init(shortBlocker(blocker), .dim)]
             } else if let plan = option.plan {
-                tail = [.init(plan.fitsNow ? "fits now" : "needs \(ClusterSetupScreen.gib(plan.needsBytes ?? 0)) more", plan.fitsNow ? .good : .warning),
-                        .init(plan.absolute ? String(format: "  first token %@ \u{B7} %.0f tok/s", time(plan.firstTokenSeconds), plan.decodeTokensPerSecond)
-                            : "  speed not measured", .dim)]
+                tail = [.init(plan.fitsNow ? "fits now" : "needs \(ClusterSetupScreen.gib(plan.needsBytes ?? 0)) more", plan.fitsNow ? .good : .warning)]
             } else {
                 tail = []
             }
@@ -612,17 +611,12 @@ enum ClusterSetupContent {
                   from: .wired("model.plan"))
             if !fits { b.text(rank.fitDetail, .warning, indent: 6, from: .wired("model.plan")) }
         }
-        if plan.absolute {
-            let label = plan.measured ? "" : " (estimate)"
-            b.fact("Predicted", String(format: "at %@ prompt tokens: first token %@, decode %.0f tok/s%@", grouped(plan.promptTokens),
-                time(plan.firstTokenSeconds), plan.decodeTokensPerSecond, label), from: .wired("model.plan"))
-        } else {
+        if !plan.absolute {
             b.fact("Predicted", "speed was not measured for this model on these Macs, so the split follows memory; no time is shown", .dim, from: .wired("model.plan"))
         }
         let alone = plan.alone.map { a in
             guard a.holds else { return "\(a.memberID) cannot hold it" }
-            guard plan.absolute else { return "\(a.memberID) holds it" + (a.fitsNow ? "" : " (not now)") }
-            return String(format: "%@ %@ / %.0f tok/s", a.memberID, time(a.firstTokenSeconds), a.decodeTokensPerSecond) + (a.fitsNow ? "" : " (not now)")
+            return "\(a.memberID) holds it" + (a.fitsNow ? "" : " (not now)")
         }
         if !alone.isEmpty { b.fact("Each alone", alone.joined(separator: " \u{B7} "), .dim, from: .wired("model.plan")) }
         if !plan.aloneAsFast.isEmpty {
@@ -645,17 +639,6 @@ enum ClusterSetupContent {
         if blocker.hasPrefix("too large") { return "too large for this pair" }
         if blocker.contains("holds it alone") { return "one Mac holds it alone" }
         return String(blocker.prefix(30))
-    }
-
-    static func time(_ seconds: Double) -> String { seconds < 10 ? String(format: "%.1f s", seconds) : String(format: "%.0f s", seconds) }
-
-    static func grouped(_ value: Int) -> String {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.groupingSeparator = ","
-        formatter.usesGroupingSeparator = true
-        return formatter.string(from: NSNumber(value: value)) ?? String(value)
     }
 
     // MARK: 5 Check
@@ -701,10 +684,10 @@ enum ClusterSetupContent {
                     else if case .running(.ranks, let since) = state.check { detail += " \u{B7} " + seconds(state.now, since) }
                 }
             case .generate:
+                // The check passes or fails on its few tokens; it quotes no speed (the onboarding's test says only its time).
                 if let result = state.checkPrompt {
                     var parts = ["\(result.completionTokens) tokens"]
                     if let first = result.firstTokenMilliseconds { parts.append(String(format: "first token %.2f s", Double(first) / 1000)) }
-                    if let rate = result.tokensPerSecond { parts.append(String(format: "%.0f tok/s", rate)) }
                     detail = parts.joined(separator: " \u{B7} ")
                 }
             case .start:
@@ -730,7 +713,6 @@ enum ClusterSetupContent {
             if let pass = state.record.checkPassed(configurationSHA256: saved.configurationSHA256) {
                 var words = "Passed \(pass.at) on this setup: ready in \(String(format: "%.1f", pass.readySeconds)) s"
                 if let first = pass.firstTokenMilliseconds { words += String(format: ", first token %.2f s", Double(first) / 1000) }
-                if let rate = pass.tokensPerSecond { words += String(format: ", %.0f tok/s", rate) }
                 b.verdict(g.done, words + ".", .good, from: .wired("check.run"))
                 b.action("enter", "Next: start serving", from: .frame)
                 b.action("c", "Run it again", from: .wired("check.run"))
@@ -962,7 +944,7 @@ enum ClusterSetupContent {
             return ["The two Macs pair over the Thunderbolt cable with their Secure Enclave keys: no SSH, no address and no network setting.",
                     "The pairing code is the same six digits on both screens when the Mac that answered is the Mac in front of you. Confirm only when you have read both."]
         case .model:
-            return ["Each model folder found on this Mac, whether the other Mac has the same artifact, and the planner's choice from both Macs' memory now: which Mac holds which layers, the mode, the predicted speed against each Mac alone, and what each rank needs against what its Mac has free.",
+            return ["Each model folder found on this Mac, whether the other Mac has the same artifact, and the planner's choice from both Macs' memory now: which Mac holds which layers, the mode, whether each Mac could hold it alone, and what each rank needs against what its Mac has free.",
                     "Using a plan saves this Mac's setup and sends the other Mac its own; the other Mac approves it on its own screen. Nothing starts."]
         case .check:
             return ["A short end-to-end proof across the cable: both links, a start, both ranks loaded (\u{201C}0 of 2 ranks ready\u{201D} counts up), a few tokens through the local API, a stop, and the memory released on both Macs (journal empty, wired memory back under the idle baseline)."]

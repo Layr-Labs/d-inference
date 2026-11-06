@@ -69,6 +69,10 @@ extension ClusterConsoleCheck {
                 $0.peer = reached; $0.check = .failed(.ranks, "Both ranks were not ready 240 s after the start (1 of 2 ranks ready).") }),
             ("5 passed", make(F.snapshot(F.reportA(saved: savedA), pair: F.savedLeaderPair, record: passed), step: .check) {
                 $0.peer = reached; $0.check = .passed(passed.checks[0]); $0.cleanup = ["This Mac: device journal empty; wired memory 9.8 GiB (was 9.7 GiB before), under the 26 GiB idle baseline"] }),
+            ("5 generated", make(F.snapshot(F.reportA(saved: savedA), pair: F.savedLeaderPair, record: F.confirmed()), step: .check) {
+                $0.peer = reached; $0.check = .running(.stop, since: 1_000_000_000)
+                $0.checkPrompt = .init(completionTokens: 8, firstTokenMilliseconds: 720, tokensPerSecond: 53.1, finishReason: "length") }),
+            ("5 passed earlier", make(F.snapshot(F.reportA(saved: savedA), pair: F.savedLeaderPair, record: passed), step: .check) { $0.peer = reached }),
             ("5 follower", make(F.snapshot(F.reportB(saved: savedB), pair: F.savedFollowerPair, record: F.confirmed()), step: .check)),
             ("6 not started", make(F.snapshot(F.reportA(saved: savedA), pair: F.savedLeaderPair, record: passed), step: .serve) { $0.peer = reached }),
             ("6 serving", make(F.snapshot(F.reportA(saved: savedA), pair: F.savedLeaderPair, record: passed), step: .serve) {
@@ -207,7 +211,7 @@ extension ClusterConsoleCheck {
         expect(text("3 confirmed").contains("both screens showed this code"), "a confirmation shows")
         let plans = text("4 plans")
         expect(plans.contains("Qwen3.5-9B") && plans.contains("fits now"), "the 9B fits now: \(plans)")
-        expect(plans.contains("speed not measured") && plans.contains("the split follows memory"), "without measurements no time is shown: \(plans)")
+        expect(plans.contains("speed was not measured") && plans.contains("the split follows memory"), "without measurements no time is shown: \(plans)")
         expect(plans.contains("mac-a (this Mac)") && plans.contains("layers 0-"), "which Mac holds which layers")
         expect(plans.contains("Each alone"), "each Mac alone shows")
         expect(plans.contains(ClusterSetupPlanning.notClusterModel), "blocked models say why, next to them: \(plans)")
@@ -218,8 +222,16 @@ extension ClusterConsoleCheck {
         expect(text("5 failed").contains("Run the check again"), "a failed check offers to run again")
         expect(text("5 passed").contains("Check passed"), "a pass shows")
         expect(text("5 follower").contains("leader runs the check"), "a follower is told who checks")
+        // The check passes or fails on 8 tokens: it says how many came back and how soon, never a speed, as the
+        // onboarding's test says only its time (owner, 2026-11-05: "it should not show tok/s").
+        let generated = text("5 generated")
+        expect(generated.contains("8 tokens \u{B7} first token 0.72 s") && !generated.contains("tok/s"), "the check's generation, no speed: \(generated)")
+        let earlier = text("5 passed earlier")
+        expect(earlier.contains("Passed 2026-10-10T15:40:00Z on this setup: ready in 11.2 s, first token 0.72 s.") && !earlier.contains("tok/s"),
+               "a recorded pass, no speed: \(earlier)")
         let serving = text("6 serving")
         expect(serving.contains("Serving Qwen3.5-9B") && serving.contains("3 requests served"), "the live view: \(serving)")
+        // Kept: a test prompt the person typed and sent reports what that request measured.
         expect(text("6 answered").contains("52.4 tok/s"), "the prompt's speed")
         expect(text("6 stopped").contains("Clean up"), "the clean-up after a stop")
         expect(text("6 failed").contains("coordinator did not acknowledge"), "a failed start shows its output")
@@ -307,7 +319,9 @@ extension ClusterConsoleCheck {
         withSpeed.peer = .reached(F.reportB(), seconds: 0.4, at: 1)
         withSpeed.plans = .ready(measured.map(\.option))
         let speedText = ClusterSetupContent.body(withSpeed, width: 100, glyphs: .unicode, interactive: true).map(\.text).joined(separator: "\n")
-        expect(speedText.contains("first token") && speedText.contains("tok/s") && speedText.contains("Each alone"), "measured figures show: \(speedText)")
+        // The choice quotes no speed, measured or predicted (owner, 2026-11-05: the model and mode choice never quote tok/s).
+        expect(!speedText.contains("tok/s") && !speedText.contains("first token") && !speedText.contains("Predicted")
+               && speedText.contains("Each alone") && speedText.contains("mac-a holds it"), "measured figures are not quoted: \(speedText)")
         expect(speedText.contains("Qwen3.8-27B-4bit-mtp") && !speedText.contains("EigenLabs/"), "names show without their publisher")
         // Not on the other Mac: blocked with the copy step.
         let alone = ClusterSetupPlanning.decide(readings: F.readings, description: F.pairDescription, localMemberID: "mac-a",

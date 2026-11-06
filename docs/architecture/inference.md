@@ -2925,6 +2925,22 @@ errors instead of wrapping them as a retryable 503 construction refusal.
   `maxMediaDecodedBytes` 25 MiB, `maxVideoDurationSeconds` 600,
   `maxImagesPerRequest` 16, `maxVideosPerRequest` 8,
   `maxRequestVideoFramePixels` 384 Mpx; `decodeOverheadFactor = 4`.
+- **A failed video reader decodes again once.** An `AVAssetReader` can fail on a
+  valid video. When a reader pass of the GLM 5.3, MiMo V2.6, Qwen4 or Nemotron
+  Super decoder ends in a state other than `.completed`, the decoder keeps the
+  reader status and the domain and code of its error chain (`VideoReaderFailure`)
+  and decodes again with a new reader over the same in-memory asset
+  (`VideoReaderRetry`; the Super frame reader replaces its reader once and
+  decodes from the first frame again). A second success gives the same frames.
+  A second failure with an AVFoundation or VideoToolbox decoder, hardware or
+  interruption code (`VideoReaderFailure.isTransient`) refuses as a retryable
+  503 (failure code `capacity`), so the coordinator can send the request to
+  another provider. Any other second failure is the media's `invalid_media`
+  400. Each failed pass emits a WARN `engine_health` event, operation
+  `video_reader_failed`, with `retrying`, `transient`, `reader_status` and
+  `reader_error` (codes only)
+  (`libs/mlx-swift-lm/Libraries/MLXLMCommon/VideoReaderFailure.swift`,
+  `provider-swift/Sources/ProviderCore/Inference/Vision/VideoReaderFailureReport.swift`).
 - Vision requests never stage SSD blocks and get no deadline projection; VLM
   slots require a backend that honors span masks. The current paged cache
   satisfies that structural gate; supported vision serving still requires its
@@ -3713,6 +3729,8 @@ evidence, not a change to the normal final-row contract or the near-tie rule
 | Model dropped from advertised set | Unsupported `model_type` | `EngineV2SupportedModels.swift` |
 | Model advertised, capacity quotes rejected with reason `template` | Scan-time render check failed (`template_render_ok = false`) | `TemplateRenderCheck.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift` (`reject(.template)`) |
 | Image rejected | Over `MediaIngest` caps or over the N² tower budget | `MediaIngest.swift`, `VisionTowerBudget.swift` |
+| `video_reader_failed` WARN event, `retrying: true`, and the request served | A video reader pass failed and the second pass decoded the video; `reader_error` names the reader's error codes | `libs/mlx-swift-lm/Libraries/MLXLMCommon/VideoReaderFailure.swift` (`VideoReaderRetry`), `VideoReaderFailureReport.swift` |
+| Video refused after two `video_reader_failed` events (503 `capacity` or 400 `invalid_media`) | Both reader passes failed: 503 for a transient decoder, hardware or interruption code, 400 otherwise | `EngineV2VisionPrefill.swift` (`clientFault(for:)`), `EngineV2GLM5NextMediaPrefill.swift` (`glm5NextInputError`), `MiMoV26EncodedMediaIngress.swift` (`outwardFailure`), `NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
 | `missingUserQuery` (400) | Qwen 3.5/3.6/3.8 or Bonsai 2 history with no user turn beyond `<tool_response>` wrappers | `provider-swift/Sources/ProviderCore/Inference/Prompting/Qwen35TemplateFixes.swift` (`validateUserQuery`) |
 | `Inference failure: invalid request (<reason>)` in `darkbloom logs` (400) | The sealed request, its body decode or the model's native controls refused it before the inference task, or a prompt policy or engine admission refused it while its prompt was prepared; the reason is the closed [refusal line](../provider/cli-reference.md#refusal-lines) | `provider-swift/Sources/ProviderCore/Inference/Engine/InferenceRefusalReason.swift` (`InferenceRefusalReason`, `init(promptRefusal:)`); `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift` (`nativeControlsRefusal`) |
 | Load refused: `pagedUnavailable` (503) | Explicit `engine_v2_kv_backend = paged` and the paged pool/kernels failed | `EngineV2Factory+BackendPreparation.swift` — see [`prefix-cache.md`](prefix-cache.md) |
@@ -4133,12 +4151,29 @@ away; mixed pairs are first-class).
 - **Measured speed:** `ClusterServedModes.figures` over this build's served
   records of this model on these Macs (`ClusterServedSpeedRecords.servedBy`), as
   the planner reads them: a figure from 3 served requests on. Never a
-  prediction; without one the model list says "not measured on these Macs yet".
-  The mode question uses these figures (else the planner's predictions) only
-  to rank the modes: its recommendation and its mode lines quote no tokens per
-  second (owner, 2026-11-05), and a re-plan's "Planned in the mode chosen" line
-  gives the size, mode and shares without the planner's predicted speed
-  (`ClusterOnboardingModeAdvice.fasterWords`, `OnboardingLive.localPlanModels`).
+  prediction. Beside it, each mode carries the rate the latest other build
+  served it at (`ClusterSetupPlanning.earlierFigures`; an earlier build, or a
+  newer one after a rollback), from records that name how they were served and
+  were served the way the plan will serve (through Darkbloom or locally;
+  tensor parallel with Qwen's tensor assistant exactly when the plan decodes
+  with it). Records name it from #1819 on (provider 0.10.11, DevNet .100):
+  0.10.10's never count, so the update from 0.10.10 to 0.10.11 still ranks by
+  the planner's predictions until a mode serves with 0.10.11. No safe scope can
+  be read from a record that names none: equal tensor-parallel shares serve
+  through Darkbloom and locally alike. The mode question ranks the modes by this
+  build's figures, else, while this build has served none of them (every
+  update starts there), by the other builds', else by the planner's
+  predictions (`ClusterOnboardingModeAdvice.advise`). The planner itself still
+  reads only this build's records. The list puts the recommended mode first,
+  and a model named on the command line starts in it
+  (`ClusterOnboardingMode.defaultIndex`), so neither contradicts the
+  recommendation. No screen quotes these figures (owner, 2026-11-05: "the
+  model and mode choice never quote tok/s"): the model list names the modes
+  (`ClusterOnboardingMode.listWords`);
+  the recommendation and the mode lines say why in words; a re-plan's "Planned
+  in the mode chosen" line gives the size, mode and shares
+  (`ClusterOnboardingDeployment.choiceLine`); and the six-step developer
+  wizard's model step and check show no speed (`ClusterSetupContent`).
 - **The current model:** on a set-up pair the list preselects the model serving
   now (or the last one used); it keeps the mode the saved setup served in when
   the plan still lists it (`keepMode`, from `ClusterOnboardingResume.servingMode`),
@@ -4151,8 +4186,13 @@ away; mixed pairs are first-class).
   alone. A chosen tensor parallel is the family a tensor quote prices, so the
   singleton and assistant quotes accept it (`applySingleton`, the planner's
   assistant guard).
-- **Default:** the fastest measured family, else the planner's
-  (`ClusterOnboardingMode.defaultIndex`).
+- **Default:** the recommended family when it is listed, else the fastest
+  measured with this build, else the planner's
+  (`ClusterOnboardingMode.defaultIndex`). The list names it first and a model
+  named on the command line starts in it. The question's cursor starts on the
+  recommendation, else on the mode the pair serves in, else on the default; a
+  model started again the other way (local only or through Darkbloom) keeps
+  its mode.
 - **Local Network truth:** the follower the service runs is the process that
   dials the other Mac, so its last dial decides (`ClusterService.followerRefusal`:
   the refusal macOS gave it, or a link it opened since, or a dial that failed

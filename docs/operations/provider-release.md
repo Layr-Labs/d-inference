@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-11-05
+> Last updated: 2026-11-06
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -27,145 +27,70 @@ runs the resolve, build, qualification, signing, R2 staging and publication
 chain for one environment. To find the newest dev release, read
 `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
-`ProviderCore.version` is prepared as `0.10.9`, a patch release over `v0.10.8`.
-It fixes why pairs failed to load on 0.10.7 and 0.10.8: single-Mac serving
-left on a paired Mac and revived by an update or a login, one Mac of a pair
-updating alone, a leftover pair part that kept a Mac online with no requests
-(#1793), and screens that disagreed or advised plain `darkbloom stop`
-(#1796, #1798). A pair whose Macs run different releases catches up and says
-so (#1795). GLM-5.3-Flash loads on two 128 GB Macs, with requests admitted on
-arrival and an optional, consented `darkbloom cluster gpu-limit` (#1719,
-re-applied on `dev`). Switching a pair to serving through Darkbloom plans it
-for Darkbloom and shows ✓ only once the coordinator has the pair. A pair
-reading long prompts answers checks and cancels without waiting, and no longer
-reports itself as crashed. `darkbloom cluster` checks both Macs for
-single-Mac serving before it starts, says up front that macOS prompts appear
-on each Mac's own screen, shows the start's progress on both Macs, and
-recommends a mode in words, trusting a measured mode over a prediction (#1810,
-#1811, #1812). MiMo-V2.6-Flash in tensor parallel loads in time, and
-pairs that serve several requests at once keep streaming while they admit
-another (#1800, #1802, #1808). Sandbox setup can use an external drive (#1759, merged
-directly into `master`). Both Macs of a pair must run 0.10.9: a pair with one
-Mac on 0.10.8 behaves the old way until both are updated, and a pair on 0.10.8
-updates itself
+`ProviderCore.version` is prepared as `0.10.10`, a patch release over `v0.10.9`.
+It adds `darkbloom waitlist` and first-setup approval gates for Darkbloom
+Sandbox and `darkbloom cluster`, ported from #1742 onto `master` (the feature
+PR #1850). Nothing else changes from v0.10.9: the serving engine, the
+pair setup, the models, the toolchain (Xcode 27.2 / SDK 27.2 / Swift 6.4.2) and
+the MLX pins are v0.10.9's. Both Macs of a pair must run 0.10.10, and a pair on
+0.10.9 updates itself
 ([updating Darkbloom on the pair](../provider/two-mac-cluster.md#updating-darkbloom-on-the-pair)).
-See the [`v0.10.9` changelog entry](../../CHANGELOG.md) for the full scope.
+See the [`v0.10.10` changelog entry](../../CHANGELOG.md) for the full scope.
 
-Before tagging `v0.10.9`:
+Before tagging `v0.10.10`:
 
-- Confirm the tagged commit builds with Xcode 27.2 / SDK 27.2 / Swift 6.4.2
-  (#1791 on `master`, #1815 on `dev`): `mise.toml` has `swift = "6.4.2"` and
-  `release-provider.yml` sets `DARKBLOOM_PROVIDER_TOOLCHAIN: release` and
-  asserts `build_sdk_version == '27.2'`. With SDK 27.2, Foundation's `Date >=`
-  and `Date <=` are back-deployed as weak imports that macOS 27.2 pre-release
-  builds lack, so a call jumps to address 0 (DevNet `0.10.6-dev.branch.87`
-  crashed this way). The tagged commit must carry the fix that #1815 brings
-  (#1807's change): `scripts/check-date-comparisons.py` passes on its source,
-  and the release build runs `scripts/check-provider-weak-imports.py` on the
-  CLI, enclave, fan helper and cluster helpers, refusing either symbol.
-- Check the tag run's unsigned `darkbloom` and `darkbloom-enclave` with the
-  release kit's weak-import check too, before the release publishes.
-- Confirm that the tagged commit pins `libs/mlx` and the nested `mlx` to
-  `72dffa2d`, `libs/mlx-swift` to `c633d221` and `libs/mlx-swift-lm` to
-  `32f5c744`, as v0.10.8 did. No MLX pin moves.
-- The tag build's `metallib_hash` changes from v0.10.8's `98bab9d7…614be`,
-  because Xcode 27.2's Metal compiler builds the same kernels differently. It
-  should equal the final DevNet build's (`5b97893c…70ac` on DevNet's Xcode 27.2
-  builds `branch.87` and `branch.93`). The facts dry run must use that
-  metallib.
+- Confirm the tagged commit keeps the release toolchain: `mise.toml` has
+  `swift = "6.4.2"`, `release-provider.yml` sets
+  `DARKBLOOM_PROVIDER_TOOLCHAIN: release` and asserts
+  `build_sdk_version == '27.2'`, `scripts/check-date-comparisons.py` passes, and
+  the release build runs `scripts/check-provider-weak-imports.py`.
+- Confirm the pins `libs/mlx` and the nested `mlx` `72dffa2d`,
+  `libs/mlx-swift` `c633d221` and `libs/mlx-swift-lm` `32f5c744`, as v0.10.9.
+  The tag build's `metallib_hash` should equal v0.10.9's
+  `5b97893cc20e6e9651edf3284d970488af9a9bdd64820231e95fee760eec70ac`.
 - `PROD_CLUSTER_RUNTIME_ENABLED` is `true`, so this tag registers a cluster
-  runtime facts block. 0.10.9 changes the cluster placement planner, so the
-  facts must be computed again: on the exact tag tree, run the release's facts
-  step read-only against production's catalog,
-  `scripts/provider-cluster-runtime-facts.sh <app> darkbloom prod <new folder>`,
-  with an unsigned app staged the way the build job stages it. It must exit 0.
-  Compare the block with v0.10.8's and explain every difference. Check the
-  catalog rows of `glm-5.3-flash`, `EigenLabs/Qwen3.8-27B-4bit-mtp`,
-  `gemma-4-26b-qat-4bit` and `mimo-v2.6-flash-mopd`.
-- The catalog's output limits are unchanged by 0.10.9: production's rows for
-  Qwen3.8-27B and MiMo-V2.6-Flash list 65,536 and 131,072 output tokens while a
-  pair accepts at most 32,768, so pairs refuse requests without `max_tokens`
-  for these two models and the coordinator tries single Macs instead, as on
-  0.10.8.
-- Decide on the coordinator's catalog room
-  ([cluster runtime facts](#cluster-runtime-facts)) before the tag. Production
-  holds 24 approvals from v0.10.7 and 24 from v0.10.8, and this release adds 2
-  per model of its block. With more than 8 models, the three releases pass the
-  bound of 64, so v0.10.7's approvals are left out: pairs still on 0.10.7 stop
-  serving through Darkbloom until they update themselves, and the coordinator
-  logs `release cluster approvals omitted` for v0.10.7. The release owner
-  agreed to this on 2026-11-04; before the tag, check again that no pair on
-  0.10.7 serves.
-- Known before the tag, not blockers: DevNet's model catalog does not list
-  `gemma-4-26b-qat-4bit`, so DevNet pairs cannot serve Gemma 4 26B
-  (production's catalog lists it, with the weights hash the provider
-  expects); a GLM-5.3-Flash tensor-parallel pair slows down under heavy
-  sustained load and can refuse with "provider capacity unavailable", as on
-  0.10.8 (a side-by-side test measured 0.10.9 as fast as 0.10.8).
+  runtime facts block. Run the release's facts step read-only on the exact tag
+  tree (`scripts/provider-cluster-runtime-facts.sh <app> darkbloom prod <new folder>`
+  on an unsigned app staged as the build job stages it). It must exit 0 and
+  match v0.10.9's block in models, grants and qualifications.
+- Catalog room: production holds 24 approvals from v0.10.8 and 24 from v0.10.9.
+  This release adds 2 per model of its block (24 for 12 models), so v0.10.8's
+  approvals are left out: pairs still on 0.10.8 stop serving through Darkbloom
+  until they update, and the coordinator logs `release cluster approvals
+  omitted` for v0.10.8.
 - The tagged commit is on `master` and verified, holds `ProviderCore.version`
-  `0.10.9`, keeps the plain-build default `prod`
-  (`scripts/provider-build-default.py --branch master`), and its `changelog.d/`
-  holds only `README.md`.
+  `0.10.10`, keeps the plain-build default `prod`, and its `changelog.d/` holds
+  only `README.md`.
 
 Roll out in this order; each step is a separate approval:
 
-1. Production platform: 0.10.9's registration needs nothing new from the
-   coordinator. Confirm that production's `/health` `build_commit` is the
-   coordinator that registered v0.10.8 (`97189cd696`) or a later reviewed
-   deploy, and that no coordinator swap overlaps this release's publication.
-2. Merge into `master`, each squash-merged after its approval: first the `dev`
-   to `master` release snapshot, then this preparation, cherry-picked onto
-   `master` after the snapshot's squash. Its tree must not bring back a
-   rendered fragment. Let SDK 27 release preparation pass on `master`.
-3. Re-run the facts dry run on the tag tree, and decide on the catalog room, as
-   above.
-4. Tag `v0.10.9` on this preparation's squash commit
+1. Production platform: 0.10.10's registration needs nothing new. The waitlist
+   routes (darkbloom-platform #627) are independent: without them the first
+   setups go on as in 0.10.9. Confirm production's `/health` `build_commit`
+   and that no coordinator swap overlaps this release's publication.
+2. Merge into `master`, each squash-merged after its approval: the waitlist
+   feature PR, then this preparation. Let SDK 27 release preparation pass on
+   `master`.
+3. Re-run the facts dry run on the tag tree.
+4. Tag `v0.10.10` on this preparation's squash commit
    ([step 4](#4-tag-and-push-production-source)). After registration, check
-   that `GET /v1/cluster/approvals` lists the derived
-   `release/0.10.9/<model>/s<1|2>` approvals beside v0.10.8's, that
-   `release cluster approvals omitted` names no release but v0.10.7, and that
-   the GitHub release page lists the pull requests the snapshot carried from
-   `dev`.
-5. Pairs on 0.10.8 and 0.10.7 update themselves at their update slot, or at
-   once with `darkbloom update` on each Mac. Single Macs update by themselves.
-   Check that each pair serves again, not only that it registered.
-6. The platform snapshots its provider contracts from the tagged commit
-   (`python3 scripts/provider-contracts.py snapshot <tag commit>`), sets
-   `LatestProviderVersion` to `0.10.9` in the coordinator's `server.go` in the
-   same change and adds the revision row to its provider-contract reference.
+   `GET /v1/cluster/approvals` for `release/0.10.10/<model>/s<1|2>` beside
+   v0.10.9's, and that `release cluster approvals omitted` names v0.10.8.
+5. Pairs on 0.10.9 update themselves at their update slot, or at once with
+   `darkbloom update` on each Mac. Single Macs update by themselves.
+6. The platform snapshots its provider contracts from the tagged commit and
+   sets `LatestProviderVersion` to `0.10.10`.
 
 Catalog changes, allowlist changes and model registration are separate
-approvals. This preparation tags, deploys and enables nothing; merging it into
-`master` publishes nothing, because the staging lane runs only while
-`STAGING_ENABLED` is `true`.
+approvals. This preparation tags, deploys and enables nothing.
 
-`v0.10.8` was [published on 2026-11-04](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.8)
+`v0.10.9` was [published on 2026-11-05](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.9)
+from `95cc1ca37533aa860f1948bde0d6ec9c36a6bd4a`, `v0.10.8` was
+[published on 2026-11-04](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.8)
 from `e8f3d53f6d49c66232ea4cd270b84c2aa4df01f0`, `v0.10.7` was
 [published on 2026-11-03](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.7)
-from `7512eeeae0682b120f3d86abbc712861bdbf2bda`, `v0.10.6` was
-[published on 2026-10-31](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.6)
-from `84ddfdba6bb704bf1c68f97c7060289079380ceb`, `v0.10.5` was
-[published on 2026-10-30](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.5)
-from `d3bbcd064ea290fbeb500e5c51c7870e3695741c`. Publication does not establish
+from `7512eeeae0682b120f3d86abbc712861bdbf2bda`. Publication does not establish
 that every optional feature or environment has been activated.
-
-0.10.2's remaining enablement steps do not wait for this tag and still apply;
-each is a separate approval:
-
-1. Add GLM-5.3-Flash's tuple to the coordinator's cache-routing allowlist. GLM's
-   SSD reuse was qualified on a signed `0.10.1` provider, and the coordinator
-   must include request normalization v9.
-2. After the fleet converges on `0.10.3` or later, list `logprobs` in
-   GLM-5.3-Flash's catalog row. Once a signed `0.10.3` or later build also
-   restores Nemotron 3.5 Super's SSD checkpoints after a restart, add Super's
-   tuple to the allowlist and list `logprobs` in Super's catalog row.
-
-Platform evidence, inspected on 2026-11-05 (recheck before tagging):
-
-| Claim | Source |
-|---|---|
-| Production's coordinator runs platform `97189cd696`, which registered v0.10.8 and its `darkbloom_cluster_runtime_v2` block, and serves 24 `release/0.10.7/…` and 24 `release/0.10.8/…` approvals; the latest release is 0.10.8 with `metallib_hash` `98bab9d7…614be` | `GET https://api.darkbloom.dev/health` (`build_commit`), `GET https://api.darkbloom.dev/v1/cluster/approvals` and `GET https://api.darkbloom.dev/v1/releases/latest?platform=macos-arm64`, read on 2026-11-05 05:30Z |
-| The registration scripts, `ClusterPublicModels` and `ClusterRuntimeApprovalFacts` are unchanged since `v0.10.8` (re-checked on `dev` `b7c52e4ece`, the release's `dev` head) | `git diff --stat v0.10.8 <this commit> -- scripts/provider-release-publication.py scripts/provider-cluster-runtime-facts.sh scripts/provider-cluster-runtime-models.py` and the two Swift files, empty on 2026-11-05 |
 
 ## Prerequisites
 

@@ -10,6 +10,11 @@ extension PairingCheck {
         private let lock = NSLock()
         private var bytes = [UInt8]()
         private var stop = false
+        private var childEnded = false
+        /// Left once the reader will never use its descriptor again. The terminal closes only after that: a reader
+        /// still polling a closed number reads the next terminal once `openpty` reuses the number, and takes that
+        /// terminal's lines (its pairing code) from the check that owns it.
+        let reading = DispatchGroup()
 
         init() {
             var primary: Int32 = -1, secondary: Int32 = -1
@@ -17,20 +22,39 @@ extension PairingCheck {
             precondition(openpty(&primary, &secondary, nil, nil, &window) == 0)
             master = primary; slave = secondary
             _ = fcntl(primary, F_SETFL, fcntl(primary, F_GETFL) | O_NONBLOCK)
+            reading.enter()
             Thread.detachNewThread { [self] in
+                defer { reading.leave() }
                 var buffer = [UInt8](repeating: 0, count: 4096)
-                while !lock.withLock({ stop }) {
+                while true {
+                    // The child's end is read before the poll: a child that had exited by then wrote every byte
+                    // already, so an empty read after it is the end of its text, never a byte still on its way.
+                    let (stopped, ended) = lock.withLock { (stop, childEnded) }
+                    if stopped { return }
                     var fd = pollfd(fd: master, events: Int16(POLLIN), revents: 0)
-                    guard poll(&fd, 1, 20) > 0 else { continue }
+                    _ = poll(&fd, 1, 20)
                     let count = read(master, &buffer, buffer.count)
-                    if count > 0 { lock.withLock { bytes += buffer.prefix(count) } } else if count == 0 || (errno != EAGAIN && errno != EINTR) { return }
+                    if count > 0 { lock.withLock { bytes += buffer.prefix(count) }; continue }
+                    if ended || count == 0 || (errno != EAGAIN && errno != EINTR) { return }
                 }
             }
         }
 
         var text: String { String(decoding: lock.withLock { bytes }, as: UTF8.self) }
         func type(_ text: String) { _ = text.withCString { write(master, $0, strlen($0)) } }
-        func close() { lock.withLock { stop = true }; Thread.sleep(forTimeInterval: 0.05); Darwin.close(master); Darwin.close(slave) }
+
+        /// Called once the child on this terminal has exited; returns once the reader read its last byte and stopped.
+        func childExited() {
+            lock.withLock { childEnded = true }
+            reading.wait()
+        }
+
+        /// Closes both ends once the reader stopped, so no reader outlives its terminal.
+        func close() {
+            lock.withLock { stop = true }
+            reading.wait()
+            Darwin.close(master); Darwin.close(slave)
+        }
 
         func wait(for needle: String, seconds: Double) -> Bool {
             let end = Date().addingTimeInterval(seconds)
@@ -56,20 +80,25 @@ extension PairingCheck {
         }
     }
 
-    static func spawnChild(_ arguments: [String], on terminal: Terminal) -> pid_t {
+    static func spawnChild(_ arguments: [String], on terminal: Terminal, executable: String? = nil) -> pid_t {
+        let path = executable ?? child
         var actions: posix_spawn_file_actions_t?
         posix_spawn_file_actions_init(&actions)
         for target in [STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO] { posix_spawn_file_actions_adddup2(&actions, terminal.slave, target) }
         posix_spawn_file_actions_addclose(&actions, terminal.master)
         var pid: pid_t = 0
-        let argv = ([child] + arguments).map { strdup($0) } + [nil]
+        let argv = ([path] + arguments).map { strdup($0) } + [nil]
         defer { argv.forEach { free($0) }; posix_spawn_file_actions_destroy(&actions) }
-        guard posix_spawn(&pid, child, &actions, nil, argv, environ) == 0 else { return -1 }
+        guard posix_spawn(&pid, path, &actions, nil, argv, environ) == 0 else { return -1 }
         return pid
     }
 
-    /// The exit status, or nil if it did not end in time (it is then killed).
-    static func reap(_ pid: pid_t, seconds: Double) -> Int32? {
+    /// The exit status, or nil if it did not end in time (it is then killed). Returns once the terminal's reader has
+    /// read everything the child wrote, so the child's last lines are in `text`.
+    static func reap(_ pid: pid_t, on terminal: Terminal, seconds: Double) -> Int32? {
+        // A child that never started has no pid; -1 would wait for, and kill, every process this user owns.
+        guard pid > 0 else { return nil }
+        defer { terminal.childExited() }
         let end = Date().addingTimeInterval(seconds)
         var status: Int32 = 0
         while Date() < end {
@@ -96,6 +125,27 @@ extension PairingCheck {
             _ = listener.wait(for: "Listening on lo0", seconds: 10)
             connectorPID = spawnChild(["connect", port, connectorStore.path, root.appendingPathComponent("connector/identity.key").path], on: connector)
         }
+    }
+
+    /// The harness itself: a terminal's reader stopped up to a poll after `close` (it slept 50 ms and hoped), so a
+    /// reader late by more read the next terminal once `openpty` reused the numbers, and `reap` returned before the
+    /// reader took a child's last lines. `reap` now returns once the reader read the last byte and stopped, and
+    /// `close` waits for the reader before closing anything.
+    static func terminalHarness() {
+        let first = Terminal()
+        // 44,004 bytes, no line ending to rewrite: far more than the terminal buffers, so the child's last write
+        // waits for the reader and the tail is still in the terminal when the child exits.
+        let script = "i=0; while [ $i -lt 4000 ]; do printf 'line %05d ' $i; i=$((i+1)); done; printf last"
+        expectEqual(reap(spawnChild(["-c", script], on: first, executable: "/bin/sh"), on: first, seconds: 20), 0, "harness: the child ran")
+        expect(first.reading.wait(timeout: .now()) == .success, "harness: reap returns once the reader read the last byte and stopped")
+        let written = first.text
+        expect(written.utf8.count == 44_004 && written.hasSuffix("line 03999 last"), "harness: every byte the child wrote is read: \(written.utf8.count) bytes")
+        first.close()
+        let second = Terminal()
+        defer { second.close() }
+        expectEqual(reap(spawnChild(["-c", "printf next"], on: second, executable: "/bin/sh"), on: second, seconds: 20), 0, "harness: the next child ran")
+        expectEqual(second.text, "next", "harness: the next terminal gets all of its own text")
+        expect(first.text == written, "harness: a closed terminal reads nothing more: \(first.text.dropFirst(written.count))")
     }
 
     static func terminalBothConfirm() {
@@ -130,7 +180,7 @@ extension PairingCheck {
         while Date() < askEnd && !reasked() { Thread.sleep(forTimeInterval: 0.02) }
         expect(reasked(), "the connector is asked again with the code itself, not just \"the same code\"")
         pair.connector.type("y")
-        let listenerStatus = reap(pair.listenerPID, seconds: 20), connectorStatus = reap(pair.connectorPID, seconds: 20)
+        let listenerStatus = reap(pair.listenerPID, on: pair.listener, seconds: 20), connectorStatus = reap(pair.connectorPID, on: pair.connector, seconds: 20)
         expectEqual(listenerStatus, 0, "listener exits 0"); expectEqual(connectorStatus, 0, "connector exits 0")
         expect(pair.listener.text.contains("Paired. This Mac pins the other Mac's Secure Enclave key"), "the listener says it paired")
         expect(pair.connector.text.contains("Roster pty-pair, generation 1"), "the connector names the roster")
@@ -151,8 +201,8 @@ extension PairingCheck {
         expect(code != nil && code == pair.connector.code(seconds: 20), "both show the code")
         Thread.sleep(forTimeInterval: 0.9)
         pair.connector.type("n")
-        expectEqual(reap(pair.connectorPID, seconds: 15), 1, "the Mac that said no exits 1")
-        expectEqual(reap(pair.listenerPID, seconds: 15), 1, "the other Mac exits 1")
+        expectEqual(reap(pair.connectorPID, on: pair.connector, seconds: 15), 1, "the Mac that said no exits 1")
+        expectEqual(reap(pair.listenerPID, on: pair.listener, seconds: 15), 1, "the other Mac exits 1")
         expect(pair.connector.text.contains("Not confirmed. Nothing was paired."), "the Mac that said no says so")
         expect(pair.listener.text.contains("The other Mac did not confirm the code. Nothing was paired."), "the other Mac is told")
         expect(pair.listener.text.contains("Not paired: the codes were not confirmed on the other Mac. Nothing was stored."), "the listener's closing line")

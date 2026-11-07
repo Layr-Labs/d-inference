@@ -1562,30 +1562,41 @@ public final class ClusterService: @unchecked Sendable {
         return pairRuns(status) || status.control.map { !otherMacAbsentModes.contains($0.mode) } == true
     }
 
+    /// How `releaseForSingleMac` ended.
+    public enum SingleMacRelease: Equatable, Sendable {
+        /// This Mac's saved start is cleared, and its part stopped.
+        case released
+        /// A cluster command held the command lock for the whole wait: nothing was read or written.
+        case commandStillRunning
+        /// The start couldn't be cleared, or the part didn't stop in time.
+        case partNotStopped
+    }
+
     /// Going back to single-Mac serving on a Mac whose pair isn't running: this Mac's saved start is cleared, so its
     /// cluster service runs no part (and never takes the serving lock back by itself), and the part still running stops
     /// within `seconds`, freeing the lock. The pairing stays: `darkbloom cluster` starts the pair again. It holds the
     /// control command lock, as every stop of the pair does (waiting up to 600 s for a cluster command that runs), so
-    /// the service's steps that stop the pair only to start it again never put this start back (`restoreStart`). False
-    /// when a cluster command still ran after those 600 s, the start couldn't be cleared, or the part didn't stop in time.
-    public static func releaseForSingleMac(seconds: Double) -> Bool {
-        guard let paths = try? ClusterUserPaths() else { return false }
-        return releaseForSingleMac(seconds: seconds, paths: paths)
+    /// the service's steps that stop the pair only to start it again never put this start back (`restoreStart`).
+    public static func releaseForSingleMac(seconds: Double, waiting: () -> Void = {}) -> SingleMacRelease {
+        guard let paths = try? ClusterUserPaths() else { return .partNotStopped }
+        return releaseForSingleMac(seconds: seconds, paths: paths, waiting: waiting)
     }
 
-    /// `releaseForSingleMac(seconds:)` in the home `paths` names; tests give their own.
-    static func releaseForSingleMac(seconds: Double, paths: ClusterUserPaths) -> Bool {
+    /// `releaseForSingleMac(seconds:waiting:)` in the home `paths` names, waiting `commandSeconds` for the command lock;
+    /// tests give their own.
+    static func releaseForSingleMac(seconds: Double, paths: ClusterUserPaths, commandSeconds: Double = 600,
+                                    waiting: () -> Void = {}) -> SingleMacRelease {
         let setup = ClusterSetupPaths(paths: paths)
         let store = ClusterSetupStore(paths: setup)
-        guard let held = ClusterControlCommandLock.acquire(seconds: 600,
-            file: setup.directory.appendingPathComponent("control.lock")) else { return false }
+        guard let held = ClusterControlCommandLock.acquire(seconds: commandSeconds,
+            file: setup.directory.appendingPathComponent("control.lock")) else { return .partNotStopped }
         defer { held.release() }
         do {
             if (try? store.readRecord())?.leadership?.serving == true {
                 try store.updateRecord { $0.leadership?.serving = false }
             }
-        } catch { return false }
-        return stopLocalPart(in: setup.directory, seconds: seconds)
+        } catch { return .partNotStopped }
+        return stopLocalPart(in: setup.directory, seconds: seconds) ? .released : .partNotStopped
     }
 
     public static func pairRuns(_ status: ClusterServiceStatus?) -> Bool {

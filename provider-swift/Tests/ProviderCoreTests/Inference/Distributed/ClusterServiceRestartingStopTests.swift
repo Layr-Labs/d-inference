@@ -314,7 +314,8 @@ struct ClusterServiceRestartingStopTests {
         try withExtendedLifetime(macs) {
             // The step holds the command lock, as `checkForUpdate` and `checkApproval` do around it.
             let held = try #require(ClusterControlCommandLock.acquire(seconds: 0, file: Self.commandLock(service)))
-            let paths = macs.leader.paths, owner = DispatchSemaphore(value: 0), released = ClusterApprovalRecorder<Bool>()
+            let paths = macs.leader.paths, owner = DispatchSemaphore(value: 0)
+            let released = ClusterApprovalRecorder<ClusterService.SingleMacRelease>()
             Thread.detachNewThread {
                 guard owner.wait(timeout: .now() + 30) == .success else { return }
                 released.append(ClusterService.releaseForSingleMac(seconds: 1, paths: paths))
@@ -335,9 +336,31 @@ struct ClusterServiceRestartingStopTests {
             }
             held.release()
             #expect(Self.waitUntil(seconds: 10) { !released.values.isEmpty }, "the owner's stop did not finish")
-            #expect(released.values == [true])
+            #expect(released.values == [.released])
             let serving = try service.store.readRecord().leadership?.serving
             #expect(serving == false, "the \(step) put back a start the owner cleared")
+        }
+    }
+
+    /// That stop waits for a cluster command holding the command lock (up to 10 minutes). It says so at once, before the
+    /// wait, so `darkbloom stop` can tell the person, and a command still running at the end is told apart from a part
+    /// that didn't stop: it read and wrote nothing.
+    @Test func aStopForSingleMacServingSaysWhenItWaitsForARunningCommand() throws {
+        let (macs, service) = try leader()
+        try withExtendedLifetime(macs) {
+            let paths = macs.leader.paths, said = ClusterApprovalRecorder<Date>()
+            let held = try #require(ClusterControlCommandLock.acquire(seconds: 0, file: Self.commandLock(service)))
+            let began = Date()
+            let busy = ClusterService.releaseForSingleMac(seconds: 1, paths: paths, commandSeconds: 1) { said.append(Date()) }
+            held.release()
+            #expect(said.values.map { $0.timeIntervalSince(began) < 0.5 } == [true], "the wait was not said once, before it")
+            #expect(busy == .commandStillRunning)
+            #expect(try service.store.readRecord().leadership?.serving == true, "a stop that never held the lock cleared the start")
+            // Nothing runs: nothing to say.
+            let free = ClusterService.releaseForSingleMac(seconds: 1, paths: paths, commandSeconds: 1) { said.append(Date()) }
+            #expect(free == .released)
+            #expect(said.values.count == 1)
+            #expect(try service.store.readRecord().leadership?.serving == false)
         }
     }
 

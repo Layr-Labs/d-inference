@@ -106,10 +106,7 @@ struct Stop: AsyncParsableCommand {
         }
         if stop == .stopHere, pair.started, pair.serviceRunning {
             print(pair.leftoverStopLine)
-            guard await Start.releaseLeftoverPart() else {
-                for line in pair.releaseFailedLines { print(line) }
-                throw ExitCode.failure
-            }
+            try await Start.releaseLeftoverPart(pair)
         }
         // Stopping single-Mac serving here: a choice of it made before no longer stands.
         if pair.paired { Start.clearSoloChoice() }

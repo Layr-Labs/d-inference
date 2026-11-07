@@ -615,6 +615,16 @@ then `master`'s. Blacksmith runners keep their own colocated cache, so an entry
 saved there never reaches a Darkbloom Sandbox, and the reverse: a push warms
 the caches of the runners it ran on.
 
+The fixture caches hold downloads pinned by SHA-256, so their keys hash the
+pins, not the run or the branch. The scripts use a restored entry only if its
+bytes still have the pinned digest, and download any other; a restore never
+skips a check. A Darkbloom host serves only the entries it saved itself
+(10 GiB per repository, least recently used first), so a fixture cache warms
+one host at a time, through the dev pushes that run the provider tests there.
+The prompt fixture downloads are 104 MB before compression (87 MB for the 7 v1
+contracts, which share their tokenizers, and 17 MB for Nemotron); the MiMo
+audio codec entry is 1,575 MiB compressed.
+
 | Cache | Path | Key; restore prefixes | Saved by, on pushes to `master` and `dev` |
 |---|---|---|---|
 | Git objects | `.git` | `git-v1-<os>-<YYYY-MM-DD>`; `git-v1-<os>-<YYYY-MM>-`, then `git-v1-<os>-` | every job that checks out |
@@ -624,6 +634,7 @@ the caches of the runners it ran on.
 | Metal library | `/private/tmp/dinf-ci/metallib-cache` | `metallib-key`, exact only | each build lane |
 | MiMo metadata downloads | `/private/tmp/dinf-ci/mimo-metadata-cache`, one file per pinned SHA-256 | `mimo-metadata-v1-<hash of the pin scripts>`, exact only | each provider shard |
 | MiMo audio codec | `/private/tmp/dinf-ci/mimo-audio-source` | `mimo-audio-source-v2-<sha256>`, exact only; fetched only when the audio gate runs ([test guide](test.md)) | the last provider shard |
+| Prompt fixture downloads | `/private/tmp/dinf-ci/prompt-fixture-cache`, one file per pinned SHA-256 | `prompt-fixtures-v1-<hash of the v1 and Nemotron prompt-contract manifests>`, exact only | provider shard 1, after both parity steps pass |
 | Cluster metadata build | `$RUNNER_TEMP/cluster-native-metadata` | toolchain, submodule pins, manifests and paths, then the commit | `cluster-release-checks` |
 
 The Swift test build has three nested restore tiers. `swift-prefix` binds the

@@ -367,6 +367,18 @@ jobs:
             ${{ runner.temp }}/provider-unit-shard/slot-*.out
           if-no-files-found: warn
           retention-days: 7
+      # The prompt artifacts both parity steps download (tokenizers, templates
+      # and configs, 104 MB once deduplicated), one file per pinned SHA-256
+      # (scripts/verified_download_cache.py). The key hashes the manifests that
+      # pin them; prepare-prompt-fixtures.py uses an entry only if its bytes
+      # still have the pinned size and digest, and downloads any other.
+      - name: Restore verified prompt fixture downloads
+        id: prompt-fixture-cache
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' }}
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: /private/tmp/dinf-ci/prompt-fixture-cache
+          key: prompt-fixtures-v1-${{ hashFiles('fixtures/prompt-contract/v1/manifests/*.json', 'fixtures/prompt-contract/nemotron/manifests/*.json') }}
       # Prompt Parity runs once, in shard 1 (the shard of selection
       # PARITY_SHARD), against the provider products. A failure fails the shard,
       # and with it the Provider Tests gate. The summary checks each run's
@@ -376,6 +388,7 @@ jobs:
         if: ${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' }}
         env:
           PROMPT_PARITY_SKIP_BUILD: '1'
+          PROMPT_PARITY_DOWNLOAD_CACHE: /private/tmp/dinf-ci/prompt-fixture-cache
         run: |
           set -o pipefail
           report="$RUNNER_TEMP/provider-unit-shard"
@@ -384,7 +397,10 @@ jobs:
           python3 scripts/provider-test-shards.py counts parity ProductionPromptParityTests \
             "$report/parity-prompt.log" "$report/shard-parity-prompt.json"
       - name: Verify pinned Nemotron prompts and numeric cache plans
+        id: nemotron-parity
         if: ${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' }}
+        env:
+          PROMPT_PARITY_DOWNLOAD_CACHE: /private/tmp/dinf-ci/prompt-fixture-cache
         run: |
           set -o pipefail
           report="$RUNNER_TEMP/provider-unit-shard"
@@ -392,6 +408,14 @@ jobs:
           ./scripts/verify-nemotron-prompt-parity.sh 2>&1 | tee "$report/parity-nemotron.log"
           python3 scripts/provider-test-shards.py counts parity NemotronTemplateParityLiveTests \
             "$report/parity-nemotron.log" "$report/shard-parity-nemotron.json"
+      # Both parity steps passed, so the cache holds every pinned artifact, and
+      # only verified bytes were stored in it.
+      - name: Save verified prompt fixture downloads
+        if: ${{ !cancelled() && env.SAVE_CACHES == 'true' && matrix.shard == 1 && steps.prompt-parity.outcome == 'success' && steps.nemotron-parity.outcome == 'success' && steps.prompt-fixture-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: /private/tmp/dinf-ci/prompt-fixture-cache
+          key: ${{ steps.prompt-fixture-cache.outputs.cache-primary-key }}
       - name: Test desktop control API with isolated local state
         if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.test-products.outcome == 'success' }}
         timeout-minutes: 3

@@ -12,6 +12,11 @@ struct Start: AsyncParsableCommand {
         Scans local MLX models, lets you pick which to serve, then launches
         a launchd background service. Use --model to skip the interactive picker.
 
+        In a terminal, the first start asks how this Mac serves: only you (--local),
+        the Darkbloom network (--network), or both with you first (--me-first). The
+        answer is saved; --choose asks again. Without a terminal and without a saved
+        answer, it serves the Darkbloom network as before.
+
         On a Mac in a two-Mac cluster whose pair runs, it starts the pair instead: in a
         terminal the `darkbloom cluster` screen; without one the pair's saved model,
         waiting until it serves (exit 0 serving, 3 not serving yet, 5 the other Mac isn't
@@ -55,7 +60,7 @@ struct Start: AsyncParsableCommand {
     var network = false
 
     @Flag(inversion: .prefixedNo, exclusivity: .exclusive,
-          help: "--me-first: serve Darkbloom and you, you first: Darkbloom pauses while you use this Mac's local API and comes back once you're idle. --no-me-first: Darkbloom keeps serving while you use it (saved).")
+          help: "--me-first: Darkbloom and you, you first. Darkbloom pauses while you use this Mac's local API and comes back once you're idle. --no-me-first: Darkbloom keeps serving while you use it (saved).")
     var meFirst: Bool?
 
     @Option(name: .customLong("me-first-idle"),
@@ -133,7 +138,9 @@ struct Start: AsyncParsableCommand {
     /// Both cluster modes are control-only: they take the saved cluster's
     /// model and lifecycle, so every solo serving option is refused at parse.
     mutating func validate() throws {
+        if let conflict = localFirstOptions.conflict { throw ValidationError(conflict) }
         let soloOverrides = !model.isEmpty || all || idleTimeout != nil || schedule || autopilot != nil
+            || network || meFirst != nil || meFirstIdle != nil || route != nil || choose
         if clusterMember {
             guard !distributed, !local, !localEndpoint, !soloOverrides else {
                 throw ValidationError("--cluster-member cannot be combined with solo serving or local distributed mode.")
@@ -214,6 +221,11 @@ struct Start: AsyncParsableCommand {
         if schedule { given.append("--schedule") }
         if local { given.append("--local") }
         if localEndpoint { given.append("--local-endpoint") }
+        if network { given.append("--network") }
+        if let meFirst { given.append(meFirst ? "--me-first" : "--no-me-first") }
+        if meFirstIdle != nil { given.append("--me-first-idle") }
+        if route != nil { given.append("--route") }
+        if choose { given.append("--choose") }
         if portOption != nil { given.append("--port") }
         if bindOption != nil { given.append("--bind") }
         if noAuth { given.append("--no-auth") }

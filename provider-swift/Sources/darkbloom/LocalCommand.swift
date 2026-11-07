@@ -63,10 +63,12 @@ struct Local: AsyncParsableCommand {
             print("  API key:  \(info.apiKey)")
         }
         print("  pid:      \(info.pid)")
-        let route = (try? savedLocalSettings(configPath: nil))??.route
-        for line in Self.servingLines(info: info, state: DaemonStateFile.read(), route: route,
-                                      accountKeySaved: { Start.accountKeySaved() }) {
-            print(line)
+        if let state = DaemonStateFile.read(), state.pid == info.pid {
+            let route = (try? savedLocalSettings(configPath: nil))??.route
+            for line in Self.servingLines(info: info, state: state, route: route,
+                                          accountKeySaved: { Start.accountKeySaved() }) {
+                print(line)
+            }
         }
         print()
         print("Use it with any OpenAI client:")
@@ -83,11 +85,33 @@ struct Local: AsyncParsableCommand {
         print("    -d '{\"model\":\"<id>\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'")
     }
 
-    /// Red skeleton: nothing about how the server serves yet.
+    /// How the server behind `info` serves, and where your requests go when it can't take them; empty when the
+    /// running provider's state isn't that server's (a cluster's API, or an older provider). `accountKeySaved` is
+    /// asked only then. Never a key or a speed.
     static func servingLines(info: LocalEndpoint.Info, state: DaemonState?, route: LocalSettings.Route?,
-                             accountKeySaved: () -> Bool) -> [String] { [] }
+                             accountKeySaved: () -> Bool) -> [String] {
+        guard let state, state.pid == info.pid else { return [] }
+        let serving: String
+        if state.runtimeCapabilities == nil {
+            serving = LocalFirstWords.serving(mode: .local, meFirst: false, idleMinutes: 0)
+        } else if let meFirst = state.meFirst {
+            serving = LocalFirstWords.serving(mode: .both, meFirst: true,
+                                              idleMinutes: LocalFirstWords.idleMinutes(milliseconds: meFirst.idleMs))
+        } else {
+            serving = LocalFirstWords.serving(mode: .both, meFirst: false, idleMinutes: 0)
+        }
+        let keySaved = accountKeySaved()
+        return ["  serving:  \(serving)",
+                "  requests: \(LocalFirstWords.requests(route: route, accountKeySaved: keySaved))"
+                    + (keySaved ? "" : " (`\(BuildEnvironment.current.cliName) route key` adds your other Macs)")]
+    }
 
-    static var notRunningHint: [String] { ["Start one with:  \(BuildEnvironment.current.cliName) start --local"] }
+    /// What `local` says to start a local API when none runs.
+    static var notRunningHint: [String] {
+        let cli = BuildEnvironment.current.cliName
+        return ["Start one with:  \(cli) start --me-first   (Darkbloom and you, you first)",
+                "             or: \(cli) start --local      (only you, on this Mac)"]
+    }
 
     /// For a server listening on every interface: this Mac's Bonjour (`.local`) URL, which other computers on the
     /// same network can dial; nil for a loopback or specific-address server, or when the Mac has no local host name.

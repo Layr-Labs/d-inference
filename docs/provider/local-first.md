@@ -104,6 +104,8 @@ for example `http://127.0.0.1:8001/v1`, and this Mac's local key.
   prints the key.
 - **On your network:** the local API listens on this Mac only, unless you start
   with `--bind <address>`; it always needs the key unless you add `--no-auth`.
+  Without a key your requests stay on this Mac: nothing is passed on to your
+  other Macs or the network, and `start` and `status` say so.
 
 ## Check how this Mac serves
 

@@ -164,8 +164,8 @@ struct StartServing: Equatable, Sendable {
     var meFirst: Bool
     var meFirstIdleMinutes: UInt64
     var route: LocalSettings.Route?
-    /// Whether the local router's account key is saved; nil when not looked up (no local API, `--local`, or the
-    /// --foreground service).
+    /// Whether the local router's account key is saved; nil when not looked up (no local API, `--local`, `--no-auth`,
+    /// or the --foreground service).
     var accountKeySaved: Bool?
     /// The local API's port and address, with `mode` local or both.
     var port: UInt16
@@ -191,15 +191,19 @@ struct StartServing: Equatable, Sendable {
     /// go. No key and no speed. A start that nothing chose (`today`) prints today's summary, so nothing.
     var summaryLines: [String] {
         if source == .today, mode == .network { return [] }
-        var lines = ["  Serving: " + LocalFirstWords.serving(mode: mode, meFirst: meFirst, idleMinutes: meFirstIdleMinutes)]
+        let lines = ["  Serving: " + LocalFirstWords.serving(mode: mode, meFirst: meFirst, idleMinutes: meFirstIdleMinutes)]
         guard hasLocalAPI else { return lines }
+        // Without a local key the router passes nothing on, whatever the route (`LocalRouterConfig.localKeyRequired`).
+        guard !noAuth else {
+            return lines + ["  Local:   \(baseURL) — your requests: this Mac only",
+                            "           (no API key: --no-auth, so requests stay on this Mac)"]
+        }
         let keySaved = accountKeySaved ?? false
         let cli = BuildEnvironment.current.cliName
-        lines.append("  Local:   \(baseURL) — your requests: "
-            + LocalFirstWords.requests(route: route, accountKeySaved: keySaved))
-        let key = noAuth ? "no API key: --no-auth" : "`\(cli) local` shows the key"
-        lines.append("           (\(key)" + (keySaved ? ")" : "; `\(cli) route key` adds your other Macs)"))
-        return lines
+        return lines + [
+            "  Local:   \(baseURL) — your requests: " + LocalFirstWords.requests(route: route, accountKeySaved: keySaved),
+            "           (`\(cli) local` shows the key" + (keySaved ? ")" : "; `\(cli) route key` adds your other Macs)"),
+        ]
     }
 }
 
@@ -296,8 +300,9 @@ enum StartServingResolver {
             } else if source == .question, port != saved.port {
                 change.port = port
             }
-            // `--local` keeps its banner, which shows the key and no route, so it never asks the Keychain.
-            if accountKeySaved == nil, source != .flag(.local) { accountKeySaved = env.accountKeySaved() }
+            // `--local` keeps its banner, which shows the key and no route, and a local API without a key
+            // (`--no-auth`) passes nothing on, so neither asks the Keychain.
+            if accountKeySaved == nil, source != .flag(.local), !options.noAuth { accountKeySaved = env.accountKeySaved() }
         }
         // What serves: the saved settings with this start's change.
         var settings = saved

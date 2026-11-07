@@ -14,3 +14,8 @@
   (never its key), and that the other Macs are part of the pair. No line shows a speed.
 - `darkbloom start --cluster-member` takes `--local-endpoint --port --bind` from the cluster service, never with
   `--no-auth`.
+- A pair's local API without a cluster approval (its leader registered with the coordinator, or serving locally because
+  the coordinator couldn't take it) no longer asks the coordinator whether your other Macs serve a model before passing
+  your request on to them, as `cluster local` already didn't. The coordinator's count never
+  includes that leader, so with exactly one other Mac serving the model the request was refused as `this_mac_only`
+  instead of going to that Mac.

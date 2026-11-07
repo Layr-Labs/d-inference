@@ -9,8 +9,8 @@ import Testing
 /// A pair's leader API run by `darkbloom start --local --distributed`: `cluster local`, and the leader's own API while
 /// the pair isn't offered to Darkbloom, registered with the coordinator or fallen back to serving locally (L3 review,
 /// nit 4). It takes no Darkbloom work in any of these, so its router never asks the coordinator's `self` view: the view
-/// doesn't count this leader, and with exactly one other Mac of the owner's serving the model it would read as none and
-/// answer a false `this_mac_only`.
+/// doesn't count this leader, and with exactly one other Mac of the owner's serving the model it would read as this Mac
+/// alone and answer a false `this_mac_only`.
 @Suite("Local router: a pair's leader outside Darkbloom")
 struct LocalRouterPairLeaderTests {
     @Test func aRequestThePairCantTakeGoesToYourOtherMacWithoutAskingTheSelfView() async throws {

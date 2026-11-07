@@ -199,7 +199,10 @@ take it (`LocalRouter`, `provider-swift/Sources/ProviderCore/Server/LocalRouter*
   no other Mac of yours serving it, `my-macs` answers this Mac's status with
   code `this_mac_only`, and `my-macs-first` goes straight to `prefer`.
   `--local` and `cluster local` never take coordinator work, so they never
-  ask.
+  ask, and neither does a pair's API without a cluster approval
+  (`start --local --distributed`): even when its leader registers with the
+  coordinator, it is a control-only member that hosts no pair slot, and the
+  `self` view doesn't count it.
 - **Timeouts:** 10 s to put a request on the wire, then up to 5 minutes
   without a byte (`self` may queue for 120 s), with no limit on a stream's
   length. Model lists from the coordinator wait at most 5 s.

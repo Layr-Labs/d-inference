@@ -44,6 +44,7 @@ struct ClusterPairBothMeFirstCLITests {
         #expect(leader?.host == "0.0.0.0" && leader?.port == 8001)
         #expect(leader?.authToken == "dk-cluster-fixture", "always the pair's key, as `cluster local`")
         #expect(leader?.router != nil, "the local router rides along: this Mac's engine is the pair")
+        #expect(leader?.router?.takesCoordinatorWork == true, "Both: the pair takes Darkbloom work beside the API")
         #expect(said.isEmpty)
 
         // Every other member: no API, no key read, one line.

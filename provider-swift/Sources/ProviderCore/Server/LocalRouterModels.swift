@@ -24,13 +24,13 @@ public struct LocalModelLimits: Sendable, Equatable {
 
     /// `text`, then `image` for a model whose engine takes images, and `video` for one that takes video as well.
     public static func inputModalities(image: Bool, video: Bool = false) -> [String] {
-        ["text"]
+        ["text"] + (image ? ["image"] : []) + (image && video ? ["video"] : [])
     }
 
     /// What one Mac takes for a model it serves: images when the model advertises vision (`ModelInfo.isVision`, which
     /// the coordinator routes images on).
     static func inputModalities(of model: ModelInfo) -> [String] {
-        ["text"]
+        inputModalities(image: model.isVision == true)
     }
 }
 
@@ -66,6 +66,7 @@ struct LocalRouterModelEntry: Codable, Equatable, Sendable {
         self.name = name
         contextLength = limits.contextLength
         maxOutputLength = limits.maxOutputLength
+        inputModalities = limits.inputModalities
     }
 
     init(from decoder: Decoder) throws {
@@ -78,6 +79,8 @@ struct LocalRouterModelEntry: Codable, Equatable, Sendable {
             ?? (try? container.decodeIfPresent(Int.self, forKey: .maxModelLen))
         contextLength = context.flatMap { $0 > 0 ? $0 : nil }
         maxOutputLength = (try? container.decodeIfPresent(Int.self, forKey: .maxOutputLength)).flatMap { $0 > 0 ? $0 : nil }
+        inputModalities = (try? container.decodeIfPresent([String].self, forKey: .inputModalities))
+            .flatMap { $0.isEmpty ? nil : $0 }
     }
 
     func encode(to encoder: Encoder) throws {
@@ -91,12 +94,14 @@ struct LocalRouterModelEntry: Codable, Equatable, Sendable {
         // vLLM's name for the same number, as the engine's own list writes it.
         try container.encodeIfPresent(contextLength, forKey: .maxModelLen)
         try container.encodeIfPresent(maxOutputLength, forKey: .maxOutputLength)
+        try container.encodeIfPresent(inputModalities, forKey: .inputModalities)
     }
 
     mutating func fill(_ limits: LocalModelLimits?) {
         guard let limits else { return }
         if contextLength == nil { contextLength = limits.contextLength }
         if maxOutputLength == nil { maxOutputLength = limits.maxOutputLength }
+        if inputModalities == nil { inputModalities = limits.inputModalities }
     }
 }
 

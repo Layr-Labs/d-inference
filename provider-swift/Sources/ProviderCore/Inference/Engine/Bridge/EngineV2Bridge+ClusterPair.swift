@@ -12,6 +12,7 @@ extension EngineV2Bridge {
     /// image profile, and text alone otherwise (every pipeline, and the Gemma
     /// and MiMo pairs).
     nonisolated var pairInputModalities: [String] {
-        ["text"]
+        let media = clusterGLMMediaIngress != nil || clusterQwenMediaIngress != nil
+        return LocalModelLimits.inputModalities(image: media || clusterGLMImageConfiguration != nil, video: media)
     }
 }

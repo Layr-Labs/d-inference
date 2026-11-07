@@ -69,7 +69,7 @@ struct IntegrationModel: Equatable, Sendable {
             id: id, name: fallbackName ? entry.displayName.map { Self.name($0, at: location) } ?? name : name,
             location: location, contextLength: context,
             outputLimit: keptOutput ?? context.map { max(1, min(cap, $0 / 4)) },
-            tools: entry.tools ?? tools, imageInput: entry.imageInput ?? imageInput,
+            tools: entry.tools ?? tools, imageInput: fallback.endpointImageInput || (entry.imageInput ?? imageInput),
             reasoning: entry.reasoning ?? reasoning, fallback: fallback)
     }
 
@@ -121,7 +121,7 @@ struct EndpointModel: Decodable, Equatable, Sendable {
         contextLength = try container.decodeIfPresent(Int.self, forKey: .contextLength)
             ?? container.decodeIfPresent(Int.self, forKey: .maxModelLen)
         maxOutputLength = try container.decodeIfPresent(Int.self, forKey: .maxOutputLength)
-        inputModalities = nil
+        inputModalities = try? container.decodeIfPresent([String].self, forKey: .inputModalities)
     }
 
     /// The endpoint says the model takes images.
@@ -213,9 +213,11 @@ enum IntegrationModels {
                 id: entry.id, name: IntegrationModel.name(display, at: location), location: location,
                 contextLength: context, outputLimit: context.map { max(1, min(cap, $0 / 4)) },
                 tools: capabilities.isEmpty || !capabilities.isDisjoint(with: toolCapabilities),
-                imageInput: !capabilities.isDisjoint(with: imageCapabilities),
+                imageInput: entry.takesImages || !capabilities.isDisjoint(with: imageCapabilities),
                 reasoning: !capabilities.isDisjoint(with: reasoningCapabilities),
-                fallback: details.model == nil ? .init(endpointOutputCap: positive(entry.maxOutputLength)) : nil)
+                fallback: details.model == nil
+                    ? .init(endpointOutputCap: positive(entry.maxOutputLength), endpointImageInput: entry.takesImages)
+                    : nil)
         }
         return ordered(models)
     }

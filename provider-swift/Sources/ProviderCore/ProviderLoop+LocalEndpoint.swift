@@ -119,11 +119,21 @@ extension ProviderLoop {
         modelSlots[modelId]?.modelType ?? advertisedModels[modelId]?.modelType
     }
 
-    /// A resident model's window as its engine admits it, for the router's `/v1/models`: the most a prompt or its
-    /// output may be; nil while not loaded.
+    /// What the router's `/v1/models` says of a model this Mac serves: the input it takes, and once it is loaded its
+    /// window as its engine admits it, the most a prompt or its output may be.
     func localModelLimits(_ modelId: String) -> LocalModelLimits? {
-        guard let slot = modelSlots[modelId] else { return nil }
-        return LocalModelLimits(window: slot.engineV2.advertisedContextTokens ?? slot.sizing.maxContextLength)
+        let input = localInputModalities(modelId)
+        guard let slot = modelSlots[modelId] else { return input.map { LocalModelLimits(inputModalities: $0) } }
+        return LocalModelLimits(window: slot.engineV2.advertisedContextTokens ?? slot.sizing.maxContextLength,
+                                inputModalities: input)
+    }
+
+    /// The input a local request for a model may carry. On a pair's leader, the media its slot takes
+    /// (`EngineV2Bridge.pairInputModalities`); unknown until the slot is published. On one Mac, images when the model
+    /// advertises vision (`ModelInfo.isVision`, as the coordinator routes images on it).
+    func localInputModalities(_ modelId: String) -> [String]? {
+        if isClusterMember { return modelSlots[modelId]?.engineV2.pairInputModalities }
+        return advertisedModels[modelId].map(LocalModelLimits.inputModalities(of:))
     }
 
     /// Invoked by Hummingbird once the local endpoint socket is bound and

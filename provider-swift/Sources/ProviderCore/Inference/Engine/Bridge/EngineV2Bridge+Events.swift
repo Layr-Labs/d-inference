@@ -18,7 +18,8 @@ extension EngineV2Bridge {
         readyReceiptRegistered: Bool = false,
         profile: RequestProfileBuilder? = nil,
         nativeRetirement: CBv2RequestRetirement? = nil,
-        httpResponse: DistributedHTTPResponse? = nil
+        httpResponse: DistributedHTTPResponse? = nil,
+        prefill: LocalPrefillProgress? = nil
     ) {
         let bridge = self
         let retirementReceipt = nativeRetirement == nil ? nil : active[id]?.prefillReceipt
@@ -35,7 +36,8 @@ extension EngineV2Bridge {
                 readyReceiptRegistered: readyReceiptRegistered,
                 profile: profile,
                 nativeRetirement: nativeRetirement,
-                httpResponse: httpResponse
+                httpResponse: httpResponse,
+                prefill: prefill
             )
             retirementReceipt?.endAfterRetirement()
             await bridge.clearPumpTask(id: id, releaseNativeIdentity: nativeRetirement != nil)
@@ -67,11 +69,14 @@ extension EngineV2Bridge {
         readyReceiptRegistered: Bool = false,
         profile: RequestProfileBuilder? = nil,
         nativeRetirement: CBv2RequestRetirement? = nil,
-        httpResponse: DistributedHTTPResponse? = nil
+        httpResponse: DistributedHTTPResponse? = nil,
+        prefill: LocalPrefillProgress? = nil
     ) async {
         // Resolve only after record(usage:) has delivered the lookup callback
         // or teardown has finalized its failure, and owned resources retire.
         defer { usageSignal?.completeTerminalObservation() }
+        // A request that ends without a first token says no more of its prompt either.
+        defer { prefill?.end() }
         // NOTE: the shared-budget KV reservation is taken in `submitTokenized`
         // (the pre-engine admission gate), NOT here — the pump only RELEASES
         // it on the terminal/teardown paths below, and ONLY when THIS request
@@ -105,6 +110,8 @@ extension EngineV2Bridge {
                     // A distributed response's first-content budget is met by
                     // the first committed token, visible yet or not.
                     httpResponse?.firstTokenCommitted()
+                    // The prompt is done: its progress comments end here.
+                    prefill?.end()
                 }
                 recordProgress(id: id, newTokens: tokens.count)
                 if trackStopTokens {

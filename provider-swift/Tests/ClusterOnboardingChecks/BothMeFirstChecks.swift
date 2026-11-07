@@ -17,6 +17,7 @@ extension OnboardingChecks {
         theWayItServesNowChangesNothing()
         aPairServingBothSwitchesToLocalOnly()
         aLocalPairSwitchesToBothFromAPlanMadeForDarkbloom()
+        theLoginChecksServeLocallyOnlySavesNoAnswer()
     }
 
     /// Plain `darkbloom cluster` in a terminal: the question is asked, and its answer saved, as the live operations do.
@@ -217,5 +218,25 @@ extension OnboardingChecks {
         expect(recorder.all == ["ensureService", "status", "reachMembers", "planModels", "servingChoice", "reachMembers", "planModels",
                                 "recheckFit 0", "adopt 0", "setScope both 0.0.0.0", "saveServingChoice both", "serve", "waitReady",
                                 "testRequest", "register", "waitReady", "pairServing"], "local to both: \(recorder.all)")
+    }
+
+    /// The first setup: Both answered, a Mac without a login, and "Serve locally only" at the login check. The pair
+    /// serves locally only, and no answer is saved: the person never chose Only me, which `[local] mode` would then
+    /// preselect and a single-Mac start would read (review N1).
+    static func theLoginChecksServeLocallyOnlySavesNoAnswer() {
+        let both = [ClusterOnboardingMacName.this, ClusterOnboardingMacName.other(named: "Apple M3 Ultra, 256 GB")]
+        let recorder = Recorder()
+        var made = operations(recorder, pairEvents: leaderEvents, pairResult: .paired(role: .leader, peerName: "Apple M3 Ultra, 256 GB"),
+                              readyResult: .success(localReady), missingLogins: both)
+        asking(&made, recorder)
+        let run = TerminalRun(made)
+        expect(run.waitFor("  " + prompt(2)), "login fallback: the pairing"); run.type("y")
+        expect(run.waitFor(servingQuestion(enter: 3)), "login fallback: the question"); run.type("\r")
+        expect(run.waitFor("  " + prompt(2), count: 2), "login fallback: the list"); run.type("\r")
+        expect(run.waitFor("  1) Log in on this Mac\n  2) Serve locally only\n  3) Cancel\n"), "login fallback: the login check: \(run.text)")
+        run.type("2")
+        expect(run.finish() == 0, "login fallback: exit 0")
+        expect(recorder.all.contains("setScope local 0.0.0.0"), "login fallback: the pair serves locally only: \(recorder.all)")
+        expect(!recorder.all.contains { $0.hasPrefix("saveServingChoice") }, "login fallback: no answer saved: \(recorder.all)")
     }
 }

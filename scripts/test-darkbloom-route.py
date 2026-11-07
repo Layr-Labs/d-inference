@@ -117,7 +117,7 @@ UNSIZED_PLAN_REQUEST = [{"lane": "test-cluster-2", "profile": "macos_arm64", "co
                         {"lane": "test-cluster-1", "profile": "macos_arm64", "count": 1},
                         {"lane": "test-provider-1", "profile": "macos_arm64", "count": 1}]
 # Cluster GPU Tests are not routed: shard 2 uses more memory than any signed
-# size, and one lane would carry one size for both shards.
+# size, and one lane would carry one size for every shard.
 UNROUTED_MACOS = {("provider-tests.yml", "test-cluster-gpu")}
 MASTER_LINUX_LANES = (f"release-integrity linux_arm64 {LINUX_FALLBACK}", f"docs linux_arm64 {LINUX_FALLBACK}")
 # (workflow, job): the expression its runs-on reads.

@@ -144,9 +144,9 @@ jobs:
   # shards share one lane with a count of 2: the two Cluster Focused Checks
   # shards, Cluster Runtime Tests shards 2 and 3 (test-cluster-2) and shards
   # 4 and 5 (test-cluster-3). A lane asks for a job only when the job runs.
-  # The two Cluster GPU Tests shards are not routed: shard 2 uses 42 GiB, more
-  # than any signed size, and one lane carries one size for both shards. They
-  # run on blacksmith-12vcpu-macos-27.
+  # The three Cluster GPU Tests shards are not routed: shard 2 uses 42 GiB,
+  # more than any signed size, and one lane carries one size for every shard.
+  # They run on blacksmith-12vcpu-macos-27.
   #
   # Sizes (<vCPUs>x<GiB>) are sent only while DARKBLOOM_JOB_SHAPES is `on`
   # (darkbloom-route.yml). A job asks for the smallest signed size (4x16,

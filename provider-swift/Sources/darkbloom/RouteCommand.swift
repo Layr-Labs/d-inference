@@ -195,6 +195,11 @@ struct RouteKeyFlow {
         let tty = open("/dev/tty", O_RDWR)
         guard tty >= 0 else { return nil }
         defer { close(tty) }
+        return readHidden(prompt: prompt, terminal: tty)
+    }
+
+    static func readHidden(prompt: String, terminal tty: Int32,
+                           onSignal: @escaping @Sendable (Int32) -> Void = { _ = raise($0) }) -> String? {
         var saved = termios()
         guard tcgetattr(tty, &saved) == 0 else { return nil }
         var silent = saved

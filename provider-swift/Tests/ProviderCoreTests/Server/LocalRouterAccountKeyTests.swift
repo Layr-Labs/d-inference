@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import Security
 import Testing
 @testable import ProviderCore
@@ -94,6 +95,62 @@ struct LocalRouterAccountKeyTests {
         try store.remove()
     }
 
+    // MARK: - A read never waits on a Keychain dialog
+
+    /// A login-keychain item this build may not read without approval (an ad-hoc rebuild changes the binary the item
+    /// trusts) would show a dialog, and a request would wait on it. The query's UI keys don't reach legacy items, so
+    /// the read turns the legacy keychain's process-wide switch off and puts it back after: it fails at once instead.
+    @Test func aReadNeverWaitsOnAKeychainDialog() throws {
+        let keychain = FakeKeychain(entitled: false)
+        keychain.loginItems["svc.test/acct"] = Data("sk-fake".utf8)
+        keychain.loginNeedsApproval = true
+        let store = KeychainLocalRouterAccountKeyStore(service: "svc.test", account: "acct", calls: keychain.calls)
+        #expect(throws: LocalRouterAccountKeyError.keychain(operation: "read", status: errSecAuthFailed)) {
+            try store.load()
+        }
+        #expect(keychain.prompts == 0)
+        #expect(keychain.reads.map(\.keychain) == ["dp", "login"])
+        #expect(keychain.reads.allSatisfy { !$0.interactionAllowed })
+        #expect(keychain.interactionAllowed, "the switch is put back")
+        #expect(keychain.switchChanges == [false, true])
+        // The data-protection read carries a context that may not ask either.
+        let dataProtection = try #require(keychain.reads.first?.query)
+        let context = try #require(dataProtection[kSecUseAuthenticationContext as String] as? LAContext)
+        #expect(context.interactionNotAllowed)
+    }
+
+    @Test func aSwitchThatIsAlreadyOffIsLeftOff() throws {
+        let keychain = FakeKeychain(entitled: true)
+        keychain.interactionAllowed = false
+        let store = KeychainLocalRouterAccountKeyStore(service: "svc.test", account: "acct", calls: keychain.calls)
+        #expect(try store.load() == nil)
+        #expect(keychain.switchChanges.isEmpty)
+        #expect(!keychain.interactionAllowed)
+    }
+
+    @Test func aReadWhoseSwitchCantBeTurnedOffDoesNotRun() throws {
+        let keychain = FakeKeychain(entitled: false)
+        keychain.switchFailure = errSecNotAvailable
+        let store = KeychainLocalRouterAccountKeyStore(service: "svc.test", account: "acct", calls: keychain.calls)
+        #expect(throws: LocalRouterAccountKeyError.keychain(operation: "read", status: errSecNotAvailable)) {
+            try store.load()
+        }
+        #expect(keychain.reads.isEmpty)
+    }
+
+    /// `route key` runs at a terminal, where approving a new build is how it gets the key back: saving and removing
+    /// may still ask, and never touch the switch.
+    @Test func savingAndRemovingAtTheTerminalMayStillAsk() throws {
+        let keychain = FakeKeychain(entitled: false)
+        keychain.loginItems["svc.test/acct"] = Data("sk-old".utf8)
+        keychain.loginNeedsApproval = true
+        let store = KeychainLocalRouterAccountKeyStore(service: "svc.test", account: "acct", calls: keychain.calls)
+        try store.save("sk-new")
+        try store.remove()
+        #expect(keychain.prompts == 2)
+        #expect(keychain.switchChanges.isEmpty)
+    }
+
     @Test(.enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_TEST_KEYCHAIN"] == "1"))
     func theKeychainStoreRoundTripsUnderATestService() throws {
         let store = KeychainLocalRouterAccountKeyStore(service: "io.darkbloom.test.local-router.\(UUID().uuidString)",
@@ -109,8 +166,9 @@ struct LocalRouterAccountKeyTests {
     }
 }
 
-/// The four Keychain calls, in memory: a data-protection Keychain (refused with `errSecMissingEntitlement` unless
-/// `entitled`, as for a build without the access-group entitlement) and a login keychain, keyed by service/account.
+/// The Keychain calls, in memory: a data-protection Keychain (refused with `errSecMissingEntitlement` unless
+/// `entitled`, as for a build without the access-group entitlement) and a login keychain, keyed by service/account,
+/// with the legacy keychain's process-wide switch for asking the user.
 final class FakeKeychain: @unchecked Sendable {
     private let lock = NSLock()
     let entitled: Bool
@@ -120,6 +178,17 @@ final class FakeKeychain: @unchecked Sendable {
     var loginItems: [String: Data] = [:]
     private(set) var log: [String] = []
     private(set) var added: [[String: Any]] = []
+    /// The legacy keychain's switch for asking the user, as `SecKeychainGetUserInteractionAllowed` reads it.
+    var interactionAllowed = true
+    /// When set, reading or setting the switch fails with this status.
+    var switchFailure: OSStatus?
+    private(set) var switchChanges: [Bool] = []
+    /// The login keychain's items need the user's approval for this build, as after an ad-hoc rebuild: with the
+    /// switch on, a call asks (`prompts`, and the fake approves); with it off, it fails with `errSecAuthFailed`.
+    var loginNeedsApproval = false
+    private(set) var prompts = 0
+    /// Every read: the keychain it went to, whether the switch allowed asking then, and its query.
+    private(set) var reads: [(keychain: String, interactionAllowed: Bool, query: [String: Any])] = []
 
     init(entitled: Bool, failing: OSStatus? = nil) {
         self.entitled = entitled
@@ -137,6 +206,14 @@ final class FakeKeychain: @unchecked Sendable {
         "\(query[kSecAttrService as String] as? String ?? "")/\(query[kSecAttrAccount as String] as? String ?? "")"
     }
 
+    /// A login item this build needs approval for: asked for when the switch allows it, else refused.
+    private func approval(_ name: String) -> OSStatus? {
+        guard name == "login", loginNeedsApproval else { return nil }
+        guard interactionAllowed else { return errSecAuthFailed }
+        prompts += 1
+        return nil
+    }
+
     private func items(_ name: String) -> [String: Data] { name == "dp" ? dataProtectionItems : loginItems }
     private func setItem(_ name: String, _ id: String, _ data: Data?) {
         if name == "dp" { dataProtectionItems[id] = data } else { loginItems[id] = data }
@@ -148,8 +225,10 @@ final class FakeKeychain: @unchecked Sendable {
                 self.lock.withLock {
                     let (name, refusal) = self.keychain(query)
                     self.log.append("copy \(name)")
+                    self.reads.append((name, self.interactionAllowed, query))
                     if let refusal { return (refusal, nil) }
                     guard let data = self.items(name)[self.id(query)] else { return (errSecItemNotFound, nil) }
+                    if let refusal = self.approval(name) { return (refusal, nil) }
                     return (errSecSuccess, data)
                 }
             },
@@ -170,6 +249,7 @@ final class FakeKeychain: @unchecked Sendable {
                     self.log.append("update \(name)")
                     if let refusal { return refusal }
                     guard self.items(name)[self.id(query)] != nil else { return errSecItemNotFound }
+                    if let refusal = self.approval(name) { return refusal }
                     self.setItem(name, self.id(query), attributes[kSecValueData as String] as? Data)
                     return errSecSuccess
                 }
@@ -180,7 +260,19 @@ final class FakeKeychain: @unchecked Sendable {
                     self.log.append("delete \(name)")
                     if let refusal { return refusal }
                     guard self.items(name)[self.id(query)] != nil else { return errSecItemNotFound }
+                    if let refusal = self.approval(name) { return refusal }
                     self.setItem(name, self.id(query), nil)
+                    return errSecSuccess
+                }
+            },
+            userInteractionAllowed: {
+                self.lock.withLock { (self.switchFailure ?? errSecSuccess, self.interactionAllowed) }
+            },
+            setUserInteractionAllowed: { allowed in
+                self.lock.withLock {
+                    if let failure = self.switchFailure { return failure }
+                    self.switchChanges.append(allowed)
+                    self.interactionAllowed = allowed
                     return errSecSuccess
                 }
             })

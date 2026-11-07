@@ -146,6 +146,11 @@ public enum LocalRouterPolicy {
         status == 402
     }
 
+    static func networkRefusalPrefix(errorType: String?) -> String {
+        "No balance for the network fallback: none of your Macs could take this request, and the Darkbloom network "
+            + "needs a positive balance. Darkbloom said: "
+    }
+
     /// `self`'s answer when none of the owner's Macs took the request: none linked (409), none online, none serving
     /// the model or none able to take its shape (503), or all busy (429, `machine_busy`). The network's 402 then
     /// stands, as the clearer answer.

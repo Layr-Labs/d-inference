@@ -134,6 +134,9 @@ struct KeychainItemCalls: Sendable {
     var add: @Sendable ([String: Any]) -> OSStatus
     var update: @Sendable ([String: Any], [String: Any]) -> OSStatus
     var delete: @Sendable ([String: Any]) -> OSStatus
+    /// The legacy keychain's process-wide switch for asking the user, and setting it.
+    var userInteractionAllowed: @Sendable () -> (OSStatus, Bool)
+    var setUserInteractionAllowed: @Sendable (Bool) -> OSStatus
 
     static let system = KeychainItemCalls(
         copyMatching: { query in
@@ -143,7 +146,13 @@ struct KeychainItemCalls: Sendable {
         },
         add: { SecItemAdd($0 as CFDictionary, nil) },
         update: { SecItemUpdate($0 as CFDictionary, $1 as CFDictionary) },
-        delete: { SecItemDelete($0 as CFDictionary) })
+        delete: { SecItemDelete($0 as CFDictionary) },
+        userInteractionAllowed: {
+            var allowed: DarwinBoolean = true
+            let status = SecKeychainGetUserInteractionAllowed(&allowed)
+            return (status, allowed.boolValue)
+        },
+        setUserInteractionAllowed: { SecKeychainSetUserInteractionAllowed($0) })
 }
 
 /// An account key held in memory: tests, and callers that must not touch the Keychain.

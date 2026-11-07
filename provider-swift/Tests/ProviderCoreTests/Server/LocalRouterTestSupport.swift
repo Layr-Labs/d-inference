@@ -76,14 +76,24 @@ final class RouterTransportFactory: @unchecked Sendable {
     }
 }
 
-/// An in-memory key store that counts its reads: this Mac's path reads none.
+/// An in-memory key store that counts its reads (this Mac's path reads none), and can fail them as a Keychain that
+/// won't hand the key over does.
 final class CountingAccountKeyStore: LocalRouterAccountKeyStore, @unchecked Sendable {
     private let lock = NSLock()
     private var key: String?
     private var reads = 0
+    private var failure: OSStatus?
     init(_ key: String?) { self.key = key }
     var loads: Int { lock.withLock { reads } }
-    func load() throws -> String? { lock.withLock { reads += 1; return key } }
+    /// Every read from now on fails with `status`; nil: reads succeed again.
+    func failReads(with status: OSStatus?) { lock.withLock { failure = status } }
+    func load() throws -> String? {
+        try lock.withLock {
+            reads += 1
+            if let failure { throw LocalRouterAccountKeyError.keychain(operation: "read", status: failure) }
+            return key
+        }
+    }
     func save(_ key: String) throws { lock.withLock { self.key = key } }
     func remove() throws { lock.withLock { key = nil } }
 }

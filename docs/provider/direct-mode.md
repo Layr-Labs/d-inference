@@ -1,6 +1,6 @@
 # Direct mode: a local OpenAI-compatible endpoint
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-07
 
 Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
@@ -37,7 +37,7 @@ See [inference and logprob admission](../architecture/inference.md).
    | Mode | Command | Coordinator | Models come from | Earns |
    |---|---|---|---|---|
    | Standalone | `darkbloom start --local` | not contacted | `StandaloneServer`'s own slot cache (`provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift`) | no |
-   | Unified | `darkbloom start --local-endpoint` | connected as usual | the live `ProviderLoop` slots — weights load once and local + fleet requests share one continuous-batching engine and KV budget (`provider-swift/Sources/ProviderCore/ProviderLoop+LocalEndpoint.swift`) | yes, for fleet traffic |
+   | Unified | `darkbloom start --local-endpoint` | connected as usual | the live `ProviderLoop` slots — weights load once and local + fleet requests share one continuous-batching engine and KV budget (`provider-swift/Sources/ProviderCore/ProviderLoop+LocalEndpoint.swift`) | yes, for fleet traffic while you are not using the Mac (step 3) |
 
 2. Start standalone. This runs in the current terminal (no LaunchAgent) and
    installs no service:
@@ -99,6 +99,17 @@ See [inference and logprob admission](../architecture/inference.md).
    request first loads the model if needed and then holds a reservation until
    its stream ends, so the coordinator's advertised capacity reflects local
    load too.
+
+   That reservation is your use of the Mac: by default ("me first") the
+   provider stops taking Darkbloom requests from the moment one of your
+   requests holds a model, and takes them again once none of your requests
+   has run for `[local] me_first_idle_minutes` (2 minutes by default).
+   Darkbloom requests already running finish. Model lists, health checks,
+   `/metrics`, the tokenizer utilities and requests this Mac refuses do not
+   count. Set `[local] me_first = false` to share the Mac between your
+   requests and Darkbloom's, as before
+   ([configuration](../reference/configuration.md#local-first-use-local),
+   [owner pause](../architecture/owner-pause.md)).
 
 4. Get the endpoint and key:
 

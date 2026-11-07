@@ -60,8 +60,7 @@ struct OwnerPauseWireTests {
 
         // The owner goes idle: one routable heartbeat without busy fields, and nothing after it.
         await loop.noteLocalUse(.end)
-        clock.advance(ms: 60_000)
-        #expect(await loop.resumeIfOwnerIdle())
+        #expect(await loop.resumeIfOwnerIdleForTesting(advancing: clock, by: 60_000))
         let resumed = try #require(try await mock.waitForSnapshot { $0.heartbeats.count == 3 })
         #expect(resumed.heartbeats[2].status == .idle && resumed.heartbeats[2].busy == nil)
         try await Task.sleep(for: .milliseconds(300))

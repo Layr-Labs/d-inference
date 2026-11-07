@@ -231,12 +231,7 @@ extension ProviderLoop {
         await refreshActivationReserve()
         await updateAggregateCapacity()
         await coordinatorClient?.sendEventHeartbeat()
-        guard !servingDrain.refusing, !addonHoldActive, !ownerPausesPublic else { return }
-        if let entries = deferredDesiredModels, let send = outboundSend {
-            deferredDesiredModels = nil
-            logger.info("Replaying desired_models deferred during the add-on hold (\(entries.count) entr(ies))")
-            await reconcileDesiredModels(entries, send: send)
-        }
+        await replayDesiredModels(deferred: "during the add-on hold")
     }
 
     /// The drain this hold owns: accepted work, then every model.

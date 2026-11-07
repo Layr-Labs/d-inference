@@ -42,10 +42,6 @@ final class OwnerPauseOutbound: @unchecked Sendable {
         return nil
     }
 
-    func completed(_ requestID: String) -> Bool {
-        messages(for: requestID).contains { if case .inferenceComplete = $0 { return true }; return false }
-    }
-
     var prefetchStatuses: [(model: String, status: ProviderMessage.PrefetchModelStatus.Status, error: String?)] {
         lock.withLock { messages }.compactMap {
             if case .prefetchModelStatus(let model, let status, _, _, let error) = $0 { return (model, status, error) }
@@ -112,6 +108,14 @@ final class OwnerPauseGate: @unchecked Sendable {
 extension ProviderLoop {
     func useMeFirstClockForTesting(_ clock: MeFirstTestClock) { meFirstNowMs = { clock.now } }
 
+    /// Moves the test clock and asks for the resume in one actor turn. The real
+    /// resume timer, armed by the last `.end`, could otherwise read the new time
+    /// first and end the pause itself.
+    func resumeIfOwnerIdleForTesting(advancing clock: MeFirstTestClock, by milliseconds: Int64) -> Bool {
+        clock.advance(ms: milliseconds)
+        return resumeIfOwnerIdle()
+    }
+
     /// A Darkbloom request as admission tracks one once accepted.
     func startOwnerPauseTestRequest(_ id: String, model: String, gate: OwnerPauseGate) {
         acceptedLifecycleRequests.insert(id)
@@ -157,8 +161,7 @@ struct OwnerPauseLoopTests {
         /// The owner's last request ends and the idle time passes.
         func ownerGoesIdle(after milliseconds: Int64 = 60_000) async -> Bool {
             await loop.noteLocalUse(.end)
-            clock.advance(ms: milliseconds)
-            return await loop.resumeIfOwnerIdle()
+            return await loop.resumeIfOwnerIdleForTesting(advancing: clock, by: milliseconds)
         }
 
         func remove() { sandbox.remove() }
@@ -202,8 +205,7 @@ struct OwnerPauseLoopTests {
         h.state.inferenceActive = true
         #expect(await !h.ownerGoesIdle(after: 59_900))
         #expect(try await h.heartbeat()["status"] as? String == "draining")
-        h.clock.advance(ms: 100)
-        #expect(await h.loop.resumeIfOwnerIdle())
+        #expect(await h.loop.resumeIfOwnerIdleForTesting(advancing: h.clock, by: 100))
         let serving = try await h.heartbeat()
         #expect(serving["status"] as? String == "serving")
         for key in Self.busyKeys { #expect(serving[key] == nil) }
@@ -360,6 +362,46 @@ struct OwnerPauseLoopTests {
         await h.loop.finishAddonTestRequest("accepted")
     }
 
+    /// The other order: the pause ends under the hold, which keeps the busy
+    /// fields and desired_models until its release.
+    @Test func aPauseEndingUnderAnAddOnHoldLeavesTheBusyFieldsAndDesiredModelsToIt() async throws {
+        let h = try await harness()
+        defer { h.remove() }
+        let addon = AddonHoldLoopTests.addon
+        let peer = AddonPeer(identifier: addon)
+        await h.loop.useAddonHoldForTesting(paths: nil, clock: AddonTestClock(h.clock.now))
+        let outbound = OwnerPauseOutbound()
+        let send = SendHandle { outbound.append($0) }
+        await h.loop.setAddonTestOutbound(send)
+        // Darkbloom work accepted earlier keeps the hold draining, so it never reaches its unload here.
+        await h.loop.acceptAddonTestRequest("accepted")
+
+        await h.loop.noteLocalUse(.start)
+        guard case .hold(let holdID, _, let holdSince, _) = await h.loop.handleAddonIPC(
+            .hold(addon: addon, vmBytes: 1 << 30, leaseSeconds: 60), peer: peer) else {
+            Issue.record("the hold was refused")
+            return
+        }
+        let desired = CoordinatorMessage.DesiredModelEntry(modelName: "alias", desiredBuild: "org/desired-build")
+        await h.loop.handleDesiredModels([desired], send: send)
+
+        #expect(await h.ownerGoesIdle())
+        #expect(!h.state.ownerPausesPublic)
+        #expect(h.state.busy == ProviderBusy(reason: .addon, sinceMs: holdSince, addon: addon))
+        let held = try await h.heartbeat()
+        #expect(held["status"] as? String == "draining" && held["busy_reason"] as? String == "addon")
+        // The pause's end leaves desired_models to the hold.
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await h.loop.deferredDesiredModels == [desired])
+        #expect(outbound.prefetchStatuses.isEmpty)
+
+        #expect(await h.loop.handleAddonIPC(.release(holdID: holdID), peer: peer) == .released)
+        #expect(h.state.busy == nil)
+        #expect(try await addonEventually { await h.loop.deferredDesiredModels == nil })
+        #expect(try await addonEventually { outbound.prefetchStatuses.contains { $0.model == "org/desired-build" } })
+        await h.loop.finishAddonTestRequest("accepted")
+    }
+
     @Test func desiredModelsWaitForTheOwnerAndReplayWhenThePauseEnds() async throws {
         let h = try await harness()
         defer { h.remove() }
@@ -383,8 +425,7 @@ struct OwnerPauseLoopTests {
         #expect(await !h.ownerGoesIdle(after: 30_000))
         #expect(await h.loop.deferredDesiredModels == [during])
 
-        h.clock.advance(ms: 30_000)
-        #expect(await h.loop.resumeIfOwnerIdle())
+        #expect(await h.loop.resumeIfOwnerIdleForTesting(advancing: h.clock, by: 30_000))
         #expect(try await addonEventually { await h.loop.deferredDesiredModels == nil })
         #expect(try await addonEventually { prefetcher.requested == ["org/before-pause", "org/during-pause"] })
     }
@@ -414,8 +455,7 @@ struct OwnerPauseLoopTests {
         #expect(Set(written.keys) == ["idle_ms", "paused", "since_ms", "last_use_ms", "local_requests_in_flight",
                                       "darkbloom_requests_finishing"])
 
-        h.clock.advance(ms: 60_000)
-        #expect(await h.loop.resumeIfOwnerIdle())
+        #expect(await h.loop.resumeIfOwnerIdleForTesting(advancing: h.clock, by: 60_000))
         let resumed = MeFirstSnapshot(idleMs: 60_000, paused: false, lastUseMs: start + 5_000)
         #expect(await h.loop.currentDaemonState().meFirst == resumed)
         #expect(DaemonStateFile.read(from: h.sandbox.daemonStateFile)?.meFirst == resumed)

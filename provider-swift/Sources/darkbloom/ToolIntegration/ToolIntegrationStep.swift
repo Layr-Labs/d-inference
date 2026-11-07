@@ -151,6 +151,7 @@ struct ToolIntegrationStep {
         let catalog = await fetchCatalog()
         let models = IntegrationModels.resolve(listed, catalog: catalog)
         var ok = true
+        var summaries: [ToolConfigSummary] = []
         for (tool, executable) in ready {
             let outcome: ToolConfigWriter.Outcome
             do {
@@ -165,13 +166,17 @@ struct ToolIntegrationStep {
                                            home: environment.home)
             lines.forEach(say)
             ok = ok && done
+            if let summary = outcome.summary { summaries.append(summary) }
             // An older Hermes can't read the key yet: set up anyway, and say how to fix it.
             if tool == .hermes, done, let warning = versionOutput(tool, executable)
                 .flatMap({ HermesVersion.keyCommandWarning(versionOutput: $0) }) {
                 say("  Warning: \(warning)")
             }
         }
-        if catalog == nil { say("  (Model details unavailable offline; run this again online to refresh them.)") }
+        if catalog == nil, !summaries.isEmpty {
+            say(summaries.allSatisfy(\.undescribed.isEmpty) ? Self.catalogUnreachableKept
+                : Self.catalogUnreachable(ready.map(\.tool)))
+        }
         // This Mac lists a model's context only while it is loaded, so the tools got the catalog's limits for the rest.
         let unloaded = listed.filter {
             $0.contextLength == nil && IntegrationModels.location(ownedBy: $0.ownedBy) == .thisMac
@@ -254,6 +259,16 @@ struct ToolIntegrationStep {
     /// The line when a background start's local API answers, but no key file holds its key.
     static func noKeyFile(_ tools: [IntegrationTool], port: UInt16) -> String {
         "✗ This Mac's local API on :\(port) answers, but no key file holds its key, so \(notSetUp(tools))."
+    }
+
+    /// The line when the catalog can't be read and the tools' own entries kept every model's name and image support.
+    static let catalogUnreachableKept = "  Darkbloom's catalog wasn't reachable, so the models' names and image "
+        + "support stay as they were."
+
+    /// The line when the catalog can't be read and a tool now lists a model without its name and image support.
+    static func catalogUnreachable(_ tools: [IntegrationTool]) -> String {
+        "  Darkbloom's catalog wasn't reachable: run `\(cli) start \(flags(tools))` again online for the models' "
+            + "names and image support."
     }
 
     /// The last line when a tool couldn't be set up: the start never stops Darkbloom for a tool.

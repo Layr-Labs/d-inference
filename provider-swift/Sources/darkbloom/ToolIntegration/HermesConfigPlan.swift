@@ -27,15 +27,20 @@ enum HermesConfigPlan {
     /// The file's new bytes: Darkbloom's provider with the models Hermes can use (at least 64K context) and their
     /// context and vision, and Darkbloom as the main model, as `ollama launch` and `omlx launch` make theirs.
     static func plan(
-        existing: Data?, endpoint: IntegrationEndpoint, models: [IntegrationModel], provider: IntegrationProvider
+        existing: Data?, endpoint: IntegrationEndpoint, models listed: [IntegrationModel], provider: IntegrationProvider
     ) -> ToolConfigPlan {
-        guard !models.isEmpty else {
+        guard !listed.isEmpty else {
             return .refused(.models("Darkbloom's endpoint lists no chat models yet, so Hermes has none to use."))
         }
+        let original = String(decoding: existing ?? Data(), as: UTF8.self)
+        // The provider's own model entries stand in for what the catalog didn't say (offline, or a model it doesn't
+        // list), so such a run never drops a model's vision or context.
+        let entries = (try? HermesEdit(text: original, provider: provider))?.modelEntries() ?? [:]
+        let models = IntegrationModels.keeping(listed, entries: entries)
         let usable = models.filter { ($0.contextLength ?? 0) >= minimumContext }
         guard !usable.isEmpty else { return .refused(.models(floorReason(models))) }
         do {
-            var edit = try HermesEdit(text: String(decoding: existing ?? Data(), as: UTF8.self), provider: provider)
+            var edit = try HermesEdit(text: original, provider: provider)
             guard let main = edit.mainModel(among: usable) else {
                 return .refused(.models("""
                     Hermes needs a main model with at least 64K context on this Mac or your other Macs; Darkbloom \
@@ -48,7 +53,8 @@ enum HermesConfigPlan {
             let summary = ToolConfigSummary(
                 provider: change, models: usable.map(\.id), defaultModel: main,
                 leftOut: models.filter { ($0.contextLength ?? 0) < minimumContext }.map(\.id),
-                droppedComments: text.map { edit.droppedComments(in: $0) } ?? 0)
+                droppedComments: text.map { edit.droppedComments(in: $0) } ?? 0,
+                undescribed: usable.filter { $0.fallback != nil && entries[$0.id] == nil }.map(\.id))
             guard let text else { return .unchanged(summary) }
             return .change(Data(text.utf8), summary)
         } catch {
@@ -245,6 +251,30 @@ private struct HermesEdit {
             if model.imageInput { block.append(three + "supports_vision: true") }
         }
         return block
+    }
+
+    /// What Darkbloom's provider block says of each model now, by model ID: its context and vision, with the block's
+    /// output cap. A block it can't read holds nothing.
+    func modelEntries() -> [String: IntegrationModel.Entry] {
+        guard let providers, providers.value.isEmpty,
+              let mine = (try? children(of: providers))?.first(where: { $0.key == provider.id }),
+              let fields = try? children(of: mine) else { return [:] }
+        func value(_ key: String, in entries: [YAMLEntry]) -> String? {
+            entries.first { $0.key == key }.flatMap { Self.scalar($0.value) }
+        }
+        let cap = fields.first { $0.key == "extra_body" }.flatMap { try? children(of: $0) }
+            .flatMap { value("max_tokens", in: $0) }.flatMap { Int($0) }
+        guard let models = fields.first(where: { $0.key == "models" }), let listed = try? children(of: models) else {
+            return [:]
+        }
+        var entries: [String: IntegrationModel.Entry] = [:]
+        for model in listed {
+            let values = (try? children(of: model)) ?? []
+            entries[model.key] = IntegrationModel.Entry(
+                contextLength: value("context_length", in: values).flatMap { Int($0) }, outputLimit: cap,
+                imageInput: value("supports_vision", in: values)?.lowercased() == "true")
+        }
+        return entries
     }
 
     // MARK: - Result

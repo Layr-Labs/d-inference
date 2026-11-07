@@ -27,6 +27,9 @@ struct ToolConfigSummary: Equatable, Sendable {
     var leftOut: [String] = []
     /// Comments on the lines the edit replaced or removed. The backup keeps them.
     var droppedComments = 0
+    /// The models the config now lists with fallbacks for what the catalog would say (offline, or a model it doesn't
+    /// list), the file having no entry of its own for them: their names and image input are guesses.
+    var undescribed: [String] = []
 
     /// The plain-words line about lost comments, or nil when every comment survived.
     var droppedCommentsNote: String? {

@@ -33,7 +33,8 @@ private final class StepSandbox: @unchecked Sendable {
     ]
 
     func step(_ tools: [IntegrationTool], installed: Set<IntegrationTool> = Set(IntegrationTool.allCases),
-              listed: [EndpointModel]? = StepSandbox.listed, hermesVersion: String? = nil) -> ToolIntegrationStep {
+              listed: [EndpointModel]? = StepSandbox.listed, catalog: CatalogSnapshot? = nil,
+              hermesVersion: String? = nil) -> ToolIntegrationStep {
         ToolIntegrationStep(
             tools: tools, environment: ToolIntegrationEnvironment(home: home, variables: [:]), provider: F.provider,
             findTool: { installed.contains($0) ? .installed(URL(fileURLWithPath: "/fake/\($0.rawValue)")) : .missing },
@@ -41,10 +42,18 @@ private final class StepSandbox: @unchecked Sendable {
                 guard let listed else { throw IntegrationModelsError.http(status: 503) }
                 return listed
             },
-            fetchCatalog: { nil },
+            fetchCatalog: { catalog },
             say: { self.said.append($0) },
             versionOutput: { tool, _ in tool == .hermes ? hermesVersion : nil })
     }
+
+    /// The catalog's names and capabilities for `listed`, and a smaller output cap for Qwen.
+    static let catalog = CatalogSnapshot(models: [
+        CatalogModel(id: "qwen3.8-27b", s3Name: "qwen3.8-27b", displayName: "Qwen 3.8 27B", sizeGb: 1,
+                     maxContextLength: 262_144, maxOutputLength: 8_192, capabilities: ["tools", "vision", "reasoning"]),
+        CatalogModel(id: "gemma-4-26b-qat-4bit", s3Name: "gemma-4-26b-qat-4bit", displayName: "Gemma 4 26B", sizeGb: 1,
+                     maxContextLength: 262_144, capabilities: ["tools", "vision"]),
+    ], aliases: [])
 
     var openCodeFile: URL { home.appendingPathComponent(".config/opencode/opencode.jsonc") }
     var hermesFile: URL { home.appendingPathComponent(".hermes/config.yaml") }
@@ -335,7 +344,8 @@ struct StartToolIntegrationTests {
             "  Switch back: hermes model   ·   Undo: rm \(ToolIntegration.shellQuoted(sandbox.hermesFile.path))   ·   "
                 + "Chats already open keep their model.",
             "  Left out: gemma-4-26b-qat-4bit (Hermes needs 64K context)",
-            "  (Model details unavailable offline; run this again online to refresh them.)",
+            "  Darkbloom's catalog wasn't reachable: run `darkbloom start --opencode --hermes` again online for the "
+                + "models' names and image support.",
             "  Requests: this Mac only",
             "  Other tools: OPENAI_BASE_URL=http://127.0.0.1:8123/v1 OPENAI_API_KEY=\"$(cat ~/.darkbloom/local_token)\"",
         ])
@@ -368,6 +378,49 @@ struct StartToolIntegrationTests {
         for file in sandbox.filesOtherThanTheKey() {
             #expect(!F.utf8(try Data(contentsOf: file)).contains(sandbox.token), "\(file.path) holds the key")
         }
+    }
+
+    @Test("a re-run without the catalog keeps the names, image support and limits it gave: nothing changes")
+    func rerunWithoutTheCatalogKeepsItsDetails() async throws {
+        let sandbox = try StepSandbox()
+        #expect(await sandbox.step([.opencode, .hermes], catalog: StepSandbox.catalog)
+            .run(endpoint: sandbox.endpoint, requests: "this Mac only"))
+        let openCode = try Data(contentsOf: sandbox.openCodeFile)
+        let hermes = try Data(contentsOf: sandbox.hermesFile)
+        #expect(F.utf8(openCode).contains("\"name\": \"Qwen 3.8 27B (this Mac)\""))
+        #expect(F.utf8(openCode).contains("\"limit\": { \"context\": 131072, \"output\": 8192 }"))
+        #expect(F.utf8(hermes).contains("supports_vision: true"))
+
+        // Offline, and against a catalog that doesn't list the models (another coordinator's): no write, no backup.
+        let elsewhere = CatalogSnapshot(models: [], aliases: [])
+        for catalog in [nil, elsewhere] {
+            sandbox.said = []
+            #expect(await sandbox.step([.opencode, .hermes], catalog: catalog)
+                .run(endpoint: sandbox.endpoint, requests: "this Mac only"))
+            let unreachable = "  Darkbloom's catalog wasn't reachable, so the models' names and image support stay as "
+                + "they were."
+            #expect(Array(sandbox.said.dropLast()) == [
+                "✓ OpenCode already lists Darkbloom's 2 models (nothing changed).",
+                "✓ Hermes already uses Darkbloom's current models (nothing changed).",
+            ] + (catalog == nil ? [unreachable] : []) + ["  Requests: this Mac only"])
+            #expect(try Data(contentsOf: sandbox.openCodeFile) == openCode)
+            #expect(try Data(contentsOf: sandbox.hermesFile) == hermes)
+        }
+        #expect(sandbox.directory.allFiles().filter { $0.path.contains("/integrations/backups/") }.isEmpty)
+
+        // Offline with a new model: the new one is set up with what is known, the others keep theirs, and one line
+        // says to run the start again online.
+        sandbox.said = []
+        let more = StepSandbox.listed + [EndpointModel(id: "new-model", ownedBy: "this-mac", contextLength: 65_536)]
+        #expect(await sandbox.step([.opencode, .hermes], listed: more)
+            .run(endpoint: sandbox.endpoint, requests: "this Mac only"))
+        #expect(sandbox.said.contains("  Darkbloom's catalog wasn't reachable: run `darkbloom start --opencode "
+            + "--hermes` again online for the models' names and image support."))
+        let rewritten = F.utf8(try Data(contentsOf: sandbox.openCodeFile))
+        #expect(rewritten.contains("\"name\": \"Qwen 3.8 27B (this Mac)\"")
+            && rewritten.contains("\"name\": \"Gemma 4 26B (this Mac)\"")
+            && rewritten.contains("\"name\": \"new-model (this Mac)\""))
+        #expect(F.utf8(try Data(contentsOf: sandbox.hermesFile)).contains("supports_vision: true"))
     }
 
     @Test("a tool that isn't installed, an unreadable model list or Hermes' 64K floor: ✗, and Darkbloom keeps serving")

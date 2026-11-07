@@ -5,7 +5,7 @@ import ProviderCore
 struct IntegrationModel: Equatable, Sendable {
     /// Where requests for the model run. The cases are declared in the order the tools list them, which is the order
     /// `Comparable` gives them.
-    enum Location: Comparable, Sendable {
+    enum Location: Comparable, CaseIterable, Sendable {
         case thisMac
         case yourMacs
         /// Other Darkbloom machines: the local router lists them only when the owner opted into "My Macs first".
@@ -31,6 +31,57 @@ struct IntegrationModel: Equatable, Sendable {
     let tools: Bool
     let imageInput: Bool
     let reasoning: Bool
+    /// Set when the catalog didn't describe the model: offline, or a model it doesn't list. The name (unless an alias
+    /// gave one), the capabilities and the limits the endpoint didn't give are then fallbacks, and a tool's own entry
+    /// for the model keeps its values for them (`keeping(_:)`).
+    var fallback: Fallback?
+
+    struct Fallback: Equatable, Sendable {
+        /// The endpoint's output cap; nil when it gave none.
+        var endpointOutputCap: Int?
+    }
+
+    /// A model's entry in a tool's config, as the tool has it now; nil for what the entry doesn't hold.
+    struct Entry: Equatable, Sendable {
+        /// The name without where the model runs.
+        var displayName: String?
+        var contextLength: Int?
+        var outputLimit: Int?
+        var tools: Bool?
+        var imageInput: Bool?
+        var reasoning: Bool?
+    }
+
+    /// The model with what the tool's `entry` already says in place of its fallbacks, so a run without the catalog
+    /// never downgrades what a run with it wrote: the name, tools, image input and reasoning, the context when the
+    /// endpoint gives none, and the output while the context is the one it was set for (unless the endpoint gives a
+    /// cap).
+    func keeping(_ entry: Entry?) -> IntegrationModel {
+        guard let fallback, let entry else { return self }
+        let context = contextLength ?? entry.contextLength
+        let keptOutput = fallback.endpointOutputCap == nil && context != nil && context == entry.contextLength
+            ? entry.outputLimit : nil
+        let cap = fallback.endpointOutputCap ?? IntegrationModels.defaultOutputCap
+        let fallbackName = name == Self.name(id, at: location)
+        return IntegrationModel(
+            id: id, name: fallbackName ? entry.displayName.map { Self.name($0, at: location) } ?? name : name,
+            location: location, contextLength: context,
+            outputLimit: keptOutput ?? context.map { max(1, min(cap, $0 / 4)) },
+            tools: entry.tools ?? tools, imageInput: entry.imageInput ?? imageInput,
+            reasoning: entry.reasoning ?? reasoning, fallback: fallback)
+    }
+
+    /// `Qwen 3.8 27B (this Mac)`.
+    static func name(_ display: String, at location: Location) -> String { "\(display) (\(location.label))" }
+
+    /// A tool's name for a model without where it runs: `Qwen 3.8 27B (this Mac)` gives `Qwen 3.8 27B`.
+    static func displayName(in name: String) -> String {
+        for location in Location.allCases where name.hasSuffix(" (\(location.label))") {
+            let display = name.dropLast(location.label.count + 3)
+            if !display.isEmpty { return String(display) }
+        }
+        return name
+    }
 }
 
 /// One entry of the endpoint's `GET /v1/models`.
@@ -128,6 +179,8 @@ enum IntegrationModels {
     ///   `defaultOutputCap`.
     /// - Capabilities: the catalog's names; without them, tools on (Darkbloom serves tool calls on its chat models),
     ///   text input only (the engine refuses images on text-only builds) and no reasoning claim.
+    /// - A model the catalog doesn't describe carries `fallback`: a tool's own entry for it keeps its values
+    ///   (`keeping(_:entries:)`).
     static func resolve(_ listed: [EndpointModel], catalog: CatalogSnapshot?) -> [IntegrationModel] {
         var nearest: [String: (entry: EndpointModel, location: IntegrationModel.Location)] = [:]
         for entry in listed {
@@ -144,13 +197,26 @@ enum IntegrationModels {
             let capabilities = Set((details.model?.capabilities ?? []).map { $0.lowercased() })
             let display = details.name.flatMap { $0.isEmpty ? nil : $0 } ?? entry.id
             return IntegrationModel(
-                id: entry.id, name: "\(display) (\(location.label))", location: location, contextLength: context,
-                outputLimit: context.map { max(1, min(cap, $0 / 4)) },
+                id: entry.id, name: IntegrationModel.name(display, at: location), location: location,
+                contextLength: context, outputLimit: context.map { max(1, min(cap, $0 / 4)) },
                 tools: capabilities.isEmpty || !capabilities.isDisjoint(with: toolCapabilities),
                 imageInput: !capabilities.isDisjoint(with: imageCapabilities),
-                reasoning: !capabilities.isDisjoint(with: reasoningCapabilities))
+                reasoning: !capabilities.isDisjoint(with: reasoningCapabilities),
+                fallback: details.model == nil ? .init(endpointOutputCap: positive(entry.maxOutputLength)) : nil)
         }
-        return models.sorted { ($0.location, $0.name.lowercased(), $0.id) < ($1.location, $1.name.lowercased(), $1.id) }
+        return ordered(models)
+    }
+
+    /// The tools' order: this Mac, your Macs, the network, then by name.
+    static func ordered(_ models: [IntegrationModel]) -> [IntegrationModel] {
+        models.sorted { ($0.location, $0.name.lowercased(), $0.id) < ($1.location, $1.name.lowercased(), $1.id) }
+    }
+
+    /// `models` with a tool's `entries` (by model ID) kept for what the catalog didn't describe
+    /// (`IntegrationModel.keeping`), in the tools' order again.
+    static func keeping(_ models: [IntegrationModel], entries: [String: IntegrationModel.Entry]) -> [IntegrationModel] {
+        let kept = models.map { $0.keeping(entries[$0.id]) }
+        return kept == models ? models : ordered(kept)
     }
 
     /// Where a model the endpoint lists runs, from its `owned_by`.

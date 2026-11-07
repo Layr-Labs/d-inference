@@ -53,7 +53,41 @@ struct IntegrationModelsTests {
             [EndpointModel(id: "qwen3.8-27b", ownedBy: "local", contextLength: 131_072)], catalog: nil)
         #expect(models == [IntegrationModel(
             id: "qwen3.8-27b", name: "qwen3.8-27b (this Mac)", location: .thisMac, contextLength: 131_072,
-            outputLimit: 32_768, tools: true, imageInput: false, reasoning: false)])
+            outputLimit: 32_768, tools: true, imageInput: false, reasoning: false, fallback: .init())])
+    }
+
+    @Test("without the catalog, a tool's entry keeps its name, capabilities, context and output; the endpoint's win")
+    func keepingAToolsEntry() {
+        let listed = [EndpointModel(id: "qwen3.8-27b", ownedBy: "this-mac", contextLength: 131_072)]
+        let online = catalog([catalogModel("qwen3.8-27b", display: "Qwen 3.8 27B", context: 262_144, output: 8_192,
+                                           capabilities: ["tools", "vision", "thinking"])])
+        let described = IntegrationModels.resolve(listed, catalog: online)[0]
+        let entry = IntegrationModel.Entry(displayName: "Qwen 3.8 27B", contextLength: 131_072, outputLimit: 8_192,
+                                           tools: true, imageInput: true, reasoning: true)
+        #expect(described.fallback == nil && described.keeping(entry) == described, "the catalog's word stands")
+        // Offline, and a catalog that doesn't list the model.
+        for snapshot in [nil, catalog([])] {
+            let guessed = IntegrationModels.resolve(listed, catalog: snapshot)[0]
+            #expect(guessed.name == "qwen3.8-27b (this Mac)" && !guessed.imageInput && guessed.outputLimit == 32_768)
+            #expect(guessed.keeping(nil) == guessed, "with no entry, what is known")
+            let kept = guessed.keeping(entry)
+            #expect(kept.name == described.name && kept.tools && kept.imageInput && kept.reasoning)
+            #expect(kept.contextLength == 131_072 && kept.outputLimit == 8_192)
+        }
+        // Where the model runs comes from the endpoint; a context it doesn't give, from the entry.
+        let moved = IntegrationModels.resolve([EndpointModel(id: "qwen3.8-27b", ownedBy: "my-macs")], catalog: nil)[0]
+            .keeping(entry)
+        #expect(moved.name == "Qwen 3.8 27B (your Macs)")
+        #expect(moved.contextLength == 131_072 && moved.outputLimit == 8_192)
+        // The endpoint's context and output cap win over the entry's; for another context, the output is worked out
+        // again.
+        let capped = IntegrationModels.resolve(
+            [EndpointModel(id: "qwen3.8-27b", contextLength: 16_384, maxOutputLength: 2_048)], catalog: nil)[0]
+        #expect(capped.keeping(entry).contextLength == 16_384 && capped.keeping(entry).outputLimit == 2_048)
+        let smaller = IntegrationModels.resolve([EndpointModel(id: "qwen3.8-27b", contextLength: 16_384)], catalog: nil)
+        #expect(smaller[0].keeping(entry).outputLimit == 4_096)
+        #expect(IntegrationModel.displayName(in: "GLM (Darkbloom network, billed)") == "GLM")
+        #expect(IntegrationModel.displayName(in: "My own name") == "My own name")
     }
 
     @Test("the catalog names the model and sets its capabilities and output cap; the endpoint's context wins")

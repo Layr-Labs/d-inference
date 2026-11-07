@@ -62,6 +62,31 @@ struct HermesConfigPlanTests {
             leftOut: ["gemma-4-26b-qat-4bit"])))
     }
 
+    @Test("without the catalog, each model keeps its entry's vision and context, and the output cap stays")
+    func undescribedModelsKeepTheirEntries() throws {
+        let online = try #require(F.newText(plan(nil)))
+        // `F.models` as the endpoint lists them when the catalog can't be read; GLM without its context.
+        let offline = IntegrationModels.resolve([
+            EndpointModel(id: "gemma-4-26b-qat-4bit", ownedBy: "this-mac", contextLength: 32_768),
+            EndpointModel(id: "qwen3.8-27b", ownedBy: "this-mac", contextLength: 131_072),
+            EndpointModel(id: "glm-5.3-flash", ownedBy: "my-macs"),
+        ], catalog: nil)
+        #expect(plan(online, models: offline) == .unchanged(ToolConfigSummary(
+            provider: .unchanged, models: ["qwen3.8-27b", "glm-5.3-flash"], defaultModel: "qwen3.8-27b",
+            leftOut: ["gemma-4-26b-qat-4bit"])))
+
+        // A model the file has no entry for gets what is known; the others keep theirs.
+        let more = offline + IntegrationModels.resolve(
+            [EndpointModel(id: "new-model", ownedBy: "this-mac", contextLength: 65_536)], catalog: nil)
+        let result = plan(online, models: more)
+        let text = try #require(F.newText(result))
+        #expect(F.summary(result)?.undescribed == ["new-model"])
+        #expect(text.contains("      \"glm-5.3-flash\":\n        context_length: 98304\n"
+            + "        supports_vision: true\n"))
+        #expect(text.contains("      \"new-model\":\n        context_length: 65536\n"))
+        #expect(text.contains("    extra_body:\n      max_tokens: 16384\n"))
+    }
+
     @Test("every key written is one Hermes documents")
     func documentedKeys() throws {
         let text = try #require(F.newText(plan(nil)))

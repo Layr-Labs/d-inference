@@ -23,10 +23,10 @@ enum OpenCodeConfigPlan {
     /// The file's new bytes. A `.json` file stays strict JSON when it was: it gets no comment line. The top-level
     /// `model` is added only when neither this file nor, by `defaultModelElsewhere`, another global file sets one.
     static func plan(
-        existing: Data?, fileName: String, endpoint: IntegrationEndpoint, models: [IntegrationModel],
+        existing: Data?, fileName: String, endpoint: IntegrationEndpoint, models listed: [IntegrationModel],
         provider: IntegrationProvider, home: URL, defaultModelElsewhere: Bool = false
     ) -> ToolConfigPlan {
-        guard let first = models.first else {
+        guard !listed.isEmpty else {
             return .refused(.models("Darkbloom's endpoint lists no chat models yet, so OpenCode has none to use."))
         }
         let original = [UInt8](existing ?? Data())
@@ -39,6 +39,11 @@ enum OpenCodeConfigPlan {
             return .refused(.file("it isn't valid JSON (line \(error.line))"))
         }
         guard let root = document.root.object else { return .refused(.file("it isn't a JSON object")) }
+        // The provider's own model entries stand in for what the catalog didn't say (offline, or a model it doesn't
+        // list), so such a run never downgrades a name or a capability.
+        let entries = root.members(named: "providers").first?.value.object?.members(named: provider.id).first
+            .map { modelEntries(in: $0.value, of: document) } ?? [:]
+        let models = IntegrationModels.keeping(listed, entries: entries)
         var splice = Splice(document: document)
         let block = Block(provider: provider, endpoint: endpoint, models: models, home: home,
                           withComment: fileName.hasSuffix(".jsonc"), unit: splice.unit)
@@ -46,7 +51,7 @@ enum OpenCodeConfigPlan {
         var rootMembers: [[String]] = fresh ? [["\"$schema\": \(jsonString(schemaURL))"]] : []
         let modelKeys = root.members(named: "model")
         guard modelKeys.count < 2 else { return .refused(.file("it has two \"model\" keys")) }
-        let defaultModel = modelKeys.isEmpty && !defaultModelElsewhere ? "\(provider.id)/\(first.id)" : nil
+        let defaultModel = modelKeys.isEmpty && !defaultModelElsewhere ? "\(provider.id)/\(models[0].id)" : nil
         if let defaultModel { rootMembers.append(["\"model\": \(jsonString(defaultModel))"]) }
 
         let change: ToolConfigSummary.ProviderChange
@@ -73,7 +78,9 @@ enum OpenCodeConfigPlan {
         }
         if !rootMembers.isEmpty { splice.append(rootMembers, to: root) }
 
-        let summary = ToolConfigSummary(provider: change, models: models.map(\.id), defaultModel: defaultModel)
+        let summary = ToolConfigSummary(
+            provider: change, models: models.map(\.id), defaultModel: defaultModel,
+            undescribed: models.filter { $0.fallback != nil && entries[$0.id] == nil }.map(\.id))
         guard splice.changesBytes else { return .unchanged(summary) }
         return verified(splice.result(), original: original, document: document, fileName: fileName,
                         provider: provider, summary: summary)
@@ -100,6 +107,28 @@ enum OpenCodeConfigPlan {
             !text.contains(String(decoding: document.bytes[range], as: UTF8.self))
         }.count
         return .change(Data(bytes), summary)
+    }
+
+    /// What the provider's value says of each model now, by model ID. An entry that doesn't read as one Darkbloom
+    /// writes holds nothing.
+    static func modelEntries(
+        in value: JSONCDocument.Value, of document: JSONCDocument
+    ) -> [String: IntegrationModel.Entry] {
+        guard let models = value.object?.members(named: "models").first?.value.object else { return [:] }
+        let decoder = JSONDecoder()
+        decoder.allowsJSON5 = true
+        var entries: [String: IntegrationModel.Entry] = [:]
+        for member in models.members {
+            let bytes = Data(document.bytes[member.value.start..<member.value.end])
+            guard let written = try? decoder.decode(WrittenModel.self, from: bytes) else { continue }
+            entries[member.key] = IntegrationModel.Entry(
+                displayName: written.name.map(IntegrationModel.displayName(in:)),
+                contextLength: written.limit?.context, outputLimit: written.limit?.output,
+                tools: written.capabilities?.tools,
+                imageInput: written.capabilities?.input.map { $0.contains("image") },
+                reasoning: written.capabilities.map { $0.reasoning?.supported == true })
+        }
+        return entries
     }
 
     /// `{file:…}` for the key file: under `~` when it is in the home directory, which OpenCode expands.
@@ -140,6 +169,28 @@ enum OpenCodeConfigPlan {
         }
         return escaped + "\""
     }
+}
+
+/// A model's value as Darkbloom writes it in the provider block.
+private struct WrittenModel: Decodable {
+    struct Limit: Decodable {
+        let context: Int?
+        let output: Int?
+    }
+
+    struct Capabilities: Decodable {
+        struct Reasoning: Decodable {
+            let supported: Bool?
+        }
+
+        let tools: Bool?
+        let input: [String]?
+        let reasoning: Reasoning?
+    }
+
+    let name: String?
+    let limit: Limit?
+    let capabilities: Capabilities?
 }
 
 /// The provider block as lines, indented by the file's own unit.

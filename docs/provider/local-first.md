@@ -144,6 +144,10 @@ darkbloom start --me-first --opencode --hermes
 - **Run it again** when your models change; with nothing new, it changes
   nothing. Run it again too once a model you just started is loaded: until
   then this Mac doesn't know its limits, and the start says so.
+- **Offline** (Darkbloom's catalog unreachable), a run again keeps the names,
+  image support and limits already set up. A model set up for the first time
+  then gets its ID and text input only, and the start says to run it again
+  online.
 - **Hermes v0.20.2 or later** reads Darkbloom's key from its file; with an older
   Hermes the start still sets it up and says, in one line, to run
   `hermes update`.

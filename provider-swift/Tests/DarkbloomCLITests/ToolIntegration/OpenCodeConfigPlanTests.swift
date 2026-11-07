@@ -120,6 +120,30 @@ struct OpenCodeConfigPlanTests {
         #expect(F.summary(fewer) == ToolConfigSummary(provider: .updated, models: ["qwen3.8-27b"], defaultModel: nil))
     }
 
+    @Test("without the catalog, each model keeps its entry's name, capabilities and limits: nothing changes")
+    func undescribedModelsKeepTheirEntries() throws {
+        let online = try #require(F.newText(plan(nil)))
+        // `F.models` as the endpoint lists them when the catalog can't be read; GLM without its context.
+        let offline = IntegrationModels.resolve([
+            EndpointModel(id: "gemma-4-26b-qat-4bit", ownedBy: "this-mac", contextLength: 32_768),
+            EndpointModel(id: "qwen3.8-27b", ownedBy: "this-mac", contextLength: 131_072),
+            EndpointModel(id: "glm-5.3-flash", ownedBy: "my-macs"),
+        ], catalog: nil)
+        #expect(plan(online, models: offline) == .unchanged(ToolConfigSummary(
+            provider: .unchanged, models: ["gemma-4-26b-qat-4bit", "qwen3.8-27b", "glm-5.3-flash"], defaultModel: nil)))
+
+        // A model the file has no entry for gets what is known; the others keep theirs.
+        let more = offline + IntegrationModels.resolve(
+            [EndpointModel(id: "new-model", ownedBy: "this-mac", contextLength: 65_536)], catalog: nil)
+        let result = plan(online, models: more)
+        let text = try #require(F.newText(result))
+        #expect(F.summary(result)?.undescribed == ["new-model"])
+        #expect(text.contains(#""name": "GLM-5.3-Flash (your Macs)""#))
+        #expect(text.contains(#""limit": { "context": 98304, "output": 24576 }"#))
+        #expect(text.contains(#""name": "new-model (this Mac)""#))
+        #expect(text.contains(#""input": ["text", "image"], "output": ["text"], "reasoning": { "supported": true }"#))
+    }
+
     @Test("a strict .json file gets no comment and stays strict JSON")
     func strictJSON() throws {
         let owner = """

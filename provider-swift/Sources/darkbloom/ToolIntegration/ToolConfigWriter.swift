@@ -20,6 +20,14 @@ struct ToolConfigWriter {
         /// `backup` is nil when the file was new; `undo` is the shell command that puts the file back exactly.
         case written(file: URL, backup: URL?, undo: String, ToolConfigSummary)
         case refused(file: URL, ToolConfigRefusal)
+
+        /// What the config lists for Darkbloom now; nil when the edit was refused.
+        var summary: ToolConfigSummary? {
+            switch self {
+            case .unchanged(_, let summary), .planned(_, _, let summary), .written(_, _, _, let summary): summary
+            case .refused: nil
+            }
+        }
     }
 
     let tool: IntegrationTool

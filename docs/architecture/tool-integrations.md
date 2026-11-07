@@ -41,7 +41,11 @@ flowchart LR
    chat model from the catalog (`display_name`, with where it runs: this Mac, your Macs, the network), takes its
    context from the endpoint, else the catalog's maximum, its output cap as `min(max output, context / 4)` with
    `defaultOutputCap = 32_768`, and its capabilities from the catalog's names (tools on and text-only input when the
-   catalog is unreachable).
+   catalog is unreachable). A model the catalog doesn't describe (offline, or one it doesn't list) carries
+   `IntegrationModel.fallback`, and each planner first reads its own entry for the model back from the file
+   (`OpenCodeConfigPlan.modelEntries`, `HermesEdit.modelEntries`): `IntegrationModel.keeping` takes the entry's name,
+   capabilities and vision, its context when the endpoint gives none, and its output while the context is the one it
+   was set for. A model with no entry keeps the fallbacks and is named in `ToolConfigSummary.undescribed`.
 3. **OpenCode.** `OpenCodeConfigPlan.plan` reads the file into byte ranges with `JSONCDocument` and replaces only the
    `providers.<id>` value, or appends it in the file's indentation and trailing-comma style. The block has the base
    URL, `apiKey: "{file:<key file>}"` (under `~` in the home directory), `compatibility.maxTokensField: "max_tokens"`
@@ -70,7 +74,8 @@ flowchart LR
 3. The `darkbloom` block is Darkbloom's whole: a run that changes it rewrites all of it, so a key the owner added
    inside it is replaced too (only comments are counted); the backup keeps it.
 4. An edit is idempotent: the planners render deterministically, and equal bytes give `.unchanged`, with no backup and
-   no write (`ToolConfigWriter.apply`).
+   no write (`ToolConfigWriter.apply`). That holds without the catalog too: the file's own entries stand in for it, so
+   a run offline never downgrades what a run online wrote.
 5. A file a splice can't edit safely is refused before anything is written: malformed or ambiguous JSONC, a root or
    `providers` that isn't an object, and in YAML several documents, tab indentation, anchors, aliases or merge keys,
    block text, inline or multi-line values in `providers` or `model` (`JSONCDocument`, `HermesEdit.checkSection`).

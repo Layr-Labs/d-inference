@@ -190,12 +190,8 @@ struct LocalSettingsTests {
             (LocalSettings(bind: "my laptop"), #"[local] bind must be \#(Self.bindRule), not "my laptop"."#),
         ]
         for (settings, message) in cases {
-            #expect(throws: LocalSettingsError.self) { try settings.validate() }
-            do {
-                try settings.validate()
-            } catch {
-                #expect("\(error)" == message)
-            }
+            let refusal = #expect(throws: LocalSettingsError.self) { try settings.validate() }
+            #expect(refusal?.description == message)
         }
         #expect(throws: Never.self) {
             try LocalSettings(mode: .both, meFirst: false, meFirstIdleMinutes: 1, route: .myMacs, port: 65535,

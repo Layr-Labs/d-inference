@@ -219,7 +219,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `--no-autopilot` | flag | `false` | Save opt-out and retain ordinary idle-policy mode |
 | `--foreground` / `--no-foreground` | flag, **hidden** | `false` | Serve in this process instead of installing the LaunchAgent; launchd passes it |
 | `--local` | flag | `false` | Coordinator-less OpenAI-compatible server ([direct mode](./direct-mode.md)) |
-| `--local-endpoint` | flag | `false` | Local endpoint alongside the coordinator; mutually exclusive with `--local`. Darkbloom requests pause while your local requests run, unless `[local] me_first = false` ([direct mode](./direct-mode.md)) |
+| `--local-endpoint` | flag | `false` | Local endpoint alongside the coordinator; mutually exclusive with `--local`. Darkbloom requests pause while your local requests run and for `[local] me_first_idle_minutes` after, unless `[local] me_first = false` ([direct mode](./direct-mode.md)) |
 | `--port <n>` | `UInt16` | `8000` | Local server port |
 | `--bind <addr>` | `String` | `127.0.0.1` | Local server bind address |
 | `--no-auth` | flag | `false` | Disable the local bearer-token check |
@@ -1106,7 +1106,7 @@ Where `logs` and [`report`](#darkbloom-report) wait for a `log` child to finish,
 | `--idle-timeout <mins>` | Idle-memory policy, saved to `[backend] idle_timeout_mins` (0 = always ready); skips the memory prompt |
 | `--foreground` | Run in the foreground (used by launchd; normally implicit) |
 | `--local` | Run a local OpenAI server only; do not connect to the coordinator |
-| `--local-endpoint` | Serve a local OpenAI endpoint alongside the coordinator; Darkbloom requests pause while you use it (`[local] me_first`) |
+| `--local-endpoint` | Serve a local OpenAI endpoint alongside the coordinator; Darkbloom requests pause while you use it and for `[local] me_first_idle_minutes` after (`[local] me_first`) |
 | `--port <port>` | Port for `--local` / `--local-endpoint` (default 8000) |
 | `--bind <addr>` | Bind address for local modes (default 127.0.0.1) |
 | `--no-auth` | Disable local API-key auth (trusted/airgapped only) |

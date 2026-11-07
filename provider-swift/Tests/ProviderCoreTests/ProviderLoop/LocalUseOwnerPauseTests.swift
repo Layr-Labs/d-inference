@@ -94,6 +94,27 @@ struct LocalUseOwnerPauseTests {
         ByteBuffer(string: chatJSON(model: model, stream: stream, extra: extra))
     }
 
+    /// `startLocalEndpoint` turns me first on as `[local]` says, before its
+    /// server can take a request: the step the harness takes by hand. The
+    /// address is TEST-NET-1 (RFC 5737), which no interface has, so the server
+    /// never binds and writes no discovery file; the test cancels it anyway.
+    @Test(arguments: [nil, LocalSettings(meFirst: false)] as [LocalSettings?])
+    func startingTheEndpointTurnsMeFirstOnAsLocalSays(_ local: LocalSettings?) async throws {
+        let sandbox = try ModelLoadingSandbox()
+        defer { sandbox.remove() }
+        let unbindable = LocalInferenceHTTPConfig(host: "192.0.2.1", port: 0, authToken: Self.token)
+        let loop = try await ModelLoadingFixtures.makeLoop(sandbox: sandbox, localEndpoint: unbindable, local: local)
+        #expect(await loop.meFirstSnapshot == nil)
+
+        await loop.startLocalEndpoint(unbindable)
+        let expected = local == nil ? MeFirstSnapshot(idleMs: Self.twoMinutesMs, paused: false) : nil
+        #expect(await loop.meFirstSnapshot == expected)
+
+        let server = try #require(await loop.localServerTask)
+        server.cancel()
+        await server.value
+    }
+
     /// The local request is admitted and holds its model: me first pauses
     /// Darkbloom. However long the stream runs, the pause holds, and the
     /// owner's idle time counts from the stream's end.

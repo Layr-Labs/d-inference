@@ -101,9 +101,11 @@ See [inference and logprob admission](../architecture/inference.md).
    requests holds a model, and takes them again once none of your requests
    has run for `[local] me_first_idle_minutes` (2 minutes by default).
    Darkbloom requests already running finish. Model lists, health checks,
-   `/metrics`, the tokenizer utilities and requests this Mac refuses do not
-   count. Set `[local] me_first = false` to share the Mac between your
-   requests and Darkbloom's, as before
+   `/metrics`, the tokenizer utilities and requests refused before they hold
+   a model do not count. This is on for every unified Mac, including the
+   desktop app's "Alongside the network". To share the Mac between your
+   requests and Darkbloom's, as before, set `me_first = false` under
+   `[local]` in `provider.toml`, then run `darkbloom restart`
    ([configuration](../reference/configuration.md#local-first-use-local),
    [owner pause](../architecture/owner-pause.md)).
 

@@ -80,7 +80,9 @@ struct FlintContextAdmissionTests {
         let native = FlintContextSentinelEngine()
         let bridge = try await makeBridge(model: model(limit: 8), native: native,
             sizingContext: 0, defaultOutput: 2)
-        for (prompt, accepted) in [(6, true), (7, false), (9, false)] {
+        // The default output is cut to the window the prompt leaves (7 + 1); a
+        // prompt that fills the window alone is still refused.
+        for (prompt, accepted) in [(6, true), (7, true), (8, false), (9, false)] {
             let before = native.submittedOutputs.count
             do {
                 let stream = try await bridge.submitTokenized(
@@ -94,7 +96,7 @@ struct FlintContextAdmissionTests {
             }
             #expect(native.submittedOutputs.count == before + (accepted ? 1 : 0))
         }
-        #expect(native.submittedOutputs == [2])
+        #expect(native.submittedOutputs == [2, 1])
         #expect(await bridge._testPendingSubmissionCount() == 0)
         await bridge.shutdown()
     }

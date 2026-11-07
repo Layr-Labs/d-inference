@@ -1,6 +1,6 @@
 # Beta features
 
-> Last updated: 2026-10-13
+> Last updated: 2026-11-07
 
 Turn experimental engine behaviour on or off per machine with `darkbloom beta`,
 which writes keys into `provider.toml` so every serve path (LaunchAgent daemon,
@@ -141,4 +141,4 @@ darkbloom status         # per-slot KV/MTP posture after restart
 - [CLI reference](./cli-reference.md) — `beta` flags, config keys and defaults, passthrough list.
 - [`reference/configuration.md`](../reference/configuration.md) — every environment variable.
 - [Troubleshooting](./troubleshooting.md) — KV-backend guard and `RETIRED knob` warnings.
-- [Direct mode](./direct-mode.md) — beta features apply to the local endpoint too.
+- [The local API](./direct-mode.md) — beta features apply to the local API too.

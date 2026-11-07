@@ -175,7 +175,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | Command | Purpose | `--config` | Source (`provider-swift/Sources/darkbloom/…`) |
 |---|---|---|---|
 | `cache` | Inspect or set encrypted-cache storage and daily write limits | ✓ | `Cache/CacheCommand.swift` (`Cache`) |
-| `start` | Serve. Default: install and start the LaunchAgent; `--local` for a coordinator-less server. In a terminal, the first start asks how this Mac serves ([one question](#how-this-mac-serves-one-question)) | ✓ | `StartCommand.swift` (`Start`) |
+| `start` | Serve. Default: install and start the LaunchAgent; `--local` for Only me, with no coordinator. In a terminal, the first start asks how this Mac serves ([one question](#how-this-mac-serves-one-question)) | ✓ | `StartCommand.swift` (`Start`) |
 | `schedule` | Edit, show or disable saved weekly availability and startup loading; never start/stop the service | ✓ | `Scheduling/ScheduleCommand.swift` (`AvailabilitySchedule`) |
 | `switch` | Gracefully replace hosted models in the running coordinator-connected provider, without restart or reconnect | | `SwitchCommand.swift` (`Switch`) |
 | `addon` | Debug add-on holds on the running provider: `status` (default), `hold`, `release` | | `AddonCommand.swift` (`Addon`) |
@@ -186,7 +186,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `status` | Config, hardware, schedule, live daemon state (including the coordinator's last `Trust: <level> / <status>` message), per-slot KV/MTP posture | ✓ | `StatusCommand.swift` (`Status`) |
 | `doctor` | Diagnostics (see [troubleshooting](./troubleshooting.md#doctor-checks)) | ✓ | `DoctorCommand.swift` (`Doctor`) |
 | `models` | `list`, `catalog`, `download`, `remove` | ✓ | `ModelsCommand.swift` (`Models`) |
-| `local` | Print the direct-mode endpoint and API key | | `LocalCommand.swift` (`Local`) |
+| `local` | Print the local API's address and key | | `LocalCommand.swift` (`Local`) |
 | `cluster` | Set up two Macs to serve one model together ([guided setup](./two-mac-cluster.md)); `cluster local` serves without a coordinator. In a terminal, the first setup asks how the pair serves (**Only me (this pair, local)**, **Darkbloom network**, or **Both, me first**, preselected: the leader's local API beside Darkbloom, which pauses while you use it), saves the answer in `[local] mode`, and asks nothing without a terminal ([Both, me first](./two-mac-cluster.md#both-me-first-the-pairs-own-api-beside-darkbloom)). Run again on a paired Mac it works like `darkbloom start` (which opens the same screen there): both Macs, the cable and the status, then the pair's models with the current one preselected (Enter keeps it or starts it again), each with the modes it runs there, the recommended one first and no speed, **Change how the pair serves** (the three choices below; `cluster local`'s list keeps its line to switch to Darkbloom), and **Start over**; another model asks once before the serving one stops, and every start ends with the outcome, the pair's card and `darkbloom stop` / `restart` / `status` ([after setup](./two-mac-cluster.md#the-steps-once)). It offers **Start over** after one question (also when the other Mac does not answer over the cable: the screen then names that Mac and what to run there), and **Pair again** without it only when the saved pairing was made with another Secure Enclave key; both take the steps of `cluster pair --forget` (`ClusterUnpairing`), then pair ([pairing again](./two-mac-cluster.md#pairing-again)) | ✓ | `ClusterCommand.swift` (`Cluster`) |
 | `waitlist` | List the waitlists the coordinator offers and where the account stands (bare), or put the account on one and show where it stands (`waitlist cluster`, `waitlist sandbox`); waitlists are per account | ✓ | `Waitlist/WaitlistCommand.swift` (`Waitlist`) |
 | `login` | Link the machine to an account (RFC 8628 device code) | ✓ | `LoginCommand.swift` (`Login`) |
@@ -214,14 +214,14 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `--model <id>` | `[String]`, repeatable | `[]` | Select these startup models and skip the picker; compatible with Autopilot enrollment |
 | `--all` | flag | `false` | Ordinary serving of every runtime-supported local model; skips the picker. Compatible with `--autopilot`, where only verified eligible downloaded network builds enroll |
 | `--idle-timeout <mins>` | `UInt64?` | `backend.idle_timeout_mins` (`60`) | Override the idle unload timeout for this run |
-| `--schedule` | flag | `false` | Open the interactive availability/loading wizard before background startup; rejects `--foreground` and standalone `--local` (`Start.run`, `StartCommand.swift`) |
+| `--schedule` | flag | `false` | Open the interactive availability/loading wizard before background startup; rejects `--foreground` and Only me (`--local`) (`Start.run`, `StartCommand.swift`) |
 | `--autopilot` | flag | `false` | Keep the normal startup selector, verify cached network inventory and save experimental enrollment; verification adds no downloads and the default rollout is shadow |
 | `--no-autopilot` | flag | `false` | Save opt-out and retain ordinary idle-policy mode |
 | `--foreground` / `--no-foreground` | flag, **hidden** | `false` | Serve in this process instead of installing the LaunchAgent; launchd passes it |
-| `--local` | flag | `false` | Only me, on this Mac: a coordinator-less OpenAI-compatible server ([direct mode](./direct-mode.md)), for this start |
-| `--network` | flag | `false` | Darkbloom network only, no local API, for this start (today's plain `start`) |
-| `--me-first` / `--no-me-first` | flag | unset | `--me-first`: Both, me first: a local API beside Darkbloom, and Darkbloom pauses while you use it, for this start. `--no-me-first`: Darkbloom keeps serving while you use the local API (saved as `[local] me_first = false`); `--me-first` undoes it |
-| `--local-endpoint` | flag | `false` | Local endpoint alongside the coordinator: Both, with me first on (Darkbloom requests pause while your local requests run and for `[local] me_first_idle_minutes` after) unless `--no-me-first` (`[local] me_first = false`); mutually exclusive with `--local` |
+| `--local` | flag | `false` | Only me: [the local API](./direct-mode.md) with no coordinator, in this terminal; not saved in `[local] mode` |
+| `--network` | flag | `false` | Darkbloom network: no local API (today's plain `start`); not saved in `[local] mode`, but the LaunchAgent keeps it until the next `start` |
+| `--me-first` / `--no-me-first` | flag | unset | `--me-first`: Both, me first: a local API beside Darkbloom, and Darkbloom pauses while you use it; not saved in `[local] mode`, but the LaunchAgent keeps it until the next `start`. `--no-me-first`: Darkbloom keeps serving while you use the local API (saved as `[local] me_first = false`); `--me-first` undoes it |
+| `--local-endpoint` | flag | `false` | Both, me first, the older flag: the local API beside Darkbloom, with me first on (Darkbloom requests pause while your local requests run and for `[local] me_first_idle_minutes` after) unless `--no-me-first` (`[local] me_first = false`); mutually exclusive with `--local` |
 | `--me-first-idle <min>` | `UInt64?`, 1–120 | `[local] me_first_idle_minutes` (`2`) | Minutes with none of your requests before Darkbloom comes back; saved. Not `--idle-timeout` (model memory) |
 | `--route <route>` | `this-mac`, `my-macs`, `my-macs-first` | `[local] route` | Where your requests go when this Mac can't take them ([the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)); saved; needs an account key (`darkbloom route key`) |
 | `--choose` | flag | `false` | In a terminal: ask how this Mac serves again, although a choice is saved |
@@ -244,8 +244,10 @@ A single-Mac `start` decides how this Mac serves (`StartServingResolver`,
 `provider-swift/Sources/darkbloom/Start/StartLocalFirst.swift`; for users:
 [Use your Mac yourself, first](./local-first.md)):
 
-1. A mode flag, for this start only: `--local`, `--network`, `--me-first` or
-   `--local-endpoint`.
+1. A mode flag: `--local`, `--network`, `--me-first` or `--local-endpoint`.
+   It isn't saved in `[local] mode`, but the LaunchAgent this start installs
+   keeps its arguments, so login, `restart`, updates and the watchdog serve
+   that way until the next `start`.
 2. `--choose` (a terminal only): the question again.
 3. The saved choice, `[local] mode`, with or without a terminal. A saved
    `local` (Only me) serves in a terminal, so without one the start is refused
@@ -547,7 +549,7 @@ selection does not save the schedule or replace the running service
 (`Start.run`, `Start.launchDaemon` in
 `provider-swift/Sources/darkbloom/Start/StartCommand+Daemon.swift`). Ordinary `start`
 does not add a schedule prompt; it uses saved settings. Saved availability also
-controls an attached `--local-endpoint`, but standalone `--local` ignores it.
+controls Both, me first (`--me-first`, `--local-endpoint`), but Only me (`--local`) ignores it.
 
 ### `darkbloom schedule`
 
@@ -604,12 +606,12 @@ the daemon's own resolved config path, including a custom path, is authoritative
 and the command scans local models in that config's `model_cache_directory`.
 
 The provider validates local artifacts before fencing new coordinator and
-unified-local admissions, finishes accepted requests and terminal usage, and
+local API admissions, finishes accepted requests and terminal usage, and
 asks the coordinator to validate the complete selection before unloading anything.
 It then replaces its full model inventory on the existing coordinator session.
 It does not restart the process, reconnect, re-attest, install a service, or
 change watchdog/login recovery settings. Coordinator URL, authentication and
-local endpoint settings remain unchanged. Selected resident models can stay
+local API settings remain unchanged. Selected resident models can stay
 loaded; new models load on demand under the existing memory safeguards.
 The coordinator must support `models_replace`; deploy the coordinator upgrade
 before enabling this command on providers. Unsupported or missing receipts fail
@@ -642,7 +644,7 @@ just mailbox publication. The provider requires a matching
 `models_replace_resumed` receipt from the coordinator before writing that
 completion receipt. A successful selection is persisted for later restart,
 watchdog recovery and scheduled serving windows. Stale/missing/older daemons and
-standalone `--local` servers fail without launching anything. A drain timeout returns failure and
+Only me (`--local`) servers fail without launching anything. A drain timeout returns failure and
 leaves admission closed while accepted work continues; retry `switch` after
 the outstanding work finishes. Rejected selections are not partially applied.
 Live rollback restores an originally absent model key/file when no other edit
@@ -680,7 +682,7 @@ startup models. The scheduled loop keeps the original window end while hashing
 and skips startup if that window has closed. A late start serves only for the
 remaining window time. Other provider settings outside model selection and
 Autopilot settings, runtime
-identity/capabilities and local endpoint options remain frozen for the process
+identity/capabilities and local API options remain frozen for the process
 (`ScheduledWindowSelection` in `provider-swift/Sources/darkbloom/ScheduledWindowSelection.swift`;
 `Start.runScheduled` in `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift`).
 
@@ -696,7 +698,7 @@ darkbloom stop --force             # explicit interruption, including stalled wo
 Use the [stop flags](#darkbloom-stop) and [restart flags](#darkbloom-restart) below
 for deadline recovery. Commands do not initiate graceful shutdown by killing the
 serve task. `SIGTERM`, `SIGINT` and AppKit termination enter the same drain;
-standalone local mode also waits for active HTTP response bodies. `SIGHUP`
+Only me (`--local`) also waits for active HTTP response bodies. `SIGHUP`
 enters it too for a provider started by hand (`start --local`, or
 `start --foreground` typed into a terminal), so closing its terminal window
 drains it instead of ending the process at once. `SIGHUP` is not a stop signal
@@ -749,7 +751,7 @@ this Mac serves, read from its state and `local.json` (`Status.servingLines`,
 
 | State | Line |
 |---|---|
-| Darkbloom network only | `Serving: Darkbloom network only — this Mac has no local API` |
+| Darkbloom network | `Serving: Darkbloom network only — this Mac has no local API` |
 | Both, me first, open | `Serving: Darkbloom and you, me first — open to Darkbloom (none of your requests in the last 2 minutes)` |
 | Both, me first, paused | `Serving: you first — Darkbloom paused since 14:02 (your last request 1 minute ago; back at about 14:13 if you stay idle)`; while your requests run, `(your request is running; back 2 minutes after it ends)`; then, only while some finish, `         2 Darkbloom requests are finishing` |
 | Both, me first off | `Serving: Darkbloom and you, shared — Darkbloom keeps serving while you use this Mac (me first is off)` |
@@ -929,7 +931,7 @@ darkbloom cluster local [<model>] [--bind <address>]
 | `--model-dir`, `--worker` | `String?`, **hidden** | none | As for `darkbloom cluster` (developer) |
 | `--private-glm-image-qualification` | flag, **hidden** | `false` | Select the bounded GLM image candidate on the current paired leader for local qualification; requires the exact cached GLM artifact, uses automatic placement, and does not grant coordinator or solo serving |
 
-Runs the onboarding asking for local-only serving (`ClusterOnboardingRequest`),
+Runs the onboarding asking for Only me (`ClusterOnboardingRequest`),
 saved in the leader's setup record (`ClusterOnboardingLeadership.localOnly`,
 `localBind`) until **Change how the pair serves** in `darkbloom cluster`'s list (or
 **Switch to serving through Darkbloom** in this command's own list) serves through Darkbloom again. It asks
@@ -937,7 +939,7 @@ nothing and saves nothing in `[local]`.
 The leader part then starts with `--no-coordinator`. Needs a terminal; exit 1
 otherwise. On the Mac that joins a waiting leader it pairs, says to continue on
 the leader with `darkbloom cluster local` (`ClusterOnboardingDriver.joinedLocalLine`) and, like
-`darkbloom cluster`, follows the start there to its ✓ (exit 0) or ✗ (exit 1); q leaves (exit 0). Steps: [Serving locally only](./two-mac-cluster.md#serving-locally-only)
+`darkbloom cluster`, follows the start there to its ✓ (exit 0) or ✗ (exit 1); q leaves (exit 0). Steps: [Only me: the pair for you alone](./two-mac-cluster.md#serving-locally-only)
 (`provider-swift/Sources/darkbloom/ClusterLocalCommand.swift`).
 
 ### `darkbloom cluster status`
@@ -964,7 +966,7 @@ Next: Leave both Macs running: Darkbloom retries by itself. Or serve locally onl
 
 | Exit status | `state` | Meaning |
 |---|---|---|
-| `0` | `serving` | The pair serves: through Darkbloom once the coordinator has it, or on the leading Mac's local API when it serves locally only |
+| `0` | `serving` | The pair serves: through Darkbloom once the coordinator has it, or on the leading Mac's local API when it serves Only me |
 | `3` | `loading`, `not_serving`, `unknown` | Not serving yet: loading, or a reason in `reason` (such as macOS keeping a Mac off the local network, or a pair not offered to Darkbloom, below). A load whose part keeps ending gives that end as its reason, as the start's screen says it: "this Mac's part ended (exit 1: deadline) and starts again by itself" |
 | `4` | `stopped` | Stopped (Stop in `darkbloom cluster`, or `darkbloom cluster stop`), also while the other Mac isn't answering |
 | `5` | `other_mac_away` | The pair is started and the other Mac isn't answering over the cable (its cluster service is off, it sleeps, or waits for a login) |
@@ -1325,8 +1327,8 @@ Where `logs` and [`report`](#darkbloom-report) wait for a `log` child to finish,
 | `--all` | Serve all downloaded models |
 | `--idle-timeout <mins>` | Idle-memory policy, saved to `[backend] idle_timeout_mins` (0 = always ready); skips the memory prompt |
 | `--foreground` | Run in the foreground (used by launchd; normally implicit) |
-| `--local` | Run a local OpenAI server only; do not connect to the coordinator |
-| `--local-endpoint` | Serve a local OpenAI endpoint alongside the coordinator; Darkbloom requests pause while you use it and for `[local] me_first_idle_minutes` after (`[local] me_first`) |
+| `--local` | Only me: serve the local API only; do not connect to the coordinator |
+| `--local-endpoint` | Both, me first (older flag): serve the local API beside the coordinator; Darkbloom requests pause while you use it and for `[local] me_first_idle_minutes` after (`[local] me_first`) |
 | `--port <port>` | Port for `--local` / `--local-endpoint` (default 8000) |
 | `--bind <addr>` | Bind address for local modes (default 127.0.0.1) |
 | `--no-auth` | Disable local API-key auth (trusted/airgapped only) |
@@ -1358,8 +1360,8 @@ Every `darkbloom start` mode preloads selected models with the default
 `startup_preload = true`, regardless of the idle-memory policy. A scheduled
 provider begins this loading at the window opening, not beforehand.
 A coordinator-connected provider prioritizes previously loaded models and
-defers registration for up to `startup_preload_timeout_secs`; standalone
-`--local` finishes preloading before it listens. An explicit `[backend]
+defers registration for up to `startup_preload_timeout_secs`; Only me
+(`--local`) finishes preloading before it listens. An explicit `[backend]
 preload_models` list takes precedence. The slot limit and available memory
 can leave models to load on a later request. `startup_preload = false`
 disables preloading in either mode. The one-token `startup_selftest` and
@@ -1535,7 +1537,7 @@ darkbloom addon release [--force]
 | `release --force` | `false` | Release even while an add-on holds the machine lock, so its VMs may still be using memory |
 
 Without `--force`, `release` refuses while the machine lock is held. A provider
-without add-on support (older, or a standalone `--local` server) is refused
+without add-on support (older, or an Only me `--local` server) is refused
 before anything is sent. The command waits up to 10 seconds for the provider's
 answer. `darkbloom status` prints `Not serving: held by add-on …` while held.
 Code: `provider-swift/Sources/darkbloom/AddonCommand.swift` (`Addon`),
@@ -2891,7 +2893,7 @@ accepts `--json`. Under the default `auto` mode a served checkpoint that embeds 
 drafts without any beta toggle. Exact `gemma-4-26b-qat-4bit` also resolves its
 external assistant automatically; other checkpoints without an embedded
 declaration stay target-only. Missing or invalid assistants fall back to ordinary
-decode. Standalone serving also downloads the verified assistant in the background,
+decode. Only me (`--local`) also downloads the verified assistant in the background,
 using the configured `coordinator.url` catalog, and activates it only when the
 current engine is idle. Existing requests keep their engine; insufficient memory
 or preparation failure preserves target-only serving. Local parity results are not
@@ -2977,7 +2979,8 @@ darkbloom unenroll --keep-serving [--no-open]
 
 ## `darkbloom local`
 
-Print the local (direct-mode) OpenAI endpoint URL and API key.
+Print the local API's address and key: the OpenAI-compatible server of
+**Only me** or **Both, me first** on this Mac.
 
 ```bash
 darkbloom local [--json]
@@ -3202,7 +3205,7 @@ override `provider.toml` for one process, are in
 | `[provider] memory_reserve_gb | 4 | GiB withheld from the selected OS-available/MLX load budget; the larger unified-cap reserve still applies. By default OS availability includes inactive pages or, when larger, the reclaimable file page cache, so this is not a free-page floor. Set process-start DARKBLOOM_MEMORY_AVAILABILITY=free-only for shared hosts; see [memory admission](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/scheduling.md#shared-host-memory-admission). |
 | `[provider] auto_update` | `true` | Startup + periodic self-update; on a `darkbloom cluster` Mac, the pair's coordinated update at its update slot ([cluster service](cluster-always-on.md#the-pairs-coordinated-update)) |
 | `[provider] auto_restart` | `true` | Arm the watchdog LaunchAgent |
-| `[provider] update_jitter_seconds` | `300` | Max random delay before an automatic install or a network provider drains a model for a prepared MTP replacement; serving continues during the delay. `0` disables jitter; capped at `3600`. Standalone MTP upgrades skip this delay. Random staggering provides no fleet availability guarantee (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `updateJitterSeconds`; `provider-swift/Sources/ProviderCore/Update/UpdateJitter.swift`, `delay`; `provider-swift/Sources/ProviderCore/ProviderLoop+MTPDrain.swift`, `waitBeforeMTPUpgradeDrain`) |
+| `[provider] update_jitter_seconds` | `300` | Max random delay before an automatic install or a network provider drains a model for a prepared MTP replacement; serving continues during the delay. `0` disables jitter; capped at `3600`. Only me's (`--local`) MTP upgrades skip this delay. Random staggering provides no fleet availability guarantee (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `updateJitterSeconds`; `provider-swift/Sources/ProviderCore/Update/UpdateJitter.swift`, `delay`; `provider-swift/Sources/ProviderCore/ProviderLoop+MTPDrain.swift`, `waitBeforeMTPUpgradeDrain`) |
 | `[backend] enabled_models` | `[]` | Advertise only these ids; empty = all serveable. When set, it also bounds coordinator model commands and rollouts ([operator filter](../reference/configuration.md#provider-model-selection)) |
 | `[backend] model_cache_directory` | unset | Explicit saved hub directory; set or import once with `models location`, clear with `--reset`. Ambient cache variables never override it; hand-written relative paths are anchored to the config file (`provider-swift/Sources/ProviderCore/Config/ModelCacheConfiguration.swift`, `ConfigManager.modelCacheDirectory`) |
 | `[backend] idle_timeout_mins` | `60` | Unload a model idle this long; `0` disables; paused during active or explicitly paused Autopilot |
@@ -3404,7 +3407,7 @@ automatic updates with `darkbloom autoupdate disable`.
 ## Related
 
 - [Installation](./installation.md) · [Quickstart](./quickstart.md) · [Troubleshooting](./troubleshooting.md)
-- [Direct mode](./direct-mode.md) · [Self-route](./self-route.md) · [Fan control](./fan-control.md) · [Beta features](./beta-features.md) · [Darkbloom Sandbox](./sandboxes.md)
+- [Use your Mac yourself, first](./local-first.md) · [The local API](./direct-mode.md) · [Self-route](./self-route.md) · [Fan control](./fan-control.md) · [Beta features](./beta-features.md) · [Darkbloom Sandbox](./sandboxes.md)
 - [`reference/configuration.md`](../reference/configuration.md) — every environment variable and config key.
 - [Attestation](./attestation.md) — trust levels; [`architecture/security/attestation.md`](../architecture/security/attestation.md) for the mechanism.
 

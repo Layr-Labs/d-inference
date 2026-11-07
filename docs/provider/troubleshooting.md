@@ -105,7 +105,7 @@ and `provider-swift/Sources/darkbloom/Diagnostics/DoctorRunner.swift`, using
 
 | Message | Cause | Fix |
 |---|---|---|
-| `--local and --local-endpoint are mutually exclusive …` | Both flags given | Pick one ([direct mode](./direct-mode.md)) |
+| `--local and --local-endpoint are mutually exclusive …` | Both flags given | Pick one: `--local` for Only me, `--me-first` for Both, me first ([the local API](./direct-mode.md)) |
 | `A debugger is attached. The coordinator will reject this provider.` | `checkDebuggerAttached()` | Detach the debugger |
 | `This Mac has N GB RAM. At least 8 GB is needed to serve any model.` | `Start.runPreflightChecks` (`provider-swift/Sources/darkbloom/Start/StartCommand+Preflight.swift`) | Use a larger machine ([hardware requirements](./hardware-requirements.md)) |
 | `Cannot start: …` | `Start.prepareServeRuntime` — `GPUEnforcement.requireMetal` failed, or the Gemma runtime environment could not be applied (`GemmaOptimizationEnvironment.apply`) | Confirm a Metal GPU (`system_profiler SPDisplaysDataType`); retry |
@@ -262,8 +262,8 @@ request answered. Otherwise its line names why
 
 | Line | What to do |
 |---|---|
-| `… isn't logged in to Darkbloom, so the coordinator won't pair it` | `darkbloom login` on the Mac named, then **Retry**; or **Serve locally only**. |
-| `<Mac> isn't verified by Apple yet; Darkbloom retries by itself at about <time>` | The coordinator pairs only members with a current App Attest authorization. Leave both Macs running and don't restart either until that time (that Mac's local key-generation safeguard; `darkbloom doctor` shows it on the "app attest key" line), then **Retry**; or **Serve locally only**. |
+| `… isn't logged in to Darkbloom, so the coordinator won't pair it` | `darkbloom login` on the Mac named, then **Retry**; or **Serve locally only** (Only me). |
+| `<Mac> isn't verified by Apple yet; Darkbloom retries by itself at about <time>` | The coordinator pairs only members with a current App Attest authorization. Leave both Macs running and don't restart either until that time (that Mac's local key-generation safeguard; `darkbloom doctor` shows it on the "app attest key" line), then **Retry**; or **Serve locally only** (Only me). |
 | `<Mac> lacks free memory for its share` | Quit apps on that Mac, then **Retry**; or **Change model**. |
 | `A part keeps ending the same way: …` | **Diagnostics** saves a redacted file in the home folder to send with a report. |
 
@@ -341,4 +341,4 @@ provider logs or `devicecheckd` evidence.
 - [Installation](./installation.md) · [Quickstart](./quickstart.md).
 - [Attestation](./attestation.md) — trust levels, enrollment, challenge cadence.
 - [Check a missing base reward](./base-rewards.md) — green `doctor` vs missing `model=base_reward`.
-- [Direct mode](./direct-mode.md) · [Fan control](./fan-control.md) · [Beta features](./beta-features.md).
+- [Use your Mac yourself, first](./local-first.md) · [The local API](./direct-mode.md) · [Fan control](./fan-control.md) · [Beta features](./beta-features.md).

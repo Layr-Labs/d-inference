@@ -266,12 +266,91 @@ struct HermesConfigPlanTests {
             "- a\n- b\n",
             "providers:\n  omlx:\n    api: x\nproviders:\n  other:\n    api: y\n",
             "model: \"x\n  y\"\n",
+            "providers:\n- omlx\n",
+            "model:\n- default\n",
+            "model: x\n- y\n",
+            "model:\n  provider: omlx\n  - y\n",
         ]
         for text in cases {
             #expect(F.refusal(plan(text))?.kind == .file, "\(text)")
         }
         // A single leading document marker and an empty providers mapping are fine.
         #expect(F.newText(plan("---\nproviders: {}\n")) == "---\nproviders:\n" + added + block + mainModel)
+    }
+
+    /// What `omlx launch hermes` writes (PyYAML `safe_dump(sort_keys=False)`), and Hermes up to v0.17: lists under
+    /// top-level keys are indentless, so `- item` sits in column 0. That is valid YAML, and Hermes reads it.
+    /// (The independent review's test, as given.)
+    @Test("a config.yaml as PyYAML writes it (indentless top-level lists) is edited, its lists kept")
+    func pyyamlIndentlessLists() throws {
+        let lists = """
+        toolsets:
+        - hermes-cli
+        fallback_providers:
+        - provider: openrouter
+          model: anthropic/claude-sonnet-4
+
+        """
+        let owner = """
+        model:
+          provider: omlx
+          default: Qwen3.6-35B-A3B-4bit
+          context_length: 262144
+        providers:
+          omlx:
+            name: oMLX
+            base_url: http://127.0.0.1:8000/v1
+            api_mode: chat_completions
+
+        """ + lists
+        let result = plan(owner)
+        let text = try #require(F.newText(result), "\(result)")
+        #expect(text.hasSuffix(lists))
+        #expect(text.contains("  provider: \"custom:darkbloom\"\n"))
+        #expect(text.contains("    api_mode: chat_completions\n" + added + "  darkbloom:\n"))
+        #expect(F.newText(plan(text)) == nil)
+    }
+
+    @Test("an indentless list inside the model section is kept, and the keys around it are edited")
+    func indentlessListInTheModelSection() throws {
+        let owner = """
+        model:
+          provider: omlx
+          aliases:
+          - fast
+          - big
+          default: Qwen3.6-35B-A3B-4bit
+        providers:
+          omlx:
+            api: http://127.0.0.1:8000/v1
+
+        """
+        let text = try #require(F.newText(plan(owner)))
+        #expect(text.hasPrefix("""
+        model:
+          provider: "custom:darkbloom"
+          aliases:
+          - fast
+          - big
+          default: "qwen3.8-27b"
+        providers:
+
+        """))
+        #expect(F.newText(plan(text)) == nil)
+    }
+
+    @Test("a stale model.ollama_num_ctx goes too: Hermes applies it to every local endpoint")
+    func removesOllamaNumCtx() throws {
+        let text = try #require(F.newText(plan("""
+        model:
+          provider: ollama-launch
+          default: qwen3.6
+          base_url: http://127.0.0.1:11434/v1
+          ollama_num_ctx: 32768
+
+        """)))
+        #expect(text.hasPrefix("model:\n  provider: \"custom:darkbloom\"\n  default: \"qwen3.8-27b\"\nproviders:\n"))
+        #expect(!text.contains("ollama_num_ctx"))
     }
 
     @Test("the config file: $HERMES_HOME/config.yaml, else ~/.hermes/config.yaml")

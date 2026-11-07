@@ -57,6 +57,9 @@ struct ToolIntegrationTests {
             }
             #expect(undo.hasPrefix("rm '"))
         }
+        // A new Hermes config starts owner-only: it can come to hold other providers' keys. OpenCode's holds none.
+        #expect(posixMode(configFile(of: outcomes[0])) == 0o644)
+        #expect(posixMode(configFile(of: outcomes[1])) == 0o600)
         let opencode = try String(contentsOf: configFile(of: outcomes[0]), encoding: .utf8)
         #expect(opencode.contains("\"apiKey\": \"{file:~/.darkbloom/local_token}\""))
         #expect(opencode.contains("\"maxTokensField\": \"max_tokens\""))
@@ -96,6 +99,27 @@ struct ToolIntegrationTests {
         for outcome in outcomes + [changed] {
             #expect(!String(describing: outcome).contains(sandbox.token))
         }
+    }
+
+    /// OpenCode loads both global files, `.jsonc` last. With the owner's default in `opencode.json` and none in
+    /// `opencode.jsonc`, a `model` added to `.jsonc` would override the owner's. (The independent review's test.)
+    @Test("the owner's default model in opencode.json is kept when Darkbloom edits opencode.jsonc")
+    func defaultModelInTheSiblingFile() throws {
+        let directory = try TemporaryDirectory("review-both-files")
+        let home = directory.file("home")
+        let keyFile = try directory.write(F.freshToken(), to: "home/.darkbloom/local_token", mode: 0o600)
+        try directory.write("{\n  \"model\": \"omlx/Qwen3.6-35B-A3B-4bit\"\n}\n", to: "home/.config/opencode/opencode.json")
+        try directory.write("{\n  \"theme\": \"dark\"\n}\n", to: "home/.config/opencode/opencode.jsonc")
+        let outcome = try ToolIntegration.configure(
+            .opencode, endpoint: IntegrationEndpoint(baseURL: "http://127.0.0.1:8123/v1", keyFile: keyFile),
+            models: F.models, provider: F.provider, environment: ToolIntegrationEnvironment(home: home, variables: [:]))
+        guard case .written(let file, _, _, let summary) = outcome else {
+            Issue.record("expected a written outcome, got \(outcome)")
+            return
+        }
+        #expect(file.lastPathComponent == "opencode.jsonc")
+        #expect(summary.defaultModel == nil)
+        #expect(!(try String(contentsOf: file, encoding: .utf8)).contains("\"model\""))
     }
 
     @Test("XDG_CONFIG_HOME and HERMES_HOME move the files; a dry run writes nothing")

@@ -31,7 +31,8 @@ enum IntegrationTool: String, CaseIterable, Sendable {
         switch self {
         case .opencode:
             OpenCodeConfigPlan.plan(existing: existing, fileName: file.lastPathComponent, endpoint: endpoint,
-                                    models: models, provider: provider, home: home)
+                                    models: models, provider: provider, home: home,
+                                    defaultModelElsewhere: OpenCodeConfigPlan.otherGlobalConfigSetsModel(besides: file))
         case .hermes:
             HermesConfigPlan.plan(existing: existing, endpoint: endpoint, models: models, provider: provider)
         }

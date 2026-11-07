@@ -1171,6 +1171,108 @@ struct ClusterPairControlTests {
         #expect(calls.isEmpty, "\(calls)")
     }
 
+    /// `stop` says "`darkbloom start` on either Mac starts the pair again", and a script (or an agent following
+    /// `cluster status`'s `next`) now finds that true: on DevNet pair-2 it served this Mac alone and stopped at the model
+    /// picker.
+    @Test("`darkbloom start` without a terminal on a stopped pair starts it again with its saved model; exit 0")
+    func startWithoutATerminalStartsAStoppedPair() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent, \.standardErrorContent]) {
+            try await exitWithPair(stoppedPair(), actions: pairActions(serving: false)) { _ in
+                try replaceStandardInput(with: "")
+                try await ClusterPairSummary.$readerForTesting.withValue({ live in live ? servingPair() : stoppedPair() }) {
+                    try await ClusterPairCommands.$waitForTesting.withValue(.init(seconds: 0, interval: 0)) {
+                        try await runCLICommand(Start.self, ["start"])
+                    }
+                }
+            }
+        }
+        #expect(lines(result?.standardOutputContent) == ["This Mac is in a two-Mac cluster with \(otherMac): starting the pair."]
+            + servingBlock + [""])
+        #expect(pairActionCalls(text(result?.standardErrorContent)) == ["ensureService", "serve"])
+    }
+
+    @Test("`darkbloom start` in a terminal on a stopped pair opens the pair's screen, with no question first")
+    func startInATerminalOpensAStoppedPairsScreen() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent, \.standardErrorContent]) {
+            try await exitWithPair(stoppedPair(), actions: pairActions(serving: false)) { _ in
+                try replaceStandardInput(with: "")
+                try await ClusterPairCommands.$terminalForTesting.withValue(true) {
+                    try await ClusterPairCommands.$screenForTesting.withValue({ config in
+                        print("screen: darkbloom cluster (config \(config ?? "default"))")
+                    }) { try await runCLICommand(Start.self, ["start"]) }
+                }
+            }
+        }
+        #expect(lines(result?.standardOutputContent) == [
+            "This Mac is in a two-Mac cluster with \(otherMac): starting the pair.",
+            "screen: darkbloom cluster (config default)", ""])
+        let calls = pairActionCalls(text(result?.standardErrorContent))
+        #expect(calls.isEmpty, "\(calls)")
+    }
+
+    /// The desktop app's Start runs `start --model <id> --config <path>` from its LaunchAgent, stdin `/dev/null`
+    /// (`DesktopBackend.arguments`, `DesktopWorker`). On a paired Mac that is single-Mac serving without --solo.
+    @Test("the app's Start on a paired Mac whose pair is stopped is refused at once by name (exit 64): it never waits or serves")
+    func appStartOnAStoppedPairIsRefused() async {
+        let result = await #expect(processExitsWith: .exitCode(64), observing: [\.standardOutputContent, \.standardErrorContent]) {
+            try await exitWithPair(stoppedPair(), actions: pairActions(serving: false)) { sandbox in
+                try replaceStandardInput(with: "")
+                try await ClusterPairCommands.$waitForTesting.withValue(.init(seconds: 0, interval: 0)) {
+                    try await runCLICommand(Start.self, ["start", "--model", "acme/Alpha-4bit", "--config", sandbox.config.path])
+                }
+            }
+        }
+        #expect(lines(result?.standardOutputContent) == stoppedPair().singleMacOptionsRefusal(["--model"]) + [""])
+        let stderr = text(result?.standardErrorContent)
+        #expect(changingLaunchctlCalls(stderr).isEmpty, "\(changingLaunchctlCalls(stderr))")
+        #expect(pairActionCalls(stderr).isEmpty, "\(pairActionCalls(stderr))")
+    }
+
+    /// `start --solo`, `restart` and `update` stop a started pair's leftover part before serving alone. That may wait for a
+    /// running cluster command and end with nothing changed, so "its saved start is cleared" is said only once it is.
+    @Test("`start --solo` on a Mac whose pair isn't running says its saved start is cleared only once it is")
+    func soloStartSaysClearedOnlyOnceItIs() async {
+        let busy = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            try await exitWithPair(stalePair(), actions: pairActions()) { _ in
+                try await Start.$releaseOutcomeForTesting.withValue(commandStillRunning) {
+                    try await runCLICommand(Start.self, ["start", "--solo", "--model", "acme/Alpha-4bit"])
+                }
+            }
+        }
+        let busyOut = lines(busy?.standardOutputContent)
+        #expect(!busyOut.contains { $0.contains("saved start is cleared") }, "\(busyOut)")
+        #expect(Array(busyOut.prefix(2)) == [stalePair().leftoverStopLine, ClusterPairSummary.releaseWaitLine], "\(busyOut)")
+        let released = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            try await exitWithPair(stalePair(), actions: pairActions()) { _ in
+                try await Start.$releaseOutcomeForTesting.withValue({ _ in .released }) {
+                    try await runCLICommand(Start.self, ["start", "--solo", "--model", "acme/Alpha-4bit"])
+                }
+            }
+        }
+        // Then the single-Mac start goes on (it ends at this sandbox's missing model, never at a refusal).
+        let releasedOut = lines(released?.standardOutputContent)
+        #expect(Array(releasedOut.prefix(2)) == [stalePair().leftoverStopLine,
+            "This Mac's leftover part of the pair stopped, and its saved start is cleared: serving this Mac alone."], "\(releasedOut)")
+    }
+
+    @Test("`restart` of single-Mac serving on a Mac whose pair isn't running never says the saved start is cleared before it is")
+    func restartSaysClearedOnlyOnceItIs() async {
+        let result = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            try await exitWithPair(stalePair(), actions: pairActions()) { sandbox in
+                try leaveStoppedSingleMacPlist(in: sandbox)
+                try await LaunchctlControl.$runnerForTesting.withValue(loadedSingleMacLaunchctl) {
+                    try await Start.$releaseOutcomeForTesting.withValue(commandStillRunning) {
+                        try await ClusterPairCommands.$waitForTesting.withValue(.init(seconds: 0, interval: 0)) {
+                            try await runCLICommand(Restart.self, ["restart"])
+                        }
+                    }
+                }
+            }
+        }
+        #expect(lines(result?.standardOutputContent) == [stalePair().leftoverStopLine, ClusterPairSummary.releaseWaitLine]
+            + ClusterPairSummary.releaseBusyLines + [""])
+    }
+
     @Test("`darkbloom status` leads with the pair block, then this Mac's fields, and no single-Mac Daemon/Traffic lines")
     func statusShowsThePair() async {
         let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {

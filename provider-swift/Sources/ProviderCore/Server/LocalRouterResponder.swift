@@ -261,9 +261,9 @@ public final class LocalRouter: Sendable {
 
     /// A streamed or collected answer, passed through chunk by chunk as it arrives. A client that leaves stops the
     /// request at the coordinator (on `prefer` the network would go on generating, billed): when a chunk can't be
-    /// written, and when its connection closes even while no chunk flows (the request's disconnect scope, which this
-    /// Mac's own streams use too; the server allows half-close, so a client that only half-closes is noticed at the
-    /// next chunk).
+    /// written, and when its connection closes, even while no chunk flows (the request's disconnect scope, which this
+    /// Mac's own streams use too). The server allows input half-close, so a client's normal close (a FIN) is noticed
+    /// only when a chunk can't be delivered; a reset is noticed at once.
     private func relay(_ upstream: LocalRouterUpstreamResponse, hop: LocalRouterUpstreamRoute) -> Response {
         let body = upstream.body, cancel = upstream.cancel
         let scope = LocalRequestCancellation.current

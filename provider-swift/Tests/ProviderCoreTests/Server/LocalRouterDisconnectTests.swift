@@ -24,8 +24,8 @@ struct LocalRouterDisconnectTests {
 
     /// While nothing flows (a long prompt at the other Mac): the stand-in sends one event, then waits 4 s; the client
     /// leaves after the first event, resetting its connection. Only the closed connection can end it: no chunk will
-    /// fail to write for 4 s. (A client that only half-closes is noticed at the next chunk, as for this Mac's own
-    /// streams: the server allows half-close.)
+    /// fail to write for 4 s. (A normal close, a FIN, reads as an input half-close, which the server allows: it is
+    /// noticed when a chunk can't be delivered, as for this Mac's own streams.)
     @Test func aPassedOnStreamEndsAtTheCoordinatorWhenTheClientLeavesWhileNothingFlows() async throws {
         let standIn = try RawSSEStandIn(events: 3, gap: .milliseconds(100), pauseAfterFirst: .seconds(4))
         defer { standIn.stop() }

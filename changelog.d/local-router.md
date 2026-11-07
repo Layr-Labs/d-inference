@@ -9,8 +9,8 @@
   (`--stdin` to pipe it in, `--remove` to remove it). The key is never printed, logged, or written to a file.
 - Tools keep one local URL and the local key. Their own route header is ignored. Answers say who served them
   (`X-Darkbloom-Served-By: this-mac` or `darkbloom`), and the coordinator's errors come back as sent. A balance refusal
-  on the network route says that the network fallback needs a balance. A client that stops reading stops the request
-  at the coordinator too.
+  on the network route says that the network fallback needs a balance. A client that disconnects mid-stream stops the
+  request at the coordinator too.
 - `/v1/models` lists this Mac's models, then your Macs' (and the network's with "My Macs first"), each once, with
   `owned_by` and, when known, `context_length` and `max_output_length`. This Mac's models now say
   `owned_by: "this-mac"` instead of `"local"`. A model this Mac serves is listed once, under its own id, even when your

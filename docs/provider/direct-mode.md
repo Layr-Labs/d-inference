@@ -179,10 +179,11 @@ key is read when a request needs it.
   route. A streamed answer is passed through chunk by chunk as it arrives.
 - **A client that leaves stops the request at the coordinator too,** so the
   network doesn't go on generating, billed, and your other Mac doesn't stay
-  busy: when a chunk can't be written to the client, or when its connection
-  closes, even while nothing flows (a long prompt). A client that only
-  half-closes its connection is noticed at the next chunk, as for this Mac's
-  own streams.
+  busy. A reset connection stops it at once, even while nothing flows (a
+  long prompt). A normal close reads as a half-close, which the local API
+  allows, as for this Mac's own streams, so it stops the request when the
+  next chunk can't be delivered: mid-stream within a chunk or two, during a
+  long prompt at its first token.
 - **What comes back:** the coordinator's answer with its status, body and
   `Retry-After` as sent, plus `X-Darkbloom-Served-By: darkbloom` and
   `X-Darkbloom-Route-Used: self|prefer`. This Mac's own answers carry

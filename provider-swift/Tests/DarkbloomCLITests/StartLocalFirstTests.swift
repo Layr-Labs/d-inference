@@ -31,10 +31,8 @@ private final class ScriptedTerminal: @unchecked Sendable {
     /// `Start.resolveServing` with this terminal, then `saveServingChoice`, as a start that goes ahead does.
     func resolve(_ start: Start, terminal: Bool, keySaved: Bool = false, busy: Set<UInt16> = [],
                  ownLivePort: UInt16? = nil) throws -> StartServing? {
-        let environment = self.environment(terminal: terminal, keySaved: keySaved, busy: busy, ownLivePort: ownLivePort)
-        let serving = try start.resolveServing(terminal: terminal, readInput: environment.readInput,
-                                               emit: environment.emit, accountKeySaved: environment.accountKeySaved,
-                                               ownLivePort: environment.ownLivePort, isFree: environment.isFree)
+        let serving = try start.resolveServing(environment: environment(terminal: terminal, keySaved: keySaved,
+                                                                        busy: busy, ownLivePort: ownLivePort))
         if let serving { try start.saveServingChoice(serving) }
         return serving
     }
@@ -195,9 +193,7 @@ struct StartLocalFirstTests {
         let before = config.bytes
         let terminal = ScriptedTerminal(["3"]).environment(terminal: true)
         let start = try config.start([])
-        let serving = try #require(try start.resolveServing(
-            terminal: true, readInput: terminal.readInput, emit: terminal.emit, accountKeySaved: terminal.accountKeySaved,
-            ownLivePort: terminal.ownLivePort, isFree: terminal.isFree))
+        let serving = try #require(try start.resolveServing(environment: terminal))
         #expect(config.bytes == before)
         try start.saveServingChoice(serving)
         #expect(config.local == LocalSettings(mode: .both, port: firstNewPort))
@@ -305,7 +301,7 @@ struct StartLocalFirstTests {
         for terminal in [false, true] {
             let script = ScriptedTerminal(["1"])
             let local = try #require(try script.resolve(try config.start(["--local"]), terminal: terminal))
-            #expect(local.mode == .local && local.source == .flag("--local") && local.port == defaultPort)
+            #expect(local.mode == .local && local.source == .flag(.local) && local.port == defaultPort)
             #expect(local.bind == "127.0.0.1" && local.change.isEmpty && local.accountKeySaved == nil)
 
             let unified = try #require(try script.resolve(try config.start(["--local-endpoint"]), terminal: terminal))
@@ -356,7 +352,7 @@ struct StartLocalFirstTests {
         defer { config.remove() }
         let script = ScriptedTerminal()
         let serving = try #require(try script.resolve(try config.start(["--me-first"]), terminal: false))
-        #expect(serving.mode == .both && serving.source == .flag("--me-first") && serving.meFirst)
+        #expect(serving.mode == .both && serving.source == .flag(.meFirst) && serving.meFirst)
         #expect(serving.port == firstNewPort && !script.probed.contains(8000))
         #expect(config.local == LocalSettings(port: firstNewPort))
         #expect(serving.portNote == LocalAPIPort.note(chosen: firstNewPort, start: defaultPort))
@@ -364,7 +360,7 @@ struct StartLocalFirstTests {
 
     @Test("the serving process's me first follows the mode it serves, not a saved choice its flags overrode")
     func servedModeDecidesMeFirst() {
-        let both = StartServing(mode: .both, source: .flag("--me-first"), meFirst: true, meFirstIdleMinutes: 5,
+        let both = StartServing(mode: .both, source: .flag(.meFirst), meFirst: true, meFirstIdleMinutes: 5,
                                 route: nil, accountKeySaved: nil, port: 8001, bind: "127.0.0.1", noAuth: false)
         var config = ProviderConfig(provider: ProviderSettings(name: "l4"))
         config.local = LocalSettings(mode: .network, meFirstIdleMinutes: 5)
@@ -420,18 +416,15 @@ struct StartLocalFirstTests {
 
     @Test("refusals name the flags in plain words")
     func refusalWords() {
-        func message(_ arguments: [String]) -> String? {
-            do { _ = try Start.parse(arguments); return nil } catch { return Start.message(for: error) }
-        }
-        #expect(message(["--me-first-idle", "0"])
+        #expect(refusal(["--me-first-idle", "0"])
             == "--me-first-idle must be a whole number of minutes from 1 to 120, not 0.")
-        #expect(message(["--network", "--port", "9000"])
+        #expect(refusal(["--network", "--port", "9000"])
             == "`--network` serves no local API, so `--port` doesn't apply. Drop it, or choose --me-first or --local.")
-        #expect(message(["--choose", "--network"])
+        #expect(refusal(["--choose", "--network"])
             == "`--choose` asks how this Mac serves, so it can't be used with `--network`. Use one.")
-        #expect(message(["--no-me-first", "--local"])
+        #expect(refusal(["--no-me-first", "--local"])
             == "`--no-me-first` applies when this Mac serves Darkbloom and you (--me-first); it doesn't apply with `--local`.")
-        #expect(message(["--route", "everywhere"])?.contains(
+        #expect(refusal(["--route", "everywhere"])?.contains(
             "--route must be this-mac (only this Mac), my-macs (your other Macs, free) or my-macs-first (then the "
                 + "Darkbloom network, billed), not \"everywhere\".") == true)
     }
@@ -535,7 +528,7 @@ struct StartLocalFirstTests {
                 + "Darkbloom network (billed)",
             "           (no API key: --no-auth)",
         ])
-        #expect(serving(.network, key: nil, source: .flag("--network")).summaryLines == [
+        #expect(serving(.network, key: nil, source: .flag(.network)).summaryLines == [
             "  Serving: Darkbloom network — this Mac serves Darkbloom and earns while it runs",
         ])
         #expect(serving(.network, key: nil, source: .today).summaryLines.isEmpty)
@@ -568,7 +561,7 @@ struct StartLocalFirstTests {
         }
         for arguments in [["--local", "--me-first"], ["--network", "--port", "1"], ["--choose", "--network"],
                           ["--no-me-first", "--network"], ["--me-first-idle", "0"], ["--foreground", "--route", "my-macs"]] {
-            lines.append((try? Start.parse(arguments)).map { _ in "" } ?? LocalFirstOptionsTestWords.refusal(arguments))
+            lines.append(refusal(arguments) ?? "")
         }
         lines += LocalFirstStatusFixtures.everyLine()
         let text = lines.joined(separator: "\n")
@@ -583,14 +576,12 @@ struct StartLocalFirstTests {
     }
 }
 
-/// The refusal a set of flags gets, as the person sees it.
-enum LocalFirstOptionsTestWords {
-    static func refusal(_ arguments: [String]) -> String {
-        do {
-            _ = try Start.parse(arguments)
-            return ""
-        } catch {
-            return Start.message(for: error)
-        }
+/// The refusal a set of flags gets, as the person sees it; nil when they parse.
+private func refusal(_ arguments: [String]) -> String? {
+    do {
+        _ = try Start.parse(arguments)
+        return nil
+    } catch {
+        return Start.message(for: error)
     }
 }

@@ -1,24 +1,24 @@
-# Direct mode: a local OpenAI-compatible endpoint
+# The local API: an OpenAI-compatible server on your Mac
 
 > Last updated: 2026-11-07
 
-Run the provider's inference engine as an OpenAI-compatible HTTP server on your
-own Mac, either standalone (`darkbloom start --local`, no coordinator, no
-earnings) or alongside fleet serving (`darkbloom start --local-endpoint`). For
-operators who want their own tools to call the models they already host.
-A request this Mac serves never leaves it and is never billed. With an account
-key saved, one it can't take can go on to your other Macs, free, and with
-`my-macs-first` to the Darkbloom network, billed
+Your Mac's models as an OpenAI-compatible HTTP server for your own tools,
+served two ways: **Only me** (`darkbloom start --local`: no coordinator, no
+earnings) or **Both, me first** (`darkbloom start --me-first`: beside the
+Darkbloom network, which pauses while you use it; `--no-me-first` keeps the two
+sharing the Mac). For anyone whose own tools should call the models this Mac
+hosts. A request this Mac serves never leaves it and is never billed. With an
+account key saved, one it can't take can go on to your other Macs, free, and
+with `my-macs-first` to the Darkbloom network, billed
 ([the local router](#when-this-mac-cant-take-a-request-the-local-router)). In a terminal,
-`darkbloom start` asks once which of these you want ([Use your Mac yourself,
-first](./local-first.md)); unified mode is its **Both, me first**, where
-Darkbloom pauses while you use the local API (`--me-first`; `--no-me-first`
-keeps the two sharing the Mac).
+`darkbloom start` asks once which you want ([Use your Mac yourself,
+first](./local-first.md)); `darkbloom start --opencode` also sets OpenCode up
+([Use it from OpenCode or Hermes](./local-first.md#use-it-from-opencode-or-hermes)).
 
 Chat completions accept `stop` as a string or string array and pass explicit
 `min_p` to the engine. JSON and SSE responses include requested captured
 logprobs and reasoning-token usage when available, using the same HTTP wiring
-as a local cluster endpoint. Capture still depends on the selected native
+as a pair's local API. Capture still depends on the selected native
 runtime: an unsupported cluster mode returns `logprob_capture_unsupported`
 before reservation. Shared API tests do not establish native feature support.
 See [inference and logprob admission](../architecture/inference.md).
@@ -26,32 +26,42 @@ See [inference and logprob admission](../architecture/inference.md).
 ## Prerequisites
 
 - Provider installed ([installation](./installation.md)); no account or
-  `darkbloom login` is needed for `--local`.
+  `darkbloom login` is needed for **Only me**.
 - At least one model downloaded with an engine-v2 adapter (gpt-oss, gemma-4
-  families); `darkbloom models list`.
-- Port `8000` free, or choose another with `--port`.
+  families); `darkbloom models list`. **Only me** serves the models already
+  here; for **Both, me first**, `darkbloom start`'s model list also downloads.
+- A free port. `--local` and `--local-endpoint` use `[local] port`, else `8000`;
+  the start question, a saved choice and `--me-first` take the first free port
+  from 8001 and save it. `--port` picks one yourself.
+
+<!-- pending LS-1: one port per Mac, chosen once from 8001 and used by every start; Only me also gets the model list with downloads. -->
 
 ## Steps
 
-1. Pick a mode. The two flags are mutually exclusive; `darkbloom start`
-   rejects the combination with exit 1
-   (`provider-swift/Sources/darkbloom/Start/StartCommand.swift`, `Start.run`).
+1. Pick how this Mac serves. `--local` and `--me-first` (or `--local-endpoint`)
+   are mutually exclusive; `darkbloom start` refuses the combination
+   (`provider-swift/Sources/darkbloom/Start/StartCommand.swift`, `Start.validate`,
+   `Start.run`).
 
-   | Mode | Command | Coordinator | Models come from | Earns |
+   | Choice | Command | Coordinator | Models come from | Earns |
    |---|---|---|---|---|
-   | Standalone | `darkbloom start --local` | not contacted | `StandaloneServer`'s own slot cache (`provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift`) | no |
-   | Unified | `darkbloom start --local-endpoint` | connected as usual | the live `ProviderLoop` slots — weights load once and local + fleet requests share one continuous-batching engine and KV budget (`provider-swift/Sources/ProviderCore/ProviderLoop+LocalEndpoint.swift`) | yes, for fleet traffic while you are not using the Mac (step 3) |
+   | Only me | `darkbloom start --local` | not contacted | `StandaloneServer`'s own slot cache (`provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift`) | no |
+   | Both, me first | `darkbloom start --me-first` (older flag: `--local-endpoint`) | connected as usual | the live `ProviderLoop` slots — weights load once and local + fleet requests share one continuous-batching engine and KV budget (`provider-swift/Sources/ProviderCore/ProviderLoop+LocalEndpoint.swift`) | yes, for fleet traffic while you are not using the Mac (step 3) |
 
-2. Start standalone. This runs in the current terminal (no LaunchAgent) and
-   installs no service:
+2. Start **Only me**. It runs in the current terminal (no LaunchAgent) and
+   installs no service; a background service that was running stops first
+   (`ServiceDrain.prepareForegroundReplacement`), so once this server ends,
+   nothing serves until the next `darkbloom start`:
 
    ```bash
-   darkbloom start --local --model <model-id>          # or --all, or the picker
-   darkbloom start --local --port 8080 --bind 0.0.0.0  # other port / all interfaces
+   darkbloom start --local                              # every downloaded model it can serve
+   darkbloom start --local --model <model-id>           # only this one (repeatable)
+   darkbloom start --local --port 8080 --bind 0.0.0.0   # another port / every interface
    ```
 
-   `--port` defaults to `8000` (`defaultLocalPort`; a dev build uses its own
-   port, see [Dev build identity](../operations/provider-release.md#dev-build-identity)),
+   `--port` defaults to `[local] port`, else `8000` (`defaultLocalPort`; a dev
+   build uses its own port, see
+   [Dev build identity](../operations/provider-release.md#dev-build-identity)),
    `--bind` to `127.0.0.1`. Before serving,
    `Start.runLocalStandalone` (`provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift`)
    loads or creates the API token, filters the chosen models to those with an
@@ -68,7 +78,7 @@ See [inference and logprob admission](../architecture/inference.md).
    model, which still loads on request. A local GLM qualification load reads its
    weights for its own per-file SHA-256 verification and the tensor reads only;
    that verification is the artifact hash, with no separate weight-hash passes
-   (`GLM5NextManagedLoad.verifiedArtifactSHA256`). Standalone preload does not run the
+   (`GLM5NextManagedLoad.verifiedArtifactSHA256`). Only me's preload does not run the
    coordinator-serving one-token startup self-test. Each preloaded model does run
    the excluded [shape warmup](../architecture/inference.md#model-startup-calibration)
    before the listener opens: a short shader-cache probe, plus the shape cells
@@ -81,16 +91,18 @@ See [inference and logprob admission](../architecture/inference.md).
    `Local server failed to bind <addr>:<port> within 5s` otherwise), writes the
    discovery file and holds a fan-control lease while running
    ([fan control](./fan-control.md)). Ctrl-C stops it and removes the
-   discovery file. Closing the terminal window does the same
-   ([stop signals](./cli-reference.md#graceful-stop-and-restart)), unless the
-   command was started with hangups ignored (for example under `nohup`), in
-   which case it keeps serving.
+   discovery file, and so does `darkbloom stop`. Closing the terminal window
+   does the same ([stop signals](./cli-reference.md#graceful-stop-and-restart)),
+   unless the command was started with hangups ignored (for example under
+   `nohup`), in which case it keeps serving.
 
-3. Or start unified. This goes through the normal LaunchAgent path, so the
-   flags are recorded in the plist and survive reboots:
+   <!-- pending LS-1: Only me serves in the background, after the model list and the memory question; a here flag keeps this terminal server. -->
+
+3. Or start **Both, me first**. This goes through the normal LaunchAgent path,
+   so the flags are recorded in the plist and survive reboots:
 
    ```bash
-   darkbloom start --local-endpoint --port 8000
+   darkbloom start --me-first
    ```
 
    The provider daemon starts the local server in a child task once it is
@@ -98,7 +110,7 @@ See [inference and logprob admission](../architecture/inference.md).
    bind on <host>:<port> (port already in use?)` and keeps serving the fleet;
    restart with a free `--port`. The discovery file is written only after the
    provider's own socket is bound, never on a probe another process could
-   answer (`ProviderLoop.onLocalEndpointBound`). In unified mode a local
+   answer (`ProviderLoop.onLocalEndpointBound`). With Both, me first a local
    request first loads the model if needed and then holds a reservation until
    its stream ends, so the coordinator's advertised capacity reflects local
    load too.
@@ -109,17 +121,18 @@ See [inference and logprob admission](../architecture/inference.md).
    has run for `[local] me_first_idle_minutes` (2 minutes by default).
    Darkbloom requests already running finish. Model lists, health checks,
    `/metrics`, the tokenizer utilities and requests refused before they hold
-   a model do not count. This is on for every unified Mac, including the
-   desktop app's "Alongside the network". To share the Mac between your
-   requests and Darkbloom's, as before, set `me_first = false` under
-   `[local]` in `provider.toml`, then run `darkbloom restart`
+   a model do not count. This is on for every Mac that serves Both, me first,
+   including the desktop app's "Alongside the network". To share the Mac
+   between your requests and Darkbloom's, as before, start once with
+   `--no-me-first`, which saves `me_first = false` under `[local]` in
+   `provider.toml`; `--me-first` turns it back on
    ([configuration](../reference/configuration.md#local-first-use-local),
    [owner pause](../architecture/owner-pause.md)).
 
-4. Get the endpoint and key:
+4. Get the address and key:
 
    ```bash
-   darkbloom local          # Base URL, API key, model list, curl example
+   darkbloom local          # address, key, how this Mac serves, a curl example
    darkbloom local --json   # the raw ~/.darkbloom/local.json record
    ```
 
@@ -145,7 +158,7 @@ See [inference and logprob admission](../architecture/inference.md).
 | API key | `~/.darkbloom/local_token`, mode `0600`; `dk-local-` + base64url of 32 random bytes; created once, reused across restarts | `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift` (`loadOrCreateToken`, `tokenPrefix`) |
 | Discovery record | `~/.darkbloom/local.json`, mode `0600`: `base_url`, `api_key`, `host`, `port`, `pid`, `version`, `updated_at`; removed on graceful shutdown | `LocalEndpoint.Info`, `writeInfo`, `removeInfo` |
 | Directory | `~/.darkbloom`; a dev build (`darkbloom-dev`) uses `~/.darkbloom-dev`. `DARKBLOOM_LOCAL_DIR` replaces it for both files | `LocalEndpoint.directory`, `BuildEnvironment.installDirectory` |
-| Key file for tools | A tool that reads the key from a file instead of keeping a copy (OpenCode's `{file:}`, Hermes' `key_cmd`) uses the file holding exactly the key of the server on that port: `local_token`, or `cluster_local_token` for a pair serving locally. Both files hold only the key and are replaced atomically, never partly written. See the [config writers](../architecture/tool-integrations.md) | `LocalEndpoint.keyFile(forPort:)`, `provider-swift/Sources/ProviderCore/Service/AtomicFile.swift` (`AtomicFile.write`) |
+| Key file for tools | A tool that reads the key from a file instead of keeping a copy (OpenCode's `{file:}`, Hermes' `key_cmd`) uses the file holding exactly the key of the server on that port: `local_token`, or `cluster_local_token` for a pair's API. Both files hold only the key and are replaced atomically, never partly written. See the [config writers](../architecture/tool-integrations.md) | `LocalEndpoint.keyFile(forPort:)`, `provider-swift/Sources/ProviderCore/Service/AtomicFile.swift` (`AtomicFile.write`) |
 | `--bind 0.0.0.0` | Advertised `base_url` uses `127.0.0.1`; other hosts use the machine's address, and `darkbloom local` prints its Bonjour URL on a `network:` line. [`darkbloom cluster local`](./two-mac-cluster.md#serving-locally-only) binds the cluster's API this way by default | `LocalEndpoint.Info.init`, `Local.networkURL` |
 | `--no-auth` | No token check; `api_key` is empty in the discovery record. The [local router](#when-this-mac-cant-take-a-request-the-local-router) then passes nothing on and never uses the account key | `LocalInferenceHTTPConfig.authToken == nil`; `LocalRouterConfig.localKeyRequired` |
 
@@ -173,7 +186,7 @@ take it (`LocalRouter`, `provider-swift/Sources/ProviderCore/Server/LocalRouter*
 
 **Requests from other machines never use the paid network; they can use this
 Mac and your other Macs.** A local API that listens beyond loopback (a pair's
-Both or `cluster local` API on `0.0.0.0`, or any `--bind`) can be reached by
+Both, me first or Only me API on `0.0.0.0`, or any `--bind`) can be reached by
 anyone there with its key, and a request this Mac can't take would go on with
 this Mac's account key. So the router decides per connection, from its TCP
 peer and never from a header (`LocalHTTPClient`): a peer that isn't loopback
@@ -244,17 +257,17 @@ next request reads it again, with no restart.
     `401`);
   - an unreachable coordinator is `502` `darkbloom_unreachable`;
   - an error body that can't be read is `502` `darkbloom_error_unreadable`;
-  - a body over the local endpoint's limit is `413`, before anything else.
+  - a body over the local API's limit is `413`, before anything else.
 - **Never back to this Mac:** the coordinator can't leave one Mac out of a
   `self` request, and a `self` request to a Mac that can't take work waits
   120 s for `429 machine_busy`. So on a Mac that also serves Darkbloom
-  (`--local-endpoint`, or a pair through Darkbloom), when this Mac serves the
+  (Both, me first, or a pair through Darkbloom), when this Mac serves the
   requested model (or a build of the alias it names), the router first asks
   the coordinator's `self` view of that one model (`GET /v1/models/<id>`). With
   no other Mac of yours serving it, `my-macs` answers this Mac's status with
   code `this_mac_only`, and `my-macs-first` answers `prefer`'s `402` without
-  the `self` retry. `--local` and `cluster local` never take coordinator work,
-  so they never ask, and neither does a pair's API without a cluster approval
+  the `self` retry. Only me (`--local`, `cluster local`) never takes coordinator
+  work, so it never asks, and neither does a pair's API without a cluster approval
   (`start --local --distributed`): even when its leader registers with the
   coordinator, it is a control-only member that hosts no pair slot, and the
   `self` view doesn't count it.
@@ -300,6 +313,8 @@ The coordinator's lists are cached for 30 s and the catalog for 5 minutes; a
 coordinator that can't be reached leaves this Mac's models alone in the list
 and is asked again after 10 s. With `this-mac`, the list never leaves the Mac.
 Integrations (OpenCode, Hermes) read this list.
+
+<!-- pending R-FULL: local and direct use offer each model's full context window and every capability; only the Mac's memory bounds a request, and the answer says so; OpenRouter is separate. -->
 
 ## Routes
 
@@ -398,12 +413,15 @@ reasoning. See [Native Flint](../architecture/inference.md#native-flint).
 
 ```bash
 darkbloom local
-curl -s http://127.0.0.1:8000/health
-curl -s http://127.0.0.1:8000/v1/models -H "Authorization: Bearer $(cat ~/.darkbloom/local_token)"
+BASE=$(darkbloom local --json | jq -r .base_url)    # http://127.0.0.1:<port>/v1
+curl -s "${BASE%/v1}/health"
+curl -s "$BASE/models" -H "Authorization: Bearer $(darkbloom local --json | jq -r .api_key)"
 ```
 
-`darkbloom status` shows the local endpoint in unified mode; in standalone mode
-the process prints its listening address and the daemon-state file is not used.
+`darkbloom status` says how this Mac serves, for both choices
+(`Serving: only you, on this Mac …` or `Serving: Darkbloom and you, me first …`),
+from the running provider's `~/.darkbloom/daemon-state.json`, which Only me
+writes too (`StandaloneServer.startLifecycleControl`).
 
 ## Troubleshooting
 
@@ -419,18 +437,18 @@ the process prints its listening address and the daemon-state file is not used.
 
 ## Nemotron Super
 
-In unified mode, chat completions for `nvidia-nemotron-3.5-super` load the
+With Both, me first, chat completions for `nvidia-nemotron-3.5-super` load the
 managed slot through the ordinary local acquisition and run on its owner
 (`provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalEndpointEngine.swift`):
 the controls in the table below apply, prefix reuse uses one partition per
-local endpoint (text checkpoints are complete SSD checkpoints by default; an
+local API (text checkpoints are complete SSD checkpoints by default; an
 image turn reuses only with the resident bank, `DARKBLOOM_PREFIX_CACHE_MEMORY=1`,
 and only checkpoints of the same images at the same positions), a text
 response's `usage.prompt_tokens_details.cached_tokens` counts the prompt tokens
 it restored, and inline images are served as described below, target-only on
 the default speculating owner. Other routes for that id
 (`/v1/completions`, `/v1/responses`) are refused; the generic engine never
-serves Super. Standalone mode (`darkbloom start --local`) does not list it.
+serves Super. Only me (`darkbloom start --local`) does not list it.
 
 ### Experimental Nemotron Super owner fixtures
 
@@ -478,6 +496,8 @@ must retain media/KV and response ownership until native terminal retirement.
 
 ## Related
 
+- [Use your Mac yourself, first](./local-first.md) — Only me, Darkbloom network
+  or Both, me first, and OpenCode or Hermes on this API.
 - [Self-route](./self-route.md) — route your *fleet* requests to your own
   provider through the coordinator instead of a local socket; the local router
   uses it when this Mac can't take a request.
@@ -496,7 +516,7 @@ request after the provider is serving again.
 
 ### Queued cluster requests during a mode change
 
-A cluster host configured for automatic batch replacement keeps the same authenticated local endpoint while changing native modes for queued demand. Running requests finish on their existing workers. Requests still waiting keep their place, cancellation state and original queue wait limit while the old workers release and the replacement loads. A disconnected or expired request is not admitted after loading finishes. Diagnostics report the temporary reconfiguration as not ready; the bounded request queue remains available.
+A cluster host configured for automatic batch replacement keeps the same authenticated local API while changing native modes for queued demand. Running requests finish on their existing workers. Requests still waiting keep their place, cancellation state and original queue wait limit while the old workers release and the replacement loads. A disconnected or expired request is not admitted after loading finishes. Diagnostics report the temporary reconfiguration as not ready; the bounded request queue remains available.
 
 If a short burst drains before planning finishes, the host may retain the metadata-only proposal for up to 30 seconds. It uses that proposal only when fresh requests wait in the same serving generation; an idle endpoint does not reload. The planner considers the largest independently priced capacity first, and the deferred load still checks current memory after both previous workers release. Request cancellation and the original queue wait limit remain unchanged.
 
@@ -514,7 +534,7 @@ copy of the stream (`provider-swift/Sources/ProviderCore/ProviderLoop+ClusterPai
 ([Both, me first](./two-mac-cluster.md#both-me-first-the-pairs-own-api-beside-darkbloom)):
 the cluster service adds `--local-endpoint --port <port> --bind <address>` to
 that part's `darkbloom start --foreground --cluster-member`, with the pair's
-key. Every other member runs none.
+key. Every other member runs none. <!-- pending LS-3: every other member runs the relay darkbloom cluster local uses (ClusterLocalRelay), so tools on each Mac of the pair use their own Mac's address and the same key. -->
 
 | Case | Answer | Source |
 |---|---|---|
@@ -576,7 +596,7 @@ and `provider-swift/Sources/ProviderCore/Inference/Distributed/Observability/Dis
 ### Qwen27 image and video requests on a pair
 
 An installed pair that explicitly reports the Qwen media contract accepts the
-existing OpenAI image/video content parts through the same local endpoint.
+existing OpenAI image/video content parts through the same local API.
 The provider validates the exact registered 27B configuration and resolved
 processor before preparing media. A model name or vision configuration alone
 does not enable the route. The native pair must independently load and report

@@ -1,6 +1,6 @@
 # Add-on hold
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-07
 
 How a local add-on, such as the Darkbloom Sandbox VM host, takes a Mac away
 from inference without disconnecting the provider, and how the provider
@@ -76,7 +76,7 @@ stateDiagram-v2
    (`enforceAddonHoldLeases`, `AddonMachineLock.observe` in
    `provider-swift/Sources/ProviderCore/Addon/AddonHoldPaths.swift`).
 8. Active holds persist in the owner-only runtime directory; a restarted or
-   updated provider closes admission before the local endpoint or startup
+   updated provider closes admission before the local API or startup
    preload can load a model while a lease is valid or the lock is held
    (`restoreAddonHolds`, `startAddonHoldService` called from `run()` in
    `provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift`).

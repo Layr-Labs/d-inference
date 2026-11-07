@@ -9,7 +9,7 @@ fields are in the [protocol reference](../reference/protocol-messages.md#add-on-
 
 ## Context
 
-A provider with a local endpoint beside Darkbloom shares one engine and one KV
+A provider serving **Both, me first**, its local API beside Darkbloom, shares one engine and one KV
 budget between the owner's requests and Darkbloom's. The owner pause gives the
 owner the Mac: Darkbloom work stops arriving while the owner uses it, nothing
 already accepted is cut, and the Mac goes back to Darkbloom on its own.
@@ -40,7 +40,7 @@ clock the caller supplies. `ProviderLoop+MeFirst.swift` in
 
 | API | Behaviour |
 |---|---|
-| `enableMeFirst(idle:)` | Turns the pause on with the owner's idle time (`[local] me_first_idle_minutes`, 2 minutes by default). The first call wins; a changed setting applies at the next start. The local endpoint calls it as it starts, where me first applies (below); a pair's leader enables it from `[local]` ([pairs](#pairs)). |
+| `enableMeFirst(idle:)` | Turns the pause on with the owner's idle time (`[local] me_first_idle_minutes`, 2 minutes by default). The first call wins; a changed setting applies at the next start. The local API calls it as it starts, where me first applies (below); a pair's leader enables it from `[local]` ([pairs](#pairs)). |
 | `noteLocalUse(.start)` | A local request acquired a model: `acquireModelForLocal` calls it right after taking the request's reservation (on a pair's leader, `noteClusterPairLocalUse`). The first one pauses Darkbloom work. |
 | `noteLocalUse(.end)` | It released the model: `releaseLocalReservation` calls it when it drops that reservation. The end of the last one starts the idle countdown. Every start is paired with one end; an unmatched end changes nothing. |
 | `resumeIfOwnerIdle()` | Ends the pause once the idle time has passed. The resume timer calls it. A fresh coordinator connection makes the same check before its first heartbeat (`reassertOwnerPauseAfterReconnect`). On a pair's leader the member beat calls it too. |
@@ -75,19 +75,19 @@ which reads `[local]` from the loaded config through
 
 | Provider | Me first |
 |---|---|
-| `start --local-endpoint`: the local endpoint beside the coordinator | On, mode `both`, unless `[local] me_first = false`; idle `me_first_idle_minutes` (default `2`) |
+| Both, me first (`start --me-first` or `--local-endpoint`): the local API beside the coordinator | On, mode `both`, unless `[local] me_first = false`; idle `me_first_idle_minutes` (default `2`) |
 | The same with `[local] me_first = false`, or a saved `mode` other than `both` | Off: local and Darkbloom requests share the Mac, and the heartbeat is unchanged |
-| Plain `start`, and a cluster member without the pair's slot | Off: no local endpoint |
+| Darkbloom network (plain `start`, `--network`), and a cluster member without the pair's slot | Off: no local API |
 | A pair's leader with its local API beside Darkbloom | See [pairs](#pairs) |
-| `start --local` (`StandaloneServer`) | None: no coordinator, so no `ProviderLoop` and nothing to pause |
+| Only me (`start --local`, `StandaloneServer`) | None: no coordinator, so no `ProviderLoop` and nothing to pause |
 
 With no `[local]` section it is on, so a Mac that already served with
 `--local-endpoint` before this change pauses from its first start after the
-update. That includes the desktop app's "Alongside the network", which starts
-the provider with `--local-endpoint`. To turn it off, set `me_first = false`
-under `[local]` in `provider.toml` (`~/.config/darkbloom/provider.toml`), then
-restart serving (`darkbloom restart`): the setting is read when the provider
-starts.
+update. That includes the desktop app's "Alongside the network" (Both, me
+first), which starts the provider with `--local-endpoint`. To turn it off,
+start once with `--no-me-first`, which saves `me_first = false` under `[local]`
+in `provider.toml` (`~/.config/darkbloom/provider.toml`): the setting is read
+when the provider starts.
 
 ### What counts as use
 
@@ -249,7 +249,7 @@ without the GPU.
 
 `MeFirstSettingsTests` pins where me first applies. `LocalUseOwnerPauseTests`
 checks that `startLocalEndpoint` turns me first on as `[local]` says, and
-sends requests through the local endpoint's own HTTP application
+sends requests through the local API's own HTTP application
 (`makeLocalEndpointApplication`) to a slot whose engine the test scripts:
 the pause and the resume, refused requests and the routes that are not use,
 `me_first = false` with the heartbeat compared byte for byte, one start and

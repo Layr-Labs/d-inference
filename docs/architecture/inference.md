@@ -7598,7 +7598,11 @@ flowchart LR
    is unchanged.
 6. The owner-pause hook `noteClusterPairLocalUse` brackets each local request
    once: from when it starts waiting for a lane, or takes one, until it leaves
-   without one or its lane is released.
+   without one or its lane is released. With me first on (`[local]`), it drives
+   the leader's [owner pause](owner-pause.md#pairs): the leader's heartbeat
+   drains for the owner, which takes the whole pair out of routing until two
+   idle minutes after the owner's last request, while every other member stays
+   as it is.
 7. Nothing keys on two ranks: the host is a serving role, not a rank, and the
    pair engine takes any identity of two or more distinct peers
    (`DistributedResidentIdentity.validate`).

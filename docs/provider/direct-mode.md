@@ -363,6 +363,16 @@ follows it), admission opens, a drain begins or the slot retires. A request
 that finds a lane free and nobody waiting takes it at once. Darkbloom requests
 never wait for this queue, and their path through the pair is unchanged.
 
+Me first applies to the whole pair. From the moment one of your requests
+starts waiting for a lane, the leader's heartbeat says `draining` with
+`busy_reason: owner`, and the pair takes no new Darkbloom requests. Darkbloom
+requests already running finish; one that races the heartbeat is refused with
+the typed draining answer and goes to another Mac. Two minutes after your last
+request ends (`[local] me_first_idle_minutes`), the pair takes Darkbloom
+requests again. `[local] me_first = false` keeps the shared serving above. The
+other members don't change, and the pair keeps its session and its loaded
+model ([owner pause](../architecture/owner-pause.md#pairs)).
+
 ### Speed records of cluster requests
 
 A cluster endpoint records how fast each request ran that computed its whole

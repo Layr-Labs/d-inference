@@ -76,16 +76,36 @@ final class RouterTransportFactory: @unchecked Sendable {
     }
 }
 
-/// An in-memory key store that counts its reads: this Mac's path reads none.
+/// An in-memory key store that counts its reads (this Mac's path reads none), and can fail them as a Keychain that
+/// won't hand the key over does.
 final class CountingAccountKeyStore: LocalRouterAccountKeyStore, @unchecked Sendable {
     private let lock = NSLock()
     private var key: String?
     private var reads = 0
+    private var failure: OSStatus?
     init(_ key: String?) { self.key = key }
     var loads: Int { lock.withLock { reads } }
-    func load() throws -> String? { lock.withLock { reads += 1; return key } }
+    /// Every read from now on fails with `status`; nil: reads succeed again.
+    func failReads(with status: OSStatus?) { lock.withLock { failure = status } }
+    func load() throws -> String? {
+        try lock.withLock {
+            reads += 1
+            if let failure { throw LocalRouterAccountKeyError.keychain(operation: "read", status: failure) }
+            return key
+        }
+    }
     func save(_ key: String) throws { lock.withLock { self.key = key } }
     func remove() throws { lock.withLock { key = nil } }
+}
+
+/// Whether `condition` holds within 2 s, polled.
+func holdsWithinTwoSeconds(_ condition: @Sendable () -> Bool) async -> Bool {
+    let deadline = ContinuousClock.now + .seconds(2)
+    while !condition() {
+        guard ContinuousClock.now < deadline else { return false }
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+    return true
 }
 
 /// Every line the router logs.
@@ -195,10 +215,13 @@ struct RouterFixture {
         self.localModels = localModels
         self.localLimits = localLimits
         let factory = factory, log = log
-        routerConfig = router ? LocalRouterConfig(
+        var config = LocalRouterConfig(
             settings: LocalSettings(route: route), upstreamBaseURL: Self.upstreamBase,
             takesCoordinatorWork: takesCoordinatorWork, accountKeys: keys,
-            makeTransport: { factory.make() }, log: { log.append($0) }, timing: timing) : nil
+            makeTransport: { factory.make() }, log: { log.append($0) }, timing: timing)
+        // A change notification of this fixture's own, never an install's `route key` one.
+        config.keyChangeNotification = "io.darkbloom.test.route-key-changed." + UUID().uuidString
+        routerConfig = router ? config : nil
     }
 
     /// One endpoint over this fixture's engine, router and coordinator; each call makes a new application.

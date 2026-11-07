@@ -169,10 +169,13 @@ take it (`LocalRouter`, `provider-swift/Sources/ProviderCore/Server/LocalRouter*
 |---|---|
 | `this-mac` (the default without an account key) | This Mac's own answer; nothing leaves the Mac |
 | `my-macs` (the default once a key is saved) | Passed to the coordinator with `X-Darkbloom-Route: self`: only your Macs answer, free |
-| `my-macs-first` | Passed to the coordinator with `X-Darkbloom-Route: prefer`: your Macs first, then the network, billed to your balance. The coordinator picks among the Macs that can take the request now, so a busy Mac of yours doesn't hold it. `prefer` needs a balance even when one of your Macs answers: on its `402`, the request is sent once more with `self` (your Macs only, free) |
+| `my-macs-first` | Passed to the coordinator with `X-Darkbloom-Route: prefer`: your Macs first (free), then the network, billed to your balance. The coordinator picks among the Macs that can take the request now, so a busy Mac of yours doesn't hold it while another Mac, yours or the network's, can take it. `prefer` reserves the price up front even when one of your Macs answers: on any `402` (no balance, or the key's spend cap), the request is sent once more with `self` (your Macs only, free, never spending) |
 
-The route is read when the local API starts (a change needs a restart); the
-key is read when a request needs it.
+The route is read when the local API starts (a change needs a restart). The
+key is read once, by the first request that needs it, and kept in memory:
+`darkbloom route key` tells a running local API when it saves or removes the
+key (a Darwin notification, `<keychain prefix>.route-key-changed`), and the
+next request reads it again, with no restart.
 
 - **Save the key:** `darkbloom route key` (hidden input, or `--stdin`), from
   the Darkbloom console. It is checked once with `GET /v1/models` and
@@ -180,6 +183,16 @@ key is read when a request needs it.
   printed, logged, or written to `provider.toml`, `local.json` or a tool's
   config, and a running local API uses it from its next request: no restart.
   `darkbloom route key --remove` keeps every request on this Mac again.
+- **Reading the key never asks.** The local API reads the key without a
+  Keychain dialog, so a request never waits on one. When the Keychain won't
+  hand the key over without asking (a locked keychain, or a new local build
+  the item doesn't trust yet), the local API says so once in its log and keeps
+  requests on this Mac; a failed read isn't kept, so the next request tries
+  again. Run `darkbloom route key` again to let a new build read it. Signed
+  builds read the data-protection Keychain, which never asks. Unsigned and
+  ad-hoc builds keep the key in the login keychain, and only that read turns
+  off the process-wide `SecKeychainSetUserInteractionAllowed` switch, for its
+  moment.
 - **Without a local key (`--no-auth`) nothing is passed on.** Anything that
   reaches the port is then a client, a web page included, so the router
   serves this Mac only, never reads the account key and never dials the
@@ -209,9 +222,12 @@ key is read when a request needs it.
   `Retry-After` as sent, plus `X-Darkbloom-Served-By: darkbloom` and
   `X-Darkbloom-Route-Used: self|prefer`. This Mac's own answers carry
   `X-Darkbloom-Served-By: this-mac`. These answers are this Mac's own words:
-  - a `402` from `prefer` that `self` couldn't turn into an answer starts its
-    message with `No balance for the network fallback:` (status, type, code
-    and `Retry-After` unchanged);
+  - a `402` from `prefer` that `self` couldn't turn into an answer keeps its
+    status, type, code and `Retry-After`. Its message starts with
+    `No balance for the network fallback:` when Darkbloom's `error.type` is
+    `insufficient_funds`, and with `Network fallback refused:` for any other
+    reason (the key's spend cap, a promotion's limit), followed by
+    Darkbloom's own message;
   - a refused account key is `502` `account_key_refused` (not the client's
     `401`);
   - an unreachable coordinator is `502` `darkbloom_unreachable`;
@@ -230,8 +246,12 @@ key is read when a request needs it.
 - **Timeouts:** 10 s to put a request on the wire, then up to 5 minutes
   without a byte, with no limit on a stream's length. With `my-macs`, a `self`
   request for a model only busy Macs of yours serve queues at the coordinator
-  for up to 120 s before `429 machine_busy`; `my-macs-first` doesn't wait
-  there. Model lists from the coordinator wait at most 3 s.
+  for up to 120 s before `429 machine_busy`. `my-macs-first` doesn't wait on a
+  busy Mac of yours while another Mac, yours or the network's, can take the
+  request now. When none can, the coordinator queues the `prefer` request too,
+  for up to 120 s before `429 machine_busy`, and keeps it queued while you
+  have a Mac serving the model. Model lists from the coordinator wait at most
+  3 s.
 - **A plain `ws://` coordinator URL** (a test coordinator) sends the account
   key without TLS, as the provider already sends its own token there.
 - **`max_completion_tokens`:** every local API serves a chat request that

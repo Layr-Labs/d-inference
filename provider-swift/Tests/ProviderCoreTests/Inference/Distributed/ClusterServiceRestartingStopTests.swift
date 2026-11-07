@@ -453,6 +453,42 @@ struct ClusterServiceRestartingStopTests {
         }
     }
 
+    /// The memory re-plan (`noteMemoryRefusal`: this Mac's part refused at load twice) comes due when a part ends, so
+    /// also right after the owner stops the pair with `darkbloom stop`. It waits for the command lock that stop holds,
+    /// then plans, adopts and serves: `localServe` saves the start again, and the pair the owner stopped starts. Once it
+    /// holds the lock it acts only on a start still saved and a claim still confirmed.
+    @Test(arguments: ["the owner stopped the pair", "control moved to the other Mac"])
+    func aMemoryReplanRightAfterAStopOrAHandOverDoesNothing(_ meanwhile: String) throws {
+        let (macs, service) = try leader()
+        try withExtendedLifetime(macs) {
+            try Self.confirmedLeader(service, macs)
+            let replanned = ClusterApprovalRecorder<Bool>(), lines = ClusterApprovalRecorder<String>()
+            let offered = ClusterOnboardingModelChoice(title: ClusterApprovalMacs.model, lines: ["fixture plan"], blocker: nil,
+                                                       modelID: ClusterApprovalMacs.model)
+            // `serve` stands in for `OnboardingLive.localServe`'s first write.
+            service.memoryReplan = .init(reachMembers: { replanned.append(true); return .success([]) },
+                planModels: { .success([offered]) }, adopt: { _ in .success([]) },
+                serve: { _ = try? service.store.updateRecord { $0.leadership?.serving = true }; return .success([]) })
+            // The owner's command holds the command lock as the re-plan comes due.
+            let held = try #require(ClusterControlCommandLock.acquire(seconds: 0, file: Self.commandLock(service)))
+            let done = DispatchSemaphore(value: 0)
+            Thread.detachNewThread {
+                service.replanForMemory(model: ClusterApprovalMacs.model) { lines.append($0) }
+                done.signal()
+            }
+            if meanwhile == "the owner stopped the pair" {
+                guard case .success = Self.stop(service, otherMac: {})() else { Issue.record("the owner's stop failed"); return }
+            } else {
+                service.lock.withLock { service.control = Self.node(macs, leader: macs.follower.memberID, term: 2) }
+            }
+            held.release()
+            #expect(done.wait(timeout: .now() + 20) == .success, "the re-plan did not end")
+            #expect(replanned.values.isEmpty, "the memory re-plan went on after \(meanwhile): \(lines.values)")
+            let serving = try service.store.readRecord().leadership?.serving
+            #expect(serving == (meanwhile != "the owner stopped the pair"), "\(meanwhile): the start is \(String(describing: serving))")
+        }
+    }
+
     /// The re-plan after an update in the actual service loop, its stop failing at the other Mac (B6): the pair stays
     /// started, and the re-plan is tried again 10 minutes later (`ClusterOnboardingUpdate.retryAfterFailureSeconds`), not
     /// at every tick. The test moves the next check instead of waiting for it.

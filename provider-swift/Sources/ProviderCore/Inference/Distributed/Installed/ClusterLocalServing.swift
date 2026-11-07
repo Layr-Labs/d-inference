@@ -106,10 +106,9 @@ public enum ClusterLocalServing {
         return base + ["--local-endpoint", "--port", String(port), "--bind", bind]
     }
 
-    /// Never taken by a new local API, a pair's or a single Mac's (the single-Mac start reads it as
-    /// `LocalSettings.neverChosenPorts`): 8000, where other local AI apps listen (oMLX on the owner's Mac), and the
-    /// cable ports pairs pair and talk on, production's (`pairPortsWords`) and this build's own. A port choice skips
-    /// them before it probes, so none is ever even test-bound.
+    /// Never taken by a new local API, a pair's or a single Mac's (`LocalSettings.neverChosenPorts`): 8000, where other
+    /// local AI apps listen (oMLX on the owner's Mac), and the cable ports pairs pair and talk on: production's
+    /// (`pairPortsWords`) and this build's own.
     public static let neverChosenPorts: Set<Int> =
         Set([8000] + [ClusterCablePorts(environment: .prod), .current].flatMap(pairPorts))
 

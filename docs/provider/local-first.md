@@ -41,7 +41,9 @@ To answer again, run `darkbloom start --choose`.
 Starts without a terminal never ask: the service that macOS starts at login, the
 Darkbloom app, and scripts. Until you choose in a terminal, they keep doing
 exactly what they did before: the Darkbloom network, with no local API and no
-new port. Once you've chosen, they use your choice.
+new port. Once you've chosen, they use your choice, except **Only me**, which
+serves in a terminal: a start without one says so and stops before it changes
+anything.
 
 You can also name the choice for one start, in a terminal or not:
 

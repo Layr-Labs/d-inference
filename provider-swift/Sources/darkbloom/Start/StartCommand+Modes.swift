@@ -169,6 +169,10 @@ extension Start {
             throw ExitCode.failure
         }
         print("Listening on \(bind):\(port)")
+        // Only now that the start went ahead does "Only me" (or the port it chose) become the saved choice: a start
+        // refused above (no model it can serve, the running provider's drain, a port another program holds) saves
+        // nothing.
+        try saveServingChoice(serving)
 
         await server.startLifecycleControl()
 

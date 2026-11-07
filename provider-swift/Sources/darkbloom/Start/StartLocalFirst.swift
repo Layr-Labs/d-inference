@@ -100,7 +100,8 @@ struct LocalFirstOptions: Equatable, Sendable {
 
     /// How this start's mode is decided, in order: a mode flag; `--choose`, the question again; the saved choice;
     /// the question, in a terminal. Without a terminal and without a saved choice: `.today`, the Darkbloom network
-    /// with no local API. The --foreground service never asks: its flags say how it serves.
+    /// with no local API; a saved "Only me" without a terminal is refused. The --foreground service never asks: its
+    /// flags say how it serves.
     func modeStep(saved: LocalSettings?, terminal: Bool) throws -> ServingStep {
         if let flag = modeFlag { return .decided(flag.mode, .flag(flag)) }
         // Today's plain start, as `LocalSettings.launchMode` reads it without --local or --local-endpoint.
@@ -113,7 +114,16 @@ struct LocalFirstOptions: Equatable, Sendable {
             }
             return .ask(preselected: saved?.mode ?? .both)
         }
-        if let mode = saved?.mode { return .decided(mode, .saved) }
+        if let mode = saved?.mode {
+            // "Only me" serves in the terminal that starts it. Without one (the desktop app's Start, a script) it would
+            // be a server its caller waits on forever, after stopping the running provider: refuse before anything.
+            guard mode != .local || terminal else {
+                throw ValidationError("This Mac is set to Only me, which serves in a terminal. Run "
+                    + "`\(BuildEnvironment.current.cliName) start` in one, or name how to serve: --local, --network or "
+                    + "--me-first.")
+            }
+            return .decided(mode, .saved)
+        }
         return terminal ? .ask(preselected: .both) : .decided(today, .today)
     }
 }

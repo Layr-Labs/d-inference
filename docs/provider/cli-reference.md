@@ -246,7 +246,11 @@ A single-Mac `start` decides how this Mac serves (`StartServingResolver`,
 1. A mode flag, for this start only: `--local`, `--network`, `--me-first` or
    `--local-endpoint`.
 2. `--choose` (a terminal only): the question again.
-3. The saved choice, `[local] mode`, with or without a terminal.
+3. The saved choice, `[local] mode`, with or without a terminal. A saved
+   `local` (Only me) serves in a terminal, so without one the start is refused
+   before anything stops or starts (exit 64): ``This Mac is set to Only me,
+   which serves in a terminal. Run `darkbloom start` in one, or name how to
+   serve: --local, --network or --me-first.``
 4. In a terminal (stdin and stdout), the question, after the terms notice and
    before the model picker:
 
@@ -272,8 +276,8 @@ A single-Mac `start` decides how this Mac serves (`StartServingResolver`,
 
 Only the question saves a mode. The answer, its follow-up and the local API's
 port are written to `[local]` once the start goes ahead (after the model
-picker; for "Only me", before it serves), so a cancelled or refused start
-saves nothing; "Only me" with `--schedule` or `--autopilot` is refused before
+picker; for "Only me", once its server listens), so a cancelled or refused
+start saves nothing; "Only me" with `--schedule` or `--autopilot` is refused before
 saving. **Only me** then serves in this terminal as `--local` does (Ctrl-C
 drains it); **Darkbloom network** and **Both, me first** install the
 LaunchAgent with the arguments `--local-endpoint` has always used

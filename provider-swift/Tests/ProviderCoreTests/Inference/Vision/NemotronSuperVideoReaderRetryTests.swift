@@ -135,26 +135,24 @@ struct NemotronSuperVideoReaderRetryTests {
 
 /// Holds read number `read` for `seconds` on the reader's queue, as a
 /// decoder slowed by a loaded machine does, and counts the readers that read.
-/// It keeps each reader, as `ReaderEnder` does, so a freed reader's address
-/// cannot hide a second reader.
 private final class SlowRead: @unchecked Sendable {
     private let lock = NSLock()
     private let read: Int
     private let seconds: TimeInterval
     private var reads = 0
-    private var seen: [AVAssetReader] = []
+    private var order = ReaderOrder()
 
     init(atRead read: Int, seconds: TimeInterval) {
         self.read = read
         self.seconds = seconds
     }
 
-    var readers: Int { lock.withLock { seen.count } }
+    var readers: Int { lock.withLock { order.readerCount } }
 
     var hook: @Sendable (AVAssetReader) -> Void {
         { [self] reader in
             let hold = lock.withLock { () -> Bool in
-                if !seen.contains(where: { $0 === reader }) { seen.append(reader) }
+                order.count(readBy: reader)
                 reads += 1
                 return reads == read
             }

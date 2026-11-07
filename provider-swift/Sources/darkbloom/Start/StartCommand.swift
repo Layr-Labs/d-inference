@@ -105,11 +105,12 @@ struct Start: AsyncParsableCommand {
                           bind: bindOption, noAuth: noAuth, foreground: foreground)
     }
 
-    /// How this start serves from its flags alone, as before `[local]`: for callers that resolved nothing.
+    /// How this start serves from its flags alone, as before `[local]`: for callers that resolved nothing (tests that
+    /// call a serving mode directly).
     var servingFromFlags: StartServing {
-        let named = localFirstOptions.flagMode
-        let mode = named?.mode ?? LocalSettings.launchMode(local: local, localEndpoint: localEndpoint)
-        return StartServing(mode: mode, source: named.map { .flag($0.flag) } ?? .today,
+        let flag = localFirstOptions.modeFlag
+        let mode = flag?.mode ?? LocalSettings.launchMode(local: local, localEndpoint: localEndpoint)
+        return StartServing(mode: mode, source: flag.map { .flag($0) } ?? .today,
                             meFirst: mode == .both && meFirst != false,
                             meFirstIdleMinutes: meFirstIdle ?? LocalSettings.defaultMeFirstIdleMinutes, route: route,
                             accountKeySaved: nil, port: port, bind: bind, noAuth: noAuth)
@@ -569,16 +570,7 @@ struct Start: AsyncParsableCommand {
 
     /// How this start serves (`StartServingResolver`), with the question asked in a terminal; nil when the person
     /// cancelled at the question. Nothing is saved yet: `saveServingChoice` saves once the start goes ahead.
-    func resolveServing(
-        terminal: Bool = ClusterPairCommands.isTerminal(),
-        readInput: @escaping () -> String? = { readLine() },
-        emit: @escaping (String) -> Void = { print($0, terminator: ""); fflush(stdout) },
-        accountKeySaved: @escaping () -> Bool = { Start.accountKeySaved() },
-        ownLivePort: @escaping () -> UInt16? = { LocalEndpoint.readLiveInfo()?.port },
-        isFree: @escaping (UInt16) -> Bool = { ClusterLocalServing.portIsFree(Int($0)) }
-    ) throws -> StartServing? {
-        let environment = ServingEnvironment(terminal: terminal, readInput: readInput, emit: emit,
-                                             accountKeySaved: accountKeySaved, ownLivePort: ownLivePort, isFree: isFree)
+    func resolveServing(environment: ServingEnvironment = .live) throws -> StartServing? {
         guard let serving = try StartServingResolver.resolve(
             localFirstOptions, saved: try savedLocalSettings(configPath: configOptions.config), environment: environment)
         else { return nil }
@@ -606,7 +598,7 @@ struct Start: AsyncParsableCommand {
 
     /// Whether the local router's account key is in this Mac's Keychain. Never prints it.
     static func accountKeySaved(_ store: any LocalRouterAccountKeyStore = KeychainLocalRouterAccountKeyStore()) -> Bool {
-        ((try? store.load()) ?? nil)?.isEmpty == false
+        (try? store.load())?.isEmpty == false
     }
 
     /// Backward-compatible forwarding shim for the process-start environment

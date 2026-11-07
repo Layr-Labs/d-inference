@@ -1,6 +1,12 @@
 import Foundation
 import ProviderCore
 
+extension DaemonState {
+    /// Whether the provider that wrote this state serves only its owner: the coordinator-less server (`--local`,
+    /// "Only me") is the only one that writes no runtime capabilities.
+    var servesOnlyItsOwner: Bool { runtimeCapabilities == nil }
+}
+
 extension Status {
     /// How this Mac serves now, from the running provider: a `Serving:` line (and one more while Darkbloom requests
     /// finish under a pause), then, with a local API, where your requests go. `accountKeySaved` is asked only then.
@@ -10,8 +16,7 @@ extension Status {
                              timeZone: TimeZone = .current) -> [String] {
         guard liveEndpoint?.pid == state.pid else { return ["Serving: Darkbloom network only — this Mac has no local API"] }
         var lines: [String]
-        if state.runtimeCapabilities == nil {
-            // Only the coordinator-less server (`--local`, "Only me") writes a state without capabilities.
+        if state.servesOnlyItsOwner {
             lines = ["Serving: only you, on this Mac — Darkbloom never contacts this Mac"]
         } else if let meFirst = state.meFirst {
             lines = meFirstLines(meFirst, now: now, timeZone: timeZone)

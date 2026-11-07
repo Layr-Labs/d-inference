@@ -1,6 +1,6 @@
 # Use your Mac yourself, first
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-07
 
 Your Mac can serve three ways:
 
@@ -9,9 +9,6 @@ Your Mac can serve three ways:
 | **Only me, on this Mac** | Darkbloom never contacts this Mac. Your own tools use its local API. |
 | **Darkbloom network** | This Mac serves Darkbloom and earns while it runs. It has no local API. |
 | **Both, me first** | This Mac serves Darkbloom while you aren't using it. When you use it, Darkbloom traffic pauses, and it comes back once you've been idle for 2 minutes. |
-
-None of these choices says anything about speed: pick the one that fits how you
-use your Mac.
 
 ## Choose once
 

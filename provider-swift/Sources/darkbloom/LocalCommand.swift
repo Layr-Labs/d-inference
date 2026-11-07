@@ -64,8 +64,7 @@ struct Local: AsyncParsableCommand {
         }
         print("  pid:      \(info.pid)")
         if let state = DaemonStateFile.read(), state.pid == info.pid {
-            let saved: LocalSettings? = (try? savedLocalSettings(configPath: nil)) ?? nil
-            let route = saved?.route
+            let route = (try? savedLocalSettings(configPath: nil))?.route
             for line in Self.servingLines(info: info, state: state, route: route,
                                           accountKeySaved: { Start.accountKeySaved() }) {
                 print(line)
@@ -94,7 +93,7 @@ struct Local: AsyncParsableCommand {
                              accountKeySaved: () -> Bool) -> [String] {
         guard let state, state.pid == info.pid else { return [] }
         let serving: String
-        if state.runtimeCapabilities == nil {
+        if state.servesOnlyItsOwner {
             serving = LocalFirstWords.serving(mode: .local, meFirst: false, idleMinutes: 0)
         } else if let meFirst = state.meFirst {
             serving = LocalFirstWords.serving(mode: .both, meFirst: true,

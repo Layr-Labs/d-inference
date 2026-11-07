@@ -104,10 +104,9 @@ struct StartToolIntegrationTests {
             var remaining = answers
             let start = try Start.parse(["--opencode", "--hermes", "--config", config.path])
             do {
-                _ = try start.resolveServing(terminal: terminal,
-                                             readInput: { remaining.isEmpty ? nil : remaining.removeFirst() },
-                                             emit: { _ in }, accountKeySaved: { false }, ownLivePort: { nil },
-                                             isFree: { _ in true })
+                _ = try start.resolveServing(environment: ServingEnvironment(
+                    terminal: terminal, readInput: { remaining.isEmpty ? nil : remaining.removeFirst() },
+                    emit: { _ in }, accountKeySaved: { false }, ownLivePort: { nil }, isFree: { _ in true }))
                 Issue.record("no local API must refuse the tools")
             } catch let error as ValidationError {
                 #expect(error.message == refusal)

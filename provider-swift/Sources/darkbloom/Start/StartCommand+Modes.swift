@@ -19,6 +19,7 @@ extension Start {
         serving resolved: StartServing? = nil
     ) async throws {
         let serving = resolved ?? servingFromFlags
+        // The resolved address, which `[local]` may set, shadows `Start.port` and `Start.bind` (the flags alone).
         let (port, bind) = (serving.port, serving.bind)
         warnBootSecurity(snapshot: bootSecuritySnapshot, coordinatorEnforced: false)
 
@@ -72,7 +73,7 @@ extension Start {
         let baseURL = serving.baseURL
         // `--local` prints its key as it always has; "Only me" chosen at the question or saved, and a start that sets
         // tools up, say where it is.
-        let printsKey = serving.source == .flag("--local") && requestedTools.isEmpty
+        let printsKey = serving.source == .flag(.local) && requestedTools.isEmpty
         print("\(BuildEnvironment.current.cliName) \(ProviderCore.version) (local / direct mode)")
         if !printsKey { print("Serving: " + LocalFirstWords.serving(mode: .local, meFirst: false, idleMinutes: 0)) }
         print("Preparing local server on \(bind):\(port)")

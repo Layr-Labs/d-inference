@@ -328,14 +328,27 @@ does not restart into it; restored v<previous> and quarantined v<version>`,
 `cluster update: this Mac's part serves again on v<version>`.
 
 Planning again and registering again both act only once the other Mac has
-confirmed the leader's claim (`ClusterControlNode.leadershipConfirmed`): the two
-Macs restart seconds apart, and the one that comes back first may take control
-after the lease's 30 s, so a restarted leader's saved claim may be superseded.
-Both stop the pair (`OnboardingLive.localStop`, which clears the pair's saved
-start first) only to start it again
+confirmed the leader's claim, or hasn't answered for the lease's 30 s
+(`ClusterControlNode.leadershipConfirmed`): the two Macs restart seconds apart,
+and the one that comes back first may take control after the lease's 30 s, so a
+restarted leader's saved claim may be superseded. Both stop the pair
+(`OnboardingLive.localStop`, which clears the pair's saved start first) only to
+start it again
 (`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService+RestartingStop.swift`):
 when the stop fails, the saved start is put back and the stop request it left
-is dropped, so the next check tries again.
+is dropped, so the next check tries again. The log says `could not set the
+cluster up again after the update: <reason>` or `could not stop the parts to
+change the cluster approval: <reason>`, followed by `The pair stays started`.
+While the other Mac doesn't answer its status, a change of approval that would
+stop a serving pair waits: every change is sent to the other Mac. The
+coordinator is still asked at each check.
+
+An owner's stop is never undone by either step. Every stop of the pair takes
+the control command lock: `darkbloom cluster stop`, `darkbloom stop` (also on a
+Mac where the pair doesn't run and the other Mac doesn't answer) and
+`darkbloom start --solo`, which wait up to 10 minutes for a cluster command that
+runs. A step that waited for the lock goes on only while the pair's start is
+still saved.
 
 ## Permissions asked once
 

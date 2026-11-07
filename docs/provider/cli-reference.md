@@ -420,7 +420,8 @@ and no mode flag, a start without a terminal is refused in one line, as on one
 Mac (exit 64), before anything here is stopped or cleared. Otherwise it first
 stops a part of the pair still running here and
 clears the pair's saved start on this Mac (`ClusterService.releaseForSingleMac`,
-up to 5 minutes), then says one line: ``This Mac is in a two-Mac cluster with the
+up to 5 minutes, after up to 10 for a cluster command that is running), then
+says one line: ``This Mac is in a two-Mac cluster with the
 other Mac (…), which isn't running here: serving this Mac alone, and its saved
 start is cleared (`darkbloom cluster` starts the pair again).`` A part that
 doesn't stop in time starts nothing (exit 1) and names `darkbloom cluster pair
@@ -2013,7 +2014,10 @@ never touches the pair; a daemon state the cluster's part wrote is never drained
 
 While the pair doesn't run here (`Stop.PairedStop.stopHere`), plain `stop` stops
 what runs on this Mac: a leftover part of the pair (its saved start on this Mac
-is cleared) and single-Mac serving. It never asks the other Mac. While the
+is cleared) and single-Mac serving. It never asks the other Mac. It takes the
+cluster command lock first, as `darkbloom cluster stop` does (waiting up to 10
+minutes for a cluster command that is running), so no automatic step of the
+cluster service starts the pair again after it. While the
 other Mac answers but the pair hasn't served yet, plain `stop` stops the pair
 on both Macs, as while it runs.
 

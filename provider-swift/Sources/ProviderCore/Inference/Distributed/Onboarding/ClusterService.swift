@@ -1124,7 +1124,8 @@ public final class ClusterService: @unchecked Sendable {
     /// On the control leader, while the cluster serves: when a Darkbloom update changed a Mac's worker (its digest no
     /// longer matches the saved setup's pin, so both Macs refuse their parts), the same model is planned again,
     /// adopted, synced to the member and served, as `m` with the same model would, with nobody running a command.
-    /// Checked every `ClusterOnboardingUpdate.checkEverySeconds` on a thread of its own; holds the command lock so a
+    /// Checked every `ClusterOnboardingUpdate.checkEverySeconds` on a thread of its own (every `recheckWhileWaitingSeconds`
+    /// while the Macs run different builds, `retryAfterFailureSeconds` after a failure); holds the command lock so a
     /// person's command and this never run at once.
     private func checkForUpdate(say: @escaping @Sendable (String) -> Void) {
         // Only on a claim the other Mac confirmed: the Macs restart into an update seconds apart, and the one back first
@@ -1169,11 +1170,12 @@ public final class ClusterService: @unchecked Sendable {
                 return
             }
             self.lock.withLock { self.updateWaitLine = nil }
-            // Held, the command lock keeps a hand-over off; one may have finished while the builds were compared.
+            // Held, the command lock keeps a hand-over and a person's stop off; either may have finished while the builds
+            // were compared, and the re-plan's stop would put back a start the person cleared.
             guard let held = ClusterControlCommandLock.acquire(seconds: 5,
                 file: self.store.paths.directory.appendingPathComponent("control.lock")) else { return }
             defer { held.release() }
-            guard self.leadershipConfirmed() else { return }
+            guard self.leadershipConfirmed(), (try? self.store.readRecord())?.leadership?.serving == true else { return }
             self.lock.withLock { self.updatingLine = ClusterOnboardingUpdate.statusLine }
             self.publish()
             say("Darkbloom changed on \(macs): setting the cluster up again for \(model)")
@@ -1191,7 +1193,8 @@ public final class ClusterService: @unchecked Sendable {
             case .success(let value): choice = value
             case .failure(let failure):
                 // `replanAfterUpdate` kept the saved start: the next check tries again.
-                say("could not set the cluster up again after the update: " + failure.lines.joined(separator: " "))
+                say("could not set the cluster up again after the update: " + failure.lines.joined(separator: " ")
+                    + " The pair stays started; this is tried again in \(Int(ClusterOnboardingUpdate.retryAfterFailureSeconds) / 60) minutes.")
                 self.lock.withLock { self.nextUpdateCheck = Date().addingTimeInterval(ClusterOnboardingUpdate.retryAfterFailureSeconds) }
                 return
             }
@@ -1208,9 +1211,10 @@ public final class ClusterService: @unchecked Sendable {
     /// `ClusterOnboardingUpdate.checkEverySeconds` while the pair is registered or serves locally with its approval set
     /// aside (`ClusterApprovalCheck.asks`). Only when a setup must change (`ClusterApprovalCheck.step`: an approval to
     /// save, or one to serve without because the coordinator gave no answer for the grace, no longer lists it, or the
-    /// parts keep failing with it) it stops both parts, changes both Macs' setups and serves again. A coordinator that
-    /// serves nothing new changes nothing and stops nothing. An approval that ended is removed by each Mac itself
-    /// before its part starts (`supervise`), never by stopping a running pair.
+    /// parts keep failing with it) it stops both parts, changes both Macs' setups and serves again; a change that would
+    /// stop a serving pair waits while the other Mac doesn't answer its status. A coordinator that serves nothing new
+    /// changes nothing and stops nothing. An approval that ended is removed by each Mac itself before its part starts
+    /// (`supervise`), never by stopping a running pair.
     private func checkApproval(say: @escaping @Sendable (String) -> Void) {
         // Only on a claim the other Mac confirmed, as `checkForUpdate`: a change of approval stops the pair.
         guard leadershipConfirmed() else { return }
@@ -1241,6 +1245,8 @@ public final class ClusterService: @unchecked Sendable {
                 let serving: Bool
                 /// The saved setup's worker digest, recorded with an approval set aside.
                 let worker: String
+                /// The other Mac answered its status: every change of the approval sends to it.
+                let peerAnswered: Bool
             }
             func decide(_ answer: () -> ClusterApprovalFetch.Outcome?) -> Decided? {
                 let record = try? self.store.readRecord()
@@ -1271,7 +1277,7 @@ public final class ClusterService: @unchecked Sendable {
                     memberQuickEnds: quickEnds, peerApprovalID: peerApprovalID, watch: &watch, clock: ClusterService.monotonicSeconds(),
                     grace: ClusterService.soloGraceSeconds, now: now)
                 return Decided(step: step, watch: watch, serving: record?.leadership?.serving == true,
-                               worker: saved.capability.runtimeBinarySHA256)
+                               worker: saved.capability.runtimeBinarySHA256, peerAnswered: peer != nil)
             }
             var fetched: ClusterApprovalFetch.Outcome?
             func answer() -> ClusterApprovalFetch.Outcome? {
@@ -1299,6 +1305,9 @@ public final class ClusterService: @unchecked Sendable {
             self.lock.withLock { self.approvalWatch = decided.watch }
             let step = decided.step, serving = decided.serving
             guard step != .keep else { return }
+            // A change can't succeed while the other Mac doesn't answer: one that stops a serving pair waits for it, or this
+            // Mac's part would stop for nothing at every check.
+            guard decided.peerAnswered || !serving else { return }
             let send: (ClusterServiceCommand) throws -> Void = { request in _ = try live.command(request, seconds: 180) }
             let result = ClusterApprovalSync.apply(step, grace: ClusterService.soloGraceSeconds, paths: paths,
                 providerConfiguration: configuration, pairingStore: pairingStore, scratch: scratch, now: Date().timeIntervalSince1970,
@@ -1555,8 +1564,10 @@ public final class ClusterService: @unchecked Sendable {
 
     /// Going back to single-Mac serving on a Mac whose pair isn't running: this Mac's saved start is cleared, so its
     /// cluster service runs no part (and never takes the serving lock back by itself), and the part still running stops
-    /// within `seconds`, freeing the lock. The pairing stays: `darkbloom cluster` starts the pair again. False when the
-    /// start couldn't be cleared or the part didn't stop in time.
+    /// within `seconds`, freeing the lock. The pairing stays: `darkbloom cluster` starts the pair again. It holds the
+    /// control command lock, as every stop of the pair does (waiting up to 600 s for a cluster command that runs), so
+    /// the service's steps that stop the pair only to start it again never put this start back (`restoreStart`). False
+    /// when a cluster command still ran after those 600 s, the start couldn't be cleared, or the part didn't stop in time.
     public static func releaseForSingleMac(seconds: Double) -> Bool {
         guard let paths = try? ClusterUserPaths() else { return false }
         return releaseForSingleMac(seconds: seconds, paths: paths)
@@ -1566,6 +1577,9 @@ public final class ClusterService: @unchecked Sendable {
     static func releaseForSingleMac(seconds: Double, paths: ClusterUserPaths) -> Bool {
         let setup = ClusterSetupPaths(paths: paths)
         let store = ClusterSetupStore(paths: setup)
+        guard let held = ClusterControlCommandLock.acquire(seconds: 600,
+            file: setup.directory.appendingPathComponent("control.lock")) else { return false }
+        defer { held.release() }
         do {
             if (try? store.readRecord())?.leadership?.serving == true {
                 try store.updateRecord { $0.leadership?.serving = false }

@@ -1,13 +1,18 @@
 import Foundation
 
 /// The control leader's automatic steps that stop the pair only to start it again: the re-plan after a Darkbloom update
-/// (`checkForUpdate`) and a change of the pair's cluster approval (`checkApproval`). Both keep two invariants:
+/// (`checkForUpdate`) and a change of the pair's cluster approval (`checkApproval`). Both keep three invariants:
 /// - A failed stop never loses the pair's saved start. Their stop is a person's stop (`OnboardingLive.localStop`): it
 ///   clears the saved start before it stops anything. Both steps act only while the start is saved, and nothing else
 ///   starts a pair again, so every failure from the stop on, including the stop's own, puts it back (`restoreStart`).
+/// - A stop the owner made is never undone. Every stop of the pair holds the control command lock (a person's, typed
+///   here or forwarded by the other Mac, and `releaseForSingleMac`'s), and once a step holds it, it stops and starts the
+///   pair only while the start is still saved: the re-plan reads it again, and the approval change decides again.
 /// - Neither acts on an unconfirmed claim: each checks `leadershipConfirmed` before it begins and again once it holds
 ///   the control command lock. The Macs restart into an update seconds apart, and the one back first may take control
 ///   meanwhile: the other Mac then refuses the stop of a leader whose saved claim it superseded.
+///
+/// The steps take the command lock beside this service's own files: on a Mac, the one every cluster command takes.
 ///
 /// DevNet pair-2, 2026-11-07 (`0.10.10-dev.branch.135` → `.137`): such a stop failed right after both Macs restarted
 /// into the update, and the pair stayed stopped on both Macs until `darkbloom cluster` was run.
@@ -64,6 +69,7 @@ extension ClusterService {
         if case .failure(let failure) = stop() {
             restoreStart()
             return "could not stop the parts to change the cluster approval: " + failure.lines.joined(separator: " ")
+                + " The pair stays started; the change is tried again at the next check."
         }
         guard drained() else {
             restoreStart()
@@ -85,7 +91,7 @@ extension ClusterService {
     /// Puts the pair's saved start back after an automatic step stopped it to start it again, and drops the stop request a
     /// stop that failed midway keeps (this Mac's part had not released yet): left in place, it would hold off every start,
     /// sync and hand-over (`OnboardingLive.localServe`, `syncMembers`). Both steps call it under the control command lock,
-    /// so no person's stop is under way.
+    /// which every stop of the pair holds, so no person's stop is under way.
     func restoreStart() {
         try? store.updateRecord { $0.leadership?.serving = true; $0.stopDrain = nil }
     }

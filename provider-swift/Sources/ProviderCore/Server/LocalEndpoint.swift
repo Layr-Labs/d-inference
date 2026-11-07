@@ -68,6 +68,15 @@ public enum LocalEndpoint {
         return existingClusterToken() ?? readToken()
     }
 
+    /// The file holding exactly `token(forPort:)`, for tools that read the key from a file (OpenCode's `{file:}`,
+    /// Hermes' `key_cmd`) instead of keeping a copy in their own config. Nil when no key file holds that key.
+    public static func keyFile(forPort port: Int) -> URL? {
+        guard let key = token(forPort: port) else { return nil }
+        return [clusterTokenPath(), tokenPath()].first { path in
+            (try? String(contentsOf: path, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) == key
+        }
+    }
+
     /// The pair's key when this Mac has one; nil otherwise (nothing is created).
     public static func existingClusterToken() -> String? {
         guard let content = try? String(contentsOf: clusterTokenPath(), encoding: .utf8) else { return nil }
@@ -194,41 +203,9 @@ public enum LocalEndpoint {
 
     // MARK: - Shared file writer (atomic, 0600)
 
-    enum WriteError: Error { case failed(String) }
-
-    /// Write `contents` to `path` with `0600` and no umask window: create a
-    /// fresh temp file via `O_CREAT|O_EXCL|0600` (perms applied at creation),
-    /// write it fully, then atomically `rename` over the target. Both artifacts
-    /// hold a secret (the token), so neither the file nor any reader should ever
-    /// observe looser permissions or a partial write.
+    /// Both artifacts hold a secret (the token), so neither the file nor any reader may ever observe looser
+    /// permissions or a partial write: `AtomicFile` creates its sibling `0600` and renames it over the target.
     private static func writeFile(_ contents: String, to path: URL) throws {
-        let dir = path.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-
-        let tmp = dir.appendingPathComponent(".\(path.lastPathComponent).tmp-\(getpid())-\(UInt32.random(in: .min ... .max))")
-        let fd = open(tmp.path, O_CREAT | O_EXCL | O_WRONLY, 0o600)
-        guard fd >= 0 else { throw WriteError.failed("create \(tmp.lastPathComponent): \(String(cString: strerror(errno)))") }
-
-        var bytes = Array(contents.utf8)
-        var ok = true
-        bytes.withUnsafeBytes { buf in
-            var off = 0
-            while off < buf.count {
-                let n = write(fd, buf.baseAddress!.advanced(by: off), buf.count - off)
-                if n <= 0 { ok = false; break }
-                off += n
-            }
-        }
-        close(fd)
-        bytes.removeAll(keepingCapacity: false)
-
-        guard ok else {
-            unlink(tmp.path)
-            throw WriteError.failed("write \(tmp.lastPathComponent)")
-        }
-        guard rename(tmp.path, path.path) == 0 else {
-            unlink(tmp.path)
-            throw WriteError.failed("rename onto \(path.lastPathComponent): \(String(cString: strerror(errno)))")
-        }
+        try AtomicFile.write(Data(contents.utf8), to: path, mode: 0o600)
     }
 }

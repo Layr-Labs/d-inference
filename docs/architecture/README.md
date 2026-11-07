@@ -15,6 +15,7 @@ Provider execution, local security and external contracts. Backend and console i
 - [Provider Model Registry Boundary](model-registry.md)
 - [Model artifact revisions](model-revisions.md)
 - [Native block-generation adapter](native-block-inference.md)
+- [OpenCode and Hermes config writers](tool-integrations.md)
 - [Provider Architecture](overview.md)
 - [KV cache layouts and prefix caching](prefix-cache.md)
 - [Native live KV, independent checkpoint precision and optional live-packed execution](kv-cache-quantization.md)

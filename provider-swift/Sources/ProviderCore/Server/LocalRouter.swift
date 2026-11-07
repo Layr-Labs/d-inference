@@ -1,5 +1,6 @@
 import Foundation
 import HTTPTypes
+import notify
 
 /// The local router: this Mac's local API takes the owner's request first, then, when this Mac can't take it and the
 /// owner chose so, passes it to the coordinator, the way the iPhone app routes:
@@ -36,8 +37,10 @@ public struct LocalRouterConfig: Sendable {
     /// the router serves this Mac only and never reads or lends the account key. `makeLocalInferenceApplication` sets it
     /// from the endpoint's own key.
     public var localKeyRequired = true
+    /// The Darwin notification the key store posts when `route key` saves or removes the key
+    /// (`KeychainLocalRouterAccountKeyStore.changeNotification`); nil when the store posts none (an in-memory one).
     var keyChangeNotification: String?
-    /// Whether the last read of the account key failed, so a run of failures is said once.
+    /// The account key as last read, kept until it changes.
     let keyCache = LocalRouterKeyCache()
 
     public init(settings: LocalSettings, upstreamBaseURL: URL, takesCoordinatorWork: Bool,
@@ -66,18 +69,18 @@ public struct LocalRouterConfig: Sendable {
     }
 
     /// The route in effect now, and the key it uses. Without a saved key, or without a local key (`--no-auth`), nothing
-    /// can go upstream, whatever the route. The key is read from the store on every call, so a key saved or removed
-    /// with `route key` counts from the next request; a saved `this-mac`, or no local key, never reads the Keychain.
-    /// A key that can't be read (the Keychain won't hand it over without asking) is said once per run of failures,
-    /// in a line without the key, and keeps requests on this Mac. `[local] route` itself is read at start.
+    /// can go upstream, whatever the route. The key is read once, by the first call that needs it, and kept in memory
+    /// (`LocalRouterKeyCache`); `route key` announces a change, and the next call reads it again, so a change counts
+    /// from the next request without a restart. A saved `this-mac`, or no local key, never reads the Keychain. A key
+    /// that can't be read (the Keychain won't hand it over without asking) isn't kept: it is said once per run of
+    /// failures, in a line without the key, and keeps requests on this Mac. `[local] route` itself is read at start.
     func effectiveRoute() -> (route: LocalSettings.Route, accountKey: String?) {
         guard localKeyRequired, settings.route != .thisMac else { return (.thisMac, nil) }
         let key: String?
         do {
-            key = try accountKeys.load().flatMap { $0.isEmpty ? nil : $0 }
-            keyCache.succeeded()
+            key = try keyCache.key(from: accountKeys, changes: keyChangeNotification)
         } catch {
-            if keyCache.failed() {
+            if keyCache.readFailed() {
                 // Only the store's own error is known to carry no key characters (an OSStatus only).
                 let reason = (error as? LocalRouterAccountKeyError)?.description ?? "the account key could not be read"
                 log("\(reason); requests stay on this Mac until it can be read (after a new build, save it again with "
@@ -91,22 +94,70 @@ public struct LocalRouterConfig: Sendable {
     }
 }
 
-/// Whether the account key's last read failed: a run of failures is said once, and again after a read succeeds.
+/// The account key as last read, kept in memory so passed-on requests and model lists don't each read the Keychain.
+///
+/// The copy is kept only while the store's changes are watched: the store posts a Darwin notification when `route key`
+/// saves or removes the key, and this drops the copy on it (`notify_register_dispatch`), so the next request reads the
+/// key again. A failed read isn't kept, so the next request tries again; a run of failures is said once.
 final class LocalRouterKeyCache: @unchecked Sendable {
     private let lock = NSLock()
+    /// nil: no copy; `.some(nil)`: read, and no key is saved.
+    private var copy: String??
+    /// How many changes were announced, so a read that a change overtook isn't kept.
+    private var changes = 0
     private var failing = false
+    private var watchTried = false
+    /// The registration for the change notification; nil when there is none to watch, or it couldn't be made.
+    private var watch: Int32?
 
-    var keepsACopy: Bool { false }
+    deinit { if let watch { notify_cancel(watch) } }
+
+    /// Whether a copy is kept now.
+    var keepsACopy: Bool { lock.withLock { copy != nil } }
+
+    /// The saved key, nil when none is saved: the kept copy, else a read of `store`, kept while `changes` (the store's
+    /// change notification) is watched.
+    func key(from store: any LocalRouterAccountKeyStore, changes notification: String?) throws -> String? {
+        let (kept, seen, keeps) = lock.withLock { () -> (String??, Int, Bool) in
+            if !watchTried {
+                watchTried = true
+                watch = notification.flatMap { watchChanges(named: $0) }
+            }
+            return (copy, changes, watch != nil)
+        }
+        if let kept { return kept }
+        let key = try store.load().flatMap { $0.isEmpty ? nil : $0 }
+        lock.withLock {
+            failing = false
+            if keeps, changes == seen { copy = .some(key) }
+        }
+        return key
+    }
+
+    /// The key changed: the next request reads it again.
+    func drop() {
+        lock.withLock {
+            copy = nil
+            changes += 1
+        }
+    }
 
     /// Notes a failed read; true when it starts a run of failures.
-    func failed() -> Bool {
+    func readFailed() -> Bool {
         lock.withLock {
             defer { failing = true }
             return !failing
         }
     }
 
-    func succeeded() { lock.withLock { failing = false } }
+    /// Registers for `name`; nil when it can't, and then nothing is kept.
+    private func watchChanges(named name: String) -> Int32? {
+        var token: Int32 = 0
+        let status = notify_register_dispatch(name, &token, DispatchQueue.global(qos: .utility)) { [weak self] _ in
+            self?.drop()
+        }
+        return status == NOTIFY_STATUS_OK ? token : nil
+    }
 }
 
 /// The value of `X-Darkbloom-Route` on an upstream hop.

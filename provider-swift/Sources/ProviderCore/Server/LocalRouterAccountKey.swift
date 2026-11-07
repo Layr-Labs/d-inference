@@ -41,6 +41,8 @@ public struct KeychainLocalRouterAccountKeyStore: LocalRouterAccountKeyStore {
     public let service: String
     public let account: String
 
+    /// The Darwin notification posted when the key is saved or removed, so a running local API, which keeps the key in
+    /// memory, reads it again: one per identity, `<keychain prefix>.route-key-changed` for the default service.
     public var changeNotification: String { service + "-key-changed" }
 
     /// The `SecItem` calls; a fake in tests.
@@ -58,32 +60,32 @@ public struct KeychainLocalRouterAccountKeyStore: LocalRouterAccountKeyStore {
 
     /// Never asks the user: a read that would need a Keychain dialog (a locked keychain, or an item this build may not
     /// read without approval, as after an ad-hoc rebuild) fails at once instead, so a request never waits on one.
-    /// Data-protection items follow the query's `LAContext`, which may not ask. Legacy (login keychain) items ignore
-    /// the query's UI keys and follow the process-wide `SecKeychainSetUserInteractionAllowed` switch, which is off for
-    /// the read and put back after. Saving and removing (`route key`, at a terminal) may still ask.
+    /// Data-protection items (signed builds) follow the query's `LAContext`, which may not ask. Legacy (login
+    /// keychain) items (unsigned and ad-hoc builds) ignore the query's UI keys and follow the process-wide
+    /// `SecKeychainSetUserInteractionAllowed` switch, which is off for the login-keychain read only and put back after.
+    /// Saving and removing (`route key`, at a terminal) may still ask.
     public func load() throws -> String? {
-        try withoutAskingTheUser {
-            try withKeychain(operation: "read") { dataProtection in
-                var query = identity(dataProtection: dataProtection)
-                query[kSecReturnData as String] = true
-                query[kSecMatchLimit as String] = kSecMatchLimitOne
-                if dataProtection { query[kSecUseAuthenticationContext as String] = Self.contextThatMayNotAsk() }
-                let (status, data) = calls.copyMatching(query)
-                switch status {
-                case errSecSuccess:
-                    guard let data, let key = String(data: data, encoding: .utf8), !key.isEmpty else {
-                        return .done(nil)
-                    }
-                    return .done(key)
-                case errSecItemNotFound:
+        try withKeychain(operation: "read", loginKeychainNeverAsks: true) { dataProtection in
+            var query = identity(dataProtection: dataProtection)
+            query[kSecReturnData as String] = true
+            query[kSecMatchLimit as String] = kSecMatchLimitOne
+            if dataProtection { query[kSecUseAuthenticationContext as String] = Self.contextThatMayNotAsk() }
+            let (status, data) = calls.copyMatching(query)
+            switch status {
+            case errSecSuccess:
+                guard let data, let key = String(data: data, encoding: .utf8), !key.isEmpty else {
                     return .done(nil)
-                default:
-                    return .failed(status)
                 }
+                return .done(key)
+            case errSecItemNotFound:
+                return .done(nil)
+            default:
+                return .failed(status)
             }
         }
     }
 
+    /// Saves `key` and posts `changeNotification`.
     public func save(_ key: String) throws {
         try withKeychain(operation: "save") { dataProtection in
             let query = identity(dataProtection: dataProtection)
@@ -98,13 +100,16 @@ public struct KeychainLocalRouterAccountKeyStore: LocalRouterAccountKeyStore {
             }
             return status == errSecSuccess ? .done(()) : .failed(status)
         }
+        calls.announceChange(changeNotification)
     }
 
+    /// Removes the key and posts `changeNotification`.
     public func remove() throws {
         try withKeychain(operation: "remove") { dataProtection in
             let status = calls.delete(identity(dataProtection: dataProtection))
             return status == errSecSuccess || status == errSecItemNotFound ? .done(()) : .failed(status)
         }
+        calls.announceChange(changeNotification)
     }
 
     private func identity(dataProtection: Bool) -> [String: Any] {
@@ -118,11 +123,12 @@ public struct KeychainLocalRouterAccountKeyStore: LocalRouterAccountKeyStore {
         return query
     }
 
-    /// One read at a time turns the switch off, as it is the whole process's.
+    /// One login-keychain read at a time turns the switch off, as it is the whole process's.
     private static let userInteractionSwitch = NSLock()
 
     /// Runs `read` with the legacy keychain's switch for asking the user off, then puts back what was set. A switch
-    /// that can't be read or turned off means no read.
+    /// that can't be read or turned off means no read. Only the login-keychain read needs it: data-protection items
+    /// don't follow the switch, so a signed build never touches it.
     private func withoutAskingTheUser<T>(_ read: () throws -> T) throws -> T {
         try Self.userInteractionSwitch.withLock {
             let (status, allowed) = calls.userInteractionAllowed()
@@ -151,13 +157,16 @@ public struct KeychainLocalRouterAccountKeyStore: LocalRouterAccountKeyStore {
         case failed(OSStatus)
     }
 
-    /// The data-protection Keychain first; the login keychain when this build lacks the entitlement for it.
-    private func withKeychain<T>(operation: String, _ body: (Bool) -> Outcome<T>) throws -> T {
+    /// The data-protection Keychain first; the login keychain when this build lacks the entitlement for it, with the
+    /// legacy keychain's switch for asking the user off when `loginKeychainNeverAsks`.
+    private func withKeychain<T>(operation: String, loginKeychainNeverAsks: Bool = false,
+                                 _ body: (Bool) -> Outcome<T>) throws -> T {
         switch body(true) {
         case .done(let value):
             return value
         case .failed(let status) where status == errSecMissingEntitlement:
-            switch body(false) {
+            let login = try loginKeychainNeverAsks ? withoutAskingTheUser { body(false) } : body(false)
+            switch login {
             case .done(let value): return value
             case .failed(let status): throw LocalRouterAccountKeyError.keychain(operation: operation, status: status)
             }
@@ -167,8 +176,9 @@ public struct KeychainLocalRouterAccountKeyStore: LocalRouterAccountKeyStore {
     }
 }
 
-/// The four `SecItem` calls the Keychain store makes, so tests can run its logic (the fallback, the attributes) against
-/// a fake instead of a real Keychain.
+/// The calls the Keychain store makes (the four `SecItem` calls, the legacy keychain's switch for asking the user, and
+/// the change notification), so tests can run its logic (the fallback, the attributes) against a fake instead of a
+/// real Keychain.
 struct KeychainItemCalls: Sendable {
     var copyMatching: @Sendable ([String: Any]) -> (OSStatus, Data?)
     var add: @Sendable ([String: Any]) -> OSStatus
@@ -179,6 +189,7 @@ struct KeychainItemCalls: Sendable {
     /// (`SecItem.h`).
     var userInteractionAllowed: @Sendable () -> (OSStatus, Bool)
     var setUserInteractionAllowed: @Sendable (Bool) -> OSStatus
+    /// Posts a Darwin notification (`notify_post`).
     var announceChange: @Sendable (String) -> Void
 
     static let system = KeychainItemCalls(

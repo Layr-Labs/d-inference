@@ -9,8 +9,9 @@
 - `darkbloom route key` saves the account API key in this Mac's Keychain after one check with Darkbloom
   (`--stdin` to pipe it in, `--remove` to remove it). The key is never printed, logged, or written to a file. ^C at
   its hidden prompt gives the terminal its echo back.
-- The local API never waits on a Keychain dialog to read the key. When the Keychain won't hand it over without asking
-  (a locked keychain, or a new local build), it says so once in its log and keeps requests on this Mac.
+- The local API reads the key once and keeps it in memory; `route key` tells it when the key changes. It never waits on
+  a Keychain dialog to read the key: when the Keychain won't hand it over without asking (a locked keychain, or a new
+  local build), it says so once in its log and keeps requests on this Mac.
 - Tools keep one local URL and the local key. Their own route header is ignored. Answers say who served them
   (`X-Darkbloom-Served-By: this-mac` or `darkbloom`), and the coordinator's errors come back as sent. A refusal on the
   network route says why: no balance, or Darkbloom's own reason (a key's spend cap, for one). A client that disconnects

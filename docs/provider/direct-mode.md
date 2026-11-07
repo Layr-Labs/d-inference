@@ -150,8 +150,11 @@ take it (`LocalRouter`, `provider-swift/Sources/ProviderCore/Server/LocalRouter*
 | `my-macs` (the default once a key is saved) | Passed to the coordinator with `X-Darkbloom-Route: self`: only your Macs answer, free |
 | `my-macs-first` | Passed to the coordinator with `X-Darkbloom-Route: prefer`: your Macs first (free), then the network, billed to your balance. The coordinator picks among the Macs that can take the request now, so a busy Mac of yours doesn't hold it while another Mac, yours or the network's, can take it. `prefer` reserves the price up front even when one of your Macs answers: on any `402` (no balance, or the key's spend cap), the request is sent once more with `self` (your Macs only, free, never spending) |
 
-The route is read when the local API starts (a change needs a restart); the
-key is read when a request needs it.
+The route is read when the local API starts (a change needs a restart). The
+key is read once, by the first request that needs it, and kept in memory:
+`darkbloom route key` tells a running local API when it saves or removes the
+key (a Darwin notification, `<keychain prefix>.route-key-changed`), and the
+next request reads it again, with no restart.
 
 - **Save the key:** `darkbloom route key` (hidden input, or `--stdin`), from
   the Darkbloom console. It is checked once with `GET /v1/models` and
@@ -163,10 +166,12 @@ key is read when a request needs it.
   Keychain dialog, so a request never waits on one. When the Keychain won't
   hand the key over without asking (a locked keychain, or a new local build
   the item doesn't trust yet), the local API says so once in its log and keeps
-  requests on this Mac; run `darkbloom route key` again to let a new build
-  read it. For the login keychain, where unsigned and ad-hoc builds keep the
-  key, this turns off the process-wide `SecKeychainSetUserInteractionAllowed`
-  switch for the moment of the read.
+  requests on this Mac; a failed read isn't kept, so the next request tries
+  again. Run `darkbloom route key` again to let a new build read it. Signed
+  builds read the data-protection Keychain, which never asks. Unsigned and
+  ad-hoc builds keep the key in the login keychain, and only that read turns
+  off the process-wide `SecKeychainSetUserInteractionAllowed` switch, for its
+  moment.
 - **Without a local key (`--no-auth`) nothing is passed on.** Anything that
   reaches the port is then a client, a web page included, so the router
   serves this Mac only, never reads the account key and never dials the

@@ -125,7 +125,7 @@ struct Update: AsyncParsableCommand {
                 print("Use --override-quarantine only for an explicit operator retry.")
 
             case .checkFailed(let reason):
-                printError("update check failed: \(reason)")
+                for line in Self.checkFailedLines(reason, checkOnly: true) { printError(line) }
                 throw ExitCode.failure
             }
             return
@@ -190,7 +190,7 @@ struct Update: AsyncParsableCommand {
             throw ExitCode.failure
 
         case .checkFailed(let reason):
-            printError("download failed: update check failed: \(reason)")
+            for line in Self.checkFailedLines(reason, checkOnly: false) { printError(line) }
             throw ExitCode.failure
 
         case .downloadFailed(let reason):
@@ -208,6 +208,14 @@ struct Update: AsyncParsableCommand {
             printError("failed to replace binary: \(reason)")
             throw ExitCode.failure
         }
+    }
+
+    /// A failed release check in plain words: what failed, that nothing changed, and what to do.
+    static func checkFailedLines(_ reason: String, checkOnly: Bool) -> [String] {
+        let command = "`\(BuildEnvironment.current.cliName) update\(checkOnly ? " --check-only" : "")`"
+        let failed = "Couldn't check for updates: " + (reason.hasSuffix(".") ? reason : reason + ".")
+        return [failed + (checkOnly ? "" : " Nothing was downloaded or changed."),
+                "Run \(command) again in a minute. If it keeps failing, check this Mac's network connection."]
     }
 
     /// A single-Mac provider job is loaded on a Mac whose pair is started: the update restarts the pair, never that job

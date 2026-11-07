@@ -284,8 +284,9 @@ public struct SelfUpdater: Sendable {
         case failed(String)
     }
 
-    /// How the release check asks the coordinator for its latest release: at most `attempts` tries of at most
-    /// `requestTimeout` each, `pause` between them.
+    /// How the release check asks the coordinator for its latest release. Each try waits at most `requestTimeout` for
+    /// an answer, not a session's 60 s default, and a try that failed on the way (`retries(after:)`) is made again
+    /// after a jittered pause that doubles, `attempts` tries in all. An answer is final, a refusal included.
     struct ReleaseCheck: Sendable {
         var attempts = 3
         var requestTimeout: TimeInterval = 15
@@ -295,6 +296,23 @@ public struct SelfUpdater: Sendable {
         }
 
         static let standard = ReleaseCheck()
+
+        /// A failure on the way that can pass: no answer in time, a connection lost or refused, a name that didn't
+        /// resolve, no network for a moment. Never a cancellation.
+        static func retries(after error: Error) -> Bool {
+            guard let code = (error as? URLError)?.code else { return false }
+            return [.timedOut, .networkConnectionLost, .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed,
+                    .notConnectedToInternet, .secureConnectionFailed].contains(code)
+        }
+
+        /// Why the check failed after `tries`, in the words `darkbloom update` prints.
+        func failure(_ error: Error, tries: Int, coordinator: String) -> String {
+            let count = tries > 1 ? " (\(tries) tries)" : ""
+            guard (error as? URLError)?.code != .timedOut else {
+                return "\(coordinator) didn't answer within \(Int(requestTimeout.rounded(.up))) s\(count)"
+            }
+            return "couldn't reach \(coordinator)\(count): \(error.localizedDescription)"
+        }
     }
 
     private func fetchLatestRelease() async -> LatestReleaseFetch {
@@ -303,46 +321,66 @@ public struct SelfUpdater: Sendable {
         guard let url = URL(string: endpoint) else {
             return .failed("invalid coordinator URL: \(endpoint)")
         }
+        // The request's own timeout bounds each try, whatever the session's is.
+        var request = URLRequest(url: url)
+        request.timeoutInterval = releaseCheck.requestTimeout
+        var backoff = releaseCheck.backoff
+        var tries = 0
+        while true {
+            tries += 1
+            do {
+                let (data, response) = try await urlSession.data(for: request)
+                return Self.latestRelease(data: data, response: response)
+            } catch {
+                guard tries < releaseCheck.attempts, ReleaseCheck.retries(after: error), !Task.isCancelled else {
+                    let coordinator = url.host.map { host in url.port.map { "\(host):\($0)" } ?? host } ?? endpoint
+                    return .failed(releaseCheck.failure(error, tries: tries, coordinator: coordinator))
+                }
+                await releaseCheck.pause(Double.random(in: backoff.nextDelayRange()))
+            }
+        }
+    }
 
+    private static func latestRelease(data: Data, response: URLResponse) -> LatestReleaseFetch {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            return .failed("unexpected response type")
+        }
+
+        guard httpResponse.statusCode == 200 else {
+            return .failed("coordinator returned HTTP \(httpResponse.statusCode)")
+        }
+
+        let object: Any
         do {
-            let (data, response) = try await urlSession.data(from: url)
-
-            guard let httpResponse = response as? HTTPURLResponse else {
-                return .failed("unexpected response type")
-            }
-
-            guard httpResponse.statusCode == 200 else {
-                return .failed("coordinator returned HTTP \(httpResponse.statusCode)")
-            }
-
-            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                return .failed("invalid JSON response")
-            }
-
-            guard let version = json["version"] as? String,
-                  let platform = json["platform"] as? String,
-                  let downloadURL = json["url"] as? String
-            else {
-                return .failed("missing required fields in release response")
-            }
-            guard platform == "macos-arm64" else {
-                return .failed("coordinator returned unsupported release platform \(platform)")
-            }
-            guard let bundleHash = json["bundle_hash"] as? String else {
-                return .failed("missing release hash field")
-            }
-
-            return .release(ReleaseInfo(
-                version: version,
-                platform: platform,
-                url: downloadURL,
-                bundleHash: bundleHash,
-                binaryHash: json["binary_hash"] as? String,
-                metallibHash: json["metallib_hash"] as? String
-            ))
+            object = try JSONSerialization.jsonObject(with: data)
         } catch {
             return .failed(error.localizedDescription)
         }
+        guard let json = object as? [String: Any] else {
+            return .failed("invalid JSON response")
+        }
+
+        guard let version = json["version"] as? String,
+              let platform = json["platform"] as? String,
+              let downloadURL = json["url"] as? String
+        else {
+            return .failed("missing required fields in release response")
+        }
+        guard platform == "macos-arm64" else {
+            return .failed("coordinator returned unsupported release platform \(platform)")
+        }
+        guard let bundleHash = json["bundle_hash"] as? String else {
+            return .failed("missing release hash field")
+        }
+
+        return .release(ReleaseInfo(
+            version: version,
+            platform: platform,
+            url: downloadURL,
+            bundleHash: bundleHash,
+            binaryHash: json["binary_hash"] as? String,
+            metallibHash: json["metallib_hash"] as? String
+        ))
     }
 
     // MARK: - Download and Verify
@@ -1003,7 +1041,7 @@ public struct SelfUpdater: Sendable {
             return .quarantined(version: version, reason: reason)
 
         case .checkFailed(let reason):
-            return .downloadFailed(reason: "update check failed: \(reason)")
+            return .checkFailed(reason: reason)
 
         case .updateAvailable(let current, let release):
             let downloadResult = await downloadAndVerify(release: release)

@@ -6,8 +6,8 @@ import Foundation
 /// beside that code, at the same quality of service: the probe waits on a
 /// semaphore until a deadline every `periodNanoseconds` and keeps the worst
 /// overshoot. The code may be late by that much, which depends on the host:
-/// Blacksmith's VMs wake within a few milliseconds, a Darkbloom VM was 17 ms
-/// late once.
+/// Blacksmith's VMs mostly wake within a few milliseconds but one was 46 ms
+/// late, a Darkbloom VM was 17 ms late once.
 final class WakeLatencyProbe: @unchecked Sendable {
     private let lock = NSLock(), sleeper = DispatchSemaphore(value: 0), stopped = DispatchSemaphore(value: 0)
     private var running = true, worst: UInt64 = 0, samples = 0

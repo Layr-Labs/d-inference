@@ -1166,35 +1166,22 @@ public final class ClusterService: @unchecked Sendable {
                 self.lock.withLock { self.nextUpdateCheck = Date().addingTimeInterval(ClusterOnboardingUpdate.retryAfterFailureSeconds) }
             }
             let live = self.controlLive
-            if case .failure(let failure) = live.localReachMembers({ _ in }) { return failed(failure.lines) }
-            // Both Macs refuse the old parts once their workers changed, and the parts hold the model's memory until
-            // they stop: stop them and wait for the memory before planning. Planned while they run, a tensor-parallel
-            // pair does not fit "now" and a pipeline is chosen in its place. A failure from here on keeps the
-            // serving intent, so the next check tries again.
-            if case .failure(let failure) = live.localStop() { return failed(failure.lines) }
-            live.awaitReleased()
-            func failedStopped(_ lines: [String]) {
-                try? self.store.updateRecord { $0.leadership?.serving = true }
-                failed(lines)
-            }
             // The same model keeps the mode the pair served it in, unless the planner and the pair's own served
             // requests both find another faster (`ClusterServedModes.hold`). `localPlanModels` asks the other Mac for
-            // its report again: the one `localReachMembers` took above still counts its old part's memory.
+            // its report again: the one `localReachMembers` took still counts its old part's memory.
             let keeping = saved.publicModelID == model ? [model: saved.selectedGenerationMode] : [:]
-            let choices: [ClusterOnboardingModelChoice]
-            switch live.localPlanModels(keeping: keeping) {
-            case .success(let value): choices = value
-            case .failure(let failure): return failedStopped(failure.lines)
+            let replanned = Self.replanAfterUpdate(model: model, .init(
+                reachMembers: { live.localReachMembers({ _ in }) }, stop: { live.localStop() },
+                awaitReleased: { live.awaitReleased() }, planModels: { live.localPlanModels(keeping: keeping) },
+                adopt: { live.localAdopt($0) }, serve: { live.localServe() }, restoreStart: { self.restoreStart() }))
+            let choice: ClusterOnboardingModelChoice
+            switch replanned {
+            case .success(let value): choice = value
+            case .failure(let failure): return failed(failure.lines)
             }
-            // `model` is the model's id (the record keeps ids; the screens show catalog names).
-            guard let index = ClusterOnboardingUpdate.servableIndex(of: model, in: choices) else {
-                return failedStopped(["\(model) is not offered on these Macs with this release: \(choices.first { ($0.modelID ?? $0.title) == model }?.blocker ?? "not found")"])
-            }
-            if case .failure(let failure) = live.localAdopt(index) { return failedStopped(failure.lines) }
-            if case .failure(let failure) = live.localServe() { return failedStopped(failure.lines) }
             // The plan's own line and its reason for the mode (tensor parallel or a pipeline), so the log says why.
             say("set the cluster up again after the update: \(model) is starting on both Macs ("
-                + choices[index].lines.joined(separator: " ") + ")")
+                + choice.lines.joined(separator: " ") + ")")
             // The re-adopted setups carry no cluster approval: the next check finds the same model approval again, or the
             // build-pinned entry of the updated app.
             self.lock.withLock { self.approvalChecked = false; self.nextApprovalCheck = .distantPast }
@@ -1296,15 +1283,8 @@ public final class ClusterService: @unchecked Sendable {
             let result = ClusterApprovalSync.apply(step, grace: ClusterService.soloGraceSeconds, paths: paths,
                 providerConfiguration: configuration, pairingStore: pairingStore, scratch: scratch, now: Date().timeIntervalSince1970,
                 stop: {
-                    guard serving else { return nil }
-                    if case .failure(let failure) = live.localStop() {
-                        return "could not stop the parts to change the cluster approval: " + failure.lines.joined(separator: " ")
-                    }
-                    guard live.drained(seconds: 300) else {
-                        try? self.store.updateRecord { $0.leadership?.serving = true }
-                        return "a part did not stop within 5 minutes: the cluster approval stays as it is"
-                    }
-                    return nil
+                    Self.stopForApprovalChange(serving: serving, stop: { live.localStop() }, drained: { live.drained(seconds: 300) },
+                                               restoreStart: { self.restoreStart() })
                 },
                 serve: {
                     guard serving, case .failure(let failure) = live.localServe() else { return }

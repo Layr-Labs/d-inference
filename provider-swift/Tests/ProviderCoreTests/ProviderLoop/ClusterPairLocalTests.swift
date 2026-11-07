@@ -12,6 +12,36 @@ import MLXLMCommon
 
 private let pairLocalToken = "pair-local-fixture-token"
 
+/// The leader's local API in these tests: loopback, port 0, with the key.
+private let keyedLocalAPI = LocalInferenceHTTPConfig(host: "127.0.0.1", port: 0, authToken: pairLocalToken)
+
+private let leaderHardware = HardwareInfo(machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4,
+    chipTier: .max, memoryGb: 64, memoryAvailableGb: 64, cpuCores: .init(total: 16, performance: 12, efficiency: 4),
+    gpuCores: 40, memoryBandwidthGbs: 546)
+
+/// A member loop that has not run yet, with or without a local API: whether
+/// it may keep one is the first thing `run()` decides
+/// (`prepareClusterMemberControl`).
+private func memberLoop(name: String, localEndpoint: LocalInferenceHTTPConfig?, model: String = clusterPairFixtureModel,
+                        hardware: HardwareInfo = leaderHardware,
+                        coordinatorURL: String = "ws://127.0.0.1:9/ws", local: LocalSettings? = nil) throws -> ProviderLoop {
+    try ProviderLoop(
+        config: .init(coordinatorURL: coordinatorURL, hardware: hardware,
+            models: [.init(id: model, modelType: "qwen3_5", sizeBytes: 1, estimatedMemoryGb: 1)],
+            config: .init(provider: .init(name: name, autoUpdate: false), backend: .init(),
+                coordinator: .init(url: coordinatorURL, heartbeatIntervalSecs: 1), local: local),
+            localEndpoint: localEndpoint, executionRole: .clusterMember),
+        attestationSigner: ServeLoopTestSigner())
+}
+
+/// The leader's serving context for `model`. These tests publish their slots
+/// themselves, so it never builds an owner.
+private func pairServingContext(_ model: String = clusterPairFixtureModel) throws -> ClusterPairServingContext {
+    try ClusterPairServingContext(publicModelID: model, modelType: "qwen3_5",
+        tokenizer: TokenizerHandle(DistributedTestTokenizer()), eosTokenIDs: [99], profile: distributedTestProfile(),
+        makeOwner: { _ in throw ClusterPairSlotError.notServing("these tests publish their own slots") })
+}
+
 /// Set when the work it marks has ended; read without waiting.
 private final class Finished: @unchecked Sendable {
     private let lock = NSLock()
@@ -40,9 +70,7 @@ extension ProviderLoop {
     /// (`installClusterPairServing`), without a two-rank installation: these
     /// tests publish their slots themselves, with any roster.
     func hostClusterPairSlotForTesting(model: String = clusterPairFixtureModel) throws {
-        clusterPairServing = try ClusterPairServingContext(publicModelID: model, modelType: "qwen3_5",
-            tokenizer: TokenizerHandle(DistributedTestTokenizer()), eosTokenIDs: [99], profile: distributedTestProfile(),
-            makeOwner: { _ in throw ClusterPairSlotError.notServing("these tests publish their own slots") })
+        clusterPairServing = try pairServingContext(model)
     }
 
     var clusterPairLocalWaitingCount: Int { clusterPairLocalLanes.waitingCount }
@@ -117,19 +145,10 @@ private struct PairLeaderFixture {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let previous = ProcessInfo.processInfo.environment["DARKBLOOM_LOCAL_DIR"]
         if localAPI { try #require(setenv("DARKBLOOM_LOCAL_DIR", directory.path, 1) == 0) }
-        let hardware = HardwareInfo(machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4, chipTier: .max,
-            memoryGb: 64, memoryAvailableGb: 64, cpuCores: .init(total: 16, performance: 12, efficiency: 4),
-            gpuCores: 40, memoryBandwidthGbs: 546)
         // Shared serving (`me_first = false`): these tests are about the lanes, and a
         // pause would refuse the Darkbloom requests they push (`ClusterPairMeFirstTests`).
-        let loop = try ProviderLoop(
-            config: .init(coordinatorURL: url, hardware: hardware,
-                models: [.init(id: clusterPairFixtureModel, modelType: "qwen3_5", sizeBytes: 1, estimatedMemoryGb: 1)],
-                config: .init(provider: .init(name: "cluster-pair-local", autoUpdate: false), backend: .init(),
-                    coordinator: .init(url: url, heartbeatIntervalSecs: 1), local: LocalSettings(meFirst: false)),
-                localEndpoint: localAPI ? .init(host: "127.0.0.1", port: 0, authToken: pairLocalToken) : nil,
-                executionRole: .clusterMember),
-            attestationSigner: ServeLoopTestSigner())
+        let loop = try memberLoop(name: "cluster-pair-local", localEndpoint: localAPI ? keyedLocalAPI : nil,
+                                  coordinatorURL: url, local: LocalSettings(meFirst: false))
         await loop.setEngineV2RuntimeForTesting(EngineV2Runtime())
         await loop.setServeUsesHostServicesForTesting(false)
         await loop.setDaemonStateFileForTesting(directory.appendingPathComponent("state.json"))
@@ -230,36 +249,28 @@ struct ClusterPairLocalTests {
     /// key: the real rank-0 installation serves; rank 1, a member with no pair
     /// installation and a host without a key refuse it at once.
     @Test func onlyTheSlotsHostRunsALocalAPIAndAlwaysWithAKey() async throws {
+        // The contract fixture's installations are for "fixture-model" on an Apple M4.
         let contract = try MemberContractFixture()
-        func member(_ endpoint: LocalInferenceHTTPConfig?) throws -> ProviderLoop {
-            let hardware = HardwareInfo(machineModel: "fixture", chipName: "Apple M4", chipFamily: .m4, chipTier: .pro,
-                memoryGb: 24, memoryAvailableGb: 20, cpuCores: .init(total: 12, performance: 8, efficiency: 4),
-                gpuCores: 16, memoryBandwidthGbs: 200)
-            return try ProviderLoop(
-                config: .init(coordinatorURL: "ws://127.0.0.1:9/ws", hardware: hardware,
-                    models: [.init(id: "fixture-model", modelType: "qwen3_5", sizeBytes: 1, estimatedMemoryGb: 1)],
-                    config: .init(provider: .init(name: "cluster-pair-local-host", autoUpdate: false), backend: .init(),
-                        coordinator: .init(url: "ws://127.0.0.1:9/ws", heartbeatIntervalSecs: 1)),
-                    localEndpoint: endpoint, executionRole: .clusterMember),
-                attestationSigner: ServeLoopTestSigner())
+        let context = try pairServingContext("fixture-model")
+        func member(_ endpoint: LocalInferenceHTTPConfig = keyedLocalAPI) throws -> ProviderLoop {
+            try memberLoop(name: "cluster-pair-local-host", localEndpoint: endpoint, model: "fixture-model",
+                hardware: HardwareInfo(machineModel: "fixture", chipName: "Apple M4", chipFamily: .m4, chipTier: .pro,
+                    memoryGb: 24, memoryAvailableGb: 20, cpuCores: .init(total: 12, performance: 8, efficiency: 4),
+                    gpuCores: 16, memoryBandwidthGbs: 200))
         }
-        let keyed = LocalInferenceHTTPConfig(host: "127.0.0.1", port: 0, authToken: pairLocalToken)
-        let context = try ClusterPairServingContext(publicModelID: "fixture-model", modelType: "qwen3_5",
-            tokenizer: TokenizerHandle(DistributedTestTokenizer()), eosTokenIDs: [99], profile: distributedTestProfile(),
-            makeOwner: { _ in throw ClusterPairSlotError.notServing("not served here") })
 
-        let leader = try member(keyed)
+        let leader = try member()
         try await leader.installNativePairMember(contract.installations[0])
         try await leader.installClusterPairServing(context)
         try await leader.prepareClusterMemberControlForTesting()
         #expect(await leader.state.refusingNewWork, "the leader stays a control-only member until its slot serves")
 
-        let follower = try member(keyed)
+        let follower = try member()
         try await follower.installNativePairMember(contract.installations[1])
         await #expect(throws: ClusterMemberControlError.incompatibleConfiguration) {
             try await follower.prepareClusterMemberControlForTesting()
         }
-        let uninstalled = try member(keyed)
+        let uninstalled = try member()
         await #expect(throws: ClusterMemberControlError.incompatibleConfiguration) {
             try await uninstalled.prepareClusterMemberControlForTesting()
         }
@@ -466,16 +477,26 @@ struct ClusterPairLocalTests {
     /// Nothing keys on two Macs: a pair of three ranks with three lanes serves
     /// three local requests at once and queues the fourth; the two members
     /// that do not host the slot refuse a local API. A roster still needs two
-    /// distinct ranks or more.
+    /// distinct ranks or more, and an impostor rank is still refused.
     @Test func nothingKeysOnTwoRanks() async throws {
+        let epoch = UUID()
         func identity(_ peers: [String]) -> DistributedResidentIdentity {
-            .init(membershipEpoch: UUID(), modelID: clusterPairFixtureModel,
+            .init(membershipEpoch: epoch, modelID: clusterPairFixtureModel,
                   artifactSHA256: String(repeating: "a", count: 64), configurationSHA256: String(repeating: "b", count: 64),
                   peers: peers.enumerated().map { .init(id: $0.element, buildSHA256: String(repeating: "\($0.offset)", count: 64)) })
         }
         #expect(throws: DistributedEngineError.self) { try identity(["rank-0"]).validate() }
+        #expect(throws: DistributedEngineError.self) { try identity(["rank-0", "rank-0"]).validate() }
         #expect(throws: DistributedEngineError.self) { try identity(["rank-0", "rank-1", "rank-0"]).validate() }
-        let owner = ScriptedPairOwner(identity: identity(["rank-0", "rank-1", "rank-2"]))
+        let roster = identity(["rank-0", "rank-1", "rank-2"])
+        // The engine serves only an owner whose readiness is the expected
+        // roster, peer for peer: one other rank in the third place is refused.
+        let impostor = ScriptedPairOwner(identity: identity(["rank-0", "rank-1", "rank-x"]))
+        #expect(throws: DistributedEngineError.unavailable) {
+            _ = try DistributedEngineFactory.makeBridge(owner: impostor, expectedIdentity: roster,
+                profile: try distributedTestProfile(), tokenizer: TokenizerHandle(DistributedTestTokenizer()), eosTokenIDs: [99])
+        }
+        let owner = ScriptedPairOwner(identity: roster)
         owner.lanes = 3
         let leader = try await pairLeaderLoop()
         try await leader.publishClusterPairSlot(clusterPairSpecification(owner), owner: owner)
@@ -493,16 +514,7 @@ struct ClusterPairLocalTests {
         #expect(await leader.retireClusterPairSlot(reason: "test"))
 
         for rank in 1...2 {
-            let member = try ProviderLoop(
-                config: .init(coordinatorURL: "ws://127.0.0.1:9/ws", hardware: HardwareInfo(machineModel: "Mac16,5",
-                    chipName: "Apple M4 Max", chipFamily: .m4, chipTier: .max, memoryGb: 64, memoryAvailableGb: 64,
-                    cpuCores: .init(total: 16, performance: 12, efficiency: 4), gpuCores: 40, memoryBandwidthGbs: 546),
-                    models: [.init(id: clusterPairFixtureModel, modelType: "qwen3_5", sizeBytes: 1, estimatedMemoryGb: 1)],
-                    config: .init(provider: .init(name: "cluster-rank-\(rank)", autoUpdate: false), backend: .init(),
-                        coordinator: .init(url: "ws://127.0.0.1:9/ws", heartbeatIntervalSecs: 1)),
-                    localEndpoint: .init(host: "127.0.0.1", port: 0, authToken: pairLocalToken),
-                    executionRole: .clusterMember),
-                attestationSigner: ServeLoopTestSigner())
+            let member = try memberLoop(name: "cluster-rank-\(rank)", localEndpoint: keyedLocalAPI)
             await #expect(throws: ClusterMemberControlError.incompatibleConfiguration) {
                 try await member.prepareClusterMemberControlForTesting()
             }

@@ -7605,7 +7605,11 @@ flowchart LR
    as it is.
 7. Nothing keys on two ranks: the host is a serving role, not a rank, and the
    pair engine takes any identity of two or more distinct peers
-   (`DistributedResidentIdentity.validate`).
+   (`DistributedResidentIdentity.validate`). That check is only the shape of
+   the roster the provider expects: a repeated peer is still refused, and an
+   impostor still is too, because the engine serves only an owner whose
+   readiness equals that identity, peer for peer (`DistributedCBv2Engine`).
+   Every roster formed today is still two distinct peers.
 
 ## Cluster pair capability honesty
 

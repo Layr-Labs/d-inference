@@ -116,6 +116,13 @@ extension ProviderLoop {
         return resumeIfOwnerIdle()
     }
 
+    /// The serve loop's `.connected` step after the test clock moved, in one
+    /// actor turn for the same reason.
+    func finishPlannedReconnectForTesting(advancing clock: MeFirstTestClock, by milliseconds: Int64) {
+        clock.advance(ms: milliseconds)
+        finishPlannedReconnect()
+    }
+
     /// A Darkbloom request as admission tracks one once accepted.
     func startOwnerPauseTestRequest(_ id: String, model: String, gate: OwnerPauseGate) {
         acceptedLifecycleRequests.insert(id)
@@ -156,6 +163,22 @@ struct OwnerPauseLoopTests {
 
         func heartbeat() async throws -> [String: Any] {
             try #require(JSONSerialization.jsonObject(with: Data(await client.buildHeartbeatJSON().utf8)) as? [String: Any])
+        }
+
+        /// The heartbeat, canonical, without `system_metrics`: the one part that
+        /// moves with the host between two builds.
+        func heartbeatFrameWithoutMetrics() async throws -> Data {
+            var object = try await heartbeat()
+            object.removeValue(forKey: "system_metrics")
+            return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        }
+
+        /// The `register` frame, from the busy fields the client copies into it.
+        func registerFrame() throws -> Data {
+            try ProviderProtocolCodec.encodeProviderMessage(CoordinatorClientCodec.registrationMessage(
+                from: .init(url: "ws://127.0.0.1:0/ws/provider", hardware: ModelLoadingFixtures.defaultHardware,
+                            models: [], backendName: "mlx-swift"),
+                busy: state.busy))
         }
 
         /// The owner's last request ends and the idle time passes.
@@ -442,7 +465,11 @@ struct OwnerPauseLoopTests {
         let entered = MeFirstSnapshot(idleMs: 60_000, paused: true, sinceMs: start, lastUseMs: start,
                                       localRequestsInFlight: 1)
         #expect(await h.loop.currentDaemonState().meFirst == entered)
-        // Transitions write the file `status` reads; requests do not.
+        // No request writes the file `status` reads, not even the one that
+        // starts the pause: the loop's regular write (every 2 s while serving)
+        // carries it. Only the resume writes at once.
+        #expect(DaemonStateFile.read(from: h.sandbox.daemonStateFile)?.meFirst == open)
+        await h.loop.writeDaemonState()  // the loop's regular write
         #expect(DaemonStateFile.read(from: h.sandbox.daemonStateFile)?.meFirst == entered)
         h.clock.advance(ms: 5_000)
         await h.loop.noteLocalUse(.end)
@@ -461,21 +488,53 @@ struct OwnerPauseLoopTests {
         #expect(DaemonStateFile.read(from: h.sandbox.daemonStateFile)?.meFirst == resumed)
     }
 
+    /// With me first off, the frames and the loop's own gates are today's:
+    /// local use changes no byte, every gate admits, and no timer or task exists.
     @Test func withMeFirstOffNothingPausesAndNoTimerOrTaskIsLeft() async throws {
         let h = try await harness(meFirst: false)
         defer { h.remove() }
+        let stub = makeInertStubBridge(modelId: Self.model)
+        await h.loop.modelLoadingInstallSlot(Self.model, bridge: stub.bridge)
+        let outbound = OwnerPauseOutbound()
+        let send = SendHandle { outbound.append($0) }
+        let prefetcher = OwnerPausePrefetcher()
+        let prefetch = ModelPrefetchCoordinator(prefetcher: prefetcher, preCheck: { _ in .needsFetch },
+                                                onVerified: { _ in })
+        await h.loop.installPrefetchCoordinatorForTesting(prefetch, client: h.client, send: send)
+        await h.loop.setDesiredPrefetchRetryDelaysForTesting([])
+        let heartbeatBefore = try await h.heartbeatFrameWithoutMetrics()
+        let registerBefore = try h.registerFrame()
+
         for _ in 0..<10 {
             await h.loop.noteLocalUse(.start)
             await h.loop.noteLocalUse(.end)
         }
         #expect(await !h.loop.meFirstResumeTimerArmedForTesting)
         #expect(!h.state.ownerPausesPublic && h.state.busy == nil)
+        #expect(!h.state.refusingDarkbloomWork && !h.state.refusingNewWork(forModel: Self.model))
         #expect(await h.loop.meFirstSnapshot == nil)
         #expect(await h.loop.currentDaemonState().meFirst == nil)
         #expect(await !h.loop.resumeIfOwnerIdle())
+        #expect(try await h.heartbeatFrameWithoutMetrics() == heartbeatBefore)
+        #expect(try h.registerFrame() == registerBefore)
         let heartbeat = try await h.heartbeat()
         #expect(heartbeat["status"] as? String == "idle")
         for key in Self.busyKeys { #expect(heartbeat[key] == nil) }
+
+        // The loop's own gates: nothing is refused for the owner.
+        await h.loop.handleInferenceRequest(requestId: "off", ciphertext: Data([1]), senderPublicKey: nil,
+            cacheReceiptNonce: nil, authenticatedCacheScope: nil, send: send)
+        #expect(outbound.failure(for: "off")?.statusCode == 400)
+        await h.loop.handleLoadModelRequest(modelId: Self.model, send: send)
+        #expect(outbound.loadStatuses.map(\.status) == [.succeeded])
+        await h.loop.handleCoordinatorPrefetch(modelId: "org/off-prefetch", priority: 1, send: send)
+        #expect(try await addonEventually { prefetcher.requested == ["org/off-prefetch"] })
+        let desired = CoordinatorMessage.DesiredModelEntry(modelName: "alias", desiredBuild: "org/off-desired")
+        await h.loop.handleDesiredModels([desired], send: send)
+        #expect(await h.loop.deferredDesiredModels == nil)
+        #expect(try await addonEventually { prefetcher.requested == ["org/off-prefetch", "org/off-desired"] })
+        #expect(await h.loop.autopilotBusyReasons().isEmpty)
+        #expect(await !h.loop.meFirstResumeTimerArmedForTesting)
     }
 
     /// The real clock: the one timer exists only while the owner's idle time counts down,

@@ -71,6 +71,7 @@ struct Local: AsyncParsableCommand {
                 print(line)
             }
         }
+        if !info.apiKey.isEmpty { print("  tools:    \(BuildEnvironment.current.cliName) start --opencode · --hermes") }
         print()
         print("Use it with any OpenAI client:")
         print("  export OPENAI_BASE_URL=\(info.baseURL)")

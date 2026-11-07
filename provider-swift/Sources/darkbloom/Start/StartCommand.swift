@@ -590,6 +590,9 @@ struct Start: AsyncParsableCommand {
             }
             if autopilot == true { throw ValidationError("Autopilot requires a network provider. Nothing was saved.") }
         }
+        if !requestedTools.isEmpty, !serving.hasLocalAPI {
+            throw ValidationError(ToolIntegrationStep.noLocalAPI(requestedTools) + " Nothing was started or saved.")
+        }
         return serving
     }
 

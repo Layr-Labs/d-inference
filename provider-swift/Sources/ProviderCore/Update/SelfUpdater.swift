@@ -44,6 +44,8 @@ public enum UpdateResult: Sendable {
     case quarantined(version: String, reason: String)
     case busy(reason: String)
     case cancelled(reason: String)
+    /// The coordinator could not be asked for its latest release; nothing was downloaded.
+    case checkFailed(reason: String)
     case downloadFailed(reason: String)
     case hashMismatch(expected: String, got: String)
     case replaceFailed(reason: String)
@@ -62,6 +64,7 @@ public struct SelfUpdater: Sendable {
     /// `checkForUpdate` uses, from the same injected seam.
     internal let currentVersion: String
     private let urlSession: URLSession
+    private let releaseCheck: ReleaseCheck
     let now: @Sendable () -> Double
     /// Test seam threaded into every `UpdateRecoveryStore` this updater
     /// constructs; production always uses the no-op default.
@@ -128,7 +131,8 @@ public struct SelfUpdater: Sendable {
         },
         recoveryFaultInjector:
             @escaping @Sendable (UpdateRecoveryStore.FaultPoint) throws -> Void = { _ in },
-        installedAppRegistrar: (@Sendable (URL) -> Void)? = nil
+        installedAppRegistrar: (@Sendable (URL) -> Void)? = nil,
+        releaseCheck: ReleaseCheck = .standard
     ) {
         // Convert WebSocket URL to HTTP if needed
         var base = WebSocketURLScheme.toHTTP(coordinatorBaseURL)
@@ -142,6 +146,7 @@ public struct SelfUpdater: Sendable {
         self.verifyCodeSignatures = verifyCodeSignatures
         self.currentVersion = currentVersion
         self.urlSession = urlSession
+        self.releaseCheck = releaseCheck
         self.now = now
         self.recoveryFaultInjector = recoveryFaultInjector
         self.installedAppRegistrar = installedAppRegistrar
@@ -277,6 +282,19 @@ public struct SelfUpdater: Sendable {
     private enum LatestReleaseFetch {
         case release(ReleaseInfo)
         case failed(String)
+    }
+
+    /// How the release check asks the coordinator for its latest release: at most `attempts` tries of at most
+    /// `requestTimeout` each, `pause` between them.
+    struct ReleaseCheck: Sendable {
+        var attempts = 3
+        var requestTimeout: TimeInterval = 15
+        var backoff = ExponentialBackoff(base: 1, max: 4)
+        var pause: @Sendable (TimeInterval) async -> Void = { seconds in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+        }
+
+        static let standard = ReleaseCheck()
     }
 
     private func fetchLatestRelease() async -> LatestReleaseFetch {

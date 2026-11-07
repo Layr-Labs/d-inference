@@ -50,6 +50,9 @@ struct Update: AsyncParsableCommand {
     /// Tests run `update` as root without being root.
     @TaskLocal static var runsAsRootForTesting: Bool?
 
+    /// Tests give `update` an updater for the coordinator URL it chose, with an install root of their own.
+    @TaskLocal static var updaterForTesting: (@Sendable (String) -> SelfUpdater)?
+
     /// Whether this process runs as root: `--rollback` refuses it.
     static var runsAsRoot: Bool { runsAsRootForTesting ?? (geteuid() == 0) }
 
@@ -75,7 +78,7 @@ struct Update: AsyncParsableCommand {
         print("")
 
         let coordinatorURL = coordinator ?? config.coordinator.url
-        let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
+        let updater = Self.updaterForTesting?(coordinatorURL) ?? SelfUpdater(coordinatorBaseURL: coordinatorURL)
 
         if rollback {
             guard !refusesRollbackAsRoot else {
@@ -184,6 +187,10 @@ struct Update: AsyncParsableCommand {
 
         case .cancelled(let reason):
             printError("update cancelled: \(reason)")
+            throw ExitCode.failure
+
+        case .checkFailed(let reason):
+            printError("download failed: update check failed: \(reason)")
             throw ExitCode.failure
 
         case .downloadFailed(let reason):

@@ -1,9 +1,9 @@
 import ArgumentParser
 import Foundation
-import ProviderCore
 import Testing
 
 @testable import darkbloom
+@testable import ProviderCore
 
 /// `darkbloom update --check-only` asks the coordinator for the latest
 /// release and installs nothing. The release endpoint is the stub
@@ -60,6 +60,45 @@ struct UpdateCheckCommandTests {
 
         let failed = try #require(outputSection(output, from: "== FAILED", to: "== END"))
         #expect(failed == header)
+    }
+
+    /// pair-2's MacBook (DevNet, 2026-11-07): "download failed: update check failed: The request timed out", twice, a
+    /// minute each. The check of both forms of the command now tries 3 times, 15 s each, and says what failed, that
+    /// nothing changed, and what to do. `update` gets an install root in the sandbox (`Update.updaterForTesting`).
+    @Test("a check that gets no answer is tried 3 times, 15 s each, then said plainly with what to do")
+    func unansweredCheckSaysWhatToDo() async throws {
+        let result = try await #require(
+            processExitsWith: .success, observing: [\.standardErrorContent]
+        ) {
+            let sandbox = try CLICommandSandbox.enter()
+            defer { sandbox.remove() }
+            let install = sandbox.root.appendingPathComponent("install", isDirectory: true)
+            let unanswered = ["/v1/releases/latest": CoordinatorStub.Reply.failure(.timedOut)]
+            try await Update.$updaterForTesting.withValue({ coordinator in
+                SelfUpdater(coordinatorBaseURL: coordinator, installRoot: install, verifyCodeSignatures: false,
+                            currentVersion: ProviderCore.version, releaseCheck: .init(pause: { _ in }))
+            }) {
+                CoordinatorStub.install(unanswered)
+                let checkOnly = try await runFailingCLICommand(
+                    Update.self, ["update", "--check-only", "--config", sandbox.config.path])
+                #expect((checkOnly as? ExitCode) == .failure)
+                #expect(CoordinatorStub.requests.map(\.timeoutInterval) == [15, 15, 15])
+
+                CoordinatorStub.install(unanswered)
+                let update = try await runFailingCLICommand(Update.self, ["update", "--config", sandbox.config.path])
+                #expect((update as? ExitCode) == .failure)
+                #expect(CoordinatorStub.requests.map { $0.url?.path } == Array(repeating: "/v1/releases/latest", count: 3))
+            }
+        }
+        let errors = decodedText(result.standardErrorContent)
+        #expect(errors.contains("""
+            Couldn't check for updates: coordinator.invalid didn't answer within 15 s (3 tries).
+            Run `darkbloom update --check-only` again in a minute. If it keeps failing, check this Mac's network connection.
+            Couldn't check for updates: coordinator.invalid didn't answer within 15 s (3 tries). Nothing was downloaded or changed.
+            Run `darkbloom update` again in a minute. If it keeps failing, check this Mac's network connection.
+
+            """), "\(errors)")
+        #expect(!errors.contains("download failed"))
     }
 
     @Test("an update without hashes prints only the bundle hash")

@@ -256,15 +256,22 @@ func printedValue(_ output: String, label: String) -> String? {
 }
 
 /// Answers every request on the shared URL session from a fixed table keyed
-/// by URL path. A path without an entry gets HTTP 404. Requests are kept so
-/// a test can check what the command sent.
+/// by URL path, or fails it on the way (`Reply.failure`). A path without an
+/// entry gets HTTP 404. Requests are kept so a test can check what the command
+/// sent.
 final class CoordinatorStub: URLProtocol, @unchecked Sendable {
     struct Reply: Sendable {
         let status: Int
         let body: Data
+        /// No answer: the request fails on the way with this error.
+        var failure: URLError.Code? = nil
 
         static func json(_ status: Int, _ text: String) -> Reply {
             Reply(status: status, body: Data(text.utf8))
+        }
+
+        static func failure(_ code: URLError.Code) -> Reply {
+            Reply(status: 0, body: Data(), failure: code)
         }
     }
 
@@ -297,6 +304,10 @@ final class CoordinatorStub: URLProtocol, @unchecked Sendable {
         let reply = Self.lock.withLock { () -> Reply in
             Self.recorded.append(request)
             return Self.replies[request.url?.path ?? ""] ?? Reply(status: 404, body: Data())
+        }
+        if let failure = reply.failure {
+            client?.urlProtocol(self, didFailWithError: URLError(failure))
+            return
         }
         guard let url = request.url,
               let response = HTTPURLResponse(

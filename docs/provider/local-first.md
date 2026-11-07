@@ -202,6 +202,8 @@ A pair gets the same three choices: in a terminal, `darkbloom cluster` asks
 (preselected), and its list's **Change how the pair serves** asks again. With
 **Both, me first**, the Mac that runs the pair's first part also runs the
 pair's local API, and Darkbloom pauses while you use it, for the whole pair.
+Every other Mac of the pair answers on its own port too, with its own key, so
+`darkbloom local` and `darkbloom start --opencode` work on each Mac.
 Your answer is saved in `[local] mode` too. The other Macs run no local API.
 Without a terminal nothing is asked, and a pair keeps serving as it did
 ([Both, me first](./two-mac-cluster.md#both-me-first-the-pairs-own-api-beside-darkbloom)).

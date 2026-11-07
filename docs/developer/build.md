@@ -377,12 +377,30 @@ Swift build cache keys bind that path (`scripts/provider-ci-cache.py` keys the
 resolved checkout).
 
 `scripts/ci-test-products.py`, through `.github/actions/provider-ci-products`,
-packs the lane's `.build` with tar and zstd, without the compile intermediates
-(each target's `<Target>.build` directory, `ModuleCache`, `index` and
-`Modules`). The archive keeps the test bundles, the executables, the resource
-bundles, the staged matched `mlx.metallib`, and the checkouts, repositories and
-`workspace-state.json`, so SwiftPM loads the package graph without a fetch. It
-is uploaded without more compression and kept for one day. A test job selects
+packs the lane's `.build` with tar and zstd. It leaves out what no test step
+reads:
+
+- The compile intermediates: each target's `<Target>.build` directory,
+  `ModuleCache`, `index` and `Modules`.
+- The host tools, which SwiftPM builds with a `-tool` suffix (the
+  `MLXHuggingFaceMacros-tool` macro), and their modules in `Modules-tool`.
+  Only the compiler runs them.
+- Every `.dSYM` bundle, including the test bundle's own. The coverage report
+  reads the coverage maps in the binaries, not DWARF. Without the dSYMs, a
+  stalled-test sample (`scripts/run-provider-test-watchdog.py`) names each
+  frame's function and offset, but not its file and line.
+- `repositories`, SwiftPM's bare clones. SwiftPM reads them only to check out
+  a dependency whose checkout is missing or at another revision.
+
+The archive keeps the test bundles, the executables, the resource bundles,
+the staged matched `mlx.metallib` and its copies in the test bundle, the build
+database, and the checkouts and `workspace-state.json`, so SwiftPM loads the
+package graph without a fetch. zstd packs it at level 9 with a 2 GiB
+long-distance window (`--long=31`), which stores content repeated far apart,
+such as the metallib copies, once; unpacking needs the same window and about
+2 GiB of memory. On the products of run 42318853015 this takes the provider
+archive from 1,065 to 265 MiB (4,519 to 2,176 MiB of files). The archive is
+uploaded without more compression and kept for one day. A test job selects
 the SDK 27 toolchain, downloads the archive and unpacks it. It refuses
 products of another commit or of another Swift, Xcode or SDK version, and it
 never unpacks over a build. When only the builds of those versions differ (the

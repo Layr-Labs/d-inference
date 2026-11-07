@@ -125,7 +125,9 @@ struct FlintContextAdmissionTests {
                     with: Data(String(buffer: response.body).utf8)) as? [String: Any])
                 let error = try #require(json["error"] as? [String: Any])
                 #expect(error["type"] as? String == "invalid_request_error")
-                #expect(error["message"] as? String == "Invalid inference request.")
+                #expect(error["code"] as? String == "context_length_exceeded")
+                #expect(error["message"] as? String == "The prompt and max_tokens together don't fit in this "
+                    + "model's context window (its context_length in /v1/models). Shorten the prompt or lower max_tokens.")
             }
         }
         #expect(native.submittedOutputs.isEmpty)

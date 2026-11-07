@@ -73,10 +73,77 @@ struct LocalContextWindowTests {
         await bridge.shutdown()
     }
 
+    @Test func theNonthrowingStreamKeepsTheWindowRefusalTyped() async {
+        let engine = WindowSentinelEngine()
+        let bridge = Self.bridge(engine)
+        let stream = await bridge.submitTokenized(promptTokens: Array(repeating: 1, count: Self.window),
+            request: .init(model: "window/model", messages: [], max_tokens: 64))
+        var errors: [String] = []
+        for await event in stream {
+            if case .error(let message) = event { errors.append(message) }
+        }
+        #expect(errors.count == 1)
+        #expect(MultiModelBatchSchedulerEngineError.fromSchedulerMessage(errors.first ?? "")
+            == .promptExceedsContext(EngineV2Bridge.promptExceedsContextMessage(contextTokens: Self.window)))
+        #expect(engine.submittedOutputs.isEmpty)
+        await bridge.shutdown()
+    }
+
     @Test func thisMacsAPIAnswersAnOverWindowPromptWithA400NamingTheWindow() async throws {
         let engine = WindowSentinelEngine()
         let tokenizer = WindowTokenizer(count: 8)
         let bridge = Self.bridge(engine, window: 8, tokenizer: tokenizer)
+        let (status, error) = try await Self.answer(bridge, tokenizer: tokenizer)
+        #expect(status == 400)
+        #expect(error["code"] as? String == "context_length_exceeded")
+        #expect((error["message"] as? String)?.contains("context window of 8 tokens") == true, "\(error)")
+        #expect(engine.submittedOutputs.isEmpty)
+        await bridge.shutdown()
+    }
+
+    /// A model with an advertised context (GLM, MiMo, Super, Qwen4, Flint,
+    /// Bonsai 9B) refuses a prompt and `max_tokens` that together pass it; this
+    /// Mac's API says so in words, as it does for the model window.
+    @Test func thisMacsAPIAnswersARequestPastAnAdvertisedContextInWords() async throws {
+        let engine = WindowSentinelEngine()
+        let tokenizer = WindowTokenizer(count: 8)
+        let bridge = EngineV2Bridge(engine: engine, modelId: "window/model", tokenizer: TokenizerHandle(tokenizer),
+            eosTokenIds: [], defaultMaxTokens: 32_768, maxConcurrentRequests: 1, kvBudget: Self.budget(),
+            advertisedContextTokens: 8)
+        let (status, error) = try await Self.answer(bridge, tokenizer: tokenizer)
+        #expect(status == 400)
+        #expect(error["code"] as? String == "context_length_exceeded")
+        #expect(error["message"] as? String == "The prompt and max_tokens together don't fit in this model's "
+            + "context window (its context_length in /v1/models). Shorten the prompt or lower max_tokens.")
+        #expect(engine.submittedOutputs.isEmpty)
+        await bridge.shutdown()
+    }
+
+    /// Within the window, this Mac's memory decides: a request reserves its
+    /// prompt and output when it starts, and one the memory can't hold is
+    /// refused as busy (503, which the local router may pass on) in words that
+    /// name the memory and what to change.
+    @Test func thisMacsAPISaysWhenItsMemoryCantHoldARequest() async throws {
+        let engine = WindowSentinelEngine()
+        let tokenizer = WindowTokenizer(count: 8)
+        let exhausted = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0, memorySnapshot: {
+            .init(total: 8 << 30, active: 8 << 30, cache: 0, systemAvailable: 0)
+        })
+        let bridge = EngineV2Bridge(engine: engine, modelId: "window/model", tokenizer: TokenizerHandle(tokenizer),
+            eosTokenIds: [], defaultMaxTokens: 32_768, defaultMaxTokensContextLimit: Self.window,
+            maxConcurrentRequests: 1, kvBytesPerToken: 4_000, kvBudget: exhausted)
+        let (status, error) = try await Self.answer(bridge, tokenizer: tokenizer)
+        #expect(status == 503)
+        #expect(error["message"] as? String == "This Mac's memory can't hold this request right now. Lower "
+            + "max_tokens or shorten the prompt (or send less media), or retry when this Mac's other requests finish.")
+        #expect(engine.submittedOutputs.isEmpty)
+        await bridge.shutdown()
+    }
+
+    /// This Mac's API over one bridge: the status and the error object of a chat
+    /// request, without `max_tokens`, whose prompt renders to the tokenizer's count.
+    private static func answer(_ bridge: EngineV2Bridge, tokenizer: WindowTokenizer) async throws
+        -> (status: Int, error: [String: Any]) {
         let handle = TokenizerHandle(tokenizer)
         let app = makeLocalInferenceApplication(
             config: .init(host: "127.0.0.1", port: 0, authToken: "synthetic-fixture-token"),
@@ -88,19 +155,14 @@ struct LocalContextWindowTests {
             },
             tokenizerProvider: { _ in .init(tokenizer: handle, modelType: nil) },
             availableModels: { ["window/model"] }, mtpSlots: { [] })
-        try await app.test(.router) { client in
-            try await client.execute(uri: "/v1/chat/completions", method: .post,
+        let (status, body) = try await app.test(.router) { client in
+            let response = try await client.execute(uri: "/v1/chat/completions", method: .post,
                 headers: [.contentType: "application/json", .authorization: "Bearer synthetic-fixture-token"],
-                body: ByteBuffer(string: #"{"model":"window/model","messages":[{"role":"user","content":"hi"}]}"#)
-            ) { response in
-                #expect(response.status == .badRequest)
-                let text = String(buffer: response.body)
-                #expect(text.contains("context window of 8 tokens"), "\(text)")
-                #expect(text.contains("context_length_exceeded"), "\(text)")
-            }
+                body: ByteBuffer(string: #"{"model":"window/model","messages":[{"role":"user","content":"hi"}]}"#))
+            return (response.status.code, String(buffer: response.body))
         }
-        #expect(engine.submittedOutputs.isEmpty)
-        await bridge.shutdown()
+        let json = try JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any]
+        return (status, json?["error"] as? [String: Any] ?? [:])
     }
 
     @Test func thisMacListsItsWindowAsTheContextAndTheOutput() {

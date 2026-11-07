@@ -12,8 +12,9 @@ extension Status {
     /// finish under a pause), then, with a local API, where your requests go. `accountKeySaved` is asked only for a
     /// local API with a key. No key and no speed.
     static func servingLines(state: DaemonState, liveEndpoint: LocalEndpoint.Info?, route: LocalSettings.Route?,
-                             accountKeySaved: () -> Bool, now: Date = Date(),
-                             timeZone: TimeZone = .current) -> [String] {
+                             accountKeySaved: () -> Bool,
+                             nextFreePort: (UInt16) -> UInt16? = { LocalAPIPort.nextFree(besides: $0) },
+                             now: Date = Date(), timeZone: TimeZone = .current) -> [String] {
         guard let liveEndpoint, liveEndpoint.pid == state.pid else {
             return ["Serving: Darkbloom network only — this Mac has no local API"]
         }

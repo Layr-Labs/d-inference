@@ -7,7 +7,7 @@ import Testing
 
 /// A terminal that answers from a script, then ends; it records what it was asked, what was printed, every look at
 /// the Keychain and every port probed. Nothing here binds a port or opens the Keychain.
-private final class ScriptedTerminal: @unchecked Sendable {
+final class ScriptedTerminal: @unchecked Sendable {
     var answers: [String]
     var reads = 0
     var output = ""
@@ -39,7 +39,7 @@ private final class ScriptedTerminal: @unchecked Sendable {
 }
 
 /// A `provider.toml` in its own temp folder; nil `toml` leaves the file absent.
-private struct TempConfig {
+struct TempConfig {
     let directory: URL
     let path: URL
 
@@ -358,29 +358,31 @@ struct StartLocalFirstTests {
 
     // MARK: - Old flags keep their old meaning
 
-    @Test("--local, --local-endpoint and plain start keep their modes, ports and LaunchAgent argv, and ask nothing")
+    @Test("--local and --local-endpoint keep their modes and LaunchAgent argv and ask nothing; they save only this Mac's port")
     func oldFlagsKeepTheirModes() throws {
-        let config = try TempConfig(plainConfig)
-        defer { config.remove() }
         for terminal in [false, true] {
+            let config = try TempConfig(plainConfig)
+            defer { config.remove() }
             let script = ScriptedTerminal(["1"])
             let local = try #require(try script.resolve(try config.start(["--local"]), terminal: terminal))
-            #expect(local.mode == .local && local.source == .flag(.local) && local.port == defaultPort)
-            #expect(local.bind == "127.0.0.1" && local.change.isEmpty && local.accountKeySaved == nil)
+            #expect(local.mode == .local && local.source == .flag(.local) && local.port == firstNewPort)
+            #expect(local.bind == "127.0.0.1" && local.accountKeySaved == nil)
+            #expect(local.change == LocalSettingsChange(port: firstNewPort), "the port, chosen once, and no mode")
+            #expect(local.portNote == LocalAPIPort.note(chosen: firstNewPort, start: defaultPort))
 
             let unified = try #require(try script.resolve(try config.start(["--local-endpoint"]), terminal: terminal))
-            #expect(unified.mode == .both && unified.meFirst && unified.port == defaultPort && unified.change.isEmpty)
+            #expect(unified.mode == .both && unified.meFirst && unified.port == firstNewPort && unified.change.isEmpty)
             #expect(launchAgentArguments(unified.launchAgentEndpoint)
-                == launchAgentArguments(.init(enabled: true, port: defaultPort, bind: "127.0.0.1", noAuth: false)))
+                == launchAgentArguments(.init(enabled: true, port: firstNewPort, bind: "127.0.0.1", noAuth: false)))
+            #expect(script.reads == 0 && script.probed == [firstNewPort], "probed once, for the one choice")
 
             let custom = try #require(try script.resolve(
                 try config.start(["--local-endpoint", "--port", "9001", "--bind", "0.0.0.0", "--no-auth"]),
                 terminal: terminal))
             #expect(launchAgentArguments(custom.launchAgentEndpoint)
                 == launchAgentArguments(.init(enabled: true, port: 9001, bind: "0.0.0.0", noAuth: true)))
-            #expect(script.reads == 0 && script.probed.isEmpty)
+            #expect(config.local == LocalSettings(port: 9001), "a named port is saved; a flag's mode never is")
         }
-        #expect(config.local == nil, "old flags save nothing")
     }
 
     @Test("--local-endpoint --no-me-first is today's shared unified mode, and the choice is saved")
@@ -389,10 +391,10 @@ struct StartLocalFirstTests {
         defer { config.remove() }
         let serving = try #require(try ScriptedTerminal().resolve(
             try config.start(["--local-endpoint", "--no-me-first"]), terminal: false))
-        #expect(serving.mode == .both && !serving.meFirst && serving.port == defaultPort)
+        #expect(serving.mode == .both && !serving.meFirst && serving.port == firstNewPort)
         #expect(launchAgentArguments(serving.launchAgentEndpoint)
-            == launchAgentArguments(.init(enabled: true, port: defaultPort, bind: "127.0.0.1", noAuth: false)))
-        #expect(config.local == LocalSettings(meFirst: false))
+            == launchAgentArguments(.init(enabled: true, port: firstNewPort, bind: "127.0.0.1", noAuth: false)))
+        #expect(config.local == LocalSettings(meFirst: false, port: firstNewPort))
         // Me first again: --me-first undoes it, without saving a mode.
         let again = try #require(try ScriptedTerminal().resolve(try config.start(["--me-first"]), terminal: false))
         #expect(again.meFirst && again.change.meFirst == true && again.change.mode == nil)
@@ -417,7 +419,7 @@ struct StartLocalFirstTests {
             loadToken: { Issue.record("--no-auth reads no token"); return "dk-local-fixture" }))
         #expect(endpoint.authToken == nil && endpoint.router?.settings.route == .myMacsFirst)
         #expect(serving.summaryLines.suffix(2) == [
-            "  Local:   http://127.0.0.1:\(defaultPort)/v1 — your requests: this Mac only",
+            "  Local:   http://127.0.0.1:\(firstNewPort)/v1 — your requests: this Mac only",
             "           (no API key: --no-auth, so requests stay on this Mac)",
         ])
         // status and local read the running provider: the same, and the Keychain isn't asked.
@@ -442,7 +444,7 @@ struct StartLocalFirstTests {
             try config.start(["--local-endpoint", "--me-first-idle", "5", "--route", "my-macs-first"]),
             terminal: false, keySaved: true))
         #expect(serving.meFirstIdleMinutes == 5 && serving.route == .myMacsFirst && serving.accountKeySaved == true)
-        #expect(config.local == LocalSettings(meFirstIdleMinutes: 5, route: .myMacsFirst))
+        #expect(config.local == LocalSettings(meFirstIdleMinutes: 5, route: .myMacsFirst, port: firstNewPort))
     }
 
     @Test("--me-first without a terminal serves Both on a new port it saves, and saves no mode")
@@ -584,30 +586,29 @@ struct StartLocalFirstTests {
         #expect(config.local == nil, "nothing is saved")
     }
 
-    @Test("the question starts from the configured port, skips 8000, and says which port it chose")
-    func questionPortFromConfiguredPort() throws {
-        let reserved = try TempConfig(plainConfig + "\n\n[local]\nport = 8000\n")
-        defer { reserved.remove() }
-        let skipped = try #require(try ScriptedTerminal(["3"]).resolve(try reserved.start(["--choose"]), terminal: true))
-        #expect(skipped.port == 8001 && reserved.local?.port == 8001)
-        #expect(skipped.portNote == "Local API port: 8001 (saved; 8000 is left for other apps).")
-
-        let busy = try TempConfig(plainConfig + "\n\n[local]\nport = 8005\n")
-        defer { busy.remove() }
-        let moved = try #require(try ScriptedTerminal(["1"]).resolve(try busy.start([]), terminal: true, busy: [8005]))
-        #expect(moved.port == 8006 && moved.portNote == "Local API port: 8006 (saved; 8005 is in use).")
-
-        let kept = try TempConfig(plainConfig + "\n\n[local]\nport = 8005\n")
-        defer { kept.remove() }
-        let same = try #require(try ScriptedTerminal(["3"]).resolve(try kept.start([]), terminal: true))
-        #expect(same.port == 8005 && same.portNote == nil && same.change.port == nil)
+    @Test("the question keeps a saved port, even 8000 or a busy one, and an explicit --port is honoured and saved")
+    func questionKeepsTheSavedPort() throws {
+        let cases: [(saved: UInt16, busy: Set<UInt16>)] = [(8000, []), (8005, [8005]), (8005, [])]
+        for (saved, busy) in cases {
+            let config = try TempConfig(plainConfig + "\n\n[local]\nport = \(saved)\n")
+            defer { config.remove() }
+            let before = config.bytes
+            let script = ScriptedTerminal(["3"])
+            let kept = try #require(try script.resolve(try config.start(["--choose"]), terminal: true, busy: busy))
+            #expect(kept.port == saved && kept.portNote == nil && kept.change.port == nil, "\(saved)")
+            #expect(script.probed.isEmpty && config.local == LocalSettings(mode: .both, port: saved), "\(saved)")
+            #expect(config.bytes != before, "the answer is saved")
+        }
 
         let explicit = try TempConfig(plainConfig)
         defer { explicit.remove() }
         let asked = try #require(try ScriptedTerminal(["3"]).resolve(try explicit.start(["--port", "8000"]),
                                                                     terminal: true))
         #expect(asked.port == 8000 && explicit.local?.port == 8000, "an explicit --port is honoured and saved")
+        #expect(asked.portNote == "Local API port: 8000 (saved).")
         #expect(LocalAPIPort.note(chosen: 8002, start: 8002) == "Local API port: 8002 (saved).")
+        #expect(LocalAPIPort.note(chosen: 8001, start: 8000) == "Local API port: 8001 (saved; 8000 is left for other apps).")
+        #expect(LocalAPIPort.note(chosen: 8006, start: 8005) == "Local API port: 8006 (saved; 8005 is in use).")
     }
 
     // MARK: - The start's summary
@@ -680,7 +681,10 @@ struct StartLocalFirstTests {
             + ServingQuestion.routeLines
             + [ServingQuestion.prompt(preselected: 3), ServingQuestion.retry, ServingQuestion.cancelled,
                LocalAPIPort.note(chosen: 8001, start: 8000), LocalAPIPort.note(chosen: 8003, start: 8001),
-               LocalAPIPort.noneFree(from: 8001)]
+               LocalAPIPort.note(named: 8007, saved: nil), LocalAPIPort.note(named: 8007, saved: 8005),
+               LocalAPIPort.noneFree(from: 8001),
+               Start.localServerBindFailure(bind: "127.0.0.1", port: 8001, nextFree: 8002),
+               Start.localServerBindFailure(bind: "127.0.0.1", port: 8001, nextFree: nil)]
         for mode in LocalSettings.Mode.allCases {
             for meFirst in [true, false] {
                 for key in [true, false] {

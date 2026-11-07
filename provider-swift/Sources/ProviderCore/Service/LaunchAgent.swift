@@ -141,15 +141,23 @@ public enum LaunchAgent: Sendable {
     /// The caller must complete the normal drain and hold the lifecycle lock.
     public static func installLocalAndStart(models: [String], configPath: URL?) throws {
         guard !isLoaded() else { throw LaunchAgentError.bootstrapFailed("Existing provider must be drained first") }
-        var arguments = [currentExecutablePath(), "start", "--local"]
-        for model in models { arguments += ["--model", model] }
-        if let configPath { arguments += ["--config", configPath.path] }
+        let arguments = localProgramArguments(binaryPath: currentExecutablePath(), models: models,
+                                              configPath: configPath, port: 0, bind: "", noAuth: false)
         let contents = makeServicePlist(label: label, programArguments: arguments,
             logPath: logPath().path, environment: ProcessInfo.processInfo.environment)
         try FileManager.default.createDirectory(at: plistPath().deletingLastPathComponent(), withIntermediateDirectories: true)
         try PropertyListSerialization.data(fromPropertyList: contents, format: .xml, options: 0)
             .write(to: plistPath(), options: .atomic)
         try loadService()
+    }
+
+    /// The local-only job's argv, without touching launchd or the filesystem.
+    static func localProgramArguments(binaryPath: String, models: [String], configPath: URL?, port: UInt16,
+                                      bind: String, noAuth: Bool) -> [String] {
+        var arguments = [binaryPath, "start", "--local"]
+        for model in models { arguments += ["--model", model] }
+        if let configPath { arguments += ["--config", configPath.path] }
+        return arguments
     }
 
     // MARK: - Stop

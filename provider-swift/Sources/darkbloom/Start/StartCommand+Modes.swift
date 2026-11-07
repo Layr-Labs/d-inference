@@ -166,7 +166,7 @@ extension Start {
         // already holding the port could answer.
         guard await server.waitUntilBound(timeoutSeconds: 5.0) else {
             await server.stop()
-            printError("Local server failed to bind \(bind):\(port) within 5s — is the port already in use?")
+            printError(Self.localServerBindFailure(bind: bind, port: port, nextFree: nil))
             throw ExitCode.failure
         }
         print("Listening on \(bind):\(port)")
@@ -203,6 +203,11 @@ extension Start {
         }
     }
 
+
+    /// The coordinator-less server couldn't listen on its port within 5 seconds.
+    static func localServerBindFailure(bind: String, port: UInt16, nextFree: UInt16?) -> String {
+        "Local server failed to bind \(bind):\(port) within 5s — is the port already in use?"
+    }
 
     // MARK: - Foreground (invoked by launchd)
 

@@ -110,6 +110,11 @@ struct Local: AsyncParsableCommand {
                     + (keySaved ? "" : " (`\(BuildEnvironment.current.cliName) route key` adds your other Macs)")]
     }
 
+    /// What `local` says when the running provider's local API couldn't listen (`DaemonState.localAPIFailure`).
+    static func notUpLine(_ failure: DaemonState.LocalAPIFailure, nextFree: UInt16?) -> String {
+        "No local server running."
+    }
+
     /// What `local` says to start a local API when none runs.
     static var notRunningHint: [String] {
         let cli = BuildEnvironment.current.cliName

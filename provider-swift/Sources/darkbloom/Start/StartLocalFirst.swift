@@ -335,36 +335,6 @@ enum StartServingResolver {
     }
 }
 
-/// The port of a local API a start creates.
-enum LocalAPIPort {
-    /// Never chosen for a new local API: 8000, where other local AI apps listen (oMLX on the owner's Mac), and
-    /// 47420–47423, which two-Mac pairs use. A pair's local API keeps to the same (`ClusterLocalServing.localAPIPort`).
-    static let neverChosen = LocalSettings.neverChosenPorts
-    /// How far past the first port the search goes.
-    static let span: UInt16 = 20
-
-    /// The first of `start`…`start + span` that isn't one of `neverChosen` and that no other program listens on, or
-    /// that this install's own running local API holds (the new start replaces it). `isFree` is never asked about
-    /// `neverChosen`, so a start never even test-binds them.
-    static func pick(from start: UInt16, ownLivePort: UInt16?, isFree: (UInt16) -> Bool) -> UInt16? {
-        (start...last(from: start)).first { !neverChosen.contains($0) && ($0 == ownLivePort || isFree($0)) }
-    }
-
-    static func last(from start: UInt16) -> UInt16 { start > UInt16.max - span ? UInt16.max : start + span }
-
-    /// Says which port was chosen, and why not the first one.
-    static func note(chosen: UInt16, start: UInt16) -> String {
-        guard chosen != start else { return "Local API port: \(chosen) (saved)." }
-        let why = neverChosen.contains(start) ? "is left for other apps" : "is in use"
-        return "Local API port: \(chosen) (saved; \(start) \(why))."
-    }
-
-    static func noneFree(from start: UInt16) -> String {
-        "No free port for this Mac's API from \(start) to \(last(from: start)) (8000 and \(ClusterLocalServing.pairPortsWords) are never chosen). "
-            + "Free one, or name one with --port <n>."
-    }
-}
-
 /// The config at `configPath` (the default config when nil), read without detecting hardware; nil when the file is
 /// absent. A file this build refuses throws its plain refusal.
 func savedConfig(configPath rawPath: String?) throws -> ProviderConfig? {

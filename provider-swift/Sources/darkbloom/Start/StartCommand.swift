@@ -284,6 +284,11 @@ struct Start: AsyncParsableCommand {
 
     var startsSingleMacServing: Bool { !foreground && !clusterMember && !distributed }
 
+    /// Whether this start is a service's child that serves as its arguments say.
+    static func isServiceChild(local: Bool, foreground: Bool, distributed: Bool, startedByAService: () -> Bool) -> Bool {
+        foreground
+    }
+
     /// Tests stand in for stopping this Mac's leftover part (`ClusterService.releaseForSingleMac`).
     @TaskLocal static var releaseForTesting: (@Sendable () -> Bool)?
     /// As `releaseForTesting`, with how it ended, given what it calls before it waits for a running cluster command.

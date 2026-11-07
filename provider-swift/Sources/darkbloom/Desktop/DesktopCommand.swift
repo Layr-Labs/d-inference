@@ -82,6 +82,17 @@ struct Desktop: AsyncParsableCommand {
     /// The drain's options, as `darkbloom stop` would take them with none given.
     static func drainOptions() throws -> DrainOptions { try DrainOptions.parse([]) }
 
+    /// The local API the app's local mode serves: this Mac's port and `[local] bind`.
+    static func localAPI(configPath: String?,
+                         ownLivePort: () -> UInt16? = { LocalEndpoint.readLiveInfo()?.port },
+                         isFree: (UInt16) -> Bool = { ClusterLocalServing.portIsFree(Int($0)) })
+      throws -> (choice: LocalAPIPort.Choice, bind: String) {
+      let loaded = try loadRuntimeConfiguration(configPath: configPath)
+      let choice = try LocalAPIPort.thisMac(configPath: loaded.configPath, fallbackConfig: loaded.config,
+                                            ownLivePort: ownLivePort, isFree: isFree)
+      return (choice, loaded.config.local?.resolvedBind ?? LocalSettings.defaultBind)
+    }
+
     /// On a Mac in a two-Mac cluster: why local mode starts nothing; nil elsewhere.
     static func pairRefusal(_ pair: ClusterPairSummary) -> [String]? {
       guard pair.paired else { return nil }

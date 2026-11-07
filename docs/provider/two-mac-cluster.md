@@ -786,7 +786,16 @@ With **Both, me first**:
   (on that Mac alone when the other Mac doesn't say), never 8000, where other
   local AI apps listen, or the pair's own ports 47420–47423. It always needs the
   pair's key, the same as `darkbloom cluster local`'s; `darkbloom local` on that
-  Mac shows the address and the key.
+  Mac shows the address and the key. With the macOS firewall on, macOS may ask
+  once to let Darkbloom accept incoming connections.
+- **On the other Mac:** nothing passes the port on (no relay, unlike
+  `darkbloom cluster local`): tools there dial that Mac's LAN or tailnet
+  address.
+- **Requests the pair can't take** (a model it doesn't serve, a full queue) go
+  on as that Mac's `[local] route` says, with that Mac's account key
+  ([the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
+  Requests from other machines never use the paid network; they can use the
+  pair and your other Macs.
 - **Me first:** while one of your requests runs on it, or waits for a lane, the
   pair takes no new Darkbloom request, and Darkbloom's running requests finish.
   It takes Darkbloom requests again 2 minutes after your last request ends
@@ -800,7 +809,10 @@ With **Both, me first**:
   first, as for **Darkbloom network**. Both need both Macs logged in.
 - **Not offered:** while Darkbloom doesn't have the pair (no approval, the
   coordinator away), it serves on the leader's local API as before
-  ([above](#registered-with-the-coordinator-as-a-cluster-member)).
+  ([above](#registered-with-the-coordinator-as-a-cluster-member)): on that Mac
+  only (`127.0.0.1`), on the same port, with that Mac's own key rather than the
+  pair's (`darkbloom local` there shows it). Tools on other machines, or set up
+  with the pair's key, reach the pair again once Darkbloom has it.
 
 `darkbloom status` and `darkbloom cluster status` say it, on the Mac that runs
 the pair's API:

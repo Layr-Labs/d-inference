@@ -306,7 +306,7 @@ coordinator's `self` list names this Mac's own builds by their aliases.
 |---|---|
 | `owned_by` | `this-mac`, `my-macs` (your other Macs, free) or `darkbloom` (the network, billed). Before the router, this Mac's entries said `local` |
 | `context_length`, `max_model_len` | This Mac's engine for its resident models; else the Darkbloom catalog (`/v1/models/catalog`), by model or by the alias's build; omitted when unknown |
-| `max_output_length` | The catalog's (a pair's: its profile's); omitted when unknown |
+| `max_output_length` | This Mac's loaded models: their context window too, as a request's prompt and output together may fill it ([each model's whole window](#each-models-whole-window-on-this-mac)); else the catalog's (a pair's: its profile's); omitted when unknown |
 | `name` | The coordinator's or the catalog's display name for your Macs' and the network's models |
 
 The coordinator's lists are cached for 30 s and the catalog for 5 minutes; a
@@ -314,7 +314,20 @@ coordinator that can't be reached leaves this Mac's models alone in the list
 and is asked again after 10 s. With `this-mac`, the list never leaves the Mac.
 Integrations (OpenCode, Hermes) read this list.
 
-<!-- pending R-FULL: local and direct use offer each model's full context window and every capability; only the Mac's memory bounds a request, and the answer says so; OpenRouter is separate. -->
+### Each model's whole window, on this Mac
+
+A model this Mac has loaded takes a prompt and its answer within its context
+window, the `context_length` above: the model's own, from its config, except
+GLM-5.3-Flash and Nemotron Super, which are held to 262,144 tokens on one Mac.
+It writes up to what the prompt leaves of the window: up to 32,768 tokens when
+the request names no `max_tokens`, and up to the rest of the window when
+`max_tokens` asks for it. Within the window, this Mac's memory decides: each
+request reserves room for its prompt and its output when it starts. The answer
+says which bound a request met ([refused request shapes](#refused-request-shapes)):
+the window (400 `context_length_exceeded`, in words that name it) or this Mac's
+memory (503, which the router passes on when a route dials out).
+
+<!-- pending R-FULL: GLM-5.3-Flash and Nemotron Super at their 1,048,576-token configs on one Mac; each model's capabilities (image, video and audio input, reasoning) in this list; a memory refusal that names how many tokens this Mac holds; the same for direct use through the network; OpenRouter is separate. -->
 
 ## Routes
 
@@ -344,7 +357,7 @@ value in [runtime constants](./cli-reference.md#runtime-constants))
 matches the coordinator WebSocket frame allowance. Per-image, per-video and
 per-audio limits are the same as fleet serving and are configured through the
 variables in [`reference/configuration.md`](../reference/configuration.md).
-A request that omits `max_tokens` may write up to 32,768 tokens (`SlotSizingSnapshot.defaultOutputTokens`, as on a pair), cut to the context window its prompt leaves; an explicit `max_tokens` is never cut.
+A request that omits `max_tokens` may write up to 32,768 tokens (`SlotSizingSnapshot.defaultOutputTokens`, as on a pair), cut to the context window its prompt leaves; a `max_tokens` may ask for the rest of the window ([each model's whole window](#each-models-whole-window-on-this-mac)).
 
 For Chat/Completions streaming, inspect every SSE event for `error`, even after
 HTTP 200. A late generation failure ends with a sanitized error chunk and
@@ -369,6 +382,9 @@ envelope, the same on one Mac and on a [two-Mac cluster](./two-mac-cluster.md):
 
 | Request | Answer | Source |
 |---|---|---|
+| On one Mac, a prompt that fills the context window of a model that advertises none of its own (Gemma 4, Qwen 3.5, 3.6 and 3.8, GPT-OSS, Nemotron Lightning) | HTTP `400`, code `context_length_exceeded`, before the engine: `The prompt fills this model's context window of <N> tokens, leaving no room for an answer. Shorten the prompt or start a new conversation.` A `max_tokens` beyond what the prompt leaves is cut to it instead, and the answer ends with `finish_reason: length` if it gets there | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Translation.swift` (`outputTokens(requested:promptTokens:)`, `promptExceedsContextMessage`) |
+| On one Mac, a prompt and `max_tokens` that together pass an advertised context (GLM-5.3-Flash and Nemotron Super: 262,144; MiMo V2.6, Qwen4, Flint and Bonsai 9B: their configs') | HTTP `400`, code `context_length_exceeded`: `The prompt and max_tokens together don't fit in this model's context window (its context_length in /v1/models). Shorten the prompt or lower max_tokens.` Without `max_tokens`, only a prompt that fills the window | `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
+| On one Mac, a request its memory can't hold now | HTTP `503`: `This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt (or send less media), or retry when this Mac's other requests finish.` The local router passes it on when a route dials out | `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
 | A content part whose `type` is none of `text`, `input_text`, `output_text`, `image_url`, `input_image`, `video_url`, `input_audio` (for example `input_file`, `input_video`, `refusal`) | HTTP `400` before model acquisition or SSE headers: `Content part type "<type>" is not supported. Send text, image_url, video_url or input_audio parts.` The type is shown with at most 64 of its letters, digits and `_.-:/`. Models without native audio still refuse `input_audio` | `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/OpenAIRequestValidation.swift` (`OpenAIRequestValidationError.unsupportedContentPart`) |
 | `response_format` `json_object`/`json_schema` whose answer stopped at `max_tokens` before it was complete (a reasoning model can spend the whole budget thinking) | HTTP `422`: `The output was cut off by max_tokens before the structured (response_format) answer was complete. Raise max_tokens or lower the reasoning effort, and retry.` Invalid JSON at a natural stop keeps its `422` with the closed internal-failure message. GLM-5.3-Flash validates its withheld JSON answer itself (`GLM5NextResponseFormat`) and answers a truncated one with that closed `422` | `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXOpenAIService.swift` (`MLXOpenAIServiceError.responseFormatCutOffByMaxTokens`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`); `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`validatedContent`) |
 | GLM-5.3-Flash with images or video and `response_format` `json_object`/`json_schema` or a required or named `tool_choice` | HTTP `400` `Invalid inference request.` (failure code `invalid_request`) before any media decode: only the text path withholds and validates such an answer or call. Hidden reasoning (`reasoning.exclude: true`, `include_reasoning: false`, `thinking.display: "omitted"`) is served with media too, its reasoning withheld | `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` (`prepareCompletion`); `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextPromptPolicy.swift` (`withholdsOutput`, `withholdsReasoning`) |

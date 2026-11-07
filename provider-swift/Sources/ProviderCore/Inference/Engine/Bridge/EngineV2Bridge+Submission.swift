@@ -92,6 +92,14 @@ extension EngineV2Bridge {
             continuation.yield(.error(Qwen4SupportPolicy.contextRejectionMessage))
             continuation.finish()
             return stream
+        } catch MultiModelBatchSchedulerEngineError.promptExceedsContext(let message) {
+            // The model window's refusal keeps its marker and its words (the
+            // window, never request content), which callers map back.
+            let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
+            continuation.yield(.error(
+                MultiModelBatchSchedulerEngineError.promptExceedsContext(message).errorDescription ?? message))
+            continuation.finish()
+            return stream
         } catch MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(let message),
             MultiModelBatchSchedulerEngineError.unsupportedOutputControl(let message) {
             // Capacity and output-control refusals already finalized their

@@ -194,8 +194,33 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
                 FileHandle.standardError.write(Data("local API: error text (debug): \(String(describing: error).prefix(400))\n".utf8))
             }
             let status = HTTPResponse.Status(code: Int(failure.statusCode))
-            return Self.openAIErrorResponse(status: status, message: failure.message)
+            // A request past an advertised context or beyond what this Mac's
+            // memory holds now is answered in words that name the bound and
+            // what to change (fixed text, never request content).
+            switch error as? MultiModelBatchSchedulerEngineError {
+            case .advertisedContextExceeded?:
+                return Self.openAIErrorResponse(status: status, message: Self.advertisedContextExceededMessage,
+                    code: "context_length_exceeded")
+            case .tokenBudgetExhausted?:
+                return Self.openAIErrorResponse(status: status, message: Self.memoryRefusalMessage)
+            default:
+                return Self.openAIErrorResponse(status: status, message: failure.message)
+            }
         }
+    }
+
+    /// This Mac's answer to a prompt and `max_tokens` that together pass an
+    /// advertised context.
+    static var advertisedContextExceededMessage: String {
+        "The prompt and max_tokens together don't fit in this model's context window "
+            + "(its context_length in /v1/models). Shorten the prompt or lower max_tokens."
+    }
+
+    /// This Mac's answer to a request its memory can't hold now: each request
+    /// reserves its prompt and its output when it starts.
+    static var memoryRefusalMessage: String {
+        "This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt "
+            + "(or send less media), or retry when this Mac's other requests finish."
     }
 
     /// Headers returned on a `OPTIONS` preflight. Matches the

@@ -604,6 +604,9 @@ without an advertised context holds every request to its model's window
 `context_length_exceeded`, and a `max_tokens` beyond what the prompt leaves is
 cut to it before the reservation
 (`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Translation.swift`).
+A request the grant can't hold now is refused for capacity; this Mac's API
+answers it with 503 and words that name this Mac's memory and what to change
+(`provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift`).
 
 Loads and serving-set reserve raises must preserve each resident bridge's total
 `minimumServiceableGrantBytes`

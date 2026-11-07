@@ -391,3 +391,35 @@ enum EngineV2Translation {
         return "engine_v2 submit failed: \(error.localizedDescription)"
     }
 }
+
+extension EngineV2Bridge {
+    /// The context a request that names no `max_tokens` fits its default output
+    /// into: the smaller of the cluster profile's or the slot's own window
+    /// (`defaultMaxTokensContextLimit`) and the advertised context; nil when
+    /// neither is known.
+    nonisolated var defaultOutputContextLimit: Int? {
+        [defaultMaxTokensContextLimit, advertisedContextTokens].compactMap { $0 }.min()
+    }
+
+    /// The output a request may write after a prompt of `promptTokens`, which
+    /// every budget of the request (its reservation, its token constraint) is
+    /// sized for: `requested` as asked, cut to what the prompt leaves of the
+    /// model window on a slot that holds requests to it (`outputWindowTokens`);
+    /// without `requested`, the default cut to the window
+    /// (`EngineV2Translation.defaultOutputTokens`).
+    nonisolated func outputTokens(requested: Int?, promptTokens: Int) -> Int {
+        guard let requested else {
+            return EngineV2Translation.defaultOutputTokens(defaultMaxTokens, promptTokens: promptTokens,
+                contextLimit: defaultOutputContextLimit)
+        }
+        guard let window = outputWindowTokens, promptTokens < window else { return requested }
+        return min(requested, window - promptTokens)
+    }
+
+    /// The refusal of a prompt that leaves no room in the model window, in the
+    /// words a client sees: the window, never request content.
+    static func promptExceedsContextMessage(contextTokens: Int) -> String {
+        "The prompt fills this model's context window of \(contextTokens) tokens, leaving no room for an answer. "
+            + "Shorten the prompt or start a new conversation."
+    }
+}

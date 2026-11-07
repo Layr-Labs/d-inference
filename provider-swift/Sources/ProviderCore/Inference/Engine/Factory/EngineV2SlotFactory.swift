@@ -574,6 +574,9 @@ enum EngineV2SlotFactory {
             stopStringScope: ModelEOSPolicy.stopStringScope(modelId: modelId, modelType: modelType),
             samplingDefaults: samplingDefaults,
             defaultMaxTokens: sizing.defaultMaxTokens,
+            // A request without max_tokens writes until the window is full,
+            // never past it, whether or not the slot advertises its context.
+            defaultMaxTokensContextLimit: maxContextLength > 0 ? maxContextLength : nil,
             maxConcurrentRequests: effectiveMaxConcurrentRequests,
             performanceProfile: preparedBackend?.performanceProfile,
             deadlineProfile: deadlineProfile,

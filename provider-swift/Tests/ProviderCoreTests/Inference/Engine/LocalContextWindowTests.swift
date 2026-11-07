@@ -102,6 +102,12 @@ struct LocalContextWindowTests {
         #expect(engine.submittedOutputs.isEmpty)
         await bridge.shutdown()
     }
+
+    @Test func thisMacListsItsWindowAsTheContextAndTheOutput() {
+        let limits = LocalModelLimits(window: Self.window)
+        #expect(limits.contextLength == Self.window && limits.maxOutputLength == Self.window)
+        #expect(LocalModelLimits(window: nil) == LocalModelLimits())
+    }
 }
 
 /// No tensors or token generation: records the output each admitted request asks for.

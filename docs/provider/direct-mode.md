@@ -329,7 +329,7 @@ value in [runtime constants](./cli-reference.md#runtime-constants))
 matches the coordinator WebSocket frame allowance. Per-image, per-video and
 per-audio limits are the same as fleet serving and are configured through the
 variables in [`reference/configuration.md`](../reference/configuration.md).
-`max_tokens` defaults to the scheduler's default when a request omits it.
+A request that omits `max_tokens` may write up to 32,768 tokens (`SlotSizingSnapshot.defaultOutputTokens`, as on a pair), cut to the context window its prompt leaves; an explicit `max_tokens` is never cut.
 
 For Chat/Completions streaming, inspect every SSE event for `error`, even after
 HTTP 200. A late generation failure ends with a sanitized error chunk and

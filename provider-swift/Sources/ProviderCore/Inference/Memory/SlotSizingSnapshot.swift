@@ -53,10 +53,19 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
     /// The model's configured context window (`max_position_embeddings`),
     /// or 0 when unknown. Bounds re-slice weights and vision KV clamps.
     public let maxContextLength: Int
-    /// Default `max_tokens` for requests that omit it: `min(context, 8192)`
-    /// when the context is known, else the provider default (mirrors the
-    /// legacy `applyPostLoadBudgets` policy).
+    /// Default `max_tokens` for requests that omit it (`defaultOutput(maxContext:fallback:)`);
+    /// the bridge cuts it to the context the prompt leaves.
     public let defaultMaxTokens: Int
+
+    /// The output a request that names no `max_tokens` may write: the
+    /// standard request's output, as on a pair (`DistributedEngineFactory.defaultOutputTokens`).
+    /// Not a cap: an explicit `max_tokens` is never cut.
+    public static let defaultOutputTokens = 32_768
+
+    /// `defaultOutputTokens` within a known context, else `fallback`.
+    public static func defaultOutput(maxContext: Int, fallback: Int) -> Int {
+        maxContext > 0 ? min(maxContext, defaultOutputTokens) : fallback
+    }
 
     /// `auxiliaryWeightBytes`: resident weight bytes that live OUTSIDE the
     /// model container (the MTP drafter — never scanned, advertised, or
@@ -193,9 +202,7 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
         }
 
         let maxContext = architecture.maxContextLength ?? 0
-        let defaultMaxTokens = maxContext > 0
-            ? min(maxContext, 8192)
-            : fallbackDefaultMaxTokens
+        let defaultMaxTokens = defaultOutput(maxContext: maxContext, fallback: fallbackDefaultMaxTokens)
 
         return SlotSizingSnapshot(
             weightsBytes: facts.bytes,

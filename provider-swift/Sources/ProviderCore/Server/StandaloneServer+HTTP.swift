@@ -95,10 +95,11 @@ extension StandaloneServer {
         slots[modelId]?.modelType ?? models.first(where: { $0.id == modelId })?.modelType
     }
 
-    /// A resident model's context as its engine admits it, for the router's `/v1/models`; nil while not loaded.
+    /// A resident model's window as its engine admits it, for the router's `/v1/models`: the most a prompt or its
+    /// output may be; nil while not loaded.
     func localModelLimits(_ modelId: String) -> LocalModelLimits? {
         guard let slot = slots[modelId] else { return nil }
-        return LocalModelLimits(contextLength: slot.bridge.advertisedContextTokens ?? slot.sizing.maxContextLength)
+        return LocalModelLimits(window: slot.bridge.advertisedContextTokens ?? slot.sizing.maxContextLength)
     }
 }
 
@@ -170,6 +171,9 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
             return Self.openAIErrorResponse(
                 status: HTTPResponse.Status(code: Int(failure.statusCode)),
                 message: failure.message)
+        } catch MultiModelBatchSchedulerEngineError.promptExceedsContext(let message) {
+            // The model window this Mac holds requests to, in plain words.
+            return Self.openAIErrorResponse(status: .badRequest, message: message, code: "context_length_exceeded")
         } catch MultiModelBatchSchedulerEngineError.distributedRequestRefused(let refusal, let message) {
             // A cluster pair's refusal names its rule and the model's limits
             // (a closed template, never request content): the client sees why.

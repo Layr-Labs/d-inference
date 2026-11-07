@@ -253,10 +253,11 @@ extension EngineV2Bridge {
         let retirementTransfer = EngineV2RetirementTransfer()
         guard acquireServiceAllowance(requestID: id, serviceReservationID: serviceReservationID,
             serviceReservation: serviceReservation, promptTokens: promptTokens.count,
-            maxOutputTokens: max(0, request.max_tokens ?? defaultMaxTokens),
+            maxOutputTokens: max(0, outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count)),
             qualifiedTextWork: multimodal == nil && mediaKind == nil,
             recoverPrefillEvidence: canRecoverPrefillEvidence(
-                promptTokens: promptTokens.count, maxOutputTokens: request.max_tokens ?? defaultMaxTokens,
+                promptTokens: promptTokens.count,
+                maxOutputTokens: outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count),
                 deadline: firstContentDeadline,
                 isMultimodal: multimodal != nil || mediaKind != nil)) else {
             // A full Mac refuses as capacity before any stream exists, so
@@ -322,7 +323,7 @@ extension EngineV2Bridge {
             // The same coordinator hint that gates the write also tells the
             // engine which fork boundary is worth staging.
             prefixCheckpointTargetTokens: donationDemand?.repeatedPrefixTokens,
-            defaultMaxTokensContextLimit: defaultMaxTokensContextLimit,
+            defaultMaxTokensContextLimit: defaultOutputContextLimit,
             // The native block engine's decoder matches stops over the whole
             // output, so its requests carry no scope and the reported stop
             // agrees with the one that matched.
@@ -345,6 +346,17 @@ extension EngineV2Bridge {
             ssdStaged: false,
             readyReceiptRegistered: false,
             usageSignal: usageSignal)
+        // A slot that holds requests to its model window refuses a prompt that
+        // fills it, naming the window, and writes at most what the prompt leaves.
+        if let window = outputWindowTokens {
+            guard promptTokens.count < window else {
+                usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
+                continuation.finish()
+                throw MultiModelBatchSchedulerEngineError.promptExceedsContext(
+                    Self.promptExceedsContextMessage(contextTokens: window))
+            }
+            cbv2Request.maxTokens = outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count)
+        }
         let (worstCaseTokens, tokenCountOverflow) = promptTokens.count.addingReportingOverflow(
             cbv2Request.maxTokens)
         if let cap = advertisedContextTokens,

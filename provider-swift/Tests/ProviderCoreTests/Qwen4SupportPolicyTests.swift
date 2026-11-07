@@ -122,9 +122,11 @@ struct Qwen4SupportPolicyTests {
 
     @Test func requestEnvelopeIncludesReservedAndDefaultOutput() async throws {
         // An engine-admission sentinel stops accepted cases before any model work.
+        // A request without max_tokens gets the default output cut to the window
+        // its prompt leaves; only a prompt that fills the window alone is refused.
         let cases: [(prompt: Int, output: Int?, accepted: Bool)] = [
-            (8, 0, true), (7, 1, true), (6, nil, true),
-            (8, 1, false), (9, 0, false), (7, nil, false),
+            (8, 0, true), (7, 1, true), (6, nil, true), (7, nil, true),
+            (8, 1, false), (9, 0, false), (8, nil, false),
             (1, Int.max, false), (1, -1, false),
         ]
         for testCase in cases {
@@ -142,7 +144,7 @@ struct Qwen4SupportPolicyTests {
                 #expect(!testCase.accepted)
                 #expect(error == .advertisedContextExceeded)
             }
-            #expect(native.submittedOutputs == (testCase.accepted ? [testCase.output ?? 2] : []))
+            #expect(native.submittedOutputs == (testCase.accepted ? [testCase.output ?? min(2, 8 - testCase.prompt)] : []))
             if !testCase.accepted {
                 #expect(native.prefixProbes == 0)
                 #expect(usage.lookupResult?.outcome == .skippedPolicy)

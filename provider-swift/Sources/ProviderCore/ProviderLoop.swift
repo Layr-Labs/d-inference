@@ -1102,7 +1102,7 @@ public actor ProviderLoop {
 
     internal static let schedulerMaxConcurrent = 24
     internal static let schedulerPendingTimeout: Duration = .seconds(120)
-    internal static let schedulerDefaultMaxTokens = 4096
+    internal static let schedulerDefaultMaxTokens = SlotSizingSnapshot.defaultOutputTokens
 
     /// Infer the reasoning parser format from the model's `model_type`
     /// (read from config.json at scan time). Used to auto-select the

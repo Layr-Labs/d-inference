@@ -1,0 +1,5 @@
+### This Mac serves its model's whole window and holds every request to it
+
+- A request to this Mac's own API that names no `max_tokens` (curl, the OpenAI SDKs, any client that leaves it out) may now write up to 32,768 tokens, as on a pair. Before, it stopped at 8,192 tokens, or 4,096 on MiMo V2.6 and Nemotron Super, which could cut a thinking model off before its answer. That default is cut to the context window the prompt leaves, so a long prompt without `max_tokens` is served until the window is full instead of being refused.
+- Models that advertise no context of their own (Gemma 4, Qwen 3.5, 3.6 and 3.8, GPT-OSS, Nemotron Lightning) are now held to their model's window. A prompt that fills it is refused with 400 `context_length_exceeded` and a message naming the window; before, it ran past the model's window. A `max_tokens` larger than what the prompt leaves is cut to fit, and the answer ends with `finish_reason: length` if it gets there.
+- This Mac's `/v1/models` lists each of its models' window as both `context_length` and `max_output_length`, so `darkbloom start --opencode` and `--hermes` write the model's own output limit instead of the catalog's.

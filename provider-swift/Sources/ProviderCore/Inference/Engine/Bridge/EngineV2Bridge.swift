@@ -133,9 +133,15 @@ public actor EngineV2Bridge {
     /// that has not been admitted.
     let samplingDefaults: EngineV2SamplingDefaults
     let defaultMaxTokens: Int
-    /// A cluster pair's context: an omitted `max_tokens` is the default cut
-    /// to what still fits after the prompt (nil everywhere else).
+    /// The context an omitted `max_tokens` is cut to fit after the prompt: a
+    /// cluster pair's, or a single Mac slot's own model window (nil when unknown).
     let defaultMaxTokensContextLimit: Int?
+    /// The model window a single Mac slot without an advertised context holds
+    /// every request to: a prompt that fills it is refused, naming it, and a
+    /// `max_tokens` that would pass it is cut to what the prompt leaves. Nil on a
+    /// pair (its engine refuses by its own limits) and on a slot with an
+    /// advertised context, which refuses a request beyond it.
+    nonisolated let outputWindowTokens: Int?
     let maxConcurrentRequests: Int
     nonisolated let performanceProfile: ServingPerformanceProfile?
     nonisolated let deadlineProfile: DeadlinePerformanceProfile?
@@ -460,11 +466,13 @@ public actor EngineV2Bridge {
         self.pagedPageSize = kvBackendKind == .paged && (pagedPageSize ?? 0) > 0 ? pagedPageSize : nil
         self.kvBackendFallbackReason = kvBackendFallbackReason
         self.distributedFirstTokenBudgetPolicy = distributedFirstTokenBudgetPolicy
-        self.advertisedContextTokens =
-            Qwen4SupportPolicy.validatedContextTokens(advertisedContextTokens)
+        let advertised = Qwen4SupportPolicy.validatedContextTokens(advertisedContextTokens)
             ?? Qwen4SupportPolicy.contextLimit(modelID: modelId)
             ?? performanceProfile?.contextTokensMax
             ?? deadlineProfile?.configuredContextTokens
+        self.advertisedContextTokens = advertised
+        self.outputWindowTokens = advertised == nil && !(engine is DistributedCBv2Engine)
+            ? defaultMaxTokensContextLimit.flatMap { $0 > 0 ? $0 : nil } : nil
         self.clampedKVBackendFallbackReason =
             Self.heartbeatFallbackReason(kvBackendFallbackReason)
         self.stopTokenIds = EngineV2Translation.stopTokenIds(

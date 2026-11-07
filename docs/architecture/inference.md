@@ -2009,7 +2009,7 @@ an explicit Boolean. Input IDs, sampling and cache keys do not depend on it.
 Bridge-side order (`EngineV2Bridge.submitTokenized`): request-id
 normalisation (`maxRequestIdLength = 256`; duplicates rejected) → first
 deadline check → translation (`maxTokens = request.max_tokens ??
-defaultMaxTokens`, 4096) → resident probe / useful SSD stage → shared-KV reservation (contiguous slots
+defaultOutputTokens(promptTokens:)`: the slot's 32,768-token default cut to the window the prompt leaves) → resident probe / useful SSD stage → shared-KV reservation (contiguous slots
 only; segmented paged admission and backing use the shared native process owner) → final deadline
 check → engine request-id mint → `engine.submit`. The terminal `CBv2Usage`
 carries `CBv2RequestTiming`, copied verbatim onto the wire and folded into
@@ -2783,9 +2783,9 @@ and cached like Flint's (`TokenizerVocabularyCache`, four entries).
 
 A constraint's budget must equal the engine request's `maxTokens`, or the engine
 refuses it (`CBv2SchedulerError.tokenConstraintBudgetMismatch`). The bridge
-resolves an omitted `max_tokens` with its own default (`EngineV2Bridge`
-`defaultMaxTokens`, from the model's sizing), so the text path builds every token
-constraint, Qwen's and Flint's, from that same default.
+resolves an omitted `max_tokens` with its own default cut to the window the prompt
+leaves (`EngineV2Bridge.defaultOutputTokens(promptTokens:)`), so the text path builds
+every token constraint, Qwen's and Flint's, from that same value.
 
 The request streams through the native reasoning split (`NativeToolStreamRouter`
 seeded from `JSONAnswerConstraint.channelPrefix`), so `JSONAnswerOutput` checks

@@ -60,7 +60,9 @@ struct Bonsai9BContextTests {
         let bridge = EngineV2Bridge(engine: engine, modelId: id,
             tokenizer: TokenizerHandle(BonsaiContextTokenizer()), eosTokenIds: [],
             defaultMaxTokens: 8, maxConcurrentRequests: 1, advertisedContextTokens: cap(8, modelID: id))
-        let stream = await bridge.submitTokenized(promptTokens: [1],
+        // The default output is cut to the window the prompt leaves; a prompt
+        // that fills the window alone is still refused.
+        let stream = await bridge.submitTokenized(promptTokens: Array(repeating: 1, count: 8),
             request: .init(model: id, messages: []), requestId: "default-output")
         var errors: [String] = []
         for await event in stream { if case .error(let message) = event { errors.append(message) } }

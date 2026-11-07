@@ -11,6 +11,13 @@ public struct LocalModelLimits: Sendable, Equatable {
         self.contextLength = contextLength.flatMap { $0 > 0 ? $0 : nil }
         self.maxOutputLength = maxOutputLength.flatMap { $0 > 0 ? $0 : nil }
     }
+
+    /// A single Mac slot's limits: its model window bounds a request's prompt
+    /// and its output alike (a `max_tokens` beyond what the prompt leaves is
+    /// cut to it), so both are the window.
+    public init(window: Int?) {
+        self.init(contextLength: window, maxOutputLength: window)
+    }
 }
 
 /// One entry of the router's `/v1/models`: the integration contract for OpenCode and Hermes.

@@ -119,10 +119,11 @@ extension ProviderLoop {
         modelSlots[modelId]?.modelType ?? advertisedModels[modelId]?.modelType
     }
 
-    /// A resident model's context as its engine admits it, for the router's `/v1/models`; nil while not loaded.
+    /// A resident model's window as its engine admits it, for the router's `/v1/models`: the most a prompt or its
+    /// output may be; nil while not loaded.
     func localModelLimits(_ modelId: String) -> LocalModelLimits? {
         guard let slot = modelSlots[modelId] else { return nil }
-        return LocalModelLimits(contextLength: slot.engineV2.advertisedContextTokens ?? slot.sizing.maxContextLength)
+        return LocalModelLimits(window: slot.engineV2.advertisedContextTokens ?? slot.sizing.maxContextLength)
     }
 
     /// Invoked by Hummingbird once the local endpoint socket is bound and

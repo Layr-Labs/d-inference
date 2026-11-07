@@ -85,6 +85,11 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// The prompt plus resolved output reservation is outside this candidate's
     /// advertised context. Deterministic client fault; no request content carried.
     case advertisedContextExceeded
+    /// The prompt leaves no room in the model window of a slot that holds every
+    /// request to it (`EngineV2Bridge.outputWindowTokens`). Deterministic client
+    /// fault; the message names the window, never request content, so a client
+    /// may be shown it.
+    case promptExceedsContext(String)
     /// The slot's engine cannot honor a requested output control (logprobs or
     /// a token constraint on a native-tracked engine). Deterministic for the
     /// request and slot, so 400 before any reservation; never the untyped 500
@@ -111,6 +116,10 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// the closed refusal's own template (rule and model limits only, never
     /// request content), so it may be shown to the client.
     case distributedRequestRefused(DistributedRequestRefusal, message: String)
+
+    /// The machine-readable head of `promptExceedsContext` in a generation
+    /// `.error(message)`, which `fromSchedulerMessage` reads back.
+    static let promptExceedsContextPrefix = "prompt_exceeds_context"
 
     public var errorDescription: String? {
         switch self {
@@ -145,6 +154,8 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
             return message
         case .advertisedContextExceeded:
             return Qwen4SupportPolicy.contextRejectionMessage
+        case .promptExceedsContext(let message):
+            return Self.promptExceedsContextPrefix + ": " + message
         case .unsupportedOutputControl(let message):
             return message
         case .missingUserQuery:
@@ -183,6 +194,10 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
         }
         if lowercased == Qwen4SupportPolicy.contextRejectionMessage {
             return .advertisedContextExceeded
+        }
+        if lowercased.hasPrefix(promptExceedsContextPrefix + ":") {
+            return .promptExceedsContext(String(message.dropFirst(promptExceedsContextPrefix.count + 1))
+                .trimmingCharacters(in: .whitespaces))
         }
         if lowercased.hasPrefix(EngineV2Translation.unsupportedOutputControlPrefix) {
             return .unsupportedOutputControl(message)

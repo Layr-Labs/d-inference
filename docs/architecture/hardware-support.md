@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-11-04
+> Last updated: 2026-11-07
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -594,6 +594,16 @@ owning-full-attention marginal byte rate times context, capped by
 weights do not choose KV precision: native admission separately accounts for the
 observed per-layer dtype, window rings, recurrent state and configured MTP state
 (`provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2Reslice.swift`).
+
+A request reserves its prompt plus its `max_tokens` from that grant when it is
+submitted. A request that names no `max_tokens` reserves the 32,768-token default
+(`SlotSizingSnapshot.defaultOutputTokens`, as on a pair) cut to the window its
+prompt leaves, so the default never needs more than the model's context. A slot
+without an advertised context holds every request to its model's window
+(`EngineV2Bridge.outputWindowTokens`): a prompt that fills it is refused as
+`context_length_exceeded`, and a `max_tokens` beyond what the prompt leaves is
+cut to it before the reservation
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Translation.swift`).
 
 Loads and serving-set reserve raises must preserve each resident bridge's total
 `minimumServiceableGrantBytes`

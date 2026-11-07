@@ -99,6 +99,11 @@ public enum ClusterServingScope: Sendable, Equatable {
         return inet_pton(AF_INET, text, &v4) == 1 || inet_pton(AF_INET6, text, &v6) == 1
     }
 
+    /// The local API listens on every address of the Mac that runs it (local only's default, and Both's): every other Mac
+    /// of the pair then answers on its own port too, passing each connection over the cable (`ClusterLocalRelay`). A
+    /// loopback or one-address API isn't reached over the cable, and no other Mac opens what the person kept closed.
+    public var answersOnEveryMac: Bool { localAPIBind == Self.localOnlyDefaultBind }
+
     /// True when hosts other than this Mac can reach the API (any address that is not loopback).
     public var reachableFromNetwork: Bool {
         guard let bind = localAPIBind else { return false }
@@ -1046,10 +1051,14 @@ public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
     /// How the plan that runs splits the model, as the serving line marks it (`ClusterOnboardingDeployment.splitMarker`);
     /// nil when it is not known here, one Mac serves alone, or from an older build.
     public var split: String? = nil
+    /// Both, me first with the pair's API on every address (`ClusterServingScope.answersOnEveryMac`): every other Mac
+    /// answers on its own port too (`ClusterLocalRelay`), so each Mac's screen names its own API. Nil otherwise, and from
+    /// an older build.
+    public var relayed: Bool? = nil
     public init(servedBy: String, port: Int, deployment: String? = nil, notice: String? = nil, network: Bool? = nil,
-                offered: String? = nil, split: String? = nil) {
+                offered: String? = nil, split: String? = nil, relayed: Bool? = nil) {
         self.servedBy = servedBy; self.port = port; self.deployment = deployment; self.notice = notice; self.network = network
-        self.offered = offered; self.split = split
+        self.offered = offered; self.split = split; self.relayed = relayed
     }
 
     /// The screens' one line (2026-11-03: less is better), "Serving Qwen3.8 27B (pipeline) at http://localhost:8000",

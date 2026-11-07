@@ -67,6 +67,11 @@ extension ClusterPairSummary {
         }
     }
 
+    /// This Mac's relay, from its own files: the discovery record its cluster service wrote (`live`); nil when none.
+    static func relayAddress(own: ClusterServiceStatus?, live: LocalEndpoint.Info?) -> ClusterPairLocalAPI.Address? {
+        nil
+    }
+
     /// This Mac's view of the pair's local API, read from its own files: whether its part runs rank 0 (its cluster
     /// service's status), the discovery record that part wrote, and that part's me first (the daemon state it writes).
     static func localAPIFacts(own: ClusterServiceStatus?) -> ClusterPairLocalAPI {

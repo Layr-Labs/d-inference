@@ -76,14 +76,16 @@ extension Start {
 
     /// Beside a pair that just started: for its local API on this Mac, when there is one. A pair starts only without
     /// single-Mac options, so no option here changes what serves.
-    func setUpToolsBesidePair() async throws {
+    func setUpToolsBesidePair(pair: ClusterPairSummary? = nil,
+                              waitForAPI: (() async -> LocalAPIWait)? = nil,
+                              step: ToolIntegrationStep? = nil) async throws {
         guard !requestedTools.isEmpty else { return }
         guard let endpoint = IntegrationEndpoint.live() else {
             print(ToolIntegrationStep.noPairAPI(requestedTools))
             print(ToolIntegrationStep.keepsServing)
             throw ExitCode.failure
         }
-        try await setUpToolsWithSavedSettings(endpoint, step: nil)
+        try await setUpToolsWithSavedSettings(endpoint, step: step)
     }
 
     /// Beside the coordinator-less server, once it is bound, on a task of its own: the server keeps serving whatever

@@ -21,6 +21,29 @@ extension OnboardingChecks {
         aPairServingBothSwitchesToTheDarkbloomNetwork()
         quittingAtTheListAfterAnsweringSavesNothing()
         quittingTheListsQuestionChangesNothing()
+        theOtherMacsCardNamesItsOwnAPI()
+    }
+
+    /// The other Mac's screen (its own `darkbloom cluster`, which the leading Mac answers): with the pair's API on every
+    /// address, that Mac answers on its own port too (its relay), so its card names its own API, as the leading Mac's
+    /// does. With the API kept on the leading Mac (loopback or one address), the card points there, as before.
+    static func theOtherMacsCardNamesItsOwnAPI() {
+        let there = ClusterOnboardingMacName.other(named: "Apple M5 Ultra, 256 GB")
+        let everyAddress = ClusterServingScope.publicServingWithLocalAPI(bind: "0.0.0.0")
+        expect(everyAddress.answersOnEveryMac && ClusterServingScope.localOnly(bind: "0.0.0.0").answersOnEveryMac,
+               "every address: every Mac answers")
+        for bind in ["127.0.0.1", "::1", "192.168.1.5"] {
+            expect(!ClusterServingScope.publicServingWithLocalAPI(bind: bind).answersOnEveryMac, "\(bind): the leading Mac only")
+        }
+        expect(!ClusterServingScope.publicServing.answersOnEveryMac, "Darkbloom network: no API anywhere")
+        let relayed = ClusterOnboardingReady(servedBy: there, port: 0, offered: "offered for pairing", relayed: true)
+        expect(relayed.outcome(model: "m", scope: everyAddress, test: "in 0.61 s").lines == [bothAPILineHere, "Test response in 0.61 s"],
+               "relayed: the other Mac's card names its own API: \(relayed.outcome(model: "m", scope: everyAddress, test: "in 0.61 s").lines)")
+        let kept = ClusterOnboardingReady(servedBy: there, port: 0, offered: "offered for pairing")
+        expect(kept.bothAPILine == "Local API: on \(there), you first (Darkbloom pauses while you use it; `darkbloom local` there "
+               + "shows its address and key)", "kept on the leading Mac: \(kept.bothAPILine)")
+        let leading = ClusterOnboardingReady(servedBy: ClusterOnboardingMacName.this, port: 0, offered: "offered for pairing", relayed: true)
+        expect(leading.bothAPILine == bothAPILineHere, "the leading Mac's card is as it was")
     }
 
     /// Plain `darkbloom cluster` in a terminal: the question is asked, and its answer saved, as the live operations do.

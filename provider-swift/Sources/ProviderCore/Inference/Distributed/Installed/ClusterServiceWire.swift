@@ -85,6 +85,10 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
     /// its own API, relay or solo server holds count as free), so rank 0 takes a port free on both Macs. Nil from an
     /// older build.
     public var freePorts: [Int]? = nil
+    /// In the answer to a `status` command, from the Mac whose part runs rank 0: the port the pair's local API listens
+    /// on, on every address, once bound (its part's discovery record), Both or local only. Every other Mac's relay
+    /// passes there (`ClusterLocalRelay`). Nil otherwise, and from an older build (its local only session's port then).
+    public var pairAPIPort: Int? = nil
     /// This Mac's coordinator-paired parts that ended in a row right after starting (`ClusterApprovalCheck`); the
     /// control leader makes the pair serve locally when either Mac's count reaches the solo server's limit. Nil from an
     /// older build.

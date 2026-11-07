@@ -19,10 +19,13 @@ public struct LocalAuthResponder<Inner: HTTPResponder>: HTTPResponder {
 
     public let inner: Inner
     public let token: String?
+    /// A pair's API: the pair's key, taken beside `token` (`LocalInferenceHTTPConfig.pairToken`).
+    public let pairToken: String?
 
-    public init(inner: Inner, token: String?) {
+    public init(inner: Inner, token: String?, pairToken: String? = nil) {
         self.inner = inner
         self.token = token
+        self.pairToken = pairToken
     }
 
     public func respond(to request: Request, context: Context) async throws -> Response {
@@ -30,7 +33,8 @@ public struct LocalAuthResponder<Inner: HTTPResponder>: HTTPResponder {
             method: request.method,
             path: request.uri.path,
             authorizationHeader: request.headers[.authorization],
-            token: token
+            token: token,
+            pairToken: pairToken
         ) {
             return try await inner.respond(to: request, context: context)
         }
@@ -50,7 +54,8 @@ public enum LocalAuthPolicy {
         method: HTTPRequest.Method,
         path: String,
         authorizationHeader: String?,
-        token: String?
+        token: String?,
+        pairToken: String? = nil
     ) -> Bool {
         guard let token, !token.isEmpty else { return true }
         if method == .options { return true }

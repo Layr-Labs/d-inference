@@ -251,6 +251,9 @@ struct ToolIntegrationStep {
             + "the leading Mac's own API; run this there."
     }
 
+    /// The line on a Mac whose pair keeps its local API on the Mac that runs it, on `bind` only.
+    static func pairAPIElsewhere(_ tools: [IntegrationTool], bind: String) -> String { "" }
+
     /// The line beside a running local API without a key (`--no-auth`), which tools can't use.
     static func keyless(port: UInt16) -> String {
         "✗ Darkbloom's local API on :\(port) has no key (--no-auth); tools need one: start it without --no-auth."

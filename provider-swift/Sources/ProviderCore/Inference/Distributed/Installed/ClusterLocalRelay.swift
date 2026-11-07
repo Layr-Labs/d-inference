@@ -16,11 +16,21 @@ public final class ClusterLocalRelay: @unchecked Sendable {
         public init(host: String, port: Int) { self.host = host; self.port = port }
     }
 
+    /// The two keys the relay knows: this Mac's own (`LocalEndpoint.loadOrCreateToken`), which tools on this Mac read,
+    /// and the pair's (`LocalEndpoint.loadOrCreateClusterToken`), which the API on rank 0 takes from every relay.
+    public struct Keys: Equatable, Sendable {
+        public var own: String
+        public var pair: String
+        public init(own: String, pair: String) { self.own = own; self.pair = pair }
+    }
+
     public static let maximumConnections = 64
     public static let idleSeconds = 600
 
     public let port: Int
     public let target: Target
+    /// Nil: every byte passes as it comes, keys included.
+    public let keys: Keys?
     private let listener: Int32
     private let lock = NSLock()
     private var stopped = false
@@ -31,7 +41,7 @@ public final class ClusterLocalRelay: @unchecked Sendable {
 
     /// Listens on `bind` (IPv4) at `port` (nil when it cannot: another program holds it) and passes each connection
     /// to `target`.
-    public init?(port: Int, bind: String = "0.0.0.0", target: Target) {
+    public init?(port: Int, bind: String = "0.0.0.0", target: Target, keys: Keys? = nil) {
         guard (1...65_535).contains(port), (1...65_535).contains(target.port) else { return nil }
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
@@ -47,7 +57,7 @@ public final class ClusterLocalRelay: @unchecked Sendable {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
         }
         guard bound == 0, listen(fd, 64) == 0 else { close(fd); return nil }
-        self.port = port; self.target = target; listener = fd
+        self.port = port; self.target = target; self.keys = keys; listener = fd
         Thread.detachNewThread { [self] in acceptLoop() }
     }
 

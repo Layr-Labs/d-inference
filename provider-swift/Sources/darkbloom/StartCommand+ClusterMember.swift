@@ -89,14 +89,15 @@ extension Start {
     /// with an open one.
     static func clusterMemberLocalEndpoint(requested: Bool, hostsPairSlot: Bool, bind: String, port: UInt16,
                                            local: LocalSettings?, coordinatorURL: String?,
-                                           loadToken: () throws -> String = { try LocalEndpoint.loadOrCreateClusterToken() },
+                                           loadToken: () throws -> String = { try LocalEndpoint.loadOrCreateToken() },
+                                           loadPairToken: () throws -> String = { try LocalEndpoint.loadOrCreateClusterToken() },
                                            say: (String) -> Void = printError) -> LocalInferenceHTTPConfig? {
         guard requested else { return nil }
         guard hostsPairSlot else {
             say("This Mac's part runs no local API: the pair's API is on the Mac that runs rank 0.")
             return nil
         }
-        guard let token = try? loadToken(), !token.isEmpty else {
+        guard let token = try? loadPairToken(), !token.isEmpty else {
             say("The pair's local API key could not be read or created, so this part serves Darkbloom without the local API.")
             return nil
         }

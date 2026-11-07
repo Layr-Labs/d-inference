@@ -69,6 +69,12 @@ struct ClusterPairSummary: Sendable, Equatable {
     var speculationNote: String?
     /// The pair serves Both, me first: its local API beside Darkbloom, as this Mac sees it; nil for any other way.
     var localAPI: ClusterPairLocalAPI?
+    /// Where the pair's local API listens on the Mac that runs it (`ClusterServingScope.localAPIBind`), local only or
+    /// Both; nil for the Darkbloom network.
+    var localAPIBind: String?
+    /// This Mac's relay to the pair's API on the Mac that runs rank 0 (`ClusterLocalRelay`), as its discovery record
+    /// says; nil while none runs.
+    var relaying: ClusterPairLocalAPI.Address?
 
     static let notPaired = ClusterPairSummary(paired: false, state: .notPaired)
 

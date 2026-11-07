@@ -625,6 +625,13 @@ public final class ClusterService: @unchecked Sendable {
             : "port \(wanted.port) is taken on this Mac: the API answers here on port \(port), passed over the cable to port \(wanted.port) on the other Mac (rank 0)")
     }
 
+    /// The discovery record this Mac's relay writes for its tools (`darkbloom local`, `start --opencode`).
+    public static func relayDiscovery(port: Int, keys: ClusterLocalRelay.Keys, pid: Int32 = getpid(),
+                                      now: Date = Date()) -> LocalEndpoint.Info {
+        LocalEndpoint.Info(host: ClusterServingScope.localOnlyDefaultBind, port: UInt16(port), apiKey: keys.pair,
+                           version: ProviderCore.version, pid: pid, updatedAt: ISO8601DateFormatter().string(from: now))
+    }
+
     /// Asks the other Mac (every 10 s, never on this loop's thread) where its rank 0 API listens.
     private func askRankZeroPort() {
         let begin = lock.withLock { () -> Bool in

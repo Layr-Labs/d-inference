@@ -56,6 +56,10 @@ class Selection:
     tests: tuple = ()
     # Base: these suites only, or every suite no other base selection takes.
     suites: tuple | None = None
+    # Base, with `suites`: only these test functions of the suites. The base
+    # selection of the same suites without `functions` runs all the others,
+    # so a new test of the suites runs there.
+    functions: tuple = ()
     # Focused: a runner script under libs/darkbloom-cluster/Tests.
     runner: str | None = None
     # The shard runs its groups at the same time, each group's selections one
@@ -107,26 +111,43 @@ QWEN_TP_MTP_GPU_TESTS = (
     "anAssistedHybridPromptMergesFramesAndSpeculatesAlikeOnGPU",
 )
 
-# The Gemma 4 suites: 592 of the base tests' 970 s (run 41992571131, job
-# 127128309712). They run in a process of their own, so the family still
-# shares one process; `audit` checks that every Gemma suite is listed.
+# The Gemma 4 suites: 610 s in one process (median of 14 runs of 2026-11-06,
+# when they all ran in base-gemma). `audit` checks that every Gemma suite is listed
+# and that each runs whole in exactly one base selection of Gemma suites:
+# Gemma4TensorParallelTests (296 s) in one, the others (314 s) in the other.
 GEMMA_SUITES = (
     "Gemma4BatchArithmeticAgreementTests", "Gemma4BatchDecodeTests", "Gemma4StagePagedSyntheticTests",
     "Gemma4TensorParallelPrefixTests", "Gemma4TensorParallelRuntimeTests", "Gemma4TensorParallelTests",
     "GemmaPrefillArithmeticTests", "GemmaPrefixChunkTests", "ResidentAdmissionGemma4Tests",
+)
+GEMMA_TENSOR_PARALLEL_SUITES = ("Gemma4TensorParallelTests",)
+BATCH_SESSION_SUITES = ("QwenTensorParallelBatchSessionTests",)
+# The batch-session suite's warm and SSD prefix tier tests: 325 of the
+# suite's 672 s on the CPU (median of 14 runs, 2026-11-06). They run in a
+# process of their own; the suite's other tests run in base-batch-session.
+BATCH_SESSION_PREFIX_TIER_TESTS = (
+    "warmAttentionPrefixesPreserveMixedHistoriesAndRetirement",
+    "ssdAttentionPrefixesRestoreAfterTheTiersReopen",
+    "ssdBalancedRecordsAdoptOnBothRanksWithAnExactBand",
 )
 
 SELECTIONS = (
     # Blocking shard 1 runs `base` alone, then the share probe alone. The
     # probe times its share against a 1.5 s budget, so it never runs on a Mac
     # just after the concurrent GPU groups (run 41973436945 failed it there).
-    # Shard 2 runs group 1 (the CPU batch-session suite, then the GLM paged-KV,
-    # invariance and census, TF32 and Gemma selections) beside group 2 (the
-    # Qwen GPU chain and glm53-prefix-ssd). Shard 3 runs the Gemma 4 base
-    # suites alone.
-    Selection("base-batch-session", "blocking", 2, suites=("QwenTensorParallelBatchSessionTests",), group=1),
+    # Shards 2 and 3 each run a Qwen GPU group beside a CPU group of the
+    # batch-session suite. Shard 2: group 1 is the first half of the Qwen GPU
+    # chain, then the GLM paged-KV, invariance and census, TF32 and Gemma
+    # selections; group 2 is base-batch-session. Shard 3: group 1 is the rest
+    # of the Qwen GPU chain and glm53-prefix-ssd; group 2 is the prefix tier
+    # tests. Shards 4 and 5 each run one half of the Gemma 4 base suites alone.
+    Selection("base-batch-session", "blocking", 2, suites=BATCH_SESSION_SUITES, group=2),
+    Selection("base-batch-session-prefix-tiers", "blocking", 3, suites=BATCH_SESSION_SUITES,
+              functions=BATCH_SESSION_PREFIX_TIER_TESTS, group=2),
     Selection("base", "blocking", 1),
-    Selection("base-gemma", "blocking", 3, suites=GEMMA_SUITES),
+    Selection("base-gemma-tensor-parallel", "blocking", 4, suites=GEMMA_TENSOR_PARALLEL_SUITES),
+    Selection("base-gemma", "blocking", 5,
+              suites=tuple(suite for suite in GEMMA_SUITES if suite not in GEMMA_TENSOR_PARALLEL_SUITES)),
     Selection("qwen-tp-batch-gpu", "blocking", 2, {"QWEN_TP_BATCH_GPU": "1"}, tests=(
         "bothTilesGiveTheSameBytes",
         "actualHybridShardsPreserveAttentionConvAndSSMRows",
@@ -139,16 +160,16 @@ SELECTIONS = (
         "mergedStepTemporariesStayWithinTheirCharge",
         "mergedFramesKeepEveryBit",
         "executorRunsThePlannedMergedStep",
-    ), group=2),
+    ), group=1),
     Selection("qwen-tp-batch-gpu-paged", "blocking", 2, {"QWEN_TP_BATCH_GPU": "1", "QWEN_TP_BATCH_KV": "paged"}, tests=(
         "cohortSurvivorKeepsOnlyItsOwnRows",
         "routedExpertCapacityOneAndTwoKeepExactPagedLogitsAndHistory",
         "capacityOneAndTwoKeepExactPagedLogitsAndHistory",
         "pagesGrowMidDecodeWithoutChangingAByte",
         "promptLayerSubmissionKeepsEveryBit",
-    ), group=2),
-    Selection("qwen-tp-mtp-gpu", "blocking", 2, {"QWEN_TP_MTP_GPU": "1"}, tests=QWEN_TP_MTP_GPU_TESTS, group=2),
-    Selection("qwen-tp-aqv-gpu", "blocking", 2, {"QWEN_TP_AQV_GPU": "1"}, tests=(
+    ), group=1),
+    Selection("qwen-tp-mtp-gpu", "blocking", 3, {"QWEN_TP_MTP_GPU": "1"}, tests=QWEN_TP_MTP_GPU_TESTS, group=1),
+    Selection("qwen-tp-aqv-gpu", "blocking", 3, {"QWEN_TP_AQV_GPU": "1"}, tests=(
         "declinesWhatItDoesNotCover",
         "agreesWithTheDequantizedProduct",
         "everyVectorEqualsItsOwnSingleVectorCall",
@@ -158,19 +179,19 @@ SELECTIONS = (
         "siluMultiplyEqualsTheUnfusedChain",
         "sigmoidGateEqualsTheUnfusedChain",
         "cachedGatedDeltaScalesEqualFreshOnes",
-    ), group=2),
-    Selection("qwen-tp-moe-gpu", "blocking", 2, {"QWEN_TP_MOE_GPU": "1", "QWEN_TP_MOE_GPU_DIAG": "1"}, tests=(
+    ), group=1),
+    Selection("qwen-tp-moe-gpu", "blocking", 3, {"QWEN_TP_MOE_GPU": "1", "QWEN_TP_MOE_GPU_DIAG": "1"}, tests=(
         "packedSharedExpertCollectiveIsBitIdenticalOnTwoGPURanks",
         "packedRunsRepeatAndShortPromptsOnTwoGPURanks",
-    ), group=2),
+    ), group=1),
     Selection("qwen-tp-share-probe-gpu", "blocking", 1, {"QWEN_TP_SHARE_PROBE_GPU": "1"}, tests=(
         "eachRankTimesItsShareAloneAndReleasesItsRequest",
         "aRefusalOrAFailureGivesNoProbeAndKeepsNothing",
     )),
-    Selection("glm53-prefix-ssd", "blocking", 2, {"GLM53_PREFIX_SSD": "1"}, tests=(
+    Selection("glm53-prefix-ssd", "blocking", 3, {"GLM53_PREFIX_SSD": "1"}, tests=(
         "aServingStageRestoresFromTheSSDExactly",
         "aServingStageRestoresFromABalancedRecord",
-    ), group=2),
+    ), group=1),
     Selection("glm53-paged-kv", "blocking", 2, {"GLM53_PAGED_KV": "1"}, tests=(
         "pagedRequestsDecideAndHoldWhatContiguousOnesDo",
         "pagedMediaRequestsDecideAndHoldWhatContiguousOnesDo",
@@ -192,8 +213,14 @@ SELECTIONS = (
     Selection("gemma-tp-diag", "blocking", 2, {"GEMMA_TP_DIAG": "1"}, tests=(
         "diagnosticShardOperationsEqualWholeOperations",
     ), group=1),
+    # The two halves of QwenTensorParallelRowsCheck, each alone on a GPU shard.
+    # As one test it took 1098 s and decided the run's wall time (run
+    # 42268059756); each half prefills about half of its 130k prompt tokens.
     Selection("qwen-tp-real-geometry-gpu", "nonblocking", 1, {"QWEN_TP_REAL_GEOMETRY_GPU": "1"}, tests=(
         "rowsEqualTheirSoloStepsAndWindowPositionsAtRealWidths",
+    )),
+    Selection("qwen-tp-real-geometry-gpu-segments", "nonblocking", 3, {"QWEN_TP_REAL_GEOMETRY_GPU": "1"}, tests=(
+        "rowsAcrossKVSegmentsEqualTheirSoloStepsAtRealWidths",
     )),
     Selection("qwen-tp-mtp-gpu-wide-kernel", "nonblocking", 2, {"QWEN_TP_MTP_GPU": "1"}, tests=(
         "wideKernelRowsEqualEachRowsOwnWindowCall",
@@ -271,6 +298,11 @@ def suites_regex(suites):
     return f"^{MODULE}[./](?:{'|'.join(sorted(suites))})(?:[./]|$)"
 
 
+def suite_functions_regex(suites, names):
+    """The test functions `names` of `suites`, and of no other suite."""
+    return f"^{MODULE}[./](?:{'|'.join(sorted(suites))})/(?:{'|'.join(sorted(names))})\\("
+
+
 def switched_regex():
     """Every test a base selection must not run: the switched and model-gated tests."""
     gated = [name for selection in SELECTIONS for name in selection.tests] + list(REQUIRES_MODEL)
@@ -281,9 +313,15 @@ def swift_arguments(selection):
     """The run-nested-suite.sh arguments: the filter, then extra `swift test` arguments."""
     if selection.tests:
         return [functions_regex(selection.tests), "--no-parallel"]
+    if selection.functions:
+        return [suite_functions_regex(selection.suites, selection.functions), "--skip", switched_regex(),
+                "--no-parallel"]
     if selection.suites:
-        return [suites_regex(selection.suites), "--skip", switched_regex(), "--no-parallel"]
-    others = [suite for other in SELECTIONS if other.base and other.suites for suite in other.suites]
+        # The tests that a selection of some of these suites' functions takes.
+        taken = [suite_functions_regex(other.suites, other.functions) for other in SELECTIONS
+                 if other.functions and other.suites == selection.suites]
+        return [suites_regex(selection.suites), "--skip", "|".join([switched_regex(), *taken]), "--no-parallel"]
+    others = {suite for other in SELECTIONS if other.base and other.suites for suite in other.suites}
     return [f"^{MODULE}[./]", "--skip", f"{switched_regex()}|{suites_regex(others)}", "--no-parallel"]
 
 
@@ -495,6 +533,53 @@ def gemma_suites_in_sources(directory=RUNTIME_TESTS):
     return names
 
 
+def ungated_tests_of(suites, directory=RUNTIME_TESTS):
+    """The test functions without a trait in the files that declare `suites`."""
+    names = set()
+    for path in sorted(directory.rglob("*.swift")):
+        text = path.read_text()
+        if any(re.search(rf"\b(?:struct|class|enum) {suite}\b", text) for suite in suites):
+            names.update(re.findall(r'@Test(?:\("[^"]*"\))?\s+func (\w+)\(', text))
+    return names
+
+
+def audit_split_suites(repeated):
+    """A selection of some functions of base suites: each is an ungated test of
+    those suites, named once, and one other base selection runs the rest."""
+    errors = []
+    split = [selection for selection in SELECTIONS if selection.functions]
+    named = [name for selection in split for name in selection.functions]
+    for name in sorted({name for name in named if named.count(name) > 1}):
+        errors.append(f"{name} is in more than one selection of suite functions")
+    for selection in split:
+        rest = [other.name for other in SELECTIONS
+                if other.base and not other.functions and other.suites == selection.suites]
+        if not selection.base or not selection.suites or len(rest) != 1:
+            errors.append(f"{selection.name} names suite functions, so it must be a base selection of suites "
+                          f"with exactly one base selection of the same suites for their other tests, not {rest}")
+        tests = ungated_tests_of(selection.suites or ())
+        for name in sorted(set(selection.functions) - tests):
+            errors.append(f"{name} ({selection.name}) is not an ungated test of {selection.suites}")
+        for name in sorted(set(selection.functions) & repeated):
+            errors.append(f"{name} ({selection.name}) is defined more than once; its name does not select one test")
+    return errors
+
+
+def audit_gemma_selections():
+    """Every Gemma suite runs whole in exactly one base selection, which holds only Gemma suites."""
+    errors = []
+    for suite in GEMMA_SUITES:
+        owners = [selection.name for selection in SELECTIONS
+                  if selection.base and selection.suites and suite in selection.suites]
+        if len(owners) != 1:
+            errors.append(f"Gemma suite {suite} must be in exactly one base selection, not {owners}")
+    for selection in SELECTIONS:
+        suites = set(selection.suites or ())
+        if suites & set(GEMMA_SUITES) and (suites - set(GEMMA_SUITES) or selection.functions):
+            errors.append(f"{selection.name} must hold whole Gemma suites and nothing else")
+    return errors
+
+
 def audit():
     errors = []
     planned = [name for selection in SELECTIONS for name in selection.tests]
@@ -513,6 +598,8 @@ def audit():
     gemma = gemma_suites_in_sources()
     if gemma != set(GEMMA_SUITES):
         errors.append(f"Gemma suites in the sources {sorted(gemma)} differ from GEMMA_SUITES {sorted(GEMMA_SUITES)}")
+    errors += audit_gemma_selections()
+    errors += audit_split_suites(repeated)
     names = [selection.name for selection in SELECTIONS]
     if len(names) != len(set(names)) or any(selection.lane not in LANES for selection in SELECTIONS):
         errors.append("Selection names must be unique and every lane known")

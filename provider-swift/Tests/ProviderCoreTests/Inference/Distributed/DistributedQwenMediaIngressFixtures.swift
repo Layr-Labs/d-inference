@@ -120,17 +120,35 @@ final class QwenIngressLease: DistributedResidentRequestLease, @unchecked Sendab
     private var request: CBv2Request?
     private var emit: (@Sendable (DistributedResidentEvent) -> Bool)?
     private var released = 0
+    private var started = false
     init(identity: DistributedResidentIdentity, request: CBv2Request) {
         self.identity = identity; requestID = request.id; self.request = request
     }
     var holdsWire: Bool { lock.withLock { request?.clusterQwenMedia != nil } }
     var releases: Int { lock.withLock { released } }
-    func start(emit: @escaping @Sendable (DistributedResidentEvent) -> Bool) throws { lock.withLock { self.emit = emit } }
+    /// The owner lists a lease at its reservation; the engine starts it once
+    /// the reservation has returned. An event sent before then has no receiver.
+    var isStarted: Bool { lock.withLock { started } }
+    func start(emit: @escaping @Sendable (DistributedResidentEvent) -> Bool) throws {
+        lock.withLock { self.emit = emit; started = true }
+    }
     func send(_ event: DistributedResidentEvent) { _ = lock.withLock { emit }?(event) }
     func cancel() {}
     func acknowledge() { retired.complete() }
     func waitUntilRetired() async { await retired.wait() }
     func releaseResources() { lock.withLock { request = nil; emit = nil; released += 1 } }
+}
+
+extension EngineV2Bridge {
+    /// Returns when the pump of `requestId` (every live pump when nil) has
+    /// returned. The client's stream ends first; the pump then waits for the
+    /// native retirement and releases what its submission held, the media
+    /// allowance included.
+    func awaitPumps(requestId: String? = nil) async {
+        let tasks: [Task<Void, Never>]
+        if let requestId { tasks = pumpTasks[requestId].map { [$0] } ?? [] } else { tasks = Array(pumpTasks.values) }
+        for task in tasks { await task.value }
+    }
 }
 
 actor QwenIngressReleaseCounter {

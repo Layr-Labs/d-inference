@@ -44,10 +44,20 @@ class ClusterTestPlanTests(unittest.TestCase):
         cases.update({
             f"{module}.QwenTensorParallelBatchSessionTests/actualShardsBatchIndependentHistories()": "base-batch-session",
             f"{module}.QwenTensorParallelBatchSessionTests/Nested/plainCase()": "base-batch-session",
+            # The prefix tier tests of the suite, and only of that suite, run in their own process.
+            f"{module}.QwenTensorParallelBatchSessionTests/warmAttentionPrefixesPreserveMixedHistoriesAndRetirement()":
+                "base-batch-session-prefix-tiers",
+            f"{module}.QwenTensorParallelBatchSessionTests/ssdBalancedRecordsAdoptOnBothRanksWithAnExactBand()":
+                "base-batch-session-prefix-tiers",
+            f"{module}.QwenTensorParallelBatchSessionTests/Nested/ssdAttentionPrefixesRestoreAfterTheTiersReopen()":
+                "base-batch-session",
+            f"{module}.QwenTensorParallelBatchSessionTestsMore/ssdAttentionPrefixesRestoreAfterTheTiersReopen()":
+                "base",
             f"{module}.PrefixCacheContractTests/plannedFramesStartAtTheReusedPrefix()": "base",
             f"{module}.QwenBatchCancellationTests/testAcceptedStartStaysCharged": "base",
             f"{module}.QwenTensorParallelBatchSessionTestsMore/plainCase()": "base",
-            f"{module}.Gemma4TensorParallelTests/plainCase()": "base-gemma",
+            f"{module}.Gemma4TensorParallelTests/plainCase()": "base-gemma-tensor-parallel",
+            f"{module}.Gemma4BatchDecodeTests/plainCase()": "base-gemma",
             f"{module}/ResidentAdmissionGemma4Tests/Nested/plainCase()": "base-gemma",
             f"{module}.Gemma4TensorParallelTestsMore/plainCase()": "base",
             # A switched test of a Gemma suite runs only in its switch's selection.
@@ -84,18 +94,27 @@ class ClusterTestPlanTests(unittest.TestCase):
     def test_order_dependent_selections_keep_their_process_and_order(self):
         # Some GPU and peer tests pass only after earlier work in the same
         # process or on the same Mac (PR 1745 runs 41692814231, 41700931534).
-        # Each model family's base suites share one process: the CPU
-        # batch-session suite runs in its own, the Gemma family in its own and
-        # every other base suite in `base`.
+        # Every base suite runs whole in one process, except the CPU
+        # batch-session suite, whose prefix tier tests run in a process of
+        # their own and its other tests in another. The Gemma family runs in
+        # two processes of its own (Gemma4TensorParallelTests, then the
+        # others), and every other base suite in `base`.
         base = [selection for selection in plan.SELECTIONS if selection.base]
-        self.assertEqual([(selection.name, selection.suites) for selection in base],
-                         [("base-batch-session", ("QwenTensorParallelBatchSessionTests",)), ("base", None),
-                          ("base-gemma", plan.GEMMA_SUITES)])
+        gemma_rest = tuple(suite for suite in plan.GEMMA_SUITES if suite != "Gemma4TensorParallelTests")
+        self.assertEqual([(selection.name, selection.suites, selection.functions) for selection in base],
+                         [("base-batch-session", ("QwenTensorParallelBatchSessionTests",), ()),
+                          ("base-batch-session-prefix-tiers", ("QwenTensorParallelBatchSessionTests",),
+                           plan.BATCH_SESSION_PREFIX_TIER_TESTS),
+                          ("base", None, ()),
+                          ("base-gemma-tensor-parallel", ("Gemma4TensorParallelTests",), ()),
+                          ("base-gemma", gemma_rest, ())])
         self.assertTrue(all("Gemma" in suite for suite in plan.GEMMA_SUITES))
-        gemma = next(selection for selection in base if selection.name == "base-gemma")
-        self.assertIsNone(gemma.group)
-        self.assertEqual([selection.name for selection in plan.SELECTIONS
-                          if (selection.lane, selection.shard) == ("blocking", gemma.shard)], ["base-gemma"])
+        # Each Gemma selection has a shard and its Mac to itself.
+        for name in ("base-gemma-tensor-parallel", "base-gemma"):
+            gemma = next(selection for selection in base if selection.name == name)
+            self.assertIsNone(gemma.group)
+            self.assertEqual([selection.name for selection in plan.SELECTIONS
+                              if (selection.lane, selection.shard) == ("blocking", gemma.shard)], [name])
         # `base`, the longest selection, and then the share probe have shard 1
         # and its Mac to themselves, one process at a time. The probe times
         # its share against a 1.5 s budget: it never shares a shard with the
@@ -116,6 +135,23 @@ class ClusterTestPlanTests(unittest.TestCase):
         # still run one selection at a time.
         self.assertEqual({selection.lane for selection in plan.SELECTIONS if selection.group is not None},
                          {"blocking"})
+
+    def test_each_half_of_the_real_geometry_rows_check_has_a_gpu_shard_to_itself(self):
+        # As one test the check alone set the run's wall time; its halves
+        # compare against their own solo runs, so each runs on its own Mac.
+        halves = {"qwen-tp-real-geometry-gpu": "rowsEqualTheirSoloStepsAndWindowPositionsAtRealWidths",
+                  "qwen-tp-real-geometry-gpu-segments": "rowsAcrossKVSegmentsEqualTheirSoloStepsAtRealWidths"}
+        selections = {selection.name: selection for selection in plan.SELECTIONS}
+        shards = set()
+        for name, test in halves.items():
+            with self.subTest(selection=name):
+                selection = selections[name]
+                self.assertEqual((selection.lane, selection.tests, selection.group), ("nonblocking", (test,), None))
+                self.assertEqual(selection.environment, {"QWEN_TP_REAL_GEOMETRY_GPU": "1"})
+                self.assertEqual([other.name for other in plan.SELECTIONS
+                                  if (other.lane, other.shard) == ("nonblocking", selection.shard)], [name])
+                shards.add(selection.shard)
+        self.assertEqual(len(shards), 2)
 
     def test_a_shard_runs_its_groups_together_then_its_other_selections_alone(self):
         marks = Path(self.enterContext(tempfile.TemporaryDirectory())) / "marks"
@@ -252,17 +288,22 @@ class ClusterTestPlanTests(unittest.TestCase):
         for job_id, (lane, name) in jobs.items():
             with self.subTest(job=job_id):
                 job = self.jobs[job_id]
-                matrix = re.search(r"(?m)^        shard: \[([0-9, ]+)\]$", job).group(1)
-                self.assertEqual([int(shard) for shard in matrix.split(",")], plan.shards(lane))
-                # The blocking shards each read a Darkbloom lane of their own;
-                # the GPU shards are not routed: shard 2 needs more memory
-                # than any signed Darkbloom size.
-                for shard in plan.shards(lane):
-                    routed = f"        {job_id}-{shard} macos_arm64 " in self.jobs["route"]
-                    self.assertEqual(routed, lane == "blocking")
-                if lane == "nonblocking":
+                if lane == "blocking":
+                    # Each blocking shard reads the Darkbloom lane its matrix
+                    # entry names; two shards can share a lane, which the
+                    # route then requests for both (test-darkbloom-route.py).
+                    entries = re.findall(r"(?m)^          - \{shard: ([0-9]+), lane: ([a-z0-9-]+)\}$", job)
+                    self.assertEqual([int(shard) for shard, _ in entries], plan.shards(lane))
+                    self.assertIn("    runs-on: ${{ fromJSON(inputs.routes)[matrix.lane] }}\n", job)
+                    for _, route_lane in entries:
+                        self.assertIn(f"        {route_lane} macos_arm64 ", self.jobs["route"])
+                else:
+                    # The GPU shards are not routed: shard 2 needs more memory
+                    # than any signed Darkbloom size.
+                    matrix = re.search(r"(?m)^        shard: \[([0-9, ]+)\]$", job).group(1)
+                    self.assertEqual([int(shard) for shard in matrix.split(",")], plan.shards(lane))
                     self.assertIn(f"    runs-on: {workflow.BLACKSMITH_MAC}\n", job)
-                    self.assertNotIn(f"        {job_id} ", self.jobs["route"])
+                    self.assertNotIn(f"        {job_id}", self.jobs["route"])
                 steps = {workflow.field(step, "name", indent=6): step for step in workflow.step_blocks(job)}
                 products = steps["Download cluster test products"]
                 self.assertEqual(workflow.field(products, "uses"), workflow.PRODUCTS_ACTION)

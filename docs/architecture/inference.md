@@ -749,8 +749,15 @@ the reader's one cancellation, runs in order on the reader's own serial queue
 while the pulling thread waits for the sample, so the reader is never
 cancelled during a read. Waiting on the decoder is bounded by
 `NemotronSuperVideoDecode.decodeAllowance` (5 s, then 2 ms a frame and 4 ns a
-coded pixel, at most 120 s): when it is spent the wait ends and the video is
-refused. Cancelling the request, as the binding's `drain` does, ends the wait
+coded pixel, at most `maximumDecodeAllowance`, 120 s): when it is spent the
+wait ends and the video is refused with `decodeAllowanceSpent`. The allowance
+is wall time, so a loaded machine spends it faster than the decoder's work
+alone. A spent allowance stops the reader; it is not a reader failure and is
+not decoded again. Because the movie's work is already bounded by the plan's
+decoded pixels, a spent allowance is this provider's fault: it refuses as a
+retryable 503 (failure code `capacity`), so the coordinator can send the
+request to another provider.
+Cancelling the request, as the binding's `drain` does, ends the wait
 at once. Either way the reader is cancelled once the read in progress
 returns, and that read's sample is dropped.
 `NemotronSuperVideoFeatures.prepare` runs
@@ -765,7 +772,8 @@ the previous tubelet; the host scores then select the kept rows, the same rows
 EVS selects over the whole video. Each tubelet's kept rows are substituted
 at its `<image>` run as a causal span with `mediaKind` `video`. A tubelet whose
 rows were all pruned keeps its label and wrappers and has no span. Invalid,
-oversized or undecodable videos map to the invalid-media 400. AVFoundation's
+oversized or undecodable videos map to the invalid-media 400; a spent decode
+allowance maps to the retryable 503. AVFoundation's
 BGRA conversion differs from FFmpeg's at chroma edges, so frames are close to,
 not equal to, the reference loader's.
 
@@ -1795,7 +1803,16 @@ MoE Qwens, and standalone `CBv2NativeBlockEngine` slots run an excluded
 128-token warmup followed by two uncached solo probes
 of at most 512 prompt tokens and 32 output tokens. Completed calibration seeds
 prefill/decode evidence without requiring a customer job and runs once per loaded
-engine. Failure backs off for 120 seconds; interruption backs off for 30 seconds.
+engine. A probe's prompt sample must pass the same filters as a serving sample
+(`EngineV2Bridge.classifyPrefillSample`): a computation window of at least 1 ms
+and a rate of at most 20,000 tokens per second (`maxPlausiblePrefillTps`). This
+ceiling is equal to the coordinator's
+[`MaxPrefillTPS`](https://github.com/Layr-Labs/darkbloom-platform/blob/d7de2162f2097fc9f47ae469e7933db1121482b2/coordinator/internal/registry/capacityvalue/normalize.go#L17),
+and the coordinator drops a published rate above it. A probe that prefills
+faster gives no prefill sample, but its decode sample still counts. One counted
+probe is enough to complete the bootstrap. If no probe counts and no fresh
+serving rate exists, the bootstrap fails. Failure backs off for 120 seconds;
+interruption backs off for 30 seconds.
 An unfinished bootstrap retries when that backoff expires even if its completed
 probes left fresh partial rates. Fresh serving samples from an early request do
 not suppress an unfinished first bootstrap either. Only completed native MiMo
@@ -3733,6 +3750,7 @@ evidence, not a change to the normal final-row contract or the near-tie rule
 | Image rejected | Over `MediaIngest` caps or over the N² tower budget | `MediaIngest.swift`, `VisionTowerBudget.swift` |
 | `video_reader_failed` or `audio_reader_failed` WARN event, `retrying: true`, and the request served | A video or audio reader pass failed and the second pass decoded the track; `reader_error` names the reader's error codes | `libs/mlx-swift-lm/Libraries/MLXLMCommon/VideoReaderFailure.swift` (`VideoReaderRetry`), `VideoReaderFailureReport.swift` |
 | Video refused after two `video_reader_failed` or `audio_reader_failed` events (503 `capacity` or 400 `invalid_media`) | Both reader passes failed: 503 for a transient decoder, hardware or interruption code, 400 otherwise | `EngineV2VisionPrefill.swift` (`clientFault(for:)`), `EngineV2GLM5NextMediaPrefill.swift` (`glm5NextInputError`), `MiMoV26EncodedMediaIngress.swift` (`outwardFailure`), `NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
+| Nemotron Super video refused with 503 `capacity` and no `video_reader_failed` event | The wait on the decoder outlasted `decodeAllowance` (wall time; a slow or loaded Mac), `NemotronSuperVideoDecode.Failure.decodeAllowanceSpent` | `NemotronSuperVideoDecode.swift` (`decodeAllowance`, `SerialReader.earlyEnd`), `NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
 | `missingUserQuery` (400) | Qwen 3.5/3.6/3.8 or Bonsai 2 history with no user turn beyond `<tool_response>` wrappers | `provider-swift/Sources/ProviderCore/Inference/Prompting/Qwen35TemplateFixes.swift` (`validateUserQuery`) |
 | `Inference failure: invalid request (<reason>)` in `darkbloom logs` (400) | The sealed request, its body decode or the model's native controls refused it before the inference task, or a prompt policy or engine admission refused it while its prompt was prepared; the reason is the closed [refusal line](../provider/cli-reference.md#refusal-lines) | `provider-swift/Sources/ProviderCore/Inference/Engine/InferenceRefusalReason.swift` (`InferenceRefusalReason`, `init(promptRefusal:)`); `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift` (`nativeControlsRefusal`) |
 | Load refused: `pagedUnavailable` (503) | Explicit `engine_v2_kv_backend = paged` and the paged pool/kernels failed | `EngineV2Factory+BackendPreparation.swift` — see [`prefix-cache.md`](prefix-cache.md) |
@@ -7092,9 +7110,12 @@ and gate rows whose SwiGLU inputs reach its range (about ±30). A row's logits
 and history equal its run alone, on a one- or an eight-lane host, beside rows
 of 100 to 4,600 tokens that join and leave, across two KV segments, while an
 assistant observes the cohort, and at every position of a four-column verify
-window alone and in a cohort. Both ranks run it in one process
-(`QwenTensorParallelRealGeometryRowsTests`, `QWEN_TP_REAL_GEOMETRY_GPU=1`) or
-as two processes over the loopback ring (`darkbloom-cluster-tp-check
+window alone and in a cohort. The check has two halves
+(`QwenTensorParallelRowsCheck.Part`): the rows of 100 to 4,090 tokens, and the
+rows that span KV segments. Each compares only against the solo runs it makes
+itself, so each also runs alone. Both ranks run it in one process
+(`QwenTensorParallelRealGeometryRowsTests`, `QWEN_TP_REAL_GEOMETRY_GPU=1`, one
+test a half) or, both halves, as two processes over the loopback ring (`darkbloom-cluster-tp-check
 qwen-rows`, native or sealed sums, with the worker's arithmetic environment).
 It refuses to report when a logit is not finite, when its reference logits are
 not all distinct, when the long rows fit one KV segment, or when its comparison

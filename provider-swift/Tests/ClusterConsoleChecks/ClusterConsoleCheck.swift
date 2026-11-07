@@ -45,6 +45,7 @@ import Darwin
         defer { try? FileManager.default.removeItem(at: scratch) }
 
         let groups: [(String, () throws -> Void)] = [
+            ("pseudo-terminal harness: a drain reads every byte, nothing reads after close", pseudoTerminalHarness),
             ("wiring table", wiringTableMatchesCode),
             ("key decoder", keyDecoder),
             ("reducer: refresh and polling", reducerRefresh),

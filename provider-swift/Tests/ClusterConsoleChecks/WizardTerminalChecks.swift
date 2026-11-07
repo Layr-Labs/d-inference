@@ -29,9 +29,11 @@ final class WizardRun: @unchecked Sendable {
 
     var isRunning: Bool { lock.withLock { outcome == nil } }
 
+    /// How the wizard ended, once every byte it drew was read; nil when it is still running after `seconds`.
     func end(within seconds: Double = 5) -> Result<ClusterConsoleExit, Error>? {
         guard finished.wait(timeout: .now() + seconds) == .success else { return nil }
         finished.signal()
+        terminal.drain()
         return lock.withLock { outcome }
     }
 

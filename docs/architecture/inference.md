@@ -7784,8 +7784,8 @@ automatic steps that stop the pair only to start it again (the re-plan after an
 update, `ClusterService.replanAfterUpdate`, and a change of cluster approval,
 `ClusterService.stopForApprovalChange`) then put the saved start back and drop
 the stop token (`ClusterService.restoreStart`), under the command lock: both
-steps act only while the start is saved, so stopped intent retained there left
-the pair stopped on both Macs until a person started it. Both steps also act
+steps act only while the start is saved, so stopped intent retained there would
+leave the pair stopped on both Macs until a person started it. Both steps also act
 only on a claim the other Mac confirmed (`ClusterService.leadershipConfirmed`),
 as forwarded commands do.
 A forwarded stop allows 330 seconds for the local retirement and peer command.
@@ -7795,7 +7795,7 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/C
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift`
 (`ClusterService.stopLocalPart`, `syncMembers`, `checkForUpdate`, `checkApproval`),
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService+RestartingStop.swift`
-(`ClusterService.restoreStart`), and
+(`ClusterService.replanAfterUpdate`, `stopForApprovalChange`, `restoreStart`), and
 `provider-swift/Sources/darkbloom/ClusterServiceCommand.swift` (`Cluster.Stop.finishStop`).
 
 A live service acknowledges planned local stop only through a fresh private supervision-cycle publication (`service-supervision.json`) with its current PID and idle state. Ordinary status writes cannot acknowledge an in-flight child start; the stop waits boundedly for the actual supervisor to finish that start and retire it before peer stop.

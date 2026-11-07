@@ -113,7 +113,8 @@ struct ClusterServiceRestartingStopTests {
             case "plan": steps.planModels = { .failure(refused) }
             case "offer": steps.planModels = { .success([ClusterOnboardingModelChoice(title: "another/model", lines: [], blocker: nil)]) }
             case "adopt": steps.planModels = { .success([offered]) }; steps.adopt = { _ in .failure(refused) }
-            default: steps.planModels = { .success([offered]) }; steps.serve = { .failure(refused) }
+            case "serve": steps.planModels = { .success([offered]) }; steps.serve = { .failure(refused) }
+            default: Issue.record("no step \(failing)"); return
             }
             guard case .failure = ClusterService.replanAfterUpdate(model: ClusterApprovalMacs.model, steps) else {
                 Issue.record("the re-plan did not fail at \(failing)"); return

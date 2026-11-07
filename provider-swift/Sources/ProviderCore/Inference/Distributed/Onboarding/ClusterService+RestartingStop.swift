@@ -1,11 +1,16 @@
 import Foundation
 
 /// The control leader's automatic steps that stop the pair only to start it again: the re-plan after a Darkbloom update
-/// (`checkForUpdate`) and a change of the pair's cluster approval (`checkApproval`). Their stop is a person's stop
-/// (`OnboardingLive.localStop`), which clears the pair's saved start before it stops anything, so a failed stop must put
-/// it back: both steps act only while the start is saved, and nothing else starts a pair again. DevNet pair-2, 2026-11-07
-/// (`0.10.10-dev.branch.135` → `.137`): such a stop failed right after both Macs restarted into the update, and the pair
-/// stayed stopped on both Macs until `darkbloom cluster` was run.
+/// (`checkForUpdate`) and a change of the pair's cluster approval (`checkApproval`). Both keep two invariants:
+/// - A failed stop never loses the pair's saved start. Their stop is a person's stop (`OnboardingLive.localStop`): it
+///   clears the saved start before it stops anything. Both steps act only while the start is saved, and nothing else
+///   starts a pair again, so every failure from the stop on, including the stop's own, puts it back (`restoreStart`).
+/// - Neither acts on an unconfirmed claim: each checks `leadershipConfirmed` before it begins and again once it holds
+///   the control command lock. The Macs restart into an update seconds apart, and the one back first may take control
+///   meanwhile: the other Mac then refuses the stop of a leader whose saved claim it superseded.
+///
+/// DevNet pair-2, 2026-11-07 (`0.10.10-dev.branch.135` → `.137`): such a stop failed right after both Macs restarted
+/// into the update, and the pair stayed stopped on both Macs until `darkbloom cluster` was run.
 extension ClusterService {
     /// The steps of the re-plan after an update, as the control leader's onboarding operations run them (`controlLive`);
     /// tests stand in.
@@ -25,8 +30,9 @@ extension ClusterService {
     /// once their workers changed, and planned while they run, a tensor-parallel pair does not fit "now" and a pipeline is
     /// chosen in its place. The model's choice as planned, or why the cluster was not set up again.
     static func replanAfterUpdate(model: String, _ steps: UpdateReplan) -> Result<ClusterOnboardingModelChoice, ClusterOnboardingFailure> {
+        // Nothing is stopped yet: the saved start is as it was.
         if case .failure(let failure) = steps.reachMembers() { return .failure(failure) }
-        // From the stop on, also when the stop itself fails, a failure keeps the serving intent, so the next check tries
+        // From the stop on, every failure puts the saved start back, including the stop's own, so the next check tries
         // again.
         func failed(_ failure: ClusterOnboardingFailure) -> Result<ClusterOnboardingModelChoice, ClusterOnboardingFailure> {
             steps.restoreStart()

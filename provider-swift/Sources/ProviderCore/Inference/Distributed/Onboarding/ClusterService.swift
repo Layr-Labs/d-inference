@@ -597,8 +597,15 @@ public final class ClusterService: @unchecked Sendable {
         guard let index = ClusterOnboardingUpdate.servableIndex(of: model, in: choices) else {
             return failed(["\(model) does not fit these Macs' memory now: \(choices.first { ($0.modelID ?? $0.title) == model }?.blocker ?? "not offered")"])
         }
-        if case .failure(let failure) = steps.adopt(index) { return failed(failure.lines) }
-        if case .failure(let failure) = steps.serve() { return failed(failure.lines) }
+        // On a serving pair `localAdopt` stops both parts first, and that stop clears the saved start. From there every
+        // failure, the stop's own included, puts it back (`restoreStart`, under the command lock every stop of the pair
+        // holds), so the pair serves as before and the next refusals bring the next re-plan.
+        func restored(_ lines: [String]) {
+            restoreStart()
+            failed(lines + ["The pair stays started."])
+        }
+        if case .failure(let failure) = steps.adopt(index) { return restored(failure.lines) }
+        if case .failure(let failure) = steps.serve() { return restored(failure.lines) }
         let after = try? context.savedConfiguration().reference.get()?.sha256
         lock.withLock { sameSplitReplans = before == after ? sameSplitReplans + 1 : 0 }
         // `localAdopt` stops the serving parts and plans once more when their memory is back, so the split adopted

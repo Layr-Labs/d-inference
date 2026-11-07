@@ -3482,7 +3482,10 @@ automatic re-plan after repeated memory refusals at load adopts through the
 same path (`ClusterService.noteMemoryRefusal`, `replanForMemory`). It comes due
 when a part ends, so also right after an owner's stop: once it holds the
 command lock it acts only while the pair's start is still saved and this Mac's
-claim is confirmed, so it never starts a pair its owner stopped. The stage memory
+claim is confirmed, so it never starts a pair its owner stopped. Its adoption
+stops a serving pair first; from there every failure, of that stop too, puts
+the saved start back (`ClusterService.restoreStart`), as the re-plan after an
+update does, so a failed automatic stop never leaves the pair stopped. The stage memory
 gate's two fixed margins (the admissible floor, 6 GiB, and the loading
 headroom, 4 GiB, measured on 256 GiB Macs) apply on Macs with 96 GiB or more;
 below that they are the same share of the observed Mac's memory, never under

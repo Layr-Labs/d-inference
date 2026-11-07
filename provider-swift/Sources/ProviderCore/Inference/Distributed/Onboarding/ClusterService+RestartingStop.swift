@@ -14,7 +14,8 @@ import Foundation
 ///   meanwhile: the other Mac then refuses the stop of a leader whose saved claim it superseded.
 ///
 /// The memory re-plan (`replanForMemory`) starts the pair too, and takes the command lock as the re-plan does: it never
-/// starts a pair its owner stopped while it waited, nor acts on a claim that moved meanwhile.
+/// starts a pair its owner stopped while it waited, nor acts on a claim that moved meanwhile. Its adoption stops a
+/// serving pair first (`localAdopt`), and as with the steps, every failure from there puts the start back.
 ///
 /// The steps, and the memory re-plan, take the command lock beside this service's own files: on a Mac, the one every
 /// cluster command takes.

@@ -54,10 +54,14 @@ enum RelaySockets {
         throw RelayCheckFailure("the relay did not listen on a loopback port")
     }
 
-    static func connect(_ port: Int) throws -> Int32 {
+    /// A client connection whose reads give up after `readTimeout` seconds, so a check whose answer never ends fails
+    /// instead of waiting out the relay's own idle bound (`ClusterLocalRelay.idleSeconds`).
+    static func connect(_ port: Int, readTimeout: Int = 20) throws -> Int32 {
         guard let fd = ClusterLocalRelay.connect(.init(host: "127.0.0.1", port: port)) else {
             throw RelayCheckFailure("nothing answers on port \(port)")
         }
+        var timeout = timeval(tv_sec: readTimeout, tv_usec: 0)
+        _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
         return fd
     }
 

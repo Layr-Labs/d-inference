@@ -6,7 +6,10 @@ Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
 earnings) or alongside fleet serving (`darkbloom start --local-endpoint`). For
 operators who want their own tools to call the models they already host.
-Requests never leave the machine and are never billed. In a terminal,
+A request this Mac serves never leaves it and is never billed. With an account
+key saved, one it can't take can go on to your other Macs, free, and with
+`my-macs-first` to the Darkbloom network, billed
+([the local router](#when-this-mac-cant-take-a-request-the-local-router)). In a terminal,
 `darkbloom start` asks once which of these you want ([Use your Mac yourself,
 first](./local-first.md)); unified mode is its **Both, me first**, where
 Darkbloom pauses while you use the local API (`--me-first`; `--no-me-first`
@@ -105,9 +108,11 @@ See [inference and logprob admission](../architecture/inference.md).
    requests holds a model, and takes them again once none of your requests
    has run for `[local] me_first_idle_minutes` (2 minutes by default).
    Darkbloom requests already running finish. Model lists, health checks,
-   `/metrics`, the tokenizer utilities and requests this Mac refuses do not
-   count. Set `[local] me_first = false` to share the Mac between your
-   requests and Darkbloom's, as before
+   `/metrics`, the tokenizer utilities and requests refused before they hold
+   a model do not count. This is on for every unified Mac, including the
+   desktop app's "Alongside the network". To share the Mac between your
+   requests and Darkbloom's, as before, set `me_first = false` under
+   `[local]` in `provider.toml`, then run `darkbloom restart`
    ([configuration](../reference/configuration.md#local-first-use-local),
    [owner pause](../architecture/owner-pause.md)).
 

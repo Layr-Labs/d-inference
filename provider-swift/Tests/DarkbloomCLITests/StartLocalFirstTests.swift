@@ -263,6 +263,70 @@ struct StartLocalFirstTests {
         #expect(config.bytes == before)
     }
 
+    /// The desktop app's network Start is `start --model <id> --config <path>` (`DesktopBackend.arguments`), run
+    /// without a terminal, and it waits for the command to end. "Only me" serves in the terminal that starts it, so
+    /// without one it must not become a server that never returns, after stopping the running provider (review RV1).
+    @Test("without a terminal, a saved Only me is refused in one line, before anything stops or starts")
+    func nonTerminalSavedOnlyMeIsRefused() throws {
+        let config = try TempConfig(plainConfig + "\n\n[local]\nmode = \"local\"\nport = 8001\n")
+        defer { config.remove() }
+        let before = config.bytes
+        var action = DesktopAction(id: UUID().uuidString, action: "start")
+        action.models = ["fixture/model"]
+        let argv = try DesktopBackend.arguments(for: action, configPath: config.path.path, localActive: false)
+        #expect(argv == ["start", "--model", "fixture/model", "--config", config.path.path], "the app names no mode")
+        let script = ScriptedTerminal(["1"])
+        do {
+            _ = try script.resolve(try Start.parse(Array(argv.dropFirst())), terminal: false)
+            Issue.record("a saved Only me without a terminal must be refused")
+        } catch let error as ValidationError {
+            #expect(error.message == "This Mac is set to Only me, which serves in a terminal. Run `darkbloom start` in "
+                + "one, or name how to serve: --local, --network or --me-first.")
+        }
+        #expect(script.reads == 0 && script.keyLookups == 0 && script.livePortLookups == 0 && script.probed.isEmpty)
+        #expect(config.bytes == before)
+        // In a terminal the saved choice serves Only me, and without one a mode flag decides as before.
+        #expect(try script.resolve(try config.start([]), terminal: true)?.mode == .local)
+        #expect(try script.resolve(try config.start(["--network"]), terminal: false)?.mode == .network)
+        #expect(try script.resolve(try config.start(["--local"]), terminal: false)?.mode == .local)
+    }
+
+    /// The LaunchAgent's `--foreground` child runs at every launch: its argv says how it serves.
+    @Test("the --foreground service never saves, probes a port or asks the Keychain")
+    func foregroundServiceTouchesNothing() throws {
+        let config = try TempConfig(plainConfig + "\n\n[local]\nmode = \"network\"\nme_first = false\n")
+        defer { config.remove() }
+        let before = config.bytes
+        for arguments in [["--foreground", "--local-endpoint", "--port", "8003"], ["--foreground", "--me-first"]] {
+            let script = ScriptedTerminal(["1"])
+            let serving = try #require(try script.resolve(try config.start(arguments), terminal: false, keySaved: true))
+            #expect(serving.mode == .both && serving.change.isEmpty && serving.portNote == nil, "\(arguments)")
+            #expect(serving.accountKeySaved == nil && script.keyLookups == 0, "\(arguments)")
+            #expect(script.reads == 0 && script.livePortLookups == 0 && script.probed.isEmpty, "\(arguments)")
+        }
+        #expect(config.bytes == before)
+    }
+
+    @Test("an Only me start that runLocalStandalone refuses (no model it can serve) saves nothing")
+    func refusedOnlyMeSavesNothing() async throws {
+        let config = try TempConfig(plainConfig)
+        defer { config.remove() }
+        let before = config.bytes
+        let start = try config.start([])
+        let terminal = ScriptedTerminal(["1"]).environment(terminal: true)
+        let serving = try #require(try start.resolveServing(environment: terminal))
+        #expect(serving.mode == .local && serving.change.mode == .local)
+        let snapshot = RuntimeSnapshot(configPath: config.path, configFileExists: true,
+                                       config: ProviderConfig(provider: ProviderSettings(name: "l4-fixture")),
+                                       hardware: nil, hardwareError: nil, models: [])
+        await #expect(throws: ExitCode.self) {
+            try await start.runLocalStandalone(
+                snapshot: snapshot, config: snapshot.config, runtimeCapabilities: [],
+                bootSecuritySnapshot: BootSecuritySnapshot(macOSMajorVersion: 26, sip: .enabled), serving: serving)
+        }
+        #expect(config.bytes == before, "a refused start saves nothing")
+    }
+
     // MARK: - --choose
 
     @Test("--choose asks again, pre-selecting the saved choice, and saves the new answer")

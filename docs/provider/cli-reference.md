@@ -221,7 +221,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `--local` | flag | `false` | Only me, on this Mac: a coordinator-less OpenAI-compatible server ([direct mode](./direct-mode.md)), for this start |
 | `--network` | flag | `false` | Darkbloom network only, no local API, for this start (today's plain `start`) |
 | `--me-first` / `--no-me-first` | flag | unset | `--me-first`: Both, me first: a local API beside Darkbloom, and Darkbloom pauses while you use it, for this start. `--no-me-first`: Darkbloom keeps serving while you use the local API (saved as `[local] me_first = false`); `--me-first` undoes it |
-| `--local-endpoint` | flag | `false` | Local endpoint alongside the coordinator: Both, with me first on (Darkbloom requests pause while your local requests run) unless `--no-me-first` (`[local] me_first = false`); mutually exclusive with `--local` |
+| `--local-endpoint` | flag | `false` | Local endpoint alongside the coordinator: Both, with me first on (Darkbloom requests pause while your local requests run and for `[local] me_first_idle_minutes` after) unless `--no-me-first` (`[local] me_first = false`); mutually exclusive with `--local` |
 | `--me-first-idle <min>` | `UInt64?`, 1–120 | `[local] me_first_idle_minutes` (`2`) | Minutes with none of your requests before Darkbloom comes back; saved. Not `--idle-timeout` (model memory) |
 | `--route <route>` | `this-mac`, `my-macs`, `my-macs-first` | `[local] route` | Where your requests go when this Mac can't take them ([the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)); saved; needs an account key (`darkbloom route key`) |
 | `--choose` | flag | `false` | In a terminal: ask how this Mac serves again, although a choice is saved |
@@ -247,7 +247,11 @@ A single-Mac `start` decides how this Mac serves (`StartServingResolver`,
 1. A mode flag, for this start only: `--local`, `--network`, `--me-first` or
    `--local-endpoint`.
 2. `--choose` (a terminal only): the question again.
-3. The saved choice, `[local] mode`, with or without a terminal.
+3. The saved choice, `[local] mode`, with or without a terminal. A saved
+   `local` (Only me) serves in a terminal, so without one the start is refused
+   before anything stops or starts (exit 64): ``This Mac is set to Only me,
+   which serves in a terminal. Run `darkbloom start` in one, or name how to
+   serve: --local, --network or --me-first.``
 4. In a terminal (stdin and stdout), the question, after the terms notice and
    before the model picker:
 
@@ -273,8 +277,8 @@ A single-Mac `start` decides how this Mac serves (`StartServingResolver`,
 
 Only the question saves a mode. The answer, its follow-up and the local API's
 port are written to `[local]` once the start goes ahead (after the model
-picker; for "Only me", before it serves), so a cancelled or refused start
-saves nothing; "Only me" with `--schedule` or `--autopilot` is refused before
+picker; for "Only me", once its server listens), so a cancelled or refused
+start saves nothing; "Only me" with `--schedule` or `--autopilot` is refused before
 saving. **Only me** then serves in this terminal as `--local` does (Ctrl-C
 drains it); **Darkbloom network** and **Both, me first** install the
 LaunchAgent with the arguments `--local-endpoint` has always used
@@ -1276,7 +1280,7 @@ Where `logs` and [`report`](#darkbloom-report) wait for a `log` child to finish,
 | `--idle-timeout <mins>` | Idle-memory policy, saved to `[backend] idle_timeout_mins` (0 = always ready); skips the memory prompt |
 | `--foreground` | Run in the foreground (used by launchd; normally implicit) |
 | `--local` | Run a local OpenAI server only; do not connect to the coordinator |
-| `--local-endpoint` | Serve a local OpenAI endpoint alongside the coordinator; Darkbloom requests pause while you use it (`[local] me_first`) |
+| `--local-endpoint` | Serve a local OpenAI endpoint alongside the coordinator; Darkbloom requests pause while you use it and for `[local] me_first_idle_minutes` after (`[local] me_first`) |
 | `--port <port>` | Port for `--local` / `--local-endpoint` (default 8000) |
 | `--bind <addr>` | Bind address for local modes (default 127.0.0.1) |
 | `--no-auth` | Disable local API-key auth (trusted/airgapped only) |

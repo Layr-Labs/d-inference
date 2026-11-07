@@ -165,6 +165,28 @@ struct UnpairedMacServesNormallyTests {
         #expect(pair(running: false, reachable: true).restartAddendum.hasSuffix(" " + restartsBoth))
     }
 
+    @Test("restart's words never say that a started pair whose other Mac is gone serves")
+    func restartWordsWhenTheOtherMacIsGone() {
+        // It doesn't run here, and a plain restart has just cleared its saved start: never "This Mac serves …".
+        let notStarted = "The pair was not started; `\(cli) cluster` starts it."
+        let gone = pair(running: false)
+        let goneSentence = "This Mac is in a two-Mac cluster with \(otherMac), which isn't running here (\(otherMac) isn't answering)."
+        #expect(gone.restartAddendum == goneSentence + " " + notStarted)
+        #expect(gone.restartRefusal == [goneSentence,
+            "`\(cli) restart --solo` restarts single-Mac serving, and this Mac has none: nothing was restarted.", notStarted])
+        #expect(gone.idleRestartRefusal.first == notRunning, "the cluster service's own line leads while it runs")
+        // This Mac's cluster service down: no line of its own, and nothing known of the other Mac.
+        var serviceDown = gone
+        serviceDown.serviceRunning = false
+        serviceDown.pairNotRunning = nil
+        let downSentence = "This Mac is in a two-Mac cluster with \(otherMac), which isn't running here."
+        #expect(serviceDown.idleRestartRefusal.first == downSentence)
+        #expect(serviceDown.restartAddendum == downSentence + " " + notStarted)
+        // Where the pair runs, or may still be loading, it does serve or start here: the words stay.
+        #expect(pair(running: true, reachable: true).restartAddendum.hasPrefix("This Mac serves in a two-Mac cluster"))
+        #expect(pair(running: false, reachable: true).restartAddendum.hasPrefix("This Mac serves in a two-Mac cluster"))
+    }
+
     @Test("update: single-Mac serving restarts on a Mac whose pair doesn't run; the pair's protection stays where it runs")
     func updateChoice() {
         // The 0.10.8 → 0.10.9 case: a single-Mac job and a leftover part whose start is still saved.

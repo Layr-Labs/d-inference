@@ -763,6 +763,15 @@ private func leaveStoppedSingleMacPlist(in sandbox: CLICommandSandbox) throws {
     try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: path)
 }
 
+/// launchctl as `recordingLaunchctl`, except that `print` finds single-Mac serving's job loaded with no process: set up
+/// here, its process ended (launchd keeps a `KeepAlive` false job loaded after a crash).
+private func loadedSingleMacLaunchctl(_ arguments: [String]) throws -> LaunchctlControl.Output {
+    let job = LaunchctlControl.target(label: LaunchAgent.label)
+    guard arguments == ["print", job] else { return try recordingLaunchctl(arguments) }
+    FileHandle.standardError.write(Data("launchctl: \(arguments.joined(separator: " "))\n".utf8))
+    return LaunchctlControl.Output(status: 0, stdout: "\(job) = {\n\tstate = not running\n}\n", stderr: "")
+}
+
 private func pairActionCalls(_ stderr: String) -> [String] {
     stderr.split(separator: "\n").filter { $0.hasPrefix("pair action: ") }.map { String($0.dropFirst("pair action: ".count)) }
 }
@@ -1089,13 +1098,43 @@ struct ClusterPairControlTests {
         let result = await #expect(processExitsWith: .exitCode(1), observing: [\.standardOutputContent, \.standardErrorContent]) {
             try await exitWithPair(stoppedPair(), actions: pairActions(serving: false)) { sandbox in
                 try leaveStoppedSingleMacPlist(in: sandbox)
-                try await runCLICommand(Restart.self, ["restart"])
+                // A restart that starts the pair again would wait up to 10 minutes for it to serve: fail in seconds.
+                try await ClusterPairCommands.$waitForTesting.withValue(.init(seconds: 0, interval: 0)) {
+                    try await runCLICommand(Restart.self, ["restart"])
+                }
             }
         }
         #expect(text(result?.standardOutputContent) == transcript(stoppedPair().idleRestartRefusal))
         let stderr = text(result?.standardErrorContent)
         #expect(changingLaunchctlCalls(stderr).isEmpty, "\(changingLaunchctlCalls(stderr))")
         #expect(pairActionCalls(stderr).isEmpty, "\(pairActionCalls(stderr))")
+    }
+
+    /// The other side: single-Mac serving set up here still restarts, also with its process ended (a crash). Its loaded
+    /// job is what counts, never a running process: the watchdog recovers such a job the same way.
+    @Test("`darkbloom restart` on a Mac whose pair is stopped still restarts single-Mac serving whose job is loaded")
+    func restartOnAStoppedPairRestartsLoadedSingleMacServing() async {
+        let result = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent, \.standardErrorContent]) {
+            try await DarkbloomCommandLook.$forTesting.withValue(terminalLook()) {
+                try await exitWithPair(stoppedPair(), actions: pairActions(serving: false)) { sandbox in
+                    try leaveStoppedSingleMacPlist(in: sandbox)
+                    try await LaunchctlControl.$runnerForTesting.withValue(loadedSingleMacLaunchctl) {
+                        try await ClusterPairCommands.$waitForTesting.withValue(.init(seconds: 0, interval: 0)) {
+                            try await runCLICommand(Restart.self, ["restart"])
+                        }
+                    }
+                }
+            }
+        }
+        // It goes ahead (only a restart that does opens with the mark) into single-Mac serving's drain, where the harness
+        // stops it: no update lease beside the test runner, and every launchctl change refused.
+        let stream = text(result?.standardOutputContent)
+        #expect(stream.hasPrefix("\n" + DarkbloomCommandLook.mark("Darkbloom restart", revealed: Int.max, colour: "38;5;27") + "\n"),
+                "\(stream.debugDescription)")
+        #expect(stream.contains("\u{1B}[2mDraining accepted requests\u{2026}\u{1B}[0m"), "\(stream.debugDescription)")
+        #expect(!stream.contains("Nothing serves on this Mac"), "\(stream.debugDescription)")
+        let calls = pairActionCalls(text(result?.standardErrorContent))
+        #expect(calls.isEmpty, "\(calls)")
     }
 
     @Test("`darkbloom status` leads with the pair block, then this Mac's fields, and no single-Mac Daemon/Traffic lines")

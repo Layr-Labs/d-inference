@@ -36,6 +36,9 @@ public enum ClusterServingScope: Sendable, Equatable {
     case publicServing
     /// The local API listens on `bind` and needs its API key.
     case localOnly(bind: String)
+    /// Both, me first: through Darkbloom as `publicServing`, and the pair's local API on the part that hosts the pair's
+    /// slot, on `bind` with the pair's key; Darkbloom pauses while the owner uses it.
+    case publicServingWithLocalAPI(bind: String)
 
     /// Every interface of the leading Mac (LAN or tailnet) unless the person chose an address (owner, 2026-10-15).
     public static let localOnlyDefaultBind = "0.0.0.0"
@@ -44,14 +47,14 @@ public enum ClusterServingScope: Sendable, Equatable {
     static let loopbackBind = "127.0.0.1"
 
     /// The scope a record keeps (nil from an older build or before the first choice: public).
-    public init(localOnly: Bool?, bind: String?) {
+    public init(localOnly: Bool?, localAPI: Bool? = nil, bind: String?) {
         guard localOnly == true else { self = .publicServing; return }
         self = .localOnly(bind: bind.map { Self.isValidBind($0) ? $0 : Self.loopbackBind } ?? Self.localOnlyDefaultBind)
     }
 
     /// The scope a message carries (`localOnly`, `bind`): nil when it carries none, or an address the API does not take
     /// (a local-only scope without an address listens everywhere, as the default does).
-    public static func carried(localOnly: Bool?, bind: String?) -> ClusterServingScope? {
+    public static func carried(localOnly: Bool?, localAPI: Bool? = nil, bind: String?) -> ClusterServingScope? {
         guard let localOnly else { return nil }
         guard localOnly else { return .publicServing }
         let address = bind ?? localOnlyDefaultBind
@@ -64,6 +67,10 @@ public enum ClusterServingScope: Sendable, Equatable {
         if case .localOnly(let bind) = self { return bind }
         return nil
     }
+
+    public var localAPIBind: String? { bind }
+
+    public var addsLocalAPI: Bool { false }
 
     /// An address the local API may listen on: `localhost` or a numeric IPv4/IPv6 address (`0.0.0.0` = every one).
     public static func isValidBind(_ text: String) -> Bool {
@@ -83,13 +90,39 @@ public enum ClusterServingScope: Sendable, Equatable {
     /// through the console's rename, so it names this build's command itself (`ClusterOnboardingCommand.name`).
     public var line: String {
         switch self {
-        case .publicServing:
+        case .publicServing, .publicServingWithLocalAPI:
             return "Serving through Darkbloom"
         case .localOnly(let bind):
             let reach = bind == Self.localOnlyDefaultBind ? "on this Mac's networks"
                 : reachableFromNetwork ? "at \(bind)" : "on this Mac only (\(bind))"
             return "Local only, \(reach); API key: `\(ClusterOnboardingCommand.name) local`"
         }
+    }
+}
+
+/// How a pair serves, as the person chooses it in `darkbloom cluster`: the single-Mac start's three choices, for the
+/// pair. The raw values are `[local] mode`'s, where the answer is saved.
+public enum ClusterServingChoice: String, Sendable, Equatable, CaseIterable {
+    /// Only me (this pair, local): `darkbloom cluster local`.
+    case onlyMe = "local"
+    /// Darkbloom network: the pair serves Darkbloom with no local API.
+    case network
+    /// Both, me first: Darkbloom and the pair's local API, Darkbloom paused while the owner uses it.
+    case bothMeFirst = "both"
+
+    public init(scope: ClusterServingScope) { self = .network }
+
+    public func scope(keeping current: ClusterServingScope) -> ClusterServingScope { .publicServing }
+}
+
+/// What the question asks with: the saved answer to pre-select (nil: none saved) and the minutes the pair stays
+/// paused after the owner's last request (`[local] me_first_idle_minutes`).
+public struct ClusterServingChoiceAsk: Sendable, Equatable {
+    public var saved: ClusterServingChoice?
+    public var idleMinutes: Int
+
+    public init(saved: ClusterServingChoice? = nil, idleMinutes: Int = 2) {
+        self.saved = saved; self.idleMinutes = idleMinutes
     }
 }
 
@@ -1102,7 +1135,8 @@ public enum ClusterOnboardingSync {
     /// `memberServing` nil: the member did not answer (asked again at the next check). `memberLocalOnly` nil: the
     /// member's build does not report the serving scope, so only the model and the start are compared.
     public static func action(leaderServing: Bool, leaderModel: String?, memberServing: Bool?, memberModel: String?,
-                              leaderLocalOnly: Bool = false, memberLocalOnly: Bool? = nil) -> Action {
+                              leaderLocalOnly: Bool = false, memberLocalOnly: Bool? = nil,
+                              leaderLocalAPI: Bool = false, memberLocalAPI: Bool? = nil) -> Action {
         guard let memberServing else { return .none }
         if leaderServing {
             let scopeAgrees = memberLocalOnly.map { $0 == leaderLocalOnly } ?? true
@@ -1357,6 +1391,12 @@ public struct ClusterOnboardingOperations: Sendable {
     /// The pair serves through Darkbloom (its start ends with the coordinator's step), not locally only. Not in
     /// `init`: only the live operations set it.
     public var servesThroughDarkbloom: @Sendable () -> Bool = { true }
+    /// What the question of how the pair serves asks with (`ClusterServingChoice`): the saved answer and the idle
+    /// minutes. Nil: the question isn't asked, and the list's line switches between Darkbloom and local only, as before.
+    /// Not in `init`: plain `darkbloom cluster` in a terminal sets it (never `darkbloom cluster local`).
+    public var servingChoice: @Sendable () -> ClusterServingChoiceAsk? = { nil }
+    /// Saves the question's answer (`[local] mode`); its lines say a save that failed. Not in `init`.
+    public var saveServingChoice: @Sendable (ClusterServingChoice) -> Result<[String], ClusterOnboardingFailure> = { _ in .success([]) }
 
     public init(resume: @escaping @Sendable () -> ClusterOnboardingResume,
                 checkLink: @escaping @Sendable (@escaping @Sendable (String) -> Void) -> ClusterOnboardingLinkResult,

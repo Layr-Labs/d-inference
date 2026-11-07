@@ -28,7 +28,8 @@ struct DistributedStartCommandTests {
         let leader = try Start.parse(["--local", "--distributed", "--coordinator-url", "wss://example.invalid"])
         #expect(leader.coordinatorURL == "wss://example.invalid")
         #expect(try Start.parse([]).clusterMember == false)
-        for values in [["--cluster-member", "--local"], ["--cluster-member", "--local-endpoint"],
+        // `--cluster-member --local-endpoint` is the pair's local API beside Darkbloom (ClusterPairBothMeFirstCLITests).
+        for values in [["--cluster-member", "--local"], ["--cluster-member", "--local-endpoint", "--no-auth"],
                        ["--cluster-member", "--distributed", "--local"], ["--cluster-member", "--all"],
                        ["--cluster-member", "--model", "other"], ["--cluster-member", "--idle-timeout", "2"]] {
             #expect(throws: (any Error).self) { _ = try Start.parse(values) }

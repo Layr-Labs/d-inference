@@ -67,6 +67,8 @@ struct ClusterPairSummary: Sendable, Equatable {
     var leftoverService: Bool = false
     /// Why the leader's adopted plan serves without the model's speculative assistant (`ClusterOnboardingLeadership.speculationNote`).
     var speculationNote: String?
+    /// The pair serves Both, me first: its local API beside Darkbloom, as this Mac sees it; nil for any other way.
+    var localAPI: ClusterPairLocalAPI?
 
     static let notPaired = ClusterPairSummary(paired: false, state: .notPaired)
 

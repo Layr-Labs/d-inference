@@ -74,6 +74,13 @@ extension Start {
         return (loop, prepared, installation != nil)
     }
 
+    static func clusterMemberLocalEndpoint(requested: Bool, hostsPairSlot: Bool, bind: String, port: UInt16,
+                                           local: LocalSettings?, coordinatorURL: String?,
+                                           loadToken: () throws -> String = { try LocalEndpoint.loadOrCreateClusterToken() },
+                                           say: (String) -> Void = printError) -> LocalInferenceHTTPConfig? {
+        nil
+    }
+
     /// What a member's start that failed with `error` ends with. Refused because another Darkbloom app holds this Mac's
     /// GPU, or production serves here, it is a wait, never a failure: it says the refusal's `Error:` line (an `ExitCode`
     /// prints nothing, and the cluster service waits on that line) and ends with the exit code reserved for it, which

@@ -43,6 +43,9 @@ public struct LocalSettings: Sendable, Equatable, Codable {
     public static let defaultMeFirstIdleMinutes: UInt64 = 2
     public static let meFirstIdleMinutesRange: ClosedRange<UInt64> = 1...120
     public static let defaultBind = "127.0.0.1"
+    /// Never chosen for a new local API, a single Mac's or a pair's: 8000, where other local AI apps listen (oMLX on
+    /// the owner's Mac), and 47420–47423, which two-Mac pairs use.
+    public static let neverChosenPorts: Set<UInt16> = [8000, 47420, 47421, 47422, 47423]
 
     public init(mode: Mode? = nil, meFirst: Bool? = nil, meFirstIdleMinutes: UInt64? = nil, route: Route? = nil,
                 port: UInt16? = nil, bind: String? = nil) {

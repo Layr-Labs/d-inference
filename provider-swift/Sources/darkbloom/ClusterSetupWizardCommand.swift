@@ -134,6 +134,14 @@ extension Cluster.Setup {
         if code != 0 { throw ExitCode(code) }
     }
 
+    static func asksServingChoice(request: ClusterOnboardingRequest) -> Bool { false }
+
+    static func servingChoiceAsk(config: String?) -> ClusterServingChoiceAsk { .init() }
+
+    static func saveServingChoice(_ choice: ClusterServingChoice, config: String?) -> Result<[String], ClusterOnboardingFailure> {
+        .success([])
+    }
+
     /// The clusters waitlist's id in the coordinator's catalog.
     static let waitlistFeature = "cluster"
 

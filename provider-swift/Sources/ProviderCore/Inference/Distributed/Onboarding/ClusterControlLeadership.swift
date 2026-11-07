@@ -783,6 +783,8 @@ public struct ClusterControlRequest: Codable, Sendable, Equatable {
     public var model: String?
     public var localOnly: Bool?
     public var bind: String?
+    /// `scope`: true for Both, me first, with the local API's address in `bind`. Nil from an older build.
+    public var localAPI: Bool?
     /// `adopt`: the mode family chosen on the forwarding Mac's screen (a `ClusterForcedMode` raw value); nil keeps the
     /// listed plan's, and from an older build.
     public var mode: String?

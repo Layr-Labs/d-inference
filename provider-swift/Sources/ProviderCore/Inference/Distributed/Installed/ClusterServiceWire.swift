@@ -78,6 +78,9 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
     /// This Mac's record says the cluster serves locally only (`ClusterServingScope`); the leader sends the start again
     /// to a member whose answer differs from its own. Nil from an older build.
     public var localOnly: Bool? = nil
+    /// This Mac's record says the pair serves Both, me first (`ClusterServingScope.publicServingWithLocalAPI`); compared
+    /// as `localOnly` is. Nil from an older build.
+    public var localAPI: Bool? = nil
     /// In the answer to a `status` command: the ports of `ClusterLocalServing.servingPorts` free on this Mac (those
     /// its own API, relay or solo server holds count as free), so rank 0 takes a port free on both Macs. Nil from an
     /// older build.
@@ -178,6 +181,8 @@ public struct ClusterServiceCommand: Codable, Sendable, Equatable {
     /// moves to it: true for local only, with the API's address in `bind`. Nil from an older build (nothing recorded).
     public var localOnly: Bool?
     public var bind: String?
+    /// `serve`: true for Both, me first, with the local API's address in `bind`. Nil from an older build.
+    public var localAPI: Bool?
     /// `serve`, local only: the pair's local API key (`LocalEndpoint.loadOrCreateClusterToken`), kept by the member
     /// so the key stays the same whichever Mac runs the API. Only inside the keyed link control session; never logged.
     public var localToken: String?

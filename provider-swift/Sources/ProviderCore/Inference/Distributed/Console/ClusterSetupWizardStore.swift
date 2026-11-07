@@ -202,6 +202,9 @@ public struct ClusterOnboardingLeadership: Codable, Sendable, Equatable {
     /// through the coordinator, as before. A member records the leader's choice from its start command.
     public var localOnly: Bool?
     public var localBind: String?
+    /// True for Both, me first (`ClusterServingScope.publicServingWithLocalAPI`): through the coordinator, with the
+    /// pair's local API on `localBind`. Nil: an older build's record, or no local API.
+    public var localAPI: Bool?
 
     public init(role: String, leaderPin: String, peerPin: String, peerName: String, since: String) {
         self.role = role; self.leaderPin = leaderPin; self.peerPin = peerPin; self.peerName = peerName; self.since = since

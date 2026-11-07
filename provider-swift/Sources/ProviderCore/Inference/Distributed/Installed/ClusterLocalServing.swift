@@ -96,6 +96,18 @@ public enum ClusterLocalServing {
         return base + [noCoordinatorFlag, "--bind", bind]
     }
 
+    public static func memberArguments(_ base: [String], scope: ClusterServingScope, localRank: Int, port: Int) -> [String] {
+        base
+    }
+
+    public static func localAPIFreePorts(isFree: (Int) -> Bool = portIsFree) -> [Int] {
+        freePorts(isFree: isFree)
+    }
+
+    public static func localAPIPort(localFree: [Int], peersFree: [[Int]]?, preferred: Int? = nil) -> Int {
+        sharedPort(localFree: localFree, peerFree: peersFree?.first, preferred: preferred)
+    }
+
     /// The solo server (this Mac alone after the absence grace) is coordinator-less already; local-only serving gives
     /// it the same address as the cluster's API.
     public static func soloArguments(_ base: [String], scope: ClusterServingScope) -> [String] {

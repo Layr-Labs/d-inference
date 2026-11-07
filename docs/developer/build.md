@@ -381,9 +381,10 @@ packs the lane's `.build` with tar and zstd. It leaves out what no test step
 reads:
 
 - The compile intermediates: each target's `<Target>.build` directory,
-  `ModuleCache`, `index`, `Modules` and `Modules-tool`.
+  `ModuleCache`, `index` and `Modules`.
 - The host tools, which SwiftPM builds with a `-tool` suffix (the
-  `MLXHuggingFaceMacros-tool` macro); only the compiler runs them.
+  `MLXHuggingFaceMacros-tool` macro), and their modules in `Modules-tool`.
+  Only the compiler runs them.
 - Every `.dSYM` bundle, including the test bundle's own. The coverage report
   reads the coverage maps in the binaries, not DWARF. Without the dSYMs, a
   stalled-test sample (`scripts/run-provider-test-watchdog.py`) names each

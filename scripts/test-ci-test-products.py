@@ -85,13 +85,15 @@ class TestProductsTests(unittest.TestCase):
         self.assertEqual(self.run_main("pack", "provider", str(self.archive))[0], 0)
         shutil.rmtree(self.package / ".build")
 
-    def test_round_trip_keeps_the_products_and_drops_the_compile_intermediates(self):
+    def test_round_trip_keeps_the_products_and_drops_what_no_test_step_reads(self):
         status, printed = self.run_main("pack", "provider", str(self.archive))
         self.assertEqual(status, 0, printed)
         self.assertIn("MiB of files", printed)
         self.assertIn("MiB compressed", printed)
         self.assertIn(f"{products.STAMP}=", self.environment.read_text())
         shutil.rmtree(self.package / ".build")
+        # zstd packs from a pipe, so the frame declares the full 2 GiB window:
+        # the unpack fails unless it passes LONG_WINDOW too.
         with mock.patch.dict(os.environ, {products.STAMP: "0"}):
             status, printed = self.run_main("unpack", "provider", str(self.archive))
         self.assertEqual(status, 0, printed)

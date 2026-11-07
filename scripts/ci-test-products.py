@@ -10,15 +10,15 @@ different paths (.github/workflows/provider-tests.yml).
 
 The archive holds the lane's `.build` directory without what no test step
 reads: each target's `<Target>.build` directory (object files and dependency
-records), `ModuleCache`, `index`, `Modules` and `Modules-tool`; the host tools
-(macros and plugins, which SwiftPM builds with a `-tool` suffix and only the
-compiler runs); the `.dSYM` bundles (the coverage report reads the coverage
-maps in the binaries, not DWARF); and `repositories`, SwiftPM's bare clones,
-which it reads only to check out a dependency whose checkout is missing or at
-another revision. It keeps the test bundles, the executables, the resource
-bundles, the staged matched `mlx.metallib`, the build database, and the
-checkouts and `workspace-state.json`, which load the package graph without a
-fetch. The test bundle's copies of `mlx.metallib` cost nearly nothing: zstd's
+records), `ModuleCache`, `index` and `Modules`; the host tools (macros and
+plugins, which SwiftPM builds with a `-tool` suffix, and their `Modules-tool`;
+only the compiler runs them); the `.dSYM` bundles (the coverage report reads
+the coverage maps in the binaries, not DWARF); and `repositories`, SwiftPM's
+bare clones, which it reads only to check out a dependency whose checkout is
+missing or at another revision. It keeps the test bundles, the executables,
+the resource bundles, the staged matched `mlx.metallib`, the build database,
+and the checkouts and `workspace-state.json`, which load the package graph
+without a fetch. The test bundle's copies of `mlx.metallib` cost nearly nothing: zstd's
 long-distance mode (LONG_WINDOW) stores each repeat as a reference. A
 manifest records the commit and the toolchain; a test job refuses products of
 another commit or of another Swift, Xcode or SDK version, and warns when only
@@ -38,6 +38,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -46,8 +47,10 @@ import time
 
 FIXED_ROOT = Path("/private/tmp/dinf")
 LANES = {"provider": "provider-swift", "cluster": "libs/darkbloom-cluster"}
-# Directories inside .build/<triple>/<configuration>/ that only the compiler reads.
-INTERMEDIATES = ("ModuleCache", "index", "Modules", "Modules-tool")
+# Directories inside .build/<triple>/<configuration>/ that only the compiler
+# reads. `unread` drops `Modules-tool` with the host tools, by their `-tool`
+# suffix.
+INTERMEDIATES = ("ModuleCache", "index", "Modules")
 # zstd's long-distance mode with a 2 GiB window: content repeated far apart
 # (the metallib copies, the code that the test bundle and the executables
 # share) is stored once. Unpacking needs the same window and about 2 GiB of
@@ -178,8 +181,9 @@ def pack(root, lane, archive):
     directory = package(root, lane)
     started = time.monotonic()
     paths = product_paths(directory)
-    files = sum(entry.lstat().st_size for entry in (directory / path for path in paths)
-                if entry.is_file() and not entry.is_symlink())
+    # Regular files only: a link or a directory adds its entry, not its target.
+    files = sum(entry.st_size for entry in (os.lstat(directory / path) for path in paths)
+                if stat.S_ISREG(entry.st_mode))
     manifest = {"lane": lane, "commit": commit(root), "toolchain": toolchain(), "entries": len(paths)}
     (directory / ".build" / MANIFEST).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     paths.append(Path(".build") / MANIFEST)

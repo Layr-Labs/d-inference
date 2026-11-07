@@ -284,9 +284,10 @@ struct Start: AsyncParsableCommand {
 
     var startsSingleMacServing: Bool { !foreground && !clusterMember && !distributed }
 
-    /// Tests stand in for stopping this Mac's leftover part (`ClusterService.releaseForSingleMac`), given what it calls
-    /// before it waits for a running cluster command.
-    @TaskLocal static var releaseForTesting: (@Sendable (_ waiting: () -> Void) -> ClusterService.SingleMacRelease)?
+    /// Tests stand in for stopping this Mac's leftover part (`ClusterService.releaseForSingleMac`).
+    @TaskLocal static var releaseForTesting: (@Sendable () -> Bool)?
+    /// As `releaseForTesting`, with how it ended, given what it calls before it waits for a running cluster command.
+    @TaskLocal static var releaseOutcomeForTesting: (@Sendable (_ waiting: () -> Void) -> ClusterService.SingleMacRelease)?
 
     /// How long the leftover part gets to release its model and the serving lock.
     static let releaseSeconds: Double = 300
@@ -315,8 +316,10 @@ struct Start: AsyncParsableCommand {
         // Flushed: the desktop app reads this output through a pipe while the command waits.
         let waiting: @Sendable () -> Void = { print(ClusterPairSummary.releaseWaitLine); fflush(stdout) }
         let released: ClusterService.SingleMacRelease
-        if let release = releaseForTesting {
+        if let release = releaseOutcomeForTesting {
             released = release(waiting)
+        } else if let release = releaseForTesting {
+            released = release() ? .released : .partNotStopped
         } else if !ClusterPairSummary.readsThisMacsCluster {
             released = .released
         } else {

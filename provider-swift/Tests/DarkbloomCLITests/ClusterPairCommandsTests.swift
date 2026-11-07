@@ -744,12 +744,6 @@ private func stalePair() -> ClusterPairSummary {
     return summary
 }
 
-/// A cluster command holds the pair's command lock through the whole wait (`ClusterService.releaseForSingleMac`).
-private func commandStillRunning(_ waiting: () -> Void) -> ClusterService.SingleMacRelease {
-    waiting()
-    return .commandStillRunning
-}
-
 private func pairActionCalls(_ stderr: String) -> [String] {
     stderr.split(separator: "\n").filter { $0.hasPrefix("pair action: ") }.map { String($0.dropFirst("pair action: ".count)) }
 }
@@ -770,6 +764,12 @@ private let servingBlock = ["✓ Serving Qwen 3.8 27B through Darkbloom on both 
                             "  Serves:  through Darkbloom"] + resultFooter
 
 private func lines(_ bytes: [UInt8]?) -> [String] { text(bytes).split(separator: "\n", omittingEmptySubsequences: false).map(String.init) }
+
+/// A cluster command holds the pair's command lock through the whole wait (`ClusterService.releaseForSingleMac`).
+private func commandStillRunning(_ waiting: () -> Void) -> ClusterService.SingleMacRelease {
+    waiting()
+    return .commandStillRunning
+}
 
 @Suite("darkbloom start, stop, restart and status control the pair on a Mac in a two-Mac cluster")
 struct ClusterPairControlTests {
@@ -821,7 +821,7 @@ struct ClusterPairControlTests {
     func startSoloOnAStalePair() async {
         let result = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent, \.standardErrorContent]) {
             try await exitWithPair(stalePair(), actions: pairActions()) { _ in
-                try await Start.$releaseForTesting.withValue({ _ in FileHandle.standardError.write(Data("released\n".utf8)); return .released }) {
+                try await Start.$releaseForTesting.withValue({ FileHandle.standardError.write(Data("released\n".utf8)); return true }) {
                     try await runCLICommand(Start.self, ["start", "--solo", "--model", "acme/Alpha-4bit"])
                 }
             }
@@ -851,7 +851,7 @@ struct ClusterPairControlTests {
             try await exitWithPair(stale, actions: pairActions()) { sandbox in
                 guard case .success = Cluster.Setup.saveServingChoice(.onlyMe, config: sandbox.config.path) else { throw ExitCode(98) }
                 try await ClusterPairCommands.$terminalForTesting.withValue(false) {
-                    try await Start.$releaseForTesting.withValue({ _ in FileHandle.standardError.write(Data("released\n".utf8)); return .released }) {
+                    try await Start.$releaseForTesting.withValue({ FileHandle.standardError.write(Data("released\n".utf8)); return true }) {
                         try await runCLICommand(Start.self, ["start", "--model", "acme/Alpha-4bit", "--config", sandbox.config.path])
                     }
                 }
@@ -863,7 +863,7 @@ struct ClusterPairControlTests {
             try await exitWithPair(stale, actions: pairActions()) { sandbox in
                 guard case .success = Cluster.Setup.saveServingChoice(.onlyMe, config: sandbox.config.path) else { throw ExitCode(98) }
                 try await ClusterPairCommands.$terminalForTesting.withValue(false) {
-                    try await Start.$releaseForTesting.withValue({ _ in FileHandle.standardError.write(Data("released\n".utf8)); return .released }) {
+                    try await Start.$releaseForTesting.withValue({ FileHandle.standardError.write(Data("released\n".utf8)); return true }) {
                         try await runCLICommand(Start.self, ["start", "--solo", "--config", sandbox.config.path])
                     }
                 }
@@ -882,7 +882,7 @@ struct ClusterPairControlTests {
     func startSoloWhenTheLeftoverWontStop() async {
         let result = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
             try await exitWithPair(stalePair(), actions: pairActions()) { _ in
-                try await Start.$releaseForTesting.withValue({ _ in .partNotStopped }) {
+                try await Start.$releaseForTesting.withValue({ false }) {
                     try await runCLICommand(Start.self, ["start", "--model", "acme/Alpha-4bit"])
                 }
             }
@@ -901,12 +901,12 @@ struct ClusterPairControlTests {
     func stopAndStartSayTheyWaitForARunningClusterCommand() async {
         let stop = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
             try await exitWithPair(stalePair(), actions: pairActions()) { _ in
-                try await Start.$releaseForTesting.withValue(commandStillRunning) { try await runCLICommand(Stop.self, ["stop"]) }
+                try await Start.$releaseOutcomeForTesting.withValue(commandStillRunning) { try await runCLICommand(Stop.self, ["stop"]) }
             }
         }
         let start = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
             try await exitWithPair(stalePair(), actions: pairActions()) { _ in
-                try await Start.$releaseForTesting.withValue(commandStillRunning) {
+                try await Start.$releaseOutcomeForTesting.withValue(commandStillRunning) {
                     try await runCLICommand(Start.self, ["start", "--solo", "--model", "acme/Alpha-4bit"])
                 }
             }
@@ -925,7 +925,7 @@ struct ClusterPairControlTests {
     func stopOnAStalePair() async {
         let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent, \.standardErrorContent]) {
             try await exitWithPair(stalePair(), actions: pairActions()) { _ in
-                try await Start.$releaseForTesting.withValue({ _ in FileHandle.standardError.write(Data("released\n".utf8)); return .released }) {
+                try await Start.$releaseForTesting.withValue({ FileHandle.standardError.write(Data("released\n".utf8)); return true }) {
                     try await runCLICommand(Stop.self, ["stop"])
                 }
             }

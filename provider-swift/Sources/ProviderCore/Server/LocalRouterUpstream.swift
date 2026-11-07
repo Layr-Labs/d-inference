@@ -31,11 +31,15 @@ public struct LocalRouterUpstreamResponse: Sendable {
     /// Lower-cased names.
     public var headers: [String: String]
     public var body: AsyncThrowingStream<ByteBuffer, Error>
+    /// Stops the request at the coordinator.
+    public var cancel: @Sendable () -> Void
 
-    public init(status: Int, headers: [String: String], body: AsyncThrowingStream<ByteBuffer, Error>) {
+    public init(status: Int, headers: [String: String], body: AsyncThrowingStream<ByteBuffer, Error>,
+                cancel: @escaping @Sendable () -> Void = {}) {
         self.status = status
         self.headers = headers
         self.body = body
+        self.cancel = cancel
     }
 }
 

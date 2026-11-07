@@ -39,9 +39,16 @@ public struct KeychainLocalRouterAccountKeyStore: LocalRouterAccountKeyStore {
     public let service: String
     public let account: String
 
+    let calls: KeychainItemCalls
+
     public init(service: String = Self.defaultService, account: String = Self.defaultAccount) {
+        self.init(service: service, account: account, calls: .system)
+    }
+
+    init(service: String, account: String, calls: KeychainItemCalls) {
         self.service = service
         self.account = account
+        self.calls = calls
     }
 
     public func load() throws -> String? {
@@ -118,6 +125,24 @@ public struct KeychainLocalRouterAccountKeyStore: LocalRouterAccountKeyStore {
             throw LocalRouterAccountKeyError.keychain(operation: operation, status: status)
         }
     }
+}
+
+/// The four `SecItem` calls the Keychain store makes.
+struct KeychainItemCalls: Sendable {
+    var copyMatching: @Sendable ([String: Any]) -> (OSStatus, Data?)
+    var add: @Sendable ([String: Any]) -> OSStatus
+    var update: @Sendable ([String: Any], [String: Any]) -> OSStatus
+    var delete: @Sendable ([String: Any]) -> OSStatus
+
+    static let system = KeychainItemCalls(
+        copyMatching: { query in
+            var result: CFTypeRef?
+            let status = SecItemCopyMatching(query as CFDictionary, &result)
+            return (status, result as? Data)
+        },
+        add: { SecItemAdd($0 as CFDictionary, nil) },
+        update: { SecItemUpdate($0 as CFDictionary, $1 as CFDictionary) },
+        delete: { SecItemDelete($0 as CFDictionary) })
 }
 
 /// An account key held in memory: tests, and callers that must not touch the Keychain.

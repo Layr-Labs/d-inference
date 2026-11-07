@@ -86,6 +86,7 @@ struct RouteKeyFlow {
     let savedRoute: LocalSettings.Route?
     let check: @Sendable (String) async -> RouteKeyCheck
     let say: (String) -> Void
+    var liveEndpointHasNoLocalKey = false
 
     func save(_ rawKey: String) async -> Int32 {
         let key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)

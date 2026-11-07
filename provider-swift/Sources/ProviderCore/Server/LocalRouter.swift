@@ -29,6 +29,8 @@ public struct LocalRouterConfig: Sendable {
     /// One line per decision to pass a request on; never a key, a body or a prompt.
     public var log: @Sendable (String) -> Void
     public var timing: LocalRouter.Timing
+    /// The local API requires its key.
+    public var localKeyRequired = true
 
     public init(settings: LocalSettings, upstreamBaseURL: URL, takesCoordinatorWork: Bool,
                 accountKeys: any LocalRouterAccountKeyStore,
@@ -132,6 +134,10 @@ public enum LocalRouterPolicy {
     public static func passesOn(localStatus status: HTTPResponse.Status) -> Bool {
         status == .notFound || status == .tooManyRequests || status == .serviceUnavailable
     }
+
+    public static func asksYourMacs(afterNetworkStatus status: Int) -> Bool { false }
+
+    public static func yourMacsCouldNotTakeIt(status: Int) -> Bool { false }
 
     /// After `self`, `my-macs-first` tries `prefer` when no Mac of the owner's took the request: none linked (409),
     /// none online, none serving the model or none able to take its shape (503), or all busy (429, `machine_busy`).

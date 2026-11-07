@@ -29,7 +29,7 @@ struct LocalRouterTests {
     @Test func eachRouteHasItsHopsAndOnlyThisMacsInabilityPassesARequestOn() {
         #expect(LocalRouterPolicy.hops(for: .thisMac).isEmpty)
         #expect(LocalRouterPolicy.hops(for: .myMacs) == [.mine])
-        #expect(LocalRouterPolicy.hops(for: .myMacsFirst) == [.mine, .prefer])
+        #expect(LocalRouterPolicy.hops(for: .myMacsFirst) == [.prefer])
         #expect(LocalRouterUpstreamRoute.mine.rawValue == "self")
         for status: HTTPResponse.Status in [.notFound, .tooManyRequests, .serviceUnavailable] {
             #expect(LocalRouterPolicy.passesOn(localStatus: status), "\(status)")
@@ -39,8 +39,12 @@ struct LocalRouterTests {
                                              .init(code: 499)] {
             #expect(!LocalRouterPolicy.passesOn(localStatus: status), "\(status)")
         }
-        #expect([409, 429, 503].allSatisfy(LocalRouterPolicy.triesNextHop(after:)))
-        #expect(![200, 400, 401, 402, 403, 413, 500, 502, 504].contains(where: LocalRouterPolicy.triesNextHop(after:)))
+        // Only "no balance" on the network route asks your Macs (free) once.
+        #expect(LocalRouterPolicy.asksYourMacs(afterNetworkStatus: 402))
+        #expect(![200, 400, 401, 403, 409, 429, 500, 502, 503, 504].contains(where: LocalRouterPolicy.asksYourMacs(afterNetworkStatus:)))
+        // Your Macs not taking it then (none linked, offline, not serving, busy) leaves the network's 402 standing.
+        #expect([409, 429, 503].allSatisfy(LocalRouterPolicy.yourMacsCouldNotTakeIt(status:)))
+        #expect(![200, 400, 401, 402, 403, 413, 500, 502, 504].contains(where: LocalRouterPolicy.yourMacsCouldNotTakeIt(status:)))
         #expect(LocalRouterPolicy.upstreamPath(forLocalPath: "/chat/completions") == "/v1/chat/completions")
         #expect(LocalRouterPolicy.upstreamPath(forLocalPath: "/completions") == "/v1/completions")
         #expect(LocalRouterPolicy.upstreamPath(forLocalPath: "/responses") == "/v1/responses")
@@ -155,30 +159,65 @@ struct LocalRouterTests {
         #expect(fixture.upstream.posts.map(\.route) == ["self"])
     }
 
-    @Test func myMacsFirstTriesTheOwnersMacsBeforeTheNetwork() async throws {
-        for (selfStatus, expected) in [(200, ["self"]), (503, ["self", "prefer"]), (409, ["self", "prefer"]),
-                                       (429, ["self", "prefer"]), (400, ["self"])] {
+    /// `my-macs-first` is `prefer`: the coordinator takes your Macs first, then the network, without `self`'s
+    /// 120 s queue for a busy Mac of yours. Only a 402 (no balance) asks your Macs (`self`, free), once.
+    @Test func myMacsFirstAsksTheNetworkRouteFirstAndYourMacsOnlyAfterANoBalance() async throws {
+        let cases: [(prefer: Int, mine: Int?, posts: [String], status: Int, routeUsed: String)] = [
+            (200, nil, ["prefer"], 200, "prefer"),
+            (503, nil, ["prefer"], 503, "prefer"),
+            (429, nil, ["prefer"], 429, "prefer"),
+            (409, nil, ["prefer"], 409, "prefer"),
+            (402, 200, ["prefer", "self"], 200, "self"),
+            (402, 503, ["prefer", "self"], 402, "prefer"),
+            (402, 409, ["prefer", "self"], 402, "prefer"),
+            (402, 429, ["prefer", "self"], 402, "prefer"),
+            (402, 400, ["prefer", "self"], 400, "self"),
+        ]
+        for item in cases {
             let fixture = RouterFixture(route: .myMacsFirst) { request in
-                request.route == "self" ? .json(selfStatus, #"{"error":{"message":"from self"}}"#)
-                    : .json(200, #"{"id":"from-prefer"}"#)
+                request.route == "prefer"
+                    ? .json(item.prefer, #"{"error":{"message":"from prefer","code":"c\#(item.prefer)"}}"#)
+                    : .json(item.mine ?? 500, #"{"error":{"message":"from self"}}"#)
             }
             try await fixture.app.test(.router) { client in
                 try await client.execute(uri: "/v1/chat/completions", method: .post, headers: RouterFixture.authorized,
                                          body: ByteBuffer(string: RouterFixture.chat("busy"))) { response in
-                    if expected.count == 2 {
-                        #expect(response.status == .ok)
-                        #expect(response.headers[LocalRouterPolicy.routeUsedHeader] == "prefer")
-                    } else {
-                        #expect(response.status.code == selfStatus)
-                        #expect(response.headers[LocalRouterPolicy.routeUsedHeader] == "self")
-                    }
+                    #expect(response.status.code == item.status, "\(item)")
+                    #expect(response.headers[LocalRouterPolicy.routeUsedHeader] == item.routeUsed, "\(item)")
                 }
             }
-            #expect(fixture.upstream.posts.map(\.route) == expected, "self answered \(selfStatus)")
+            #expect(fixture.upstream.posts.map(\.route) == item.posts, "\(item)")
         }
     }
 
-    @Test func aBalanceRefusalOnTheNetworkHopSaysSoPlainly() async throws {
+    @Test func aBusyMacOfYoursNeverHoldsMyMacsFirstInSelfsQueue() async throws {
+        // `self` would queue for a busy Mac of yours (120 s at the coordinator); the router never sends it.
+        let fixture = RouterFixture(route: .myMacsFirst) { request in
+            request.route == "self" ? .init(status: 200, hang: true) : .json(200, #"{"id":"from-prefer"}"#)
+        }
+        let started = ContinuousClock.now
+        let status = try await withThrowingTaskGroup(of: Int?.self) { group in
+            group.addTask {
+                try await fixture.app.test(.router) { client in
+                    try await client.execute(uri: "/v1/chat/completions", method: .post,
+                                             headers: RouterFixture.authorized,
+                                             body: ByteBuffer(string: RouterFixture.chat("busy"))) { $0.status.code }
+                }
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(5))
+                return nil
+            }
+            let first = try await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+        #expect(status == 200, "the request waited on self's queue")
+        #expect(ContinuousClock.now - started < .seconds(2))
+        #expect(fixture.upstream.posts.map(\.route) == ["prefer"])
+    }
+
+    @Test func aBalanceRefusalOnTheNetworkRouteSaysSoPlainly() async throws {
         let coordinatorMessage = "your balance is too low for this request — add funds at /billing or lower max_tokens"
         let fixture = RouterFixture(route: .myMacsFirst) { request in
             request.route == "self"
@@ -202,7 +241,7 @@ struct LocalRouterTests {
                 #expect(message.hasSuffix(coordinatorMessage))
             }
         }
-        #expect(fixture.upstream.posts.map(\.route) == ["self", "prefer"])
+        #expect(fixture.upstream.posts.map(\.route) == ["prefer", "self"])
     }
 
     @Test func theClientsRouteHeaderAndKeyNeverReachTheCoordinator() async throws {
@@ -347,35 +386,111 @@ struct LocalRouterTests {
         }
     }
 
-    @Test func myMacsFirstGoesStraightToTheNetworkWhenOnlyThisMacServesTheModel() async throws {
+    @Test func myMacsFirstAsksNoSelfThatCouldOnlyComeBackHereAfterANoBalance() async throws {
         let fixture = RouterFixture(route: .myMacsFirst, takesCoordinatorWork: true) { request in
-            request.method == "GET" ? .json(200, #"{"id":"draining","metadata":{"provider_count":1}}"#)
-                : .json(200, #"{"id":"from-prefer"}"#)
+            if request.method == "GET" { return .json(200, #"{"id":"draining","metadata":{"provider_count":1}}"#) }
+            return request.route == "prefer"
+                ? .json(402, #"{"error":{"message":"no balance","code":"insufficient_quota"}}"#)
+                : .json(200, #"{"id":"from-self"}"#)
         }
         try await fixture.app.test(.router) { client in
             try await client.execute(uri: "/v1/chat/completions", method: .post, headers: RouterFixture.authorized,
                                      body: ByteBuffer(string: RouterFixture.chat("draining"))) { response in
-                #expect(response.status == .ok)
-                #expect(response.headers[LocalRouterPolicy.routeUsedHeader] == "prefer")
+                #expect(response.status.code == 402)
+                #expect(String(buffer: response.body).contains("No balance for the network fallback"))
             }
         }
         #expect(fixture.upstream.posts.map(\.route) == ["prefer"])
+        #expect(fixture.upstream.requests.contains { $0.method == "GET" && $0.url.path == "/v1/models/draining" })
     }
 
-    @Test func anAliasOfABuildThisMacServesCountsAsThisMacsModel() async throws {
-        let catalog = #"{"models":[{"id":"org/build-4bit","max_context_length":131072,"max_output_length":32768}],"aliases":[{"id":"alias-x","display_name":"Alias X","desired_build":"org/build-4bit"}]}"#
-        let fixture = RouterFixture(route: .myMacs, takesCoordinatorWork: true, localModels: ["org/build-4bit"]) { request in
-            if request.url.path == "/v1/models/catalog" { return .json(200, catalog) }
+    static let aliasCatalog = #"{"models":[{"id":"org/build-4bit","max_context_length":131072,"max_output_length":32768},{"id":"org/other-8bit","max_context_length":65536}],"aliases":[{"id":"alias-x","display_name":"Alias X","desired_build":"org/build-4bit"},{"id":"other","display_name":"Other","desired_build":"org/other-8bit"}]}"#
+
+    @Test func anAliasOfABuildThisMacServesIsServedHere() async throws {
+        let fixture = RouterFixture(route: .myMacs, takesCoordinatorWork: true, localModels: ["org/build-4bit"],
+                                    engineServes: ["org/build-4bit"]) { request in
+            if request.url.path == "/v1/models/catalog" { return .json(200, Self.aliasCatalog) }
+            return .json(200, #"{"id":"chatcmpl-up"}"#)
+        }
+        try await fixture.app.test(.router) { client in
+            for stream in [false, true] {
+                try await client.execute(uri: "/v1/chat/completions", method: .post, headers: RouterFixture.authorized,
+                                         body: ByteBuffer(string: RouterFixture.chat("alias-x", stream: stream))) { response in
+                    #expect(response.status == .ok)
+                    #expect(response.headers[LocalRouterPolicy.servedByHeader] == "this-mac")
+                }
+            }
+        }
+        #expect(fixture.engine.requests.map(\.model) == ["alias-x", "org/build-4bit", "alias-x", "org/build-4bit"])
+        #expect(fixture.upstream.posts.isEmpty)
+    }
+
+    @Test func anAliasOfABuildThisMacCantTakeNowStillNeverComesBackThroughSelf() async throws {
+        let fixture = RouterFixture(route: .myMacs, takesCoordinatorWork: true, localModels: ["org/build-4bit"],
+                                    engineBusy: ["org/build-4bit"]) { request in
+            if request.url.path == "/v1/models/catalog" { return .json(200, Self.aliasCatalog) }
             if request.method == "GET" { return .json(200, #"{"id":"alias-x","metadata":{"provider_count":1}}"#) }
             return .json(200, #"{"id":"chatcmpl-up"}"#)
         }
         try await fixture.app.test(.router) { client in
             try await client.execute(uri: "/v1/chat/completions", method: .post, headers: RouterFixture.authorized,
                                      body: ByteBuffer(string: RouterFixture.chat("alias-x"))) { response in
+                #expect(response.status == .tooManyRequests)
                 #expect(String(buffer: response.body).contains("this_mac_only"))
             }
         }
         #expect(fixture.upstream.posts.isEmpty)
+    }
+
+    @Test func thisMacsModelIsListedOnceUnderItsOwnIdThoughYourMacsListItsAlias() async throws {
+        let mine = #"{"object":"list","data":[{"id":"alias-x","object":"model","owned_by":"self","name":"Alias X","metadata":{"provider_count":1}},{"id":"other","object":"model","owned_by":"self","metadata":{"provider_count":1}}]}"#
+        let network = #"{"object":"list","data":[{"id":"alias-x","object":"model","owned_by":"eigeninference","context_length":131072},{"id":"big","object":"model","owned_by":"eigeninference","context_length":262144}]}"#
+        let fixture = RouterFixture(route: .myMacsFirst, takesCoordinatorWork: true, localModels: ["org/build-4bit"]) { request in
+            switch (request.url.path, request.route) {
+            case ("/v1/models/catalog", _): return .json(200, Self.aliasCatalog)
+            case ("/v1/models", "self"?): return .json(200, mine)
+            case ("/v1/models", nil): return .json(200, network)
+            default: return .json(500, "{}")
+            }
+        }
+        let entries: [LocalRouterModelEntry] = try await fixture.app.test(.router) { client in
+            try await client.execute(uri: "/v1/models", method: .get, headers: RouterFixture.authorized) { response in
+                try JSONDecoder().decode(LocalRouterModelList.self, from: Data(buffer: response.body)).data
+            }
+        }
+        #expect(entries.map { "\($0.id) \($0.ownedBy)" } == ["org/build-4bit this-mac", "other my-macs", "big darkbloom"])
+    }
+
+    // MARK: - Without a local key
+
+    /// `--no-auth`: anything that reaches the port is a client. With a saved account key, the router still serves this
+    /// Mac only and never dials the coordinator, so no page or process borrows the owner's other Macs or balance.
+    @Test func withoutALocalKeyNothingIsPassedOnAndTheCoordinatorIsNeverDialled() async throws {
+        let fixture = RouterFixture(route: .myMacsFirst, localKey: nil)
+        try await fixture.app.test(.router) { client in
+            for (model, status) in [("absent", HTTPResponse.Status.notFound), ("busy", .tooManyRequests),
+                                    ("draining", .serviceUnavailable), ("here", .ok)] {
+                // No Authorization at all, and a foreign Origin, as a web page sends it.
+                try await client.execute(uri: "/v1/chat/completions", method: .post,
+                                         headers: [.contentType: "application/json", .origin: "https://example.invalid"],
+                                         body: ByteBuffer(string: RouterFixture.chat(model))) { response in
+                    #expect(response.status == status, "\(model)")
+                    #expect(response.headers[LocalRouterPolicy.servedByHeader] == "this-mac", "\(model)")
+                }
+            }
+            try await client.execute(uri: "/v1/models", method: .get) { response in
+                let list = try JSONDecoder().decode(LocalRouterModelList.self, from: Data(buffer: response.body))
+                #expect(list.data.allSatisfy { $0.ownedBy == "this-mac" })
+            }
+        }
+        #expect(fixture.factory.count == 0)
+        #expect(fixture.upstream.requests.isEmpty)
+        #expect(fixture.log.lines.contains {
+            $0 == "no local key (--no-auth): requests stay on this Mac, and the account key is never used"
+        })
+        var config = try #require(fixture.routerConfig)
+        config.localKeyRequired = false
+        #expect(config.effectiveRoute().route == .thisMac && config.effectiveRoute().accountKey == nil)
     }
 
     @Test func aMacThatTakesNoCoordinatorWorkPassesOnWithoutAsking() async throws {

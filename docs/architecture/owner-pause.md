@@ -1,6 +1,6 @@
 # Owner pause ("me first")
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-07
 
 How a provider that serves Darkbloom and its owner from one Mac stops taking
 Darkbloom work while the owner uses the Mac through its local API, and returns
@@ -85,12 +85,35 @@ The pause is event-driven:
    describe the hold. Its release hands them back to the pause, which goes on
    (`publishBusy`, `ProviderBusy.publishing`).
 2. Only the end of the last drain, hold or pause replays `desired_models`. An
-   update, model switch or hold that ends during the pause leaves them deferred.
+   update, model switch or hold that ends during the pause leaves them
+   deferred, and a pause that ends under a drain or hold leaves them to it
+   (`replayDesiredModels`).
 3. Local admission never reads the pause: `throwIfRefusingNewLocalWork` is
    unchanged, and `ProviderState.refusingNewWork` stays apart from
    `ownerPausesPublic`.
 4. A clock that goes back restarts the countdown from the new time, so the
    pause outlasts the jump by one idle time at most.
+5. The pause cancels nothing. It has no drain bound: Darkbloom work accepted
+   before it runs to the end, unlike under an add-on hold.
+
+## Known gaps
+
+- **A model switch during the pause can report an unconfirmed result.** After
+  a switch, the coordinator reopens routing only on an `idle` or `serving`
+  heartbeat ([model replacement](../reference/protocol-messages.md#models_replace--models_replace_ack--models_replace_ready--models_replace_resumed)),
+  and every heartbeat of the pause says `draining`. If the pause outlasts the
+  provider's 30-second readiness wait (`resumeAfterModelSwitch`), `switch`
+  reports "Model selection applied locally, but coordinator routing readiness
+  is unconfirmed". The selection is applied, and the heartbeat that ends the
+  pause reopens routing.
+- **Model revision activations and MTP idle upgrades** don't wait for the
+  pause. They wait for an idle model, so one can start in a gap between the
+  owner's requests.
+- **The owner's own coordinator requests** (`X-Darkbloom-Route: self` or
+  `prefer`) look like public work to the provider. They don't pause the Mac,
+  and while it is paused they don't reach it: `self` waits (on today's
+  coordinator up to 120 seconds, then `429 machine_busy`), and `prefer` goes
+  to other Macs.
 
 ## Tests
 

@@ -94,11 +94,13 @@ extension ProviderLoop {
         pendingRetirementReconnect = nil
         if servingDrain.owner == .reconnect { deferredDesiredModels = nil }
         servingDrain.resumeReconnect()
+        // Before the barrier's event heartbeat, so that heartbeat says whether
+        // the owner pause goes on.
+        reassertOwnerPauseAfterReconnect()
         setRetirementReconnectBarrier(false)
         localResponseTracker.setAccepting(!servingDrain.refusing && !isShuttingDown)
         if !servingDrain.refusing { lifecycleStatus = .init() }
         reassertAddonHoldAfterReconnect()
-        reassertOwnerPauseAfterReconnect()
         // A model-store rollback during the old close may need another fresh
         // registration. Do not lose it to coalescing with the earlier request.
         startPlannedReconnectIfNeeded()

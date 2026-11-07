@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-07
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -7590,7 +7590,10 @@ flowchart LR
    request's end and the periodic capacity refresh (`refreshClusterPairCapacity`
    calls `wakeClusterPairLocalWaiters`), admission opening, a drain beginning
    (`beginServingDrain`) and retirement wake them; cancellation and the
-   queue's ceiling refuse them.
+   queue's ceiling refuse them. A reset connection cancels its request at
+   once; a connection closed normally is seen only at the request's first
+   write, after its turn (`LocalHTTPConnectionCancellationRegistry`), as on
+   `cluster local`.
 4. Local admission opens only once the warmup canary passed
    (`clusterPairAdmissionOpenSlotID`, set in `publishClusterPairSlot`) and
    closes when retirement starts (`retireClusterPairSlot`).

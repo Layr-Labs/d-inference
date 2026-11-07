@@ -2,8 +2,8 @@ import Foundation
 import Testing
 @testable import ProviderCore
 
-// Me first for a pair (L5b). While the owner uses the pair through its leader's
-// local API, the pair takes no Darkbloom work; once the owner has been idle for
+// Me first for a pair. While the owner uses the pair through its leader's local
+// API, the pair takes no Darkbloom work; once the owner has been idle for
 // `[local] me_first_idle_minutes` (two minutes by default), it takes Darkbloom
 // work again. The leader decides for the pair: its heartbeat drains, which makes
 // the whole pair unroutable, and every other member stays control-only and
@@ -20,16 +20,16 @@ private let busyKeys = ["busy_reason", "busy_since_ms", "busy_addon"]
 /// rank-0 installation gives), with its local API when `localAPI`, and the
 /// given `[local]` section and owner's clock.
 private func pairMember(hostsSlot: Bool = true, localAPI: Bool = true, local: LocalSettings? = nil,
-                        clock: MeFirstTestClock = MeFirstTestClock(), coordinatorURL: String = "ws://127.0.0.1:9/ws",
+                        clock: MeFirstTestClock = MeFirstTestClock(),
                         name: String = "pair-me-first") async throws -> ProviderLoop {
     let hardware = HardwareInfo(machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4, chipTier: .max,
         memoryGb: 64, memoryAvailableGb: 64, cpuCores: .init(total: 16, performance: 12, efficiency: 4),
         gpuCores: 40, memoryBandwidthGbs: 546)
     let loop = try ProviderLoop(
-        config: .init(coordinatorURL: coordinatorURL, hardware: hardware,
+        config: .init(coordinatorURL: "ws://127.0.0.1:9/ws", hardware: hardware,
             models: [.init(id: clusterPairFixtureModel, modelType: "qwen3_5", sizeBytes: 1, estimatedMemoryGb: 1)],
             config: .init(provider: .init(name: name, autoUpdate: false), backend: .init(),
-                coordinator: .init(url: coordinatorURL, heartbeatIntervalSecs: 1), local: local),
+                coordinator: .init(url: "ws://127.0.0.1:9/ws", heartbeatIntervalSecs: 1), local: local),
             localEndpoint: localAPI ? .init(host: "127.0.0.1", port: 0, authToken: pairKey) : nil,
             executionRole: .clusterMember),
         attestationSigner: ServeLoopTestSigner())
@@ -54,6 +54,15 @@ private func servingLeader(_ owner: ScriptedPairOwner, local: LocalSettings? = n
     return leader
 }
 
+/// The leader's `run()` against a `MockCoordinator` (`PairLeaderFixture`),
+/// with its local API and no `[local]` section, so me first is on as by
+/// default, on the owner's fake `clock`.
+private func meFirstLeaderFixture(clock: MeFirstTestClock) async throws -> PairLeaderFixture {
+    let fixture = try await PairLeaderFixture.make(localAPI: true, local: nil)
+    await fixture.loop.useMeFirstClockForTesting(clock)
+    return fixture
+}
+
 /// A client on `loop`'s state that never connects: it builds the heartbeat the
 /// coordinator would get.
 private func heartbeatBuilder(_ loop: ProviderLoop) async -> CoordinatorClient {
@@ -68,15 +77,37 @@ private func heartbeatFields(_ builder: CoordinatorClient) async throws -> [Stri
 }
 
 /// A heartbeat's JSON with sorted keys, without what every build samples
-/// afresh (the system metrics and the capacity sequence) and without `extra`.
-private func stableHeartbeat(_ builder: CoordinatorClient, dropping extra: [String] = []) async throws -> String {
+/// afresh: the system metrics and the capacity sequence.
+private func stableHeartbeat(_ builder: CoordinatorClient) async throws -> String {
     var fields = try await heartbeatFields(builder)
-    for key in ["system_metrics"] + extra { fields.removeValue(forKey: key) }
+    fields.removeValue(forKey: "system_metrics")
     if var capacity = fields["backend_capacity"] as? [String: Any] {
         capacity.removeValue(forKey: "capacity_seq")
         fields["backend_capacity"] = capacity
     }
     return String(decoding: try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys]), as: UTF8.self)
+}
+
+/// A member that does not host the slot, prepared as `run()` prepares it and
+/// with the same (absent) `[local]` as the leader, and the heartbeat it gave
+/// before anything happened.
+private struct ControlOnlyMember {
+    let loop: ProviderLoop
+    let builder: CoordinatorClient
+    let before: String
+
+    init(rank: Int, clock: MeFirstTestClock) async throws {
+        loop = try await pairMember(hostsSlot: false, localAPI: false, clock: clock, name: "pair-me-first-rank-\(rank)")
+        try await loop.prepareClusterMemberControlForTesting()
+        builder = await heartbeatBuilder(loop)
+        before = try await stableHeartbeat(builder)
+    }
+
+    /// One member beat, then the heartbeat the coordinator would get.
+    func beat() async throws -> String {
+        _ = await loop.clusterMemberHeartbeat()
+        return try await stableHeartbeat(builder)
+    }
 }
 
 /// A local request in its own task, so a test can watch it wait for a lane.
@@ -117,82 +148,6 @@ extension ProviderLoop {
     }
 }
 
-/// The leader's `run()` against a `MockCoordinator`, with its local API on
-/// 127.0.0.1 port 0, whose discovery record goes to a directory of its own
-/// (`DARKBLOOM_LOCAL_DIR`, restored once the loop has stopped).
-private struct LeaderRunFixture {
-    let mock: MockCoordinator
-    let loop: ProviderLoop
-    let directory: URL
-    let previousLocalDirectory: String?
-
-    static func make(local: LocalSettings? = nil, clock: MeFirstTestClock) async throws -> LeaderRunFixture {
-        let mock = MockCoordinator()
-        let url = try await mock.start().mockProviderWebSocketURL()
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("pair-me-first-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let previous = ProcessInfo.processInfo.environment["DARKBLOOM_LOCAL_DIR"]
-        try #require(setenv("DARKBLOOM_LOCAL_DIR", directory.path, 1) == 0)
-        let loop = try await pairMember(local: local, clock: clock, coordinatorURL: url)
-        await loop.setDaemonStateFileForTesting(directory.appendingPathComponent("state.json"))
-        return .init(mock: mock, loop: loop, directory: directory, previousLocalDirectory: previous)
-    }
-
-    func start() -> Task<Void, Error> { Task { try await loop.run() } }
-
-    /// Registration and the member acceptance; returns the provider's public key.
-    func register() async throws -> String {
-        let registration = try #require(try await mock.awaitFirstRegister(timeout: .seconds(15)))
-        try await mock.pushClusterMemberAcceptance(nonce: try #require(registration.memberRegistrationNonce))
-        try await loop.waitForClusterMemberRegistration(until: .now.advanced(by: .seconds(5)))
-        return try #require(registration.publicKey)
-    }
-
-    /// The local API's port, from its discovery record.
-    func localPort() async throws -> UInt16 {
-        #expect(await clusterPairWait { LocalEndpoint.readInfo() != nil })
-        let info = try #require(LocalEndpoint.readInfo())
-        #expect(info.port != 0 && info.apiKey == pairKey)
-        return info.port
-    }
-
-    func localChat(port: UInt16) throws -> URLRequest {
-        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!)
-        request.httpMethod = "POST"; request.timeoutInterval = 20
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(pairKey)", forHTTPHeaderField: "Authorization")
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": clusterPairFixtureModel, "messages": [["role": "user", "content": "local"]],
-            "max_tokens": 3, "stream": true, "temperature": 0, "reasoning_parser": "none"])
-        return request
-    }
-
-    func push(_ id: String, publicKey: String) async throws {
-        let body = try JSONSerialization.data(withJSONObject: [
-            "model": clusterPairFixtureModel, "messages": [["role": "user", "content": "pair"]],
-            "max_tokens": 3, "stream": true, "temperature": 0, "reasoning_parser": "none"])
-        try await mock.pushInferenceRequest(requestId: id, providerPublicKeyBase64: publicKey,
-            chatRequestJSON: body, consumerKeyPair: .generate())
-    }
-
-    /// Whether the Darkbloom request `id` completed without an error.
-    func completed(_ id: String, timeout: Duration = .seconds(10)) async throws -> Bool {
-        try await mock.waitForSnapshot(timeout: timeout) { snapshot in
-            snapshot.inferenceComplete.contains { $0.requestId == id } || snapshot.inferenceErrors.contains { $0.requestId == id }
-        }.map { $0.inferenceErrors.allSatisfy { $0.requestId != id } } ?? false
-    }
-
-    func cleanUp(_ task: Task<Void, Error>) async {
-        task.cancel()
-        _ = await ServeLoopFixture.finishes(task, within: .seconds(30))
-        await mock.shutdown()
-        if let previousLocalDirectory { setenv("DARKBLOOM_LOCAL_DIR", previousLocalDirectory, 1) }
-        else { unsetenv("DARKBLOOM_LOCAL_DIR") }
-        try? FileManager.default.removeItem(at: directory)
-    }
-}
-
 @Suite("Me first for a pair: the leader's local use pauses the pair", .serialized, .timeLimit(.minutes(2)))
 struct ClusterPairMeFirstTests {
     /// The owner's request through the leader's local API pauses the pair: the
@@ -202,12 +157,8 @@ struct ClusterPairMeFirstTests {
     /// the member beat ends the pause, and Darkbloom requests are served again.
     @Test func theLeadersLocalUseDrainsItsHeartbeatForTheOwnerAndMembersAreUntouched() async throws {
         let clock = MeFirstTestClock()
-        let fixture = try await LeaderRunFixture.make(clock: clock)
-        // A member that does not host the slot, as `run()` prepares it, with the same (absent) `[local]`.
-        let member = try await pairMember(hostsSlot: false, localAPI: false, clock: clock, name: "pair-me-first-rank-1")
-        try await member.prepareClusterMemberControlForTesting()
-        let memberBuilder = await heartbeatBuilder(member)
-        let memberBefore = try await stableHeartbeat(memberBuilder)
+        let fixture = try await meFirstLeaderFixture(clock: clock)
+        let member = try await ControlOnlyMember(rank: 1, clock: clock)
         let task = fixture.start()
         do {
             let publicKey = try await fixture.register()
@@ -231,8 +182,7 @@ struct ClusterPairMeFirstTests {
             #expect(beat.backendCapacity?.slots.map(\.model) == [clusterPairFixtureModel], "the slot stays published")
             #expect(beat.warmModels == [clusterPairFixtureModel], "and loaded")
             #expect(state.ownerPausesPublic && !state.refusingNewWork, "only Darkbloom work pauses: local admission stays open")
-            _ = await member.clusterMemberHeartbeat()
-            #expect(try await stableHeartbeat(memberBuilder) == memberBefore, "the member's heartbeat is unchanged")
+            #expect(try await member.beat() == member.before, "the member's heartbeat is unchanged")
 
             // The member beat ends the pause two minutes after the owner's last request, not a millisecond sooner.
             #expect(await clusterPairWait { await fixture.loop.clusterPairLocalCounts == (0, 0, 0) })
@@ -248,10 +198,9 @@ struct ClusterPairMeFirstTests {
             try await fixture.push("after-the-pause", publicKey: publicKey)
             #expect(try await fixture.completed("after-the-pause"), "Darkbloom requests are served again")
 
-            _ = await member.clusterMemberHeartbeat()
-            #expect(try await stableHeartbeat(memberBuilder) == memberBefore)
-            #expect(await member.meFirstSnapshot == nil)
-            let memberFields = try await heartbeatFields(memberBuilder)
+            #expect(try await member.beat() == member.before)
+            #expect(await member.loop.meFirstSnapshot == nil)
+            let memberFields = try await heartbeatFields(member.builder)
             #expect(memberFields["status"] as? String == "draining", "the member stays control-only")
             for key in busyKeys { #expect(memberFields[key] == nil) }
         } catch { await fixture.cleanUp(task); throw error }
@@ -302,7 +251,7 @@ struct ClusterPairMeFirstTests {
     /// idle time counts leaves no resume timer behind.
     @Test func darkbloomRequestsInFlightFinishAndARacingDispatchIsRefusedOnce() async throws {
         let clock = MeFirstTestClock()
-        let fixture = try await LeaderRunFixture.make(clock: clock)
+        let fixture = try await meFirstLeaderFixture(clock: clock)
         let task = fixture.start()
         do {
             let publicKey = try await fixture.register()
@@ -363,14 +312,8 @@ struct ClusterPairMeFirstTests {
         let clock = MeFirstTestClock()
         let leader = try await servingLeader(owner, clock: clock)
         let leaderBuilder = await heartbeatBuilder(leader)
-        var members: [(loop: ProviderLoop, builder: CoordinatorClient, before: String)] = []
-        for rank in 1...2 {
-            let member = try await pairMember(hostsSlot: false, localAPI: false, clock: clock,
-                                              name: "pair-me-first-rank-\(rank)")
-            try await member.prepareClusterMemberControlForTesting()
-            let builder = await heartbeatBuilder(member)
-            members.append((member, builder, try await stableHeartbeat(builder)))
-        }
+        var members: [ControlOnlyMember] = []
+        for rank in 1...2 { members.append(try await ControlOnlyMember(rank: rank, clock: clock)) }
 
         var running: [MultiModelBatchSchedulerEngine.AcquiredModel] = []
         for _ in 0..<3 { running.append(try await leader.acquireModelForLocal(clusterPairFixtureModel)) }
@@ -379,10 +322,7 @@ struct ClusterPairMeFirstTests {
         #expect(await leader.meFirstSnapshot?.localRequestsInFlight == 4, "waiting or running, each is the owner's use")
         let paused = try await heartbeatFields(leaderBuilder)
         #expect(paused["status"] as? String == "draining" && paused["busy_reason"] as? String == "owner")
-        for member in members {
-            _ = await member.loop.clusterMemberHeartbeat()
-            #expect(try await stableHeartbeat(member.builder) == member.before)
-        }
+        for member in members { #expect(try await member.beat() == member.before) }
 
         await running.removeFirst().releaseToken.fire()
         running.append(try await fourth.value)
@@ -393,8 +333,7 @@ struct ClusterPairMeFirstTests {
         #expect(open["status"] as? String == "idle")
         for key in busyKeys { #expect(open[key] == nil) }
         for member in members {
-            _ = await member.loop.clusterMemberHeartbeat()
-            #expect(try await stableHeartbeat(member.builder) == member.before)
+            #expect(try await member.beat() == member.before)
             #expect(await member.loop.meFirstSnapshot == nil)
         }
         #expect(await leader.retireClusterPairSlot(reason: "test"))
@@ -440,9 +379,10 @@ struct ClusterPairMeFirstTests {
     /// their own; a hundred member beats send nothing; the resume sends one.
     /// The only task is the owner pause's one timer: none while the first
     /// request runs, at most one arming per request's end, and one left once
-    /// the idle time counts. With me first off, nothing is sent or started. The hook takes as long with ten thousand of the owner's
-    /// requests in flight as with one, and a whole local acquire and release
-    /// costs about the same with me first on as off (both printed).
+    /// the idle time counts. With me first off, nothing is sent or started.
+    /// The hook takes as long with ten thousand of the owner's requests in
+    /// flight as with one, and a whole local acquire and release costs about
+    /// the same with me first on as off (both printed).
     @Test func thePauseCostsO1PerRequestAndNothingPolls() async throws {
         for meFirst in [true, false] {
             let mock = MockCoordinator()

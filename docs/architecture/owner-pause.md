@@ -43,7 +43,7 @@ clock the caller supplies. `ProviderLoop+MeFirst.swift` in
 | `enableMeFirst(idle:)` | Turns the pause on with the owner's idle time (`[local] me_first_idle_minutes`, 2 minutes by default). The first call wins; a changed setting applies at the next start. The local endpoint calls it as it starts, where me first applies (below); a pair's leader enables it from `[local]` ([pairs](#pairs)). |
 | `noteLocalUse(.start)` | A local request acquired a model: `acquireModelForLocal` calls it right after taking the request's reservation (on a pair's leader, `noteClusterPairLocalUse`). The first one pauses Darkbloom work. |
 | `noteLocalUse(.end)` | It released the model: `releaseLocalReservation` calls it when it drops that reservation. The end of the last one starts the idle countdown. Every start is paired with one end; an unmatched end changes nothing. |
-| `resumeIfOwnerIdle()` | Ends the pause once the idle time has passed. The resume timer calls it, and so does a fresh coordinator connection. On a pair's leader the member beat calls it too. |
+| `resumeIfOwnerIdle()` | Ends the pause once the idle time has passed. The resume timer calls it. A fresh coordinator connection makes the same check before its first heartbeat (`reassertOwnerPauseAfterReconnect`). On a pair's leader the member beat calls it too. |
 | `meFirstSnapshot` | What `status` reads (`DaemonState.meFirst`). |
 
 While paused:
@@ -58,7 +58,7 @@ While paused:
 | `desired_models` | Deferred; replayed when the pause ends |
 | Darkbloom work accepted before the pause | Finishes normally; never cancelled |
 | Local requests and models | Admitted and kept as usual |
-| A fresh registration | `register` carries the owner's busy fields, and the connection's first event heartbeat repeats the draining status |
+| A fresh registration | `register` carries the owner's busy fields, and the connection's first event heartbeat repeats the draining status. A pause whose idle time passed while the connection was down ends first, so that one heartbeat says `idle` or `serving` |
 
 When the idle time has passed with no local request in flight, the provider
 clears the flag, sends an `idle` or `serving` event heartbeat, and replays the
@@ -138,10 +138,29 @@ What the deployed coordinator does with a draining leader:
 - It stops routing to the whole pair, the owner's own `self` and `prefer`
   requests included.
 - It keeps the pair's session: membership is an identity and trust decision,
-  not an admission one, and only a committed `provider_drain` barrier ends a
-  pair.
-- As for any pair drain today, the pair's reward uptime stops while the leader
-  drains. A single Mac keeps its uptime while paused.
+  not an admission one, so a draining heartbeat never ends it.
+- On the deployed coordinator, while a pair is paused for its owner, both Macs
+  lose their base reward for the pause plus the 2 idle minutes, counted in
+  5-minute periods, whereas a single Mac keeps it. `[local] me_first = false`,
+  or choosing *Darkbloom network*, avoids that. In the coordinator at
+  `90ee29fc0d`:
+  - A member's base reward counts only the intervals in which its pair is
+    publicly serving-ready
+    ([coordinator/internal/payments/rewardpolicy/uptime.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/internal/payments/rewardpolicy/uptime.go#L52-L84)).
+  - Every member's heartbeat re-checks that
+    ([coordinator/registry/heartbeat.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/registry/heartbeat.go#L271-L276)),
+    a draining leader fails it
+    ([coordinator/registry/cluster_public_routing.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/registry/cluster_public_routing.go#L229-L246)),
+    and that closes every member's interval
+    ([coordinator/registry/cluster_serving_intervals.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/registry/cluster_serving_intervals.go#L49-L53)).
+  - Base rewards settle every 5 minutes
+    ([coordinator/internal/payments/rewardpolicy/epoch.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/internal/payments/rewardpolicy/epoch.go#L14)),
+    and a period under 90% coverage pays nothing
+    ([coordinator/payments/baserewards/machine_candidates.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/payments/baserewards/machine_candidates.go#L118),
+    [coordinator/payments/baserewards/floor.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/payments/baserewards/floor.go#L35-L40)).
+  - A single Mac's own session counts whatever its status
+    ([coordinator/internal/payments/rewardpolicy/uptime.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/internal/payments/rewardpolicy/uptime.go#L90-L104),
+    [coordinator/registry/heartbeat.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/registry/heartbeat.go#L221-L224)).
 
 ## Cost
 
@@ -151,7 +170,11 @@ The pause is event-driven:
   heartbeat, no task. They run in the same actor turn as the reservation and
   its release, once per request, never per token.
 - Heartbeats go out only when the pause begins and ends, beside the usual
-  baseline. The daemon state file is written on the same transitions.
+  baseline.
+- The end of the pause writes the daemon state file at once. Its start doesn't:
+  the start lands on the owner's request, and the loop already rewrites the
+  file every 2 s while serving, so `status` shows the pause within 2 s, as it
+  shows the request counts.
 - The one timer is armed when the owner's idle time starts counting. It sleeps
   until the deadline, wakes at most once per idle time while the owner keeps
   working, and is gone once the pause ends.
@@ -181,17 +204,21 @@ The pause is event-driven:
    and `releaseLocalReservation` call the hooks in the same actor turn as the
    reservation and its release, and the request's `OneShotRelease` releases
    once; a release that drops no reservation ends no use.
+7. The pause belongs to the serving process and isn't saved, unlike an add-on
+   hold. A restart or update during a pause comes back open, and the owner's
+   next request pauses again.
 
 ## Known gaps
 
-- **A model switch during the pause can report an unconfirmed result.** After
-  a switch, the coordinator reopens routing only on an `idle` or `serving`
-  heartbeat ([model replacement](../reference/protocol-messages.md#models_replace--models_replace_ack--models_replace_ready--models_replace_resumed)),
+- **`darkbloom switch` during the pause can exit with an error, though the
+  switch completes.** After a switch, the coordinator reopens routing only on
+  an `idle` or `serving` heartbeat ([model replacement](../reference/protocol-messages.md#models_replace--models_replace_ack--models_replace_ready--models_replace_resumed)),
   and every heartbeat of the pause says `draining`. If the pause outlasts the
-  provider's 30-second readiness wait (`resumeAfterModelSwitch`), `switch`
-  reports "Model selection applied locally, but coordinator routing readiness
-  is unconfirmed". The selection is applied, and the heartbeat that ends the
-  pause reopens routing.
+  provider's 30-second readiness wait (`resumeAfterModelSwitch`), `darkbloom
+  switch` exits with the error "Model selection applied locally, but
+  coordinator routing readiness is unconfirmed". The new selection is already
+  serving locally, and the heartbeat that ends the pause reopens Darkbloom
+  routing to it: nothing needs redoing.
 - **Model revision activations and MTP idle upgrades** don't wait for the
   pause. They wait for an idle model, so one can start in a gap between the
   owner's requests.
@@ -207,10 +234,7 @@ The pause is event-driven:
 one minute at 59.9 s and 60 s and the two-minute default at 119.9 s and 120 s.
 `OwnerPauseLoopTests` drives the loop without a serve loop, and
 `OwnerPauseWireTests` checks the heartbeats on the wire against the loopback
-mock coordinator. `ClusterPairMeFirstTests` covers pairs with a scripted pair
-owner: the leader's heartbeat, the racing refusal, work in flight, the member
-beat's two minutes on a fake clock, a roster of three ranks, me first off and
-the cost. These loop tests skip the capacity rebuild
+mock coordinator. These loop tests skip the capacity rebuild
 (`capacityRebuildForTesting`), which reads MLX's Metal allocator, so they run
 without the GPU.
 
@@ -220,3 +244,10 @@ sends requests through the local endpoint's own HTTP application
 the pause and the resume, refused requests and the routes that are not use,
 `me_first = false` with the heartbeat compared byte for byte, one start and
 one end per request however it ends, and nothing per token.
+
+`ClusterPairMeFirstTests` covers pairs with a scripted pair owner: the
+leader's heartbeat, the racing refusal, work in flight, the member beat's two
+minutes on a fake clock, a roster of three ranks, me first off and the cost.
+Its two tests that complete Darkbloom requests need a Metal device, because
+each request's terminal reads MLX's memory counters, but they submit no GPU
+work.

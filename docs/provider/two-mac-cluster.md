@@ -744,6 +744,7 @@ leads.").
 
 ```text
   How should this pair serve?
+  The pair's pause, route and account key are the leading Mac's: its [local] and `darkbloom route key`.
   1) Only me (this pair, local) · Darkbloom never contacts these Macs. Your tools use the leading Mac's API.
   2) Darkbloom network · The pair serves Darkbloom and earns while it runs.
   3) Both, me first · The pair serves Darkbloom while you aren't using it. When you use its API, Darkbloom pauses until you've been idle for 2 minutes.
@@ -816,7 +817,7 @@ Members: the other Mac (Apple M3 Ultra, 256 GB) is part of the pair; it runs no 
 using it. On the other Mac:
 
 ```text
-Local API: on the other Mac (Apple M5 Ultra, 256 GB), which runs the pair's API; `darkbloom status` there says whether Darkbloom is paused for you
+Local API: on the other Mac (Apple M5 Ultra, 256 GB), which runs the pair's API; `darkbloom local` there shows its address and key, and `darkbloom status` there whether Darkbloom is paused for you
 Members: this Mac is part of the pair; it runs no local API
 ```
 

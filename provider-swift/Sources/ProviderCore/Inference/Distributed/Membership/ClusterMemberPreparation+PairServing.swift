@@ -65,9 +65,10 @@ extension ClusterMemberPreparation {
 
     /// Whether this member hosts its pair's slot once it serves (`installPairServing`): rank 0 of a setup saved for
     /// coordinator pairing over the link. Only this member may run the pair's local API beside Darkbloom.
-    public var hostsPairSlot: Bool {
-        let configuration = validation.plan.configuration
-        return configuration.nativeMember != nil && configuration.linkControl != nil && configuration.localRank == 0
+    public var hostsPairSlot: Bool { Self.hostsPairSlot(validation.plan.configuration) }
+
+    static func hostsPairSlot(_ configuration: ClusterConfiguration) -> Bool {
+        configuration.nativeMember != nil && configuration.linkControl != nil && configuration.localRank == 0
     }
 
     /// Installs this member's serving of its pair's committed starts (S10)

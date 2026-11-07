@@ -10,8 +10,11 @@
   minutes after your last request. The other Macs run no local API.
 - Without a terminal nothing is asked or saved. The login service and scripts keep serving each pair as its setup
   says, and a pair set up before this build serves through Darkbloom with no local API, as before.
+- The question says that the pair's pause, route and account key are the leading Mac's. **Serve locally only** at the
+  login check after **Both, me first** saves no answer: the pair serves locally only, and **Only me** isn't saved.
 - `darkbloom status` and `darkbloom cluster status` say whether Darkbloom is paused for you, the pair's local address
-  (never its key), and that the other Macs are part of the pair. No line shows a speed.
+  (never its key), and that the other Macs are part of the pair. On the other Mac they say that `darkbloom local` on
+  the leading Mac shows the address and key. No line shows a speed.
 - `darkbloom start --cluster-member` takes `--local-endpoint --port --bind` from the cluster service, never with
   `--no-auth`.
 - A pair's local API without a cluster approval (its leader registered with the coordinator, or serving locally because

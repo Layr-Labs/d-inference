@@ -26,8 +26,8 @@ extension ClusterPairSummary {
     func localAPILines(now: Date = Date(), timeZone: TimeZone = .current) -> [String] {
         guard let localAPI, started, paired, !pairingUnreadable else { return [] }
         guard localAPI.runsRankZero else {
-            return ["Local API: on \(otherMac), which runs the pair's API; `\(Self.cli) status` there says whether Darkbloom is "
-                        + "paused for you",
+            return ["Local API: on \(otherMac), which runs the pair's API; `\(Self.cli) local` there shows its address and key, "
+                        + "and `\(Self.cli) status` there whether Darkbloom is paused for you",
                     "Members: this Mac is part of the pair; it runs no local API"]
         }
         let members = "Members: \(otherMac) is part of the pair; it runs no local API"
@@ -57,8 +57,10 @@ extension ClusterPairSummary {
         switch address.host {
         case "0.0.0.0", "::":
             return "Local API: http://127.0.0.1:\(address.port)/v1 on this Mac, and port \(address.port) of its LAN or tailnet address" + key
-        case "127.0.0.1", "localhost", "::1":
+        case "127.0.0.1", "localhost":
             return "Local API: http://127.0.0.1:\(address.port)/v1 on this Mac" + key
+        case "::1":
+            return "Local API: http://[::1]:\(address.port)/v1 on this Mac" + key
         default:
             let host = address.host.contains(":") ? "[\(address.host)]" : address.host
             return "Local API: http://\(host):\(address.port)/v1" + key

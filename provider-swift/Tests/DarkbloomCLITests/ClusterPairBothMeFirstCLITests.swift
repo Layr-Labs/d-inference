@@ -160,10 +160,18 @@ struct ClusterPairBothMeFirstCLITests {
         pair.role = .member
         pair.localAPI = ClusterPairLocalAPI(runsRankZero: false, listening: nil, meFirst: nil)
         #expect(pair.localAPILines(now: F.now, timeZone: F.utc) == [
-            "Local API: on the other Mac (Apple M3 Ultra, 256 GB), which runs the pair's API; "
-                + "`\(ClusterPairSummary.cli) status` there says whether Darkbloom is paused for you",
+            "Local API: on the other Mac (Apple M3 Ultra, 256 GB), which runs the pair's API; `\(ClusterPairSummary.cli) local` "
+                + "there shows its address and key, and `\(ClusterPairSummary.cli) status` there whether Darkbloom is paused for you",
             "Members: this Mac is part of the pair; it runs no local API",
         ])
+    }
+
+    /// The address a tool dials: an API that listens on ::1 alone isn't reached at 127.0.0.1 (review N8).
+    @Test func anAPIOnIPv6LoopbackIsDialledThere() {
+        #expect(ClusterPairSummary.addressLine(.init(host: "::1", port: 8003))
+            == "Local API: http://[::1]:8003/v1 on this Mac (`\(ClusterPairSummary.cli) local` shows the key)")
+        #expect(ClusterPairSummary.addressLine(.init(host: "localhost", port: 8003))
+            == "Local API: http://127.0.0.1:8003/v1 on this Mac (`\(ClusterPairSummary.cli) local` shows the key)")
     }
 
     @Test func clusterStatusSaysBothBeforeWhatToDoNext() {

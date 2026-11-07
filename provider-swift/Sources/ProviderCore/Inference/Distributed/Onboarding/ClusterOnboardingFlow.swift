@@ -152,6 +152,9 @@ public enum ClusterServingChoice: String, Sendable, Equatable, CaseIterable {
     }
 
     public static let question = "How should this pair serve?"
+    /// Under the question: the pair's API goes by the leading Mac's me first, `[local] route` and account key.
+    public static let leadingMacSettings = "The pair's pause, route and account key are the leading Mac's: its [local] and "
+        + "`darkbloom route key`."
 
     /// The answer's name, as the list shows it.
     public var label: String {
@@ -2496,6 +2499,7 @@ public enum ClusterOnboardingDriver {
     static func servingQuestion(_ ask: ClusterServingChoiceAsk, preselected: ClusterServingChoice,
                                 _ console: ClusterOnboardingConsole) -> ClusterServingChoice? {
         console.say("  " + ClusterServingChoice.question)
+        console.say("  " + ClusterServingChoice.leadingMacSettings)
         let choices = ClusterServingChoice.allCases
         let lines = choices.map { choice in { (room: Int?) in servingAnswerLine(choice, idleMinutes: ask.idleMinutes, room: room) } }
         guard let picked = console.chooseFitting(lines, selected: choices.firstIndex(of: preselected) ?? 0, abandon: { false })
@@ -3014,7 +3018,8 @@ public enum ClusterOnboardingDriver {
         // The adopt stopped the model that served (each Mac released its memory first).
         if let current = serving.flatMap({ $0.modelTitle ?? $0.modelName }) { console.say("  \(done) " + stoppedLine(current)) }
         // After the adopt (which stopped a running model first), so the scope never restarts the old model. The answer
-        // is saved with it, as the way that serves (the login check may have turned it local only).
+        // is saved with it, unless the login check turned it local only: the person didn't choose Only me, which a
+        // single-Mac start would then read, so nothing is saved.
         if savesScope {
             switch operations.setScope(startScope) {
             case .success: break
@@ -3022,7 +3027,7 @@ public enum ClusterOnboardingDriver {
                 for line in failure.lines { console.say("  " + line) }
                 return 1
             }
-            if saveChoice { saveServingChoice(ClusterServingChoice(scope: startScope), operations, console) }
+            if saveChoice, startScope == scope { saveServingChoice(ClusterServingChoice(scope: scope), operations, console) }
         }
         // Different versions, then single-Mac serving: neither ends by itself, so each is said before anything starts.
         guard clearVersionSplit(operations.versionSplit(), operations, console) else { return 1 }

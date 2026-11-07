@@ -18,6 +18,9 @@ extension OnboardingChecks {
         aPairServingBothSwitchesToLocalOnly()
         aLocalPairSwitchesToBothFromAPlanMadeForDarkbloom()
         theLoginChecksServeLocallyOnlySavesNoAnswer()
+        aPairServingBothSwitchesToTheDarkbloomNetwork()
+        quittingAtTheListAfterAnsweringSavesNothing()
+        quittingTheListsQuestionChangesNothing()
     }
 
     /// Plain `darkbloom cluster` in a terminal: the question is asked, and its answer saved, as the live operations do.
@@ -30,6 +33,7 @@ extension OnboardingChecks {
     /// The question as a transcript shows it, with the answer Enter takes (1, 2 or 3).
     static func servingQuestion(enter: Int, idle: String = "2 minutes") -> String {
         "  How should this pair serve?\n"
+            + "  The pair's pause, route and account key are the leading Mac's: its [local] and `darkbloom route key`.\n"
             + "  1) Only me (this pair, local) · Darkbloom never contacts these Macs. Your tools use the leading Mac's API.\n"
             + "  2) Darkbloom network · The pair serves Darkbloom and earns while it runs.\n"
             + "  3) Both, me first · The pair serves Darkbloom while you aren't using it. When you use its API, Darkbloom "
@@ -238,5 +242,61 @@ extension OnboardingChecks {
         expect(run.finish() == 0, "login fallback: exit 0")
         expect(recorder.all.contains("setScope local 0.0.0.0"), "login fallback: the pair serves locally only: \(recorder.all)")
         expect(!recorder.all.contains { $0.hasPrefix("saveServingChoice") }, "login fallback: no answer saved: \(recorder.all)")
+    }
+
+    // The review's flows (#1884, N6), which the checks above leave out.
+
+    /// Both → Darkbloom network from the set-up pair's list: the plan stays, only the leading part starts again, the
+    /// scope and the answer are saved, and the outcome says there is no local API.
+    static func aPairServingBothSwitchesToTheDarkbloomNetwork() {
+        let recorder = Recorder()
+        var made = operations(recorder, resume: servingLeader(.publicServingWithLocalAPI(bind: "0.0.0.0")), pairEvents: [],
+                              pairResult: .failed([]), readyResult: .success(offeredReady))
+        asking(&made, recorder)
+        let run = TerminalRun(made)
+        expect(run.waitFor("  3) Change how the pair serves (now: Both, me first)\n"), "both to network: the line: \(run.text)")
+        run.type("3")
+        expect(run.waitFor(servingQuestion(enter: 3)), "both to network: Both preselected: \(run.text)")
+        run.type("2")
+        expect(run.finish() == 0, "both to network: exit 0")
+        let text = run.text
+        expect(text.contains("  Switching to the Darkbloom network: the leading Mac's part starts again without its local API.\n"),
+               "both to network: what the switch does: \(text)")
+        expect(recorder.all == ["ensureService", "status", "reachMembers", "planModels", "servingChoice", "setScope public",
+                                "saveServingChoice network", "waitReady", "pairServing"], "both to network: \(recorder.all)")
+        expect(text.contains("  " + ClusterOnboardingReady.offeredAPILine + "\n") && !text.contains(bothAPILineHere),
+               "both to network: no local API line: \(text)")
+        expectNoSpeed(text, "both to network")
+        transcript("both-to-network", text, keys: run.keys)
+    }
+
+    /// The first setup: Both answered, then q at the model list. Nothing is planned for a start, saved or started.
+    static func quittingAtTheListAfterAnsweringSavesNothing() {
+        let recorder = Recorder()
+        var made = operations(recorder, pairEvents: leaderEvents, pairResult: .paired(role: .leader, peerName: "Apple M3 Ultra, 256 GB"))
+        asking(&made, recorder)
+        let run = TerminalRun(made)
+        expect(run.waitFor("  " + prompt(2)), "q at the list: the pairing"); run.type("y")
+        expect(run.waitFor(servingQuestion(enter: 3)), "q at the list: the question"); run.type("\r")
+        expect(run.waitFor("  " + prompt(2), count: 2), "q at the list: the list"); run.type("q")
+        _ = run.finish()
+        expect(!recorder.all.contains { $0.hasPrefix("setScope") || $0.hasPrefix("saveServingChoice") || $0.hasPrefix("adopt") || $0 == "serve" },
+               "q at the list: nothing saved or started: \(recorder.all)")
+    }
+
+    /// The set-up pair's "Change how the pair serves", left with q: nothing is switched or saved.
+    static func quittingTheListsQuestionChangesNothing() {
+        let recorder = Recorder()
+        var made = operations(recorder, resume: servingLeader(.publicServingWithLocalAPI(bind: "0.0.0.0")), pairEvents: [],
+                              pairResult: .failed([]))
+        asking(&made, recorder)
+        let run = TerminalRun(made)
+        expect(run.waitFor("  3) Change how the pair serves (now: Both, me first)\n"), "q at the list's question: the line")
+        run.type("3")
+        expect(run.waitFor(servingQuestion(enter: 3)), "q at the list's question: the question"); run.type("q")
+        expect(run.finish() == 0, "q at the list's question: exit 0")
+        expect(run.text.contains("Nothing changed.\n"), "q at the list's question: says so: \(run.text)")
+        expect(!recorder.all.contains { $0.hasPrefix("setScope") || $0.hasPrefix("saveServingChoice") || $0.hasPrefix("adopt") || $0 == "serve" },
+               "q at the list's question: nothing switched or saved: \(recorder.all)")
     }
 }

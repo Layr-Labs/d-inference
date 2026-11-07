@@ -513,7 +513,6 @@ struct Start: AsyncParsableCommand {
         }
 
         if localOnly {
-            try saveServingChoice(serving)
             try await runLocalStandalone(
                 snapshot: snapshot,
                 config: effectiveConfig,

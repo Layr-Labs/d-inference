@@ -39,9 +39,17 @@ public struct KeychainLocalRouterAccountKeyStore: LocalRouterAccountKeyStore {
     public let service: String
     public let account: String
 
+    /// The `SecItem` calls; a fake in tests.
+    let calls: KeychainItemCalls
+
     public init(service: String = Self.defaultService, account: String = Self.defaultAccount) {
+        self.init(service: service, account: account, calls: .system)
+    }
+
+    init(service: String, account: String, calls: KeychainItemCalls) {
         self.service = service
         self.account = account
+        self.calls = calls
     }
 
     public func load() throws -> String? {
@@ -49,11 +57,10 @@ public struct KeychainLocalRouterAccountKeyStore: LocalRouterAccountKeyStore {
             var query = identity(dataProtection: dataProtection)
             query[kSecReturnData as String] = true
             query[kSecMatchLimit as String] = kSecMatchLimitOne
-            var result: CFTypeRef?
-            let status = SecItemCopyMatching(query as CFDictionary, &result)
+            let (status, data) = calls.copyMatching(query)
             switch status {
             case errSecSuccess:
-                guard let data = result as? Data, let key = String(data: data, encoding: .utf8), !key.isEmpty else {
+                guard let data, let key = String(data: data, encoding: .utf8), !key.isEmpty else {
                     return .done(nil)
                 }
                 return .done(key)
@@ -69,13 +76,13 @@ public struct KeychainLocalRouterAccountKeyStore: LocalRouterAccountKeyStore {
         try withKeychain(operation: "save") { dataProtection in
             let query = identity(dataProtection: dataProtection)
             let data = Data(key.utf8)
-            var status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+            var status = calls.update(query, [kSecValueData as String: data])
             if status == errSecItemNotFound {
                 var item = query
                 item[kSecValueData as String] = data
                 item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
                 item[kSecAttrLabel as String] = "Darkbloom account API key (local router)"
-                status = SecItemAdd(item as CFDictionary, nil)
+                status = calls.add(item)
             }
             return status == errSecSuccess ? .done(()) : .failed(status)
         }
@@ -83,7 +90,7 @@ public struct KeychainLocalRouterAccountKeyStore: LocalRouterAccountKeyStore {
 
     public func remove() throws {
         try withKeychain(operation: "remove") { dataProtection in
-            let status = SecItemDelete(identity(dataProtection: dataProtection) as CFDictionary)
+            let status = calls.delete(identity(dataProtection: dataProtection))
             return status == errSecSuccess || status == errSecItemNotFound ? .done(()) : .failed(status)
         }
     }
@@ -118,6 +125,25 @@ public struct KeychainLocalRouterAccountKeyStore: LocalRouterAccountKeyStore {
             throw LocalRouterAccountKeyError.keychain(operation: operation, status: status)
         }
     }
+}
+
+/// The four `SecItem` calls the Keychain store makes, so tests can run its logic (the fallback, the attributes) against
+/// a fake instead of a real Keychain.
+struct KeychainItemCalls: Sendable {
+    var copyMatching: @Sendable ([String: Any]) -> (OSStatus, Data?)
+    var add: @Sendable ([String: Any]) -> OSStatus
+    var update: @Sendable ([String: Any], [String: Any]) -> OSStatus
+    var delete: @Sendable ([String: Any]) -> OSStatus
+
+    static let system = KeychainItemCalls(
+        copyMatching: { query in
+            var result: CFTypeRef?
+            let status = SecItemCopyMatching(query as CFDictionary, &result)
+            return (status, result as? Data)
+        },
+        add: { SecItemAdd($0 as CFDictionary, nil) },
+        update: { SecItemUpdate($0 as CFDictionary, $1 as CFDictionary) },
+        delete: { SecItemDelete($0 as CFDictionary) })
 }
 
 /// An account key held in memory: tests, and callers that must not touch the Keychain.

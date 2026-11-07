@@ -221,7 +221,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `--local` | flag | `false` | Only me, on this Mac: a coordinator-less OpenAI-compatible server ([direct mode](./direct-mode.md)), for this start |
 | `--network` | flag | `false` | Darkbloom network only, no local API, for this start (today's plain `start`) |
 | `--me-first` / `--no-me-first` | flag | unset | `--me-first`: Both, me first: a local API beside Darkbloom, and Darkbloom pauses while you use it, for this start. `--no-me-first`: Darkbloom keeps serving while you use the local API (saved as `[local] me_first = false`); `--me-first` undoes it |
-| `--local-endpoint` | flag | `false` | Local endpoint alongside the coordinator: Both, with me first on (Darkbloom requests pause while your local requests run) unless `--no-me-first` (`[local] me_first = false`); mutually exclusive with `--local` |
+| `--local-endpoint` | flag | `false` | Local endpoint alongside the coordinator: Both, with me first on (Darkbloom requests pause while your local requests run and for `[local] me_first_idle_minutes` after) unless `--no-me-first` (`[local] me_first = false`); mutually exclusive with `--local` |
 | `--me-first-idle <min>` | `UInt64?`, 1–120 | `[local] me_first_idle_minutes` (`2`) | Minutes with none of your requests before Darkbloom comes back; saved. Not `--idle-timeout` (model memory) |
 | `--route <route>` | `this-mac`, `my-macs`, `my-macs-first` | `[local] route` | Where your requests go when this Mac can't take them ([the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)); saved; needs an account key (`darkbloom route key`) |
 | `--choose` | flag | `false` | In a terminal: ask how this Mac serves again, although a choice is saved |
@@ -246,7 +246,11 @@ A single-Mac `start` decides how this Mac serves (`StartServingResolver`,
 1. A mode flag, for this start only: `--local`, `--network`, `--me-first` or
    `--local-endpoint`.
 2. `--choose` (a terminal only): the question again.
-3. The saved choice, `[local] mode`, with or without a terminal.
+3. The saved choice, `[local] mode`, with or without a terminal. A saved
+   `local` (Only me) serves in a terminal, so without one the start is refused
+   before anything stops or starts (exit 64): ``This Mac is set to Only me,
+   which serves in a terminal. Run `darkbloom start` in one, or name how to
+   serve: --local, --network or --me-first.``
 4. In a terminal (stdin and stdout), the question, after the terms notice and
    before the model picker:
 
@@ -272,8 +276,8 @@ A single-Mac `start` decides how this Mac serves (`StartServingResolver`,
 
 Only the question saves a mode. The answer, its follow-up and the local API's
 port are written to `[local]` once the start goes ahead (after the model
-picker; for "Only me", before it serves), so a cancelled or refused start
-saves nothing; "Only me" with `--schedule` or `--autopilot` is refused before
+picker; for "Only me", once its server listens), so a cancelled or refused
+start saves nothing; "Only me" with `--schedule` or `--autopilot` is refused before
 saving. **Only me** then serves in this terminal as `--local` does (Ctrl-C
 drains it); **Darkbloom network** and **Both, me first** install the
 LaunchAgent with the arguments `--local-endpoint` has always used
@@ -307,6 +311,9 @@ LaunchAgent with the arguments `--local-endpoint` has always used
              (`darkbloom local` shows the key)
   ```
 
+  With `--no-auth` the local router passes nothing on, so the summary says
+  `your requests: this Mac only` and `(no API key: --no-auth, so requests stay
+  on this Mac)`, whatever the route, and the start doesn't ask the Keychain.
   No start screen prints the key, except `--local`'s own banner, as before. A
   start that nothing chose (step 5) prints today's summary.
 
@@ -683,7 +690,10 @@ this Mac serves, read from its state and `local.json` (`Status.servingLines`,
 With a local API it adds where your requests go and whether an account key is
 saved, never the key: `Your requests: this Mac first, then your other Macs
 (free) · account key saved`, or ``Your requests: this Mac only · no account key
-(`darkbloom route key` saves one)``. Only then is the Keychain asked.
+(`darkbloom route key` saves one)``. Only then is the Keychain asked. A local
+API without a key (`--no-auth`) passes nothing on: `Your requests: this Mac
+only · no local key (--no-auth), so nothing is passed on`, without asking the
+Keychain.
 
 ### `darkbloom doctor`
 
@@ -757,7 +767,9 @@ A server bound to `0.0.0.0` or `::` also prints a `network:` line with this
 Mac's Bonjour (`.local`) URL (`Local.networkURL`). When the running provider
 serves that endpoint, two lines follow `pid:`: `serving:` (how it serves, in
 the start summary's words) and `requests:` (where your requests go)
-(`Local.servingLines`). `--json` is unchanged.
+(`Local.servingLines`). A server without a key says `requests: this Mac only
+(…)` under its API key line instead, and only `serving:` follows `pid:`.
+`--json` is unchanged.
 
 ### `darkbloom route key`
 
@@ -776,7 +788,9 @@ and exits 1; an unreachable coordinator saves it with a note. It is kept in the
 Keychain (service `<keychain prefix>.route`, account `account-api-key`; the
 data-protection Keychain in signed builds, the login keychain otherwise) and
 never printed (`RouteKeyFlow`, `provider-swift/Sources/darkbloom/RouteCommand.swift`;
-`KeychainLocalRouterAccountKeyStore`). See
+`KeychainLocalRouterAccountKeyStore`). When the local API running now has no
+local key (`--no-auth`), it says that this API keeps every request on this Mac
+and never uses the key. See
 [the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router).
 
 ### Cluster placement request metadata
@@ -1240,7 +1254,7 @@ Where `logs` and [`report`](#darkbloom-report) wait for a `log` child to finish,
 | `--idle-timeout <mins>` | Idle-memory policy, saved to `[backend] idle_timeout_mins` (0 = always ready); skips the memory prompt |
 | `--foreground` | Run in the foreground (used by launchd; normally implicit) |
 | `--local` | Run a local OpenAI server only; do not connect to the coordinator |
-| `--local-endpoint` | Serve a local OpenAI endpoint alongside the coordinator; Darkbloom requests pause while you use it (`[local] me_first`) |
+| `--local-endpoint` | Serve a local OpenAI endpoint alongside the coordinator; Darkbloom requests pause while you use it and for `[local] me_first_idle_minutes` after (`[local] me_first`) |
 | `--port <port>` | Port for `--local` / `--local-endpoint` (default 8000) |
 | `--bind <addr>` | Bind address for local modes (default 127.0.0.1) |
 | `--no-auth` | Disable local API-key auth (trusted/airgapped only) |

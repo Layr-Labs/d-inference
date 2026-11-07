@@ -9,12 +9,14 @@ extension DaemonState {
 
 extension Status {
     /// How this Mac serves now, from the running provider: a `Serving:` line (and one more while Darkbloom requests
-    /// finish under a pause), then, with a local API, where your requests go. `accountKeySaved` is asked only then.
-    /// No key and no speed.
+    /// finish under a pause), then, with a local API, where your requests go. `accountKeySaved` is asked only for a
+    /// local API with a key. No key and no speed.
     static func servingLines(state: DaemonState, liveEndpoint: LocalEndpoint.Info?, route: LocalSettings.Route?,
                              accountKeySaved: () -> Bool, now: Date = Date(),
                              timeZone: TimeZone = .current) -> [String] {
-        guard liveEndpoint?.pid == state.pid else { return ["Serving: Darkbloom network only — this Mac has no local API"] }
+        guard let liveEndpoint, liveEndpoint.pid == state.pid else {
+            return ["Serving: Darkbloom network only — this Mac has no local API"]
+        }
         var lines: [String]
         if state.servesOnlyItsOwner {
             lines = ["Serving: only you, on this Mac — Darkbloom never contacts this Mac"]
@@ -23,9 +25,13 @@ extension Status {
         } else {
             lines = ["Serving: Darkbloom and you, shared — Darkbloom keeps serving while you use this Mac (me first is off)"]
         }
-        lines.append(requestsLine(route: route, accountKeySaved: accountKeySaved()))
+        // Without a local key (`--no-auth`) the router passes nothing on (`LocalRouterConfig.localKeyRequired`).
+        lines.append(liveEndpoint.apiKey.isEmpty ? noLocalKeyRequestsLine
+                     : requestsLine(route: route, accountKeySaved: accountKeySaved()))
         return lines
     }
+
+    static let noLocalKeyRequestsLine = "Your requests: this Mac only · no local key (--no-auth), so nothing is passed on"
 
     /// Me first, open or paused, from the running provider's snapshot.
     static func meFirstLines(_ snapshot: MeFirstSnapshot, now: Date = Date(), timeZone: TimeZone = .current) -> [String] {

@@ -26,20 +26,14 @@ struct LocalUseOwnerPauseTests {
         let clock: MeFirstTestClock
         let state: ProviderState
         let engine: LocalUseEngine
-        /// A client on the loop's state that never connects: it builds the
-        /// heartbeat the coordinator would get.
+        /// A client on the loop's state that never connects (`heartbeatClient`).
         let client: CoordinatorClient
 
         func heartbeat() async throws -> [String: Any] {
             try #require(JSONSerialization.jsonObject(with: Data(await client.buildHeartbeatJSON().utf8)) as? [String: Any])
         }
 
-        /// The heartbeat's exact bytes, with the live system metrics (CPU,
-        /// memory pressure, thermal state) masked: they change on every build.
-        func heartbeatBytes() async -> String {
-            await client.buildHeartbeatJSON()
-                .replacing(#/"system_metrics":\{[^{}]*\}/#, with: #""system_metrics":{}"#)
-        }
+        func heartbeatBytes() async -> String { await LocalUseOwnerPauseTests.heartbeatBytes(of: client) }
 
         /// Local requests in flight as me first counts them, and as the
         /// model's reservations count them.
@@ -66,11 +60,24 @@ struct LocalUseOwnerPauseTests {
         let engine = LocalUseEngine()
         await installSlot(engine, on: loop)
         let state = await loop.state
-        let client = CoordinatorClient(
+        return Harness(loop: loop, sandbox: sandbox, clock: clock, state: state, engine: engine,
+                       client: heartbeatClient(on: state))
+    }
+
+    /// A client on a loop's state that never connects: it builds the
+    /// heartbeat the coordinator would get.
+    static func heartbeatClient(on state: ProviderState) -> CoordinatorClient {
+        CoordinatorClient(
             config: .init(url: "ws://127.0.0.1:0/ws/provider", hardware: ModelLoadingFixtures.defaultHardware,
                           models: [], backendName: "mlx-swift"),
             stats: AtomicProviderStats(), state: state, liveAPNsToken: { nil })
-        return Harness(loop: loop, sandbox: sandbox, clock: clock, state: state, engine: engine, client: client)
+    }
+
+    /// The heartbeat's exact bytes, with the live system metrics (CPU,
+    /// memory pressure, thermal state) masked: they change on every build.
+    static func heartbeatBytes(of client: CoordinatorClient) async -> String {
+        await client.buildHeartbeatJSON()
+            .replacing(#/"system_metrics":\{[^{}]*\}/#, with: #""system_metrics":{}"#)
     }
 
     static func installSlot(_ engine: LocalUseEngine, on loop: ProviderLoop) async {
@@ -85,6 +92,27 @@ struct LocalUseOwnerPauseTests {
 
     static func chat(model: String = model, stream: Bool, extra: String = "") -> ByteBuffer {
         ByteBuffer(string: chatJSON(model: model, stream: stream, extra: extra))
+    }
+
+    /// `startLocalEndpoint` turns me first on as `[local]` says, before its
+    /// server can take a request: the step the harness takes by hand. The
+    /// address is TEST-NET-1 (RFC 5737), which no interface has, so the server
+    /// never binds and writes no discovery file; the test cancels it anyway.
+    @Test(arguments: [nil, LocalSettings(meFirst: false)] as [LocalSettings?])
+    func startingTheEndpointTurnsMeFirstOnAsLocalSays(_ local: LocalSettings?) async throws {
+        let sandbox = try ModelLoadingSandbox()
+        defer { sandbox.remove() }
+        let unbindable = LocalInferenceHTTPConfig(host: "192.0.2.1", port: 0, authToken: Self.token)
+        let loop = try await ModelLoadingFixtures.makeLoop(sandbox: sandbox, localEndpoint: unbindable, local: local)
+        #expect(await loop.meFirstSnapshot == nil)
+
+        await loop.startLocalEndpoint(unbindable)
+        let expected = local == nil ? MeFirstSnapshot(idleMs: Self.twoMinutesMs, paused: false) : nil
+        #expect(await loop.meFirstSnapshot == expected)
+
+        let server = try #require(await loop.localServerTask)
+        server.cancel()
+        await server.value
     }
 
     /// The local request is admitted and holds its model: me first pauses
@@ -268,12 +296,7 @@ struct LocalUseOwnerPauseTests {
         defer { sandbox.remove() }
         let plain = try await ModelLoadingFixtures.makeLoop(sandbox: sandbox)
         await Self.installSlot(LocalUseEngine(), on: plain)
-        let plainClient = CoordinatorClient(
-            config: .init(url: "ws://127.0.0.1:0/ws/provider", hardware: ModelLoadingFixtures.defaultHardware,
-                          models: [], backendName: "mlx-swift"),
-            stats: AtomicProviderStats(), state: await plain.state, liveAPNsToken: { nil })
-        let reference = await plainClient.buildHeartbeatJSON()
-            .replacing(#/"system_metrics":\{[^{}]*\}/#, with: #""system_metrics":{}"#)
+        let reference = await Self.heartbeatBytes(of: Self.heartbeatClient(on: plain.state))
         #expect(await h.heartbeatBytes() == reference)
 
         h.engine.script(.hold)
@@ -370,6 +393,22 @@ struct LocalUseOwnerPauseTests {
         #expect(await h.loop.meFirstSnapshot?.sinceMs == start)
         await witness.releaseToken.fire()
         #expect(await modelLoadingWaitUntil { await h.inFlight() == [0, 0] })
+        #expect(await h.loop.resumeIfOwnerIdleForTesting(advancing: h.clock, by: Self.twoMinutesMs))
+    }
+
+    /// A release that drops no reservation ends no use, so me first counts
+    /// what the reservations count: a release of a model nothing holds,
+    /// while the owner's request runs, leaves that request's use alone.
+    @Test func aReleaseThatDropsNoReservationEndsNoUse() async throws {
+        let h = try await Self.harness()
+        defer { h.remove() }
+        let running = try await h.loop.acquireModelForLocal(Self.model)
+        #expect(await h.inFlight() == [1, 1])
+        await h.loop.releaseLocalReservation("test/local-use-not-held")
+        #expect(await h.inFlight() == [1, 1])
+        #expect(h.state.ownerPausesPublic)
+        await running.releaseToken.fire()
+        #expect(await h.inFlight() == [0, 0])
         #expect(await h.loop.resumeIfOwnerIdleForTesting(advancing: h.clock, by: Self.twoMinutesMs))
     }
 

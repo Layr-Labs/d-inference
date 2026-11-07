@@ -6,12 +6,13 @@ import HTTPTypes
 ///
 /// | `[local] route`  | Hops                                                                            |
 /// |------------------|---------------------------------------------------------------------------------|
-/// | `this-mac`       | this Mac's engine only; the router never dials out                              |
-/// | `my-macs`        | this Mac → the coordinator with `X-Darkbloom-Route: self` (the owner's Macs, free) |
-/// | `my-macs-first`  | this Mac → `self` → `prefer` (the owner's Macs first, then the network, billed)  |
+/// | `this-mac`       | this Mac's engine only; the router never dials out                                  |
+/// | `my-macs`        | this Mac → the coordinator with `X-Darkbloom-Route: self` (the owner's Macs, free)   |
+/// | `my-macs-first`  | this Mac → `prefer` (the owner's Macs first, then the network, billed); on a 402, `self` |
 ///
-/// `self` comes before `prefer` because `prefer` needs a funded account even when the owner's own Mac answers
-/// (402 at a zero balance). The coordinator orders "my other Macs, then others" itself.
+/// `prefer` lets the coordinator order "my other Macs, then others" itself, among the Macs that can take the request
+/// now, so a busy Mac of the owner's never holds it in `self`'s 120 s queue. `prefer` needs a funded account even
+/// when the owner's own Mac answers, so its 402 (no balance) asks `self` once: free, the owner's Macs only.
 ///
 /// A request this Mac serves never leaves the process: the router hands it to the engine and returns the engine's
 /// response as it is, adding one header. The upstream client exists only once a request needs it.
@@ -29,6 +30,10 @@ public struct LocalRouterConfig: Sendable {
     /// One line per decision to pass a request on; never a key, a body or a prompt.
     public var log: @Sendable (String) -> Void
     public var timing: LocalRouter.Timing
+    /// Whether the local API requires its key. Without one (`--no-auth`) anything that reaches the port is a client, so
+    /// the router serves this Mac only and never reads or lends the account key. `makeLocalInferenceApplication` sets it
+    /// from the endpoint's own key.
+    public var localKeyRequired = true
 
     public init(settings: LocalSettings, upstreamBaseURL: URL, takesCoordinatorWork: Bool,
                 accountKeys: any LocalRouterAccountKeyStore,
@@ -54,11 +59,12 @@ public struct LocalRouterConfig: Sendable {
                           takesCoordinatorWork: takesCoordinatorWork, accountKeys: accountKeys)
     }
 
-    /// The route in effect now, and the key it uses. Without a saved key nothing can go upstream, whatever the route.
-    /// The key is read from the store on every call, so a key saved or removed with `route key` counts from the next
-    /// request; a saved `this-mac` never reads the Keychain.
+    /// The route in effect now, and the key it uses. Without a saved key, or without a local key (`--no-auth`), nothing
+    /// can go upstream, whatever the route. The key is read from the store on every call, so a key saved or removed
+    /// with `route key` counts from the next request; a saved `this-mac`, or no local key, never reads the Keychain.
+    /// `[local] route` itself is read at start.
     func effectiveRoute() -> (route: LocalSettings.Route, accountKey: String?) {
-        if settings.route == .thisMac { return (.thisMac, nil) }
+        guard localKeyRequired, settings.route != .thisMac else { return (.thisMac, nil) }
         let key = (try? accountKeys.load()).flatMap { $0.isEmpty ? nil : $0 }
         let route = settings.resolvedRoute(accountKeySaved: key != nil)
         guard let key, route != .thisMac else { return (.thisMac, nil) }
@@ -116,12 +122,13 @@ public enum LocalRouterPolicy {
 
     public static func isModelsPath(_ path: String) -> Bool { path == "/v1/models" || path == "/models" }
 
-    /// The upstream hops of a route, in order.
+    /// The upstream hop a request this Mac can't take is sent on, by route. `my-macs-first` asks `self` too, once, but
+    /// only after `prefer` answered 402 (`asksYourMacs`).
     public static func hops(for route: LocalSettings.Route) -> [LocalRouterUpstreamRoute] {
         switch route {
         case .thisMac: return []
         case .myMacs: return [.mine]
-        case .myMacsFirst: return [.mine, .prefer]
+        case .myMacsFirst: return [.prefer]
         }
     }
 
@@ -133,9 +140,16 @@ public enum LocalRouterPolicy {
         status == .notFound || status == .tooManyRequests || status == .serviceUnavailable
     }
 
-    /// After `self`, `my-macs-first` tries `prefer` when no Mac of the owner's took the request: none linked (409),
-    /// none online, none serving the model or none able to take its shape (503), or all busy (429, `machine_busy`).
-    public static func triesNextHop(after status: Int) -> Bool {
+    /// `my-macs-first` asks the owner's Macs (`self`, free) only when `prefer` answered 402: no balance for the
+    /// network, which `prefer`'s admission needs even when an owned Mac would answer.
+    public static func asksYourMacs(afterNetworkStatus status: Int) -> Bool {
+        status == 402
+    }
+
+    /// `self`'s answer when none of the owner's Macs took the request: none linked (409), none online, none serving
+    /// the model or none able to take its shape (503), or all busy (429, `machine_busy`). The network's 402 then
+    /// stands, as the clearer answer.
+    public static func yourMacsCouldNotTakeIt(status: Int) -> Bool {
         status == 409 || status == 429 || status == 503
     }
 

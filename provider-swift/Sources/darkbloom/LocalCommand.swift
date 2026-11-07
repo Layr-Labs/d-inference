@@ -59,6 +59,7 @@ struct Local: AsyncParsableCommand {
         }
         if info.apiKey.isEmpty {
             print("  API key:  (auth disabled)")
+            print("  requests: this Mac only (without a local key nothing is passed on to your other Macs or the network)")
         } else {
             print("  API key:  \(info.apiKey)")
         }
@@ -86,8 +87,9 @@ struct Local: AsyncParsableCommand {
     }
 
     /// How the server behind `info` serves, and where your requests go when it can't take them; empty when the
-    /// running provider's state isn't that server's (a cluster's API, or an older provider). `accountKeySaved` is
-    /// asked only then. Never a key or a speed.
+    /// running provider's state isn't that server's (a cluster's API, or an older provider). A server without a key
+    /// gets no requests line here: `run` has said "this Mac only" under its API key. `accountKeySaved` is asked only
+    /// for the requests line. Never a key or a speed.
     static func servingLines(info: LocalEndpoint.Info, state: DaemonState?, route: LocalSettings.Route?,
                              accountKeySaved: () -> Bool) -> [String] {
         guard let state, state.pid == info.pid else { return [] }
@@ -100,6 +102,7 @@ struct Local: AsyncParsableCommand {
         } else {
             serving = LocalFirstWords.serving(mode: .both, meFirst: false, idleMinutes: 0)
         }
+        guard !info.apiKey.isEmpty else { return ["  serving:  \(serving)"] }
         let keySaved = accountKeySaved()
         return ["  serving:  \(serving)",
                 "  requests: \(LocalFirstWords.requests(route: route, accountKeySaved: keySaved))"

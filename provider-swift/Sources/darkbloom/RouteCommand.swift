@@ -48,11 +48,12 @@ struct RouteKey: AsyncParsableCommand {
         Darkbloom.ensureLogging()
         let loaded = try? loadRuntimeConfiguration(configPath: configOptions.config)
         let upstream = LocalRouterPolicy.upstreamBaseURL(coordinatorURL: loaded?.config.coordinator.url)
-        let flow = RouteKeyFlow(
+        var flow = RouteKeyFlow(
             store: KeychainLocalRouterAccountKeyStore(),
             savedRoute: loaded?.config.local?.route,
             check: { key in await RouteKeyFlow.checkWithDarkbloom(key: key, upstream: upstream) },
             say: { print($0) })
+        flow.liveEndpointHasNoLocalKey = LocalEndpoint.readLiveInfo().map { $0.apiKey.isEmpty } ?? false
         if remove {
             throw ExitCode(flow.remove())
         }
@@ -86,6 +87,8 @@ struct RouteKeyFlow {
     let savedRoute: LocalSettings.Route?
     let check: @Sendable (String) async -> RouteKeyCheck
     let say: (String) -> Void
+    /// The local API running now has no local key (`--no-auth`), so its router never passes a request on.
+    var liveEndpointHasNoLocalKey = false
 
     func save(_ rawKey: String) async -> Int32 {
         let key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -111,7 +114,12 @@ struct RouteKeyFlow {
         }
         say("✓ Account key saved in this Mac's Keychain. " + note)
         for line in Self.routeLines(savedRoute: savedRoute, keySaved: true) { say(line) }
-        say("A running local API uses it from its next request that needs it; no restart is needed.")
+        if liveEndpointHasNoLocalKey {
+            say("The running local API has no local key (--no-auth): it keeps every request on this Mac and never "
+                + "uses the account key.")
+        } else {
+            say("A running local API uses it from its next request that needs it; no restart is needed.")
+        }
         return 0
     }
 

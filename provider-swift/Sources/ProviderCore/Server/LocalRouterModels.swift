@@ -166,10 +166,13 @@ struct LocalRouterCatalog: Sendable, Equatable {
 }
 
 enum LocalRouterModelMerge {
-    /// This Mac's models first (labelled `this-mac`), then the upstream lists in order, each id once.
+    /// This Mac's models first (labelled `this-mac`), then the upstream lists in order, each model once: by id, and
+    /// an upstream public alias of a build this Mac lists counts as that build. (On a Mac that also serves Darkbloom,
+    /// the coordinator's `self` list names this Mac's own builds by their aliases.)
     static func merge(local: [LocalRouterModelEntry], upstream: [(ownedBy: String, entries: [LocalRouterModelEntry])],
                       localLimits: [String: LocalModelLimits], catalog: LocalRouterCatalog?) -> [LocalRouterModelEntry] {
         var seen = Set<String>()
+        let localIDs = Set(local.map(\.id))
         var merged: [LocalRouterModelEntry] = []
         for var entry in local where seen.insert(entry.id).inserted {
             entry.ownedBy = LocalRouterPolicy.thisMac
@@ -179,6 +182,7 @@ enum LocalRouterModelMerge {
         }
         for list in upstream {
             for var entry in list.entries where seen.insert(entry.id).inserted {
+                if let builds = catalog?.aliasBuilds[entry.id], !localIDs.isDisjoint(with: builds) { continue }
                 entry.ownedBy = list.ownedBy
                 entry.fill(catalog?.limits(of: entry.id))
                 if entry.name == nil || entry.name == entry.id { entry.name = catalog?.displayNames[entry.id] ?? entry.name }

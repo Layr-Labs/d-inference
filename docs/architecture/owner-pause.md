@@ -81,6 +81,14 @@ which reads `[local]` from the loaded config through
 | A pair's leader with its local API beside Darkbloom | See [pairs](#pairs) |
 | `start --local` (`StandaloneServer`) | None: no coordinator, so no `ProviderLoop` and nothing to pause |
 
+With no `[local]` section it is on, so a Mac that already served with
+`--local-endpoint` before this change pauses from its first start after the
+update. That includes the desktop app's "Alongside the network", which starts
+the provider with `--local-endpoint`. To turn it off, set `me_first = false`
+under `[local]` in `provider.toml` (`~/.config/darkbloom/provider.toml`), then
+restart serving (`darkbloom restart`): the setting is read when the provider
+starts.
+
 ### What counts as use
 
 The owner's use is the local request's model reservation: from the moment
@@ -200,13 +208,14 @@ The pause is event-driven:
    pause outlasts the jump by one idle time at most.
 5. The pause cancels nothing. It has no drain bound: Darkbloom work accepted
    before it runs to the end, unlike under an add-on hold.
-6. A local request starts its use once and ends it once. `acquireModelForLocal`
-   and `releaseLocalReservation` call the hooks in the same actor turn as the
-   reservation and its release, and the request's `OneShotRelease` releases
-   once; a release that drops no reservation ends no use.
-7. The pause belongs to the serving process and isn't saved, unlike an add-on
+6. The pause belongs to the serving process and isn't saved, unlike an add-on
    hold. A restart or update during a pause comes back open, and the owner's
    next request pauses again.
+7. A local request starts its use once and ends it once, however it ends.
+   `acquireModelForLocal` and `releaseLocalReservation` call the hooks in the
+   same actor turn as the reservation and its release. Nothing after the start
+   throws or suspends, so the request always gets its `OneShotRelease`, which
+   releases once; a release that drops no reservation ends no use.
 
 ## Known gaps
 
@@ -239,6 +248,7 @@ mock coordinator. These loop tests skip the capacity rebuild
 without the GPU.
 
 `MeFirstSettingsTests` pins where me first applies. `LocalUseOwnerPauseTests`
+checks that `startLocalEndpoint` turns me first on as `[local]` says, and
 sends requests through the local endpoint's own HTTP application
 (`makeLocalEndpointApplication`) to a slot whose engine the test scripts:
 the pause and the resume, refused requests and the routes that are not use,

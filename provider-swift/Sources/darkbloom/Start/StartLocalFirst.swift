@@ -100,7 +100,8 @@ struct LocalFirstOptions: Equatable, Sendable {
 
     /// How this start's mode is decided, in order: a mode flag; `--choose`, the question again; the saved choice;
     /// the question, in a terminal. Without a terminal and without a saved choice: `.today`, the Darkbloom network
-    /// with no local API. The --foreground service never asks: its flags say how it serves.
+    /// with no local API; a saved "Only me" without a terminal is refused. The --foreground service never asks: its
+    /// flags say how it serves.
     func modeStep(saved: LocalSettings?, terminal: Bool) throws -> ServingStep {
         if let flag = modeFlag { return .decided(flag.mode, .flag(flag)) }
         // Today's plain start, as `LocalSettings.launchMode` reads it without --local or --local-endpoint.
@@ -113,7 +114,16 @@ struct LocalFirstOptions: Equatable, Sendable {
             }
             return .ask(preselected: saved?.mode ?? .both)
         }
-        if let mode = saved?.mode { return .decided(mode, .saved) }
+        if let mode = saved?.mode {
+            // "Only me" serves in the terminal that starts it. Without one (the desktop app's Start, a script) it would
+            // be a server its caller waits on forever, after stopping the running provider: refuse before anything.
+            guard mode != .local || terminal else {
+                throw ValidationError("This Mac is set to Only me, which serves in a terminal. Run "
+                    + "`\(BuildEnvironment.current.cliName) start` in one, or name how to serve: --local, --network or "
+                    + "--me-first.")
+            }
+            return .decided(mode, .saved)
+        }
         return terminal ? .ask(preselected: .both) : .decided(today, .today)
     }
 }
@@ -164,8 +174,8 @@ struct StartServing: Equatable, Sendable {
     var meFirst: Bool
     var meFirstIdleMinutes: UInt64
     var route: LocalSettings.Route?
-    /// Whether the local router's account key is saved; nil when not looked up (no local API, `--local`, or the
-    /// --foreground service).
+    /// Whether the local router's account key is saved; nil when not looked up (no local API, `--local`, `--no-auth`,
+    /// or the --foreground service).
     var accountKeySaved: Bool?
     /// The local API's port and address, with `mode` local or both.
     var port: UInt16
@@ -191,15 +201,19 @@ struct StartServing: Equatable, Sendable {
     /// go. No key and no speed. A start that nothing chose (`today`) prints today's summary, so nothing.
     var summaryLines: [String] {
         if source == .today, mode == .network { return [] }
-        var lines = ["  Serving: " + LocalFirstWords.serving(mode: mode, meFirst: meFirst, idleMinutes: meFirstIdleMinutes)]
+        let lines = ["  Serving: " + LocalFirstWords.serving(mode: mode, meFirst: meFirst, idleMinutes: meFirstIdleMinutes)]
         guard hasLocalAPI else { return lines }
+        // Without a local key the router passes nothing on, whatever the route (`LocalRouterConfig.localKeyRequired`).
+        guard !noAuth else {
+            return lines + ["  Local:   \(baseURL) — your requests: this Mac only",
+                            "           (no API key: --no-auth, so requests stay on this Mac)"]
+        }
         let keySaved = accountKeySaved ?? false
         let cli = BuildEnvironment.current.cliName
-        lines.append("  Local:   \(baseURL) — your requests: "
-            + LocalFirstWords.requests(route: route, accountKeySaved: keySaved))
-        let key = noAuth ? "no API key: --no-auth" : "`\(cli) local` shows the key"
-        lines.append("           (\(key)" + (keySaved ? ")" : "; `\(cli) route key` adds your other Macs)"))
-        return lines
+        return lines + [
+            "  Local:   \(baseURL) — your requests: " + LocalFirstWords.requests(route: route, accountKeySaved: keySaved),
+            "           (`\(cli) local` shows the key" + (keySaved ? ")" : "; `\(cli) route key` adds your other Macs)"),
+        ]
     }
 }
 
@@ -296,8 +310,9 @@ enum StartServingResolver {
             } else if source == .question, port != saved.port {
                 change.port = port
             }
-            // `--local` keeps its banner, which shows the key and no route, so it never asks the Keychain.
-            if accountKeySaved == nil, source != .flag(.local) { accountKeySaved = env.accountKeySaved() }
+            // `--local` keeps its banner, which shows the key and no route, and a local API without a key
+            // (`--no-auth`) passes nothing on, so neither asks the Keychain.
+            if accountKeySaved == nil, source != .flag(.local), !options.noAuth { accountKeySaved = env.accountKeySaved() }
         }
         // What serves: the saved settings with this start's change.
         var settings = saved

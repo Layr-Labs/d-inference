@@ -197,6 +197,9 @@ extension ProviderLoop {
             tokenizer: slot.tokenizer, modelType: slot.modelType, container: slot.container,
             diffusionContainer: slot.modelContainer.diffusion, isVLM: slot.isVLM,
             engineV2Bridge: slot.engineV2, visionGate: slot.visionGate(kvBudget: kvBudget)))
+        // The owner's use starts with the reservation, past every refusal.
+        // Nothing below throws or suspends, so the request always gets the
+        // release token that ends its use (`releaseLocalReservation`).
         localReservations.reserve(modelId)
         noteLocalUse(.start)
         modelSlots[modelId]?.lastInferenceAt = .now
@@ -235,12 +238,15 @@ extension ProviderLoop {
 
     /// Drop one local in-flight reservation for a model, which ends that
     /// request's use for me first. The request's `OneShotRelease` calls this
-    /// once; a release with no reservation to drop ends no use.
+    /// once, however the request ends: it completes, the engine fails it, it
+    /// is cancelled or its client disconnects. A release with no reservation
+    /// to drop ends no use.
     func releaseLocalReservation(_ modelId: String) {
-        let held = localReservations.isReserved(modelId)
-        localReservations.release(modelId)
+        if localReservations.isReserved(modelId) {
+            localReservations.release(modelId)
+            noteLocalUse(.end)
+        }
         modelSlots[modelId]?.lastInferenceAt = .now
-        if held { noteLocalUse(.end) }
     }
 
     /// Whether a model currently has a local request in flight. Used by the idle

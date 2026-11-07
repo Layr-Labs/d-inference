@@ -23,7 +23,8 @@ public struct LocalSettings: Sendable, Equatable, Codable {
         case thisMac = "this-mac"
         /// Only my Macs: the coordinator with `X-Darkbloom-Route: self`, free.
         case myMacs = "my-macs"
-        /// My Macs first: the coordinator with `X-Darkbloom-Route: prefer`, billed when the network answers.
+        /// My Macs first, then the Darkbloom network: the coordinator with `X-Darkbloom-Route: self` first, then
+        /// `prefer`, billed when the network answers.
         case myMacsFirst = "my-macs-first"
     }
 
@@ -241,8 +242,9 @@ extension LocalSettings.CodingKeys {
 // MARK: - Write-preserving edit
 
 extension ConfigManager {
-    /// Changes `[local]` in the provider config at `path` and nothing else: unknown keys, in `[local]` or anywhere
-    /// else, keep their values, so a newer build's settings survive an older build's edit. A refused value throws
+    /// Changes the values of `[local]` in the provider config at `path` and no other value: unknown keys, in `[local]`
+    /// or anywhere else, keep their values, so a newer build's settings survive an older build's edit. Comments are
+    /// dropped and keys re-sorted, as with every config writer. A refused value throws
     /// `LocalSettingsError` before anything is written, a change the file already holds writes nothing, and an explicit
     /// value is written even when it equals the default. Without a file, `fallbackConfig` (the caller's resolved
     /// configuration) is written with the new `[local]`. Returns whether the file changed.
@@ -277,7 +279,7 @@ extension ConfigManager {
         guard after != before else { return nil }
 
         // The raw table, not a re-encoded ProviderConfig, so keys this build does not know keep their values.
-        // Comments and layout may change.
+        // Serializing it drops comments and re-sorts keys, as every config writer does.
         let table: TOMLTable = try original.map { try TOMLTable(string: $0) } ?? TOMLEncoder().encode(fallbackConfig)
         // `local` is a section here or absent: `parseValidating` refused anything else, and the encoder writes one. An
         // existing section is edited in place, since TOMLKit hands out the table's own node. A new one always gets a
@@ -290,8 +292,9 @@ extension ConfigManager {
             after.write(over: before, into: section)
             table["local"] = section
         }
+        // Clearing the last key of a file that held only `[local]` leaves an empty table, and so an empty text.
         let text = table.convert()
-        guard !text.isEmpty, try TOMLTable(string: text) == table,
+        guard text.isEmpty == table.isEmpty, try TOMLTable(string: text) == table,
               try (parseValidating(text).local ?? LocalSettings()) == after
         else {
             throw ConfigError.parseFailed(detail: "[local] did not serialize to the values it was given")

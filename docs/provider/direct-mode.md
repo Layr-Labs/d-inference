@@ -433,6 +433,44 @@ If a short burst drains before planning finishes, the host may retain the metada
 
 The replacement must preserve the exact model and request limits and must fit both Macs. If a wider mode cannot start, a fresh previous-mode session may be restored after the failed replacement releases. Missing release proof stops the transition; it is never treated as free memory. The HTTP API gains no mode-selection parameter or credential change from this mechanism.
 
+### A pair's leader beside Darkbloom
+
+The member that hosts a pair's slot while the pair serves through Darkbloom
+(the coordinator-paired part on the plan's rank 0 Mac) can run this local API
+too. It serves the published slot through the slot's own bridge and lanes, so
+local and Darkbloom requests share one engine: no second process, engine or
+copy of the stream (`provider-swift/Sources/ProviderCore/ProviderLoop+ClusterPairLocal.swift`,
+`acquireClusterPairForLocal`). No command starts it yet:
+`darkbloom start --cluster-member` still refuses `--local-endpoint`, and
+`darkbloom cluster` serves a pair through Darkbloom with
+[no local API](./two-mac-cluster.md).
+
+| Case | Answer | Source |
+|---|---|---|
+| A member that does not host the slot, or a local API without a key | The member refuses to start (`ClusterMemberControlError.incompatibleConfiguration`), as before | `ProviderLoop.prepareClusterMemberControl`, `admitsClusterPairLocalAPI` |
+| The pair is not serving (forming, re-forming, retired) | HTTP `503`, as `darkbloom cluster local` answers (`DistributedRequestQueue.unavailableMessage`) | `ProviderLoop.clusterPairNotServing` |
+| A model the pair does not serve | HTTP `404` | `acquireClusterPairForLocal` |
+| Every lane busy | Waits in arrival order with at most `DARKBLOOM_CLUSTER_QUEUE_WAITING` (default `64`) others; `429` when the queue is full; `503` after waiting longer than `requestTimeout * ((waiting + lanes) / lanes)` (`DistributedRequestQueue.Limits.waitCeiling`); a client that goes away leaves the queue | `ClusterPairLocalLanes` |
+| The pair's warm-up request is running | Waits until admission opens; `503` if the slot retires instead | `ProviderLoop.publishClusterPairSlot` |
+| A stop or an update drain | Waiting requests get `429` at once, as new ones do; running ones finish before the slot retires | `ProviderLoop.beginServingDrain` |
+| A lost rank | Waiting requests get `503`; running ones end with their terminal | `ProviderLoop.retireClusterPairSlot` |
+
+A waiting request costs nothing: it is parked, not polled, until a local
+request releases a lane, a Darkbloom request ends (the capacity refresh that
+follows it), admission opens, a drain begins or the slot retires. A request
+that finds a lane free and nobody waiting takes it at once. Darkbloom requests
+never wait for this queue, and their path through the pair is unchanged.
+
+Me first applies to the whole pair. From the moment one of your requests
+starts waiting for a lane, the leader's heartbeat says `draining` with
+`busy_reason: owner`, and the pair takes no new Darkbloom requests. Darkbloom
+requests already running finish; one that races the heartbeat is refused with
+the typed draining answer and goes to another Mac. Two minutes after your last
+request ends (`[local] me_first_idle_minutes`), the pair takes Darkbloom
+requests again. `[local] me_first = false` keeps the shared serving above. The
+other members don't change, and the pair keeps its session and its loaded
+model ([owner pause](../architecture/owner-pause.md#pairs)).
+
 ### Speed records of cluster requests
 
 A cluster endpoint records how fast each request ran that computed its whole

@@ -58,6 +58,7 @@ final class ScriptedPairOwner: DistributedResidentExecutionOwner, @unchecked Sen
     private var available = true
     private var invalidation: (@Sendable () -> Void)?
     private var leases: [ScriptedPairLease] = []
+    private var requests: [CBv2Request] = []
     private var shutdowns = 0
     /// When set, every request waits for one signal before its first token.
     var hold: DispatchSemaphore?
@@ -66,6 +67,11 @@ final class ScriptedPairOwner: DistributedResidentExecutionOwner, @unchecked Sen
     var failFirstReservations = 0
     /// The resident assistant both "ranks" report loaded (nil: none).
     var tensorAssistant: ClusterQwenTensorAssistantReady?
+    /// The pair's batch lanes: the slot's engine admits this many requests at once.
+    var lanes = 1
+    var concurrentRequests: Int { lanes }
+    /// Every request the engine reserved, in order (the warmup canary first).
+    var reservedRequests: [CBv2Request] { lock.withLock { requests } }
 
     init(model: String = clusterPairFixtureModel) {
         identity = .init(membershipEpoch: UUID(), modelID: model,
@@ -97,6 +103,7 @@ final class ScriptedPairOwner: DistributedResidentExecutionOwner, @unchecked Sen
             let lease = ScriptedPairLease(identity: identity, requestID: request.id, hold: hold,
                 acceptsCleanStop: leasesAcceptCleanStop)
             leases.append(lease)
+            requests.append(request)
             return lease
         }
     }

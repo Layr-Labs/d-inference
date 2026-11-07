@@ -213,7 +213,9 @@ Coordinators key the add-on hold on `addon` only, so they treat `owner` as a
 plain drain: the Mac leaves routing and keeps its uptime. Because a coordinator
 does not act on `owner` in `register`, the first event heartbeat of a fresh
 connection repeats the draining status. Routed requests that race the owner
-pause's heartbeat get the same typed draining rejection.
+pause's heartbeat get the same typed draining rejection. On a pair, only the
+leader member (the slot's host) sends `owner`; every other member keeps its
+control-only `draining` heartbeat with no busy fields.
 
 
 ## Close codes and the reconnect wait

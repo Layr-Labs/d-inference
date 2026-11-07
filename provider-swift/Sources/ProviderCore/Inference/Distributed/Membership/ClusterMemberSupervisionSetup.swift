@@ -52,9 +52,12 @@ extension ProviderLoop {
     /// One heartbeat of a control-only member, taken ON the loop actor so a
     /// wedged loop stops beating. Refreshes the daemon state too: the launchd
     /// watchdog treats a live process whose daemon state went stale as down,
-    /// and a member otherwise writes it only when it connects.
+    /// and a member otherwise writes it only when it connects. On a pair's
+    /// leader with me first on, it also ends the owner pause once the owner's
+    /// idle time has passed: a member runs no idle monitor.
     public func clusterMemberHeartbeat() -> ClusterMemberHeartbeatSample {
         guard isClusterMember else { return .init(phase: .stopping, engineWedgedSeconds: nil, warmup: nil) }
+        resumeIfOwnerIdle()
         writeDaemonState()
         let warmup = clusterPairWarmup?.description
         if isShuttingDown || memberControlRequiresStop {

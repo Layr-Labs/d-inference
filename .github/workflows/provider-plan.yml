@@ -140,25 +140,27 @@ jobs:
   # Chooses a Darkbloom Sandbox or the Blacksmith fallback for the macOS jobs
   # of provider-tests.yml. This table is the one place that names each job's
   # lane and size. A lane is granted whole or falls back whole, so each job
-  # (each shard) has a lane of its own and falls back alone, except the two
-  # Cluster Focused Checks shards, which share one lane with a count of 2. A
-  # lane asks for a job only when the job runs. The two Cluster GPU Tests
-  # shards are not routed: shard 2 uses 42 GiB, more than any signed size,
-  # and one lane carries one size for both shards. They run on
-  # blacksmith-12vcpu-macos-27.
+  # (each shard) has a lane of its own and falls back alone, except where two
+  # shards share one lane with a count of 2: the two Cluster Focused Checks
+  # shards, Cluster Runtime Tests shards 2 and 3 (test-cluster-2) and shards
+  # 4 and 5 (test-cluster-3). A lane asks for a job only when the job runs.
+  # The three Cluster GPU Tests shards are not routed: shard 2 uses 42 GiB,
+  # more than any signed size, and one lane carries one size for every shard.
+  # They run on blacksmith-12vcpu-macos-27.
   #
   # Sizes (<vCPUs>x<GiB>) are sent only while DARKBLOOM_JOB_SHAPES is `on`
   # (darkbloom-route.yml). A job asks for the smallest signed size (4x16,
   # 4x24, 8x16, 12x32) that holds 1.25 times its sampled used memory (app +
   # wired + compressed, scripts/ci-resource-sampler.py) and on which it is at
-  # most 5% slower than on 12 vCPUs. There are two exceptions. Cluster runtime
-  # shard 2 uses 29.3 GiB (the Metal memory of the GLM-5.3 paged KV tests):
-  # 12x32, the largest size, holds it with a smaller margin. Build cluster
+  # most 5% slower than on 12 vCPUs; a lane that two shards share holds the
+  # larger. There are two exceptions. Cluster runtime shard 2 used up to
+  # 29.3 GiB (the Metal memory of the GLM-5.3 paged KV tests): 12x32, the
+  # largest size, holds it with a smaller margin. Build cluster
   # test products and Cluster Release Build Checks ask for 8x16, on which a
   # cold build is 5 to 10% slower. The sampled memory of each job is in
   # docs/developer/build.md (Job sizes).
   #
-  # While sizes are off, the 7 blocking test jobs ask without a size, as
+  # While sizes are off, the 9 blocking test jobs ask without a size, as
   # before. The build jobs and Cluster Release Build Checks are `required`:
   # while sizes are off they keep Blacksmith without asking. The lanes are in
   # the order the DARKBLOOM_MACOS_LANES cap keeps them: the critical-path test
@@ -171,8 +173,8 @@ jobs:
     with:
       lanes: |
         ${{ inputs.linux_lanes }}
-        test-cluster-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 12x32
-        test-cluster-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 4x24
+        test-cluster-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} 12x32
+        test-cluster-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} 4x24
         test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} 4x16
         test-provider-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 4x24
         test-cluster-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 4x16

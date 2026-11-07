@@ -69,6 +69,10 @@ class ComponentPathsTests(unittest.TestCase):
             "libs/mlx": {"provider", "cluster", "mimo_audio"},
             "libs/darkbloom-cluster/Package.swift": {"provider", "cluster"},
             "libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh": {"provider", "cluster"},
+            "provider-swift/Tests/ClusterConsoleChecks/run.sh": {"provider", "cluster"},
+            "provider-swift/Tests/ClusterPairingChecks/PairingTerminalChecks.swift": {"provider", "cluster"},
+            "provider-swift/Sources/ProviderBuildEnvironment/BuildEnvironment.swift": {"provider", "cluster"},
+            "handoff/TUI-wiring.md": {"provider", "cluster"},
             "fixtures/prompt-contract/v1/corpus.json": {"provider"},
             ".github/actions/provider-ci-build/action.yml": {"provider", "cluster"},
             ".github/actions/provider-ci-products/action.yml": {"provider", "cluster"},
@@ -418,7 +422,8 @@ class WorkflowRoutingTests(unittest.TestCase):
     def test_provider_aggregate_exhaustive_truth_table(self):
         jobs = workflow.job_blocks((ROOT / ".github/workflows/provider-tests.yml").read_text())
         gate = jobs["provider-test-gate"]
-        self.assertIn("needs: [test-provider, test-cluster, test-cluster-focused, cluster-release-checks]", gate)
+        self.assertIn("needs: [test-provider, test-cluster, test-cluster-focused, cluster-release-checks, "
+                      "ci-plan-checks]", gate)
         self.assertNotIn("test-provider-sdk", gate)
         self.assertIn("if: ${{ always() }}", gate)
         self.assertNotIn("continue-on-error:", gate)

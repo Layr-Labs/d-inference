@@ -241,6 +241,22 @@ struct NemotronSuperVideoBindingTests {
         #expect(invalid.code == .invalidMedia && invalid.statusCode == 400, "\(invalid)")
     }
 
+    /// A spent decode allowance is this machine's wall time, not the movie's
+    /// fault: a retryable 503 (`capacity`) that a coordinator sends to another
+    /// provider. The movie's own limits stay `invalid_media` (400).
+    @Test func spentDecodeAllowanceIsARetryableRefusal() {
+        func wire(_ error: NemotronSuperVideoDecode.Failure) -> (InferenceFailureCode, UInt16) {
+            let failure = ProviderLoop.sanitizedInferenceFailure(
+                from: SuperHTTPErrors.map(error, media: true), phase: .request)
+            return (failure.code, failure.statusCode)
+        }
+        let mapped = SuperHTTPErrors.map(NemotronSuperVideoDecode.Failure.decodeAllowanceSpent, media: true)
+        #expect(mapped as? MultiModelBatchSchedulerEngineError
+            == .requestRejected("inline video decoder outlasted its decode allowance; retry on another provider"))
+        #expect(wire(.decodeAllowanceSpent) == (.capacity, 503))
+        #expect(wire(.limit) == (.invalidMedia, 400))
+    }
+
     /// Native feature failures name what went wrong, for video as for images.
     @Test func featureFailuresNameTheirCause() {
         let failures: [(Binding.Failure, String)] = [

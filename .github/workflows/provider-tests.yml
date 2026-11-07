@@ -646,18 +646,26 @@ jobs:
     # DarkbloomClusterRuntimeTests in selections, each in its own process, on
     # separate Macs (scripts/cluster-test-plan.py): every test without a
     # switch, and the switched tests that pass on these runners. Shard 1 runs
-    # the base selection alone, then the share probe; shard 2 runs its
-    # ordered groups of selections at the same time; shard 3 runs the Gemma 4
-    # base suites alone.
+    # the base selection alone, then the share probe; shards 2 and 3 each run
+    # their ordered groups of selections at the same time; shards 4 and 5
+    # each run one half of the Gemma 4 base suites alone.
     name: Cluster Runtime Tests (shard ${{ matrix.shard }})
     needs: build-cluster
     if: ${{ inputs.cluster == 'true' }}
-    runs-on: ${{ fromJSON(inputs.routes)[format('test-cluster-{0}', matrix.shard)] }}
+    runs-on: ${{ fromJSON(inputs.routes)[matrix.lane] }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
+      # Each shard and the route lane it reads (provider-plan.yml). Shards 2
+      # and 3 share test-cluster-2, and shards 4 and 5 test-cluster-3: each
+      # of those lanes is requested for its 2 jobs and carries one size.
       matrix:
-        shard: [1, 2, 3]
+        include:
+          - {shard: 1, lane: test-cluster-1}
+          - {shard: 2, lane: test-cluster-2}
+          - {shard: 3, lane: test-cluster-2}
+          - {shard: 4, lane: test-cluster-3}
+          - {shard: 5, lane: test-cluster-3}
     steps:
       # The fixed build path, as in build-cluster (scripts/ci-test-products.py).
       - name: Work at the fixed build path
@@ -733,8 +741,9 @@ jobs:
     # The switched cluster runtime tests these runners cannot pass, the long
     # ones and the benchmarks (scripts/cluster-test-plan.py). They run and
     # report whenever the cluster jobs run; a failure does not fail the
-    # workflow. Shard 2 uses 42 GiB, more than any signed Darkbloom size, so
-    # both shards run on Blacksmith without asking the route
+    # workflow. Shards 1 and 3 each run one half of the real-geometry rows
+    # check. Shard 2 uses 42 GiB, more than any signed Darkbloom size, so
+    # every shard runs on Blacksmith without asking the route
     # (provider-plan.yml).
     name: Cluster GPU Tests (non-blocking, shard ${{ matrix.shard }})
     needs: build-cluster
@@ -744,7 +753,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3]
     steps:
       # The fixed build path, as in build-cluster (scripts/ci-test-products.py).
       - name: Work at the fixed build path
@@ -953,8 +962,9 @@ jobs:
     # source closure and runs on retained fixtures (no GPU, no model load, no
     # weights; every runner runs even after another fails). Shard 1 runs the
     # runner scripts under libs/darkbloom-cluster/Tests
-    # (scripts/cluster-test-plan.py focused lane); shard 2 runs the stage
-    # metadata, provisioning and onboarding runners. They need no test
+    # (scripts/cluster-test-plan.py focused lane) and the pairing runner;
+    # shard 2 runs the stage metadata, provisioning, onboarding and console
+    # runners. They need no test
     # products. Both shards read the one lane test-cluster-focused, which the
     # route requests for 2 jobs (provider-plan.yml).
     name: Cluster Focused Checks (shard ${{ matrix.shard }})
@@ -1027,6 +1037,12 @@ jobs:
       - name: Run cluster onboarding checks
         if: ${{ !cancelled() && matrix.shard == 2 && steps.toolchain.outcome == 'success' }}
         run: bash provider-swift/Tests/ClusterOnboardingChecks/run.sh
+      - name: Run cluster console checks
+        if: ${{ !cancelled() && matrix.shard == 2 && steps.toolchain.outcome == 'success' }}
+        run: bash provider-swift/Tests/ClusterConsoleChecks/run.sh
+      - name: Run cluster pairing checks
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.toolchain.outcome == 'success' }}
+        run: bash provider-swift/Tests/ClusterPairingChecks/run.sh
       - name: Run cluster focused checks
         if: ${{ !cancelled() && matrix.shard == 1 && steps.toolchain.outcome == 'success' }}
         timeout-minutes: 40
@@ -1045,12 +1061,62 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # The CI plans run on dev too, not only in master's Release Integrity: the
+  # cluster plan's audit against the sources and this workflow, the provider
+  # shard plan, the component classifier, the tested-change lookup, the route,
+  # the workflow pins, the test products hand-off and the resource sampler.
+  # Python only; no build and no test result, so they run beside the test
+  # jobs, on every run, and the Provider Tests gate requires them.
+  ci-plan-checks:
+    name: Check the CI plans
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          filter: blob:none
+          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
+          sparse-checkout-cone-mode: false
+      - name: Check the CI plans
+        if: ${{ !cancelled() }}
+        run: |
+          python3 scripts/cluster-test-plan.py audit
+          python3 scripts/test-cluster-test-plan.py
+          python3 scripts/test-provider-test-shards.py
+          python3 scripts/test-ci-component-paths.py
+          python3 scripts/test-ci-tested-tree.py
+          python3 scripts/test-darkbloom-route.py
+          python3 scripts/test-provider-ci-workflow.py
+          python3 scripts/test-ci-test-products.py
+          python3 scripts/test-ci-resource-sampler.py
+      # dev has no Release Integrity, so this job runs the Date comparison
+      # check too. SDK 27.2 back-deploys Date's >= and <=; pre-release macOS
+      # 27.2 builds lack the symbols. The release build also checks the built
+      # binaries (.github/actions/provider-release-build).
+      - name: Refuse back-deployed Date comparisons in provider source
+        if: ${{ !cancelled() }}
+        run: |
+          python3 scripts/test-check-date-comparisons.py
+          python3 scripts/test-check-provider-weak-imports.py
+          python3 scripts/check-date-comparisons.py
+      # The prompt fixture downloaders' retry and redirect rules, offline: no Mac, no network.
+      # Master also runs the first in its provider script checks.
+      - name: Test the prompt fixture downloaders offline
+        if: ${{ !cancelled() }}
+        run: |
+          python3 scripts/test-prepare-prompt-fixtures.py
+          python3 scripts/test-prepare-mimo-prompt-fixtures.py
+          python3 scripts/test-prepare-mimo-image-http-fixtures.py
+
   provider-test-gate:
     name: Provider Tests
     runs-on: ubuntu-24.04
     # The test jobs need their build jobs: a failed build skips its test jobs,
     # and a skipped test job that should have run fails this gate.
-    needs: [test-provider, test-cluster, test-cluster-focused, cluster-release-checks]
+    needs: [test-provider, test-cluster, test-cluster-focused, cluster-release-checks, ci-plan-checks]
     if: ${{ always() }}
     permissions:
       contents: read
@@ -1089,48 +1155,22 @@ jobs:
           test "$CLUSTER_RESULT" = "$cluster_expected"
           test "$CLUSTER_FOCUSED_RESULT" = "$cluster_expected"
           test "$CLUSTER_RELEASE_RESULT" = "$cluster_expected"
-      # The CI plans run on dev too, not only in master's Release Integrity:
-      # the cluster plan's audit against the sources and this workflow, the
-      # provider shard plan, the component classifier, the tested-change
-      # lookup, the route, the workflow pins, the test products hand-off and
-      # the resource sampler. Python only; no build. They run even when a test
-      # job failed.
+      # The CI plan checks, which ran beside the test jobs: the cluster plan's
+      # audit against the sources and this workflow, the provider shard plan,
+      # the component classifier, the tested-change lookup, the route, the
+      # workflow pins, the test products hand-off, the resource sampler, the
+      # Date comparison check and the prompt fixture downloaders.
+      - name: Require the CI plan checks
+        env:
+          PLAN_CHECKS_RESULT: ${{ needs.ci-plan-checks.result }}
+        run: test "$PLAN_CHECKS_RESULT" = success
+      # Only the record's naming script is checked out.
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        if: ${{ !cancelled() }}
+        if: ${{ inputs.skip != 'true' && (inputs.provider == 'true' || inputs.cluster == 'true') }}
         with:
           persist-credentials: false
-          filter: blob:none
-          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
+          sparse-checkout: scripts/ci-tested-tree.py
           sparse-checkout-cone-mode: false
-      - name: Check the CI plans
-        if: ${{ !cancelled() }}
-        run: |
-          python3 scripts/cluster-test-plan.py audit
-          python3 scripts/test-cluster-test-plan.py
-          python3 scripts/test-provider-test-shards.py
-          python3 scripts/test-ci-component-paths.py
-          python3 scripts/test-ci-tested-tree.py
-          python3 scripts/test-darkbloom-route.py
-          python3 scripts/test-provider-ci-workflow.py
-          python3 scripts/test-ci-test-products.py
-          python3 scripts/test-ci-resource-sampler.py
-      # dev has no Release Integrity, so the gate runs the Date comparison
-      # check too. SDK 27.2 back-deploys Date's >= and <=; pre-release macOS
-      # 27.2 builds lack the symbols. The release build also checks the built
-      # binaries (.github/actions/provider-release-build).
-      - name: Refuse back-deployed Date comparisons in provider source
-        if: ${{ !cancelled() }}
-        run: |
-          python3 scripts/test-check-date-comparisons.py
-          python3 scripts/test-check-provider-weak-imports.py
-          python3 scripts/check-date-comparisons.py
-      # The prompt fixture downloaders' retry rule, offline: no Mac, no network.
-      # Master also runs the first in its provider script checks.
-      - name: Test the prompt fixture downloaders offline
-        if: ${{ !cancelled() }}
-        run: |
-          python3 scripts/test-prepare-prompt-fixtures.py
-          python3 scripts/test-prepare-mimo-prompt-fixtures.py
       # The record a later run of the same change finds (scripts/ci-tested-tree.py):
       # the tree, the event's base and head, and the components that ran. It
       # counts only once the whole run succeeded. A run that tested nothing

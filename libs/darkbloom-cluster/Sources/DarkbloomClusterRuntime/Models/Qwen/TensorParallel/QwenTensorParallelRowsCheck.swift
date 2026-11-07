@@ -329,8 +329,23 @@ public enum QwenTensorParallelRowsCheck {
         }
     }
 
+    /// The check's two halves. Each compares only against the solo runs it
+    /// makes itself, so each also runs alone: the test suite runs them in
+    /// separate processes, and `run` with both is the whole check.
+    public enum Part: CaseIterable, Sendable {
+        /// The rows of `lengths`: alone on a one- and an eight-lane host
+        /// (P1), beside rows that join and leave (PB8, PB2, PB4), while an
+        /// assistant observes the cohort, and at every verify-window
+        /// position alone and in a cohort (W).
+        case rows
+        /// The rows of `longLengths`, alone and together across KV segments.
+        case segments
+    }
+
     /// This rank's comparisons; both ranks call it with the same arguments.
-    public static func run(model: QwenTensorParallelModel, configuration: Data, rank: Int, steps: Int = 12) throws -> Report {
+    /// `parts` selects the halves of the check; the default runs all of it.
+    public static func run(model: QwenTensorParallelModel, configuration: Data, rank: Int, steps: Int = 12,
+                           parts: Set<Part> = Set(Part.allCases)) throws -> Report {
         func rows(_ lanes: Int) throws -> Rows { try Rows(model, configuration: configuration, lanes: lanes) }
         func solo(lanes: Int, members: [Int], lengths: [Int: Int], steps: Int) throws -> Trace {
             var trace = Trace()
@@ -345,59 +360,69 @@ public enum QwenTensorParallelRowsCheck {
         }
         var differing: [String] = []
         let members = lengths.keys.sorted()
-        let soloOne = try solo(lanes: 1, members: members, lengths: lengths, steps: steps)
-        differing += try solo(lanes: 8, members: members, lengths: lengths, steps: steps)
-            .mismatches(soloOne, label: "P1 eight-lane vs one-lane host")
+        // Each half's steps keep their place in the whole check, so `run` with
+        // both halves runs the steps it always ran, in the same order: the
+        // rows half's verify windows come after the segments half.
+        var soloOne = Trace(), longSolo = Trace(), reserved = 0
+        if parts.contains(.rows) {
+            soloOne = try solo(lanes: 1, members: members, lengths: lengths, steps: steps)
+            differing += try solo(lanes: 8, members: members, lengths: lengths, steps: steps)
+                .mismatches(soloOne, label: "P1 eight-lane vs one-lane host")
 
-        // Rows 6 and 7 join before steps 3 and 5; row 1 leaves after step 6.
-        let wide = try rows(8)
-        for row in [0, 1, 2, 3, 4, 5] { try wide.open(row, length: lengths[row]!) }
-        try wide.plainSteps(lengths: lengths, steps: steps + 5, schedule: { step in
-            members.filter { row in
-                let first = row == 6 ? 3 : row == 7 ? 5 : 0
-                return step >= first && step - first < (row == 1 ? 7 : steps)
+            // Rows 6 and 7 join before steps 3 and 5; row 1 leaves after step 6.
+            let wide = try rows(8)
+            for row in [0, 1, 2, 3, 4, 5] { try wide.open(row, length: lengths[row]!) }
+            try wide.plainSteps(lengths: lengths, steps: steps + 5, schedule: { step in
+                members.filter { row in
+                    let first = row == 6 ? 3 : row == 7 ? 5 : 0
+                    return step >= first && step - first < (row == 1 ? 7 : steps)
+                }
+            }, joins: [3: [6], 5: [7]], leaves: [6: [1]])
+            try wide.retireAll()
+            differing += wide.trace.mismatches(soloOne, label: "PB8 vs P1")
+            for width in [2, 4] {
+                let narrow = try rows(width)
+                let cohort = Array(members.suffix(width))
+                for row in cohort { try narrow.open(row, length: lengths[row]!) }
+                try narrow.plainSteps(lengths: lengths, steps: steps, schedule: { _ in cohort })
+                try narrow.retireAll()
+                differing += narrow.trace.mismatches(soloOne, label: "PB\(width) vs P1")
             }
-        }, joins: [3: [6], 5: [7]], leaves: [6: [1]])
-        try wide.retireAll()
-        differing += wide.trace.mismatches(soloOne, label: "PB8 vs P1")
-        for width in [2, 4] {
-            let narrow = try rows(width)
-            let cohort = Array(members.suffix(width))
-            for row in cohort { try narrow.open(row, length: lengths[row]!) }
-            try narrow.plainSteps(lengths: lengths, steps: steps, schedule: { _ in cohort })
-            try narrow.retireAll()
-            differing += narrow.trace.mismatches(soloOne, label: "PB\(width) vs P1")
         }
 
-        let long = longLengths.keys.sorted(), longSteps = 8
-        let longSolo = try solo(lanes: 1, members: long, lengths: longLengths, steps: longSteps)
-        let spanning = try rows(8)
-        for row in long { try spanning.open(row, length: longLengths[row]!) }
-        let reserved = spanning.host.backend.bytesReserved
-        try spanning.plainSteps(lengths: longLengths, steps: longSteps, schedule: { _ in long })
-        try spanning.retireAll()
-        differing += spanning.trace.mismatches(longSolo, label: "PB8 across segments vs P1")
-
-        let windowed = [0, 2, 4, 7], columns = 4, rounds = 3
-        let observer = try rows(windowed.count)
-        for row in windowed { try observer.open(row, length: lengths[row]!) }
-        try observer.plainSteps(lengths: lengths, steps: columns * rounds, schedule: { _ in windowed }, observing: true)
-        try observer.retireAll()
-        differing += observer.trace.mismatches(soloOne, label: "PB4 observed vs P1")
-        for row in windowed {
-            let single = try rows(1)
-            try single.open(row, length: lengths[row]!)
-            try single.windows([row], rounds: rounds, columns: columns)
-            try single.retireAll()
-            differing += single.trace.mismatches(soloOne, label: "W singleton vs P1")
-            differing += single.trace.mismatches(observer.trace, label: "W singleton vs PB4 observed")
+        if parts.contains(.segments) {
+            let long = longLengths.keys.sorted(), longSteps = 8
+            longSolo = try solo(lanes: 1, members: long, lengths: longLengths, steps: longSteps)
+            let spanning = try rows(8)
+            for row in long { try spanning.open(row, length: longLengths[row]!) }
+            reserved = spanning.host.backend.bytesReserved
+            try spanning.plainSteps(lengths: longLengths, steps: longSteps, schedule: { _ in long })
+            try spanning.retireAll()
+            differing += spanning.trace.mismatches(longSolo, label: "PB8 across segments vs P1")
         }
-        let cohort = try rows(windowed.count)
-        for row in windowed { try cohort.open(row, length: lengths[row]!) }
-        try cohort.windows(windowed, rounds: rounds, columns: columns)
-        try cohort.retireAll()
-        differing += cohort.trace.mismatches(soloOne, label: "W cohort vs P1")
-        differing += cohort.trace.mismatches(observer.trace, label: "W cohort vs PB4 observed")
+
+        if parts.contains(.rows) {
+            let windowed = [0, 2, 4, 7], columns = 4, rounds = 3
+            let observer = try rows(windowed.count)
+            for row in windowed { try observer.open(row, length: lengths[row]!) }
+            try observer.plainSteps(lengths: lengths, steps: columns * rounds, schedule: { _ in windowed }, observing: true)
+            try observer.retireAll()
+            differing += observer.trace.mismatches(soloOne, label: "PB4 observed vs P1")
+            for row in windowed {
+                let single = try rows(1)
+                try single.open(row, length: lengths[row]!)
+                try single.windows([row], rounds: rounds, columns: columns)
+                try single.retireAll()
+                differing += single.trace.mismatches(soloOne, label: "W singleton vs P1")
+                differing += single.trace.mismatches(observer.trace, label: "W singleton vs PB4 observed")
+            }
+            let cohort = try rows(windowed.count)
+            for row in windowed { try cohort.open(row, length: lengths[row]!) }
+            try cohort.windows(windowed, rounds: rounds, columns: columns)
+            try cohort.retireAll()
+            differing += cohort.trace.mismatches(soloOne, label: "W cohort vs P1")
+            differing += cohort.trace.mismatches(observer.trace, label: "W cohort vs PB4 observed")
+        }
 
         let compared = soloOne.logits.count + soloOne.history.count + longSolo.logits.count + longSolo.history.count
         var tampered = soloOne
@@ -405,8 +430,10 @@ public enum QwenTensorParallelRowsCheck {
         // A candidate's non-finite row differs from a finite reference or matches a marked one.
         let finite = !(soloOne.logits.values.contains { $0.hasPrefix(Rows.nonfinite) }
             || longSolo.logits.values.contains { $0.hasPrefix(Rows.nonfinite) })
-        guard finite, Set(soloOne.logits.values).count == soloOne.logits.count, reserved > CBv2StageKVHost.segmentBytes,
-              soloOne.mismatches(soloOne, label: "").isEmpty, tampered.mismatches(soloOne, label: "").count == 1 else {
+        let rowsSound = !parts.contains(.rows) || (Set(soloOne.logits.values).count == soloOne.logits.count
+            && soloOne.mismatches(soloOne, label: "").isEmpty && tampered.mismatches(soloOne, label: "").count == 1)
+        let segmentsSound = !parts.contains(.segments) || reserved > CBv2StageKVHost.segmentBytes
+        guard finite, rowsSound, segmentsSound else {
             throw ProbeError("Qwen TP rows check: non-finite or degenerate logits, rows within one KV segment or a blind comparison")
         }
         return Report(rank: rank, compared: compared, differing: differing, reservedBytesAcrossSegments: reserved,

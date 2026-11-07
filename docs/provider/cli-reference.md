@@ -308,6 +308,9 @@ LaunchAgent with the arguments `--local-endpoint` has always used
              (`darkbloom local` shows the key)
   ```
 
+  With `--no-auth` the local router passes nothing on, so the summary says
+  `your requests: this Mac only` and `(no API key: --no-auth, so requests stay
+  on this Mac)`, whatever the route, and the start doesn't ask the Keychain.
   No start screen prints the key, except `--local`'s own banner, as before. A
   start that nothing chose (step 5) prints today's summary.
 
@@ -722,7 +725,10 @@ this Mac serves, read from its state and `local.json` (`Status.servingLines`,
 With a local API it adds where your requests go and whether an account key is
 saved, never the key: `Your requests: this Mac first, then your other Macs
 (free) · account key saved`, or ``Your requests: this Mac only · no account key
-(`darkbloom route key` saves one)``. Only then is the Keychain asked.
+(`darkbloom route key` saves one)``. Only then is the Keychain asked. A local
+API without a key (`--no-auth`) passes nothing on: `Your requests: this Mac
+only · no local key (--no-auth), so nothing is passed on`, without asking the
+Keychain.
 
 ### `darkbloom doctor`
 
@@ -796,8 +802,10 @@ A server bound to `0.0.0.0` or `::` also prints a `network:` line with this
 Mac's Bonjour (`.local`) URL (`Local.networkURL`). When the running provider
 serves that endpoint, two lines follow `pid:`: `serving:` (how it serves, in
 the start summary's words) and `requests:` (where your requests go)
-(`Local.servingLines`), and a keyed server adds `tools:    darkbloom start
---opencode · --hermes`. `--json` is unchanged.
+(`Local.servingLines`). A server without a key says `requests: this Mac only
+(…)` under its API key line instead, and only `serving:` follows `pid:`. A
+keyed server adds `tools:    darkbloom start --opencode · --hermes`. `--json`
+is unchanged.
 
 ### `darkbloom route key`
 
@@ -816,7 +824,9 @@ and exits 1; an unreachable coordinator saves it with a note. It is kept in the
 Keychain (service `<keychain prefix>.route`, account `account-api-key`; the
 data-protection Keychain in signed builds, the login keychain otherwise) and
 never printed (`RouteKeyFlow`, `provider-swift/Sources/darkbloom/RouteCommand.swift`;
-`KeychainLocalRouterAccountKeyStore`). See
+`KeychainLocalRouterAccountKeyStore`). When the local API running now has no
+local key (`--no-auth`), it says that this API keeps every request on this Mac
+and never uses the key. See
 [the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router).
 
 ### Cluster placement request metadata

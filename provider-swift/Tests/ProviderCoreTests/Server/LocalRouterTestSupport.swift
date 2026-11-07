@@ -53,7 +53,10 @@ final class RouterStubUpstream: LocalRouterTransport, @unchecked Sendable {
             continuation.finish()
         }
         continuation.onTermination = { _ in producer.cancel() }
-        return LocalRouterUpstreamResponse(status: answer.status, headers: answer.headers, body: body)
+        return LocalRouterUpstreamResponse(status: answer.status, headers: answer.headers, body: body, cancel: {
+            producer.cancel()
+            continuation.finish(throwing: CancellationError())
+        })
     }
 }
 
@@ -73,6 +76,18 @@ final class RouterTransportFactory: @unchecked Sendable {
     }
 }
 
+/// An in-memory key store that counts its reads: this Mac's path reads none.
+final class CountingAccountKeyStore: LocalRouterAccountKeyStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var key: String?
+    private var reads = 0
+    init(_ key: String?) { self.key = key }
+    var loads: Int { lock.withLock { reads } }
+    func load() throws -> String? { lock.withLock { reads += 1; return key } }
+    func save(_ key: String) throws { lock.withLock { self.key = key } }
+    func remove() throws { lock.withLock { key = nil } }
+}
+
 /// Every line the router logs.
 final class RouterLogLines: @unchecked Sendable {
     private let lock = NSLock()
@@ -90,6 +105,14 @@ final class RouterStubEngine: MLXServerEngine, @unchecked Sendable {
     private let lock = NSLock()
     private var seen: [OpenAIChatCompletionRequest] = []
     var requests: [OpenAIChatCompletionRequest] { lock.withLock { seen } }
+    /// Other ids this Mac answers like `here`, and other ids it refuses like `busy`.
+    let serves: Set<String>
+    let busy: Set<String>
+
+    init(serves: Set<String> = [], busy: Set<String> = []) {
+        self.serves = serves
+        self.busy = busy
+    }
 
     static let servedModels = ["busy", "cut", "draining", "here"]
 
@@ -100,6 +123,8 @@ final class RouterStubEngine: MLXServerEngine, @unchecked Sendable {
         lock.withLock { seen.append(request) }
         switch request.model {
         case "here", "cut": break
+        case let model where serves.contains(model): break
+        case let model where busy.contains(model): throw MultiModelBatchSchedulerEngineError.queueFull("queue full")
         case "busy": throw MultiModelBatchSchedulerEngineError.queueFull("queue full")
         case "draining": throw MultiModelBatchSchedulerEngineError.requestRejected("provider draining")
         case "bad": throw MultiModelBatchSchedulerEngineError.invalidRole("fixture")
@@ -138,15 +163,17 @@ struct RouterFixture {
     static let accountKey = "sk-synthetic-account-key-7f3a9c1e5b2d4086"
     static let upstreamBase = URL(string: "http://coordinator.invalid:8080")!
 
-    let engine = RouterStubEngine()
+    let engine: RouterStubEngine
     let upstream: RouterStubUpstream
     let factory: RouterTransportFactory
     let log = RouterLogLines()
-    let keys: InMemoryLocalRouterAccountKeyStore
+    let keys: CountingAccountKeyStore
     /// nil: the endpoint without a router (today's endpoint).
     let routerConfig: LocalRouterConfig?
     let localModels: [String]
     let localLimits: [String: LocalModelLimits]
+    /// The local API's key; nil is `--no-auth`.
+    let localKey: String?
     var app: LocalInferenceApplication { makeApp() }
 
     /// - Parameters:
@@ -156,12 +183,15 @@ struct RouterFixture {
     init(route: LocalSettings.Route? = .myMacs, key: String? = RouterFixture.accountKey, router: Bool = true,
          takesCoordinatorWork: Bool = false, localModels: [String] = RouterStubEngine.servedModels,
          localLimits: [String: LocalModelLimits] = [:], timing: LocalRouter.Timing = .init(),
+         engineServes: Set<String> = [], engineBusy: Set<String> = [], localKey: String? = RouterFixture.localKey,
          upstream script: @escaping @Sendable (LocalRouterUpstreamRequest) throws -> RouterStubUpstream.Answer = { _ in
              .json(200, #"{"id":"chatcmpl-up","object":"chat.completion","choices":[]}"#)
          }) {
+        engine = RouterStubEngine(serves: engineServes, busy: engineBusy)
+        self.localKey = localKey
         upstream = RouterStubUpstream(script)
         factory = RouterTransportFactory(upstream)
-        keys = InMemoryLocalRouterAccountKeyStore(key)
+        keys = CountingAccountKeyStore(key)
         self.localModels = localModels
         self.localLimits = localLimits
         let factory = factory, log = log
@@ -174,12 +204,12 @@ struct RouterFixture {
     /// One endpoint over this fixture's engine, router and coordinator; each call makes a new application.
     func makeApp(onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in }) -> LocalInferenceApplication {
         Self.makeApp(router: routerConfig, engine: engine, localModels: localModels, localLimits: localLimits,
-                     onServerRunning: onServerRunning)
+                     localKey: localKey, onServerRunning: onServerRunning)
     }
 
     /// The local API with `router` (nil: the endpoint without a router) over `engine`, which plays this Mac.
     static func makeApp(router: LocalRouterConfig?, engine: RouterStubEngine, localModels: [String],
-                        localLimits: [String: LocalModelLimits] = [:],
+                        localLimits: [String: LocalModelLimits] = [:], localKey: String? = RouterFixture.localKey,
                         onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in })
         -> LocalInferenceApplication {
         makeLocalInferenceApplication(

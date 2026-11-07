@@ -335,6 +335,41 @@ struct StartLocalFirstTests {
         #expect(config.local == LocalSettings(meFirst: true, port: firstNewPort))
     }
 
+    @Test("--local-endpoint --no-auth with a saved route keeps your requests on this Mac, and start, status and local say so")
+    func noAuthKeepsRequestsOnThisMac() throws {
+        let config = try TempConfig(plainConfig + "\n\n[local]\nroute = \"my-macs-first\"\n")
+        defer { config.remove() }
+        let terminal = ScriptedTerminal()
+        let serving = try #require(try terminal.resolve(try config.start(["--local-endpoint", "--no-auth"]),
+                                                        terminal: false, keySaved: true))
+        #expect(serving.mode == .both && serving.noAuth && serving.route == .myMacsFirst)
+        #expect(terminal.keyLookups == 0, "without a local key the account key plays no part")
+        // The local API gets no key, so its router keeps every request on this Mac, whatever the saved route
+        // (`LocalRouterConfig.localKeyRequired`, set from the endpoint's key; LocalRouterTests covers the router).
+        var served = ProviderConfig(provider: ProviderSettings(name: "l4"))
+        served.local = config.local
+        let endpoint = try #require(try Start.unifiedLocalEndpoint(
+            serving: serving, config: served, coordinatorURL: "wss://coordinator.invalid/ws/provider",
+            loadToken: { Issue.record("--no-auth reads no token"); return "dk-local-fixture" }))
+        #expect(endpoint.authToken == nil && endpoint.router?.settings.route == .myMacsFirst)
+        #expect(serving.summaryLines.suffix(2) == [
+            "  Local:   http://127.0.0.1:\(defaultPort)/v1 — your requests: this Mac only",
+            "           (no API key: --no-auth, so requests stay on this Mac)",
+        ])
+        // status and local read the running provider: the same, and the Keychain isn't asked.
+        let keyless = LocalFirstStatusFixtures.endpoint(apiKey: "")
+        let state = LocalFirstStatusFixtures.state(meFirst: LocalFirstStatusFixtures.open)
+        let noKeychain: () -> Bool = { Issue.record("Keychain read"); return true }
+        #expect(Status.servingLines(state: state, liveEndpoint: keyless, route: .myMacsFirst, accountKeySaved: noKeychain,
+                                    now: LocalFirstStatusFixtures.now, timeZone: LocalFirstStatusFixtures.utc) == [
+            "Serving: Darkbloom and you, me first — open to Darkbloom (none of your requests in the last 2 minutes)",
+            "Your requests: this Mac only · no local key (--no-auth), so nothing is passed on",
+        ])
+        // `local` says "requests: this Mac only" under the API key line for a keyless server; it adds no second one.
+        #expect(Local.servingLines(info: keyless, state: state, route: .myMacsFirst, accountKeySaved: noKeychain)
+            == ["  serving:  Both, me first — Darkbloom pauses while you use this Mac, back after 2 idle minutes"])
+    }
+
     @Test("the settings flags are saved as --idle-timeout is; a flag's mode is not")
     func settingsFlagsAreSaved() throws {
         let config = try TempConfig(plainConfig)
@@ -446,6 +481,13 @@ struct StartLocalFirstTests {
 
     @Test("a new local API never takes 8000 or 47420–47423, and never probes them")
     func portPickerSkipsReservedPorts() {
+        // The owner's rule on every build: 8000 and production's pair ports, plus this build's own pair ports; under
+        // production's identity exactly those five, as before.
+        #expect(LocalAPIPort.neverChosen.isSuperset(of: [8000, 47_420, 47_421, 47_422, 47_423]))
+        let cable = ClusterCablePorts.current
+        #expect(LocalAPIPort.neverChosen.isSuperset(of: [cable.linkControl, cable.pairing, cable.exchange, cable.control]))
+        #expect(BuildEnvironment.current != .prod || LocalAPIPort.neverChosen == [8000, 47_420, 47_421, 47_422, 47_423])
+        #expect(ClusterLocalServing.pairPortsWords == "47420–47423")
         var probed: [UInt16] = []
         #expect(LocalAPIPort.pick(from: 8000, ownLivePort: nil, isFree: { probed.append($0); return true }) == 8001)
         #expect(probed == [8001])
@@ -523,10 +565,15 @@ struct StartLocalFirstTests {
             "  Local:   http://127.0.0.1:8001/v1 — your requests: this Mac only",
             "           (`darkbloom local` shows the key; `darkbloom route key` adds your other Macs)",
         ])
-        #expect(serving(.both, key: true, route: .myMacsFirst, noAuth: true).summaryLines.suffix(2) == [
+        #expect(serving(.both, key: true, route: .myMacsFirst).summaryLines.suffix(2) == [
             "  Local:   http://127.0.0.1:8001/v1 — your requests: this Mac first, then your other Macs (free), then the "
                 + "Darkbloom network (billed)",
-            "           (no API key: --no-auth)",
+            "           (`darkbloom local` shows the key)",
+        ])
+        // Without a local key nothing is passed on, whatever the route and the account key.
+        #expect(serving(.both, key: true, route: .myMacsFirst, noAuth: true).summaryLines.suffix(2) == [
+            "  Local:   http://127.0.0.1:8001/v1 — your requests: this Mac only",
+            "           (no API key: --no-auth, so requests stay on this Mac)",
         ])
         #expect(serving(.network, key: nil, source: .flag(.network)).summaryLines == [
             "  Serving: Darkbloom network — this Mac serves Darkbloom and earns while it runs",

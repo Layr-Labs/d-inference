@@ -190,8 +190,15 @@ func makeLocalInferenceApplication(
     let corsResponder = CORSResponder(inner: metricsResponder)
     // After auth (a bad local key never reaches it) and outside CORS (this
     // Mac's engine errors arrive as statuses it can pass on).
-    let localRouter = config.router.map {
-        LocalRouter(config: $0, localModels: availableModels, localLimits: modelLimits ?? { _ in nil })
+    let localRouter = config.router.map { router -> LocalRouter in
+        var router = router
+        // No upstream hop without the local key: without one (`--no-auth`) anything that reaches the port is a
+        // client, and must not borrow the owner's other Macs or balance.
+        if (config.authToken ?? "").isEmpty {
+            router.localKeyRequired = false
+            router.log("no local key (--no-auth): requests stay on this Mac, and the account key is never used")
+        }
+        return LocalRouter(config: router, localModels: availableModels, localLimits: modelLimits ?? { _ in nil })
     }
     let routedResponder = LocalRouterResponder(inner: corsResponder, router: localRouter)
     // Auth rejects unauthenticated requests before body/model handling. The

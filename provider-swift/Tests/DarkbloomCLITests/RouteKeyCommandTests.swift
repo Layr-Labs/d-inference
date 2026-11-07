@@ -117,6 +117,17 @@ struct RouteKeyCommandTests {
             status: 500, body: "{}", seen: seen)) == .unchecked("Darkbloom answered HTTP 500"))
     }
 
+    @Test func aRunningLocalAPIWithoutALocalKeyKeepsRequestsOnThisMac() async throws {
+        let lines = Lines()
+        var flow = RouteKeyFlow(store: InMemoryLocalRouterAccountKeyStore(), savedRoute: .myMacs,
+                                check: { _ in .accepted(models: 1) }, say: { lines.append($0) })
+        flow.liveEndpointHasNoLocalKey = true
+        #expect(await flow.save(Self.key) == 0)
+        #expect(lines.all.contains("The running local API has no local key (--no-auth): it keeps every request "
+            + "on this Mac and never uses the account key."))
+        #expect(!lines.all.joined().contains(Self.key))
+    }
+
     @Test func noFileOfTheInstallHoldsTheKey() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("route-key-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

@@ -95,6 +95,7 @@ extension Start {
                                                                accountKeySaved: serving.accountKeySaved ?? false))
         } else {
             print("  API key:  (auth disabled — --no-auth)")
+            print("  Requests: this Mac only. Without a local key nothing is passed on to your other Macs or the network.")
         }
         print()
         print("  Shareable any time with: \(BuildEnvironment.current.cliName) local")
@@ -412,7 +413,7 @@ extension Start {
                 throw ExitCode.failure
             }
         }
-        print("Local endpoint: \(serving.baseURL)\(token != nil ? "  (API key from `\(BuildEnvironment.current.cliName) local`)" : "  (auth disabled)")")
+        print("Local endpoint: \(serving.baseURL)\(token != nil ? "  (API key from `\(BuildEnvironment.current.cliName) local`)" : "  (auth disabled: requests stay on this Mac)")")
         return LocalInferenceHTTPConfig(
             host: serving.bind, port: serving.port, authToken: token,
             router: .host(local: config.local, coordinatorURL: coordinatorURL, takesCoordinatorWork: true))

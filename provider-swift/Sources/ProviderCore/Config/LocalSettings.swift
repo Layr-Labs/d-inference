@@ -23,8 +23,8 @@ public struct LocalSettings: Sendable, Equatable, Codable {
         case thisMac = "this-mac"
         /// Only my Macs: the coordinator with `X-Darkbloom-Route: self`, free.
         case myMacs = "my-macs"
-        /// My Macs first, then the Darkbloom network: the coordinator with `X-Darkbloom-Route: self` first, then
-        /// `prefer`, billed when the network answers.
+        /// My Macs first, then the Darkbloom network: the coordinator with `X-Darkbloom-Route: prefer`, billed when the
+        /// network answers; at a zero balance, `self` once.
         case myMacsFirst = "my-macs-first"
     }
 
@@ -43,6 +43,10 @@ public struct LocalSettings: Sendable, Equatable, Codable {
     public static let defaultMeFirstIdleMinutes: UInt64 = 2
     public static let meFirstIdleMinutesRange: ClosedRange<UInt64> = 1...120
     public static let defaultBind = "127.0.0.1"
+    /// Never chosen for a new local API, a single Mac's or a pair's (`ClusterLocalServing.neverChosenPorts`): 8000,
+    /// where other local AI apps listen (oMLX on the owner's Mac), and the cable ports two-Mac pairs use (production's
+    /// 47420–47423, and this build's own).
+    public static let neverChosenPorts = Set(ClusterLocalServing.neverChosenPorts.compactMap { UInt16(exactly: $0) })
 
     public init(mode: Mode? = nil, meFirst: Bool? = nil, meFirstIdleMinutes: UInt64? = nil, route: Route? = nil,
                 port: UInt16? = nil, bind: String? = nil) {

@@ -142,7 +142,7 @@ See [inference and logprob admission](../architecture/inference.md).
 | Directory | `~/.darkbloom`; a dev build (`darkbloom-dev`) uses `~/.darkbloom-dev`. `DARKBLOOM_LOCAL_DIR` replaces it for both files | `LocalEndpoint.directory`, `BuildEnvironment.installDirectory` |
 | Key file for tools | A tool that reads the key from a file instead of keeping a copy (OpenCode's `{file:}`, Hermes' `key_cmd`) uses the file holding exactly the key of the server on that port: `local_token`, or `cluster_local_token` for a pair serving locally. Both files hold only the key and are replaced atomically, never partly written. See the [config writers](../architecture/tool-integrations.md) | `LocalEndpoint.keyFile(forPort:)`, `provider-swift/Sources/ProviderCore/Service/AtomicFile.swift` (`AtomicFile.write`) |
 | `--bind 0.0.0.0` | Advertised `base_url` uses `127.0.0.1`; other hosts use the machine's address, and `darkbloom local` prints its Bonjour URL on a `network:` line. [`darkbloom cluster local`](./two-mac-cluster.md#serving-locally-only) binds the cluster's API this way by default | `LocalEndpoint.Info.init`, `Local.networkURL` |
-| `--no-auth` | No token check; `api_key` is empty in the discovery record | `LocalInferenceHTTPConfig.authToken == nil` |
+| `--no-auth` | No token check; `api_key` is empty in the discovery record. The [local router](#when-this-mac-cant-take-a-request-the-local-router) then passes nothing on and never uses the account key | `LocalInferenceHTTPConfig.authToken == nil`; `LocalRouterConfig.localKeyRequired` |
 
 `LocalAuthResponder` (`provider-swift/Sources/ProviderCore/Server/LocalAuthResponder.swift`)
 is the outermost layer: `OPTIONS` preflights, `GET /health`, `GET /v1/health`
@@ -164,7 +164,10 @@ take it (`LocalRouter`, `provider-swift/Sources/ProviderCore/Server/LocalRouter*
 |---|---|
 | `this-mac` (the default without an account key) | This Mac's own answer; nothing leaves the Mac |
 | `my-macs` (the default once a key is saved) | Passed to the coordinator with `X-Darkbloom-Route: self`: only your Macs answer, free |
-| `my-macs-first` | First `self`; when none of your Macs takes it (`409`, `429`, `503`), again with `X-Darkbloom-Route: prefer`: the network answers, billed to your balance |
+| `my-macs-first` | Passed to the coordinator with `X-Darkbloom-Route: prefer`: your Macs first, then the network, billed to your balance. The coordinator picks among the Macs that can take the request now, so a busy Mac of yours doesn't hold it. `prefer` needs a balance even when one of your Macs answers: on its `402`, the request is sent once more with `self` (your Macs only, free) |
+
+The route is read when the local API starts (a change needs a restart); the
+key is read when a request needs it.
 
 - **Save the key:** `darkbloom route key` (hidden input, or `--stdin`), from
   the Darkbloom console. It is checked once with `GET /v1/models` and
@@ -172,25 +175,43 @@ take it (`LocalRouter`, `provider-swift/Sources/ProviderCore/Server/LocalRouter*
   printed, logged, or written to `provider.toml`, `local.json` or a tool's
   config, and a running local API uses it from its next request: no restart.
   `darkbloom route key --remove` keeps every request on this Mac again.
+- **Without a local key (`--no-auth`) nothing is passed on.** Anything that
+  reaches the port is then a client, a web page included, so the router
+  serves this Mac only, never reads the account key and never dials the
+  coordinator, whatever the route. The start banner, `darkbloom local` and
+  `darkbloom route key` say so.
 - **What passes a request on:** only this Mac's own `404` (it doesn't serve
   the model), `429` (its queue is full) or `503` (draining, an add-on hold, a
   refused load, no capacity), before any byte reached the client. A client
   error (`400`, `413`, `422`), a wrong local key (`401`), a cancel, an engine
   failure and anything after the first streamed byte stay this Mac's answer.
   The routed paths are chat completions, completions and responses; every
-  other route is this Mac's only.
+  other route is this Mac's only. A `404` for a public alias of a build this
+  Mac serves (the name the coordinator lists it under) is first answered by
+  this Mac, under the build's own id.
 - **What is sent:** the request body as the client wrote it, with the account
   key and the route header. The client's own `Authorization` and
   `X-Darkbloom-Route` are never forwarded, so a tool can't choose a billed
   route. A streamed answer is passed through chunk by chunk as it arrives.
+- **A client that leaves stops the request at the coordinator too,** so the
+  network doesn't go on generating, billed, and your other Mac doesn't stay
+  busy. A reset connection stops it at once, even while nothing flows (a
+  long prompt). A normal close reads as a half-close, which the local API
+  allows, as for this Mac's own streams, so it stops the request when the
+  next chunk can't be delivered: mid-stream within a chunk or two, during a
+  long prompt at its first token.
 - **What comes back:** the coordinator's answer with its status, body and
   `Retry-After` as sent, plus `X-Darkbloom-Served-By: darkbloom` and
   `X-Darkbloom-Route-Used: self|prefer`. This Mac's own answers carry
-  `X-Darkbloom-Served-By: this-mac`. Three answers are this Mac's own words:
-  a `402` on the network hop starts its message with `No balance for the
-  network fallback:` (status, type, code and `Retry-After` unchanged); a
-  refused account key is `502` `account_key_refused` (not the client's `401`);
-  an unreachable coordinator is `502` `darkbloom_unreachable`.
+  `X-Darkbloom-Served-By: this-mac`. These answers are this Mac's own words:
+  - a `402` from `prefer` that `self` couldn't turn into an answer starts its
+    message with `No balance for the network fallback:` (status, type, code
+    and `Retry-After` unchanged);
+  - a refused account key is `502` `account_key_refused` (not the client's
+    `401`);
+  - an unreachable coordinator is `502` `darkbloom_unreachable`;
+  - an error body that can't be read is `502` `darkbloom_error_unreadable`;
+  - a body over the local endpoint's limit is `413`, before anything else.
 - **Never back to this Mac:** the coordinator can't leave one Mac out of a
   `self` request, and a `self` request to a Mac that can't take work waits
   120 s for `429 machine_busy`. So on a Mac that also serves Darkbloom
@@ -198,12 +219,16 @@ take it (`LocalRouter`, `provider-swift/Sources/ProviderCore/Server/LocalRouter*
   requested model (or a build of the alias it names), the router first asks
   the coordinator's `self` view of that one model (`GET /v1/models/<id>`). With
   no other Mac of yours serving it, `my-macs` answers this Mac's status with
-  code `this_mac_only`, and `my-macs-first` goes straight to `prefer`.
-  `--local` and `cluster local` never take coordinator work, so they never
-  ask.
+  code `this_mac_only`, and `my-macs-first` answers `prefer`'s `402` without
+  the `self` retry. `--local` and `cluster local` never take coordinator work,
+  so they never ask.
 - **Timeouts:** 10 s to put a request on the wire, then up to 5 minutes
-  without a byte (`self` may queue for 120 s), with no limit on a stream's
-  length. Model lists from the coordinator wait at most 5 s.
+  without a byte, with no limit on a stream's length. With `my-macs`, a `self`
+  request for a model only busy Macs of yours serve queues at the coordinator
+  for up to 120 s before `429 machine_busy`; `my-macs-first` doesn't wait
+  there. Model lists from the coordinator wait at most 3 s.
+- **A plain `ws://` coordinator URL** (a test coordinator) sends the account
+  key without TLS, as the provider already sends its own token there.
 - **`max_completion_tokens`:** every local API serves a chat request that
   names only `max_completion_tokens` (what newer OpenAI clients send) with
   that value as `max_tokens`; with both, `max_tokens` wins
@@ -220,11 +245,13 @@ take it (`LocalRouter`, `provider-swift/Sources/ProviderCore/Server/LocalRouter*
 
 `GET /v1/models` (and `/models`) answers this Mac's models first, then, with
 an upstream route, your Macs' models (`self`), then with `my-macs-first` the
-public list, each id once:
+public list, each model once. A public alias of a build this Mac lists is that
+build, listed once as `this-mac`: on a Mac that also serves Darkbloom, the
+coordinator's `self` list names this Mac's own builds by their aliases.
 
 | Field | Value |
 |---|---|
-| `owned_by` | `this-mac`, `my-macs` (your other Macs, free) or `darkbloom` (the network, billed) |
+| `owned_by` | `this-mac`, `my-macs` (your other Macs, free) or `darkbloom` (the network, billed). Before the router, this Mac's entries said `local` |
 | `context_length`, `max_model_len` | This Mac's engine for its resident models; else the Darkbloom catalog (`/v1/models/catalog`), by model or by the alias's build; omitted when unknown |
 | `max_output_length` | The catalog's (a pair's: its profile's); omitted when unknown |
 | `name` | The coordinator's or the catalog's display name for your Macs' and the network's models |

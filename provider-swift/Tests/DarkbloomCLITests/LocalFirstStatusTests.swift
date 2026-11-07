@@ -20,8 +20,9 @@ enum LocalFirstStatusFixtures {
                     runtimeCapabilities: connected ? [] : nil, meFirst: meFirst)
     }
 
-    static func endpoint(pid: Int32 = 4_242) -> LocalEndpoint.Info {
-        LocalEndpoint.Info(host: "127.0.0.1", port: 8001, apiKey: "dk-local-fixture-secret", version: "test", pid: pid,
+    /// The running local API; `apiKey: ""` is one started with `--no-auth`.
+    static func endpoint(pid: Int32 = 4_242, apiKey: String = "dk-local-fixture-secret") -> LocalEndpoint.Info {
+        LocalEndpoint.Info(host: "127.0.0.1", port: 8001, apiKey: apiKey, version: "test", pid: pid,
                            updatedAt: "2026-11-06T14:00:00Z")
     }
 
@@ -45,6 +46,10 @@ enum LocalFirstStatusFixtures {
                                              accountKeySaved: { key }, now: now, timeZone: utc)
                 lines += Local.servingLines(info: endpoint(), state: state, route: nil, accountKeySaved: { key })
             }
+            lines += Status.servingLines(state: state, liveEndpoint: endpoint(apiKey: ""), route: .myMacsFirst,
+                                         accountKeySaved: { true }, now: now, timeZone: utc)
+            lines += Local.servingLines(info: endpoint(apiKey: ""), state: state, route: .myMacsFirst,
+                                        accountKeySaved: { true })
         }
         lines += Status.servingLines(state: state(), liveEndpoint: nil, route: nil, accountKeySaved: { false })
         return lines + Local.notRunningHint

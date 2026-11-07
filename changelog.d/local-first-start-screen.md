@@ -16,5 +16,6 @@
   pair ports 47420–47423, saves it and says which; `--port` still picks one.
 - `darkbloom status` says how this Mac serves in one line (for example `Serving: you first — Darkbloom paused since
   14:02 …`) and where your requests go, with whether an account key is saved. `darkbloom local` adds the same, and
-  names `start --me-first` beside `start --local`. No start screen prints the local key (except `--local`'s own
-  banner, as before), and no screen shows a speed.
+  names `start --me-first` beside `start --local`. With `--no-auth`, `start` and `status` say your requests stay on
+  this Mac. No start screen prints the local key (except `--local`'s own banner, as before), and no screen shows a
+  speed.

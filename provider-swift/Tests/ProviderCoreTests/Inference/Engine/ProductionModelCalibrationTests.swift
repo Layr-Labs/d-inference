@@ -92,7 +92,7 @@ struct ProductionModelCalibrationTests {
         #expect(!(await bridge.shapeWarmupCompletedTest()))
         #expect(!(await bridge.startShapeWarmupIfNeeded(requireNominalPosture: false)),
             "preemption backs off before a retry")
-        await bridge.waitForPumpRetirement(requestId: "foreground-preemption")
+        await bridge.awaitPumps(requestId: "foreground-preemption")
         #expect(await bridge.startShapeWarmupIfNeeded(requireNominalPosture: false, now: .now + .seconds(3_600)))
         await bridge.awaitProductionCalibration()
         #expect(await bridge.shapeWarmupCompletedTest())
@@ -326,9 +326,12 @@ struct ProductionModelCalibrationTests {
         tokenizer: any Tokenizer = ModelCalibrationTokenizer(),
         eosTokenIds: Set<Int> = []) async throws -> StandaloneServer.CachedSlot {
         let experts = modelID.contains("27B") ? 0 : 4
-        // Keep tensors small but enough real layers for measured prefill to
-        // stay inside the existing 20k TPS plausibility bound. A two-layer toy
-        // runs at ~100k TPS and is correctly rejected by serving-rate policy.
+        // Small tensors with enough real layers for a realistic step mix. The
+        // dense toy prefills 512 tokens at about 16k TPS on CI Macs, within
+        // 20% of the 20k plausibility ceiling, and a faster run drops the
+        // sample. The slot removes its ceiling (see below), so the measured
+        // cells always count. EngineV2PrefillSamplingTests and
+        // ModelCalibrationTests cover the ceiling itself.
         let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(configData: Data("""
         {"model_type":"qwen3_5","hidden_size":64,"num_hidden_layers":32,
          "intermediate_size":128,"num_attention_heads":1,"num_key_value_heads":1,
@@ -358,8 +361,10 @@ struct ProductionModelCalibrationTests {
             environment: [PrefixCachePolicy.environmentFlag: "0", KVBackendGuardStore.pathEnvKey: "/dev/null",
                 EngineV2KVQuantizationPolicy.environmentKey: "native"],
             startServingTelemetry: false, emitTelemetry: { _ in })
-        return StandaloneServer.CachedSlot(bundle: bundle, container: container, tokenizer: tokenizerHandle,
+        let slot = StandaloneServer.CachedSlot(bundle: bundle, container: container, tokenizer: tokenizerHandle,
             modelType: modelType, isVLM: false, sizing: sizing, lastUsedAt: .now)
+        await slot.bridge.removePrefillRateCeilingTest()
+        return slot
     }
 }
 
@@ -390,6 +395,7 @@ private struct CalibrationFixtureProcessor: UserInputProcessor {
 
 private extension EngineV2Bridge {
     func awaitProductionCalibration() async { await modelCalibration.task?.value }
+    func removePrefillRateCeilingTest() { prefillRateCeiling = .infinity }
     func shapeWarmupCompletedTest() -> Bool { modelCalibration.shapeWarmupWidth != nil }
     func shapeWarmupWidthTest() -> Int? { modelCalibration.shapeWarmupWidth }
     func setShapeWarmupCellsCompletedTest(_ cells: Int) { modelCalibration.shapeWarmupCellsCompleted = cells }
@@ -401,7 +407,6 @@ private extension EngineV2Bridge {
         (modelCalibration.shaderCacheCold, modelCalibration.shaderCacheProbeRuns.count)
     }
     func scheduledShapeWarmupTest() -> Bool { modelCalibration.task != nil }
-    func waitForPumpRetirement(requestId: String) async { await pumpTasks[requestId]?.value }
     func productionCalibrationWorkCounters() -> [Int64] {
         [prefillTokensTotal, prefillRequestsTotal, generatedTokensTotal, generationRequestsTotal]
     }

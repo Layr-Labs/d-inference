@@ -121,17 +121,19 @@ extension EngineV2Bridge {
     /// still rejected.
     static let maxPlausiblePrefillTps = 20_000.0
 
-    /// Classify one prefill sample against the plausibility bounds.
-    /// The window starts at the engine's first prefill launch and ends at
+    /// Classify one prefill sample against the plausibility bounds: the
+    /// window floor and `ceiling`, which a bridge sets from its own
+    /// `prefillRateCeiling`. The window starts at the engine's first prefill launch and ends at
     /// confirmed prompt computation. A shared interval tracker identifies
     /// both same-model and other-model contention independently of delivery.
     static func classifyPrefillSample(
-        prefilledTokens: Int, prefillSeconds: Double
+        prefilledTokens: Int, prefillSeconds: Double,
+        ceiling: Double = maxPlausiblePrefillTps
     ) -> Double? {
         guard prefilledTokens > 0 else { return nil }
         guard prefillSeconds >= minPrefillWindowSeconds else { return nil }
         let tps = Double(prefilledTokens) / prefillSeconds
-        guard tps.isFinite, tps <= maxPlausiblePrefillTps else { return nil }
+        guard tps.isFinite, tps <= ceiling else { return nil }
         return tps
     }
 

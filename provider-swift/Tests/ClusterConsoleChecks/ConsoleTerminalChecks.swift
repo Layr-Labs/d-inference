@@ -33,7 +33,7 @@ extension ClusterConsoleCheck {
         expect(sameMode(pty.mode, before), "leaving restores the mode it found")
         terminal.leave()
         expect(sameMode(pty.mode, before), "leaving twice is harmless")
-        usleep(50_000)
+        pty.drain()
         let written = pty.output
         expect(written.hasPrefix(enterScreen) && written.contains("frame") && written.hasSuffix(leaveScreen),
             "the alternate screen is entered first and left last")
@@ -117,7 +117,6 @@ extension ClusterConsoleCheck {
         pty.send("q")
         guard case .success(let exit)? = run.end() else { return expect(false, "q did not close the screen") }
         expectEqual(exit, .init(code: 0, farewell: []), "q closes with status 0")
-        usleep(50_000)
         expect(sameMode(pty.mode, before), "the terminal mode is restored after q")
         expect(pty.output.hasSuffix(leaveScreen), "the alternate screen is left last")
 
@@ -225,7 +224,6 @@ extension ClusterConsoleCheck {
                 expect(false, "\(what): the console did not close")
                 return nil
             }
-            usleep(50_000)
             expect(sameMode(run.terminal.mode, before), "\(what): the terminal mode is restored")
             expect(run.terminal.output.hasSuffix(leaveScreen), "\(what): the alternate screen is left")
             return exit

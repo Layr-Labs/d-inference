@@ -64,7 +64,7 @@ struct ModelCalibrationTests {
         for await event in stream {
             if case .error(let error) = event { Issue.record("early request failed: \(error)") }
         }
-        await bridge.waitForServingRetirementTest(requestId: "early-serving-sample")
+        await bridge.awaitPumps(requestId: "early-serving-sample")
         let before = try #require(await bridge.backendSlotCapacity().performanceMeasurements)
         #expect(before.isolatedPrefill != nil && before.decode != nil)
         let counters = await bridge.calibrationCountersTest()
@@ -111,6 +111,34 @@ struct ModelCalibrationTests {
         #expect(after.workloadBuckets.count == before.workloadBuckets.count)
         #expect(await bridge.calibrationCountersTest() == counters)
         #expect(await bridge.pendingCalibrationEvidenceCountTest() == 0)
+        await bridge.shutdown()
+    }
+
+    @Test("a measured cell prefilling faster than the plausibility ceiling publishes no prefill sample",
+        arguments: [(25, 1), (26, 2)])
+    func prefillCeilingDropsFastCalibrationSample(windowMilliseconds: Int, prefillSamples: Int) async throws {
+        let gate = RecoveryStepGate()
+        defer { gate.release() }
+        // Hold the second measured request (after the warmup and the first) at its prefill.
+        let (bridge, engine, budget) = try fixture(gate: gate, gateOnRequest: 3)
+        #expect(await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false))
+        try await waitForEntry(gate)
+        let (_, receipt) = try #require(await bridge.activeCalibrationReceiptTest())
+        // A receipt keeps its first sample, so the engine's own later timing
+        // is ignored: 512 tokens in 25 ms is 20,480 TPS, in 26 ms 19,692 TPS.
+        var usage = CBv2Usage(promptTokens: 512, completionTokens: 0)
+        usage.timing.prefillFirstLaunchNanos = 1_000_000
+        usage.timing.promptComputedNanos = 1_000_000 + UInt64(windowMilliseconds) * 1_000_000
+        receipt.complete(usage)
+        gate.release()
+        await bridge.waitForCalibrationTest()
+        let measurements = try #require(await bridge.backendSlotCapacity().performanceMeasurements)
+        #expect(measurements.isolatedPrefill?.sampleCount == Int64(prefillSamples), "\(measurements)")
+        // Dropped, not reclassified as a contended sample.
+        #expect(!measurements.workloadBuckets.contains { $0.phase == "prefill" && $0.contention == "contended" })
+        #expect(measurements.decode?.sampleCount == 2)
+        #expect(await bridge.calibrationRetryStateTest().0, "the first cell's sample completes the bootstrap")
+        #expect(engine.capacity().activeRequests == 0 && budget.serviceBudget.count == 0)
         await bridge.shutdown()
     }
 
@@ -383,10 +411,6 @@ private extension EngineV2Bridge {
     }
 
     func pendingCalibrationEvidenceCountTest() -> Int { modelCalibration.pendingObservations.count }
-
-    func waitForServingRetirementTest(requestId: String) async {
-        await pumpTasks[requestId]?.value
-    }
 
     func runContinuousCalibrationTest(budget: GlobalKVCacheBudget) async {
         let task = budget.serviceBudget.idleCalibration.startIfIdle(isIdle: { budget.serviceBudget.isIdle }) {

@@ -24,14 +24,29 @@ Source ownership does not grant deployment authority. Infrastructure, hosting
 and traffic changes require specific human approval. Release/model registration
 remains an external API operation.
 
-## Run A Provider
+## Use Your Mac's Models
 
-Start with [installation](docs/provider/installation.md), then
-[quickstart](docs/provider/quickstart.md). Use [direct mode](docs/provider/direct-mode.md)
-for local inference, [hardware requirements](docs/provider/hardware-requirements.md)
-for model fit, and [cache storage](docs/provider/cache-storage.md) for encrypted
-SSD storage and daily write limits.
-To have an AI agent do the setup, point it at the [agent setup prompt](docs/provider/agent-setup.md).
+Two commands put OpenCode (or Hermes) on this Mac's own models:
+
+```bash
+curl -fsSL https://api.darkbloom.dev/install.sh | bash
+darkbloom start --opencode        # or --hermes
+```
+
+`start` asks how this Mac serves: **Only me**, **Darkbloom network** or **Both,
+me first** (Enter). Choose Only me or Both, me first: it then serves your models
+in the background and sets OpenCode up. <!-- pending LS-1 --> In OpenCode, `/models` →
+Darkbloom. Two Macs: run `darkbloom cluster` on each, then
+`darkbloom start --opencode` on either. <!-- pending LS-3 -->
+
+The [quickstart](docs/provider/quickstart.md) walks through it, and
+[Use your Mac yourself, first](docs/provider/local-first.md) says what each
+choice runs, costs and earns. See also [the local API](docs/provider/direct-mode.md)
+for other OpenAI clients, [installation](docs/provider/installation.md),
+[hardware requirements](docs/provider/hardware-requirements.md) for model fit,
+and [cache storage](docs/provider/cache-storage.md) for encrypted SSD storage
+and daily write limits. To have an AI agent set up serving the Darkbloom
+network, point it at the [agent setup prompt](docs/provider/agent-setup.md).
 
 The provider is the plaintext inference endpoint. Network encryption does not
 hide prompts from that process or from the coordinator's transient request

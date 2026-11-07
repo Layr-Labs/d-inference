@@ -1,6 +1,6 @@
 # Build and validate the macOS desktop app
 
-> Last updated: 2026-10-26
+> Last updated: 2026-11-07
 
 Build the Electron frontend and its Swift CLI/backend API in this repository.
 This guide covers development and review artifacts; production distribution also
@@ -129,8 +129,8 @@ update replaces the executable). `DesktopRuntimeProfile` validates stdout alone
 for this probe, ignoring stderr notices such as the macOS upgrade warning; failed,
 invalid, or oversized output is not a version. Ordinary `DesktopWorker` commands
 still capture stderr diagnostics. The API also probes `desktop --help`: actions that need
-a `desktop` subcommand the runtime lacks (provider cooling, Studio's local-only
-serving) are refused with an explanation, and cooling controls are reported as
+a `desktop` subcommand the runtime lacks (provider cooling, Studio's Only me
+serving, "Local only") are refused with an explanation, and cooling controls are reported as
 unavailable.
 
 Initialize the Swift submodules, install the frontend dependencies, then run:
@@ -416,8 +416,8 @@ from a first install, and cancels a link in progress.
 - **Autopilot.** "Start serving with Autopilot" sends
   `{ action: 'autopilot', models, pinned, downloads, endpoint: true }`
   (`desktop-app/src/shared/autopilot.ts`). It mirrors
-  `darkbloom start --autopilot --model … --local-endpoint` followed by
-  `darkbloom autopilot pin …`.
+  `darkbloom start --autopilot --model … --local-endpoint` (Both, me first)
+  followed by `darkbloom autopilot pin …`.
   - With network earnings available, choose from the top three compatible earners
     over seven days; all three are checked initially. `downloads` contains only
     chosen models missing from disk. Swift completes downloads before enrollment.

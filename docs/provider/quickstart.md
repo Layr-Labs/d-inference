@@ -1,14 +1,25 @@
 # Provider quickstart
 
-> Last updated: 2026-10-25
+> Last updated: 2026-11-07
 
-From a fresh Apple Silicon Mac to a provider that is registered with the
-coordinator, linked to your account and serving. For operators; install, check,
-log in, pick models, start, then confirm serving authorization. New providers
-need macOS 27 or later: the installer refuses a fresh install on older macOS and
-asks you to update first. macOS 27 or later uses App Attest without new
-Darkbloom MDM enrollment. Darkbloom MDM will be
-deactivated soon; upgrade to macOS 27 to avoid the legacy enrollment step.
+From a fresh Apple Silicon Mac to OpenCode or Hermes on this Mac's own models,
+in two commands; then, if you want, to earning on the Darkbloom network. For
+anyone setting up a Mac.
+
+<!-- pending LS-1 -->
+<!-- pending LS-4 -->
+
+```text
+curl -fsSL https://api.darkbloom.dev/install.sh | bash   # ends with: Next: darkbloom start --opencode
+darkbloom start --opencode                               # or --hermes
+  How should this Mac serve?  1 Only me · 2 Darkbloom network · 3 Both, me first  [3]
+  → your models (downloads offered) → memory when idle → serves in the background
+  → waits for the model to load → ✓ OpenCode can use Darkbloom
+opencode                                                 # then /models → Darkbloom
+```
+
+Two Macs: run `darkbloom cluster` on each, then `darkbloom start --opencode` on
+either. <!-- pending LS-3 -->
 
 ## Prerequisites
 
@@ -17,12 +28,16 @@ deactivated soon; upgrade to macOS 27 to avoid the legacy enrollment step.
   Metal GPU (`provider-swift/Sources/darkbloom/Start/StartCommand+Preflight.swift`,
   `Start.runPreflightChecks`; `provider-swift/Sources/darkbloom/Start/StartCommand.swift`,
   `Start.prepareServeRuntime`).
-- Outbound HTTPS (443) to `api.darkbloom.dev`; the provider is an outbound-only
-  WebSocket client to `wss://api.darkbloom.dev/ws/provider`
+- macOS 27 or later: the installer refuses a fresh install on older macOS and
+  asks you to update first ([installation](./installation.md)).
+- OpenCode 2, or Hermes Agent v0.20.2 or later, already installed: Darkbloom
+  never installs them.
+- For **Only me**, nothing else: no account. To serve the Darkbloom network, a
+  Darkbloom account for `darkbloom login` (the login flow prints the URL to
+  open), and outbound HTTPS (443) to `api.darkbloom.dev`: the provider is an
+  outbound-only WebSocket client to `wss://api.darkbloom.dev/ws/provider`
   (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`,
   `CoordinatorSettings.url`).
-- A Darkbloom account for `darkbloom login`; the login flow prints the URL to
-  open.
 
 ## Steps
 
@@ -33,113 +48,152 @@ curl -fsSL https://api.darkbloom.dev/install.sh | bash
 source ~/.zshrc
 ```
 
-What the script verifies and writes is in [installation](./installation.md).
+It ends with the command to run next. What the script verifies and writes is
+in [installation](./installation.md).
 
-### 2. Check the machine
-
-```bash
-darkbloom doctor
-```
-
-Lines marked `✗` are failures. Hardware, Metal, SIP, account link, MDM
-enrollment and coordinator reachability are all covered; the check names are
-listed in [troubleshooting](./troubleshooting.md#doctor-checks).
-
-### 3. Download a model
-
-Ordinary non-enrolled `darkbloom start` (`provider-swift/Sources/darkbloom/Start/StartCommand.swift`) runs
-preflight checks (SIP, debugger, GPU, memory), offers to link your account if
-you are not logged in, shows an interactive model picker, asks whether models
-should stay loaded while idle (`Always ready`) or be unloaded after 60 minutes
-without requests and reloaded on demand (`Free when idle`, the default; or a
-custom window), then installs and starts a `launchd` user agent.
-Every idle-memory choice starts loading selected models before the daemon
-registers with the coordinator, subject to the startup timeout, model-slot
-limit and available memory ([startup preload details](./cli-reference.md#darkbloom-start)).
-
-`darkbloom models download` (`provider-swift/Sources/darkbloom/ModelsCommand.swift`)
-resolves the catalog entry and fetches from `https://models.darkbloom.ai`
-(`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`,
-`defaultR2CDNURL`). `darkbloom start` also offers an interactive catalog picker
-when nothing is downloaded yet, so this step can be skipped for ordinary serving.
-Enrollment needs at least one downloaded network model and downloads nothing
-itself. Once enrolled, every verified catalog build
-you download is available to Autopilot, and Autopilot may download catalog
-models on your behalf. Limit that with `darkbloom autopilot downloads enable
---max-storage-gb N --max-models N`, or turn it off with `darkbloom autopilot
-downloads disable`; it never deletes files
-([Autopilot](../architecture/model-autopilot.md#downloads-on-the-operators-behalf)).
-
-### 4. Link your account
+### 2. Start, and set up OpenCode
 
 ```bash
-darkbloom login
+darkbloom start --opencode      # --hermes for Hermes; both flags for both
 ```
 
-`Login` (`provider-swift/Sources/darkbloom/LoginCommand.swift`) runs the RFC 8628
-device-code flow (`provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift`,
-`performDeviceCodeLogin`): `POST /v1/device/code`, print the verification URL
-and one-time code, open the browser, poll `POST /v1/device/token` until you
-approve. The token is saved to `~/.darkbloom/auth_token`. This link is what
-makes the machine "yours" for [self-route](./self-route.md) and credits earnings
-to your account. `darkbloom start` offers this step inline if you skip it.
+`start` prints the Terms-of-Service notice (starting is acceptance), checks the
+Mac, then asks how it serves:
 
-### 5. Start serving
+```text
+How should this Mac serve?
+  1. Only me, on this Mac      Darkbloom never contacts this Mac. Your tools use this Mac's own API.
+  2. Darkbloom network         This Mac serves Darkbloom and earns while it runs.
+  3. Both, me first            This Mac serves Darkbloom while you aren't using it. When you use it,
+                               Darkbloom traffic pauses until you've been idle for 2 minutes.
+Choose 1, 2 or 3 [3]:
+```
+
+- **1, Only me:** your models, for your tools only. Free, no account, earns
+  nothing; Darkbloom never contacts this Mac.
+- **2, Darkbloom network:** earns while it serves, but gives your tools no
+  address on this Mac, so `--opencode` stops here and changes nothing.
+- **3, Both, me first** (Enter): your tools first; Darkbloom's requests, which
+  earn, pause while you use the Mac and come back after 2 idle minutes.
+
+Each one runs until `darkbloom stop`. What each runs, costs and earns, and how
+to switch later, is in [Use your Mac yourself, first](./local-first.md). Then
+`start` goes on (`provider-swift/Sources/darkbloom/Start/StartCommand.swift`,
+`provider-swift/Sources/darkbloom/Start/StartCommand+Daemon.swift`):
+
+1. **Your account**, for Darkbloom network and Both, me first: when this Mac
+   isn't linked yet, it offers to link it (`Link account? [Y/n]`). You can
+   skip it and link later ([step 4](#4-earn-on-the-darkbloom-network)).
+2. **Your models:** a picker lists the models on this Mac and in Darkbloom's
+   catalog, and downloads the ones you pick from `https://models.darkbloom.ai`
+   (`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`,
+   `defaultR2CDNURL`). `--model <id>` skips it. <!-- pending LS-1 -->
+3. **Memory when idle:** keep models loaded (`Always ready`), or unload them
+   after 60 minutes without requests and load them again on demand
+   (`Free when idle`, the default), or another window. `darkbloom idle`
+   changes it later. Selected models start loading right away
+   ([startup preload](./cli-reference.md#darkbloom-start)).
+4. **In the background:** it writes
+   `~/Library/LaunchAgents/io.darkbloom.provider.plist` (`RunAtLoad = true`,
+   `KeepAlive = false`; `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`)
+   and starts it, so it starts again at every login. With
+   `provider.auto_restart = true` (the default) it also arms the crash-recovery
+   watchdog `io.darkbloom.watchdog`
+   (`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`). <!-- pending LS-1 -->
+5. **OpenCode:** it waits for the model to load, on one line that updates as
+   it goes, then adds a `darkbloom` provider to OpenCode's config, keeps a
+   backup and prints the one-line undo. <!-- pending LS-4 --> No file and no screen holds
+   your key ([Use it from OpenCode or Hermes](./local-first.md#use-it-from-opencode-or-hermes)).
+
+### 3. Use it
 
 ```bash
-darkbloom start
+opencode
 ```
 
-`Start` (`provider-swift/Sources/darkbloom/Start/StartCommand.swift`,
-`provider-swift/Sources/darkbloom/Start/StartCommand+Daemon.swift`) prints the
-Terms-of-Service notice (starting is acceptance), runs preflight, offers inline
-login, uses the ordinary model picker unless explicit selection or Autopilot
-enrollment bypasses it, then writes `~/Library/LaunchAgents/io.darkbloom.provider.plist`
-(`RunAtLoad = true`, `KeepAlive = false`;
-`provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`) and starts it.
-With `provider.auto_restart = true` (the default) it also arms the crash-recovery
-watchdog `io.darkbloom.watchdog`
-(`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`). The service
-starts again at every login.
+In OpenCode, `/models` → **Darkbloom**, then pick a model; your default model is
+unchanged. With `--hermes`, Darkbloom is Hermes' main model: run `hermes`. Any
+other OpenAI client: `darkbloom local` prints the address, the key and a `curl`
+to try ([the local API](./direct-mode.md)).
 
-The experimental Autopilot interest prompt defaults to No. Yes records consent
-for the default shadow rollout, **not active residency control**. It skips the
-picker and discovers/verifies all eligible already-downloaded active network
-models, excluding arbitrary local/off-catalog, retired, ineligible or unverified
-builds. Enrollment downloads nothing; if none qualify, it fails before replacing
-the daemon. Saved model, preload, idle and other preferences are preserved, and
-ordinary startup/serving continues. Check `darkbloom autopilot status` for the
-recorded inventory and `shadow` (not activated) phase. Live rollout later chooses
-among cached models for utilization, not guaranteed earnings. Models you download
-later join Autopilot's set when the provider next starts, with no new consent
-step; `darkbloom autopilot models` refreshes the saved selection itself. See
-[Autopilot CLI](./cli-reference.md#darkbloom-autopilot).
+- **Switch later:** `darkbloom mode only-me`, `darkbloom mode network` or
+  `darkbloom mode both`, with the same models, address and key. <!-- pending LS-2 -->
+- **Two Macs:** run `darkbloom cluster` on each Mac to pair them and choose
+  how the pair serves, then `darkbloom start --opencode` on either Mac
+  ([Two Macs as one provider](./two-mac-cluster.md)). <!-- pending LS-3 -->
 
-### 6. Confirm verification
+### 4. Earn on the Darkbloom network
 
-On **macOS 27 or later**, the installer and `darkbloom enroll` skip MDM profile
-download and System Settings. Run `darkbloom status` and `darkbloom doctor` to
-check App Attest approval. Serving requires a qualified signed provider and an
-enabled coordinator; pending or unavailable approval does not trigger MDM
-fallback. See [current platform serving authorization](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/reference/provider-authorization.md).
+Only for **Darkbloom network** and **Both, me first**: **Only me** never
+contacts Darkbloom, so skip to [Verify](#verify).
 
-On **older macOS**, upgrade to macOS 27 to avoid MDM, or finish the legacy setup:
+1. **Link your account**, unless `start` already did:
 
-```bash
-darkbloom enroll
-```
+   ```bash
+   darkbloom login
+   darkbloom restart     # the running provider picks the account up when it starts
+   ```
 
-Approve the Darkbloom profile in System Settings and follow the
-[legacy verification steps](./attestation.md#steps). Darkbloom MDM will be
-deactivated soon. Keep any employer management profile. Existing Darkbloom
-profiles should remain installed until `darkbloom unenroll` approves App Attest
-migration; choosing full exit instead stops the provider.
+   `Login` (`provider-swift/Sources/darkbloom/LoginCommand.swift`) runs the RFC 8628
+   device-code flow (`provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift`,
+   `performDeviceCodeLogin`): `POST /v1/device/code`, print the verification URL
+   and one-time code, open the browser, poll `POST /v1/device/token` until you
+   approve. The token is saved to `~/.darkbloom/auth_token`. This link is what
+   makes the machine "yours" for [self-route](./self-route.md) and credits
+   earnings to your account.
+
+2. **Confirm verification.** On **macOS 27 or later**, the installer and
+   `darkbloom enroll` skip MDM profile download and System Settings: App Attest
+   replaces new Darkbloom MDM enrollment. Run `darkbloom status` and
+   `darkbloom doctor` to check App Attest approval. Serving requires a
+   qualified signed provider and an enabled coordinator; pending or unavailable
+   approval does not trigger MDM fallback. See [current platform serving authorization](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/reference/provider-authorization.md).
+
+   On **older macOS**, upgrade to macOS 27 to avoid MDM, or finish the legacy
+   setup:
+
+   ```bash
+   darkbloom enroll
+   ```
+
+   Approve the Darkbloom profile in System Settings and follow the
+   [legacy verification steps](./attestation.md#steps). Darkbloom MDM will be
+   deactivated soon. Keep any employer management profile. Existing Darkbloom
+   profiles should remain installed until `darkbloom unenroll` approves App Attest
+   migration; choosing full exit instead stops the provider.
+
+3. **Autopilot (experimental, optional).** For Darkbloom network and Both, me
+   first, `start` also asks whether to join Autopilot; the answer defaults to
+   No. Yes records consent for the default shadow rollout, **not active
+   residency control**. It skips the picker and discovers/verifies all eligible
+   already-downloaded active network models, excluding arbitrary
+   local/off-catalog, retired, ineligible or unverified builds. Enrollment
+   downloads nothing; if none qualify, it fails before replacing the daemon.
+   Saved model, preload, idle and other preferences are preserved, and ordinary
+   startup/serving continues. Check `darkbloom autopilot status` for the
+   recorded inventory and `shadow` (not activated) phase. Live rollout later
+   chooses among cached models for utilization, not guaranteed earnings. Once
+   enrolled, every verified catalog build you download is available to
+   Autopilot, and Autopilot may download catalog models on your behalf. Limit
+   that with `darkbloom autopilot downloads enable --max-storage-gb N
+   --max-models N`, or turn it off with `darkbloom autopilot downloads disable`;
+   it never deletes files
+   ([Autopilot](../architecture/model-autopilot.md#downloads-on-the-operators-behalf)).
+   Models you download later join Autopilot's set when the provider next
+   starts, with no new consent step; `darkbloom autopilot models` refreshes the
+   saved selection itself. See [Autopilot CLI](./cli-reference.md#darkbloom-autopilot).
+
+The provider becomes eligible for public traffic after the coordinator grants
+current App Attest authorization or complete legacy verification. Check
+recorded earnings in the dashboard; connection or setup completion alone does
+not prove that the provider is serving or earning. See [attestation](./attestation.md).
 
 ## Verify
 
 ```bash
-darkbloom status            # config, hardware, live daemon state, trust level
-darkbloom doctor            # ✓ daemon connected, ✓ trust level, ✓ account link
+darkbloom status            # how this Mac serves, live daemon state, trust level
+darkbloom local             # the local API's address and key (Only me, Both, me first)
+darkbloom doctor            # for the Darkbloom network: ✓ daemon connected, ✓ trust level, ✓ account link
 darkbloom logs --last 1h    # unified logs, subsystem dev.darkbloom.provider
 ```
 
@@ -149,18 +203,17 @@ and the stale threshold are in
 [troubleshooting → Doctor checks](./troubleshooting.md#doctor-checks). A stale
 snapshot is reported as such
 (`provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift`, `isStale`).
-
-The provider becomes eligible for public traffic after the coordinator grants
-current App Attest authorization or complete legacy verification. Check recorded
-earnings in the dashboard; connection or setup completion alone does not prove
-that the provider is serving or earning. See [attestation](./attestation.md).
+`doctor` also checks hardware, Metal, SIP, the account link, MDM enrollment and
+the coordinator, which **Only me** doesn't need; lines marked `✗` are failures.
 
 ## Configuration
 
 The config file is optional: `~/.config/darkbloom/provider.toml`
 (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`,
 `defaultConfigPath`). Without it every key takes the code default; `darkbloom
-autoupdate` and `darkbloom beta` write it when they change a value. The keys
+autoupdate` and `darkbloom beta` write it when they change a value, and
+`darkbloom start` writes how this Mac serves in `[local]`
+([configuration](../reference/configuration.md#local-first-use-local)). The keys
 that matter on day one, with an omitted key taking its code default:
 
 ```toml
@@ -242,11 +295,15 @@ status, and usage in the console at `https://console.darkbloom.dev`.
 A green `doctor` and live inference rows do not prove a `model=base_reward`
 grant. [Check a missing base reward](base-rewards.md).
 
-Self-route traffic to your own machine is always free; see
-[self-route](./self-route.md).
+A request this Mac's local API serves itself is never billed, and self-route
+traffic to your own machine is always free; see [self-route](./self-route.md).
 
 ## Next steps
 
+- [Use your Mac yourself, first](./local-first.md) — the three choices,
+  switching, and OpenCode or Hermes in detail.
+- [The local API](./direct-mode.md) — its address, key, routes and the local
+  router, for any OpenAI client.
 - [Installation details](./installation.md) — manual install, updates, uninstall.
 - [Hardware requirements](./hardware-requirements.md) — specs, memory model,
   thermal guidance.
@@ -254,5 +311,3 @@ Self-route traffic to your own machine is always free; see
 - [Attestation](./attestation.md) — trust levels, Secure Enclave, MDM/MDA,
   APNs code-identity.
 - [Troubleshooting](./troubleshooting.md) — common failures and fixes.
-- [Direct mode](./direct-mode.md) — use your Mac locally without the
-  coordinator relay.

@@ -2,7 +2,7 @@
 
 > Last updated: 2026-11-07
 
-How Darkbloom points OpenCode 2 and Hermes Agent at its local endpoint by editing their own config files: the
+How Darkbloom points OpenCode 2 and Hermes Agent at its local API (Only me or Both, me first) by editing their own config files: the
 endpoint and key file, the models, the two planners and the safe-edit rules. This explanation is for provider
 developers. `darkbloom start --opencode` / `--hermes` call them (`ToolIntegrationStep`,
 `provider-swift/Sources/darkbloom/ToolIntegration/ToolIntegrationStep.swift`); for users, see
@@ -46,6 +46,8 @@ flowchart LR
    (`OpenCodeConfigPlan.modelEntries`, `HermesEdit.modelEntries`): `IntegrationModel.keeping` takes the entry's name,
    capabilities and vision, its context when the endpoint gives none, and its output while the context is the one it
    was set for. A model with no entry keeps the fallbacks and is named in `ToolConfigSummary.undescribed`.
+   The rule these limits follow: local and direct use get each model's full context window and every capability it
+   has, and only the Mac's memory may bound a request; OpenRouter traffic is separate. <!-- pending R-FULL -->
 3. **OpenCode.** `OpenCodeConfigPlan.plan` reads the file into byte ranges with `JSONCDocument` and replaces only the
    `providers.<id>` value, or appends it in the file's indentation and trailing-comma style. The block has the base
    URL, `apiKey: "{file:<key file>}"` (under `~` in the home directory), `compatibility.maxTokensField: "max_tokens"`
@@ -123,7 +125,7 @@ flowchart LR
 
 ## Related
 
-- [Direct mode](../provider/direct-mode.md): the local endpoint, its key and key files.
+- [The local API](../provider/direct-mode.md): its address, key and key files.
 - [Testing the config writers](../developer/test.md#opencode-and-hermes-config-writers).
 - [Configuration reference](../reference/configuration.md#non-darkbloom_-variables-the-provider-honours):
   `XDG_CONFIG_HOME` and `HERMES_HOME`.

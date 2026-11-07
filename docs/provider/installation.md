@@ -1,11 +1,12 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-07
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
-is updated afterwards, and how to remove everything. For operators; at the end
-`darkbloom doctor` runs and reports the machine's state.
+is updated afterwards, and how to remove everything. For anyone installing
+Darkbloom; the installer ends with the command to run next,
+`darkbloom start --opencode` ([quickstart](./quickstart.md)).
 
 ## Prerequisites
 
@@ -27,18 +28,8 @@ is updated afterwards, and how to remove everything. For operators; at the end
 
 ### 1. Run the installer
 
-[backend]
-enabled_models = []
-idle_timeout_mins = 60   # free when idle; 0 = always ready (see `darkbloom idle`)
-max_model_slots = 3
-
-[gemma_optimizations]
-prefill_layer18 = true
-weighted_r1 = true
-
-[coordinator]
-url = "wss://api.darkbloom.dev/ws/provider"
-private_only = false
+```bash
+curl -fsSL https://api.darkbloom.dev/install.sh | bash
 ```
 
 The coordinator serves `scripts/install.sh` at `/install.sh` with its own base
@@ -142,6 +133,13 @@ The script performs these actions in order (`scripts/install.sh`; failures exit
    [authorization contract](../reference/provider-authorization.md).
 8. **Step 5/5 — catalog.** `GET $COORD_URL/v1/models/catalog?type=text`;
    interactive runs print up to 20 entries. Nothing is downloaded.
+9. **Done.** It prints the version and the command, then that
+   `darkbloom start` asks how this Mac serves (Only me, Darkbloom network, or
+   Both, me first), that `--opencode` then sets OpenCode up (`/models` →
+   Darkbloom; `--hermes` for Hermes), and that two Macs pair with
+   `darkbloom cluster` on each. Its last line is the command to run next:
+   `Next: darkbloom start --opencode`. Every command it prints uses the
+   installed identity's name (`darkbloom-dev` for a DevNet build).
 
 ### 2. Reload your shell
 
@@ -149,14 +147,16 @@ The script performs these actions in order (`scripts/install.sh`; failures exit
 source ~/.zshrc   # or open a new terminal
 ```
 
-### 3. Check the machine
+### 3. Start Darkbloom
 
 ```bash
-darkbloom doctor
+darkbloom start --opencode      # or --hermes, or plain darkbloom start for neither
 ```
 
-Continue with the [quickstart](./quickstart.md) to download a model, link the
-account and start serving.
+It asks how this Mac serves (**Only me**, **Darkbloom network** or **Both, me
+first**), then which models to serve, and sets OpenCode up. <!-- pending LS-1 --> The
+[quickstart](./quickstart.md) walks through it, including linking your account
+to earn on the Darkbloom network.
 
 ## Verify
 
@@ -167,6 +167,11 @@ codesign --verify --deep --strict \
   -R='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"' \
   ~/.darkbloom/Darkbloom.app && echo signature OK
 ```
+
+`darkbloom doctor` checks the machine for serving the Darkbloom network: its
+hardware, account link, verification and the coordinator
+([doctor checks](./troubleshooting.md#doctor-checks)). **Only me** needs none
+of the network checks.
 
 ## Update
 
@@ -373,7 +378,7 @@ Neither `darkbloom uninstall` nor `darkbloom stop --uninstall` removes that job.
 
 ## Related
 
-- [Quickstart](./quickstart.md) — login, start, status.
+- [Quickstart](./quickstart.md) — `darkbloom start --opencode`, the three choices, then earning.
 - [CLI reference](./cli-reference.md) — every flag, path and runtime constant.
 - [Troubleshooting](./troubleshooting.md) — installer exit messages and fixes.
 - [Attestation](./attestation.md) — what the Secure Enclave key and MDM profile buy you.

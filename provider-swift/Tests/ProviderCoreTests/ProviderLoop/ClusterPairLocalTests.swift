@@ -346,35 +346,42 @@ struct ClusterPairLocalTests {
 
     /// The queue is bounded as `cluster local`'s is: a request that finds it
     /// full is refused with 429, and one that waited past its ceiling with
-    /// 503. A waiter whose client went away leaves the queue.
+    /// 503. A cancelled waiter leaves at once from wherever it waits: the
+    /// second here, which nothing else wakes (the capacity refresh wakes only
+    /// the first).
     @Test func aFullQueueIs429AWaiterPastItsCeilingIs503AndACancelledWaiterLeaves() async throws {
         let loop = try await pairLeaderLoop()
-        await loop.setClusterPairLocalQueueForTesting(maximumWaiting: 1)
+        await loop.setClusterPairLocalQueueForTesting(maximumWaiting: 2)
         let owner = ScriptedPairOwner()
-        // A 300 ms request lifetime: with one lane and one waiting place, a
-        // waiter's ceiling is two lifetimes.
+        // A 500 ms request lifetime: with one lane and two waiting places, a
+        // waiter's ceiling is three lifetimes.
         let profile = try DistributedResidentExecutionProfile(id: owner.profileID, vocabularySize: 100,
-            maxPromptTokens: 8192, maxOutputTokens: 128, maxContextTokens: 8192 + 128, requestTimeout: .milliseconds(300))
+            maxPromptTokens: 8192, maxOutputTokens: 128, maxContextTokens: 8192 + 128, requestTimeout: .milliseconds(500))
         let specification = ClusterPairSlotSpecification(publicModelID: clusterPairFixtureModel, modelType: "qwen3_5",
             tokenizer: TokenizerHandle(DistributedTestTokenizer()), eosTokenIDs: [99], expectedIdentity: owner.identity,
             profile: profile, artifactBytes: 1 << 30)
         try await loop.publishClusterPairSlot(specification, owner: owner)
         let holder = try await loop.acquireModelForLocal(clusterPairFixtureModel)
 
-        let waiter = PendingAcquisition(loop)
+        let first = PendingAcquisition(loop)
         #expect(await clusterPairWait { await loop.clusterPairLocalWaitingCount == 1 })
+        let second = PendingAcquisition(loop)
+        #expect(await clusterPairWait { await loop.clusterPairLocalWaitingCount == 2 })
         do { _ = try await loop.acquireModelForLocal(clusterPairFixtureModel); Issue.record("a full queue admitted") }
         catch { #expect(localStatus(error) == 429, "\(error)") }
+
+        second.task.cancel()
+        // Bounded either way: without its own wake, the second would leave only
+        // once the first's ceiling put it in front.
+        #expect(await clusterPairWait(.milliseconds(300)) { second.finished.value },
+                "a cancelled waiter behind another leaves at once")
+        await #expect(throws: CancellationError.self) { _ = try await second.task.value }
+        #expect(await loop.clusterPairLocalCounts == (1, 2, 1), "only the first still waits")
+
         let started = ContinuousClock.now
-        do { _ = try await waiter.task.value; Issue.record("a waiter outlived its ceiling") }
+        do { _ = try await first.task.value; Issue.record("a waiter outlived its ceiling") }
         catch { #expect(localStatus(error) == 503, "\(error)") }
         #expect(ContinuousClock.now - started < .seconds(5))
-        #expect(await loop.clusterPairLocalCounts == (0, 1, 1))
-
-        let leaving = PendingAcquisition(loop)
-        #expect(await clusterPairWait { await loop.clusterPairLocalWaitingCount == 1 })
-        leaving.task.cancel()
-        await #expect(throws: CancellationError.self) { _ = try await leaving.task.value }
         #expect(await loop.clusterPairLocalCounts == (0, 1, 1))
         await holder.releaseToken.fire()
         #expect(await loop.clusterPairLocalCounts == (0, 0, 0))
@@ -386,10 +393,13 @@ struct ClusterPairLocalTests {
 
     /// Nothing slips in during the warmup canary: a local request made while
     /// it runs waits until admission opens, and a pair that retires during
-    /// the canary refuses it with 503.
+    /// the canary refuses it with 503. Two lanes: the canary holds one and
+    /// leaves the other free, so only the admission gate keeps the request out
+    /// (with one lane, the engine's own count would keep it out anyway).
     @Test func aLocalRequestDuringTheWarmupCanaryWaitsForAdmission() async throws {
         let loop = try await pairLeaderLoop(warmupTimeoutSeconds: 30)
         let owner = ScriptedPairOwner()
+        owner.lanes = 2
         let hold = DispatchSemaphore(value: 0)
         owner.hold = hold
         let publication = Task { try await loop.publishClusterPairSlot(clusterPairSpecification(owner), owner: owner) }
@@ -398,6 +408,7 @@ struct ClusterPairLocalTests {
         #expect(await clusterPairWait { await loop.clusterPairLocalWaitingCount == 1 })
         try await Task.sleep(for: .milliseconds(200))
         #expect(!early.finished.value, "admission is closed while the canary runs")
+        #expect(await loop.clusterPairLocalCounts == (1, 1, 0), "no local request holds the lane the canary left free")
         hold.signal()
         _ = try await publication.value
         #expect(await loop.clusterPairWarmup?.succeeded == true)

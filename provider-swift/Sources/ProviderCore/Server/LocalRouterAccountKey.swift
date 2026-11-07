@@ -1,6 +1,7 @@
 import Foundation
 import LocalAuthentication
 import Security
+import notify
 
 /// Where the local router keeps the owner's account API key: the one credential that lets this Mac's local API pass
 /// a request on to the owner's other Macs (`X-Darkbloom-Route: self`) or the network (`prefer`).
@@ -39,6 +40,8 @@ public struct KeychainLocalRouterAccountKeyStore: LocalRouterAccountKeyStore {
 
     public let service: String
     public let account: String
+
+    public var changeNotification: String { service + "-key-changed" }
 
     /// The `SecItem` calls; a fake in tests.
     let calls: KeychainItemCalls
@@ -176,6 +179,7 @@ struct KeychainItemCalls: Sendable {
     /// (`SecItem.h`).
     var userInteractionAllowed: @Sendable () -> (OSStatus, Bool)
     var setUserInteractionAllowed: @Sendable (Bool) -> OSStatus
+    var announceChange: @Sendable (String) -> Void
 
     static let system = KeychainItemCalls(
         copyMatching: { query in
@@ -191,7 +195,8 @@ struct KeychainItemCalls: Sendable {
             let status = SecKeychainGetUserInteractionAllowed(&allowed)
             return (status, allowed.boolValue)
         },
-        setUserInteractionAllowed: { SecKeychainSetUserInteractionAllowed($0) })
+        setUserInteractionAllowed: { SecKeychainSetUserInteractionAllowed($0) },
+        announceChange: { _ = notify_post($0) })
 }
 
 /// An account key held in memory: tests, and callers that must not touch the Keychain.

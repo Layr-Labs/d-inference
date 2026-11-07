@@ -36,8 +36,9 @@ public struct LocalRouterConfig: Sendable {
     /// the router serves this Mac only and never reads or lends the account key. `makeLocalInferenceApplication` sets it
     /// from the endpoint's own key.
     public var localKeyRequired = true
+    var keyChangeNotification: String?
     /// Whether the last read of the account key failed, so a run of failures is said once.
-    let keyReads = LocalRouterKeyReads()
+    let keyCache = LocalRouterKeyCache()
 
     public init(settings: LocalSettings, upstreamBaseURL: URL, takesCoordinatorWork: Bool,
                 accountKeys: any LocalRouterAccountKeyStore,
@@ -51,6 +52,7 @@ public struct LocalRouterConfig: Sendable {
         self.makeTransport = makeTransport
         self.log = log
         self.timing = timing
+        keyChangeNotification = (accountKeys as? KeychainLocalRouterAccountKeyStore)?.changeNotification
     }
 
     /// The router of a host: `[local]` from the config (absent = today's defaults), the configured coordinator, and
@@ -73,9 +75,9 @@ public struct LocalRouterConfig: Sendable {
         let key: String?
         do {
             key = try accountKeys.load().flatMap { $0.isEmpty ? nil : $0 }
-            keyReads.succeeded()
+            keyCache.succeeded()
         } catch {
-            if keyReads.failed() {
+            if keyCache.failed() {
                 // Only the store's own error is known to carry no key characters (an OSStatus only).
                 let reason = (error as? LocalRouterAccountKeyError)?.description ?? "the account key could not be read"
                 log("\(reason); requests stay on this Mac until it can be read (after a new build, save it again with "
@@ -90,9 +92,11 @@ public struct LocalRouterConfig: Sendable {
 }
 
 /// Whether the account key's last read failed: a run of failures is said once, and again after a read succeeds.
-final class LocalRouterKeyReads: @unchecked Sendable {
+final class LocalRouterKeyCache: @unchecked Sendable {
     private let lock = NSLock()
     private var failing = false
+
+    var keepsACopy: Bool { false }
 
     /// Notes a failed read; true when it starts a run of failures.
     func failed() -> Bool {

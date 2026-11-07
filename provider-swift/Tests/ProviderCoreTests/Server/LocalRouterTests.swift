@@ -7,6 +7,7 @@ import NIOCore
 import NIOFoundationCompat
 import Security
 import Testing
+import notify
 @testable import ProviderCore
 
 /// The local router (`LocalRouter`): this Mac first, then the owner's other Macs, then the network if chosen. Every
@@ -562,31 +563,56 @@ struct LocalRouterTests {
         #expect(config.effectiveRoute().route == .thisMac && config.effectiveRoute().accountKey == nil)
     }
 
+    // MARK: - The key, read once
+
+    /// The key is read once and kept in memory: a burst of passed-on requests and model lists reads the Keychain once.
+    /// `route key` posts a change notification when it saves or removes the key, and the next request reads it again.
+    @Test func theKeyIsReadOnceAndAgainOnlyAfterRouteKeyChangesIt() async throws {
+        let fixture = RouterFixture(route: .myMacsFirst)
+        let config = try #require(fixture.routerConfig)
+        let notification = try #require(config.keyChangeNotification)
+        try await fixture.app.test(.router) { client in
+            for _ in 0..<5 { try await Self.chat(client, expect: .ok) }
+            try await client.execute(uri: "/v1/models", method: .get, headers: RouterFixture.authorized) { response in
+                #expect(response.status == .ok)
+            }
+        }
+        #expect(fixture.keys.loads == 1)
+        notify_post(notification)
+        #expect(await holdsWithinTwoSeconds { !config.keyCache.keepsACopy }, "the copy is dropped on the notification")
+        try await fixture.app.test(.router) { client in
+            for _ in 0..<2 { try await Self.chat(client, expect: .ok) }
+        }
+        #expect(fixture.keys.loads == 2)
+    }
+
     // MARK: - A key that can't be read
 
     /// A Keychain that won't hand the key over without asking (a locked keychain, or a new build) is said once, in a
-    /// line without the key, and requests stay on this Mac until the key can be read again.
-    @Test func anUnreadableKeyIsSaidOnceAndRequestsStayOnThisMac() async throws {
+    /// line without the key, and requests stay on this Mac. A failed read isn't kept: the next request tries again.
+    @Test func anUnreadableKeyIsTriedAgainOnTheNextRequestAndSaidOnce() async throws {
         let fixture = RouterFixture(route: .myMacs)
-        @Sendable func chat(_ client: some TestClientProtocol, expect status: HTTPResponse.Status) async throws {
-            try await client.execute(uri: "/v1/chat/completions", method: .post, headers: RouterFixture.authorized,
-                                     body: ByteBuffer(string: RouterFixture.chat("absent"))) { response in
-                #expect(response.status == status)
-            }
-        }
+        let config = try #require(fixture.routerConfig)
+        let notification = try #require(config.keyChangeNotification)
         let keys = fixture.keys
         try await fixture.app.test(.router) { client in
             keys.failReads(with: errSecAuthFailed)
-            try await chat(client, expect: .notFound)
-            try await chat(client, expect: .notFound)
+            try await Self.chat(client, expect: .notFound)
+            try await Self.chat(client, expect: .notFound)
             try await client.execute(uri: "/v1/models", method: .get, headers: RouterFixture.authorized) { response in
                 let list = try JSONDecoder().decode(LocalRouterModelList.self, from: Data(buffer: response.body))
                 #expect(list.data.allSatisfy { $0.ownedBy == "this-mac" })
             }
+            #expect(keys.loads == 3, "each request tried again")
             keys.failReads(with: nil)
-            try await chat(client, expect: .ok)
+            try await Self.chat(client, expect: .ok)
+            // Read and kept: a keychain that locks later doesn't matter until the key changes.
             keys.failReads(with: errSecInteractionNotAllowed)
-            try await chat(client, expect: .notFound)
+            try await Self.chat(client, expect: .ok)
+            #expect(keys.loads == 4)
+            notify_post(notification)
+            #expect(await holdsWithinTwoSeconds { !config.keyCache.keepsACopy })
+            try await Self.chat(client, expect: .notFound)
         }
         let lines = fixture.log.lines.filter { $0.contains("could not read the account key") }
         #expect(lines.count == 2, "\(fixture.log.lines)")
@@ -594,7 +620,16 @@ struct LocalRouterTests {
         #expect(lines.last?.contains("OSStatus \(errSecInteractionNotAllowed)") == true)
         #expect(lines.allSatisfy { $0.contains("requests stay on this Mac") && $0.contains("route key") })
         #expect(!fixture.log.lines.joined(separator: "\n").contains(RouterFixture.accountKey))
-        #expect(fixture.upstream.posts.count == 1)
+        #expect(fixture.keys.loads == 5)
+        #expect(fixture.upstream.posts.count == 2)
+    }
+
+    /// A chat for a model this Mac doesn't serve.
+    static func chat(_ client: some TestClientProtocol, expect status: HTTPResponse.Status) async throws {
+        try await client.execute(uri: "/v1/chat/completions", method: .post, headers: RouterFixture.authorized,
+                                 body: ByteBuffer(string: RouterFixture.chat("absent"))) { response in
+            #expect(response.status == status)
+        }
     }
 
     @Test func aMacThatTakesNoCoordinatorWorkPassesOnWithoutAsking() async throws {

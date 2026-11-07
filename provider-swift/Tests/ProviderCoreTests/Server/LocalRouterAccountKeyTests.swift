@@ -99,8 +99,9 @@ struct LocalRouterAccountKeyTests {
 
     /// A login-keychain item this build may not read without approval (an ad-hoc rebuild changes the binary the item
     /// trusts) would show a dialog, and a request would wait on it. The query's UI keys don't reach legacy items, so
-    /// the read turns the legacy keychain's process-wide switch off and puts it back after: it fails at once instead.
-    @Test func aReadNeverWaitsOnAKeychainDialog() throws {
+    /// the login-keychain read runs with the legacy keychain's process-wide switch off, put back after: it fails at
+    /// once instead. The data-protection read before it doesn't touch the switch.
+    @Test func aLoginKeychainReadNeverWaitsOnAKeychainDialog() throws {
         let keychain = FakeKeychain(entitled: false)
         keychain.loginItems["svc.test/acct"] = Data("sk-fake".utf8)
         keychain.loginNeedsApproval = true
@@ -110,7 +111,7 @@ struct LocalRouterAccountKeyTests {
         }
         #expect(keychain.prompts == 0)
         #expect(keychain.reads.map(\.keychain) == ["dp", "login"])
-        #expect(keychain.reads.allSatisfy { !$0.interactionAllowed })
+        #expect(keychain.reads.map(\.interactionAllowed) == [true, false], "off for the login keychain only")
         #expect(keychain.interactionAllowed, "the switch is put back")
         #expect(keychain.switchChanges == [false, true])
         // The data-protection read carries a context that may not ask either.
@@ -119,23 +120,58 @@ struct LocalRouterAccountKeyTests {
         #expect(context.interactionNotAllowed)
     }
 
-    @Test func aSwitchThatIsAlreadyOffIsLeftOff() throws {
+    /// A signed build reads the data-protection Keychain only, which the switch doesn't govern: it never reads or sets
+    /// the switch, so a request in a signed build never takes its lock either.
+    @Test func aSignedBuildsReadNeverTouchesTheSwitch() throws {
         let keychain = FakeKeychain(entitled: true)
+        keychain.dataProtectionItems["svc.test/acct"] = Data("sk-fake".utf8)
+        keychain.switchFailure = errSecNotAvailable
+        let store = KeychainLocalRouterAccountKeyStore(service: "svc.test", account: "acct", calls: keychain.calls)
+        #expect(try store.load() == "sk-fake")
+        #expect(keychain.switchReads == 0 && keychain.switchChanges.isEmpty)
+        #expect(keychain.reads.map(\.keychain) == ["dp"])
+    }
+
+    @Test func aSwitchThatIsAlreadyOffIsLeftOff() throws {
+        let keychain = FakeKeychain(entitled: false)
         keychain.interactionAllowed = false
         let store = KeychainLocalRouterAccountKeyStore(service: "svc.test", account: "acct", calls: keychain.calls)
         #expect(try store.load() == nil)
+        #expect(keychain.reads.map(\.keychain) == ["dp", "login"])
         #expect(keychain.switchChanges.isEmpty)
         #expect(!keychain.interactionAllowed)
     }
 
-    @Test func aReadWhoseSwitchCantBeTurnedOffDoesNotRun() throws {
+    @Test func aLoginKeychainReadWhoseSwitchCantBeTurnedOffDoesNotRun() throws {
         let keychain = FakeKeychain(entitled: false)
         keychain.switchFailure = errSecNotAvailable
         let store = KeychainLocalRouterAccountKeyStore(service: "svc.test", account: "acct", calls: keychain.calls)
         #expect(throws: LocalRouterAccountKeyError.keychain(operation: "read", status: errSecNotAvailable)) {
             try store.load()
         }
-        #expect(keychain.reads.isEmpty)
+        #expect(keychain.reads.map(\.keychain) == ["dp"])
+    }
+
+    // MARK: - A change is announced
+
+    /// Saving or removing the key posts the identity's change notification, so a running local API reads it again;
+    /// a refused save posts nothing.
+    @Test func savingOrRemovingTheKeyAnnouncesIt() throws {
+        #expect(KeychainLocalRouterAccountKeyStore().changeNotification
+            == BuildEnvironment.current.keychainServicePrefix + ".route-key-changed")
+        let keychain = FakeKeychain(entitled: true)
+        let store = KeychainLocalRouterAccountKeyStore(service: "svc.test", account: "acct", calls: keychain.calls)
+        try store.save("sk-fake")
+        #expect(keychain.announced == ["svc.test-key-changed"])
+        try store.remove()
+        #expect(keychain.announced == ["svc.test-key-changed", "svc.test-key-changed"])
+        _ = try store.load()
+        #expect(keychain.announced.count == 2, "a read announces nothing")
+        let refusing = FakeKeychain(entitled: true, failing: errSecAuthFailed)
+        let refused = KeychainLocalRouterAccountKeyStore(service: "svc.test", account: "acct", calls: refusing.calls)
+        #expect(throws: LocalRouterAccountKeyError.self) { try refused.save("sk-fake") }
+        #expect(throws: LocalRouterAccountKeyError.self) { try refused.remove() }
+        #expect(refusing.announced.isEmpty)
     }
 
     /// `route key` runs at a terminal, where approving a new build is how it gets the key back: saving and removing
@@ -182,7 +218,10 @@ final class FakeKeychain: @unchecked Sendable {
     var interactionAllowed = true
     /// When set, reading or setting the switch fails with this status.
     var switchFailure: OSStatus?
+    private(set) var switchReads = 0
     private(set) var switchChanges: [Bool] = []
+    /// The change notifications posted.
+    private(set) var announced: [String] = []
     /// The login keychain's items need the user's approval for this build, as after an ad-hoc rebuild: with the
     /// switch on, a call asks (`prompts`, and the fake approves); with it off, it fails with `errSecAuthFailed`.
     var loginNeedsApproval = false
@@ -266,7 +305,10 @@ final class FakeKeychain: @unchecked Sendable {
                 }
             },
             userInteractionAllowed: {
-                self.lock.withLock { (self.switchFailure ?? errSecSuccess, self.interactionAllowed) }
+                self.lock.withLock {
+                    self.switchReads += 1
+                    return (self.switchFailure ?? errSecSuccess, self.interactionAllowed)
+                }
             },
             setUserInteractionAllowed: { allowed in
                 self.lock.withLock {
@@ -275,6 +317,7 @@ final class FakeKeychain: @unchecked Sendable {
                     self.interactionAllowed = allowed
                     return errSecSuccess
                 }
-            })
+            },
+            announceChange: { name in self.lock.withLock { self.announced.append(name) } })
     }
 }

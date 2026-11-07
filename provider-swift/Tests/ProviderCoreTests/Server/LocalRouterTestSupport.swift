@@ -98,6 +98,16 @@ final class CountingAccountKeyStore: LocalRouterAccountKeyStore, @unchecked Send
     func remove() throws { lock.withLock { key = nil } }
 }
 
+/// Whether `condition` holds within 2 s, polled.
+func holdsWithinTwoSeconds(_ condition: @Sendable () -> Bool) async -> Bool {
+    let deadline = ContinuousClock.now + .seconds(2)
+    while !condition() {
+        guard ContinuousClock.now < deadline else { return false }
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+    return true
+}
+
 /// Every line the router logs.
 final class RouterLogLines: @unchecked Sendable {
     private let lock = NSLock()
@@ -205,10 +215,13 @@ struct RouterFixture {
         self.localModels = localModels
         self.localLimits = localLimits
         let factory = factory, log = log
-        routerConfig = router ? LocalRouterConfig(
+        var config = LocalRouterConfig(
             settings: LocalSettings(route: route), upstreamBaseURL: Self.upstreamBase,
             takesCoordinatorWork: takesCoordinatorWork, accountKeys: keys,
-            makeTransport: { factory.make() }, log: { log.append($0) }, timing: timing) : nil
+            makeTransport: { factory.make() }, log: { log.append($0) }, timing: timing)
+        // A change notification of this fixture's own, never an install's `route key` one.
+        config.keyChangeNotification = "io.darkbloom.test.route-key-changed." + UUID().uuidString
+        routerConfig = router ? config : nil
     }
 
     /// One endpoint over this fixture's engine, router and coordinator; each call makes a new application.

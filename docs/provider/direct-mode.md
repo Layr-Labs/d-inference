@@ -171,6 +171,18 @@ take it (`LocalRouter`, `provider-swift/Sources/ProviderCore/Server/LocalRouter*
 | `my-macs` (the default once a key is saved) | Passed to the coordinator with `X-Darkbloom-Route: self`: only your Macs answer, free |
 | `my-macs-first` | Passed to the coordinator with `X-Darkbloom-Route: prefer`: your Macs first (free), then the network, billed to your balance. The coordinator picks among the Macs that can take the request now, so a busy Mac of yours doesn't hold it while another Mac, yours or the network's, can take it. `prefer` reserves the price up front even when one of your Macs answers: on any `402` (no balance, or the key's spend cap), the request is sent once more with `self` (your Macs only, free, never spending) |
 
+**Requests from other machines never use the paid network; they can use this
+Mac and your other Macs.** A local API that listens beyond loopback (a pair's
+Both or `cluster local` API on `0.0.0.0`, or any `--bind`) can be reached by
+anyone there with its key, and a request this Mac can't take would go on with
+this Mac's account key. So the router decides per connection, from its TCP
+peer and never from a header (`LocalHTTPClient`): a peer that isn't loopback
+(`127.0.0.0/8`, `::1`, or an IPv4 loopback peer seen as `::ffff:127.x.y.z`)
+gets `my-macs-first` as `my-macs` (`self` only, never `prefer`), and its
+`/v1/models` lists no network model. Programs on this Mac keep the route as
+saved. A connection's peer is read once, when it opens, and nothing is added to
+this Mac's own path.
+
 The route is read when the local API starts (a change needs a restart). The
 key is read once, by the first request that needs it, and kept in memory:
 `darkbloom route key` tells a running local API when it saves or removes the
@@ -242,7 +254,10 @@ next request reads it again, with no restart.
   no other Mac of yours serving it, `my-macs` answers this Mac's status with
   code `this_mac_only`, and `my-macs-first` answers `prefer`'s `402` without
   the `self` retry. `--local` and `cluster local` never take coordinator work,
-  so they never ask.
+  so they never ask, and neither does a pair's API without a cluster approval
+  (`start --local --distributed`): even when its leader registers with the
+  coordinator, it is a control-only member that hosts no pair slot, and the
+  `self` view doesn't count it.
 - **Timeouts:** 10 s to put a request on the wire, then up to 5 minutes
   without a byte, with no limit on a stream's length. With `my-macs`, a `self`
   request for a model only busy Macs of yours serve queues at the coordinator
@@ -486,6 +501,60 @@ A cluster host configured for automatic batch replacement keeps the same authent
 If a short burst drains before planning finishes, the host may retain the metadata-only proposal for up to 30 seconds. It uses that proposal only when fresh requests wait in the same serving generation; an idle endpoint does not reload. The planner considers the largest independently priced capacity first, and the deferred load still checks current memory after both previous workers release. Request cancellation and the original queue wait limit remain unchanged.
 
 The replacement must preserve the exact model and request limits and must fit both Macs. If a wider mode cannot start, a fresh previous-mode session may be restored after the failed replacement releases. Missing release proof stops the transition; it is never treated as free memory. The HTTP API gains no mode-selection parameter or credential change from this mechanism.
+
+### A pair's leader beside Darkbloom
+
+The member that hosts a pair's slot while the pair serves through Darkbloom
+(the coordinator-paired part on the plan's rank 0 Mac) can run this local API
+too. It serves the published slot through the slot's own bridge and lanes, so
+local and Darkbloom requests share one engine: no second process, engine or
+copy of the stream (`provider-swift/Sources/ProviderCore/ProviderLoop+ClusterPairLocal.swift`,
+`acquireClusterPairForLocal`). `darkbloom cluster` starts it when you choose
+**Both, me first** for the pair
+([Both, me first](./two-mac-cluster.md#both-me-first-the-pairs-own-api-beside-darkbloom)):
+the cluster service adds `--local-endpoint --port <port> --bind <address>` to
+that part's `darkbloom start --foreground --cluster-member`, with the pair's
+key. Every other member runs none.
+
+| Case | Answer | Source |
+|---|---|---|
+| A member that does not host the slot, or a local API without a key | The member refuses to start (`ClusterMemberControlError.incompatibleConfiguration`), as before | `ProviderLoop.prepareClusterMemberControl`, `admitsClusterPairLocalAPI` |
+| The pair is not serving (forming, re-forming, retired) | HTTP `503`, as `darkbloom cluster local` answers (`DistributedRequestQueue.unavailableMessage`) | `ProviderLoop.clusterPairNotServing` |
+| A model the pair does not serve | HTTP `404` | `acquireClusterPairForLocal` |
+| Every lane busy | Waits in arrival order with at most `DARKBLOOM_CLUSTER_QUEUE_WAITING` (default `64`) others; `429` when the queue is full; `503` after waiting longer than `requestTimeout * ((waiting + lanes) / lanes)` (`DistributedRequestQueue.Limits.waitCeiling`); a cancelled request or a reset connection leaves the queue at once, a connection closed normally only at its turn (below) | `ClusterPairLocalLanes` |
+| The pair's warm-up request is running | Waits until admission opens; `503` if the slot retires instead | `ProviderLoop.publishClusterPairSlot` |
+| A stop or an update drain | Waiting requests get `429` at once, as new ones do; running ones finish before the slot retires | `ProviderLoop.beginServingDrain` |
+| A lost rank | Waiting requests get `503`; running ones end with their terminal | `ProviderLoop.retireClusterPairSlot` |
+
+A waiting request costs nothing: it is parked, not polled, until a local
+request releases a lane, a Darkbloom request ends (the capacity refresh that
+follows it), admission opens, a drain begins or the slot retires. A request
+that finds a lane free and nobody waiting takes it at once. Darkbloom requests
+never wait for this queue, and their path through the pair is unchanged.
+
+A client that closes its connection normally while it waits, as curl and
+URLSession do when they give up, keeps its place in the queue until its turn,
+then reaches the pair, the same as on `darkbloom cluster local`. Only a
+cancelled request or a reset connection frees the place at once. The close is
+noticed at the request's first write, which ends the request and frees its
+lane: that bounds the waste to its turn, up to its first write. A stream
+writes as its answer starts; an answer sent whole is written when it is done
+(`provider-swift/Sources/ProviderCore/Server/LocalHTTPConnectionCancellation.swift`).
+
+Me first applies to the whole pair. From the moment one of your requests
+starts waiting for a lane, the leader's heartbeat says `draining` with
+`busy_reason: owner`, and the pair takes no new Darkbloom requests. Darkbloom
+requests already running finish; one that races the heartbeat is refused with
+the typed draining answer and goes to another Mac. Two minutes after your last
+request ends (`[local] me_first_idle_minutes`), the pair takes Darkbloom
+requests again. `[local] me_first = false` keeps the shared serving above. The
+other members don't change, and the pair keeps its session and its loaded
+model ([owner pause](../architecture/owner-pause.md#pairs)).
+
+On the deployed coordinator, while a pair is paused for you, both Macs lose
+their base reward for the pause plus the 2 idle minutes, counted in 5-minute
+periods, whereas a single Mac keeps it. `[local] me_first = false`, or choosing
+*Darkbloom network*, avoids that.
 
 ### Speed records of cluster requests
 

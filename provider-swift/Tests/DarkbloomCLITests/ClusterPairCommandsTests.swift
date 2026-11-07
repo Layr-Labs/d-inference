@@ -830,6 +830,48 @@ struct ClusterPairControlTests {
         #expect(pairActionCalls(stderr).isEmpty)
     }
 
+    /// A terminal `darkbloom cluster` saves the pair's "Only me" (`cluster local`) as `[local] mode = "local"`, which a
+    /// single-Mac start on this Mac reads too. The desktop app's Start (`start --model <id> --config <path>`) and scripts
+    /// run without a terminal: on a Mac whose pair doesn't run here (the other Mac asleep or gone, this Mac's part
+    /// serving alone or waiting), the start is refused in `start`'s one line before this Mac's part is stopped or its
+    /// saved start cleared, as for one Mac (L4's C1). Before, the part was stopped and the start cleared first.
+    @Test("without a terminal, the pair's saved Only me is refused before this Mac's part is stopped")
+    func nonTerminalStartWithThePairsOnlyMeLeavesThePart() async {
+        let refusal = "error: This Mac is set to Only me, which serves in a terminal. Run `darkbloom start` in one, or name "
+            + "how to serve: --local, --network or --me-first."
+        let app = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent, \.standardErrorContent]) {
+            var stale = stalePair()
+            stale.localOnly = true
+            try await exitWithPair(stale, actions: pairActions()) { sandbox in
+                guard case .success = Cluster.Setup.saveServingChoice(.onlyMe, config: sandbox.config.path) else { throw ExitCode(98) }
+                try await ClusterPairCommands.$terminalForTesting.withValue(false) {
+                    try await Start.$releaseForTesting.withValue({ FileHandle.standardError.write(Data("released\n".utf8)); return true }) {
+                        try await runCLICommand(Start.self, ["start", "--model", "acme/Alpha-4bit", "--config", sandbox.config.path])
+                    }
+                }
+            }
+        }
+        let solo = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent, \.standardErrorContent]) {
+            var stale = stalePair()
+            stale.localOnly = true
+            try await exitWithPair(stale, actions: pairActions()) { sandbox in
+                guard case .success = Cluster.Setup.saveServingChoice(.onlyMe, config: sandbox.config.path) else { throw ExitCode(98) }
+                try await ClusterPairCommands.$terminalForTesting.withValue(false) {
+                    try await Start.$releaseForTesting.withValue({ FileHandle.standardError.write(Data("released\n".utf8)); return true }) {
+                        try await runCLICommand(Start.self, ["start", "--solo", "--config", sandbox.config.path])
+                    }
+                }
+            }
+        }
+        for (name, result) in [("the app's Start", app), ("--solo", solo)] {
+            let stderr = text(result?.standardErrorContent), out = text(result?.standardOutputContent)
+            #expect(stderr.components(separatedBy: "\n").filter { $0 == refusal }.count == 1, "\(name): \(stderr)")
+            #expect(!stderr.contains("released"), "\(name): this Mac's part keeps running")
+            #expect(!out.contains("its saved start is cleared"), "\(name): \(out)")
+            #expect(pairActionCalls(stderr).isEmpty, "\(name)")
+        }
+    }
+
     @Test("a leftover part that doesn't stop: nothing starts beside it, and the one step that always works is named")
     func startSoloWhenTheLeftoverWontStop() async {
         let result = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {

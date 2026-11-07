@@ -359,9 +359,12 @@ On the leader, the pair's model list follows, like `darkbloom start`'s picker:
   (`darkbloom cluster local <model>`) starts in that same mode. The list shows
   no speed: neither the model list nor the mode question quotes tokens per
   second. Models these Macs cannot serve are not listed.
-- Under the models, **Switch to local only** (or **Switch to serving through
-  Darkbloom**) serves the current model the other way; serving through Darkbloom
-  checks both Macs' logins first, before the local API stops. **Start over
+- Under the models, **Change how the pair serves (now: …)** asks the three
+  choices again, the way it serves now preselected
+  ([Both, me first](#both-me-first-the-pairs-own-api-beside-darkbloom)); the
+  current model then serves the chosen way. Serving through Darkbloom checks
+  both Macs' logins first, before the local API stops. (`darkbloom cluster local`
+  shows **Switch to serving through Darkbloom** there instead.) **Start over
   (unpair and set up again)** asks once ([pairing again](#pairing-again)).
 - q or Esc changes nothing; the screen shows the status again and the commands.
 
@@ -548,7 +551,7 @@ format instruction only, as on one Mac
 | 1 | the first Mac | Run `darkbloom cluster`. Its first line is "Allow macOS permissions." It checks the Thunderbolt cable ("✓ Cable ready") and Local Network access. Nobody waits on the cable yet, so this Mac leads; its last line is **"Run `darkbloom cluster` on the other Mac."**, and it waits (q cancels). With two cables it asks "Which cable goes to the other Mac?" | the cable's port, once (your password; sudo in this terminal where macOS shows no window); Local Network access for the terminal app only where macOS blocks it |
 | 2 | the other Mac | Run `darkbloom cluster`. The same checks; then it finds the waiting Mac on the cable by itself (no address, no host name). Both screens show the same six-digit code ("Code 123 456. Same on the other Mac?"); a Mac that answered first says "Now confirm on the other Mac." | the same as the first Mac; **Yes** on each Mac when the codes match |
 | 3 | both Macs | Each says it is paired ("✓ Paired. This Mac leads." on the leader, "✓ Paired. The other Mac leads." on the other Mac). Both cluster services now run, and macOS asks on both Macs at the same moment to let Darkbloom find devices on your local network: click Allow on each; each screen waits for its own ("✓ Allowed"), up to 10 minutes with a timer, then ends with a ✗ that says where to turn Darkbloom on and what to do if it isn't listed. Nothing else is ever asked on the other Mac; it says "Waiting for the other Mac (…) to choose the model and start…", says what the leader's screen waits on, and follows the start to the same ✓/✗ block. | Local Network access for Darkbloom, once on each Mac |
-| 4 | the leader | It lists every model approved for clusters that the pair can serve (held by both Macs, by one of them, or in Darkbloom's catalog), one line each with its size and how the planner splits it, "tensor parallel" or "pipeline" ("Qwen3.8-27B-4bit-mtp · 16.3 GB · pipeline"), ending "copy" or "download" when the model must reach a Mac first (a model no Mac holds yet is split once it arrives, so its line has no split). A model a Mac holds twice (a catalog download beside the cluster's own copy) is listed once. The planner records why a model that has tensor parallel is split otherwise (for example "tensor parallel: slower here", "tensor parallel: not measured yet" or "tensor parallel: link unmeasured"); `darkbloom cluster plan` gives the full reason under "Tensor parallel or pipeline". Models that fit in the Macs' free memory now come first; one that does not ends with "does not fit now". A model a Mac has no room for on disk now comes last, ending "not enough free disk" ([Free disk](#free-disk)). Choose the model with ↑↓ and enter (enter takes the first). If the other Mac does not answer over the cable (its Darkbloom prompt may still wait for Allow), it offers **Try again** or **Cancel**. | the copy first in a list; a short one says its time ("Copy to the other Mac (about 7 s)") |
+| 4 | the leader | It asks how the pair serves: Only me (this pair, local), Darkbloom network, or Both, me first, preselected ([Both, me first](#both-me-first-the-pairs-own-api-beside-darkbloom)). Then it lists every model approved for clusters that the pair can serve (held by both Macs, by one of them, or in Darkbloom's catalog), one line each with its size and how the planner splits it, "tensor parallel" or "pipeline" ("Qwen3.8-27B-4bit-mtp · 16.3 GB · pipeline"), ending "copy" or "download" when the model must reach a Mac first (a model no Mac holds yet is split once it arrives, so its line has no split). A model a Mac holds twice (a catalog download beside the cluster's own copy) is listed once. The planner records why a model that has tensor parallel is split otherwise (for example "tensor parallel: slower here", "tensor parallel: not measured yet" or "tensor parallel: link unmeasured"); `darkbloom cluster plan` gives the full reason under "Tensor parallel or pipeline". Models that fit in the Macs' free memory now come first; one that does not ends with "does not fit now". A model a Mac has no room for on disk now comes last, ending "not enough free disk" ([Free disk](#free-disk)). Choose the model with ↑↓ and enter (enter takes the first). If the other Mac does not answer over the cable (its Darkbloom prompt may still wait for Allow), it offers **Try again** or **Cancel**. | how the pair serves, once; the copy first in a list; a short one says its time ("Copy to the other Mac (about 7 s)") |
 | 5 | — | Choosing is starting: the leader saves the setup, sends it to the other Mac over the cable and starts both Macs; once both are loaded it answers one test request, and through Darkbloom the coordinator is asked for the pair ([below](#registered-with-the-coordinator-as-a-cluster-member)). It says where and how the pair serves: "✓ Serving Qwen3.8-27B-4bit-mtp through Darkbloom on both Macs (pipeline)" once the coordinator has the pair, or "✓ Serving Qwen3.8-27B-4bit-mtp on this Mac's local API only (pipeline)" when it serves locally only, with the test response ("Test response in 0.61 s"). | nothing |
 
 When it serves through Darkbloom, the screen says so in one line, for example:
@@ -634,7 +637,8 @@ once; one planned with the one-chunk lookahead takes one at a time
    loaded the model and the pair answered its first request (the warm-up). A
    reason the Macs know ends the wait sooner (a missing login at once, others
    once the wait has run 90 s), with the choices [above](#the-steps-once). There
-   is no local API in this mode.
+   is no local API in this mode, unless you chose
+   [Both, me first](#both-me-first-the-pairs-own-api-beside-darkbloom).
 
    The wait says only what the Macs report at that moment. "isn't verified by
    Apple yet" appears only while a Mac reports its App Attest authorization
@@ -733,6 +737,104 @@ If both Macs start waiting at the same moment, the pairing's own rule picks one
 to keep waiting (it leads) and the other joins it ("✓ Paired. The other Mac
 leads.").
 
+## Both, me first: the pair's own API beside Darkbloom
+
+`darkbloom cluster` asks how the pair serves, with the three choices
+`darkbloom start` gives one Mac ([Use your Mac yourself, first](./local-first.md)):
+
+```text
+  How should this pair serve?
+  The pair's pause, route and account key are the leading Mac's: its [local] and `darkbloom route key`.
+  1) Only me (this pair, local) · Darkbloom never contacts these Macs. Your tools use the leading Mac's API.
+  2) Darkbloom network · The pair serves Darkbloom and earns while it runs.
+  3) Both, me first · The pair serves Darkbloom while you aren't using it. When you use its API, Darkbloom pauses until you've been idle for 2 minutes.
+  Choose 1-3 (enter = 3):
+```
+
+- **When it asks:** in the first setup, on the leader, once both Macs answer and
+  before the model list, which is planned for the answer. On a set-up pair, the
+  list's **Change how the pair serves (now: …)** asks again, the way it serves
+  now preselected. The first time, Enter takes **Both, me first**, or the answer
+  saved before.
+- **Only in a terminal, and only `darkbloom cluster`** (and `darkbloom start` on
+  a paired Mac, which opens the same screen). `darkbloom cluster local` names its
+  way of serving and asks nothing. Without a terminal nothing is asked: the pair
+  serves as its setup says, and a pair set up before this build serves through
+  Darkbloom with no local API, as before.
+- **Saved:** the answer goes into `[local] mode` of this Mac's `provider.toml`
+  (`local`, `network` or `both`) with the pair's way of serving, once the start
+  goes ahead; q at the question or at the list saves nothing. `darkbloom start
+  --solo` on this Mac then serves the same way
+  ([no terminal, no question](./local-first.md#no-terminal-no-question)). A
+  saved **Only me** serves this Mac alone only in a terminal: while the pair
+  doesn't run here, `darkbloom start` without one (the app's Start, a script)
+  is refused in one line before this Mac's part is stopped or its saved start
+  cleared.
+- **Only me** is `darkbloom cluster local`'s way of serving
+  ([below](#serving-locally-only)). **Darkbloom network** is the pair as
+  before, with no local API.
+
+With **Both, me first**:
+
+- **The API:** the part that runs rank 0, which hosts the pair's slot, serves
+  the pair's local OpenAI-compatible API beside Darkbloom, on the same engine
+  and lanes as Darkbloom's requests
+  ([a pair's leader beside Darkbloom](./direct-mode.md#a-pairs-leader-beside-darkbloom)).
+  The other Macs are part of the pair and run no local API.
+- **Address and key:** it listens on every network of that Mac, as `darkbloom
+  cluster local` does, on the first port from 8001 to 8020 free on both Macs
+  (on that Mac alone when the other Mac doesn't say), never 8000, where other
+  local AI apps listen, or the pair's own ports 47420–47423. It always needs the
+  pair's key, the same as `darkbloom cluster local`'s; `darkbloom local` on that
+  Mac shows the address and the key. With the macOS firewall on, macOS may ask
+  once to let Darkbloom accept incoming connections.
+- **On the other Mac:** nothing passes the port on (no relay, unlike
+  `darkbloom cluster local`): tools there dial that Mac's LAN or tailnet
+  address.
+- **Requests the pair can't take** (a model it doesn't serve, a full queue) go
+  on as that Mac's `[local] route` says, with that Mac's account key
+  ([the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
+  Requests from other machines never use the paid network; they can use the
+  pair and your other Macs.
+- **Me first:** while one of your requests runs on it, or waits for a lane, the
+  pair takes no new Darkbloom request, and Darkbloom's running requests finish.
+  It takes Darkbloom requests again 2 minutes after your last request ends
+  (`[local] me_first_idle_minutes` on that Mac, 1 to 120); `[local] me_first =
+  false` there keeps Darkbloom serving while you use it
+  ([owner pause](../architecture/owner-pause.md#pairs)). As for any pair drain,
+  the pair's reward uptime stops while it is paused.
+- **Switching:** between **Darkbloom network** and **Both, me first** the plan
+  stays: only the leading part starts again, and the screen waits until the pair
+  serves again. From **Only me**, the model is planned again for Darkbloom
+  first, as for **Darkbloom network**. Both need both Macs logged in.
+- **Not offered:** while Darkbloom doesn't have the pair (no approval, the
+  coordinator away), it serves on the leader's local API as before
+  ([above](#registered-with-the-coordinator-as-a-cluster-member)): on that Mac
+  only (`127.0.0.1`), on the same port, with that Mac's own key rather than the
+  pair's (`darkbloom local` there shows it). Tools on other machines, or set up
+  with the pair's key, reach the pair again once Darkbloom has it.
+
+`darkbloom status` and `darkbloom cluster status` say it, on the Mac that runs
+the pair's API:
+
+```text
+Serves: through Darkbloom, and on its local API with you first
+✓ Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel)
+Pair: you first — Darkbloom paused since 14:02 (your last request 1 minute ago; back at about 14:13 if you stay idle)
+Local API: http://127.0.0.1:8001/v1 on this Mac, and port 8001 of its LAN or tailnet address (`darkbloom local` shows the key)
+Members: the other Mac (Apple M3 Ultra, 256 GB) is part of the pair; it runs no local API
+```
+
+`Pair: Darkbloom and you, me first — open to Darkbloom (…)` while you aren't
+using it. On the other Mac:
+
+```text
+Local API: on the other Mac (Apple M5 Ultra, 256 GB), which runs the pair's API; `darkbloom local` there shows its address and key, and `darkbloom status` there whether Darkbloom is paused for you
+Members: this Mac is part of the pair; it runs no local API
+```
+
+No screen or status line quotes a speed, and none prints the key.
+
 ## Serving locally only
 
 `darkbloom cluster local` serves the pair for you alone: the same steps, model
@@ -774,8 +876,9 @@ may ask once to let Darkbloom accept incoming connections.
 
 The choice is kept: after a restart or reboot both Macs serve locally only
 again, until you switch back. In `darkbloom cluster` on the leader, the list's
-**Switch to serving through Darkbloom** serves through Darkbloom again and
-**Switch to local only** serves locally only. On a serving cluster, **Switch to
+**Change how the pair serves** switches it ([Both, me first](#both-me-first-the-pairs-own-api-beside-darkbloom));
+in `darkbloom cluster local`, the list's **Switch to serving through Darkbloom**
+serves through Darkbloom again. On a serving cluster, **Switch to
 serving through Darkbloom** plans the model again for Darkbloom (a local plan
 may carry Qwen's speculative assistant or unequal tensor-parallel shares, which
 the coordinator can't register), adopts that plan before anything stops, and

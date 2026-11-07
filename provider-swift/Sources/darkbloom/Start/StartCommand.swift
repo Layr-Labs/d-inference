@@ -160,11 +160,21 @@ struct Start: AsyncParsableCommand {
         let soloOverrides = !model.isEmpty || all || idleTimeout != nil || schedule || autopilot != nil
             || network || meFirst != nil || meFirstIdle != nil || route != nil || choose
         if clusterMember {
-            guard !distributed, !local, !localEndpoint, !soloOverrides else {
+            guard !distributed, !local, !soloOverrides else {
                 throw ValidationError("--cluster-member cannot be combined with solo serving or local distributed mode.")
             }
             guard !(alwaysOn && supervise) else {
                 throw ValidationError("--always-on installs the service that runs --supervise; use one of them.")
+            }
+            // The pair's local API beside Darkbloom (Both, me first): the cluster service passes --local-endpoint, its
+            // port and its address to the part it runs; the API always needs the pair's key.
+            if localEndpoint {
+                guard !noAuth else {
+                    throw ValidationError("The pair's local API always needs its key: --cluster-member --local-endpoint doesn't take --no-auth.")
+                }
+                guard !alwaysOn, !supervise else {
+                    throw ValidationError("--local-endpoint is for the part the cluster service runs (--cluster-member --foreground), not --always-on or --supervise.")
+                }
             }
         } else if alwaysOn || supervise {
             throw ValidationError("--always-on and --supervise apply to --cluster-member only.")
@@ -360,7 +370,15 @@ struct Start: AsyncParsableCommand {
                 choice = Self.chooseInTerminal(pair, aloneByDefault: aloneByDefault)
             }
             switch choice {
-            case .single, .serveAlone: if opensLook { look.open(Self.lookTitle) }
+            case .single, .serveAlone:
+                // Before the pair is touched (the solo choice recorded, this Mac's part stopped and its saved start
+                // cleared): the refusals of how this Mac would serve alone, such as a saved "Only me" (also the pair's,
+                // from `darkbloom cluster`) without a terminal. `resolveServing` makes the same ones again below.
+                if pair.paired {
+                    _ = try localFirstOptions.modeStep(saved: try savedLocalSettings(configPath: configOptions.config),
+                                                       terminal: ClusterPairCommands.isTerminal())
+                }
+                if opensLook { look.open(Self.lookTitle) }
             default: break
             }
             switch choice {

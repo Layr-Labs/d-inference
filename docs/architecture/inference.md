@@ -7584,6 +7584,84 @@ candidate choice),
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledFiles.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledNativeStart.swift`.
 
+## The pair's leader takes local requests beside Darkbloom
+
+The member that hosts a pair's slot (`ProviderLoop.hostsClusterPairSlot`, the
+serving host role a rank-0 installation gives through
+`installClusterPairServing`) can serve that slot on its unified local API while
+the pair serves through Darkbloom
+([direct mode](../provider/direct-mode.md#a-pairs-leader-beside-darkbloom)).
+Local requests reach the slot's one bridge, the one Darkbloom requests reach, so
+both share the pair's lanes (`ClusterPairSlotOwner.concurrentRequests`), its
+capacity report and its admission. Nothing is loaded, no session forms and no
+device lock is taken
+(`provider-swift/Sources/ProviderCore/ProviderLoop+ClusterPairLocal.swift`).
+
+```mermaid
+flowchart LR
+  L["Local request"] --> S{"Slot live?"}
+  S -- "no" --> N["503"]
+  S -- "yes" --> F{"Admission open,<br/>a lane free,<br/>nobody waiting?"}
+  F -- "yes" --> B["The slot's bridge"]
+  F -- "no" --> Q["FIFO queue<br/>(parked)"]
+  Q -- "woken" --> F
+  Q -- "full / ceiling / retired" --> E["429 / 503"]
+  D["Darkbloom request"] --> B
+```
+
+1. Only the slot's host runs a local API, and only with a key; any other member
+   refuses one at startup (`ProviderLoop.prepareClusterMemberControl`,
+   `admitsClusterPairLocalAPI`).
+2. A local request takes a lane only while fewer requests hold the pair's lanes
+   than it has: local ones granted here (`ClusterPairLocalLanes.lanesHeld`) and
+   Darkbloom ones accepted (`requestToModel`), with the engine's own count
+   below the lanes too, read without waiting for its queue
+   (`grantClusterPairLaneIfFree`, `EngineV2Bridge.capacitySnapshot`). The drain
+   check and the reservation (`localReservations`) have no suspension between
+   them, so a drain counts every granted local request.
+3. Waiters are parked continuations (`ClusterPairLocalLanes.park`), never
+   polled. A released local lane (`releaseClusterPairLane`), each Darkbloom
+   request's end and the periodic capacity refresh (`refreshClusterPairCapacity`
+   calls `wakeClusterPairLocalWaiters`), admission opening, a drain beginning
+   (`beginServingDrain`) and retirement wake them; cancellation and the
+   queue's ceiling refuse them. A reset connection cancels its request at
+   once; a connection closed normally is seen only at the request's first
+   write, after its turn (`LocalHTTPConnectionCancellationRegistry`), as on
+   `cluster local`.
+4. Local admission opens only once the warmup canary passed
+   (`clusterPairAdmissionOpenSlotID`, set in `publishClusterPairSlot`) and
+   closes when retirement starts (`retireClusterPairSlot`).
+5. A Darkbloom request never waits for this queue; its path through the pair
+   is unchanged.
+6. The owner-pause hook `noteClusterPairLocalUse` brackets each local request
+   once: from when it starts waiting for a lane, or takes one, until it leaves
+   without one or its lane is released. With me first on (`[local]`), it drives
+   the leader's [owner pause](owner-pause.md#pairs): the leader's heartbeat
+   drains for the owner, which takes the whole pair out of routing until two
+   idle minutes after the owner's last request, while every other member stays
+   as it is.
+7. Nothing keys on two ranks: the host is a serving role, not a rank, and the
+   pair engine takes any identity of two or more distinct peers
+   (`DistributedResidentIdentity.validate`). That check is only the shape of
+   the roster the provider expects: a repeated peer is still refused, and an
+   impostor still is too, because the engine serves only an owner whose
+   readiness equals that identity, peer for peer (`DistributedCBv2Engine`).
+   Every roster formed today is still two distinct peers.
+8. `darkbloom cluster` starts the API when the person chooses Both, me first
+   (`ClusterServingScope.publicServingWithLocalAPI`, kept in the setup record as
+   `localAPI` with `localBind` and carried to the other Mac by the serve
+   command). The cluster service gives `--local-endpoint --port --bind` to the
+   coordinator-paired part of the plan's rank 0 only
+   (`ClusterLocalServing.memberArguments`), on a port from `servingPorts` free
+   on every Mac that says, never `ClusterLocalServing.neverChosenPorts`
+   (`localAPIPort`, probing only `localAPIPorts`). The part's start gives the
+   endpoint to the member that hosts the slot
+   (`ClusterMemberPreparation.hostsPairSlot`) with the pair's key
+   (`LocalEndpoint.loadOrCreateClusterToken`, synced by the serve command) and
+   the local router. The part key marks the scope (`:local-api@`), so switching
+   between Darkbloom network and Both restarts only that part. An older record
+   or serve command has no `localAPI` and reads as the Darkbloom network.
+
 ## Cluster pair capability honesty
 
 A pair advertises what its placed mode serves, not what the artifact's

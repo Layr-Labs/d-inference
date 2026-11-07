@@ -1503,7 +1503,7 @@ final class OnboardingLive: @unchecked Sendable {
         guard let pairing = try ClusterSetupLinkExchange.pairing() else { throw ClusterOnboardingFailure("This Mac is not paired.") }
         var command = command
         if command.claim == nil { command.claim = currentClaim(try? store.readRecord()) }
-        if command.op == .serve, command.scope?.isLocalOnly == true { command.localToken = try? LocalEndpoint.loadOrCreateClusterToken() }
+        if command.op == .serve, command.scope?.localAPIBind != nil { command.localToken = try? LocalEndpoint.loadOrCreateClusterToken() }
         return try ClusterSetupLinkExchange.command(pairing: pairing, selection: try context.linkSelection(), peerAddress: nil,
             body: try JSONEncoder().encode(command), seconds: seconds).reply
     }
@@ -1654,6 +1654,8 @@ final class OnboardingLive: @unchecked Sendable {
     func localSetScope(_ scope: ClusterServingScope) -> Result<[String], ClusterOnboardingFailure> {
         guard let current = leadership else { return .failure(.init("\(Self.sentence(hereShort)) is not paired with a cluster.")) }
         let saved = scope.isLocalOnly ? "Saved on \(here): the cluster serves locally only and never contacts a coordinator."
+            : scope.addsLocalAPI ? "Saved on \(here): the cluster serves through Darkbloom, and on its local API with you first "
+                + "(Darkbloom pauses while you use it)."
             : "Saved on \(here): the cluster serves through Darkbloom (its leading Mac registers with the coordinator)."
         if current.scope == scope { return .success([saved]) }
         let startsBefore = rankZeroStarts()
@@ -2403,7 +2405,7 @@ final class OnboardingLive: @unchecked Sendable {
             lines += ClusterOnboardingSoloServing.remedies(solo.soloServing).map(ClusterOnboardingCommand.named)
         } else if leadership?.serving != true {
             lines.append("Stopped\(leadership?.modelName.map { "; last model " + modelTitle($0) } ?? "").")
-            if let scope = leadership?.scope, scope.isLocalOnly { lines.append("When it starts: " + scope.line + ".") }
+            if let scope = leadership?.scope, scope.localAPIBind != nil { lines.append("When it starts: " + scope.line + ".") }
         } else if let split = versionSplit() {
             // Different versions never clear by themselves: both windows say it, with the versions and the command.
             lines.append(ClusterOnboardingNotServing.statusLine(model: model, reason: split.reason))

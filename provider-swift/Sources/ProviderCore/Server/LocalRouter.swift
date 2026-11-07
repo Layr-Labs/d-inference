@@ -16,6 +16,7 @@ import notify
 /// When none can, the coordinator queues `prefer` too: up to 120 s, and kept while the owner has a Mac serving the
 /// model. `prefer` reserves the price up front even when the owner's own Mac answers (it charges nothing then), so
 /// its 402 (no balance, or the key's spend cap) asks `self` once: free, the owner's Macs only, never spending.
+/// A client on another machine never takes `prefer`: `my-macs-first` serves it as `my-macs` (`LocalRouterPolicy.route`).
 ///
 /// A request this Mac serves never leaves the process: the router hands it to the engine and returns the engine's
 /// response as it is, adding one header. The upstream client exists only once a request needs it.
@@ -209,6 +210,13 @@ public enum LocalRouterPolicy {
     }
 
     public static func isModelsPath(_ path: String) -> Bool { path == "/v1/models" || path == "/models" }
+
+    /// The route for a request's client. One on another machine never takes the paid hop (`prefer`): whoever holds the
+    /// local API's key there may use this Mac and the owner's other Macs (`self`, free), never the owner's balance. So
+    /// `my-macs-first` serves it as `my-macs`; a program on this Mac gets the route as saved.
+    public static func route(_ route: LocalSettings.Route, fromAnotherMachine: Bool) -> LocalSettings.Route {
+        fromAnotherMachine && route == .myMacsFirst ? .myMacs : route
+    }
 
     /// The upstream hop a request this Mac can't take is sent on, by route. `my-macs-first` asks `self` too, once, but
     /// only after `prefer` answered 402 (`asksYourMacs`).

@@ -40,10 +40,10 @@ clock the caller supplies. `ProviderLoop+MeFirst.swift` in
 
 | API | Behaviour |
 |---|---|
-| `enableMeFirst(idle:)` | Turns the pause on with the owner's idle time (`[local] me_first_idle_minutes`, 2 minutes by default). The first call wins; a changed setting applies at the next start. The local endpoint calls it as it starts, where me first applies (below). |
-| `noteLocalUse(.start)` | A local request acquired a model: `acquireModelForLocal` calls it right after taking the request's reservation. The first one pauses Darkbloom work. |
+| `enableMeFirst(idle:)` | Turns the pause on with the owner's idle time (`[local] me_first_idle_minutes`, 2 minutes by default). The first call wins; a changed setting applies at the next start. The local endpoint calls it as it starts, where me first applies (below); a pair's leader enables it from `[local]` ([pairs](#pairs)). |
+| `noteLocalUse(.start)` | A local request acquired a model: `acquireModelForLocal` calls it right after taking the request's reservation (on a pair's leader, `noteClusterPairLocalUse`). The first one pauses Darkbloom work. |
 | `noteLocalUse(.end)` | It released the model: `releaseLocalReservation` calls it when it drops that reservation. The end of the last one starts the idle countdown. Every start is paired with one end; an unmatched end changes nothing. |
-| `resumeIfOwnerIdle()` | Ends the pause once the idle time has passed. The resume timer calls it. A fresh coordinator connection makes the same check before its first heartbeat (`reassertOwnerPauseAfterReconnect`). |
+| `resumeIfOwnerIdle()` | Ends the pause once the idle time has passed. The resume timer calls it. A fresh coordinator connection makes the same check before its first heartbeat (`reassertOwnerPauseAfterReconnect`). On a pair's leader the member beat calls it too. |
 | `meFirstSnapshot` | What `status` reads (`DaemonState.meFirst`). |
 
 While paused:
@@ -77,7 +77,8 @@ which reads `[local]` from the loaded config through
 |---|---|
 | `start --local-endpoint`: the local endpoint beside the coordinator | On, mode `both`, unless `[local] me_first = false`; idle `me_first_idle_minutes` (default `2`) |
 | The same with `[local] me_first = false`, or a saved `mode` other than `both` | Off: local and Darkbloom requests share the Mac, and the heartbeat is unchanged |
-| Plain `start`, and a cluster member | Off: no local endpoint |
+| Plain `start`, and a cluster member without the pair's slot | Off: no local endpoint |
+| A pair's leader with its local API beside Darkbloom | See [pairs](#pairs) |
 | `start --local` (`StandaloneServer`) | None: no coordinator, so no `ProviderLoop` and nothing to pause |
 
 With no `[local]` section it is on, so a Mac that already served with
@@ -104,6 +105,71 @@ uses a model goes through that acquisition, so no route list is kept:
 | `/v1/models`, `/models`, `/health`, `/v1/health`, `/props`, `/metrics`, `/tokenize`, `/detokenize`, `/apply-template` | No: they hold no model |
 | The startup self-test decode | No: it reserves the model directly, without the hooks |
 
+## Pairs
+
+A pair served through Darkbloom has one owner pause, on its leader: the member
+that hosts the pair's slot and runs the pair's local API beside Darkbloom
+([the pair's leader takes local requests](inference.md#the-pairs-leader-takes-local-requests-beside-darkbloom)).
+The rule is "the process that owns the local API owns the pause"
+(`provider-swift/Sources/ProviderCore/ProviderLoop+ClusterPairMeFirst.swift`).
+
+```mermaid
+sequenceDiagram
+  participant Owner as Owner's tool
+  participant Leader as Leader member (slot and local API)
+  participant Coord as Coordinator
+  participant Member as Every other member
+  Owner->>Leader: local request starts waiting for a lane
+  Leader->>Coord: event heartbeat: draining, busy_reason owner
+  Note over Coord: the pair is not routable; its session stays
+  Coord--xLeader: racing dispatch
+  Leader->>Coord: capacity / 503 / draining
+  Owner->>Leader: last local request ends
+  Note over Leader: 2 idle minutes (resume timer, member beat)
+  Leader->>Coord: event heartbeat: idle or serving, no busy fields
+  Note over Member: control-only draining heartbeat, unchanged throughout
+```
+
+| Concern | Behaviour |
+|---|---|
+| Turning it on | `darkbloom cluster` starts the leader's local API when the person chooses Both, me first: the cluster service adds `--local-endpoint --port --bind` to the rank-0 part (`ClusterLocalServing.memberArguments`). `prepareClusterMemberControl` calls `enableClusterPairMeFirstIfConfigured` once `run()` admits the leader's local API, before the API can take a request. It is on unless `[local]` says `me_first = false`, with `[local]`'s idle time. Whatever single-Mac `mode` `[local]` saved, a leader's local API beside Darkbloom serves both |
+| The owner's use | `noteClusterPairLocalUse` forwards to `noteLocalUse` once per local request: from when it starts waiting for one of the pair's lanes, or takes one at once, until it leaves without one or releases it. So the pause begins before the request can wait behind Darkbloom work, and a request refused while the pair isn't serving never counts |
+| Heartbeat | The leader's: `draining` with `busy_reason: owner`, beside its unchanged `cluster_session` |
+| Racing dispatches | The leader's client forwards them while the slot exists, and `rejectIfDraining` refuses them with `capacity / 503 / draining` before they reach the pair |
+| The idle time | The resume timer, and the member beat (`clusterMemberHeartbeat`, every 5 s), because a member runs no idle monitor. A stopping leader cancels the timer |
+| Every other member | Untouched. It runs no local API, so nothing calls the hook and me first stays off; its heartbeat stays control-only `draining` with no busy fields |
+| Ranks | Nothing counts them: the leader is the slot's host, a role, not a rank |
+| `darkbloom cluster local` | Unchanged: no member loop and no coordinator, so nothing to pause |
+
+What the deployed coordinator does with a draining leader:
+
+- It stops routing to the whole pair, the owner's own `self` and `prefer`
+  requests included.
+- It keeps the pair's session: membership is an identity and trust decision,
+  not an admission one, so a draining heartbeat never ends it.
+- On the deployed coordinator, while a pair is paused for its owner, both Macs
+  lose their base reward for the pause plus the 2 idle minutes, counted in
+  5-minute periods, whereas a single Mac keeps it. `[local] me_first = false`,
+  or choosing *Darkbloom network*, avoids that. In the coordinator at
+  `90ee29fc0d`:
+  - A member's base reward counts only the intervals in which its pair is
+    publicly serving-ready
+    ([coordinator/internal/payments/rewardpolicy/uptime.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/internal/payments/rewardpolicy/uptime.go#L52-L84)).
+  - Every member's heartbeat re-checks that
+    ([coordinator/registry/heartbeat.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/registry/heartbeat.go#L271-L276)),
+    a draining leader fails it
+    ([coordinator/registry/cluster_public_routing.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/registry/cluster_public_routing.go#L229-L246)),
+    and that closes every member's interval
+    ([coordinator/registry/cluster_serving_intervals.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/registry/cluster_serving_intervals.go#L49-L53)).
+  - Base rewards settle every 5 minutes
+    ([coordinator/internal/payments/rewardpolicy/epoch.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/internal/payments/rewardpolicy/epoch.go#L14)),
+    and a period under 90% coverage pays nothing
+    ([coordinator/payments/baserewards/machine_candidates.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/payments/baserewards/machine_candidates.go#L118),
+    [coordinator/payments/baserewards/floor.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/payments/baserewards/floor.go#L35-L40)).
+  - A single Mac's own session counts whatever its status
+    ([coordinator/internal/payments/rewardpolicy/uptime.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/internal/payments/rewardpolicy/uptime.go#L90-L104),
+    [coordinator/registry/heartbeat.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/registry/heartbeat.go#L221-L224)).
+
 ## Cost
 
 The pause is event-driven:
@@ -123,6 +189,8 @@ The pause is event-driven:
 - The coordinator and quote paths read one more flag under the lock they
   already take. Nothing runs per token.
 - With me first off, `noteLocalUse` returns at once, and no timer or task exists.
+- On a pair's leader, the member beat that already runs every 5 seconds adds
+  one O(1) check, and the hook adds one call to each local request.
 
 ## Invariants
 
@@ -186,3 +254,10 @@ sends requests through the local endpoint's own HTTP application
 the pause and the resume, refused requests and the routes that are not use,
 `me_first = false` with the heartbeat compared byte for byte, one start and
 one end per request however it ends, and nothing per token.
+
+`ClusterPairMeFirstTests` covers pairs with a scripted pair owner: the
+leader's heartbeat, the racing refusal, work in flight, the member beat's two
+minutes on a fake clock, a roster of three ranks, me first off and the cost.
+Its two tests that complete Darkbloom requests need a Metal device, because
+each request's terminal reads MLX's memory counters, but they submit no GPU
+work.

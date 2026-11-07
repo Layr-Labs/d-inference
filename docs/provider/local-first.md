@@ -87,6 +87,9 @@ busy, they can go on, like the Darkbloom iPhone app:
 | Only my Macs (free) | Your other Macs, at no cost |
 | My Macs first | Your other Macs, then the Darkbloom network, billed to your balance |
 
+Requests from other machines never use the paid network; they can use this Mac
+and your other Macs.
+
 This needs your account API key, from the Darkbloom console, saved with
 `darkbloom route key`. It goes into this Mac's Keychain and is never printed.
 With a key saved, the question asks this too; you can also start with
@@ -194,9 +197,18 @@ Mac, start once with `--local-endpoint --no-me-first`.
 
 ## Two Macs
 
-On a Mac in a two-Mac cluster, `darkbloom start` starts the pair, and these
-flags are for serving this Mac alone: add `--solo`. To use a pair only for
-yourself, run `darkbloom cluster local` ([Two Macs as one provider](./two-mac-cluster.md)).
+A pair gets the same three choices: in a terminal, `darkbloom cluster` asks
+**Only me (this pair, local)**, **Darkbloom network** or **Both, me first**
+(preselected), and its list's **Change how the pair serves** asks again. With
+**Both, me first**, the Mac that runs the pair's first part also runs the
+pair's local API, and Darkbloom pauses while you use it, for the whole pair.
+Your answer is saved in `[local] mode` too. The other Macs run no local API.
+Without a terminal nothing is asked, and a pair keeps serving as it did
+([Both, me first](./two-mac-cluster.md#both-me-first-the-pairs-own-api-beside-darkbloom)).
+
+On a Mac in a pair, `darkbloom start` starts the pair, and the flags above are
+for serving this Mac alone: add `--solo`. To use a pair only for yourself, you
+can also run `darkbloom cluster local` ([Two Macs as one provider](./two-mac-cluster.md)).
 
 ## Related
 

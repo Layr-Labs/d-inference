@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-07
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -977,6 +977,46 @@ swift test --skip-build --no-parallel \
 The peer check is exercised only negatively: no signed add-on is available to
 the test runner, and a test authenticator stands in for it in the socket and
 serve-loop flows. Physical add-on interoperation remains a separate check.
+
+## OpenCode and Hermes config writers
+
+The [config writers'](../architecture/tool-integrations.md) suites are CPU-only
+and need no model, credential or live provider. The planners' goldens are
+inline strings; the writer and end-to-end cases use temp homes and fresh fake
+keys, and the live-endpoint case runs in a child process that alone points
+`DARKBLOOM_LOCAL_DIR` at a temp folder. None reads a real OpenCode or Hermes
+config.
+
+```bash
+swift test --skip-build --no-parallel \
+  --filter 'OpenCodeConfigPlanTests|HermesConfigPlanTests|HermesVersionTests|ToolConfigWriterTests|IntegrationModelsTests|ToolIntegrationTests|AtomicFileTests|keyFileIsTheFileHoldingThePortsKey'
+```
+
+| Coverage | Suites |
+|---|---|
+| New file, an owner's commented JSONC file, strict `.json`, a V1 `provider` map, the default model (also when the other global file sets one), re-runs, refusals, the config file choice | `OpenCodeConfigPlanTests` |
+| New file, Hermes' fresh-install `model: ""`, a file as oMLX writes it (PyYAML's column-0 lists too), the `model:` alias key, the kept default, the 64,000-token floor, quoting, refusals, every written key against Hermes' documented keys; the `key_cmd` version warning | `HermesConfigPlanTests`, `HermesVersionTests` |
+| Backups (exact bytes, 0600, five kept), unchanged writes nothing, atomic replace, symlinks, a concurrent edit, dry run, the undo command run through `/bin/sh` | `ToolConfigWriterTests`, `AtomicFileTests` |
+| Catalog names, limits and capability aliases; the fetch with the key file's key; `local.json`'s endpoint and key file; the modes of new files; the owner's default in the other global OpenCode file; no written file holds the key | `IntegrationModelsTests`, `ToolIntegrationTests`, `keyFileIsTheFileHoldingThePortsKey` |
+
+`scripts/integrations/opencode-smoke.sh` then runs the real OpenCode 2 on the
+written config. It runs the writer through the opt-in `OpenCodeSmokeSetup`
+test (enabled only by `DARKBLOOM_OPENCODE_SMOKE_HOME`), against a fake
+OpenAI-compatible server on a port the system picks, with HOME, every `XDG_*`
+folder, `TMPDIR` and the discovery folder inside one temp folder and OpenCode
+under `env -i` with `--standalone`:
+
+```bash
+scripts/integrations/opencode-smoke.sh --skip-build --scratch-path <build folder>
+```
+
+It checks that OpenCode lists the models and hides the key, that its agent turn
+sends the key file's key and `max_tokens` (the model's `limit.output`) and no
+`X-Darkbloom-Route`, that a second run changes nothing, that an owner's
+`opencode.json` keeps its V1 provider and default model and is restored exactly
+by the printed undo command, and that with both global files the owner's
+default in `opencode.json` stays the only one OpenCode loads. It proves OpenCode accepts the block, not a real
+engine's answers; Hermes is checked against its documentation only.
 
 ## Watchdog Launch Acknowledgement
 

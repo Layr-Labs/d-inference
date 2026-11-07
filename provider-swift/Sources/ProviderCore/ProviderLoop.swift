@@ -530,6 +530,18 @@ public actor ProviderLoop {
     /// Internal, nil in production: suspends the drain bound's cancellation
     /// pass where a release can interleave with it.
     internal var addonHoldBeforeCancellingStragglersForTesting: (@Sendable () async -> Void)?
+    /// Me first (`ProviderLoop+MeFirst`): the owner pause's state machine,
+    /// nil while me first is off; the one timer that ends the pause, armed
+    /// when the owner's idle time starts counting and gone once the pause
+    /// ends; and the wall clock (Unix milliseconds), a test seam.
+    internal var meFirst: MeFirstPolicy?
+    internal var meFirstResumeTimer: Task<Void, Never>?
+    internal var meFirstTimerGeneration: UInt64 = 0
+    internal var meFirstNowMs: @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000) }
+    /// Test seam, nil in production: replaces the capacity rebuild, which
+    /// reads MLX's Metal allocator, so loop tests on a serving Mac never open
+    /// the GPU.
+    internal var capacityRebuildForTesting: (@Sendable () async -> Void)?
     internal var lifecycleStatus = ProviderDrainStatus()
     internal var lastLifecycleTelemetry: ProviderDrainStatus?
     internal var lifecycleDrainTask: Task<ProviderDrainStatus, Never>?
@@ -773,6 +785,11 @@ public actor ProviderLoop {
     /// The follower member's link serving of its committed starts; retained
     /// here because the session control holds its serving host weakly.
     internal var clusterPairFollower: DistributedMemberLinkFollower?
+    /// The pair slot whose admission opened, once its warmup canary passed:
+    /// the leader's local requests wait for it (`ProviderLoop+ClusterPairLocal`).
+    internal var clusterPairAdmissionOpenSlotID: UUID?
+    /// The leader's local requests on its pair's lanes: waiting, or holding one.
+    internal var clusterPairLocalLanes = ClusterPairLocalLanes(limits: .fromEnvironment())
 
     /// Rate cap + trailing-edge coalescing for event-triggered heartbeats
     /// (routing v2, Phase 1). Driven from `updateAggregateCapacity()` — the

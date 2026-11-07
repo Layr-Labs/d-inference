@@ -82,6 +82,8 @@ import Darwin
         localSwitchesAServingCluster()
         localAgainShowsTheMenu()
         menuKeysSwitchTheScope()
+        // Local-first L5b (2026-11-07): the single-Mac start's three choices for a pair, Both, me first preselected.
+        bothMeFirstChecks()
         localNamesTheModel()
         memberJoinsWithLocal()
         servingScopeValues()
@@ -719,7 +721,8 @@ import Darwin
             saveDiagnostics: { recorder.note("saveDiagnostics"); return .success(["Saved a diagnostics file (no keys, addresses or names in it): darkbloom-cluster-diagnostics.json in your home folder."]) },
             developerNotice: { developerNotice },
             setScope: { scope in
-                recorder.note(scope.bind.map { "setScope local \($0)" } ?? "setScope public")
+                recorder.note(scope.addsLocalAPI ? "setScope both \(scope.localAPIBind ?? "")"
+                    : scope.bind.map { "setScope local \($0)" } ?? "setScope public")
                 return .success([scope.isLocalOnly ? "Saved: this cluster serves locally only." : "Saved: this cluster serves through Darkbloom."])
             },
             register: { recorder.note("register"); return registerResult },

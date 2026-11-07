@@ -15,8 +15,12 @@ extension Start {
         snapshot: RuntimeSnapshot,
         config: ProviderConfig,
         runtimeCapabilities: Set<ProviderRuntimeCapability>,
-        bootSecuritySnapshot: BootSecuritySnapshot = .live()
+        bootSecuritySnapshot: BootSecuritySnapshot = .live(),
+        serving resolved: StartServing? = nil
     ) async throws {
+        let serving = resolved ?? servingFromFlags
+        // The resolved address, which `[local]` may set, shadows `Start.port` and `Start.bind` (the flags alone).
+        let (port, bind) = (serving.port, serving.bind)
         warnBootSecurity(snapshot: bootSecuritySnapshot, coordinatorEnforced: false)
 
         let selected = advertisedModels(
@@ -66,8 +70,12 @@ extension Start {
             token = try LocalEndpoint.loadOrCreateToken()
         }
 
-        let baseURL = "http://\(bind == "0.0.0.0" ? "127.0.0.1" : bind):\(port)/v1"
+        let baseURL = serving.baseURL
+        // `--local` prints its key as it always has; "Only me" chosen at the question or saved, and a start that sets
+        // tools up, say where it is.
+        let printsKey = bannerShowsKey(serving)
         print("\(BuildEnvironment.current.cliName) \(ProviderCore.version) (local / direct mode)")
+        if !printsKey { print("Serving: " + LocalFirstWords.serving(mode: .local, meFirst: false, idleMinutes: 0)) }
         print("Preparing local server on \(bind):\(port)")
         print("Models: \(advertised.count)")
         for m in advertised {
@@ -76,17 +84,30 @@ extension Start {
         print()
         print("OpenAI-compatible endpoint:")
         print("  base URL: \(baseURL)")
-        if let token {
+        if let token, printsKey {
             print("  API key:  \(token)")
             print()
             print("  export OPENAI_BASE_URL=\(baseURL)")
             print("  export OPENAI_API_KEY=\(token)")
+        } else if token != nil {
+            print("  API key:  `\(BuildEnvironment.current.cliName) local` shows it")
+            print("  Your requests: " + LocalFirstWords.requests(route: serving.route,
+                                                               accountKeySaved: serving.accountKeySaved ?? false))
         } else {
             print("  API key:  (auth disabled — --no-auth)")
+            print("  Requests: this Mac only. Without a local key nothing is passed on to your other Macs or the network.")
         }
         print()
         print("  Shareable any time with: \(BuildEnvironment.current.cliName) local")
         print()
+
+        // `start --local` runs under the AppKit host, which turns Ctrl-C into a drain; "Only me" from the question
+        // or the saved choice runs here, so it takes the same signals itself.
+        #if os(macOS)
+        let signals = ProviderAppKitHost.shouldHost(Array(CommandLine.arguments.dropFirst())) ? nil
+            : ProviderSignalHandler { _ = await ProviderTermination.shared.request() }
+        defer { withExtendedLifetime(signals) {} }
+        #endif
 
         // Lock acquisition and exact legacy-artifact housekeeping are one
         // ordered operation shared with coordinator-connected foreground mode.
@@ -119,7 +140,10 @@ extension Start {
                 mtpDrafterPath: config.backend.mtpDrafterPath,
                 mtpAcceptance: config.backend.mtpAcceptance,
                 mtpAcceptanceByModel: config.backend.mtpAcceptanceByModel,
-                coordinatorURL: config.coordinator.url
+                coordinatorURL: config.coordinator.url,
+                // `--local` never registers with the coordinator, so a `self` request can't come back to it.
+                router: .host(local: config.local, coordinatorURL: coordinatorURL ?? config.coordinator.url,
+                              takesCoordinatorWork: false)
             ),
             models: advertised
         )
@@ -146,6 +170,10 @@ extension Start {
             throw ExitCode.failure
         }
         print("Listening on \(bind):\(port)")
+        // Only now that the start went ahead does "Only me" (or the port it chose) become the saved choice: a start
+        // refused above (no model it can serve, the running provider's drain, a port another program holds) saves
+        // nothing.
+        try saveServingChoice(serving)
 
         await server.startLifecycleControl()
 
@@ -162,6 +190,9 @@ extension Start {
         )
         try? LocalEndpoint.writeInfo(info)
         defer { LocalEndpoint.removeInfo() }
+
+        // `--opencode` / `--hermes`: set the tools up for this server, beside it; whatever happens there, it serves.
+        setUpToolsBesideLocalServer(info, serving: serving, coordinatorURL: coordinatorURL ?? config.coordinator.url)
 
         // The optional fan helper receives a renewable activity lease only
         // after the server has successfully bound, and only for the lifetime
@@ -181,8 +212,10 @@ extension Start {
         config: ProviderConfig,
         coordinatorURL: String,
         runtimeCapabilities: Set<ProviderRuntimeCapability>,
-        bootSecuritySnapshot: BootSecuritySnapshot = .live()
+        bootSecuritySnapshot: BootSecuritySnapshot = .live(),
+        serving resolved: StartServing? = nil
     ) async throws {
+        let serving = resolved ?? servingFromFlags
         warnBootSecurity(snapshot: bootSecuritySnapshot, coordinatorEnforced: true)
 
         let launchManaged = LaunchAgent.isCurrentProcessJob()
@@ -320,30 +353,8 @@ extension Start {
             print("  \(m.id) (\(String(format: "%.1f", m.estimatedMemoryGb)) GB)")
         }
 
-        // Unified mode: build the local-endpoint config when --local-endpoint is
-        // set. Reuses the same persistent bearer token + bind/port options as
-        // --local; --no-auth opts out of the token (trusted/airgapped only).
-        var localEndpointConfig: LocalInferenceHTTPConfig?
-        if localEndpoint {
-            // FAIL CLOSED: if auth is requested (no --no-auth) but the token
-            // can't be created/read, abort rather than silently opening the
-            // endpoint unauthenticated — otherwise an unwritable ~/.darkbloom
-            // would expose it (especially under --bind 0.0.0.0). Mirrors --local.
-            let token: String?
-            if noAuth {
-                token = nil
-            } else {
-                do {
-                    token = try LocalEndpoint.loadOrCreateToken()
-                } catch {
-                    printError("Cannot start --local-endpoint: failed to create the local API token (\(error)). Fix ~/\(BuildEnvironment.current.installDirectoryName) permissions, or pass --no-auth for a trusted/airgapped setup.")
-                    throw ExitCode.failure
-                }
-            }
-            localEndpointConfig = LocalInferenceHTTPConfig(host: bind, port: port, authToken: token)
-            let shownURL = "http://\(bind == "0.0.0.0" ? "127.0.0.1" : bind):\(port)/v1"
-            print("Local endpoint: \(shownURL)\(token != nil ? "  (API key from `\(BuildEnvironment.current.cliName) local`)" : "  (auth disabled)")")
-        }
+        let localEndpointConfig = try Self.unifiedLocalEndpoint(serving: serving, config: config,
+                                                                 coordinatorURL: coordinatorURL)
 
         let loopConfig = ProviderLoopConfig(
             coordinatorURL: coordinatorURL,
@@ -381,6 +392,35 @@ extension Start {
 
         ProviderProcessRun.finish()
         await TelemetryClient.shared.shutdown()
+    }
+
+    /// The unified local API of a provider that serves Darkbloom and its owner (Both); nil for the Darkbloom network
+    /// only, which then binds nothing and creates no key. Reuses the same persistent bearer token and address as
+    /// `--local`; `--no-auth` opts out of the token (trusted/airgapped only).
+    static func unifiedLocalEndpoint(
+        serving: StartServing, config: ProviderConfig, coordinatorURL: String,
+        loadToken: () throws -> String = { try LocalEndpoint.loadOrCreateToken() }
+    ) throws -> LocalInferenceHTTPConfig? {
+        guard serving.mode == .both else { return nil }
+        // FAIL CLOSED: if auth is requested (no --no-auth) but the token
+        // can't be created/read, abort rather than silently opening the
+        // endpoint unauthenticated — otherwise an unwritable ~/.darkbloom
+        // would expose it (especially under --bind 0.0.0.0). Mirrors --local.
+        let token: String?
+        if serving.noAuth {
+            token = nil
+        } else {
+            do {
+                token = try loadToken()
+            } catch {
+                printError("Cannot start --local-endpoint: failed to create the local API token (\(error)). Fix ~/\(BuildEnvironment.current.installDirectoryName) permissions, or pass --no-auth for a trusted/airgapped setup.")
+                throw ExitCode.failure
+            }
+        }
+        print("Local endpoint: \(serving.baseURL)\(token != nil ? "  (API key from `\(BuildEnvironment.current.cliName) local`)" : "  (auth disabled: requests stay on this Mac)")")
+        return LocalInferenceHTTPConfig(
+            host: serving.bind, port: serving.port, authToken: token,
+            router: .host(local: config.local, coordinatorURL: coordinatorURL, takesCoordinatorWork: true))
     }
 
     /// A provider that launchd runs relaunches through launchd, as the

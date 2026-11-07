@@ -37,7 +37,7 @@ struct Local: AsyncParsableCommand {
                     printError("The cluster's API key (the same on both Macs; `\(BuildEnvironment.current.cliName) cluster` shows where the API is):")
                     printError("  \(key)")
                 } else {
-                    printError("Start one with:  \(BuildEnvironment.current.cliName) start --local")
+                    for line in Self.notRunningHint { printError(line) }
                 }
             }
             throw ExitCode.failure
@@ -59,10 +59,19 @@ struct Local: AsyncParsableCommand {
         }
         if info.apiKey.isEmpty {
             print("  API key:  (auth disabled)")
+            print("  requests: this Mac only (without a local key nothing is passed on to your other Macs or the network)")
         } else {
             print("  API key:  \(info.apiKey)")
         }
         print("  pid:      \(info.pid)")
+        if let state = DaemonStateFile.read(), state.pid == info.pid {
+            let route = (try? savedLocalSettings(configPath: nil))?.route
+            for line in Self.servingLines(info: info, state: state, route: route,
+                                          accountKeySaved: { Start.accountKeySaved() }) {
+                print(line)
+            }
+        }
+        if !info.apiKey.isEmpty { print("  tools:    \(BuildEnvironment.current.cliName) start --opencode · --hermes") }
         print()
         print("Use it with any OpenAI client:")
         print("  export OPENAI_BASE_URL=\(info.baseURL)")
@@ -76,6 +85,36 @@ struct Local: AsyncParsableCommand {
         }
         print("    -H 'Content-Type: application/json' \\")
         print("    -d '{\"model\":\"<id>\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'")
+    }
+
+    /// How the server behind `info` serves, and where your requests go when it can't take them; empty when the
+    /// running provider's state isn't that server's (a cluster's API, or an older provider). A server without a key
+    /// gets no requests line here: `run` has said "this Mac only" under its API key. `accountKeySaved` is asked only
+    /// for the requests line. Never a key or a speed.
+    static func servingLines(info: LocalEndpoint.Info, state: DaemonState?, route: LocalSettings.Route?,
+                             accountKeySaved: () -> Bool) -> [String] {
+        guard let state, state.pid == info.pid else { return [] }
+        let serving: String
+        if state.servesOnlyItsOwner {
+            serving = LocalFirstWords.serving(mode: .local, meFirst: false, idleMinutes: 0)
+        } else if let meFirst = state.meFirst {
+            serving = LocalFirstWords.serving(mode: .both, meFirst: true,
+                                              idleMinutes: LocalFirstWords.idleMinutes(milliseconds: meFirst.idleMs))
+        } else {
+            serving = LocalFirstWords.serving(mode: .both, meFirst: false, idleMinutes: 0)
+        }
+        guard !info.apiKey.isEmpty else { return ["  serving:  \(serving)"] }
+        let keySaved = accountKeySaved()
+        return ["  serving:  \(serving)",
+                "  requests: \(LocalFirstWords.requests(route: route, accountKeySaved: keySaved))"
+                    + (keySaved ? "" : " (`\(BuildEnvironment.current.cliName) route key` adds your other Macs)")]
+    }
+
+    /// What `local` says to start a local API when none runs.
+    static var notRunningHint: [String] {
+        let cli = BuildEnvironment.current.cliName
+        return ["Start one with:  \(cli) start --me-first   (Darkbloom and you, you first)",
+                "             or: \(cli) start --local      (only you, on this Mac)"]
     }
 
     /// For a server listening on every interface: this Mac's Bonjour (`.local`) URL, which other computers on the

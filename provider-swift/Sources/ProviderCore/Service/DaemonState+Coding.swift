@@ -15,7 +15,7 @@ extension DaemonState {
         case configPath, runtimeCapabilities, inferenceActive, requestWorkPending, loadTransitionActive
         case stats, system, capacity, lastModelLoadError, slots
         case connectivity, autopilot, autopilotPhase, autopilotOperation, appAttest
-        case autopilotState, coordinatorConnection, addonHold
+        case autopilotState, coordinatorConnection, addonHold, meFirst
     }
 
     public init(from decoder: Decoder) throws {
@@ -56,6 +56,7 @@ extension DaemonState {
         autopilotOperation = try c.decodeIfPresent(AutopilotOperation.self, forKey: .autopilotOperation)
         appAttest = try c.decodeIfPresent(AppAttestLocalStatus.self, forKey: .appAttest)
         addonHold = try c.decodeIfPresent(AddonHoldSnapshot.self, forKey: .addonHold)
+        meFirst = try c.decodeIfPresent(MeFirstSnapshot.self, forKey: .meFirst)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -95,5 +96,6 @@ extension DaemonState {
         try c.encodeIfPresent(autopilotOperation, forKey: .autopilotOperation)
         try c.encodeIfPresent(appAttest, forKey: .appAttest)
         try c.encodeIfPresent(addonHold, forKey: .addonHold)
+        try c.encodeIfPresent(meFirst, forKey: .meFirst)
     }
 }

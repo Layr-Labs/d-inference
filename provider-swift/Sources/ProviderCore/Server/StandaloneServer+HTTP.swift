@@ -54,7 +54,8 @@ extension StandaloneServer {
         // their first request to pick a valid id; an empty list at cold start
         // would make them give up.
         makeLocalInferenceApplication(
-            config: LocalInferenceHTTPConfig(host: config.host, port: config.port, authToken: config.authToken),
+            config: LocalInferenceHTTPConfig(host: config.host, port: config.port, authToken: config.authToken,
+                                             router: config.router),
             defaultMaxTokens: Self.slotDefaultMaxTokens,
             acquire: { [weak self] modelId in
                 guard let self else {
@@ -82,6 +83,9 @@ extension StandaloneServer {
             },
             modelTypeProvider: { [weak self] modelId in
                 await self?.localModelTypeForAudioAdmission(modelId)
+            },
+            modelLimits: { [weak self] modelId in
+                await self?.localModelLimits(modelId)
             }
         )
     }
@@ -89,6 +93,12 @@ extension StandaloneServer {
     /// Metadata only: cold native audio still uses normal strict acquisition.
     func localModelTypeForAudioAdmission(_ modelId: String) -> String? {
         slots[modelId]?.modelType ?? models.first(where: { $0.id == modelId })?.modelType
+    }
+
+    /// A resident model's context as its engine admits it, for the router's `/v1/models`; nil while not loaded.
+    func localModelLimits(_ modelId: String) -> LocalModelLimits? {
+        guard let slot = slots[modelId] else { return nil }
+        return LocalModelLimits(contextLength: slot.bridge.advertisedContextTokens ?? slot.sizing.maxContextLength)
     }
 }
 

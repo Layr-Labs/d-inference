@@ -44,8 +44,14 @@ extension Start {
         // From the selected registered model's row, like the stop allowance.
         let budget = try session.firstTokenBudgetPolicy()
         let batching = try DistributedAutomaticBatchFactory(providerConfiguration: configPath, stopNotice: announce)
+        // The pair is this Mac's engine, and it takes no Darkbloom work here, whatever the registration wait below
+        // decides: local only, or a control-only member that hosts no pair slot (`pairLeaderOutsideDarkbloom`).
+        let providerConfig = FileManager.default.fileExists(atPath: configPath.path)
+            ? try? ConfigManager.load(from: configPath) : nil
+        let router = LocalRouterConfig.pairLeaderOutsideDarkbloom(
+            local: providerConfig?.local, coordinatorURL: coordinatorURL ?? providerConfig?.coordinator.url)
         let server = DistributedLocalServer(
-            session: session, config: .init(host: bind, port: port, authToken: token),
+            session: session, config: .init(host: bind, port: port, authToken: token, router: router),
             firstTokenBudgetPolicy: budget, batchReplacement: { try await batching.replacement(for: $0) })
 
         // Keep the existing endpoint/PID and sleep-prevention ownership. The

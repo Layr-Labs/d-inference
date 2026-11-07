@@ -16,8 +16,10 @@ extension Start {
         coordinatorURL: String,
         configPath: URL?,
         runtimeCapabilities: Set<ProviderRuntimeCapability>,
-        scheduleEdit: (current: ScheduleSettings, draft: ScheduleSettings)? = nil
+        scheduleEdit: (current: ScheduleSettings, draft: ScheduleSettings)? = nil,
+        serving resolved: StartServing? = nil
     ) async throws {
+        let serving = resolved ?? servingFromFlags
         // Run critical checks before downloading models or prompting.
         try runPreflightChecks(snapshot: snapshot)
 
@@ -41,6 +43,8 @@ extension Start {
         if let scheduleEdit {
             try scheduleEdit.draft.save(configPath: snapshot.configPath.path, expected: scheduleEdit.current)
         }
+        // How this Mac serves, likewise saved only once model selection has succeeded.
+        try saveServingChoice(serving)
 
         // Idle-memory policy: asked on the same interactive path as the model
         // picker (never for --model/--all/relaunch), with the CURRENT policy as
@@ -64,7 +68,7 @@ extension Start {
             })
         }
         defer { replacement.release() }
-        let endpoint = LaunchAgent.LocalEndpointOptions(enabled: localEndpoint, port: port, bind: bind, noAuth: noAuth)
+        let endpoint = serving.launchAgentEndpoint
         try await look.working("Starting the provider service") {
             try await Self.completeDaemonReplacement(autopilot: enableAutopilot,
                 models: selection.autopilotModels ?? selectedModelIDs,
@@ -115,10 +119,7 @@ extension Start {
             print("  Manage: \(BuildEnvironment.current.cliName) autopilot status | pause | disable")
         }
         print("  Memory:  \(IdleUnloadPolicy.describe(minutes: idleMinutes)) - `\(BuildEnvironment.current.cliName) idle` to change")
-        if localEndpoint {
-            let shownURL = "http://\(bind == "0.0.0.0" ? "127.0.0.1" : bind):\(port)/v1"
-            print("  Local:   \(shownURL) (unified mode — run `\(BuildEnvironment.current.cliName) local` for the API key)")
-        }
+        for line in serving.summaryLines { print(line) }
         print("  Logs:    \(logPath)")
         if autoRestartOn {
             print("  Recovery: auto-restart on (relaunches ~5 min after a crash)")

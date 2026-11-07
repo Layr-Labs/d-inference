@@ -67,6 +67,8 @@ struct ClusterPairSummary: Sendable, Equatable {
     var leftoverService: Bool = false
     /// Why the leader's adopted plan serves without the model's speculative assistant (`ClusterOnboardingLeadership.speculationNote`).
     var speculationNote: String?
+    /// The pair serves Both, me first: its local API beside Darkbloom, as this Mac sees it; nil for any other way.
+    var localAPI: ClusterPairLocalAPI?
 
     static let notPaired = ClusterPairSummary(paired: false, state: .notPaired)
 
@@ -115,9 +117,12 @@ struct ClusterPairSummary: Sendable, Equatable {
     /// "this Mac" or "the other Mac (…)": where the cluster is started, stopped and changed.
     var leadingMac: String { role == .member ? otherMac : ClusterOnboardingMacName.this }
 
-    /// How the pair is set to serve; "not offered" while Darkbloom can't have it (never read as serving through it).
+    /// How the pair is set to serve; "not offered" while Darkbloom can't have it (never read as serving through it), and
+    /// with Both, me first its local API too.
     var servesWords: String {
-        localOnly ? "locally only" : "through Darkbloom" + (ClusterOnboardingReady.isNotOffered(reason) ? " (not offered)" : "")
+        guard !localOnly else { return "locally only" }
+        return "through Darkbloom" + (ClusterOnboardingReady.isNotOffered(reason) ? " (not offered)" : "")
+            + (localAPI == nil ? "" : ", and on its local API with you first")
     }
 
     /// The mode and each Mac's share, from the leader's deployment line ("pipeline", "M3 Ultra 40 layers / M5 Ultra 24
@@ -566,6 +571,7 @@ extension ClusterPairSummary {
             return out
         }
         out.append(contentsOf: stateLines)
+        out.append(contentsOf: localAPILines())
         if let next { out.append("Next: " + next) }
         return out
     }

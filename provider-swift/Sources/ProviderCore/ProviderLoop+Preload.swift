@@ -62,7 +62,9 @@ extension ProviderLoop {
             send.send(.loadModelStatus(modelId: modelId, status: .failed, error: "model revision activation in progress"))
             return
         }
-        if isDraining {
+        // During the owner pause a coordinator preload must not evict the
+        // model the owner is using.
+        if isDraining || ownerPausesPublic {
             sendDrainingLoadModelFailure(modelId: modelId, send: send)
             return
         }

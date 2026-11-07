@@ -61,6 +61,20 @@ struct LocalRouterCoordinatorE2ETests {
         #expect(!log.lines.joined().contains(owner))
     }
 
+    @Test func myMacsFirstIsServedByTheOwnersOtherMacThroughPrefer() async throws {
+        let owner = try Self.key("owner-normal")
+        try await Self.app(key: owner, route: .myMacsFirst).test(.router) { client in
+            try await client.execute(uri: "/v1/chat/completions", method: .post, headers: RouterFixture.authorized,
+                                     body: ByteBuffer(string: Self.chat)) { response in
+                let text = String(buffer: response.body)
+                print("e2e my-macs-first chat: \(response.status.code) served-by \(response.headers[LocalRouterPolicy.servedByHeader] ?? "-") route-used \(response.headers[LocalRouterPolicy.routeUsedHeader] ?? "-") sse-events \(text.components(separatedBy: "data:").count - 1)")
+                #expect(response.status == .ok)
+                #expect(response.headers[LocalRouterPolicy.routeUsedHeader] == "prefer")
+                #expect(text.contains("data:") && !text.contains(owner))
+            }
+        }
+    }
+
     @Test func aConsumerWithoutAMacGetsTheCoordinatorsRefusalVerbatim() async throws {
         try await Self.app(key: try Self.key("consumer"), route: .myMacs).test(.router) { client in
             try await client.execute(uri: "/v1/chat/completions", method: .post, headers: RouterFixture.authorized,

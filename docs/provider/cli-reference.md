@@ -776,7 +776,9 @@ and exits 1; an unreachable coordinator saves it with a note. It is kept in the
 Keychain (service `<keychain prefix>.route`, account `account-api-key`; the
 data-protection Keychain in signed builds, the login keychain otherwise) and
 never printed (`RouteKeyFlow`, `provider-swift/Sources/darkbloom/RouteCommand.swift`;
-`KeychainLocalRouterAccountKeyStore`). See
+`KeychainLocalRouterAccountKeyStore`). When the local API running now has no
+local key (`--no-auth`), it says that this API keeps every request on this Mac
+and never uses the key. See
 [the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router).
 
 ### Cluster placement request metadata

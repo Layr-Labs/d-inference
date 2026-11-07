@@ -51,13 +51,6 @@ struct LocalUseOwnerPauseTests {
             await loop.makeLocalEndpointApplication(LocalUseOwnerPauseTests.endpoint)
         }
 
-        /// The owner's idle time has passed on the test clock: the pause ends,
-        /// by this call or by the resume timer if it woke first.
-        func ownerIdleTimeIsUp() async {
-            _ = await loop.resumeIfOwnerIdle()
-            #expect(!state.ownerPausesPublic)
-        }
-
         func remove() { sandbox.remove() }
     }
 
@@ -135,11 +128,9 @@ struct LocalUseOwnerPauseTests {
         #expect(await h.loop.meFirstSnapshot == MeFirstSnapshot(
             idleMs: Self.twoMinutesMs, paused: true, sinceMs: start, lastUseMs: end, resumesAtMs: end + Self.twoMinutesMs))
 
-        h.clock.advance(ms: Self.twoMinutesMs - 1)
-        #expect(await !h.loop.resumeIfOwnerIdle())
+        #expect(await !h.loop.resumeIfOwnerIdleForTesting(advancing: h.clock, by: Self.twoMinutesMs - 1))
         #expect(try await h.heartbeat()["status"] as? String == "draining")
-        h.clock.advance(ms: 1)
-        await h.ownerIdleTimeIsUp()
+        #expect(await h.loop.resumeIfOwnerIdleForTesting(advancing: h.clock, by: 1))
         let resumed = try await h.heartbeat()
         #expect(resumed["status"] as? String == "idle")
         for key in Self.busyKeys { #expect(resumed[key] == nil) }
@@ -181,8 +172,7 @@ struct LocalUseOwnerPauseTests {
         #expect(paused.heartbeats[0].busy == ProviderBusy(reason: .owner, sinceMs: start))
         #expect(await modelLoadingWaitUntil { await h.loop.meFirstSnapshot?.localRequestsInFlight == 0 })
 
-        h.clock.advance(ms: Self.twoMinutesMs)
-        await h.ownerIdleTimeIsUp()
+        #expect(await h.loop.resumeIfOwnerIdleForTesting(advancing: h.clock, by: Self.twoMinutesMs))
         let resumed = try #require(try await mock.waitForSnapshot { $0.heartbeats.count == 2 })
         #expect(resumed.heartbeats[1].status == .idle && resumed.heartbeats[1].busy == nil)
     }
@@ -380,8 +370,7 @@ struct LocalUseOwnerPauseTests {
         #expect(await h.loop.meFirstSnapshot?.sinceMs == start)
         await witness.releaseToken.fire()
         #expect(await modelLoadingWaitUntil { await h.inFlight() == [0, 0] })
-        h.clock.advance(ms: Self.twoMinutesMs)
-        await h.ownerIdleTimeIsUp()
+        #expect(await h.loop.resumeIfOwnerIdleForTesting(advancing: h.clock, by: Self.twoMinutesMs))
     }
 
     /// The hook runs when a request takes its model and when it lets it go,

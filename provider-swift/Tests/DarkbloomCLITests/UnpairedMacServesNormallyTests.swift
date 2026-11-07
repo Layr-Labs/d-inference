@@ -127,6 +127,21 @@ struct UnpairedMacServesNormallyTests {
         #expect(Restart.pairRestart(pair(running: true), singleMacInstalled: true, solo: false) == .restartPair)
     }
 
+    @Test("after a restart of single-Mac serving where the pair doesn't run, the words never send a plain restart to the pair")
+    func restartWordsWhereThePairDoesNotRun() {
+        // A plain restart never starts a pair that doesn't run here, so "`darkbloom restart` restarts both Macs" is false there.
+        var stopped = pair(running: false, reachable: true, started: false)
+        stopped.pairNotRunning = nil
+        let notStarted = "The pair was not started; `\(cli) cluster` starts it."
+        #expect(stopped.restartAddendum == stopped.pairSentence + " " + notStarted)
+        #expect(stopped.restartRefusal.last == notStarted)
+        #expect(pair(running: false).restartAddendum.hasSuffix(" " + notStarted), "started, the other Mac silent")
+        // A pair that runs here, or may still be loading while the other Mac answers, restarts on a plain restart.
+        let restartsBoth = "The pair was not restarted; `\(cli) restart` restarts both Macs."
+        #expect(pair(running: true, reachable: true).restartAddendum.hasSuffix(" " + restartsBoth))
+        #expect(pair(running: false, reachable: true).restartAddendum.hasSuffix(" " + restartsBoth))
+    }
+
     @Test("update: single-Mac serving restarts on a Mac whose pair doesn't run; the pair's protection stays where it runs")
     func updateChoice() {
         // The 0.10.8 → 0.10.9 case: a single-Mac job and a leftover part whose start is still saved.

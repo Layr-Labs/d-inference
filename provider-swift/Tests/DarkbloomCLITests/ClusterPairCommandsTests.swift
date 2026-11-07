@@ -744,6 +744,25 @@ private func stalePair() -> ClusterPairSummary {
     return summary
 }
 
+/// A pair stopped with `darkbloom stop`: its saved start is off, and both cluster services stay up, so the other Mac answers.
+private func stoppedPair() -> ClusterPairSummary {
+    var summary = pair(started: false)
+    summary.pairRunning = false
+    summary.otherMacReachable = true
+    return summary
+}
+
+/// Single-Mac serving this Mac ran before it was paired, stopped since (`darkbloom stop --solo`, or the cluster screen's
+/// consented stop): `stop` unloads and disables its job but keeps its plist on disk. Written in the sandbox's home only.
+private func leaveStoppedSingleMacPlist(in sandbox: CLICommandSandbox) throws {
+    let path = LaunchAgent.plistPath()
+    try #require(path.path.hasPrefix(sandbox.root.path + "/"), "the plist must be the sandbox's, never this Mac's: \(path.path)")
+    let plist: [String: Any] = ["Label": LaunchAgent.label, "RunAtLoad": true, "KeepAlive": false,
+                                "ProgramArguments": ["/fixture/darkbloom", "start", "--foreground", "--model", "acme/Alpha-4bit"]]
+    try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: path)
+}
+
 private func pairActionCalls(_ stderr: String) -> [String] {
     stderr.split(separator: "\n").filter { $0.hasPrefix("pair action: ") }.map { String($0.dropFirst("pair action: ".count)) }
 }
@@ -1019,6 +1038,22 @@ struct ClusterPairControlTests {
             "This Mac is in a two-Mac cluster with \(otherMac): restarting both Macs.",
             "  Stopped on both Macs; starting it again."] + servingBlock + [""])
         #expect(pairActionCalls(text(result?.standardErrorContent)) == ["stop", "verifyTeardown", "ensureService", "serve"])
+    }
+
+    /// DevNet pair-2, 2026-11-07: `restart` on the stopped pair's leading Mac loaded the single-Mac job it served with
+    /// before pairing ("Provider started."), which registered with the coordinator and held the Mac's serving lock.
+    @Test("`darkbloom restart` on a Mac whose pair is stopped starts nothing: a single-Mac plist left by `stop` is not started; exit 1")
+    func restartOnAStoppedPairStartsNothing() async {
+        let result = await #expect(processExitsWith: .exitCode(1), observing: [\.standardOutputContent, \.standardErrorContent]) {
+            try await exitWithPair(stoppedPair(), actions: pairActions(serving: false)) { sandbox in
+                try leaveStoppedSingleMacPlist(in: sandbox)
+                try await runCLICommand(Restart.self, ["restart"])
+            }
+        }
+        #expect(text(result?.standardOutputContent) == transcript(stoppedPair().idleRestartRefusal))
+        let stderr = text(result?.standardErrorContent)
+        #expect(changingLaunchctlCalls(stderr).isEmpty, "\(changingLaunchctlCalls(stderr))")
+        #expect(pairActionCalls(stderr).isEmpty, "\(pairActionCalls(stderr))")
     }
 
     @Test("`darkbloom status` leads with the pair block, then this Mac's fields, and no single-Mac Daemon/Traffic lines")

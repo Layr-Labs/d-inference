@@ -2208,7 +2208,10 @@ running, it restarts nothing, exit 1, and says `darkbloom start` serves this Mac
 alone and `darkbloom cluster` starts the pair (`ClusterPairSummary.idleRestartRefusal`).
 After it restarts single-Mac serving there, or after `--solo` there, it says
 ``The pair was not started; `darkbloom cluster` starts it.``
-(`ClusterPairSummary.restartRestartsPair`).
+(`ClusterPairSummary.restartRestartsPair`). A started pair there is named as
+not running: ``This Mac is in a two-Mac cluster with the other Mac (…), which
+isn't running here (the other Mac (…) isn't answering).``, without the
+parenthesis while this Mac's cluster service is down, never "This Mac serves".
 
 A drain timeout returns non-success and leaves the old process draining with
 automatic restart disabled; repeat the command with a new deadline or explicitly

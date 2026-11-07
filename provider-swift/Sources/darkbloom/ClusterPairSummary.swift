@@ -289,7 +289,7 @@ struct ClusterPairSummary: Sendable, Equatable {
 
     /// `darkbloom restart` on a Mac where neither the pair nor single-Mac serving runs.
     var idleRestartRefusal: [String] {
-        [pairNotRunning ?? pairSentence,
+        [pairNotRunning ?? restartPairSentence,
          "Nothing serves on this Mac, so nothing was restarted: `\(Self.cli) start` serves this Mac alone; "
             + "`\(Self.cli) cluster` starts the pair."]
     }
@@ -319,14 +319,23 @@ struct ClusterPairSummary: Sendable, Equatable {
 
     /// `darkbloom restart --solo` where no single-Mac serving is installed.
     var restartRefusal: [String] {
-        [pairSentence, "`\(Self.cli) restart --solo` restarts single-Mac serving, and this Mac has none: nothing was restarted.",
+        [restartPairSentence,
+         "`\(Self.cli) restart --solo` restarts single-Mac serving, and this Mac has none: nothing was restarted.",
          soloLeftPair("restart")]
     }
 
     /// After `darkbloom restart` restarted single-Mac serving on a Mac in a cluster: with --solo, or while the pair doesn't
     /// run here.
     var restartAddendum: String {
-        pairSentence + (pairingUnreadable ? " No cluster was restarted." : " " + soloLeftPair("restart"))
+        restartPairSentence + (pairingUnreadable ? " No cluster was restarted." : " " + soloLeftPair("restart"))
+    }
+
+    /// The pair as `restart`'s words name it: `pairSentence`, except a started pair that a restart doesn't restart. That pair
+    /// doesn't run here (its other Mac gone, or this Mac's cluster service down), so it never reads "This Mac serves".
+    private var restartPairSentence: String {
+        guard started, !pairingUnreadable, !restartRestartsPair else { return pairSentence }
+        return "This Mac is in a two-Mac cluster with \(otherMac), which isn't running here"
+            + (serviceRunning ? " (\(otherMac) isn't answering)." : ".")
     }
 
     /// `--solo` left the pair alone: "The pair was not stopped; `darkbloom stop` stops both Macs." A pair that a plain

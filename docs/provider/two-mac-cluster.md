@@ -1667,7 +1667,8 @@ running it changes nothing and names `darkbloom start` (serve this Mac alone) an
 `darkbloom cluster` (start the pair). `darkbloom update`
 restarts single-Mac serving if this Mac has it. The watchdog brings it back if it
 stopped. While the pair does run here, all of these act on the pair as above,
-and so do `stop`, `restart` and `update` while the other Mac answers.
+and so do `stop`, `restart` and `update` while the pair is started and the other
+Mac answers.
 
 **A part doesn't hold a Mac forever.** When the other Mac hasn't answered for
 15 minutes, this Mac's cluster service stops its part, which frees the serving

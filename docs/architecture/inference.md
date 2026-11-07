@@ -7610,6 +7610,20 @@ flowchart LR
    impostor still is too, because the engine serves only an owner whose
    readiness equals that identity, peer for peer (`DistributedCBv2Engine`).
    Every roster formed today is still two distinct peers.
+8. `darkbloom cluster` starts the API when the person chooses Both, me first
+   (`ClusterServingScope.publicServingWithLocalAPI`, kept in the setup record as
+   `localAPI` with `localBind` and carried to the other Mac by the serve
+   command). The cluster service gives `--local-endpoint --port --bind` to the
+   coordinator-paired part of the plan's rank 0 only
+   (`ClusterLocalServing.memberArguments`), on a port from `servingPorts` free
+   on every Mac that says, never `ClusterLocalServing.neverChosenPorts`
+   (`localAPIPort`, probing only `localAPIPorts`). The part's start gives the
+   endpoint to the member that hosts the slot
+   (`ClusterMemberPreparation.hostsPairSlot`) with the pair's key
+   (`LocalEndpoint.loadOrCreateClusterToken`, synced by the serve command) and
+   the local router. The part key marks the scope (`:local-api@`), so switching
+   between Darkbloom network and Both restarts only that part. An older record
+   or serve command has no `localAPI` and reads as the Darkbloom network.
 
 ## Cluster pair capability honesty
 

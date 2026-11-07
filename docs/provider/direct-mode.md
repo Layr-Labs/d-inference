@@ -440,10 +440,12 @@ The member that hosts a pair's slot while the pair serves through Darkbloom
 too. It serves the published slot through the slot's own bridge and lanes, so
 local and Darkbloom requests share one engine: no second process, engine or
 copy of the stream (`provider-swift/Sources/ProviderCore/ProviderLoop+ClusterPairLocal.swift`,
-`acquireClusterPairForLocal`). No command starts it yet:
-`darkbloom start --cluster-member` still refuses `--local-endpoint`, and
-`darkbloom cluster` serves a pair through Darkbloom with
-[no local API](./two-mac-cluster.md).
+`acquireClusterPairForLocal`). `darkbloom cluster` starts it when you choose
+**Both, me first** for the pair
+([Both, me first](./two-mac-cluster.md#both-me-first-the-pairs-own-api-beside-darkbloom)):
+the cluster service adds `--local-endpoint --port <port> --bind <address>` to
+that part's `darkbloom start --foreground --cluster-member`, with the pair's
+key. Every other member runs none.
 
 | Case | Answer | Source |
 |---|---|---|

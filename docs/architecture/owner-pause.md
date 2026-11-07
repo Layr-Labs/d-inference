@@ -124,7 +124,7 @@ sequenceDiagram
 
 | Concern | Behaviour |
 |---|---|
-| Turning it on | `prepareClusterMemberControl` calls `enableClusterPairMeFirstIfConfigured` once `run()` admits the leader's local API, before the API can take a request. It is on unless `[local]` says `me_first = false`, with `[local]`'s idle time. Whatever single-Mac `mode` `[local]` saved, a leader's local API beside Darkbloom serves both |
+| Turning it on | `darkbloom cluster` starts the leader's local API when the person chooses Both, me first: the cluster service adds `--local-endpoint --port --bind` to the rank-0 part (`ClusterLocalServing.memberArguments`). `prepareClusterMemberControl` calls `enableClusterPairMeFirstIfConfigured` once `run()` admits the leader's local API, before the API can take a request. It is on unless `[local]` says `me_first = false`, with `[local]`'s idle time. Whatever single-Mac `mode` `[local]` saved, a leader's local API beside Darkbloom serves both |
 | The owner's use | `noteClusterPairLocalUse` forwards to `noteLocalUse` once per local request: from when it starts waiting for one of the pair's lanes, or takes one at once, until it leaves without one or releases it. So the pause begins before the request can wait behind Darkbloom work, and a request refused while the pair isn't serving never counts |
 | Heartbeat | The leader's: `draining` with `busy_reason: owner`, beside its unchanged `cluster_session` |
 | Racing dispatches | The leader's client forwards them while the slot exists, and `rejectIfDraining` refuses them with `capacity / 503 / draining` before they reach the pair |

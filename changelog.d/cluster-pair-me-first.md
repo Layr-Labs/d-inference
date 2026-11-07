@@ -10,4 +10,4 @@
   pair's reward uptime stops while it is paused.
 - It costs next to nothing: one heartbeat when the pause begins and one when it ends, an O(1) update per local
   request, and an idle check on the member's existing 5-second beat.
-- No command starts the leader's local API yet, so nothing changes until `darkbloom cluster` offers it.
+- `darkbloom cluster` starts the leader's local API when you choose **Both, me first** for the pair.

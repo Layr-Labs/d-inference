@@ -1,0 +1,16 @@
+### Both, me first for a pair, in `darkbloom cluster`
+
+- In a terminal, `darkbloom cluster` now asks how a pair serves, with the single-Mac start's three choices: **Only me
+  (this pair, local)**, which is `darkbloom cluster local`'s way, **Darkbloom network**, or **Both, me first**, which
+  is preselected. On a set-up pair, the list's **Change how the pair serves** asks again. The answer is saved in
+  `[local] mode` once the start goes ahead. `darkbloom cluster local` is unchanged and asks nothing.
+- With **Both, me first**, the Mac that runs the pair's first part also runs the pair's local API beside Darkbloom,
+  with the pair's key, on every network of that Mac. Its port is the first one from 8001 to 8020 free on both Macs,
+  never 8000 or the pair ports 47420–47423. Darkbloom pauses for the whole pair while you use it and comes back 2
+  minutes after your last request. The other Macs run no local API.
+- Without a terminal nothing is asked or saved. The login service and scripts keep serving each pair as its setup
+  says, and a pair set up before this build serves through Darkbloom with no local API, as before.
+- `darkbloom status` and `darkbloom cluster status` say whether Darkbloom is paused for you, the pair's local address
+  (never its key), and that the other Macs are part of the pair. No line shows a speed.
+- `darkbloom start --cluster-member` takes `--local-endpoint --port --bind` from the cluster service, never with
+  `--no-auth`.

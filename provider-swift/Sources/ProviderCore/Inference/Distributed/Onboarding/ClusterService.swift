@@ -582,6 +582,9 @@ public final class ClusterService: @unchecked Sendable {
         guard let held = ClusterControlCommandLock.acquire(seconds: 5,
             file: store.paths.directory.appendingPathComponent("control.lock")) else { return }
         defer { held.release() }
+        // It comes due when a part ends, so also right after the owner's `darkbloom stop`, which held this lock: its
+        // `localServe` would start that pair again. A hand-over may have finished meanwhile too.
+        guard leadershipConfirmed(), (try? store.readRecord())?.leadership?.serving == true else { return }
         say("a Mac's memory no longer holds its share of \(model) (refused at load twice): planning again on the memory now")
         let before = try? context.savedConfiguration().reference.get()?.sha256
         let live = controlLive

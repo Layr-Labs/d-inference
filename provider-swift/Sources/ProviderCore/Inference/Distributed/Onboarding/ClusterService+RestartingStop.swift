@@ -7,12 +7,14 @@ import Foundation
 ///   starts a pair again, so every failure from the stop on, including the stop's own, puts it back (`restoreStart`).
 /// - A stop the owner made is never undone. Every stop of the pair holds the control command lock (a person's, typed
 ///   here or forwarded by the other Mac, and `releaseForSingleMac`'s), and once a step holds it, it stops and starts the
-///   pair only while the start is still saved: the re-plan reads it again, and the approval change decides again.
+///   pair only while the start is still saved: the re-plan reads it again, and the approval change decides again. The
+///   memory re-plan (`replanForMemory`), which starts the pair too, reads it again as well.
 /// - Neither acts on an unconfirmed claim: each checks `leadershipConfirmed` before it begins and again once it holds
 ///   the control command lock. The Macs restart into an update seconds apart, and the one back first may take control
 ///   meanwhile: the other Mac then refuses the stop of a leader whose saved claim it superseded.
 ///
-/// The steps take the command lock beside this service's own files: on a Mac, the one every cluster command takes.
+/// The steps, and the memory re-plan, take the command lock beside this service's own files: on a Mac, the one every
+/// cluster command takes.
 ///
 /// DevNet pair-2, 2026-11-07 (`0.10.10-dev.branch.135` → `.137`): such a stop failed right after both Macs restarted
 /// into the update, and the pair stayed stopped on both Macs until `darkbloom cluster` was run.

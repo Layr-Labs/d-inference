@@ -3479,7 +3479,10 @@ chosen model's new plan, found by its id (`OnboardingLive.localAdopt`,
 plan stands (it was priced with less memory than the Macs then have); a model
 the new plan does not offer is not started, and the screen says why. The
 automatic re-plan after repeated memory refusals at load adopts through the
-same path (`ClusterService.noteMemoryRefusal`). The stage memory
+same path (`ClusterService.noteMemoryRefusal`, `replanForMemory`). It comes due
+when a part ends, so also right after an owner's stop: once it holds the
+command lock it acts only while the pair's start is still saved and this Mac's
+claim is confirmed, so it never starts a pair its owner stopped. The stage memory
 gate's two fixed margins (the admissible floor, 6 GiB, and the loading
 headroom, 4 GiB, measured on 256 GiB Macs) apply on Macs with 96 GiB or more;
 below that they are the same share of the observed Mac's memory, never under

@@ -348,7 +348,15 @@ struct Start: AsyncParsableCommand {
                 choice = Self.chooseInTerminal(pair, aloneByDefault: aloneByDefault)
             }
             switch choice {
-            case .single, .serveAlone: if opensLook { look.open(Self.lookTitle) }
+            case .single, .serveAlone:
+                // Before the pair is touched (the solo choice recorded, this Mac's part stopped and its saved start
+                // cleared): the refusals of how this Mac would serve alone, such as a saved "Only me" (also the pair's,
+                // from `darkbloom cluster`) without a terminal. `resolveServing` makes the same ones again below.
+                if pair.paired {
+                    _ = try localFirstOptions.modeStep(saved: try savedLocalSettings(configPath: configOptions.config),
+                                                       terminal: ClusterPairCommands.isTerminal())
+                }
+                if opensLook { look.open(Self.lookTitle) }
             default: break
             }
             switch choice {

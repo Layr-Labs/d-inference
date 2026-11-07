@@ -16,6 +16,8 @@
   `--no-auth`.
 - A pair's local API without a cluster approval (its leader registered with the coordinator, or serving locally because
   the coordinator couldn't take it) no longer asks the coordinator whether your other Macs serve a model before passing
-  your request on to them, as `cluster local` already didn't. The coordinator's count never
-  includes that leader, so with exactly one other Mac serving the model the request was refused as `this_mac_only`
-  instead of going to that Mac.
+  your request on to them, as `cluster local` already didn't. The coordinator's count never includes that leader, so
+  with exactly one other Mac serving the model the request was refused as `this_mac_only` instead of going to that Mac.
+- With **Only me** saved, by `darkbloom cluster` for the pair or by `darkbloom start`, a start without a terminal (the
+  app's Start, a script) on a Mac whose pair doesn't run here is refused in one line, as on one Mac. This Mac's part of
+  the pair keeps running, and its saved start stays.

@@ -361,7 +361,11 @@ hasn't answered for 15 minutes, or it never served in its first 15 minutes),
 `--solo`, with single-Mac options such as `--model` (the app's Go Online,
 `autopilot enable`), and from a script. In a terminal it asks **Serve on this
 Mac alone** (the default when the other Mac isn't answering) or **Start the pair
-(`darkbloom cluster`)**. It first stops a part of the pair still running here and
+(`darkbloom cluster`)**. How this Mac would serve alone is checked first: with
+**Only me** saved (by `darkbloom start`, or by `darkbloom cluster` for the pair)
+and no mode flag, a start without a terminal is refused in one line, as on one
+Mac (exit 64), before anything here is stopped or cleared. Otherwise it first
+stops a part of the pair still running here and
 clears the pair's saved start on this Mac (`ClusterService.releaseForSingleMac`,
 up to 5 minutes), then says one line: ``This Mac is in a two-Mac cluster with the
 other Mac (…), which isn't running here: serving this Mac alone, and its saved

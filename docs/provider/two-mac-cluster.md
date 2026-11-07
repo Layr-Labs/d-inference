@@ -764,7 +764,11 @@ leads.").
   (`local`, `network` or `both`) with the pair's way of serving, once the start
   goes ahead; q at the question or at the list saves nothing. `darkbloom start
   --solo` on this Mac then serves the same way
-  ([no terminal, no question](./local-first.md#no-terminal-no-question)).
+  ([no terminal, no question](./local-first.md#no-terminal-no-question)). A
+  saved **Only me** serves this Mac alone only in a terminal: while the pair
+  doesn't run here, `darkbloom start` without one (the app's Start, a script)
+  is refused in one line before this Mac's part is stopped or its saved start
+  cleared.
 - **Only me** is `darkbloom cluster local`'s way of serving
   ([below](#serving-locally-only)). **Darkbloom network** is the pair as
   before, with no local API.

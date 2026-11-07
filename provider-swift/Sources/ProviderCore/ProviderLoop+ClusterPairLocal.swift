@@ -15,7 +15,9 @@ import Foundation
 // - A waiter costs nothing: it is parked until something that can free a lane
 //   or refuse it wakes it (a local request released one, the capacity refresh
 //   that follows every Darkbloom request's end, admission opening after the
-//   warmup canary, a drain, the slot retiring), its client goes away or its
+//   warmup canary, a drain, the slot retiring), its request is cancelled (a
+//   reset connection cancels it; one closed normally is seen only at the
+//   request's first write, after its turn, as on `cluster local`) or its
 //   ceiling passes. Nothing polls.
 // - Darkbloom requests never enter this queue, and their path through the slot
 //   is unchanged. Their side only calls `wakeClusterPairLocalWaiters`, which
@@ -92,7 +94,7 @@ struct ClusterPairLocalLanes {
         if let continuation = parked.removeValue(forKey: ticket) { continuation.resume() } else { woken.insert(ticket) }
     }
 
-    /// Refuses one waiter: its ceiling passed, or its client went away.
+    /// Refuses one waiter: its ceiling passed, or its request was cancelled.
     mutating func refuse(_ ticket: UUID, _ error: any Error) {
         guard waiting.contains(ticket) else { return }
         if let continuation = parked.removeValue(forKey: ticket) {
@@ -199,7 +201,7 @@ extension ProviderLoop {
     }
 
     /// Parks a waiter until it is woken (it then checks again) or refused (its
-    /// ceiling passed, or its client went away).
+    /// ceiling passed, or its request was cancelled).
     private func parkClusterPairWaiter(_ ticket: UUID) async throws {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in

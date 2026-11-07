@@ -87,18 +87,21 @@ struct RouteKeyFlow {
     let check: @Sendable (String) async -> RouteKeyCheck
     let say: (String) -> Void
 
-    private var cli: String { BuildEnvironment.current.cliName }
-
     func save(_ rawKey: String) async -> Int32 {
         let key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if let refusal = LocalRouterAccountKeyFormat.refusal(key) {
             say("✗ Not saved: \(refusal).")
             return 1
         }
-        let checked = await check(key)
-        if case .refused(let message) = checked {
+        let note: String
+        switch await check(key) {
+        case .refused(let message):
             say("✗ Darkbloom refused this key (\(message)). Nothing was saved.")
             return 1
+        case .accepted(let models):
+            note = "Darkbloom accepted it; your Macs serve " + (models == 1 ? "1 model" : "\(models) models") + " now."
+        case .unchecked(let reason):
+            note = "It couldn't be checked with Darkbloom now (\(reason))."
         }
         do {
             try store.save(key)
@@ -106,15 +109,7 @@ struct RouteKeyFlow {
             say("✗ Not saved: \(error).")
             return 1
         }
-        switch checked {
-        case .accepted(let models):
-            say("✓ Account key saved in this Mac's Keychain. Darkbloom accepted it; your Macs serve "
-                + (models == 1 ? "1 model" : "\(models) models") + " now.")
-        case .unchecked(let reason):
-            say("✓ Account key saved in this Mac's Keychain. It couldn't be checked with Darkbloom now (\(reason)).")
-        case .refused:
-            break
-        }
+        say("✓ Account key saved in this Mac's Keychain. " + note)
         for line in Self.routeLines(savedRoute: savedRoute, keySaved: true) { say(line) }
         say("A running local API uses it from its next request that needs it; no restart is needed.")
         return 0

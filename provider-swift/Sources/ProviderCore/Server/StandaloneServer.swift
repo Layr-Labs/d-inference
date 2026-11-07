@@ -117,7 +117,6 @@ public struct StandaloneServerConfig: Sendable {
         coordinatorURL: String = CoordinatorSettings().url,
         router: LocalRouterConfig? = nil
     ) {
-        self.router = router
         self.port = port
         self.host = host
         self.maxCachedModels = max(1, maxCachedModels)
@@ -138,6 +137,7 @@ public struct StandaloneServerConfig: Sendable {
         self.mtpAcceptance = mtpAcceptance
         self.mtpAcceptanceByModel = mtpAcceptanceByModel
         self.coordinatorURL = coordinatorURL
+        self.router = router
     }
 }
 

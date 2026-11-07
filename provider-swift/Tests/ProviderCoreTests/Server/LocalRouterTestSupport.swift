@@ -173,9 +173,17 @@ struct RouterFixture {
 
     /// One endpoint over this fixture's engine, router and coordinator; each call makes a new application.
     func makeApp(onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in }) -> LocalInferenceApplication {
-        let engine = engine, localModels = localModels, localLimits = localLimits
-        return makeLocalInferenceApplication(
-            config: .init(host: "127.0.0.1", port: 0, authToken: Self.localKey, router: routerConfig),
+        Self.makeApp(router: routerConfig, engine: engine, localModels: localModels, localLimits: localLimits,
+                     onServerRunning: onServerRunning)
+    }
+
+    /// The local API with `router` (nil: the endpoint without a router) over `engine`, which plays this Mac.
+    static func makeApp(router: LocalRouterConfig?, engine: RouterStubEngine, localModels: [String],
+                        localLimits: [String: LocalModelLimits] = [:],
+                        onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in })
+        -> LocalInferenceApplication {
+        makeLocalInferenceApplication(
+            config: .init(host: "127.0.0.1", port: 0, authToken: localKey, router: router),
             defaultMaxTokens: 32,
             acquire: { throw MultiModelBatchSchedulerEngineError.modelNotLoaded($0) },
             tokenizerProvider: { _ in throw MultiModelBatchSchedulerEngineError.noModelLoadedForTokenization },

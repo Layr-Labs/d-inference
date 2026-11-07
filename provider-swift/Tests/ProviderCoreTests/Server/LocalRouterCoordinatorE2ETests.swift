@@ -28,17 +28,10 @@ struct LocalRouterCoordinatorE2ETests {
         throws -> LocalInferenceApplication {
         let raw = try #require(ProcessInfo.processInfo.environment["DARKBLOOM_ROUTER_E2E_BASE"])
         let base = try #require(URL(string: raw))
-        let engine = RouterStubEngine()
         let router = LocalRouterConfig(
             settings: LocalSettings(route: route), upstreamBaseURL: base, takesCoordinatorWork: takesCoordinatorWork,
             accountKeys: InMemoryLocalRouterAccountKeyStore(key), log: { log.append($0) })
-        return makeLocalInferenceApplication(
-            config: .init(host: "127.0.0.1", port: 0, authToken: RouterFixture.localKey, router: router),
-            defaultMaxTokens: 32,
-            acquire: { throw MultiModelBatchSchedulerEngineError.modelNotLoaded($0) },
-            tokenizerProvider: { _ in throw MultiModelBatchSchedulerEngineError.noModelLoadedForTokenization },
-            availableModels: { localModels }, mtpSlots: { [] },
-            managedSuperEngine: { _, _, _ in engine })
+        return RouterFixture.makeApp(router: router, engine: RouterStubEngine(), localModels: localModels)
     }
 
     static let chat = #"{"model":"\#(model)","stream":true,"max_tokens":16,"messages":[{"role":"user","content":"hi"}]}"#

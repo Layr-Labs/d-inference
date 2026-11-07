@@ -46,8 +46,7 @@ flowchart LR
    (`OpenCodeConfigPlan.modelEntries`, `HermesEdit.modelEntries`): `IntegrationModel.keeping` takes the entry's name,
    capabilities and vision, its context when the endpoint gives none, and its output while the context is the one it
    was set for. A model with no entry keeps the fallbacks and is named in `ToolConfigSummary.undescribed`.
-   The rule these limits follow: local and direct use get each model's full context window and every capability it
-   has, and only the Mac's memory may bound a request; OpenRouter traffic is separate. <!-- pending R-FULL -->
+   <!-- pending R-FULL: the writers give each model its full context window, output length and capabilities; only the Mac's memory bounds a request; OpenRouter is separate. -->
 3. **OpenCode.** `OpenCodeConfigPlan.plan` reads the file into byte ranges with `JSONCDocument` and replaces only the
    `providers.<id>` value, or appends it in the file's indentation and trailing-comma style. The block has the base
    URL, `apiKey: "{file:<key file>}"` (under `~` in the home directory), `compatibility.maxTokensField: "max_tokens"`

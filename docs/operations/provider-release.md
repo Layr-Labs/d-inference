@@ -379,9 +379,9 @@ selects the same names from the version that `/v1/releases/latest` returns
 (`scripts/install.sh`, `select_provider_identity`). The installer must work as
 `curl | bash`, so it keeps its own copy of the names; the test compares that copy
 with the JSON. Every command it prints uses the selected `cliName`, through its
-last line, `Next: <cliName> start --opencode`; the platform serves its own
-snapshot of the script, so a change to these lines reaches `curl | bash` only
-once that snapshot is updated.
+last line, `Next: ~/.<cliName>/bin/<cliName> start --opencode`; the platform
+serves its own snapshot of the script, so a change to these lines reaches
+`curl | bash` only once that snapshot is updated.
 
 Right after selecting the identity, the installer refuses a **new** install on
 macOS 26 or earlier (`require_supported_macos`) before downloading the bundle, so a

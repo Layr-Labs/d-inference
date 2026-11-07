@@ -375,7 +375,7 @@ cancelled picker or a refused start writes nothing):
 | The start question, in a terminal (no saved `mode`, or `--choose`) | `mode`; `route` from its follow-up, asked only with an account key saved; `port` for a local API |
 | `--no-me-first`, `--me-first` (only to undo a saved `me_first = false`), `--me-first-idle <min>`, `--route <route>` | `me_first`, `me_first_idle_minutes`, `route`, as `--idle-timeout` writes `idle_timeout_mins` |
 | `--me-first` without a saved port | `port` (the first free one, as above) |
-| `--local`, `--network`, `--local-endpoint`, `--port`, `--bind`, `--no-auth`, and every other start | Nothing: a flag's mode is for that start only, and a start with no saved `mode` and no terminal keeps today's behaviour exactly |
+| `--local`, `--network`, `--local-endpoint`, `--port`, `--bind`, `--no-auth`, and every other start | Nothing: a flag's mode isn't saved here (the LaunchAgent's arguments keep it until the next start, below), and a start with no saved `mode` and no terminal keeps today's behaviour exactly |
 
 The LaunchAgent keeps the arguments `--local-endpoint` has always baked
 (`--local-endpoint --port <n> --bind <address>`, plus `--no-auth`), built from

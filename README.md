@@ -4,6 +4,42 @@ Darkbloom's Apple Silicon provider, native inference runtime integrations, and
 marketing site live here. The provider runs models locally with MLX and can
 connect to the Darkbloom network or serve a local OpenAI-compatible API.
 
+## Use Your Mac's Models
+
+Put OpenCode (or Hermes) on this Mac's own models:
+
+```bash
+curl -fsSL https://api.darkbloom.dev/install.sh | bash
+exec $SHELL -l                    # or open a new Terminal window, so your shell finds darkbloom
+darkbloom start --opencode        # or --hermes
+```
+
+`start` asks how this Mac serves: **Only me**, **Darkbloom network** or
+**Both, me first**. Press Enter for Both, me first: it asks which models to
+serve, serves them in the background and sets OpenCode up. Only me serves the
+models already on this Mac, in that Terminal window. Darkbloom network gives
+OpenCode no address on this Mac. Then, in OpenCode, `/models` → Darkbloom. Two
+Macs: run `darkbloom cluster` on each, then `darkbloom start --opencode` on the
+leading Mac.
+
+<!-- pending LS-1: Only me also asks which models to serve, and serves them in the background. -->
+<!-- pending LS-3: in a pair, start with opencode on either Mac. -->
+
+The [quickstart](docs/provider/quickstart.md) walks through it, and
+[Use your Mac yourself, first](docs/provider/local-first.md) says what each
+choice runs, costs and earns. See also [the local API](docs/provider/direct-mode.md)
+for other OpenAI clients, [installation](docs/provider/installation.md),
+[hardware requirements](docs/provider/hardware-requirements.md) for model fit,
+and [cache storage](docs/provider/cache-storage.md) for encrypted SSD storage
+and daily write limits. To have an AI agent set up serving the Darkbloom
+network, point it at the [agent setup prompt](docs/provider/agent-setup.md).
+
+The provider is the plaintext inference endpoint. Network encryption does not
+hide prompts from that process or from the coordinator's transient request
+processing. See the [encryption and storage trust model](docs/architecture/security/encryption.md)
+and [provider attestation](docs/provider/attestation.md); do not infer security
+guarantees from a repository split.
+
 ## Repository Ownership
 
 Use sibling checkouts, never one repository nested inside the other:
@@ -23,36 +59,6 @@ intended diff before pushing.
 Source ownership does not grant deployment authority. Infrastructure, hosting
 and traffic changes require specific human approval. Release/model registration
 remains an external API operation.
-
-## Use Your Mac's Models
-
-Two commands put OpenCode (or Hermes) on this Mac's own models:
-
-```bash
-curl -fsSL https://api.darkbloom.dev/install.sh | bash
-darkbloom start --opencode        # or --hermes
-```
-
-`start` asks how this Mac serves: **Only me**, **Darkbloom network** or **Both,
-me first** (Enter). Choose Only me or Both, me first: it then serves your models
-in the background and sets OpenCode up. <!-- pending LS-1 --> In OpenCode, `/models` →
-Darkbloom. Two Macs: run `darkbloom cluster` on each, then
-`darkbloom start --opencode` on either. <!-- pending LS-3 -->
-
-The [quickstart](docs/provider/quickstart.md) walks through it, and
-[Use your Mac yourself, first](docs/provider/local-first.md) says what each
-choice runs, costs and earns. See also [the local API](docs/provider/direct-mode.md)
-for other OpenAI clients, [installation](docs/provider/installation.md),
-[hardware requirements](docs/provider/hardware-requirements.md) for model fit,
-and [cache storage](docs/provider/cache-storage.md) for encrypted SSD storage
-and daily write limits. To have an AI agent set up serving the Darkbloom
-network, point it at the [agent setup prompt](docs/provider/agent-setup.md).
-
-The provider is the plaintext inference endpoint. Network encryption does not
-hide prompts from that process or from the coordinator's transient request
-processing. See the [encryption and storage trust model](docs/architecture/security/encryption.md)
-and [provider attestation](docs/provider/attestation.md); do not infer security
-guarantees from a repository split.
 
 ## Develop
 

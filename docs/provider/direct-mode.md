@@ -27,11 +27,14 @@ See [inference and logprob admission](../architecture/inference.md).
 
 - Provider installed ([installation](./installation.md)); no account or
   `darkbloom login` is needed for **Only me**.
-- At least one model with an engine-v2 adapter (gpt-oss, gemma-4 families;
-  `darkbloom models list`). `darkbloom start` offers to download one, for either
-  choice. <!-- pending LS-1 -->
-- Nothing to free: the first start takes this Mac's one port, the first free
-  from 8001, and saves it; `--port` picks another. <!-- pending LS-1 -->
+- At least one model downloaded with an engine-v2 adapter (gpt-oss, gemma-4
+  families); `darkbloom models list`. **Only me** serves the models already
+  here; for **Both, me first**, `darkbloom start`'s model list also downloads.
+- A free port. `--local` and `--local-endpoint` use `[local] port`, else `8000`;
+  the start question, a saved choice and `--me-first` take the first free port
+  from 8001 and save it. `--port` picks one yourself.
+
+<!-- pending LS-1: one port per Mac, chosen once from 8001 and used by every start; Only me also gets the model list with downloads. -->
 
 ## Steps
 
@@ -45,21 +48,21 @@ See [inference and logprob admission](../architecture/inference.md).
    | Only me | `darkbloom start --local` | not contacted | `StandaloneServer`'s own slot cache (`provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift`) | no |
    | Both, me first | `darkbloom start --me-first` (older flag: `--local-endpoint`) | connected as usual | the live `ProviderLoop` slots — weights load once and local + fleet requests share one continuous-batching engine and KV budget (`provider-swift/Sources/ProviderCore/ProviderLoop+LocalEndpoint.swift`) | yes, for fleet traffic while you are not using the Mac (step 3) |
 
-2. Start **Only me**. It serves in the background, as a LaunchAgent that
-   starts at login, after the model picker and the memory question; `--here`
-   serves in this terminal instead and installs no service: <!-- pending LS-1 -->
+2. Start **Only me**. It runs in the current terminal (no LaunchAgent) and
+   installs no service; a background service that was running stops first
+   (`ServiceDrain.prepareForegroundReplacement`), so once this server ends,
+   nothing serves until the next `darkbloom start`:
 
    ```bash
-   darkbloom start --local                              # the picker, then the background service
-   darkbloom start --local --model <model-id>           # or --all
-   darkbloom start --local --here                       # in this terminal; Ctrl-C stops it
+   darkbloom start --local                              # every downloaded model it can serve
+   darkbloom start --local --model <model-id>           # only this one (repeatable)
    darkbloom start --local --port 8080 --bind 0.0.0.0   # another port / every interface
    ```
 
-   `--bind` defaults to `127.0.0.1`, and `--port` to this Mac's saved port,
-   `[local] port`, which the first start chose (a dev build has its own, see
-   [Dev build identity](../operations/provider-release.md#dev-build-identity)). <!-- pending LS-1 -->
-   Before serving,
+   `--port` defaults to `[local] port`, else `8000` (`defaultLocalPort`; a dev
+   build uses its own port, see
+   [Dev build identity](../operations/provider-release.md#dev-build-identity)),
+   `--bind` to `127.0.0.1`. Before serving,
    `Start.runLocalStandalone` (`provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift`)
    loads or creates the API token, filters the chosen models to those with an
    engine-v2 adapter (exit 1 with `No engine-v2-capable models available to
@@ -87,12 +90,13 @@ See [inference and logprob admission](../architecture/inference.md).
    bounded by the local bind wait in [runtime constants](./cli-reference.md#runtime-constants);
    `Local server failed to bind <addr>:<port> within 5s` otherwise), writes the
    discovery file and holds a fan-control lease while running
-   ([fan control](./fan-control.md)). `darkbloom stop` stops it and removes the
-   discovery file. <!-- pending LS-1 --> In a terminal (`--here`), Ctrl-C does the same, and
-   so does closing the window
-   ([stop signals](./cli-reference.md#graceful-stop-and-restart)), unless the
-   command was started with hangups ignored (for example under `nohup`), in
-   which case it keeps serving.
+   ([fan control](./fan-control.md)). Ctrl-C stops it and removes the
+   discovery file, and so does `darkbloom stop`. Closing the terminal window
+   does the same ([stop signals](./cli-reference.md#graceful-stop-and-restart)),
+   unless the command was started with hangups ignored (for example under
+   `nohup`), in which case it keeps serving.
+
+   <!-- pending LS-1: Only me serves in the background, after the model list and the memory question; a here flag keeps this terminal server. -->
 
 3. Or start **Both, me first**. This goes through the normal LaunchAgent path,
    so the flags are recorded in the plist and survive reboots:
@@ -310,11 +314,7 @@ coordinator that can't be reached leaves this Mac's models alone in the list
 and is asked again after 10 s. With `this-mac`, the list never leaves the Mac.
 Integrations (OpenCode, Hermes) read this list.
 
-**The whole model.** This local API, a pair's, and Darkbloom's API used directly
-with your account key offer each model's full context window and every
-capability it has: images, tools, reasoning and its full output length. Only
-the Mac's memory can bound a request, and the answer then says so. Darkbloom
-through OpenRouter is separate and keeps OpenRouter's limits. <!-- pending R-FULL -->
+<!-- pending R-FULL: local and direct use offer each model's full context window and every capability; only the Mac's memory bounds a request, and the answer says so; OpenRouter is separate. -->
 
 ## Routes
 
@@ -534,10 +534,7 @@ copy of the stream (`provider-swift/Sources/ProviderCore/ProviderLoop+ClusterPai
 ([Both, me first](./two-mac-cluster.md#both-me-first-the-pairs-own-api-beside-darkbloom)):
 the cluster service adds `--local-endpoint --port <port> --bind <address>` to
 that part's `darkbloom start --foreground --cluster-member`, with the pair's
-key. Every other member runs no API of its own, but the same relay as
-`darkbloom cluster local` (`ClusterLocalRelay`): its own local port passes
-requests on to this API, so tools on each Mac of the pair use their own Mac's
-address and the same key. <!-- pending LS-3 -->
+key. Every other member runs none. <!-- pending LS-3: every other member runs the relay darkbloom cluster local uses (ClusterLocalRelay), so tools on each Mac of the pair use their own Mac's address and the same key. -->
 
 | Case | Answer | Source |
 |---|---|---|

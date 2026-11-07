@@ -172,11 +172,14 @@ page with these names ([dev build identity](../operations/provider-release.md#de
   `/usr/local/bin` is writable, links `/usr/local/bin/darkbloom-dev`.
   `darkbloom-dev login` prints DevNet's own URL. A test request needs an API
   key from the same DevNet account.
-- **The pair's local API port:** each Mac's one local API port, the first free
-  from 8001, in both apps and for both **Only me** and **Both, me first**;
-  never 8000, which other local AI apps use. <!-- pending LS-1 --> The card says which. The
-  ports the two Macs of a pair use on the cable are the DevNet app's own, so
-  the two apps' pairs never answer each other.
+- **The pair's local API port,** in both apps: for **Only me**
+  (`darkbloom cluster local`), 8000, unless another program (or the other app's
+  pair) holds it on either Mac; then the lowest port up to 8020 that is free on
+  both. For **Both, me first**, the first port from 8001 to 8020 that is free on
+  both, never 8000. The card says which. The ports the two Macs of a pair use
+  on the cable are the DevNet app's own, so the two apps' pairs never answer
+  each other. `8001` is only the DevNet app's default for single-Mac local
+  serving. <!-- pending LS-1: one port per Mac, from 8001, for both pair choices. -->
 - **The DevNet app names `darkbloom-dev`** in its screens, commands and hints,
   and the Local Network lines name “Darkbloom Dev”, but tell the human to turn
   on the row macOS lists, “Darkbloom”: both apps share one bundle ID. Type

@@ -707,5 +707,7 @@ echo "  or Both, me first. With --opencode it then sets OpenCode up: in OpenCode
 echo "  /models → $PROVIDER_LABEL. For Hermes, use --hermes instead."
 echo "  Two Macs: run $CLI_NAME cluster on each Mac to pair them."
 echo ""
-echo "  Next: $CLI_NAME start --opencode"
+# The full path works at once: the user's shell reads the new PATH line only once it restarts, and the
+# /usr/local/bin link is best effort.
+echo "  Next: ~/.$CLI_NAME/bin/$CLI_NAME start --opencode"
 echo ""

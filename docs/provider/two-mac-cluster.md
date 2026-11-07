@@ -781,7 +781,7 @@ With **Both, me first**:
   the pair's local OpenAI-compatible API beside Darkbloom, on the same engine
   and lanes as Darkbloom's requests
   ([a pair's leader beside Darkbloom](./direct-mode.md#a-pairs-leader-beside-darkbloom)).
-  The other Macs relay their own port to it, as with **Only me**. <!-- pending LS-3 -->
+  The other Macs are part of the pair and run no local API.
 - **Address and key:** it listens on every network of that Mac, as `darkbloom
   cluster local` does, on the first port from 8001 to 8020 free on both Macs
   (on that Mac alone when the other Mac doesn't say), never 8000, where other
@@ -789,10 +789,9 @@ With **Both, me first**:
   pair's key, the same as `darkbloom cluster local`'s; `darkbloom local` on that
   Mac shows the address and the key. With the macOS firewall on, macOS may ask
   once to let Darkbloom accept incoming connections.
-- **On the other Mac:** the same relay as `darkbloom cluster local` passes that
-  Mac's own port on to the pair's API, so tools there use
-  `http://127.0.0.1:<port>/v1` with the same key, and
-  `darkbloom start --opencode` works there too. <!-- pending LS-3 -->
+- **On the other Mac:** nothing passes the port on (no relay, unlike
+  `darkbloom cluster local`): tools there dial that Mac's LAN or tailnet
+  address.
 - **Requests the pair can't take** (a model it doesn't serve, a full queue) go
   on as that Mac's `[local] route` says, with that Mac's account key
   ([the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
@@ -812,9 +811,9 @@ With **Both, me first**:
 - **Not offered:** while Darkbloom doesn't have the pair (no approval, the
   coordinator away), it serves on the leader's local API as before
   ([above](#registered-with-the-coordinator-as-a-cluster-member)): on that Mac
-  only (`127.0.0.1`), with the same port and key (`darkbloom local` there
-  shows them). <!-- pending LS-1 --> Tools on other machines reach the pair again once
-  Darkbloom has it.
+  only (`127.0.0.1`), on the same port, with that Mac's own key rather than the
+  pair's (`darkbloom local` there shows it). Tools on other machines, or set up
+  with the pair's key, reach the pair again once Darkbloom has it.
 
 `darkbloom status` and `darkbloom cluster status` say it, on the Mac that runs
 the pair's API:
@@ -824,11 +823,18 @@ Serves: through Darkbloom, and on its local API with you first
 ✓ Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel)
 Pair: you first — Darkbloom paused since 14:02 (your last request 1 minute ago; back at about 14:13 if you stay idle)
 Local API: http://127.0.0.1:8001/v1 on this Mac, and port 8001 of its LAN or tailnet address (`darkbloom local` shows the key)
+Members: the other Mac (Apple M3 Ultra, 256 GB) is part of the pair; it runs no local API
 ```
 
 `Pair: Darkbloom and you, me first — open to Darkbloom (…)` while you aren't
-using it. On the other Mac, `darkbloom local` and `darkbloom status` print that
-Mac's own address for the pair's API. <!-- pending LS-3 -->
+using it. On the other Mac:
+
+```text
+Local API: on the other Mac (Apple M5 Ultra, 256 GB), which runs the pair's API; `darkbloom local` there shows its address and key, and `darkbloom status` there whether Darkbloom is paused for you
+Members: this Mac is part of the pair; it runs no local API
+```
+
+<!-- pending LS-3: in Both, me first the other Mac runs the same relay as darkbloom cluster local, so its own address answers with the pair's key, and its status and darkbloom local print that address. -->
 
 No screen or status line quotes a speed, and none prints the key.
 
@@ -1074,10 +1080,7 @@ installed artifact, not from a per-model table:
 
 ### Response length
 
-Your own tools on the pair's local API, and Darkbloom's API used directly with
-your account key, get each model's full context window, output length and
-every capability it has; only both Macs' memory can bound a request, and the
-answer then says so. Darkbloom through OpenRouter keeps OpenRouter's limits. <!-- pending R-FULL -->
+<!-- pending R-FULL: local and direct use get each model's full context window, output length and capabilities; only both Macs' memory bounds a request, and the answer says so; OpenRouter is separate. -->
 
 Cluster workers accept up to 32,768 output tokens and 32,768 prompt tokens,
 within a 65,536-token combined ceiling, except for a model served at its native
@@ -1637,7 +1640,7 @@ chose yourself (`darkbloom start --solo`, or **Serve on this Mac alone**)
 until you start the pair from that Mac, or the other Mac's screen offers the
 stop and you accept. It never stops it while the pair isn't running there.
 Parts that ended because single-Mac serving held the lock don't make the pair
-fall back to serving on the leader's local API only. Once the blocker is gone, the pair is offered
+fall back to local-only serving. Once the blocker is gone, the pair is offered
 to Darkbloom again straight away. `darkbloom stop --solo` on the Mac without
 single-Mac serving finds it on the other Mac and offers to stop it there
 (`--yes` for scripts). Plain `darkbloom stop` on a paired
@@ -1654,11 +1657,6 @@ serve each Mac alone:
 darkbloom stop            # on either Mac: stops the pair on both
 darkbloom start --solo    # then on each Mac: serves that Mac alone
 ```
-
-`start --solo` serves the Mac alone only while the pair doesn't run there, so
-stop the pair first; a plain `darkbloom start` in a terminal would ask, and its
-default starts the pair again while the other Mac answers. The pairing stays:
-`darkbloom cluster` starts the pair again.
 
 The pair "runs here" when this Mac's cluster service has heard from the other
 Mac in the last 15 minutes and, since its start, the pair has served or is still

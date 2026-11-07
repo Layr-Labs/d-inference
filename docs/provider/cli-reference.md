@@ -218,9 +218,9 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `--autopilot` | flag | `false` | Keep the normal startup selector, verify cached network inventory and save experimental enrollment; verification adds no downloads and the default rollout is shadow |
 | `--no-autopilot` | flag | `false` | Save opt-out and retain ordinary idle-policy mode |
 | `--foreground` / `--no-foreground` | flag, **hidden** | `false` | Serve in this process instead of installing the LaunchAgent; launchd passes it |
-| `--local` | flag | `false` | Only me: [the local API](./direct-mode.md) with no coordinator, for this start |
-| `--network` | flag | `false` | Darkbloom network: no local API, for this start (today's plain `start`) |
-| `--me-first` / `--no-me-first` | flag | unset | `--me-first`: Both, me first: a local API beside Darkbloom, and Darkbloom pauses while you use it, for this start. `--no-me-first`: Darkbloom keeps serving while you use the local API (saved as `[local] me_first = false`); `--me-first` undoes it |
+| `--local` | flag | `false` | Only me: [the local API](./direct-mode.md) with no coordinator, in this terminal; not saved in `[local] mode` |
+| `--network` | flag | `false` | Darkbloom network: no local API (today's plain `start`); not saved in `[local] mode`, but the LaunchAgent keeps it until the next `start` |
+| `--me-first` / `--no-me-first` | flag | unset | `--me-first`: Both, me first: a local API beside Darkbloom, and Darkbloom pauses while you use it; not saved in `[local] mode`, but the LaunchAgent keeps it until the next `start`. `--no-me-first`: Darkbloom keeps serving while you use the local API (saved as `[local] me_first = false`); `--me-first` undoes it |
 | `--local-endpoint` | flag | `false` | Both, me first, the older flag: the local API beside Darkbloom, with me first on (Darkbloom requests pause while your local requests run and for `[local] me_first_idle_minutes` after) unless `--no-me-first` (`[local] me_first = false`); mutually exclusive with `--local` |
 | `--me-first-idle <min>` | `UInt64?`, 1–120 | `[local] me_first_idle_minutes` (`2`) | Minutes with none of your requests before Darkbloom comes back; saved. Not `--idle-timeout` (model memory) |
 | `--route <route>` | `this-mac`, `my-macs`, `my-macs-first` | `[local] route` | Where your requests go when this Mac can't take them ([the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)); saved; needs an account key (`darkbloom route key`) |
@@ -244,8 +244,10 @@ A single-Mac `start` decides how this Mac serves (`StartServingResolver`,
 `provider-swift/Sources/darkbloom/Start/StartLocalFirst.swift`; for users:
 [Use your Mac yourself, first](./local-first.md)):
 
-1. A mode flag, for this start only: `--local`, `--network`, `--me-first` or
-   `--local-endpoint`.
+1. A mode flag: `--local`, `--network`, `--me-first` or `--local-endpoint`.
+   It isn't saved in `[local] mode`, but the LaunchAgent this start installs
+   keeps its arguments, so login, `restart`, updates and the watchdog serve
+   that way until the next `start`.
 2. `--choose` (a terminal only): the question again.
 3. The saved choice, `[local] mode`, with or without a terminal. A saved
    `local` (Only me) serves in a terminal, so without one the start is refused

@@ -2,24 +2,26 @@
 
 > Last updated: 2026-11-07
 
-From a fresh Apple Silicon Mac to OpenCode or Hermes on this Mac's own models,
-in two commands; then, if you want, to earning on the Darkbloom network. For
-anyone setting up a Mac.
-
-<!-- pending LS-1 -->
-<!-- pending LS-4 -->
+From a fresh Apple Silicon Mac to OpenCode or Hermes on this Mac's own models;
+then, if you want, to earning on the Darkbloom network. For anyone setting up a
+Mac.
 
 ```text
-curl -fsSL https://api.darkbloom.dev/install.sh | bash   # ends with: Next: darkbloom start --opencode
-darkbloom start --opencode                               # or --hermes
+curl -fsSL https://api.darkbloom.dev/install.sh | bash
+exec $SHELL -l                       # or open a new Terminal window
+darkbloom start --opencode           # or --hermes
   How should this Mac serve?  1 Only me · 2 Darkbloom network · 3 Both, me first  [3]
-  → your models (downloads offered) → memory when idle → serves in the background
-  → waits for the model to load → ✓ OpenCode can use Darkbloom
-opencode                                                 # then /models → Darkbloom
+  Enter → your models (downloads offered) → memory when idle → serves in the background
+  ✓ OpenCode can use Darkbloom
+opencode                             # then /models → Darkbloom
 ```
 
 Two Macs: run `darkbloom cluster` on each, then `darkbloom start --opencode` on
-either. <!-- pending LS-3 -->
+the leading Mac.
+
+<!-- pending LS-1: choice 1, Only me, also offers the model list and the memory question, and serves in the background. -->
+<!-- pending LS-4: the start waits for the model to load, on one live line, before it sets OpenCode up. -->
+<!-- pending LS-3: in a pair, start with opencode on either Mac. -->
 
 ## Prerequisites
 
@@ -45,11 +47,12 @@ either. <!-- pending LS-3 -->
 
 ```bash
 curl -fsSL https://api.darkbloom.dev/install.sh | bash
-source ~/.zshrc
+exec $SHELL -l        # or open a new Terminal window, so your shell finds darkbloom
 ```
 
-It ends with the command to run next. What the script verifies and writes is
-in [installation](./installation.md).
+The installer puts `darkbloom` on your `PATH` in `~/.zshrc`, which only a new
+shell reads. What the script verifies and writes is in
+[installation](./installation.md).
 
 ### 2. Start, and set up OpenCode
 
@@ -57,47 +60,59 @@ in [installation](./installation.md).
 darkbloom start --opencode      # --hermes for Hermes; both flags for both
 ```
 
-`start` prints the Terms-of-Service notice (starting is acceptance), checks the
-Mac, then asks how it serves (`How should this Mac serve?`). Type 1, 2 or 3,
-or press Enter for 3:
+`start` prints the Terms-of-Service notice (starting is acceptance) and asks
+how this Mac serves (`How should this Mac serve?`). Type 1, 2 or 3, or press
+Enter for 3:
 
 - **1, Only me:** your models, for your tools only. Free, no account, earns
-  nothing; Darkbloom never contacts this Mac.
+  nothing; Darkbloom never contacts this Mac. It serves the models already on
+  this Mac, in this Terminal window, until you close it or press Ctrl-C. On a
+  Mac with no model yet it stops with
+  `No engine-v2-capable models available to serve.`: download one first
+  (`darkbloom models catalog`, then `darkbloom models download <id>`), or
+  choose 3.
 - **2, Darkbloom network:** earns while it serves, but gives your tools no
-  address on this Mac, so `--opencode` stops here and changes nothing.
+  address on this Mac, so `--opencode` stops here and changes nothing. To
+  serve only the network, run `darkbloom start` without it.
 - **3, Both, me first:** your tools first; Darkbloom's requests, which earn,
   pause while you use the Mac and come back after 2 idle minutes.
 
 The screen itself, and what each choice runs, costs and earns, are in
-[Use your Mac yourself, first](./local-first.md#choose-once). Then `start` goes
-on (`provider-swift/Sources/darkbloom/Start/StartCommand.swift`,
+[Use your Mac yourself, first](./local-first.md#choose-once). With **Both, me
+first**, `start` then checks the Mac and goes on
+(`provider-swift/Sources/darkbloom/Start/StartCommand.swift`,
 `provider-swift/Sources/darkbloom/Start/StartCommand+Daemon.swift`):
 
-1. **Your account**, for Darkbloom network and Both, me first: when this Mac
-   isn't linked yet, it offers to link it (`Link account? [Y/n]`). It also
-   asks whether to try the experimental Autopilot (`[y/N]`). Both can wait
-   until [step 4](#4-earn-on-the-darkbloom-network).
+1. **Two optional questions:** when this Mac isn't linked to an account, it
+   offers to link it (`Link account? [Y/n]`), then asks whether to try the
+   experimental Autopilot (`[y/N]`). Answer `n` to both to leave them for
+   [step 4](#4-earn-on-the-darkbloom-network).
 2. **Your models:** a picker lists the models on this Mac and in Darkbloom's
    catalog, and downloads the ones you pick from `https://models.darkbloom.ai`
    (`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`,
-   `defaultR2CDNURL`). `--model <id>` skips it. <!-- pending LS-1 -->
+   `defaultR2CDNURL`). Check which ones are selected before you press Enter.
+   `--model <id>` skips the picker.
 3. **Memory when idle:** keep models loaded (`Always ready`), or unload them
    after 60 minutes without requests and load them again on demand
    (`Free when idle`, the default), or another window. `darkbloom idle`
    changes it later. Selected models start loading right away
-   ([startup preload](./cli-reference.md#darkbloom-start)). <!-- pending LS-1 -->
+   ([startup preload](./cli-reference.md#darkbloom-start)).
 4. **In the background, until `darkbloom stop`:** it writes
    `~/Library/LaunchAgents/io.darkbloom.provider.plist` (`RunAtLoad = true`,
    `KeepAlive = false`; `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`)
    and starts it, so it starts again at every login. With
    `provider.auto_restart = true` (the default) it also arms the crash-recovery
    watchdog `io.darkbloom.watchdog`
-   (`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`). <!-- pending LS-1 -->
-5. **OpenCode:** it waits for the model to load, on one line that updates as
-   it goes, then adds a `darkbloom` provider to OpenCode's config, keeps a
-   backup and prints the one-line undo. <!-- pending LS-4 --> OpenCode's config
-   never holds your key: OpenCode reads it from Darkbloom's key file
+   (`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`).
+5. **OpenCode:** once this Mac's local API answers (it waits up to 30 seconds),
+   it adds a `darkbloom` provider to OpenCode's config, keeps a backup and
+   prints the one-line undo. A model that is still loading gets its limits
+   from Darkbloom's catalog, and the start says to run it again once the model
+   is loaded. OpenCode's config never holds your key: OpenCode reads it from
+   Darkbloom's key file
    ([Use it from OpenCode or Hermes](./local-first.md#use-it-from-opencode-or-hermes)).
+
+With **Only me**, OpenCode is set up the same way once its server listens.
 
 ### 3. Use it
 
@@ -105,16 +120,20 @@ on (`provider-swift/Sources/darkbloom/Start/StartCommand.swift`,
 opencode
 ```
 
-In OpenCode, `/models` → **Darkbloom**, then pick a model; your default model is
-unchanged. With `--hermes`, Darkbloom is Hermes' main model: run `hermes`. Any
-other OpenAI client: `darkbloom local` prints the address, the key and a `curl`
-to try ([the local API](./direct-mode.md)).
+In OpenCode, `/models` → **Darkbloom**, then pick a model. If your OpenCode
+config sets no default model, Darkbloom's first model becomes the default for
+new sessions; otherwise yours stays. The start's `Use it:` line says which. With
+`--hermes`, Darkbloom is Hermes' main model: run `hermes`. Any other OpenAI
+client: `darkbloom local` prints the address, the key and a `curl` to try
+([the local API](./direct-mode.md)).
 
-- **Switch later:** `darkbloom mode only-me`, `darkbloom mode network` or
-  `darkbloom mode both`, with the same models, address and key. <!-- pending LS-2 -->
+- **Switch later:** `darkbloom start --choose` asks how this Mac serves again,
+  then goes on as above.
 - **Two Macs:** run `darkbloom cluster` on each Mac to pair them and choose
-  how the pair serves, then `darkbloom start --opencode` on either Mac
-  ([Two Macs as one provider](./two-mac-cluster.md)). <!-- pending LS-3 -->
+  how the pair serves, then `darkbloom start --opencode` on the leading Mac
+  ([Two Macs as one provider](./two-mac-cluster.md)).
+
+<!-- pending LS-2: a one-step switch that keeps the models, the address and the key. -->
 
 ### 4. Earn on the Darkbloom network
 

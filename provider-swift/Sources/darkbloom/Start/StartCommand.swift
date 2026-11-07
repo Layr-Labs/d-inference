@@ -556,7 +556,7 @@ struct Start: AsyncParsableCommand {
     /// How this start serves (`StartServingResolver`), with the question asked in a terminal; nil when the person
     /// cancelled at the question. Nothing is saved yet: `saveServingChoice` saves once the start goes ahead.
     func resolveServing(environment: ServingEnvironment = .live) throws -> StartServing? {
-        guard let serving = try StartServingResolver.resolve(
+        guard var serving = try StartServingResolver.resolve(
             localFirstOptions, saved: try savedLocalSettings(configPath: configOptions.config), environment: environment)
         else { return nil }
         if serving.mode == .local, !local {
@@ -567,8 +567,13 @@ struct Start: AsyncParsableCommand {
             }
             if autopilot == true { throw ValidationError("Autopilot requires a network provider. Nothing was saved.") }
         }
-        if !requestedTools.isEmpty, !serving.hasLocalAPI {
-            throw ValidationError(ToolIntegrationStep.noLocalAPI(requestedTools) + " Nothing was started or saved.")
+        if !requestedTools.isEmpty {
+            guard serving.hasLocalAPI else {
+                throw ValidationError(ToolIntegrationStep.noLocalAPI(requestedTools) + " Nothing was started or saved.")
+            }
+            // `--local` alone never asks the Keychain. With a tool flag, its banner and the tool block both say where
+            // requests go, so the account key is read once, here, for both.
+            if serving.accountKeySaved == nil { serving.accountKeySaved = environment.accountKeySaved() }
         }
         return serving
     }

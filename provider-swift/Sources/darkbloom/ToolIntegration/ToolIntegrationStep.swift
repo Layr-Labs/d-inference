@@ -88,13 +88,18 @@ struct ToolIntegrationStep {
     /// `<tool> --version`'s first line; nil when it doesn't answer.
     var versionOutput: (IntegrationTool, URL) -> String? = { _, _ in nil }
 
+    /// How long the step waits for the local API's `/v1/models`. That list waits for the coordinator's up to the
+    /// router's own deadline (`LocalRouter.Timing.list`), so with an unreachable coordinator it answers late: the step
+    /// gives it well over that, once, at start.
+    static let modelListTimeout: TimeInterval = 15
+
     /// The step as `start` runs it: the tools found on this Mac, the endpoint's models and the coordinator's catalog.
     static func live(tools: [IntegrationTool], coordinatorURL: String) -> ToolIntegrationStep {
         let environment = ToolIntegrationEnvironment.current
         return ToolIntegrationStep(
             tools: tools, environment: environment,
             findTool: { ToolLocator.find($0, path: environment.variables["PATH"], home: environment.home) },
-            fetchModels: { try await IntegrationModels.fetch($0) },
+            fetchModels: { try await IntegrationModels.fetch($0, timeout: Self.modelListTimeout) },
             fetchCatalog: {
                 let configuration = URLSessionConfiguration.ephemeral
                 configuration.timeoutIntervalForRequest = 5
@@ -167,6 +172,15 @@ struct ToolIntegrationStep {
             }
         }
         if catalog == nil { say("  (Model details unavailable offline; run this again online to refresh them.)") }
+        // This Mac lists a model's context only while it is loaded, so the tools got the catalog's limits for the rest.
+        let unloaded = listed.filter {
+            $0.contextLength == nil && IntegrationModels.location(ownedBy: $0.ownedBy) == .thisMac
+        }
+        if !unloaded.isEmpty {
+            let one = unloaded.count == 1
+            say("  Run `\(Self.cli) start \(Self.flags(ready.map(\.tool)))` again once the "
+                + "\(one ? "model is" : "models are") loaded, to pick up \(one ? "its" : "their") limits.")
+        }
         let keyFile = ToolIntegration.displayPath(endpoint.keyFile, home: environment.home)
         say("  Requests: \(requests)")
         say("  Other tools: OPENAI_BASE_URL=\(endpoint.baseURL) OPENAI_API_KEY=\"$(cat \(keyFile))\"")
@@ -230,6 +244,16 @@ struct ToolIntegrationStep {
     static func noPairAPI(_ tools: [IntegrationTool]) -> String {
         "✗ This Mac has no local API for the pair, so \(notSetUp(tools)). `\(cli) cluster local` serves the pair on "
             + "the leading Mac's own API; run this there."
+    }
+
+    /// The line beside a running local API without a key (`--no-auth`), which tools can't use.
+    static func keyless(port: UInt16) -> String {
+        "✗ Darkbloom's local API on :\(port) has no key (--no-auth); tools need one: start it without --no-auth."
+    }
+
+    /// The line when a background start's local API answers, but no key file holds its key.
+    static func noKeyFile(_ tools: [IntegrationTool], port: UInt16) -> String {
+        "✗ This Mac's local API on :\(port) answers, but no key file holds its key, so \(notSetUp(tools))."
     }
 
     /// The last line when a tool couldn't be set up: the start never stops Darkbloom for a tool.

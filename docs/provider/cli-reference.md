@@ -225,7 +225,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `--me-first-idle <min>` | `UInt64?`, 1–120 | `[local] me_first_idle_minutes` (`2`) | Minutes with none of your requests before Darkbloom comes back; saved. Not `--idle-timeout` (model memory) |
 | `--route <route>` | `this-mac`, `my-macs`, `my-macs-first` | `[local] route` | Where your requests go when this Mac can't take them ([the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)); saved; needs an account key (`darkbloom route key`) |
 | `--choose` | flag | `false` | In a terminal: ask how this Mac serves again, although a choice is saved |
-| `--opencode`, `--hermes` | flag | `false` | Set OpenCode 2 or Hermes Agent up to use this Mac's local API ([below](#set-up-opencode-or-hermes)); not with `--network`, `--no-auth`, `--cluster-member` or `--foreground` |
+| `--opencode`, `--hermes` | flag | `false` | Set OpenCode 2 or Hermes Agent up to use this Mac's local API ([below](#set-up-opencode-or-hermes)); not with `--network`, `--no-auth`, `--cluster-member`, `--distributed` or `--foreground` |
 | `--port <n>` | `UInt16?` | `[local] port`, else `8000` | Local server port. A new local API from the start question, a saved choice or `--me-first` takes the first free port from there instead, never `8000` or `47420`–`47423` |
 | `--bind <addr>` | `String?` | `[local] bind`, else `127.0.0.1` | Local server bind address |
 | `--no-auth` | flag | `false` | Disable the local bearer-token check |
@@ -330,10 +330,14 @@ They run once, at `start`:
    `--all`, `--idle-timeout`, `--schedule`, `--autopilot`/`--no-autopilot`,
    `--coordinator-url`, `--choose`, `--no-me-first`, `--me-first-idle`,
    `--route`): nothing starts. `Darkbloom already serves on <host>:<port>;
-   setting up OpenCode for it.`, then the tools (`Start.runningLocalAPI`).
+   setting up OpenCode for it.`, then the tools (`Start.runningLocalAPI`). One
+   without a key (`--no-auth`) is named instead, and nothing starts (exit 1):
+   ``✗ Darkbloom's local API on :8000 has no key (--no-auth); tools need one:
+   start it without --no-auth.``
 2. **Otherwise `start` runs as above**, then: `--local` and Only me set the tools
    up beside the server once it is bound; a background start waits up to 30 s
-   for its own local API (`Start.waitForLocalAPI`); a paired Mac sets them up
+   for its own local API (`Start.waitForLocalAPI`), and says at once when its
+   `local.json` names a key that no key file holds; a paired Mac sets them up
    for a local API on this Mac after the pair starts, else says that
    `darkbloom cluster local` serves one. A start that would serve no local API
    (Darkbloom network: no terminal and no saved choice, or the answer 2) is
@@ -343,13 +347,18 @@ They run once, at `start`:
    (`ToolLocator`), never installed; `opencode --version` below 2 is refused,
    and a Hermes older than v0.20.2 (`hermes --version`) is set up with one
    `Warning:` line, as it can't read the key yet (`HermesVersion.keyCommandWarning`).
-   The endpoint's `GET /v1/models` and the catalog (5 s; offline, the tools get
-   the models without catalog names) give the models; `ToolIntegration.configure`
+   The endpoint's `GET /v1/models` (15 s, `ToolIntegrationStep.modelListTimeout`:
+   well over the router's own wait for the coordinator's lists, which an
+   unreachable coordinator runs out) and the catalog (5 s; offline, the tools
+   get the models without catalog names) give the models; `ToolIntegration.configure`
    writes the block with a backup. The result block names the file changed, the
    backup and a one-line undo, then `Requests:` (where your requests go) and
    `Other tools:` (`OPENAI_BASE_URL` and `OPENAI_API_KEY="$(cat <key file>)"`).
    No line or file holds the key, and the `--local` banner shows no key when a
-   tool flag is given.
+   tool flag is given (`Start.bannerShowsKey`); its `Your requests:` line and the
+   tool block come from one Keychain read. A model of this Mac's that isn't loaded
+   yet has no context in `/v1/models`, so one line says to run the start again
+   once it is loaded, to pick up its limits.
 
 A tool it can't set up prints `✗` and why, writes nothing and ends with
 `Darkbloom keeps serving.`; the start then exits 1 (a background start keeps

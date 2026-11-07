@@ -88,9 +88,10 @@ enum IntegrationModels {
     static let reasoningCapabilities: Set<String> = ["reasoning", "thinking", "reasoning_parser"]
 
     /// `GET <baseURL>/models`, with the key read from the endpoint's key file for this one request: exactly the list
-    /// the tool will see.
+    /// the tool will see. `timeout` bounds the wait for an answer.
     static func fetch(
         _ endpoint: IntegrationEndpoint,
+        timeout: TimeInterval = 5,
         transport: Transport = { try await URLSession.shared.data(for: $0) }
     ) async throws -> [EndpointModel] {
         let key = (try? String(contentsOf: endpoint.keyFile, encoding: .utf8))?
@@ -102,7 +103,7 @@ enum IntegrationModels {
         }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.timeoutInterval = 5
+        request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await transport(request)
@@ -152,7 +153,8 @@ enum IntegrationModels {
         return models.sorted { ($0.location, $0.name.lowercased(), $0.id) < ($1.location, $1.name.lowercased(), $1.id) }
     }
 
-    private static func location(ownedBy: String?) -> IntegrationModel.Location {
+    /// Where a model the endpoint lists runs, from its `owned_by`.
+    static func location(ownedBy: String?) -> IntegrationModel.Location {
         switch ownedBy?.lowercased() {
         case "my-macs": .yourMacs
         case "darkbloom": .network

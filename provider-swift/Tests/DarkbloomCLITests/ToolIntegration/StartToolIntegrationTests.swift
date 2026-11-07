@@ -1,5 +1,7 @@
 import ArgumentParser
 import Foundation
+import Hummingbird
+import HummingbirdTesting
 import Testing
 
 @testable import ProviderCore
@@ -79,9 +81,12 @@ struct StartToolIntegrationTests {
          "`--opencode` sets a tool up beside a local API; a --cluster-member start serves none."),
         (["--opencode", "--foreground"],
          "`--opencode` runs once, at `darkbloom start`; the --foreground service never sets tools up."),
+        (["--opencode", "--local", "--distributed"],
+         "`--opencode` doesn't start a cluster. Start it first, then run `darkbloom start --opencode` on its own: it "
+            + "sets OpenCode up for the cluster's local API."),
     ]
 
-    @Test("they are refused with --network, --no-auth, a cluster member and the --foreground service",
+    @Test("they are refused with --network, --no-auth, a cluster member, --distributed and the --foreground service",
           arguments: StartToolIntegrationTests.refused)
     func refusals(arguments: [String], message: String) {
         do {
@@ -156,12 +161,132 @@ struct StartToolIntegrationTests {
         let found = await Start.waitForLocalAPI(port: 8123, seconds: 30,
                                                 live: { answers.isEmpty ? nil : answers.removeFirst() },
                                                 keyFile: { _ in keyFile }, pause: {})
-        #expect(found == IntegrationEndpoint(baseURL: "http://127.0.0.1:8123/v1", keyFile: keyFile))
+        #expect(found == .ready(IntegrationEndpoint(baseURL: "http://127.0.0.1:8123/v1", keyFile: keyFile)))
         let none = await Start.waitForLocalAPI(port: 8123, seconds: 0, live: { nil }, keyFile: { _ in keyFile },
                                                pause: {})
-        #expect(none == nil)
+        #expect(none == .notUp)
+        // Its own port with a key that no key file holds: said at once, not after the wait.
+        var pauses = 0
+        let keyless = await Start.waitForLocalAPI(port: 8123, seconds: 30,
+                                                  live: { LocalEndpoint.Info(host: "127.0.0.1", port: 8123, apiKey: "k",
+                                                                             version: "", pid: 1, updatedAt: "") },
+                                                  keyFile: { _ in nil }, pause: { pauses += 1 })
+        #expect(keyless == .noKeyFile && pauses == 0)
         #expect(ToolIntegrationStep.notUp([.opencode], seconds: 30) == "✗ This Mac's local API didn't answer within 30 "
             + "seconds, so OpenCode wasn't set up. Run `darkbloom start --opencode` again once `darkbloom local` shows it.")
+    }
+
+    @Test("beside a running local API without a key (--no-auth), the start names it and starts nothing")
+    func keylessRunningAPIIsNamed() async throws {
+        let keyless = LocalEndpoint.Info(host: "127.0.0.1", port: 8123, apiKey: "", version: "test", pid: 1,
+                                         updatedAt: "")
+        await #expect(throws: ExitCode.failure) {
+            _ = try await Start.parse(["--opencode"]).setUpToolsForRunningLocalAPI(live: keyless)
+        }
+        #expect(ToolIntegrationStep.keyless(port: 8123) == "✗ Darkbloom's local API on :8123 has no key (--no-auth); "
+            + "tools need one: start it without --no-auth.")
+        // An option that changes what serves, another port, or no tool flag: the start runs, as before.
+        for arguments in [["--opencode", "--model", "fixture/model"], ["--opencode", "--port", "9000"], []] {
+            #expect(try await Start.parse(arguments).setUpToolsForRunningLocalAPI(live: keyless) == false,
+                    "\(arguments)")
+        }
+    }
+
+    @Test("after a background start the tool step runs; a failed step, no key file or no API exits 1")
+    func toolStepAfterABackgroundStart() async throws {
+        let start = try Start.parse(["--opencode"])
+        let serving = StartServing(mode: .both, source: .saved, meFirst: true, meFirstIdleMinutes: 2,
+                                   route: .myMacsFirst, accountKeySaved: true, port: 8123, bind: "127.0.0.1",
+                                   noAuth: false)
+        let coordinator = "wss://coordinator.invalid/ws/provider"
+        let sandbox = try StepSandbox()
+        try await start.setUpToolsBesideDaemon(serving: serving, coordinatorURL: coordinator,
+                                               waitForAPI: { _ in .ready(sandbox.endpoint) },
+                                               step: sandbox.step([.opencode]))
+        #expect(FileManager.default.fileExists(atPath: sandbox.openCodeFile.path), "the step ran")
+        // The tool block says where requests go from the key this start read, without reading it again.
+        #expect(sandbox.said.contains("  Requests: this Mac first, then your other Macs (free), then the Darkbloom "
+            + "network (billed)"))
+        let missing = try StepSandbox()
+        await #expect(throws: ExitCode.failure) {
+            try await start.setUpToolsBesideDaemon(serving: serving, coordinatorURL: coordinator,
+                                                   waitForAPI: { _ in .ready(missing.endpoint) },
+                                                   step: missing.step([.opencode], installed: []))
+        }
+        #expect(missing.said.last == "Darkbloom keeps serving.")
+        for wait in [Start.LocalAPIWait.noKeyFile, .notUp] {
+            let untouched = try StepSandbox()
+            await #expect(throws: ExitCode.failure) {
+                try await start.setUpToolsBesideDaemon(serving: serving, coordinatorURL: coordinator,
+                                                       waitForAPI: { _ in wait }, step: untouched.step([.opencode]))
+            }
+            #expect(untouched.said.isEmpty && untouched.filesOtherThanTheKey().isEmpty, "\(wait)")
+        }
+        #expect(ToolIntegrationStep.noKeyFile([.opencode], port: 8123) == "✗ This Mac's local API on :8123 answers, "
+            + "but no key file holds its key, so OpenCode wasn't set up.")
+    }
+
+    @Test("start --local --opencode reads the account key once, for the banner and the tool block; no key shown")
+    func localWithAToolReadsTheAccountKeyOnce() throws {
+        let directory = try TemporaryDirectory("start-tools-local")
+        let config = try directory.write("[provider]\nname = \"d2b\"\n\n[local]\nroute = \"my-macs-first\"\n",
+                                         to: "provider.toml")
+        var lookups = 0
+        let environment = ServingEnvironment(terminal: false, readInput: { nil }, emit: { _ in },
+                                             accountKeySaved: { lookups += 1; return true }, ownLivePort: { nil },
+                                             isFree: { _ in true })
+        let start = try Start.parse(["--local", "--opencode", "--config", config.path])
+        let serving = try #require(try start.resolveServing(environment: environment))
+        #expect(serving.mode == .local && serving.accountKeySaved == true && lookups == 1)
+        // The banner's words come from that one read: requests can leave this Mac, so it doesn't say "this Mac only".
+        #expect(LocalFirstWords.requests(route: serving.route, accountKeySaved: serving.accountKeySaved ?? false)
+            == "this Mac first, then your other Macs (free), then the Darkbloom network (billed)")
+        #expect(!start.bannerShowsKey(serving), "no key in the banner with a tool flag")
+        // `--local` alone keeps its banner, key included, and still never asks the Keychain.
+        let plain = try Start.parse(["--local", "--config", config.path])
+        let plainServing = try #require(try plain.resolveServing(environment: environment))
+        #expect(plain.bannerShowsKey(plainServing) && plainServing.accountKeySaved == nil && lookups == 1)
+    }
+
+    /// The local API's `/v1/models` waits for the coordinator's lists up to the router's own deadline
+    /// (`LocalRouter.Timing.list`), so with a black-holed coordinator it answers late; the step's read must outlast it.
+    @Test("the step's model read waits out a slow /v1/models, longer than D2a's 5 s")
+    func modelReadWaitsOutASlowList() async throws {
+        let directory = try TemporaryDirectory("start-tools-slow")
+        let keyFile = try directory.write(F.freshToken(), to: "home/.darkbloom/local_token", mode: 0o600)
+        let router = Router()
+        router.get("/v1/models") { _, _ -> Response in
+            try await Task.sleep(for: .seconds(6))
+            let list = #"{"object":"list","data":[{"id":"slow","object":"model","owned_by":"this-mac"}]}"#
+            return Response(status: .ok, headers: [.contentType: "application/json"],
+                            body: .init(byteBuffer: ByteBuffer(string: list)))
+        }
+        let app = Application(router: router, configuration: .init(address: .hostname("127.0.0.1", port: 0)))
+        try await app.test(.live) { client in
+            let port = try #require(client.port)
+            // `localhost`: the live test server may listen on either loopback address.
+            let endpoint = IntegrationEndpoint(baseURL: "http://localhost:\(port)/v1", keyFile: keyFile)
+            let step = ToolIntegrationStep.live(tools: [.opencode],
+                                                coordinatorURL: "wss://coordinator.invalid/ws/provider")
+            #expect(try await step.fetchModels(endpoint).map(\.id) == ["slow"])
+        }
+        #expect(ToolIntegrationStep.modelListTimeout > Double(LocalRouter.Timing().list.components.seconds) * 2,
+                "well over the router's own list deadline")
+    }
+
+    @Test("a model this Mac hasn't loaded yet gets one line: run the start again once it is loaded")
+    func unloadedModelsSayRunAgain() async throws {
+        let line = "  Run `darkbloom start --opencode` again once the model is loaded, to pick up its limits."
+        let sandbox = try StepSandbox()
+        let unloaded = StepSandbox.listed + [EndpointModel(id: "gpt-oss-120b", ownedBy: "this-mac")]
+        #expect(await sandbox.step([.opencode], listed: unloaded).run(endpoint: sandbox.endpoint, requests: "x"))
+        #expect(sandbox.said.filter { $0 == line }.count == 1)
+        // Loaded models, and another Mac's model without a context (not this Mac's to load), get no such line.
+        for listed in [StepSandbox.listed, StepSandbox.listed + [EndpointModel(id: "other", ownedBy: "my-macs")]] {
+            let quiet = try StepSandbox()
+            _ = await quiet.step([.opencode], listed: listed).run(endpoint: quiet.endpoint, requests: "x")
+            #expect(!quiet.said.contains { $0.hasPrefix("  Run `") })
+        }
     }
 
     // MARK: - Finding the tools
@@ -304,7 +429,10 @@ struct StartToolIntegrationTests {
         _ = await sandbox.step([.opencode, .hermes]).run(endpoint: sandbox.endpoint, requests: "this Mac only")
         let text = (sandbox.said + [ToolIntegrationStep.noLocalAPI([.opencode, .hermes]),
                                     ToolIntegrationStep.notUp([.hermes], seconds: 30),
-                                    ToolIntegrationStep.noPairAPI([.opencode])]).joined(separator: "\n")
+                                    ToolIntegrationStep.noPairAPI([.opencode]),
+                                    ToolIntegrationStep.keyless(port: 8123),
+                                    ToolIntegrationStep.noKeyFile([.opencode, .hermes], port: 8123)])
+            .joined(separator: "\n")
         #expect(text.contains("✓ OpenCode can use Darkbloom") && text.contains("Choose \"Both, me first\""),
                 "the check covers the step's lines")
         #expect(!text.contains("tok/s") && !text.lowercased().contains("tokens per second"))

@@ -142,7 +142,8 @@ darkbloom start --me-first --opencode --hermes
   ```
 
 - **Run it again** when your models change; with nothing new, it changes
-  nothing.
+  nothing. Run it again too once a model you just started is loaded: until
+  then this Mac doesn't know its limits, and the start says so.
 - **Hermes v0.20.2 or later** reads Darkbloom's key from its file; with an older
   Hermes the start still sets it up and says, in one line, to run
   `hermes update`.
@@ -152,7 +153,15 @@ darkbloom start --me-first --opencode --hermes
   Darkbloom network (choose **Both, me first** or **Only me**). Darkbloom keeps
   serving either way.
 - **Not with** `--network` (no local API) or `--no-auth` (the API would need no
-  key).
+  key). Beside a local API already running with `--no-auth`, it says so and
+  starts nothing: start that API without `--no-auth` first.
+- **If a tool reads another file:** with `OPENCODE_CONFIG_DIR` set, OpenCode
+  reads only that folder, not `~/.config/opencode` (or `$XDG_CONFIG_HOME/opencode`),
+  which Darkbloom changes: unset it, or copy the `darkbloom` provider there. A
+  Hermes profile chosen with `hermes profile use <name>` reads
+  `~/.hermes/profiles/<name>/config.yaml`: set that profile up with
+  `HERMES_HOME=~/.hermes/profiles/<name> darkbloom start --hermes`. The start
+  always names the file it changed.
 
 ## Check how this Mac serves
 

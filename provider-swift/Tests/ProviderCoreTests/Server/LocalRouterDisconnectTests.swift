@@ -155,7 +155,9 @@ final class RawSSEStandIn: @unchecked Sendable {
             while true {
                 let fd = accept(listener, nil, nil)
                 guard fd >= 0 else { return }
-                Thread.detachNewThread { self?.serve(fd, events: events, gap: gap, pauseAfterFirst: pauseAfterFirst) }
+                Thread.detachNewThread { [weak self] in
+                    self?.serve(fd, events: events, gap: gap, pauseAfterFirst: pauseAfterFirst)
+                }
             }
         }
     }

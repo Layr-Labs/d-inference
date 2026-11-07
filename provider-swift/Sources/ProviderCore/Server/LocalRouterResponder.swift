@@ -43,6 +43,8 @@ public final class LocalRouter: Sendable {
         /// within the 5 s an integration gives it.
         public var list: Duration = .seconds(3)
         public var listTTL: Duration = .seconds(30)
+        /// How long the coordinator's count of the owner's Macs serving a model is reused; a failed read isn't kept.
+        public var ownedCountTTL: Duration = .seconds(5)
         public var catalogTTL: Duration = .seconds(300)
         /// How long a failed read is remembered, so an unreachable coordinator costs one try per period.
         public var failureTTL: Duration = .seconds(10)
@@ -149,7 +151,7 @@ public final class LocalRouter: Sendable {
             }
         case .myMacsFirst:
             // `prefer`: the coordinator takes the owner's Macs first, then the network, among the Macs that can take
-            // the request now, with no 120 s queue for a busy Mac of the owner's.
+            // the request now; a busy Mac of the owner's doesn't hold it while another Mac can take it.
             log("this Mac answered \(local.status.code); passing the request on (prefer)")
             let network: (upstream: LocalRouterUpstreamResponse, bytes: ByteBuffer?)
             switch try await send(.prefer) {
@@ -160,12 +162,15 @@ public final class LocalRouter: Sendable {
                 }
                 network = (upstream, bytes)
             }
-            // No balance for the network: the owner's Macs, free, once.
+            // The network refused it for money (no balance, the key's spend cap): the owner's Macs, which never spend,
+            // once.
+            let refusal = network.bytes.flatMap(Self.errorType(in:))
+            let reason = refusal == "insufficient_funds" ? "no balance" : refusal ?? "402"
             if let model, await selfHopWouldReturnHere(model: model, key: key) {
-                log("no balance for the network, and this Mac is the only one of your Macs serving its model")
+                log("the network refused it (\(reason)), and this Mac is the only one of your Macs serving its model")
                 return relayError(network.upstream, body: network.bytes, hop: .prefer, key: key)
             }
-            log("no balance for the network; asking your Macs (self)")
+            log("the network refused it (\(reason)); asking your Macs (self)")
             switch try await send(.mine) {
             case .answer(let response): return response
             case .refusal(let upstream, let bytes):
@@ -284,7 +289,8 @@ public final class LocalRouter: Sendable {
 
     /// The coordinator's refusal as it sent it (status, body, `Retry-After`), with three exceptions: the account key is
     /// never echoed; a refused account key is this Mac's problem, not the client's (502, not 401); and a 402 on the
-    /// network hop says first that it is the network fallback that needs a balance.
+    /// network hop says first that the network fallback was refused, and why
+    /// (`LocalRouterPolicy.networkRefusalPrefix`).
     private func relayError(_ upstream: LocalRouterUpstreamResponse, body: ByteBuffer?,
                             hop: LocalRouterUpstreamRoute, key: String) -> Response {
         guard var bytes = body else {
@@ -303,9 +309,8 @@ public final class LocalRouter: Sendable {
             response.headers[LocalRouterPolicy.routeUsedHeader] = hop.rawValue
             return response
         }
-        if upstream.status == 402, hop == .prefer, let clarified = Self.prefixingMessage(in: bytes, with:
-            "No balance for the network fallback: none of your Macs could take this request, and the Darkbloom "
-            + "network needs a positive balance. Darkbloom said: ") {
+        if upstream.status == 402, hop == .prefer, let clarified = Self.prefixingMessage(
+            in: bytes, with: LocalRouterPolicy.networkRefusalPrefix(errorType: Self.errorType(in: bytes))) {
             bytes = clarified
         }
         return Response(status: .init(code: upstream.status), headers: relayedHeaders(upstream, hop: hop),
@@ -389,17 +394,22 @@ public final class LocalRouter: Sendable {
     }
 
     /// How many of the owner's Macs serve `model` now, by the coordinator's `self` view of that one model (a Mac
-    /// paused for its owner counts); 0 when none does; nil when the coordinator could not say.
+    /// paused for its owner counts); 0 when none does; nil when the coordinator could not say. Reused for
+    /// `ownedCountTTL`, so a burst of passed-on requests reads it once; a failed read is asked again.
     private func ownedProviderCount(model: String, key: String) async -> Int? {
         guard let escaped = model.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else { return nil }
-        let transport = await state.transport(makeTransport)
-        guard let response = try? await transport.send(modelsRequest("/v1/models/" + escaped, key: key, route: .mine))
-        else { return nil }
-        let body = await Self.collect(response.body, limit: 1024 * 1024)
-        if response.status == 404 { return 0 }
-        guard response.status == 200, let body,
-              let entry = try? JSONDecoder().decode(LocalRouterOwnedModel.self, from: Data(buffer: body)) else { return nil }
-        return entry.providerCount
+        return await state.counts.value(for: model + "|" + Self.fingerprint(key), ttl: timing.ownedCountTTL,
+                                        failureTTL: .zero) {
+            let transport = await self.state.transport(self.makeTransport)
+            let read = self.modelsRequest("/v1/models/" + escaped, key: key, route: .mine)
+            guard let response = try? await transport.send(read) else { return nil }
+            let body = await Self.collect(response.body, limit: 1024 * 1024)
+            if response.status == 404 { return 0 }
+            guard response.status == 200, let body,
+                  let entry = try? JSONDecoder().decode(LocalRouterOwnedModel.self, from: Data(buffer: body))
+            else { return nil }
+            return entry.providerCount
+        }
     }
 
     /// A GET of one of the coordinator's model views, with `timing.list` to connect and between bytes: the account
@@ -474,6 +484,13 @@ public final class LocalRouter: Sendable {
         return ByteBuffer(string: text.replacingOccurrences(of: key, with: "[account key]"))
     }
 
+    /// The `error.type` of an OpenAI error body: why the coordinator refused.
+    static func errorType(in body: ByteBuffer) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: Data(buffer: body)) as? [String: Any],
+              let error = object["error"] as? [String: Any] else { return nil }
+        return error["type"] as? String
+    }
+
     static func errorMessage(in body: ByteBuffer) -> String? {
         guard let object = try? JSONSerialization.jsonObject(with: Data(buffer: body)) as? [String: Any],
               let error = object["error"] as? [String: Any] else { return nil }
@@ -502,11 +519,12 @@ public final class LocalRouter: Sendable {
     }
 }
 
-/// The router's mutable state: the upstream client, made by the first request that needs it, and the list caches.
+/// The router's mutable state: the upstream client, made by the first request that needs it, and the caches.
 private actor LocalRouterState {
     private var transport: (any LocalRouterTransport)?
     let lists = LocalRouterCache<[LocalRouterModelEntry]>()
     let catalog = LocalRouterCache<LocalRouterCatalog>()
+    let counts = LocalRouterCache<Int>()
 
     func transport(_ make: @Sendable () -> any LocalRouterTransport) -> any LocalRouterTransport {
         if let transport { return transport }

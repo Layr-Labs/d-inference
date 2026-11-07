@@ -68,6 +68,12 @@ public final class URLSessionLocalRouterTransport: LocalRouterTransport, @unchec
     private let session: URLSession
 
     public init() {
+        session = URLSession(configuration: Self.sessionConfiguration())
+    }
+
+    /// The session's configuration: nothing kept (cookies, cache, credentials), no waiting for connectivity, no total
+    /// cap on a stream, and up to 64 connections to the coordinator.
+    static func sessionConfiguration() -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpCookieStorage = nil
         configuration.httpShouldSetCookies = false
@@ -75,11 +81,13 @@ public final class URLSessionLocalRouterTransport: LocalRouterTransport, @unchec
         configuration.urlCredentialStorage = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.waitsForConnectivity = false
-        // HTTP/2 multiplexes; an HTTP/1.1 coordinator (a test one) would otherwise hold a 7th concurrent pass-on.
+        // HTTP/2 multiplexes. A plain-HTTP coordinator (HTTP/1.1, the V0 harness through a tunnel) takes one request
+        // per connection, and URLSession's default of 6 would hold a 7th concurrent pass-on until the connect
+        // watchdog fails it.
         configuration.httpMaximumConnectionsPerHost = 64
         // No total cap: a stream ends when the coordinator ends it. The idle limit is per request.
         configuration.timeoutIntervalForResource = 7 * 24 * 3600
-        session = URLSession(configuration: configuration)
+        return configuration
     }
 
     deinit { session.invalidateAndCancel() }

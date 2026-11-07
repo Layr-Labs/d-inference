@@ -5,7 +5,9 @@ import HummingbirdTesting
 import MLXLMServer
 import NIOCore
 import NIOFoundationCompat
+import Security
 import Testing
+import notify
 @testable import ProviderCore
 
 /// The local router (`LocalRouter`): this Mac first, then the owner's other Macs, then the network if chosen. Every
@@ -39,7 +41,7 @@ struct LocalRouterTests {
                                              .init(code: 499)] {
             #expect(!LocalRouterPolicy.passesOn(localStatus: status), "\(status)")
         }
-        // Only "no balance" on the network route asks your Macs (free) once.
+        // A 402 on the network route (no balance, a key's spend cap) asks your Macs (free, never spending) once.
         #expect(LocalRouterPolicy.asksYourMacs(afterNetworkStatus: 402))
         #expect(![200, 400, 401, 403, 409, 429, 500, 502, 503, 504].contains(where: LocalRouterPolicy.asksYourMacs(afterNetworkStatus:)))
         // Your Macs not taking it then (none linked, offline, not serving, busy) leaves the network's 402 standing.
@@ -50,6 +52,19 @@ struct LocalRouterTests {
         #expect(LocalRouterPolicy.upstreamPath(forLocalPath: "/responses") == "/v1/responses")
         for local in ["/v1/embeddings", "/v1/chat/completions/batch", "/tokenize", "/v1/models", "/v1/messages"] {
             #expect(LocalRouterPolicy.upstreamPath(forLocalPath: local) == nil, "\(local)")
+        }
+    }
+
+    /// The words before Darkbloom's own message when `prefer`'s 402 stands: "no balance" only for
+    /// `insufficient_funds`; any other reason (a key's spend cap, a promotion's limit) is left to Darkbloom's message.
+    @Test func onlyAnInsufficientFundsRefusalIsCalledNoBalance() {
+        #expect(LocalRouterPolicy.networkRefusalPrefix(errorType: "insufficient_funds")
+            .hasPrefix("No balance for the network fallback: "))
+        for type: String? in ["insufficient_quota", "free_tokens_exhausted", "", nil] {
+            let prefix = LocalRouterPolicy.networkRefusalPrefix(errorType: type)
+            #expect(prefix.hasPrefix("Network fallback refused: "), "\(String(describing: type))")
+            #expect(!prefix.lowercased().contains("balance"), "\(String(describing: type))")
+            #expect(prefix.hasSuffix("Darkbloom said: "), "\(String(describing: type))")
         }
     }
 
@@ -160,8 +175,9 @@ struct LocalRouterTests {
     }
 
     /// `my-macs-first` is `prefer`: the coordinator takes your Macs first, then the network, without `self`'s
-    /// 120 s queue for a busy Mac of yours. Only a 402 (no balance) asks your Macs (`self`, free), once.
-    @Test func myMacsFirstAsksTheNetworkRouteFirstAndYourMacsOnlyAfterANoBalance() async throws {
+    /// 120 s queue for a busy Mac of yours. Only a 402 (no balance, a key's spend cap) asks your Macs (`self`, which
+    /// never spends), once.
+    @Test func myMacsFirstAsksTheNetworkRouteFirstAndYourMacsOnlyAfterA402() async throws {
         let cases: [(prefer: Int, mine: Int?, posts: [String], status: Int, routeUsed: String)] = [
             (200, nil, ["prefer"], 200, "prefer"),
             (503, nil, ["prefer"], 503, "prefer"),
@@ -239,6 +255,33 @@ struct LocalRouterTests {
                 let message = try #require(error?["message"] as? String)
                 #expect(message.hasPrefix("No balance for the network fallback: "))
                 #expect(message.hasSuffix(coordinatorMessage))
+            }
+        }
+        #expect(fixture.upstream.posts.map(\.route) == ["prefer", "self"])
+    }
+
+    /// A key's spend cap refuses `prefer` with a 402 too. `self` is still asked once (it never spends), and the 402
+    /// that stands gives Darkbloom's own reason, not "no balance".
+    @Test func aSpendCapOnTheNetworkRouteIsSaidInDarkbloomsOwnWords() async throws {
+        let capMessage = "API key spend limit reached (total cap $0.00, used $0.00) — raise this key's limit or use another key"
+        let fixture = RouterFixture(route: .myMacsFirst) { request in
+            request.route == "self"
+                ? .json(503, #"{"error":{"type":"machine_offline","message":"offline","code":"machine_offline"}}"#)
+                : .json(402, #"{"error":{"code":"insufficient_quota","message":"\#(capMessage)","type":"insufficient_quota"}}"#)
+        }
+        try await fixture.app.test(.router) { client in
+            try await client.execute(uri: "/v1/chat/completions", method: .post, headers: RouterFixture.authorized,
+                                     body: ByteBuffer(string: RouterFixture.chat("absent"))) { response in
+                #expect(response.status.code == 402)
+                #expect(response.headers[LocalRouterPolicy.routeUsedHeader] == "prefer")
+                let error = try #require(try JSONSerialization.jsonObject(with: Data(buffer: response.body))
+                    as? [String: Any])["error"] as? [String: Any]
+                #expect(error?["type"] as? String == "insufficient_quota")
+                #expect(error?["code"] as? String == "insufficient_quota")
+                let message = try #require(error?["message"] as? String)
+                #expect(message.hasPrefix("Network fallback refused: "))
+                #expect(!message.contains("balance"))
+                #expect(message.hasSuffix(capMessage))
             }
         }
         #expect(fixture.upstream.posts.map(\.route) == ["prefer", "self"])
@@ -386,11 +429,37 @@ struct LocalRouterTests {
         }
     }
 
+    /// The count of your Macs serving a model is read once for a burst of passed-on requests; a read that fails is
+    /// not kept, so the next request asks again.
+    @Test func theCountOfYourMacsIsReadOnceForABurstOfPassOns() async throws {
+        for countAnswers in [true, false] {
+            let fixture = RouterFixture(route: .myMacs, takesCoordinatorWork: true) { request in
+                if request.method == "GET", request.url.path == "/v1/models/busy" {
+                    return countAnswers ? .json(200, #"{"id":"busy","metadata":{"provider_count":2}}"#)
+                        : .json(500, #"{"error":{"message":"internal"}}"#)
+                }
+                return .json(200, #"{"id":"chatcmpl-up"}"#)
+            }
+            try await fixture.app.test(.router) { client in
+                for _ in 0..<3 {
+                    try await client.execute(uri: "/v1/chat/completions", method: .post,
+                                             headers: RouterFixture.authorized,
+                                             body: ByteBuffer(string: RouterFixture.chat("busy"))) { response in
+                        #expect(response.status == (countAnswers ? .ok : .tooManyRequests))
+                    }
+                }
+            }
+            let reads = fixture.upstream.requests.filter { $0.method == "GET" && $0.url.path == "/v1/models/busy" }
+            #expect(reads.count == (countAnswers ? 1 : 3), "count answers: \(countAnswers)")
+            #expect(fixture.upstream.posts.count == (countAnswers ? 3 : 0))
+        }
+    }
+
     @Test func myMacsFirstAsksNoSelfThatCouldOnlyComeBackHereAfterANoBalance() async throws {
         let fixture = RouterFixture(route: .myMacsFirst, takesCoordinatorWork: true) { request in
             if request.method == "GET" { return .json(200, #"{"id":"draining","metadata":{"provider_count":1}}"#) }
             return request.route == "prefer"
-                ? .json(402, #"{"error":{"message":"no balance","code":"insufficient_quota"}}"#)
+                ? .json(402, #"{"error":{"type":"insufficient_funds","message":"no balance","code":"insufficient_quota"}}"#)
                 : .json(200, #"{"id":"from-self"}"#)
         }
         try await fixture.app.test(.router) { client in
@@ -485,12 +554,82 @@ struct LocalRouterTests {
         }
         #expect(fixture.factory.count == 0)
         #expect(fixture.upstream.requests.isEmpty)
+        #expect(fixture.keys.loads == 0)
         #expect(fixture.log.lines.contains {
             $0 == "no local key (--no-auth): requests stay on this Mac, and the account key is never used"
         })
         var config = try #require(fixture.routerConfig)
         config.localKeyRequired = false
         #expect(config.effectiveRoute().route == .thisMac && config.effectiveRoute().accountKey == nil)
+    }
+
+    // MARK: - The key, read once
+
+    /// The key is read once and kept in memory: a burst of passed-on requests and model lists reads the Keychain once.
+    /// `route key` posts a change notification when it saves or removes the key, and the next request reads it again.
+    @Test func theKeyIsReadOnceAndAgainOnlyAfterRouteKeyChangesIt() async throws {
+        let fixture = RouterFixture(route: .myMacsFirst)
+        let config = try #require(fixture.routerConfig)
+        let notification = try #require(config.keyChangeNotification)
+        try await fixture.app.test(.router) { client in
+            for _ in 0..<5 { try await Self.chat(client, expect: .ok) }
+            try await client.execute(uri: "/v1/models", method: .get, headers: RouterFixture.authorized) { response in
+                #expect(response.status == .ok)
+            }
+        }
+        #expect(fixture.keys.loads == 1)
+        notify_post(notification)
+        #expect(await holdsWithinTwoSeconds { !config.keyCache.keepsACopy }, "the copy is dropped on the notification")
+        try await fixture.app.test(.router) { client in
+            for _ in 0..<2 { try await Self.chat(client, expect: .ok) }
+        }
+        #expect(fixture.keys.loads == 2)
+    }
+
+    // MARK: - A key that can't be read
+
+    /// A Keychain that won't hand the key over without asking (a locked keychain, or a new build) is said once, in a
+    /// line without the key, and requests stay on this Mac. A failed read isn't kept: the next request tries again.
+    @Test func anUnreadableKeyIsTriedAgainOnTheNextRequestAndSaidOnce() async throws {
+        let fixture = RouterFixture(route: .myMacs)
+        let config = try #require(fixture.routerConfig)
+        let notification = try #require(config.keyChangeNotification)
+        let keys = fixture.keys
+        try await fixture.app.test(.router) { client in
+            keys.failReads(with: errSecAuthFailed)
+            try await Self.chat(client, expect: .notFound)
+            try await Self.chat(client, expect: .notFound)
+            try await client.execute(uri: "/v1/models", method: .get, headers: RouterFixture.authorized) { response in
+                let list = try JSONDecoder().decode(LocalRouterModelList.self, from: Data(buffer: response.body))
+                #expect(list.data.allSatisfy { $0.ownedBy == "this-mac" })
+            }
+            #expect(keys.loads == 3, "each request tried again")
+            keys.failReads(with: nil)
+            try await Self.chat(client, expect: .ok)
+            // Read and kept: a keychain that locks later doesn't matter until the key changes.
+            keys.failReads(with: errSecInteractionNotAllowed)
+            try await Self.chat(client, expect: .ok)
+            #expect(keys.loads == 4)
+            notify_post(notification)
+            #expect(await holdsWithinTwoSeconds { !config.keyCache.keepsACopy })
+            try await Self.chat(client, expect: .notFound)
+        }
+        let lines = fixture.log.lines.filter { $0.contains("could not read the account key") }
+        #expect(lines.count == 2, "\(fixture.log.lines)")
+        #expect(lines.first?.contains("OSStatus \(errSecAuthFailed)") == true)
+        #expect(lines.last?.contains("OSStatus \(errSecInteractionNotAllowed)") == true)
+        #expect(lines.allSatisfy { $0.contains("requests stay on this Mac") && $0.contains("route key") })
+        #expect(!fixture.log.lines.joined(separator: "\n").contains(RouterFixture.accountKey))
+        #expect(fixture.keys.loads == 5)
+        #expect(fixture.upstream.posts.count == 2)
+    }
+
+    /// A chat for a model this Mac doesn't serve.
+    static func chat(_ client: some TestClientProtocol, expect status: HTTPResponse.Status) async throws {
+        try await client.execute(uri: "/v1/chat/completions", method: .post, headers: RouterFixture.authorized,
+                                 body: ByteBuffer(string: RouterFixture.chat("absent"))) { response in
+            #expect(response.status == status)
+        }
     }
 
     @Test func aMacThatTakesNoCoordinatorWorkPassesOnWithoutAsking() async throws {

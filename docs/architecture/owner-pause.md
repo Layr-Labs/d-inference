@@ -105,10 +105,29 @@ What the deployed coordinator does with a draining leader:
 - It stops routing to the whole pair, the owner's own `self` and `prefer`
   requests included.
 - It keeps the pair's session: membership is an identity and trust decision,
-  not an admission one, and only a committed `provider_drain` barrier ends a
-  pair.
-- As for any pair drain today, the pair's reward uptime stops while the leader
-  drains. A single Mac keeps its uptime while paused.
+  not an admission one, so a draining heartbeat never ends it.
+- On the deployed coordinator, while a pair is paused for its owner, both Macs
+  lose their base reward for the pause plus the 2 idle minutes, counted in
+  5-minute periods, whereas a single Mac keeps it. `[local] me_first = false`,
+  or choosing *Darkbloom network*, avoids that. In the coordinator at
+  `90ee29fc0d`:
+  - A member's base reward counts only the intervals in which its pair is
+    publicly serving-ready
+    ([coordinator/internal/payments/rewardpolicy/uptime.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/internal/payments/rewardpolicy/uptime.go#L52-L84)).
+  - Every member's heartbeat re-checks that
+    ([coordinator/registry/heartbeat.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/registry/heartbeat.go#L271-L276)),
+    a draining leader fails it
+    ([coordinator/registry/cluster_public_routing.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/registry/cluster_public_routing.go#L229-L246)),
+    and that closes every member's interval
+    ([coordinator/registry/cluster_serving_intervals.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/registry/cluster_serving_intervals.go#L49-L53)).
+  - Base rewards settle every 5 minutes
+    ([coordinator/internal/payments/rewardpolicy/epoch.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/internal/payments/rewardpolicy/epoch.go#L14)),
+    and a period under 90% coverage pays nothing
+    ([coordinator/payments/baserewards/machine_candidates.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/payments/baserewards/machine_candidates.go#L118),
+    [coordinator/payments/baserewards/floor.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/payments/baserewards/floor.go#L35-L40)).
+  - A single Mac's own session counts whatever its status
+    ([coordinator/internal/payments/rewardpolicy/uptime.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/internal/payments/rewardpolicy/uptime.go#L90-L104),
+    [coordinator/registry/heartbeat.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/registry/heartbeat.go#L221-L224)).
 
 ## Cost
 

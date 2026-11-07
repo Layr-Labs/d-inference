@@ -1,6 +1,6 @@
 # Direct mode: a local OpenAI-compatible endpoint
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-07
 
 Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
@@ -372,6 +372,11 @@ request ends (`[local] me_first_idle_minutes`), the pair takes Darkbloom
 requests again. `[local] me_first = false` keeps the shared serving above. The
 other members don't change, and the pair keeps its session and its loaded
 model ([owner pause](../architecture/owner-pause.md#pairs)).
+
+On the deployed coordinator, while a pair is paused for you, both Macs lose
+their base reward for the pause plus the 2 idle minutes, counted in 5-minute
+periods, whereas a single Mac keeps it. `[local] me_first = false`, or choosing
+*Darkbloom network*, avoids that.
 
 ### Speed records of cluster requests
 

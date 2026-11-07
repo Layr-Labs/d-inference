@@ -513,7 +513,7 @@ struct Start: AsyncParsableCommand {
             try await runForeground(
                 snapshot: snapshot,
                 hardware: hardware,
-                config: effectiveConfig,
+                config: serving.servedConfig(effectiveConfig),
                 coordinatorURL: effectiveCoordinator,
                 runtimeCapabilities: runtimeCapabilities,
                 serving: serving

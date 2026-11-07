@@ -139,7 +139,9 @@ extension Cluster.Setup {
     static func asksServingChoice(request: ClusterOnboardingRequest) -> Bool { request.scope == nil }
 
     /// The live operations, which ask how the pair serves and save the answer where `asksServingChoice` says so. Only
-    /// this terminal screen sets them: every other caller of the operations (status, stop, the service) asks nothing.
+    /// this screen sets them, and it runs only in a terminal (`entry`): every other caller of the operations (the
+    /// cluster service, status, stop) asks and saves nothing. So without a terminal a pair serves as its record says,
+    /// and a record from before this question as the Darkbloom network.
     static func withServingChoice(_ live: ClusterOnboardingOperations, config: String?,
                                   request: ClusterOnboardingRequest) -> ClusterOnboardingOperations {
         guard asksServingChoice(request: request) else { return live }

@@ -78,19 +78,22 @@ extension Start {
         return (loop, prepared, installation != nil)
     }
 
-    /// The pair's local API beside Darkbloom (Both, me first), which the cluster service asks of the part that runs rank
-    /// 0 (`--local-endpoint --port --bind`): served by the member that hosts the pair's slot, on the address and port
-    /// the service chose, always with the pair's key (`cluster local`'s), and with the local router, for which this
-    /// Mac's engine is the pair. Every other member runs none and says so in one line; without `--local-endpoint`, the
-    /// member is today's. A key that can't be read leaves the pair serving Darkbloom without its local API, never with an
-    /// open one.
+    /// The pair's local API beside Darkbloom (Both, me first), on the address and port the cluster service chose, with
+    /// the local router, for which this Mac's engine is the pair. Without `--local-endpoint` the member is today's.
+    ///
+    /// Only the slot's host runs it, checked three times: the service passes `--local-endpoint` to rank 0's part only
+    /// (`ClusterLocalServing.memberArguments`); here, any other member runs none and says so in one line; and the loop
+    /// refuses an endpoint on a member without the slot (`admitsClusterPairLocalAPI`), which would end the part.
+    /// Never without a key: always the pair's (`cluster local`'s); `validate` refuses `--no-auth`, the loop refuses a
+    /// keyless endpoint, and a key that can't be read here leaves the pair serving Darkbloom without the API, never
+    /// with an open one.
     static func clusterMemberLocalEndpoint(requested: Bool, hostsPairSlot: Bool, bind: String, port: UInt16,
                                            local: LocalSettings?, coordinatorURL: String?,
                                            loadToken: () throws -> String = { try LocalEndpoint.loadOrCreateClusterToken() },
                                            say: (String) -> Void = printError) -> LocalInferenceHTTPConfig? {
         guard requested else { return nil }
         guard hostsPairSlot else {
-            say("This Mac's part doesn't host the pair's slot, so it runs no local API: the pair's API is on the Mac that runs rank 0.")
+            say("This Mac's part runs no local API: the pair's API is on the Mac that runs rank 0.")
             return nil
         }
         guard let token = try? loadToken(), !token.isEmpty else {

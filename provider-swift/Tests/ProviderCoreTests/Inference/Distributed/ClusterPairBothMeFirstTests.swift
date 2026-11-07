@@ -157,15 +157,15 @@ struct ClusterPairBothMeFirstTests {
 
     /// This Mac's own free ports for the pair's API: 8000 and the pair ports are never even test-bound.
     @Test func theFreePortProbeNeverTouches8000() {
-        let asked = Box()
-        let free = ClusterLocalServing.localAPIFreePorts { port in asked.ports.append(port); return port != 8002 }
-        #expect(!asked.ports.contains(8000))
-        #expect(asked.ports.allSatisfy { !LocalSettings.neverChosenPorts.contains(UInt16($0)) })
+        var asked: [Int] = []
+        let free = ClusterLocalServing.localAPIFreePorts { port in asked.append(port); return port != 8002 }
+        #expect(!asked.contains(8000))
+        #expect(asked.allSatisfy { !LocalSettings.neverChosenPorts.contains(UInt16($0)) })
         #expect(free.first == 8001 && !free.contains(8002) && !free.contains(8000))
         // `cluster local`'s own probe is unchanged: it still asks about 8000.
-        let local = Box()
-        _ = ClusterLocalServing.freePorts { port in local.ports.append(port); return true }
-        #expect(local.ports.first == 8000)
+        var askedForClusterLocal: [Int] = []
+        _ = ClusterLocalServing.freePorts { port in askedForClusterLocal.append(port); return true }
+        #expect(askedForClusterLocal.first == 8000)
     }
 
     // MARK: - The choice
@@ -183,8 +183,4 @@ struct ClusterPairBothMeFirstTests {
         // The answer is saved as `[local] mode`.
         #expect(ClusterServingChoice.allCases.map(\.rawValue) == LocalSettings.Mode.allCases.map(\.rawValue))
     }
-}
-
-private final class Box: @unchecked Sendable {
-    var ports: [Int] = []
 }

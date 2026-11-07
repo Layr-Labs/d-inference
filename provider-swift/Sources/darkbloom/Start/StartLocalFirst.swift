@@ -322,8 +322,9 @@ enum StartServingResolver {
 
 /// The port of a local API a start creates.
 enum LocalAPIPort {
-    /// Never chosen for a new local API: 8000, where other local AI apps listen (oMLX on the owner's Mac), and
-    /// 47420–47423, which two-Mac pairs use. A pair's local API keeps to the same (`ClusterLocalServing.localAPIPort`).
+    /// Never chosen for a new local API: 8000, where other local AI apps listen (oMLX on the owner's Mac), and the cable
+    /// ports pairs use, production's 47420–47423 and this build's own. A pair's local API keeps to the same set
+    /// (`ClusterLocalServing.localAPIPort`).
     static let neverChosen = LocalSettings.neverChosenPorts
     /// How far past the first port the search goes.
     static let span: UInt16 = 20

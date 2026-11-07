@@ -117,9 +117,11 @@ struct ClusterPairSummary: Sendable, Equatable {
     /// "this Mac" or "the other Mac (…)": where the cluster is started, stopped and changed.
     var leadingMac: String { role == .member ? otherMac : ClusterOnboardingMacName.this }
 
-    /// How the pair is set to serve; "not offered" while Darkbloom can't have it (never read as serving through it).
+    /// How the pair is set to serve; "not offered" while Darkbloom can't have it (never read as serving through it), and
+    /// with Both, me first its local API too.
     var servesWords: String {
-        localOnly ? "locally only" : "through Darkbloom" + (ClusterOnboardingReady.isNotOffered(reason) ? " (not offered)" : "")
+        guard !localOnly else { return "locally only" }
+        return "through Darkbloom" + (ClusterOnboardingReady.isNotOffered(reason) ? " (not offered)" : "")
             + (localAPI == nil ? "" : ", and on its local API with you first")
     }
 

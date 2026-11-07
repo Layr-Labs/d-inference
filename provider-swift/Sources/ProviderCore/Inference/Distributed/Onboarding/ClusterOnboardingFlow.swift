@@ -50,12 +50,9 @@ public enum ClusterServingScope: Sendable, Equatable {
     /// The scope a record keeps (nil from an older build or before the first choice: public). Local only wins over a
     /// local API beside Darkbloom.
     public init(localOnly: Bool?, localAPI: Bool? = nil, bind: String?) {
+        guard localOnly == true || localAPI == true else { self = .publicServing; return }
         let address = bind.map { Self.isValidBind($0) ? $0 : Self.loopbackBind } ?? Self.localOnlyDefaultBind
-        if localOnly == true {
-            self = .localOnly(bind: address)
-        } else {
-            self = localAPI == true ? .publicServingWithLocalAPI(bind: address) : .publicServing
-        }
+        self = localOnly == true ? .localOnly(bind: address) : .publicServingWithLocalAPI(bind: address)
     }
 
     /// The scope a message carries (`localOnly`, `localAPI`, `bind`): nil when it carries none, or an address the API
@@ -187,7 +184,7 @@ public enum ClusterServingChoice: String, Sendable, Equatable, CaseIterable {
         }
     }
 
-    /// After "Switching to " and "the pair serves ".
+    /// After "Switching to ", while the switch is saved.
     var switching: String {
         switch self {
         case .onlyMe: return "local only"
@@ -212,7 +209,7 @@ public struct ClusterServingChoiceAsk: Sendable, Equatable {
     public var saved: ClusterServingChoice?
     public var idleMinutes: Int
 
-    public init(saved: ClusterServingChoice? = nil, idleMinutes: Int = 2) {
+    public init(saved: ClusterServingChoice?, idleMinutes: Int) {
         self.saved = saved; self.idleMinutes = idleMinutes
     }
 }
@@ -2406,7 +2403,8 @@ public enum ClusterOnboardingDriver {
         if !justPaired, resume.serving || resume.modelName != nil || silent {
             return pairScreen(resume, operations, console, request: request, otherMacSilent: silent)
         }
-        // The first choice of plain `darkbloom cluster` asks how the pair serves (`ClusterServingChoice`).
+        // The first choice of plain `darkbloom cluster` asks how the pair serves (`ClusterServingChoice`) where the
+        // operations ask it: only the terminal screen's do, and never for `cluster local`, which names its scope.
         return chooseAndServe(operations, console, scope: request.scope ?? resume.scope, saveScope: request.scope != nil,
                               model: request.model, privateImage: request.privateImageQualification,
                               startOverRequest: justPaired ? nil : request, peer: resume.peerName,
@@ -2513,9 +2511,28 @@ public enum ClusterOnboardingDriver {
         }
     }
 
+    /// The set-up pair's "Change how the pair serves": the question, the way it serves now preselected, then the switch
+    /// to the answer, which is saved with the scope. Leaving the question, or the way it serves now, changes nothing.
+    static func changeServingChoice(_ ask: ClusterServingChoiceAsk, _ pair: ClusterOnboardingResume,
+                                    startOverRequest: ClusterOnboardingRequest?, _ operations: ClusterOnboardingOperations,
+                                    _ console: ClusterOnboardingConsole) -> Int32 {
+        guard let answer = servingQuestion(ask, preselected: ClusterServingChoice(scope: pair.scope), console) else {
+            console.say("Nothing changed.")
+            unchangedEnding(operations, console)
+            return 0
+        }
+        let wanted = answer.scope(keeping: pair.scope)
+        guard wanted != pair.scope else {
+            console.say("Nothing changed: the pair already serves that way.")
+            unchangedEnding(operations, console)
+            return 0
+        }
+        return changeScope(to: wanted, pair, startOverRequest: startOverRequest, operations, console, saveChoice: true)
+    }
+
     /// The card's line for a pair that serves through Darkbloom, and with Both, me first on its local API too.
     static func servesThroughDarkbloomLine(_ scope: ClusterServingScope) -> String {
-        "Serves:  " + ClusterServingChoice(scope: scope.addsLocalAPI ? scope : .publicServing).serves
+        "Serves:  " + (scope.addsLocalAPI ? ClusterServingChoice.bothMeFirst : .network).serves
     }
 
     /// What controls the pair once it runs, as `darkbloom start` ends (on a paired Mac they act on both Macs).
@@ -2658,10 +2675,11 @@ public enum ClusterOnboardingDriver {
     /// (with or without its local API) starts its model again from a plan made for Darkbloom, as a start does; any
     /// other switch starts its leading part again that way (the setup and the model stay). Either way the screen waits
     /// for it as it does after a start. `startOverRequest`: the menu's (its Mac was paired before this run), for the
-    /// outcome's Change model. `saving`: the question's answer, saved with the scope.
+    /// outcome's Change model. `saveChoice`: the switch answers the question, so the way it serves is also saved as the
+    /// person's choice (`[local] mode`), with the scope.
     static func changeScope(to wanted: ClusterServingScope, _ resume: ClusterOnboardingResume, startOverRequest: ClusterOnboardingRequest?,
                             _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole,
-                            saving: ClusterServingChoice? = nil) -> Int32 {
+                            saveChoice: Bool = false) -> Int32 {
         // Both logins are checked before the working local API stops (UX audit P8a: it stopped, then said "not logged in").
         if !wanted.isLocalOnly, checkLogins(scope: wanted, operations, console) != wanted {
             console.say(resume.serving ? "Nothing changed: the pair keeps serving \(ClusterServingChoice(scope: resume.scope).serves)."
@@ -2675,7 +2693,7 @@ public enum ClusterOnboardingDriver {
         if !wanted.isLocalOnly, resume.scope.isLocalOnly, resume.serving, let model = resume.modelName {
             console.say("  " + switchingToDarkbloomLine)
             return chooseAndServe(operations, console, scope: wanted, saveScope: true, model: model, startOverRequest: startOverRequest,
-                                  peer: resume.peerName, keepMode: resume.servingMode, heading: startHeading, saving: saving)
+                                  peer: resume.peerName, keepMode: resume.servingMode, heading: startHeading, saveChoice: saveChoice)
         }
         switch busy(console, "Switching to " + ClusterServingChoice(scope: wanted).switching, { operations.setScope(wanted) }) {
         case .success: break
@@ -2684,7 +2702,7 @@ public enum ClusterOnboardingDriver {
             console.say("Nothing changed.")
             return 1
         }
-        if let saving { saveServingChoice(saving, operations, console) }
+        if saveChoice { saveServingChoice(ClusterServingChoice(scope: wanted), operations, console) }
         guard resume.serving else {
             guard let model = resume.modelName else {
                 console.say("Saved: the pair serves " + ClusterServingChoice(scope: wanted).serves + " from its next start.")
@@ -2728,14 +2746,15 @@ public enum ClusterOnboardingDriver {
     /// Mac, for the ending. `keepMode`: the mode the current model served in, kept when listed. `heading`: nil in the
     /// first setup (its numbered steps); else the list's heading and then "Start", or "Start" alone for a model started
     /// again (UX audit P6). `askScope`: the first choice of plain `darkbloom cluster` asks how the pair serves, once
-    /// both Macs answer, and serves and saves that way. `saving`: an answer to save with the scope, after the adopt.
+    /// both Macs answer, and serves and saves that way. `saveChoice`: the way it then serves is also saved as the
+    /// person's choice (`[local] mode`), with the scope after the adopt; the question sets it.
     static func chooseAndServe(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole,
                                scope: ClusterServingScope = .publicServing, saveScope: Bool = false, model: String? = nil,
                                privateImage: Bool = false, startOverRequest: ClusterOnboardingRequest? = nil,
                                pair: ClusterOnboardingResume? = nil, servingNow: Bool? = nil, notOffered: Bool = false,
                                peer: String? = nil, keepMode: String? = nil, heading: String? = nil,
-                               askScope: ClusterServingChoiceAsk? = nil, saving: ClusterServingChoice? = nil) -> Int32 {
-        var scope = scope, saveScope = saveScope, saving = saving
+                               askScope: ClusterServingChoiceAsk? = nil, saveChoice: Bool = false) -> Int32 {
+        var scope = scope, saveScope = saveScope, saveChoice = saveChoice
         let serving = pair?.serving == true ? pair : nil
         console.heading(heading ?? "3/4 Model")
         var reached: [ClusterOnboardingMachine]?
@@ -2771,7 +2790,7 @@ public enum ClusterOnboardingDriver {
             }
             scope = answer.scope(keeping: scope)
             saveScope = true
-            saving = answer
+            saveChoice = true
         }
         if let notice = operations.developerNotice() { console.say(notice) }
         operations.planScope(scope)
@@ -2862,18 +2881,7 @@ public enum ClusterOnboardingDriver {
                     return changeScope(to: pair.scope.isLocalOnly ? .publicServing : .localOnly(bind: ClusterServingScope.localOnlyDefaultBind),
                                        pair, startOverRequest: startOverRequest, operations, console)
                 }
-                guard let answer = servingQuestion(ask, preselected: ClusterServingChoice(scope: pair.scope), console) else {
-                    console.say("Nothing changed.")
-                    unchangedEnding(operations, console)
-                    return 0
-                }
-                let wanted = answer.scope(keeping: pair.scope)
-                guard wanted != pair.scope else {
-                    console.say("Nothing changed: the pair already serves that way.")
-                    unchangedEnding(operations, console)
-                    return 0
-                }
-                return changeScope(to: wanted, pair, startOverRequest: startOverRequest, operations, console, saving: answer)
+                return changeServingChoice(ask, pair, startOverRequest: startOverRequest, operations, console)
             }
             chosen = open[picked]
         }
@@ -3014,7 +3022,7 @@ public enum ClusterOnboardingDriver {
                 for line in failure.lines { console.say("  " + line) }
                 return 1
             }
-            if saving != nil { saveServingChoice(ClusterServingChoice(scope: startScope), operations, console) }
+            if saveChoice { saveServingChoice(ClusterServingChoice(scope: startScope), operations, console) }
         }
         // Different versions, then single-Mac serving: neither ends by itself, so each is said before anything starts.
         guard clearVersionSplit(operations.versionSplit(), operations, console) else { return 1 }

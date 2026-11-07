@@ -106,9 +106,10 @@ public enum ClusterLocalServing {
         return base + ["--local-endpoint", "--port", String(port), "--bind", bind]
     }
 
-    /// Never taken by a new local API, a pair's or a single Mac's (`LocalSettings.neverChosenPorts`): 8000, where other
-    /// local AI apps listen (oMLX on the owner's Mac), and the cable ports pairs pair and talk on: production's
-    /// (`pairPortsWords`) and this build's own.
+    /// Never taken by a new local API, a pair's or a single Mac's (the single-Mac start reads it as
+    /// `LocalSettings.neverChosenPorts`): 8000, where other local AI apps listen (oMLX on the owner's Mac), and the
+    /// cable ports pairs pair and talk on, production's (`pairPortsWords`) and this build's own. A port choice skips
+    /// them before it probes, so none is ever even test-bound.
     public static let neverChosenPorts: Set<Int> =
         Set([8000] + [ClusterCablePorts(environment: .prod), .current].flatMap(pairPorts))
 
@@ -125,27 +126,24 @@ public enum ClusterLocalServing {
     }
 
     /// The ports the pair's local API beside Darkbloom may take: `servingPorts` without `neverChosenPorts`.
-    public static var localAPIPorts: [Int] { servingPorts.filter { !neverChosenPorts.contains($0) } }
+    public static let localAPIPorts = servingPorts.filter { !neverChosenPorts.contains($0) }
 
     /// The ones of those no other program listens on here. 8000 and the pair ports are never even test-bound.
     public static func localAPIFreePorts(isFree: (Int) -> Bool = portIsFree) -> [Int] {
         localAPIPorts.filter(isFree)
     }
 
-    /// One port for the pair's local API beside Darkbloom, chosen as `sharedPort` chooses `cluster local`'s: `preferred`
-    /// (the port used last) while it is free on every Mac, else the lowest free on every Mac, else this Mac's own. It is
-    /// never one of `neverChosenPorts`. `peersFree` holds each other Mac's free ports (nil when none
-    /// says), so nothing assumes two Macs. With nothing free here, the first port it may take: the part's bind then
+    /// One port for the pair's local API beside Darkbloom: `sharedPort`'s choice for `cluster local` (the port used
+    /// last while it is free on every Mac, else the lowest free on every Mac, else this Mac's own), made among
+    /// `localAPIPorts` only, so never one of `neverChosenPorts`. `peersFree` holds each other Mac's free ports (nil when
+    /// none says): nothing assumes two Macs. With nothing free here, the first port it may take: the part's bind then
     /// fails and says so, and the pair keeps serving Darkbloom.
     public static func localAPIPort(localFree: [Int], peersFree: [[Int]]?, preferred: Int? = nil) -> Int {
-        let allowed = localAPIPorts
-        let here = localFree.filter(allowed.contains)
-        let everywhere = peersFree.map { peers in here.filter { port in peers.allSatisfy { $0.contains(port) } } } ?? []
-        for candidates in [everywhere, here] {
-            if let preferred, candidates.contains(preferred) { return preferred }
-            if let lowest = candidates.min() { return lowest }
-        }
-        return allowed[0]
+        let here = localFree.filter(localAPIPorts.contains)
+        // Past this guard `sharedPort` always finds a port in `here`, so it never falls back to its 8000.
+        guard !here.isEmpty else { return localAPIPorts[0] }
+        let freeOnEveryMac = peersFree.map { peers in here.filter { port in peers.allSatisfy { $0.contains(port) } } }
+        return sharedPort(localFree: here, peerFree: freeOnEveryMac, preferred: preferred)
     }
 
     /// The solo server (this Mac alone after the absence grace) is coordinator-less already; local-only serving gives

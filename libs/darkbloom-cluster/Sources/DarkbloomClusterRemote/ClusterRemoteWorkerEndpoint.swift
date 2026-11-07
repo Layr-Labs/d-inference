@@ -77,6 +77,9 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
     /// The longest an idle writer rests: the lifetime check and the owner's
     /// exit are seen at least this often.
     static let writerIdleNanoseconds: UInt64 = 50_000_000
+    /// This endpoint's idle rest: `writerIdleNanoseconds` except in the CPU
+    /// checks that set it through the test seam.
+    private let writerIdle: UInt64
     private let nativeEnded = DispatchGroup()
     private let ownerEnded = DispatchGroup()
     private var ownerTerminationValue: ClusterWorkerProcessTermination?
@@ -180,7 +183,8 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
          profile: ClusterWorkerProfile, rank: Int, executionPlanSHA256: String,
          lifetimeDeadlineUptimeNanoseconds: UInt64, bootstrapRelay: (any ClusterOwnerBootstrapExchange)? = nil,
          nativeKeyRelay: ClusterOwnerNativeKeyRelay? = nil, dataPlaneTrust: Data? = nil,
-         ownerRetirementAllowanceNanoseconds: UInt64 = ClusterRemoteWorkerEndpoint.standardOwnerRetirementAllowanceNanoseconds) throws {
+         ownerRetirementAllowanceNanoseconds: UInt64 = ClusterRemoteWorkerEndpoint.standardOwnerRetirementAllowanceNanoseconds,
+         writerIdleNanoseconds: UInt64 = ClusterRemoteWorkerEndpoint.writerIdleNanoseconds) throws {
         if let dataPlaneTrust {
             guard let trust = try? ClusterWorkerCodec.decodeDataPlaneTrust(dataPlaneTrust),
                   trust.membershipEpoch == expectedIdentity.membershipEpoch, trust.rank == rank else {
@@ -192,6 +196,7 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
         guard !ceiling.overflow, ownerRetirementAllowanceNanoseconds <= 300_000_000_000 else { throw OwnerWire.invalid("Invalid owner retirement allowance") }
         ownerRetirementAllowance = ownerRetirementAllowanceNanoseconds
         ownerCeiling = ceiling.partialValue
+        writerIdle = writerIdleNanoseconds
         self.nativeKeyRelay = nativeKeyRelay
         // Under the combined profile the relay holds this rank's committed
         // start, and the owner's lease is the one that start names.
@@ -292,13 +297,13 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
         !invalid && !cleanup && !fenceRequested && !releaseRequested && incarnation != nil
     }
     /// When an idle writer looks again: at the next renewal while one can
-    /// still be sent, and never later than `writerIdleNanoseconds` from now.
+    /// still be sent, and never later than `idle` from now.
     /// `nextRenewalAt` means nothing before the hello (it is zero) or after a
     /// fence, release or cleanup (it goes stale), so it is ignored then; an
     /// overdue renewal that can be sent is due now.
-    static func writerWakeDeadline(now: UInt64, nextRenewalAt: UInt64, renewalCanBeSent: Bool) -> UInt64 {
-        let idle = now.addingReportingOverflow(writerIdleNanoseconds)
-        let latest = idle.overflow ? UInt64.max : idle.partialValue
+    static func writerWakeDeadline(now: UInt64, nextRenewalAt: UInt64, renewalCanBeSent: Bool, idle: UInt64) -> UInt64 {
+        let rested = now.addingReportingOverflow(idle)
+        let latest = rested.overflow ? UInt64.max : rested.partialValue
         guard renewalCanBeSent else { return latest }
         return max(now, min(latest, nextRenewalAt))
     }
@@ -376,7 +381,7 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
                 if wrote { continue }
                 let wake = lock.withLock {
                     Self.writerWakeDeadline(now: DispatchTime.now().uptimeNanoseconds, nextRenewalAt: nextRenewalAt,
-                        renewalCanBeSent: renewalCanBeSentLocked)
+                        renewalCanBeSent: renewalCanBeSentLocked, idle: writerIdle)
                 }
                 _ = writerWake.wait(timeout: .init(uptimeNanoseconds: wake))
             }

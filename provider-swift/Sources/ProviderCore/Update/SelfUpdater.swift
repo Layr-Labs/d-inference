@@ -44,7 +44,7 @@ public enum UpdateResult: Sendable {
     case quarantined(version: String, reason: String)
     case busy(reason: String)
     case cancelled(reason: String)
-    /// The coordinator could not be asked for its latest release; nothing was downloaded.
+    /// The check for the latest release failed (`UpdateCheckResult.checkFailed`); nothing was downloaded.
     case checkFailed(reason: String)
     case downloadFailed(reason: String)
     case hashMismatch(expected: String, got: String)
@@ -284,9 +284,18 @@ public struct SelfUpdater: Sendable {
         case failed(String)
     }
 
-    /// How the release check asks the coordinator for its latest release. Each try waits at most `requestTimeout` for
-    /// an answer, not a session's 60 s default, and a try that failed on the way (`retries(after:)`) is made again
-    /// after a jittered pause that doubles, `attempts` tries in all. An answer is final, a refusal included.
+    /// How the release check asks the coordinator for its latest release, and how long it can take:
+    /// - each try waits at most `requestTimeout` (15 s) for an answer, whatever the session's own bound (60 s for
+    ///   `URLSession.shared`, 30 s for `watchdogURLSession()`);
+    /// - only a try that failed on the way (`retries(after:)`) is made again, after a random pause from `backoff`
+    ///   (0.5–1 s, then 1–2 s), so Macs that lost the coordinator at the same moment don't all ask again together;
+    /// - at most `attempts` (3) tries: a coordinator that never answers gets 3 requests, and the check ends within
+    ///   about 48 s (3 × 15 s, and at most 3 s of pauses);
+    /// - an answer is final, an HTTP error or a release for another platform included.
+    ///
+    /// No caller asks again after a failed check, so nothing multiplies these tries: a background update ends its cycle
+    /// there and asks at its next one (a single Mac 30 min later, a pair or a cluster member at its next update slot,
+    /// the watchdog at the next restart it makes).
     struct ReleaseCheck: Sendable {
         var attempts = 3
         var requestTimeout: TimeInterval = 15
@@ -297,8 +306,8 @@ public struct SelfUpdater: Sendable {
 
         static let standard = ReleaseCheck()
 
-        /// A failure on the way that can pass: no answer in time, a connection lost or refused, a name that didn't
-        /// resolve, no network for a moment. Never a cancellation.
+        /// A failure on the way, before any answer, that may not happen again: no answer in time, a connection lost or
+        /// refused, a name that didn't resolve, no network, a TLS handshake that broke off. Never a cancellation.
         static func retries(after error: Error) -> Bool {
             guard let code = (error as? URLError)?.code else { return false }
             return [.timedOut, .networkConnectionLost, .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed,

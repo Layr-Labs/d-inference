@@ -481,7 +481,7 @@ public struct WatchdogRecoveryService: Sendable {
             case .checkFailed(let reason):
                 deps.log("update check failed; restarting current install: \(reason)")
             case .downloadFailed(let reason):
-                deps.log("update check/download failed; restarting current install: \(reason)")
+                deps.log("update download failed; restarting current install: \(reason)")
             case .hashMismatch(let expected, let got):
                 deps.log(
                     "update artifact refused (bundle hash expected \(expected), got \(got)); restarting current install")

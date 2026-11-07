@@ -166,9 +166,8 @@ func milliseconds(_ value: UInt64) -> String { String(format: "%.3f", Double(val
         }
         let latency = probe.stop()
         let idleCPU = cpuNanoseconds() - cpu, idle = now() - readyAt
-        // A renewal may be as late as this host's slowest observed wake, with
-        // 5 ms to spare, and never less than the 15 ms a fast host gets.
-        let late = max(15_000_000, latency.worst + 5_000_000)
+        // A renewal may be as late as the probe allows a wake on this host.
+        let late = latency.allowedLateness
         try require(renewals.count == 2, "Expected two renewals in 11 s of idle, saw \(renewals.count)")
         let interval = renewals[1] - renewals[0]
         let afterReady = Double(Int64(bitPattern: renewals[0] &- readyAt)) / 1_000_000

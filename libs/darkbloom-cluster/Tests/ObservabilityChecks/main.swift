@@ -578,10 +578,10 @@ func statusChecks() throws {
     let upTicks = captured.ticks.filter(\.connected).map(\.at)
     let sawDownAgain = captured.waitForTicks { $0.filter { !$0.connected }.count >= 3 }
     publisher.stop()
-    // A tick may be late by its leeway plus this host's slowest wake (5 ms to
-    // spare, at least 15 ms). That must stay under one interval, so a tick on
-    // time is told apart from one a whole interval late (a skipped interval).
-    let late = leeway + max(15_000_000, Int(latency.worst) + 5_000_000)
+    // A tick may be late by its leeway plus the lateness the probe allows a
+    // wake on this host. That must stay under one interval, so a tick on time
+    // is told apart from one a whole interval late (a skipped interval).
+    let late = leeway + Int(latency.allowedLateness)
     let gaps = zip(upTicks.dropFirst(), upTicks).map { $0 - $1 }
     let span = (upTicks.last ?? 0) - (upTicks.first ?? 0)
     let onCadence = late < interval && gaps.allSatisfy { $0 <= interval + late } && span >= gaps.count * interval - late

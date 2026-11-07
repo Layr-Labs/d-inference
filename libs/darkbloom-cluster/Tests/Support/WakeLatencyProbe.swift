@@ -24,10 +24,18 @@ final class WakeLatencyProbe: @unchecked Sendable {
         }
     }
 
-    /// Stops the probe; returns its worst overshoot and its number of waits.
-    func stop() -> (worst: UInt64, samples: Int) {
+    /// What the probe saw: its worst overshoot and its number of waits.
+    struct Reading: Sendable {
+        let worst: UInt64, samples: Int
+        /// How late the code under check may wake: the worst overshoot with
+        /// 5 ms to spare, and never less than the 15 ms a fast host gets.
+        var allowedLateness: UInt64 { max(15_000_000, worst + 5_000_000) }
+    }
+
+    /// Stops the probe and returns what it saw.
+    func stop() -> Reading {
         lock.withLock { running = false }
         stopped.wait()
-        return lock.withLock { (worst, samples) }
+        return lock.withLock { Reading(worst: worst, samples: samples) }
     }
 }

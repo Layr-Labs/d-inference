@@ -58,32 +58,25 @@ darkbloom start --opencode      # --hermes for Hermes; both flags for both
 ```
 
 `start` prints the Terms-of-Service notice (starting is acceptance), checks the
-Mac, then asks how it serves:
-
-```text
-How should this Mac serve?
-  1. Only me, on this Mac      Darkbloom never contacts this Mac. Your tools use this Mac's own API.
-  2. Darkbloom network         This Mac serves Darkbloom and earns while it runs.
-  3. Both, me first            This Mac serves Darkbloom while you aren't using it. When you use it,
-                               Darkbloom traffic pauses until you've been idle for 2 minutes.
-Choose 1, 2 or 3 [3]:
-```
+Mac, then asks how it serves (`How should this Mac serve?`). Type 1, 2 or 3,
+or press Enter for 3:
 
 - **1, Only me:** your models, for your tools only. Free, no account, earns
   nothing; Darkbloom never contacts this Mac.
 - **2, Darkbloom network:** earns while it serves, but gives your tools no
   address on this Mac, so `--opencode` stops here and changes nothing.
-- **3, Both, me first** (Enter): your tools first; Darkbloom's requests, which
-  earn, pause while you use the Mac and come back after 2 idle minutes.
+- **3, Both, me first:** your tools first; Darkbloom's requests, which earn,
+  pause while you use the Mac and come back after 2 idle minutes.
 
-Each one runs until `darkbloom stop`. What each runs, costs and earns, and how
-to switch later, is in [Use your Mac yourself, first](./local-first.md). Then
-`start` goes on (`provider-swift/Sources/darkbloom/Start/StartCommand.swift`,
+The screen itself, and what each choice runs, costs and earns, are in
+[Use your Mac yourself, first](./local-first.md#choose-once). Then `start` goes
+on (`provider-swift/Sources/darkbloom/Start/StartCommand.swift`,
 `provider-swift/Sources/darkbloom/Start/StartCommand+Daemon.swift`):
 
 1. **Your account**, for Darkbloom network and Both, me first: when this Mac
-   isn't linked yet, it offers to link it (`Link account? [Y/n]`). You can
-   skip it and link later ([step 4](#4-earn-on-the-darkbloom-network)).
+   isn't linked yet, it offers to link it (`Link account? [Y/n]`). It also
+   asks whether to try the experimental Autopilot (`[y/N]`). Both can wait
+   until [step 4](#4-earn-on-the-darkbloom-network).
 2. **Your models:** a picker lists the models on this Mac and in Darkbloom's
    catalog, and downloads the ones you pick from `https://models.darkbloom.ai`
    (`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`,
@@ -92,8 +85,8 @@ to switch later, is in [Use your Mac yourself, first](./local-first.md). Then
    after 60 minutes without requests and load them again on demand
    (`Free when idle`, the default), or another window. `darkbloom idle`
    changes it later. Selected models start loading right away
-   ([startup preload](./cli-reference.md#darkbloom-start)).
-4. **In the background:** it writes
+   ([startup preload](./cli-reference.md#darkbloom-start)). <!-- pending LS-1 -->
+4. **In the background, until `darkbloom stop`:** it writes
    `~/Library/LaunchAgents/io.darkbloom.provider.plist` (`RunAtLoad = true`,
    `KeepAlive = false`; `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`)
    and starts it, so it starts again at every login. With
@@ -102,8 +95,9 @@ to switch later, is in [Use your Mac yourself, first](./local-first.md). Then
    (`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`). <!-- pending LS-1 -->
 5. **OpenCode:** it waits for the model to load, on one line that updates as
    it goes, then adds a `darkbloom` provider to OpenCode's config, keeps a
-   backup and prints the one-line undo. <!-- pending LS-4 --> No file and no screen holds
-   your key ([Use it from OpenCode or Hermes](./local-first.md#use-it-from-opencode-or-hermes)).
+   backup and prints the one-line undo. <!-- pending LS-4 --> OpenCode's config
+   never holds your key: OpenCode reads it from Darkbloom's key file
+   ([Use it from OpenCode or Hermes](./local-first.md#use-it-from-opencode-or-hermes)).
 
 ### 3. Use it
 
@@ -192,7 +186,7 @@ not prove that the provider is serving or earning. See [attestation](./attestati
 
 ```bash
 darkbloom status            # how this Mac serves, live daemon state, trust level
-darkbloom local             # the local API's address and key (Only me, Both, me first)
+darkbloom local             # the local API's address and key (Only me or Both, me first)
 darkbloom doctor            # for the Darkbloom network: ✓ daemon connected, ✓ trust level, ✓ account link
 darkbloom logs --last 1h    # unified logs, subsystem dev.darkbloom.provider
 ```
@@ -203,8 +197,9 @@ and the stale threshold are in
 [troubleshooting → Doctor checks](./troubleshooting.md#doctor-checks). A stale
 snapshot is reported as such
 (`provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift`, `isStale`).
-`doctor` also checks hardware, Metal, SIP, the account link, MDM enrollment and
-the coordinator, which **Only me** doesn't need; lines marked `✗` are failures.
+`doctor` also checks hardware, Metal, SIP, MDM enrollment and the coordinator;
+lines marked `✗` are failures. **Only me** needs none of its network checks:
+the account link, verification and the coordinator.
 
 ## Configuration
 

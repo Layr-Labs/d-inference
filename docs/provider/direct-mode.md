@@ -37,7 +37,8 @@ See [inference and logprob admission](../architecture/inference.md).
 
 1. Pick how this Mac serves. `--local` and `--me-first` (or `--local-endpoint`)
    are mutually exclusive; `darkbloom start` refuses the combination
-   (`provider-swift/Sources/darkbloom/Start/StartCommand.swift`, `Start.run`).
+   (`provider-swift/Sources/darkbloom/Start/StartCommand.swift`, `Start.validate`,
+   `Start.run`).
 
    | Choice | Command | Coordinator | Models come from | Earns |
    |---|---|---|---|---|

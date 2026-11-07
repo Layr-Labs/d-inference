@@ -129,8 +129,8 @@ update replaces the executable). `DesktopRuntimeProfile` validates stdout alone
 for this probe, ignoring stderr notices such as the macOS upgrade warning; failed,
 invalid, or oversized output is not a version. Ordinary `DesktopWorker` commands
 still capture stderr diagnostics. The API also probes `desktop --help`: actions that need
-a `desktop` subcommand the runtime lacks (provider cooling, Studio's Only me
-serving, "Local only") are refused with an explanation, and cooling controls are reported as
+a `desktop` subcommand the runtime lacks (provider cooling, and Studio's "Local
+only", which serves Only me) are refused with an explanation, and cooling controls are reported as
 unavailable.
 
 Initialize the Swift submodules, install the frontend dependencies, then run:

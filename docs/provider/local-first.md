@@ -7,17 +7,18 @@ How your Mac serves is one choice: **Only me**, **Darkbloom network** or
 choose and switch, and how your tools (OpenCode, Hermes, any OpenAI client)
 use your Mac's models.
 
-| Choice | What runs | Where your requests go | Costs and earnings | What stops it |
-|---|---|---|---|---|
-| **Only me** | Your models, on this Mac's local API (`http://127.0.0.1:<port>/v1`) | To this Mac. Darkbloom never contacts it | Free. Earns nothing; needs no account | `darkbloom stop` |
-| **Darkbloom network** | Darkbloom's requests. No local API | Nowhere here: your tools have no address on this Mac | Earns while it serves; needs your account (`darkbloom login`) | `darkbloom stop` |
-| **Both, me first** | Darkbloom's requests, and a local API for you on `http://127.0.0.1:<port>/v1` | To this Mac first: Darkbloom pauses while you use it and comes back after 2 idle minutes | Yours are free; Darkbloom's earn while you aren't using the Mac | `darkbloom stop` |
+| Choice | What runs | Where your requests go | Costs and earnings |
+|---|---|---|---|
+| **Only me** | Your models, on this Mac's local API (`http://127.0.0.1:<port>/v1`) | To this Mac. Darkbloom never contacts it | Free. Earns nothing; needs no account |
+| **Darkbloom network** | Darkbloom's requests. No local API | Nowhere here: your tools have no address on this Mac | Earns while it serves; needs your account (`darkbloom login`) |
+| **Both, me first** | Darkbloom's requests, and a local API for you on `http://127.0.0.1:<port>/v1` | To this Mac first: Darkbloom pauses while you use it and comes back after 2 idle minutes | Yours are free; Darkbloom's earn while you aren't using the Mac |
 
-Every choice serves in the background: it starts at login, starts again after
-a crash, updates itself, and keeps the Mac awake while it serves (the display
-can still sleep). <!-- pending LS-1 --> With an account key saved, a request this Mac can't
-take can go on to your other Macs, free, or to the network, billed, if you
-choose ([below](#when-this-mac-cant-take-your-request)).
+Every choice serves in the background until `darkbloom stop`: it starts at
+login, starts again after a crash, updates itself, and keeps the Mac awake
+while it serves (the display can still sleep). <!-- pending LS-1 --> With an
+account key saved, a request this Mac can't take can go on to your other Macs,
+free, or to the network, billed, if you choose
+([below](#when-this-mac-cant-take-your-request)).
 
 ## Choose once
 
@@ -69,7 +70,7 @@ You can also name the choice for one start, in a terminal or not:
 | `--local` | Only me |
 | `--network` | Darkbloom network |
 | `--me-first` | Both, me first |
-| `--local-endpoint` | Both, me first (the older flag; it keeps a saved `--no-me-first`) |
+| `--local-endpoint` | Both, me first (the older flag; a saved `--no-me-first` stays) |
 
 A flag is for that start only; it doesn't change your saved choice. Two that
 disagree are refused, for example `--local --me-first`.
@@ -124,8 +125,8 @@ on this Mac, for example `http://127.0.0.1:8001/v1`:
   later start uses it, whatever you chose, the app's and a pair's included, so
   your tools keep finding it. <!-- pending LS-1 --> `--port <n>` picks one yourself.
 - **One key per Mac:** the same key for every choice and for a pair. <!-- pending LS-1 -->
-  `darkbloom local` shows the address and the key. No start screen prints the
-  key.
+  `darkbloom local` shows the address and the key. Of the start screens, only
+  `darkbloom start --local`'s prints the key.
 - **On your local network (LAN or tailnet):** the local API listens on this Mac
   only, unless you start with `--bind <address>`; it always needs the key
   unless you add `--no-auth`. Without a key your requests stay on this Mac:
@@ -229,17 +230,18 @@ with `--local-endpoint --no-me-first`.
 A pair gets the same three choices. Run `darkbloom cluster` on each Mac: it
 pairs them, then the leading Mac asks how the pair serves (**Only me**,
 **Darkbloom network** or **Both, me first**, preselected) and which model; its
-list's **Change how the pair serves** asks again. Then `darkbloom start --opencode` on either Mac
-sets OpenCode up there: every Mac of the pair answers on its own
-`http://127.0.0.1:<port>/v1`, with one key. <!-- pending LS-3 --> <!-- pending LS-1 -->
+list's **Change how the pair serves** asks again. Then
+`darkbloom start --opencode` on either Mac sets OpenCode up there: every Mac of
+the pair answers on its own `http://127.0.0.1:<port>/v1`, with one key. <!-- pending LS-3 --> <!-- pending LS-1 -->
 
 - **Only me:** no Mac of the pair contacts Darkbloom. `darkbloom cluster local`
   serves the pair this way too.
 - **Both, me first:** the leading Mac runs the pair's API, and Darkbloom pauses
-  for the whole pair while you use it. Today, while it is paused and for the 2
-  minutes after, both Macs earn no base reward (one Mac alone keeps it). The
-  pair's API answers on your local network (LAN or tailnet), always with the
-  key.
+  for the whole pair while you use it. While it is paused, both Macs lose their
+  base reward, counted in 5-minute periods; one Mac alone keeps it
+  ([a pair's leader beside Darkbloom](./direct-mode.md#a-pairs-leader-beside-darkbloom)).
+  The pair's API answers on your local network (LAN or tailnet), always with
+  the key.
 - Your answer is saved in `[local] mode` too. Without a terminal nothing is
   asked, and a pair keeps serving as it did
   ([Both, me first](./two-mac-cluster.md#both-me-first-the-pairs-own-api-beside-darkbloom)).

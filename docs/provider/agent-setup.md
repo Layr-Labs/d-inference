@@ -672,7 +672,7 @@ otherwise ([stopping and starting again](two-mac-cluster.md#stopping-and-startin
 | Stop the pair | Either Mac | `darkbloom stop`, the same as `darkbloom cluster stop`. Both Macs stop and stay stopped after a restart. If it takes a while, it says `Waiting for both Macs to stop; accepted requests finish first (up to about 6 min).` and `Waiting for both Macs' parts to end (up to 1 min).`. Once both parts have ended it says `Stopped on both Macs.` and `Memory freed on both Macs ✓` (exit status 0). `Asked both Macs to stop; …` with what still runs means a part hasn't ended yet (exit status 1): run `darkbloom stop` again a minute later |
 | Start it again | Either Mac | `darkbloom start`. Without a terminal it starts the saved model on both Macs; if it has to wait, it says `Waiting until the pair serves (up to 10 min).`, repeating an unchanged status each minute (`Still waiting (up to 10 min in all): …`). It waits through reasons the Macs fix by themselves, then prints a result block. Exit status `0` means it serves, `3` not yet, `4` stopped, `5` the other Mac isn't answering, `1` it couldn't start. If this Mac's cluster service runs from a terminal session, it first says ``This Mac's cluster service runs from a terminal session: replacing it with its login agent, which starts at login (this Mac's part restarts).``. If macOS keeps this Mac off the local network, it ends at once with where to turn it on and ``…; then run `darkbloom start` again.``, exit status 1. In a terminal it opens the `darkbloom cluster` screen |
 | Restart it with the same model | Either Mac | `darkbloom restart`, with the same result block and exit statuses. If it takes a while, it says the same waiting lines (the parts' wait is up to 5 min). If a part hasn't released its memory after the stop, it doesn't start again and exits with status 1 |
-| Change or test the model, or switch between serving through Darkbloom and **Only me** | The leader, in a terminal | `darkbloom cluster`, or `darkbloom start` in a terminal ([below](#the-pairs-model-list)) |
+| Change or test the model, or how the pair serves | The leader, in a terminal | `darkbloom cluster`, or `darkbloom start` in a terminal ([below](#the-pairs-model-list)) |
 | Start over and pair again | Either Mac, in a terminal | `darkbloom cluster` → **Start over (unpair and set up again)** → **Yes, start over**. Then run `darkbloom cluster` on the other Mac and choose **Start over (unpair and set up again)**, or **Pair again**, if it offers it ([pairing again](two-mac-cluster.md#pairing-again)) |
 | Update | Every Mac | `darkbloom update` on each Mac, and the pair restarts together. Automatic updates are on by default |
 | Serve on one Mac alone instead of the pair | That Mac | While the pair runs: stop it first (`darkbloom stop`), then `darkbloom start --solo --model <id>`. While it doesn't run here (the other Mac is gone or stopped clustering): `darkbloom start` serves this Mac alone. `--solo` is refused only while the pair runs here. `stop --solo`, `restart --solo` and `status --solo` act on single-Mac serving alone. Stop it with `darkbloom stop --solo` before you start the pair again |
@@ -713,10 +713,9 @@ the pair's ✓ or ✗ status, then the pair's model list. The model serving now
 - Another model asks ``Switch to <model>? …`` once (**No** by default), then
   says `✓ Stopped <model> on both Macs`, shows each Mac's load and ends like a start.
 - A line that ends with ` · not enough free disk` is refused before anything stops.
-- **Switch to local only** (to **Only me**; or **Switch to serving through
-  Darkbloom**) and **Start over (unpair and set up again)** are lines in the
-  same list. q
-  changes nothing.
+- **Change how the pair serves** (**Only me**, **Darkbloom network** or
+  **Both, me first**) and **Start over (unpair and set up again)** are lines in
+  the same list. q changes nothing.
 
 On the Mac that follows, `darkbloom cluster` shows the pair's status,
 `This Mac runs its part by itself.` and ``To change the model, run `darkbloom

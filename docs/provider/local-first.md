@@ -142,6 +142,9 @@ darkbloom start --me-first --opencode --hermes
 
 - **Run it again** when your models change; with nothing new, it changes
   nothing.
+- **Hermes v0.20.2 or later** reads Darkbloom's key from its file; with an older
+  Hermes the start still sets it up and says, in one line, to run
+  `hermes update`.
 - **When it can't:** it says why and changes nothing: the tool isn't installed
   (Darkbloom never installs it), OpenCode 1 (upgrade to OpenCode 2), Hermes
   needs a model with at least 64K context, or this Mac serves only the

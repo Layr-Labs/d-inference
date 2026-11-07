@@ -31,7 +31,7 @@ private final class StepSandbox: @unchecked Sendable {
     ]
 
     func step(_ tools: [IntegrationTool], installed: Set<IntegrationTool> = Set(IntegrationTool.allCases),
-              listed: [EndpointModel]? = StepSandbox.listed) -> ToolIntegrationStep {
+              listed: [EndpointModel]? = StepSandbox.listed, hermesVersion: String? = nil) -> ToolIntegrationStep {
         ToolIntegrationStep(
             tools: tools, environment: ToolIntegrationEnvironment(home: home, variables: [:]), provider: F.provider,
             findTool: { installed.contains($0) ? .installed(URL(fileURLWithPath: "/fake/\($0.rawValue)")) : .missing },
@@ -40,7 +40,8 @@ private final class StepSandbox: @unchecked Sendable {
                 return listed
             },
             fetchCatalog: { nil },
-            say: { self.said.append($0) })
+            say: { self.said.append($0) },
+            versionOutput: { tool, _ in tool == .hermes ? hermesVersion : nil })
     }
 
     var openCodeFile: URL { home.appendingPathComponent(".config/opencode/opencode.jsonc") }
@@ -281,6 +282,21 @@ struct StartToolIntegrationTests {
         #expect(old.said == ["✗ OpenCode 1 is installed; Darkbloom sets up OpenCode 2. Run `opencode upgrade`, then "
             + "`darkbloom start --opencode` again.", "Darkbloom keeps serving."])
         #expect(old.filesOtherThanTheKey().isEmpty)
+    }
+
+    @Test("a Hermes older than v0.20.2 is set up with one warning line: it can't read the key yet")
+    func oldHermesWarns() async throws {
+        let old = try StepSandbox()
+        #expect(await old.step([.hermes], hermesVersion: "Hermes Agent v0.19.4 (2026.7.30)")
+            .run(endpoint: old.endpoint, requests: "this Mac only"))
+        let warning = "  Warning: Hermes v0.19.4 is older than v0.20.2 and can't read Darkbloom's key (`key_cmd`), so "
+            + "Darkbloom will refuse its requests; update it with `hermes update`."
+        #expect(old.said.contains(warning))
+        #expect(old.said.firstIndex(of: warning) == old.said.firstIndex { $0.hasPrefix("  Left out:") }.map { $0 + 1 })
+        let current = try StepSandbox()
+        _ = await current.step([.hermes], hermesVersion: "Hermes Agent v0.23.0+12 (2026.9.24)")
+            .run(endpoint: current.endpoint, requests: "this Mac only")
+        #expect(!current.said.contains { $0.hasPrefix("  Warning:") })
     }
 
     @Test("no line of the step names a speed")

@@ -85,6 +85,8 @@ struct ToolIntegrationStep {
     /// The Darkbloom catalog's names and limits; nil when it can't be reached.
     var fetchCatalog: () async -> CatalogSnapshot?
     var say: (String) -> Void
+    /// `<tool> --version`'s first line; nil when it doesn't answer.
+    var versionOutput: (IntegrationTool, URL) -> String? = { _, _ in nil }
 
     /// The step as `start` runs it: the tools found on this Mac, the endpoint's models and the coordinator's catalog.
     static func live(tools: [IntegrationTool], coordinatorURL: String) -> ToolIntegrationStep {
@@ -101,18 +103,19 @@ struct ToolIntegrationStep {
                                                 urlSession: URLSession(configuration: configuration))
                 return try? await client.fetchCatalogSnapshot(includeAliases: true)
             },
-            say: { print($0) })
+            say: { print($0) },
+            versionOutput: { _, executable in ToolLocator.version(of: executable) })
     }
 
     /// Sets each tool up for `endpoint`. `requests` says where the owner's requests go, in the start screen's words.
     /// Returns whether every tool is set up now (changed, or already set up).
     func run(endpoint: IntegrationEndpoint, requests: String) async -> Bool {
-        var ready: [IntegrationTool] = []
+        var ready: [(tool: IntegrationTool, executable: URL)] = []
         var failed = false
         for tool in tools {
             switch findTool(tool) {
-            case .installed:
-                ready.append(tool)
+            case .installed(let executable):
+                ready.append((tool, executable))
             case .missing:
                 say("✗ \(tool.displayName) isn't installed on this Mac. Install it, then run "
                     + "`\(Self.cli) start \(tool.flag)` again.")
@@ -130,19 +133,20 @@ struct ToolIntegrationStep {
         return !failed
     }
 
-    private func configure(_ ready: [IntegrationTool], endpoint: IntegrationEndpoint, requests: String) async -> Bool {
+    private func configure(_ ready: [(tool: IntegrationTool, executable: URL)], endpoint: IntegrationEndpoint,
+                           requests: String) async -> Bool {
         let listed: [EndpointModel]
         do {
             listed = try await fetchModels(endpoint)
         } catch {
             say("✗ Couldn't read the models of this Mac's local API (\(Self.describe(error))), so "
-                + "\(Self.names(ready)) \(ready.count == 1 ? "wasn't" : "weren't") set up.")
+                + "\(Self.names(ready.map(\.tool))) \(ready.count == 1 ? "wasn't" : "weren't") set up.")
             return false
         }
         let catalog = await fetchCatalog()
         let models = IntegrationModels.resolve(listed, catalog: catalog)
         var ok = true
-        for tool in ready {
+        for (tool, executable) in ready {
             let outcome: ToolConfigWriter.Outcome
             do {
                 outcome = try ToolIntegration.configure(tool, endpoint: endpoint, models: models, provider: provider,
@@ -156,6 +160,11 @@ struct ToolIntegrationStep {
                                            home: environment.home)
             lines.forEach(say)
             ok = ok && done
+            // An older Hermes can't read the key yet: set up anyway, and say how to fix it.
+            if tool == .hermes, done, let warning = versionOutput(tool, executable)
+                .flatMap({ HermesVersion.keyCommandWarning(versionOutput: $0) }) {
+                say("  Warning: \(warning)")
+            }
         }
         if catalog == nil { say("  (Model details unavailable offline; run this again online to refresh them.)") }
         let keyFile = ToolIntegration.displayPath(endpoint.keyFile, home: environment.home)

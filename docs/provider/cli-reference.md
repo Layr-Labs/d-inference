@@ -333,7 +333,9 @@ They run once, at `start`:
    refused before anything starts or is saved (exit 64), naming `--me-first`
    and `--local`.
 3. **Each tool:** found on `PATH`, else in `~/.opencode/bin` or `~/.local/bin`
-   (`ToolLocator`), never installed; `opencode --version` below 2 is refused.
+   (`ToolLocator`), never installed; `opencode --version` below 2 is refused,
+   and a Hermes older than v0.20.2 (`hermes --version`) is set up with one
+   `Warning:` line, as it can't read the key yet (`HermesVersion.keyCommandWarning`).
    The endpoint's `GET /v1/models` and the catalog (5 s; offline, the tools get
    the models without catalog names) give the models; `ToolIntegration.configure`
    writes the block with a backup. The result block names the file changed, the

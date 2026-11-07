@@ -341,6 +341,9 @@ struct Start: AsyncParsableCommand {
 
     mutating func run() async throws {
         Darkbloom.ensureLogging()
+        // Line-buffer stdout: in a log or a pipe (`start … > log`, nohup) it is block-buffered, and a start that serves
+        // never exits, so its banner, "Listening on" and the tool lines would wait in the buffer.
+        setvbuf(stdout, nil, _IOLBF, 0)
         // `--opencode` / `--hermes` beside a running local API: set the tools up for it, and start nothing.
         if try await setUpToolsForRunningLocalAPI() { return }
         let look = DarkbloomCommandLook.forCommand()

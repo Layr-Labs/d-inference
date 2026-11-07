@@ -9,11 +9,16 @@ import Foundation
 /// stop does). Each then ends `.cancelled` without having been stopped, as a
 /// reader that fails partway ends `.failed`. The hook also runs before the read
 /// that returns no sample, so read 2 comes on any track with one sample buffer.
+///
+/// The ender keeps every reader it sees until the ender is released. A freed
+/// reader's address can go to the next reader, so a reader that is not kept
+/// can give its `ObjectIdentifier` and its count to a later reader.
 final class ReaderEnder: @unchecked Sendable {
     private let lock = NSLock()
     private let ending: Set<Int>
     private let read: Int
-    private var order: [ObjectIdentifier: (ordinal: Int, reads: Int)] = [:]
+    /// Every reader seen, in the order of its first read; the ordinal is the index plus 1.
+    private var readers: [(reader: AVAssetReader, reads: Int)] = []
     private var endedCount = 0
 
     init(ending: Set<Int>, atRead read: Int) {
@@ -26,11 +31,15 @@ final class ReaderEnder: @unchecked Sendable {
     var hook: @Sendable (AVAssetReader) -> Void {
         { [self] reader in
             let end = lock.withLock { () -> Bool in
-                let id = ObjectIdentifier(reader)
-                var entry = order[id] ?? (ordinal: order.count + 1, reads: 0)
-                entry.reads += 1
-                order[id] = entry
-                guard entry.reads == read, ending.contains(entry.ordinal) else { return false }
+                let index: Int
+                if let seen = readers.firstIndex(where: { $0.reader === reader }) {
+                    index = seen
+                } else {
+                    readers.append((reader, 0))
+                    index = readers.count - 1
+                }
+                readers[index].reads += 1
+                guard readers[index].reads == read, ending.contains(index + 1) else { return false }
                 endedCount += 1
                 return true
             }

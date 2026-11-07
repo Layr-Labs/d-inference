@@ -64,6 +64,112 @@ struct ClusterServiceRestartingStopTests {
               adopt: { _ in .success([]) }, serve: { .success([]) }, restoreStart: { service.restoreStart() })
     }
 
+    /// The control command lock both steps take: beside the service's own files.
+    private static func commandLock(_ service: ClusterService) -> URL {
+        service.store.paths.directory.appendingPathComponent("control.lock")
+    }
+
+    private static func waitUntil(seconds: Double, _ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while !condition() {
+            guard Date() < deadline else { return false }
+            usleep(20_000)
+        }
+        return true
+    }
+
+    /// The service's loop on a thread of its own, its lines kept; `stop` ends it and returns them.
+    private static func run(_ service: ClusterService) -> (lines: ClusterApprovalRecorder<String>, stop: () -> [String]) {
+        let stop = DispatchSemaphore(value: 0), done = DispatchSemaphore(value: 0)
+        let lines = ClusterApprovalRecorder<String>()
+        Thread.detachNewThread {
+            _ = try? service.run(stop: stop) { lines.append($0) }
+            done.signal()
+        }
+        return (lines, {
+            stop.signal()
+            #expect(done.wait(timeout: .now() + 30) == .success, "the service did not stop")
+            return lines.values
+        })
+    }
+
+    /// The control node of the leader's service: `leader` leads in `term` (this Mac or the other).
+    private static func node(_ macs: ClusterApprovalMacs, leader: String, term: UInt64) -> ClusterControlNode {
+        let local = macs.leader.memberID, peer = macs.follower.memberID
+        return ClusterControlNode(localID: local,
+            members: [.init(memberID: local, name: "fixture", memoryBytes: 1, gpuCores: 1),
+                      .init(memberID: peer, name: "fixture peer", memoryBytes: 1, gpuCores: 1)],
+            claim: .init(term: term, leaderID: leader, members: [local, peer], reason: "fixture"), rankOrder: nil,
+            now: ClusterService.monotonicSeconds(), ttl: 3_600)
+    }
+
+    /// The leader's service as its loop runs it after an update: no paired Mac answers its listeners, and the other Mac
+    /// confirmed this Mac's claim. Without a plan order its mode is idle: nothing of the model starts here.
+    private static func confirmedLeader(_ service: ClusterService, _ macs: ClusterApprovalMacs) throws {
+        try FileManager.default.moveItem(at: macs.leader.pairing.directory,
+                                         to: macs.leader.home.appendingPathComponent("pairing-elsewhere", isDirectory: true))
+        var node = Self.node(macs, leader: macs.leader.memberID, term: 1)
+        let peer = macs.follower.memberID, claim = node.claim
+        _ = node.receiveAnswer(from: peer, sent: claim,
+            answer: .accepted(.init(memberID: peer, name: "fixture peer", memoryBytes: 1, gpuCores: 1)), now: ClusterService.monotonicSeconds())
+        try #require(node.leadershipConfirmed(now: ClusterService.monotonicSeconds()))
+        service.lock.withLock { service.control = node }
+    }
+
+    /// Both Macs answer with one new build: the saved setups pin the worker before the update (`ClusterApprovalMacs`'s).
+    private static func oneNewBuild(_ macs: ClusterApprovalMacs) -> [String: String?] {
+        let new: String? = ClusterApprovalMacs.hash("9")
+        return [macs.leader.memberID: new, macs.follower.memberID: new]
+    }
+
+    /// The leading Mac of an offered pair as its service loop runs it, its other Mac silent past the lease (time-to-live
+    /// 1 s): its setup carries a current cluster approval that its coordinator (answering 404) no longer lists, so the
+    /// approval check changes the pair to serve locally (`ClusterApprovalCheck.Step.serveLocally(_, .withdrawn)`), which
+    /// stops a serving pair first. Its part is the CPU-only service-part fixture, which ends at once when asked to stop.
+    private static func approvalLeader(_ macs: ClusterApprovalMacs, serving: Bool) throws -> (ClusterService, URL) {
+        let leader = macs.leader, saved = try macs.saved(leader), facts = try macs.facts()
+        let current = try ClusterApprovalAttachment.attachment(for: macs.approval(), saved: saved, paths: leader.paths,
+            pairingStore: leader.pairing, edge: nil, now: Date().timeIntervalSince1970, chipClass: ClusterApprovalMacs.chip,
+            facts: { _ in facts })
+        let attachment = ClusterNativeMemberAttachment(ownerSHA256: current.ownerSHA256, metallibPath: current.metallibPath,
+            resourceLibraryPath: current.resourceLibraryPath, clusterApproval: macs.approval(endsIn: 14 * 86_400),
+            roster: try #require(current.roster), memberPins: try #require(current.memberPins), edges: nil)
+        try ClusterApprovalAttachment.save(attachment, saved: saved, paths: leader.paths, providerConfiguration: leader.provider,
+                                           scratch: leader.scratch)
+        try FileManager.default.moveItem(at: leader.pairing.directory,
+                                         to: leader.home.appendingPathComponent("pairing-elsewhere", isDirectory: true))
+        let helper = leader.home.appendingPathComponent("service-part-fixture")
+        try NativePairMemberFixture.helper().write(to: helper, options: .withoutOverwriting)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
+        let parts = leader.home.appendingPathComponent("parts", isDirectory: true)
+        try FileManager.default.createDirectory(at: parts, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        for role in ["leader", "member"] { try Data().write(to: parts.appendingPathComponent("release-" + role)) }
+        let wizard = ClusterSetupOperations.LiveSettings(providerConfiguration: leader.provider, darkbloomExecutable: helper,
+            sessionArguments: [], pair: nil, dryRun: true, version: "fixture")
+        let service = ClusterService(settings: .init(wizard: wizard,
+            leaderArguments: ["--service-part-fixture", parts.path, "leader"], followerArguments: [],
+            soloArguments: ["--service-part-fixture", parts.path, "replacement"],
+            memberArguments: ["--service-part-fixture", parts.path, "member"]), paths: leader.paths, recoveryGraceSeconds: 0.2,
+            powerAssertionReason: "Cluster restarting stop test " + UUID().uuidString)
+        var leadership = ClusterOnboardingLeadership(role: "leader", leaderPin: leader.pin, peerPin: macs.follower.pin,
+            peerName: "fixture peer", since: "fixture")
+        leadership.serving = serving; leadership.modelName = ClusterApprovalMacs.model
+        _ = try service.store.updateRecord { $0.leadership = leadership }
+        // Inside the other Mac's absence grace: this Mac runs its part of the cluster.
+        let local = leader.memberID, peer = macs.follower.memberID
+        let node = ClusterControlNode(localID: local,
+            members: [.init(memberID: local, name: "fixture", memoryBytes: 1, gpuCores: 1, holdsModelAlone: false)],
+            claim: .init(term: 1, leaderID: local, members: [local, peer], reason: "fixture"),
+            rankOrder: [local, peer], now: ClusterService.monotonicSeconds(), ttl: 1, soloGrace: 3_600)
+        service.lock.withLock { service.control = node }
+        return (service, parts)
+    }
+
+    /// How many parts of `role` the fixture recorded with `suffix`: `.ready` started, `.term` asked to stop.
+    private static func count(_ parts: URL, _ role: String, _ suffix: String) -> Int {
+        ((try? FileManager.default.contentsOfDirectory(atPath: parts.path)) ?? []).filter { $0.hasPrefix(role + "-") && $0.hasSuffix(suffix) }.count
+    }
+
     @Test(arguments: otherMacFailures)
     func anUpdateReplanWhoseStopTheOtherMacDidNotTakeLeavesThePairStarted(_ answer: String) throws {
         let (macs, service) = try leader()
@@ -166,6 +272,75 @@ struct ClusterServiceRestartingStopTests {
         }
     }
 
+    /// The stop went through, but a part did not end within the 5 minutes the change waits for.
+    @Test func anApprovalChangeWhosePartsDidNotStopLeavesThePairStarted() throws {
+        let (macs, service) = try leader()
+        try withExtendedLifetime(macs) {
+            let line = ClusterService.stopForApprovalChange(serving: true, stop: Self.stop(service) {}, drained: { false },
+                                                            restoreStart: { service.restoreStart() })
+            #expect(line == "a part did not stop within 5 minutes: the cluster approval stays as it is")
+            let record = try service.store.readRecord()
+            #expect(record.leadership?.serving == true, "the parts that did not stop left the pair stopped")
+            #expect(record.stopDrain == nil)
+        }
+    }
+
+    /// Once both Macs changed their setups, the parts start again (`OnboardingLive.localServe`). When that fails before
+    /// the start is saved (here: a stop request left over), the start is put back, so the service starts the parts.
+    @Test func anApprovalChangeWhoseRestartFailsLeavesThePairStarted() throws {
+        let (macs, service) = try leader()
+        try withExtendedLifetime(macs) {
+            _ = try service.store.updateRecord { $0.leadership?.serving = false; $0.stopDrain = .init(id: UUID(), keepPeerRunning: true) }
+            let line = ClusterService.restartAfterApprovalChange(serving: true, serve: { service.controlLive.localServe() },
+                                                                 restoreStart: { service.restoreStart() })
+            #expect(line?.hasPrefix("could not start the parts again after the cluster approval changed: ") == true, "\(line ?? "nil")")
+            let record = try service.store.readRecord()
+            #expect(record.leadership?.serving == true, "the failed restart left the pair stopped")
+            #expect(record.stopDrain == nil)
+            // A pair that did not serve before the change is not started.
+            #expect(ClusterService.restartAfterApprovalChange(serving: false,
+                serve: { Issue.record("started a pair that did not serve"); return .success([]) },
+                restoreStart: { Issue.record("put a start back that nothing cleared") }) == nil)
+        }
+    }
+
+    /// A stop of the owner's that clears the start without the command lock (`ClusterService.releaseForSingleMac`:
+    /// `darkbloom stop` while the pair doesn't run here and the other Mac doesn't answer, `darkbloom start --solo`) lands
+    /// while a step's own stop waits for the other Mac, which never answers. The step then puts its start back: the
+    /// owner's stop must hold all the same.
+    @Test(arguments: ["re-plan", "approval change"])
+    func anOwnersStopWithoutTheCommandLockDuringAStepsFailingStopHolds(_ step: String) throws {
+        let (macs, service) = try leader()
+        try withExtendedLifetime(macs) {
+            // The step holds the command lock, as `checkForUpdate` and `checkApproval` do around it.
+            let held = try #require(ClusterControlCommandLock.acquire(seconds: 0, file: Self.commandLock(service)))
+            let paths = macs.leader.paths, owner = DispatchSemaphore(value: 0), released = ClusterApprovalRecorder<Bool>()
+            Thread.detachNewThread {
+                guard owner.wait(timeout: .now() + 30) == .success else { return }
+                released.append(ClusterService.releaseForSingleMac(seconds: 1, paths: paths))
+            }
+            let stop = Self.stop(service) {
+                // This Mac's part released and its start is cleared; the other Mac is asked. Meanwhile the owner stops.
+                owner.signal()
+                _ = Self.waitUntil(seconds: 1) { !released.values.isEmpty }
+                throw ClusterSetupFailure("the other Mac did not answer within 30 s")
+            }
+            if step == "re-plan" {
+                var steps = Self.steps(service, stop: stop)
+                Self.notAfterAFailedStop(&steps)
+                _ = ClusterService.replanAfterUpdate(model: ClusterApprovalMacs.model, steps)
+            } else {
+                _ = ClusterService.stopForApprovalChange(serving: true, stop: stop, drained: { true },
+                                                         restoreStart: { service.restoreStart() })
+            }
+            held.release()
+            #expect(Self.waitUntil(seconds: 10) { !released.values.isEmpty }, "the owner's stop did not finish")
+            #expect(released.values == [true])
+            let serving = try service.store.readRecord().leadership?.serving
+            #expect(serving == false, "the \(step) put back a start the owner cleared")
+        }
+    }
+
     /// Both Macs restart into an update seconds apart. While one is down, the other may take control (its lease ran out
     /// after 30 s), so a restarted leader's saved claim may be superseded, and the other Mac then refuses its stop. Such a
     /// claim is confirmed or dropped at its first lease: until the other Mac confirmed it, the leader neither sets the
@@ -219,6 +394,128 @@ struct ClusterServiceRestartingStopTests {
             #expect(lines.values.filter { $0 == wait }.count == 1, "the confirmed leader did not act on the update once: \(lines.values)")
             #expect(coordinator.requests.allSatisfy { $0.hasPrefix("GET /v1/cluster/approvals") } && !coordinator.requests.isEmpty,
                     "the confirmed leader did not ask for its approvals: \(coordinator.requests)")
+        }
+    }
+
+    /// The re-plan compares the builds before it takes the command lock, so a person's stop, or a hand-over, can finish
+    /// while it waits for the lock. Once it holds the lock it acts only on a start still saved and a claim still
+    /// confirmed: its stop would put the start back when it failed (or `localServe` save it), starting the pair the owner
+    /// stopped. The actual service loop.
+    @Test(arguments: ["the owner stopped the pair", "control moved to the other Mac"])
+    func anUpdateReplanThatWaitedForTheCommandLockDoesNothingAfterAStopOrAHandOver(_ meanwhile: String) throws {
+        let (macs, service) = try leader()
+        try withExtendedLifetime(macs) {
+            // A person's command holds the command lock while the re-plan compares the builds.
+            let held = try #require(ClusterControlCommandLock.acquire(seconds: 0, file: Self.commandLock(service)))
+            let compared = DispatchSemaphore(value: 0), replanned = ClusterApprovalRecorder<Bool>()
+            var steps = Self.steps(service, stop: Self.stop(service) { throw ClusterSetupFailure("the other Mac did not answer within 30 s") })
+            steps.reachMembers = { replanned.append(true); return .success([]) }
+            service.updateReplan = (running: { compared.signal(); return Self.oneNewBuild(macs) }, steps: steps)
+            try Self.confirmedLeader(service, macs)
+            let loop = Self.run(service)
+            let began = compared.wait(timeout: .now() + 20) == .success
+            if meanwhile == "the owner stopped the pair" {
+                _ = try service.store.updateRecord { $0.leadership?.serving = false }
+            } else {
+                service.lock.withLock { service.control = Self.node(macs, leader: macs.follower.memberID, term: 2) }
+            }
+            held.release()
+            usleep(2_000_000)
+            let lines = loop.stop()
+            #expect(began, "the re-plan never compared the builds: \(lines)")
+            #expect(replanned.values.isEmpty, "the re-plan went on after \(meanwhile)")
+            #expect(!lines.contains { $0.hasPrefix("Darkbloom changed on both Macs: setting the cluster up again") }, "\(lines)")
+            let serving = try service.store.readRecord().leadership?.serving
+            #expect(serving == (meanwhile != "the owner stopped the pair"), "\(meanwhile): the start is \(String(describing: serving))")
+        }
+    }
+
+    /// The re-plan after an update in the actual service loop, its stop failing at the other Mac (B6): the pair stays
+    /// started, and the re-plan is tried again 10 minutes later (`ClusterOnboardingUpdate.retryAfterFailureSeconds`), not
+    /// at every tick. The test moves the next check instead of waiting for it.
+    @Test func anUpdateReplanWhoseStopFailsInTheServiceLoopIsTriedAgainTenMinutesLater() throws {
+        let (macs, service) = try leader()
+        try withExtendedLifetime(macs) {
+            let replans = ClusterApprovalRecorder<Bool>()
+            var steps = Self.steps(service, stop: Self.stop(service) { throw ClusterSetupFailure("the other Mac did not answer within 30 s") })
+            Self.notAfterAFailedStop(&steps)
+            steps.reachMembers = { replans.append(true); return .success([]) }
+            service.updateReplan = (running: { Self.oneNewBuild(macs) }, steps: steps)
+            try Self.confirmedLeader(service, macs)
+            let loop = Self.run(service)
+            let failed = "could not set the cluster up again after the update: "
+            let said = Self.waitUntil(seconds: 20) { loop.lines.values.contains { $0.hasPrefix(failed) } }
+            // A tick is 0.1 s: a re-plan tried again at the next tick would run many times in these 2 s.
+            usleep(2_000_000)
+            let tries = replans.values.count
+            let due = service.lock.withLock { service.nextUpdateCheck }.timeIntervalSinceNow
+            let record = try service.store.readRecord()
+            service.lock.withLock { service.nextUpdateCheck = .distantPast }
+            let again = Self.waitUntil(seconds: 10) { replans.values.count >= 2 }
+            let lines = loop.stop()
+            #expect(said, "the re-plan did not fail as its stop did: \(lines)")
+            #expect(tries == 1, "the re-plan ran \(tries) times within 2 s of its failure")
+            #expect(due > ClusterOnboardingUpdate.retryAfterFailureSeconds - 10, "the next re-plan is due in \(due) s")
+            #expect(record.leadership?.serving == true, "the failed stop left the pair stopped")
+            #expect(record.stopDrain == nil)
+            #expect(again, "the re-plan was not tried again at its next check")
+        }
+    }
+
+    /// While the other Mac doesn't answer, every change of the cluster approval fails at it (each one sends to it), so
+    /// none that stops a serving pair is begun: the leader would otherwise stop its own part at every check, a minute
+    /// apart, and start it again. It still asks the coordinator at every check. The actual service loop; the test moves
+    /// the next check instead of waiting a minute for it.
+    @Test func anApprovalChangeIsNotBegunOnAServingPairWhileTheOtherMacDoesNotAnswer() throws {
+        let coordinator = try CountingCoordinator()
+        defer { coordinator.close() }
+        let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:\(coordinator.port)/ws/provider")
+        try withExtendedLifetime(macs) {
+            let (service, parts) = try Self.approvalLeader(macs, serving: true)
+            let loop = Self.run(service)
+            let asked = Self.waitUntil(seconds: 20) { !coordinator.requests.isEmpty }
+            let askedAt = Date()
+            let ready = Self.waitUntil(seconds: 20) { Self.count(parts, "member", ".ready") > 0 }
+            // A change begun would stop this Mac's part within a second or two: it ends at once when asked.
+            usleep(4_000_000)
+            let first = coordinator.requests.count
+            let due = service.lock.withLock { service.nextApprovalCheck }.timeIntervalSince(askedAt)
+            service.lock.withLock { service.nextApprovalCheck = .distantPast }
+            let again = Self.waitUntil(seconds: 10) { coordinator.requests.count >= 2 }
+            usleep(3_000_000)
+            let record = try service.store.readRecord()
+            // Read before the service stops: it stops its part then.
+            let stopped = Self.count(parts, "member", ".term")
+            let lines = loop.stop()
+            #expect(asked && ready, "the coordinator was not asked, or the leader's part did not start: \(lines)")
+            #expect(first == 1, "the coordinator was asked \(first) times within the first check's minute")
+            #expect(due > ClusterOnboardingUpdate.checkEverySeconds - 10, "the next approval check is due \(due) s after the first")
+            #expect(again, "the coordinator was not asked again at the next check")
+            #expect(!lines.contains { $0.hasPrefix("could not stop the parts to change the cluster approval") }, "\(lines)")
+            #expect(stopped == 0, "this Mac's part was stopped for an approval change")
+            #expect(record.leadership?.serving == true)
+        }
+    }
+
+    /// The approval check asks the coordinator before it takes the command lock, so a hand-over can finish while it waits
+    /// for the lock. Once it holds the lock it changes nothing unless this Mac still leads on a confirmed claim. The pair
+    /// here does not serve, so a change would go ahead with nothing to stop. The actual service loop.
+    @Test func anApprovalChangeWhoseClaimMovedWhileItWaitedForTheCommandLockChangesNothing() throws {
+        let coordinator = try CountingCoordinator()
+        defer { coordinator.close() }
+        let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:\(coordinator.port)/ws/provider")
+        try withExtendedLifetime(macs) {
+            let (service, _) = try Self.approvalLeader(macs, serving: false)
+            // A person's command holds the command lock while the check asks the coordinator.
+            let held = try #require(ClusterControlCommandLock.acquire(seconds: 0, file: Self.commandLock(service)))
+            let loop = Self.run(service)
+            let asked = Self.waitUntil(seconds: 20) { !coordinator.requests.isEmpty }
+            service.lock.withLock { service.control = Self.node(macs, leader: macs.follower.memberID, term: 2) }
+            held.release()
+            usleep(2_000_000)
+            let lines = loop.stop()
+            #expect(asked, "the coordinator was not asked: \(lines)")
+            #expect(!lines.contains { $0.hasPrefix("The pair stays registered for now") }, "a check whose claim moved changed the approval: \(lines)")
         }
     }
 

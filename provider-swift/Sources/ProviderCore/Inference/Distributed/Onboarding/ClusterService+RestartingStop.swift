@@ -72,6 +72,16 @@ extension ClusterService {
         return nil
     }
 
+    /// `checkApproval`'s start of both parts again once the cluster approval changed (`ClusterApprovalSync.apply` calls
+    /// it after every stop that succeeded): nil once started (or the pair was not serving), else the line why not, with
+    /// the pair's saved start put back, so the service starts this Mac's part again and syncs the other Mac's.
+    static func restartAfterApprovalChange(serving: Bool, serve: () -> Result<[String], ClusterOnboardingFailure>,
+                                           restoreStart: () -> Void) -> String? {
+        guard serving, case .failure(let failure) = serve() else { return nil }
+        restoreStart()
+        return "could not start the parts again after the cluster approval changed: " + failure.lines.joined(separator: " ")
+    }
+
     /// Puts the pair's saved start back after an automatic step stopped it to start it again, and drops the stop request a
     /// stop that failed midway keeps (this Mac's part had not released yet): left in place, it would hold off every start,
     /// sync and hand-over (`OnboardingLive.localServe`, `syncMembers`). Both steps call it under the control command lock,

@@ -121,11 +121,16 @@ public final class ClusterService: @unchecked Sendable {
     private var steppedAsidePID: Int32?
     /// How single-Mac serving is stopped (`stop --solo`); tests stand in.
     var stopSingleMac: @Sendable (URL) -> Result<Void, ClusterSetupFailure> = { ClusterService.stopSoloServing(executable: $0) }
+    /// The re-plan after an update (`checkForUpdate`): each Mac's running worker digest by member, and the re-plan's
+    /// steps; tests stand in. Nil: this Mac's worker and the other Mac's as it answers over the cable, and the control
+    /// leader's onboarding operations.
+    var updateReplan: (running: () -> [String: String?], steps: UpdateReplan)?
     private var peerHeldBackSaid: String?
     private var nextSync = Date.distantPast
-    // Setting the cluster up again after a Darkbloom update (`checkForUpdate`).
+    // Setting the cluster up again after a Darkbloom update (`checkForUpdate`); a test moves the next check instead of
+    // waiting for it.
     private var updateInFlight = false
-    private var nextUpdateCheck = Date.distantPast
+    var nextUpdateCheck = Date.distantPast
     private var updatingLine: String?
     /// Said once while the Macs run different builds after an update.
     private var updateWaitLine: String?
@@ -137,10 +142,11 @@ public final class ClusterService: @unchecked Sendable {
     private var otherVersionAsked = Date.distantPast
     private var otherVersionAsking = false
     // The cluster approval is asked for once per run of this service on the control leader, and again every minute
-    // while the pair is offered or serves locally with its approval set aside (`checkApproval`).
+    // while the pair is offered or serves locally with its approval set aside (`checkApproval`); a test moves the next
+    // check instead of waiting for it.
     private var approvalChecked = false
     private var approvalInFlight = false
-    private var nextApprovalCheck = Date.distantPast
+    var nextApprovalCheck = Date.distantPast
     private var approvalWatch = ClusterApprovalCheck.Watch()
     // This Mac's coordinator-paired parts that ended in a row right after starting (`ClusterApprovalCheck.memberQuickEnds`),
     // and whether the running part is one.
@@ -1095,11 +1101,6 @@ public final class ClusterService: @unchecked Sendable {
         }
     }
 
-    /// On the control leader, while the cluster serves: when a Darkbloom update changed a Mac's worker (its digest no
-    /// longer matches the saved setup's pin, so both Macs refuse their parts), the same model is planned again,
-    /// adopted, synced to the member and served, as `m` with the same model would, with nobody running a command.
-    /// Checked every `ClusterOnboardingUpdate.checkEverySeconds` on a thread of its own; holds the command lock so a
-    /// person's command and this never run at once.
     /// The other Mac's version for the wait lines: asked over the cable at most every 30 s, off the caller's thread unless
     /// `refresh` (already a background thread); the last answer meanwhile, nil before the first.
     private func otherMacVersion(refresh: Bool = false) -> String? {
@@ -1120,9 +1121,17 @@ public final class ClusterService: @unchecked Sendable {
         return lock.withLock { otherVersion }
     }
 
+    /// On the control leader, while the cluster serves: when a Darkbloom update changed a Mac's worker (its digest no
+    /// longer matches the saved setup's pin, so both Macs refuse their parts), the same model is planned again,
+    /// adopted, synced to the member and served, as `m` with the same model would, with nobody running a command.
+    /// Checked every `ClusterOnboardingUpdate.checkEverySeconds` on a thread of its own (every `recheckWhileWaitingSeconds`
+    /// while the Macs run different builds, `retryAfterFailureSeconds` after a failure); holds the command lock so a
+    /// person's command and this never run at once.
     private func checkForUpdate(say: @escaping @Sendable (String) -> Void) {
+        // Only on a claim the other Mac confirmed: the Macs restart into an update seconds apart, and the one back first
+        // may take control meanwhile, so a restarted leader's saved claim may be superseded (and its stop refused).
         guard let leadership = (try? store.readRecord())?.leadership, leadership.serving, let model = leadership.modelName,
-              lock.withLock({ control?.leads == true }) else { return }
+              leadershipConfirmed() else { return }
         let begin: Bool = lock.withLock {
             guard !updateInFlight, !stopping, Date().timeIntervalSince(nextUpdateCheck) >= 0 else { return false }
             updateInFlight = true
@@ -1137,8 +1146,13 @@ public final class ClusterService: @unchecked Sendable {
             guard let saved = context.savedConfiguration().configuration, saved.peers.indices.contains(saved.localRank) else { return }
             let pinned = Dictionary(saved.peers.map { ($0.id, $0.runtimeBinarySHA256) }, uniquingKeysWith: { a, _ in a })
             let local = saved.peers[saved.localRank]
+            let standIn = self.updateReplan
             var current: [String: String?] = [local.id: try? context.workerSHA256(local.workerExecutable)]
-            if case .reached = context.reachPeer(), let facts = context.peerFacts { current[facts.memberID] = facts.runtimeBinarySHA256 }
+            if let standIn {
+                current = standIn.running()
+            } else if case .reached = context.reachPeer(), let facts = context.peerFacts {
+                current[facts.memberID] = facts.runtimeBinarySHA256
+            }
             let changed = ClusterOnboardingUpdate.changed(pinned: pinned, current: current)
             guard !changed.isEmpty else { return }
             let macs = changed.count == 1 && changed[0] == local.id ? "this Mac" : changed.count == 1 ? "the other Mac" : "both Macs"
@@ -1156,45 +1170,37 @@ public final class ClusterService: @unchecked Sendable {
                 return
             }
             self.lock.withLock { self.updateWaitLine = nil }
-            guard let held = ClusterControlCommandLock.acquire(seconds: 5) else { return }
+            // Held, the command lock keeps a hand-over and a person's stop off; either may have finished while the builds
+            // were compared, and the re-plan's stop would put back a start the person cleared.
+            guard let held = ClusterControlCommandLock.acquire(seconds: 5,
+                file: self.store.paths.directory.appendingPathComponent("control.lock")) else { return }
             defer { held.release() }
+            guard self.leadershipConfirmed(), (try? self.store.readRecord())?.leadership?.serving == true else { return }
             self.lock.withLock { self.updatingLine = ClusterOnboardingUpdate.statusLine }
             self.publish()
             say("Darkbloom changed on \(macs): setting the cluster up again for \(model)")
-            func failed(_ lines: [String]) {
-                say("could not set the cluster up again after the update: " + lines.joined(separator: " "))
-                self.lock.withLock { self.nextUpdateCheck = Date().addingTimeInterval(ClusterOnboardingUpdate.retryAfterFailureSeconds) }
-            }
             let live = self.controlLive
-            if case .failure(let failure) = live.localReachMembers({ _ in }) { return failed(failure.lines) }
-            // Both Macs refuse the old parts once their workers changed, and the parts hold the model's memory until
-            // they stop: stop them and wait for the memory before planning. Planned while they run, a tensor-parallel
-            // pair does not fit "now" and a pipeline is chosen in its place. A failure from here on keeps the
-            // serving intent, so the next check tries again.
-            if case .failure(let failure) = live.localStop() { return failed(failure.lines) }
-            live.awaitReleased()
-            func failedStopped(_ lines: [String]) {
-                try? self.store.updateRecord { $0.leadership?.serving = true }
-                failed(lines)
-            }
             // The same model keeps the mode the pair served it in, unless the planner and the pair's own served
             // requests both find another faster (`ClusterServedModes.hold`). `localPlanModels` asks the other Mac for
-            // its report again: the one `localReachMembers` took above still counts its old part's memory.
+            // its report again: the one `localReachMembers` took still counts its old part's memory.
             let keeping = saved.publicModelID == model ? [model: saved.selectedGenerationMode] : [:]
-            let choices: [ClusterOnboardingModelChoice]
-            switch live.localPlanModels(keeping: keeping) {
-            case .success(let value): choices = value
-            case .failure(let failure): return failedStopped(failure.lines)
+            let replanned = Self.replanAfterUpdate(model: model, standIn?.steps ?? .init(
+                reachMembers: { live.localReachMembers({ _ in }) }, stop: { live.localStop() },
+                awaitReleased: { live.awaitReleased() }, planModels: { live.localPlanModels(keeping: keeping) },
+                adopt: { live.localAdopt($0) }, serve: { live.localServe() }, restoreStart: { self.restoreStart() }))
+            let choice: ClusterOnboardingModelChoice
+            switch replanned {
+            case .success(let value): choice = value
+            case .failure(let failure):
+                // `replanAfterUpdate` kept the saved start: the next check tries again.
+                say("could not set the cluster up again after the update: " + failure.lines.joined(separator: " ")
+                    + " The pair stays started; this is tried again in \(Int(ClusterOnboardingUpdate.retryAfterFailureSeconds) / 60) minutes.")
+                self.lock.withLock { self.nextUpdateCheck = Date().addingTimeInterval(ClusterOnboardingUpdate.retryAfterFailureSeconds) }
+                return
             }
-            // `model` is the model's id (the record keeps ids; the screens show catalog names).
-            guard let index = ClusterOnboardingUpdate.servableIndex(of: model, in: choices) else {
-                return failedStopped(["\(model) is not offered on these Macs with this release: \(choices.first { ($0.modelID ?? $0.title) == model }?.blocker ?? "not found")"])
-            }
-            if case .failure(let failure) = live.localAdopt(index) { return failedStopped(failure.lines) }
-            if case .failure(let failure) = live.localServe() { return failedStopped(failure.lines) }
             // The plan's own line and its reason for the mode (tensor parallel or a pipeline), so the log says why.
             say("set the cluster up again after the update: \(model) is starting on both Macs ("
-                + choices[index].lines.joined(separator: " ") + ")")
+                + choice.lines.joined(separator: " ") + ")")
             // The re-adopted setups carry no cluster approval: the next check finds the same model approval again, or the
             // build-pinned entry of the updated app.
             self.lock.withLock { self.approvalChecked = false; self.nextApprovalCheck = .distantPast }
@@ -1205,12 +1211,15 @@ public final class ClusterService: @unchecked Sendable {
     /// `ClusterOnboardingUpdate.checkEverySeconds` while the pair is registered or serves locally with its approval set
     /// aside (`ClusterApprovalCheck.asks`). Only when a setup must change (`ClusterApprovalCheck.step`: an approval to
     /// save, or one to serve without because the coordinator gave no answer for the grace, no longer lists it, or the
-    /// parts keep failing with it) it stops both parts, changes both Macs' setups and serves again. A coordinator that
-    /// serves nothing new changes nothing and stops nothing. An approval that ended is removed by each Mac itself
-    /// before its part starts (`supervise`), never by stopping a running pair.
+    /// parts keep failing with it) it stops both parts, changes both Macs' setups and serves again; a change that would
+    /// stop a serving pair waits while the other Mac doesn't answer its status. A coordinator that serves nothing new
+    /// changes nothing and stops nothing. An approval that ended is removed by each Mac itself before its part starts
+    /// (`supervise`), never by stopping a running pair.
     private func checkApproval(say: @escaping @Sendable (String) -> Void) {
+        // Only on a claim the other Mac confirmed, as `checkForUpdate`: a change of approval stops the pair.
+        guard leadershipConfirmed() else { return }
         let begin: Bool = lock.withLock {
-            guard !approvalInFlight, !updateInFlight, !stopping, control?.leads == true, Date().timeIntervalSince(nextApprovalCheck) >= 0 else { return false }
+            guard !approvalInFlight, !updateInFlight, !stopping, Date().timeIntervalSince(nextApprovalCheck) >= 0 else { return false }
             approvalInFlight = true
             return true
         }
@@ -1236,6 +1245,8 @@ public final class ClusterService: @unchecked Sendable {
                 let serving: Bool
                 /// The saved setup's worker digest, recorded with an approval set aside.
                 let worker: String
+                /// The other Mac answered its status: every change of the approval sends to it.
+                let peerAnswered: Bool
             }
             func decide(_ answer: () -> ClusterApprovalFetch.Outcome?) -> Decided? {
                 let record = try? self.store.readRecord()
@@ -1266,7 +1277,7 @@ public final class ClusterService: @unchecked Sendable {
                     memberQuickEnds: quickEnds, peerApprovalID: peerApprovalID, watch: &watch, clock: ClusterService.monotonicSeconds(),
                     grace: ClusterService.soloGraceSeconds, now: now)
                 return Decided(step: step, watch: watch, serving: record?.leadership?.serving == true,
-                               worker: saved.capability.runtimeBinarySHA256)
+                               worker: saved.capability.runtimeBinarySHA256, peerAnswered: peer != nil)
             }
             var fetched: ClusterApprovalFetch.Outcome?
             func answer() -> ClusterApprovalFetch.Outcome? {
@@ -1280,36 +1291,33 @@ public final class ClusterService: @unchecked Sendable {
             guard initial.step != .keep else { return checked() }
             // A person's command and this never run at once. A busy lock is tried again at the next check, a minute on,
             // not at every tick.
-            guard let held = ClusterControlCommandLock.acquire(seconds: 5) else {
+            guard let held = ClusterControlCommandLock.acquire(seconds: 5,
+                file: self.store.paths.directory.appendingPathComponent("control.lock")) else {
                 say("another cluster command is running: the cluster approval is checked again in a minute")
                 return checked()
             }
             defer { held.release() }
             checked()
-            // Decided again under the lock, with the same answer: a person's command may have changed the setup, the
-            // scope or the other Mac while this check waited.
+            // Confirmed and decided again under the lock, with the same answer: a hand-over, or a person's command that
+            // changed the setup, the scope or the other Mac, may have finished while this check waited.
+            guard self.leadershipConfirmed() else { return }
             guard let decided = decide(answer) else { return }
             self.lock.withLock { self.approvalWatch = decided.watch }
             let step = decided.step, serving = decided.serving
             guard step != .keep else { return }
+            // A change can't succeed while the other Mac doesn't answer: one that stops a serving pair waits for it, or this
+            // Mac's part would stop for nothing at every check.
+            guard decided.peerAnswered || !serving else { return }
             let send: (ClusterServiceCommand) throws -> Void = { request in _ = try live.command(request, seconds: 180) }
             let result = ClusterApprovalSync.apply(step, grace: ClusterService.soloGraceSeconds, paths: paths,
                 providerConfiguration: configuration, pairingStore: pairingStore, scratch: scratch, now: Date().timeIntervalSince1970,
                 stop: {
-                    guard serving else { return nil }
-                    if case .failure(let failure) = live.localStop() {
-                        return "could not stop the parts to change the cluster approval: " + failure.lines.joined(separator: " ")
-                    }
-                    guard live.drained(seconds: 300) else {
-                        try? self.store.updateRecord { $0.leadership?.serving = true }
-                        return "a part did not stop within 5 minutes: the cluster approval stays as it is"
-                    }
-                    return nil
+                    Self.stopForApprovalChange(serving: serving, stop: { live.localStop() }, drained: { live.drained(seconds: 300) },
+                                               restoreStart: { self.restoreStart() })
                 },
                 serve: {
-                    guard serving, case .failure(let failure) = live.localServe() else { return }
-                    try? self.store.updateRecord { $0.leadership?.serving = true }
-                    say("could not start the parts again after the cluster approval changed: " + failure.lines.joined(separator: " "))
+                    if let line = Self.restartAfterApprovalChange(serving: serving, serve: { live.localServe() },
+                                                                  restoreStart: { self.restoreStart() }) { say(line) }
                 },
                 sendToPeer: send)
             try? self.store.updateRecord { stored in
@@ -1554,20 +1562,47 @@ public final class ClusterService: @unchecked Sendable {
         return pairRuns(status) || status.control.map { !otherMacAbsentModes.contains($0.mode) } == true
     }
 
+    /// How `releaseForSingleMac` ended.
+    public enum SingleMacRelease: Equatable, Sendable {
+        /// This Mac's saved start is cleared, and its part stopped.
+        case released
+        /// A cluster command held the command lock for the whole wait: nothing was read or written.
+        case commandStillRunning
+        /// The start couldn't be cleared, or the part didn't stop in time.
+        case partNotStopped
+    }
+
     /// Going back to single-Mac serving on a Mac whose pair isn't running: this Mac's saved start is cleared, so its
     /// cluster service runs no part (and never takes the serving lock back by itself), and the part still running stops
-    /// within `seconds`, freeing the lock. The pairing stays: `darkbloom cluster` starts the pair again. False when the
-    /// start couldn't be cleared or the part didn't stop in time.
-    public static func releaseForSingleMac(seconds: Double) -> Bool {
-        guard let paths = try? ClusterUserPaths() else { return false }
+    /// within `seconds`, freeing the lock. The pairing stays: `darkbloom cluster` starts the pair again. It holds the
+    /// control command lock, as every stop of the pair does (waiting up to 600 s for a cluster command that runs), so
+    /// the service's steps that stop the pair only to start it again never put this start back (`restoreStart`).
+    /// `waiting` is called once, before that wait, so the person is told at once.
+    public static func releaseForSingleMac(seconds: Double, waiting: () -> Void = {}) -> SingleMacRelease {
+        guard let paths = try? ClusterUserPaths() else { return .partNotStopped }
+        return releaseForSingleMac(seconds: seconds, paths: paths, waiting: waiting)
+    }
+
+    /// `releaseForSingleMac(seconds:waiting:)` in the home `paths` names, waiting `commandSeconds` for the command lock;
+    /// tests give their own.
+    static func releaseForSingleMac(seconds: Double, paths: ClusterUserPaths, commandSeconds: Double = 600,
+                                    waiting: () -> Void = {}) -> SingleMacRelease {
         let setup = ClusterSetupPaths(paths: paths)
         let store = ClusterSetupStore(paths: setup)
+        let file = setup.directory.appendingPathComponent("control.lock")
+        var taken = ClusterControlCommandLock.acquire(seconds: 0, file: file)
+        if taken == nil {
+            waiting()
+            taken = ClusterControlCommandLock.acquire(seconds: commandSeconds, file: file)
+        }
+        guard let held = taken else { return .commandStillRunning }
+        defer { held.release() }
         do {
             if (try? store.readRecord())?.leadership?.serving == true {
                 try store.updateRecord { $0.leadership?.serving = false }
             }
-        } catch { return false }
-        return stopLocalPart(in: setup.directory, seconds: seconds)
+        } catch { return .partNotStopped }
+        return stopLocalPart(in: setup.directory, seconds: seconds) ? .released : .partNotStopped
     }
 
     public static func pairRuns(_ status: ClusterServiceStatus?) -> Bool {

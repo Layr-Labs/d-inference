@@ -765,6 +765,12 @@ private let servingBlock = ["✓ Serving Qwen 3.8 27B through Darkbloom on both 
 
 private func lines(_ bytes: [UInt8]?) -> [String] { text(bytes).split(separator: "\n", omittingEmptySubsequences: false).map(String.init) }
 
+/// A cluster command holds the pair's command lock through the whole wait (`ClusterService.releaseForSingleMac`).
+private func commandStillRunning(_ waiting: () -> Void) -> ClusterService.SingleMacRelease {
+    waiting()
+    return .commandStillRunning
+}
+
 @Suite("darkbloom start, stop, restart and status control the pair on a Mac in a two-Mac cluster")
 struct ClusterPairControlTests {
     @Test("`darkbloom stop` on the leading Mac stops both Macs, keeps them stopped and checks the memory; launchd untouched")
@@ -885,6 +891,34 @@ struct ClusterPairControlTests {
             "This Mac's part of the pair didn't stop in time, so single-Mac serving can't start yet.",
             "To leave the pair on this Mac: `darkbloom cluster pair --status`, then `darkbloom cluster pair --forget <pin>`, then "
                 + "`darkbloom start`.", ""])
+    }
+
+    /// A cluster command holds the pair's command lock (a person's model change, or the cluster service's own step after
+    /// an update): `stop` and `start --solo` on a Mac whose pair doesn't run wait for it, up to 10 minutes. The wait is
+    /// said at once, and a command still running at its end is said as such: nothing was stopped, and leaving the pair
+    /// isn't the way out. The desktop app's Stop and Start run these commands.
+    @Test("a running cluster command: the wait is said at once, and its end as a busy pair, never as a part that didn't stop")
+    func stopAndStartSayTheyWaitForARunningClusterCommand() async {
+        let stop = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            try await exitWithPair(stalePair(), actions: pairActions()) { _ in
+                try await Start.$releaseOutcomeForTesting.withValue(commandStillRunning) { try await runCLICommand(Stop.self, ["stop"]) }
+            }
+        }
+        let start = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            try await exitWithPair(stalePair(), actions: pairActions()) { _ in
+                try await Start.$releaseOutcomeForTesting.withValue(commandStillRunning) {
+                    try await runCLICommand(Start.self, ["start", "--solo", "--model", "acme/Alpha-4bit"])
+                }
+            }
+        }
+        for (name, result) in [("stop", stop), ("start --solo", start)] {
+            let out = lines(result?.standardOutputContent)
+            #expect(Array(out.suffix(3)) == [
+                "Waiting for the pair's running command to finish (up to 10 minutes; ^C stops waiting and leaves the pair as it is).",
+                "The pair's command was still running after 10 minutes, so nothing was stopped or started. Try again, or run "
+                    + "`darkbloom cluster` to see what's running.", ""], "\(name): \(out)")
+            #expect(!out.contains { $0.contains("--forget") }, "\(name): \(out)")
+        }
     }
 
     @Test("`darkbloom stop` on a Mac whose pair doesn't run stops what runs here and never asks the other Mac")

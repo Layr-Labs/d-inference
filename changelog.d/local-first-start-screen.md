@@ -23,3 +23,5 @@
   names `start --me-first` beside `start --local`. With `--no-auth`, `start` and `status` say your requests stay on
   this Mac. No start screen prints the local key (except `--local`'s own banner, as before), and no screen shows a
   speed.
+- `darkbloom start`'s lines, such as its banner and `Listening on …`, now show at once when its output goes to a log
+  or a pipe (`start … > log`). Before, a start that serves held them until it stopped.

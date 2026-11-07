@@ -324,6 +324,9 @@ struct Start: AsyncParsableCommand {
 
     mutating func run() async throws {
         Darkbloom.ensureLogging()
+        // Line-buffer stdout: in a log or a pipe (`start … > log`, nohup) it is block-buffered, and a start that serves
+        // never exits, so its banner, "Listening on" and the tool lines would wait in the buffer.
+        setvbuf(stdout, nil, _IOLBF, 0)
         let look = DarkbloomCommandLook.forCommand()
         // Decided first: only a start that goes ahead opens with the mark, never one its flags refuse.
         let opensLook = !flagsRefuseStart

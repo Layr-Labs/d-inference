@@ -649,6 +649,29 @@ struct StartLocalFirstTests {
             == "Both, me first — Darkbloom pauses while you use this Mac, back after 1 idle minute")
     }
 
+    /// In a log or a pipe (`start … > log 2>&1`) stdout is block-buffered, and a start that serves never exits, so
+    /// its banner, "Listening on" and the tool lines would sit in the buffer. The start line-buffers it first.
+    @Test("start line-buffers stdout first: in a log or a pipe, each line shows while start still runs")
+    func startLineBuffersStandardOutput() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardErrorContent]) {
+            setvbuf(stdout, nil, _IOFBF, 1 << 16)
+            // Refused at once (two ways to serve), after the start's first step.
+            var start = try Start.parse(["--foreground", "--local", "--local-endpoint"])
+            do {
+                try await start.run()
+                exit(2)
+            } catch {}
+            var ends: [Int32] = [-1, -1]
+            guard pipe(&ends) == 0, dup2(ends[1], STDOUT_FILENO) == STDOUT_FILENO else { exit(3) }
+            print("Listening on 127.0.0.1:8002")
+            var log = pollfd(fd: ends[0], events: Int16(POLLIN), revents: 0)
+            exit(poll(&log, 1, 2_000) == 1 ? EXIT_SUCCESS : EXIT_FAILURE)
+        }
+        guard let result else { return }
+        let refusal = String(decoding: result.standardErrorContent, as: UTF8.self)
+        #expect(refusal.contains("--local and --local-endpoint are mutually exclusive"))
+    }
+
     // MARK: - No speeds, anywhere
 
     @Test("no line of the question, the summary, status or local names a speed")

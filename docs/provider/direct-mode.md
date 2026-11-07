@@ -6,7 +6,11 @@ Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
 earnings) or alongside fleet serving (`darkbloom start --local-endpoint`). For
 operators who want their own tools to call the models they already host.
-Requests never leave the machine and are never billed.
+Requests never leave the machine and are never billed. In a terminal,
+`darkbloom start` asks once which of these you want ([Use your Mac yourself,
+first](./local-first.md)); unified mode is its **Both, me first**, where
+Darkbloom pauses while you use the local API (`--me-first`; `--no-me-first`
+keeps the two sharing the Mac).
 
 Chat completions accept `stop` as a string or string array and pass explicit
 `min_p` to the engine. JSON and SSE responses include requested captured

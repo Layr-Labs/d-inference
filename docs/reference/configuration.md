@@ -346,21 +346,39 @@ defines DST adjustment, merged windows, full-week coverage and fail-closed parsi
 ### Local-first use (`[local]`)
 
 `[local]` in `provider.toml` holds how this Mac serves its owner beside, or
-instead of, Darkbloom. This build parses, checks and writes the section; the
-local API's router reads `route` (see
-[the local router](../provider/direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)),
-and serving does not read the other keys yet. Every key is optional, and an
-absent key keeps today's behaviour (`LocalSettings` in
-`provider-swift/Sources/ProviderCore/Config/LocalSettings.swift`).
+instead of, Darkbloom ([Use your Mac yourself, first](../provider/local-first.md)).
+`darkbloom start` reads `mode`, `port` and `bind`, and the local API's router
+reads `route` (see
+[the local router](../provider/direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
+Every key is optional, and an absent key keeps today's behaviour
+(`LocalSettings` in `provider-swift/Sources/ProviderCore/Config/LocalSettings.swift`;
+`StartServingResolver` in `provider-swift/Sources/darkbloom/Start/StartLocalFirst.swift`).
 
 | `provider.toml` key | Accepted values | When absent (`LocalSettings` resolver) |
 |---|---|---|
-| `[local] mode` | `"local"` (only you, on this Mac), `"network"` (the Darkbloom network only), `"both"` (both, you first) | The launch flags decide, as today: plain `start` = `network`, `--local` = `local`, `--local-endpoint` = `both` (`launchMode`, `resolvedMode`) |
+| `[local] mode` | `"local"` (only you, on this Mac), `"network"` (the Darkbloom network only), `"both"` (both, you first) | The launch flags decide, as today: plain `start` = `network`, `--local` = `local`, `--local-endpoint` = `both` (`launchMode`, `resolvedMode`). In a terminal, `darkbloom start` asks once and saves the answer |
 | `[local] me_first` | `true` or `false` | On with `mode = "both"`, off otherwise; `false` keeps today's shared serving (`meFirstEnabled`) |
 | `[local] me_first_idle_minutes` | Whole minutes, `1`–`120` | `2` (`defaultMeFirstIdleMinutes`, `resolvedMeFirstIdleMinutes`) |
 | `[local] route` | `"this-mac"` (only this Mac), `"my-macs"` (only your Macs), `"my-macs-first"` (your Macs first, then the Darkbloom network) | `this-mac`; `my-macs` once an account key is saved with `darkbloom route key` (`resolvedRoute`). Without a saved key nothing leaves this Mac, whatever the route (`LocalRouterConfig.effectiveRoute`) |
-| `[local] port` | Whole number, `1`–`65535` | The build's `defaultLocalPort` (`resolvedPort`) |
+| `[local] port` | Whole number, `1`–`65535` | The build's `defaultLocalPort` (`resolvedPort`). A local API that the start question, a saved `mode` or `--me-first` creates takes the first free port from there instead, never `8000` or `47420`–`47423`, and saves it (`LocalAPIPort`) |
 | `[local] bind` | `localhost` or a numeric IPv4 or IPv6 address (`ClusterServingScope.isValidBind`) | `127.0.0.1` (`defaultBind`, `resolvedBind`) |
+
+Who writes which key (`Start.saveServingChoice`, once the start goes ahead; a
+cancelled picker or a refused start writes nothing):
+
+| Writer | Keys |
+|---|---|
+| The start question, in a terminal (no saved `mode`, or `--choose`) | `mode`; `route` from its follow-up, asked only with an account key saved; `port` for a local API |
+| `--no-me-first`, `--me-first` (only to undo a saved `me_first = false`), `--me-first-idle <min>`, `--route <route>` | `me_first`, `me_first_idle_minutes`, `route`, as `--idle-timeout` writes `idle_timeout_mins` |
+| `--me-first` without a saved port | `port` (the first free one, as above) |
+| `--local`, `--network`, `--local-endpoint`, `--port`, `--bind`, `--no-auth`, and every start without a terminal | Nothing: a flag's mode is for that start only, and a start with no saved `mode` and no terminal keeps today's behaviour exactly |
+
+The LaunchAgent keeps the arguments `--local-endpoint` has always baked
+(`--local-endpoint --port <n> --bind <address>`, plus `--no-auth`), built from
+the resolved mode, port and address (`StartServing.launchAgentEndpoint`), so a
+rolled-back older provider reads the same plist. Its `--foreground` child serves
+as those arguments say, reads `me_first`, `me_first_idle_minutes` and `route`,
+and never asks or writes.
 
 ```toml
 [local]
@@ -368,7 +386,7 @@ mode = "both"
 me_first = true
 me_first_idle_minutes = 2
 route = "my-macs"
-port = 8000
+port = 8001
 bind = "127.0.0.1"
 ```
 

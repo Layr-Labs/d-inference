@@ -1,6 +1,6 @@
 # Darkbloom Provider Documentation
 
-> Last updated: 2026-11-04
+> Last updated: 2026-11-06
 
 This repository documents the Swift provider, local native inference and
 landing. Backend, console and admin source, development and operating guides
@@ -17,6 +17,7 @@ belong to
 - [Cache storage and daily writes](provider/cache-storage.md)
 - [Attestation](provider/attestation.md) and [troubleshooting](provider/troubleshooting.md)
 - [Local direct mode](provider/direct-mode.md) and [network self-route](provider/self-route.md)
+- [Use your Mac yourself, first](provider/local-first.md): only you, the Darkbloom network, or both with you first
 - [Fan control](provider/fan-control.md) and [beta features](provider/beta-features.md)
 - [Always-on cluster members](provider/cluster-always-on.md): link wait, restart budget, coordinated update, permissions asked once
 - [Host Darkbloom Sandbox CI jobs](provider/sandboxes.md) beside inference

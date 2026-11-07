@@ -129,15 +129,20 @@ private func localStatus(_ error: Error) -> UInt16 { ProviderLoop.mapInferenceEr
 /// A leader member's `run()` against a `MockCoordinator`, with or without its
 /// local API (127.0.0.1, port 0, a key). Its discovery record goes to a
 /// directory of its own (`DARKBLOOM_LOCAL_DIR`), restored only once the loop
-/// has stopped.
-private struct PairLeaderFixture {
+/// has stopped. `ClusterPairMeFirstTests` runs its leader here too.
+struct PairLeaderFixture {
     let mock: MockCoordinator
     let loop: ProviderLoop
     let directory: URL
     let localAPI: Bool
     let previousLocalDirectory: String?
 
-    static func make(localAPI: Bool, warmupTimeoutSeconds: Double? = nil) async throws -> PairLeaderFixture {
+    /// `local` is the leader's `[local]` section. It defaults to shared
+    /// serving (`me_first = false`): these tests are about the lanes, and a
+    /// pause would refuse the Darkbloom requests they push.
+    /// `ClusterPairMeFirstTests` passes its own.
+    static func make(localAPI: Bool, warmupTimeoutSeconds: Double? = nil,
+                     local: LocalSettings? = LocalSettings(meFirst: false)) async throws -> PairLeaderFixture {
         let mock = MockCoordinator()
         let url = try await mock.start().mockProviderWebSocketURL()
         let directory = FileManager.default.temporaryDirectory
@@ -145,10 +150,8 @@ private struct PairLeaderFixture {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let previous = ProcessInfo.processInfo.environment["DARKBLOOM_LOCAL_DIR"]
         if localAPI { try #require(setenv("DARKBLOOM_LOCAL_DIR", directory.path, 1) == 0) }
-        // Shared serving (`me_first = false`): these tests are about the lanes, and a
-        // pause would refuse the Darkbloom requests they push (`ClusterPairMeFirstTests`).
         let loop = try memberLoop(name: "cluster-pair-local", localEndpoint: localAPI ? keyedLocalAPI : nil,
-                                  coordinatorURL: url, local: LocalSettings(meFirst: false))
+                                  coordinatorURL: url, local: local)
         await loop.setEngineV2RuntimeForTesting(EngineV2Runtime())
         await loop.setServeUsesHostServicesForTesting(false)
         await loop.setDaemonStateFileForTesting(directory.appendingPathComponent("state.json"))

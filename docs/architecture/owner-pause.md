@@ -177,9 +177,13 @@ The pause is event-driven:
 one minute at 59.9 s and 60 s and the two-minute default at 119.9 s and 120 s.
 `OwnerPauseLoopTests` drives the loop without a serve loop, and
 `OwnerPauseWireTests` checks the heartbeats on the wire against the loopback
-mock coordinator. `ClusterPairMeFirstTests` covers pairs with a scripted pair
-owner: the leader's heartbeat, the racing refusal, work in flight, the member
-beat's two minutes on a fake clock, a roster of three ranks, me first off and
-the cost. These loop tests skip the capacity rebuild
+mock coordinator. These loop tests skip the capacity rebuild
 (`capacityRebuildForTesting`), which reads MLX's Metal allocator, so they run
 without the GPU.
+
+`ClusterPairMeFirstTests` covers pairs with a scripted pair owner: the
+leader's heartbeat, the racing refusal, work in flight, the member beat's two
+minutes on a fake clock, a roster of three ranks, me first off and the cost.
+Its two tests that complete Darkbloom requests need a Metal device, because
+each request's terminal reads MLX's memory counters, but they submit no GPU
+work.

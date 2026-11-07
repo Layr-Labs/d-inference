@@ -297,6 +297,17 @@ struct ClusterPairSummary: Sendable, Equatable {
             + "then `\(Self.cli) start`."]
     }
 
+    /// Said at once when stopping this Mac's leftover part waits for a cluster command that runs (it holds the command
+    /// lock): nothing has been read or written yet.
+    static let releaseWaitLine = "Waiting for the pair's running command to finish (up to 10 minutes; ^C stops waiting and "
+        + "leaves the pair as it is)."
+
+    /// That command still ran after the 10 minutes: nothing was stopped, and the pair needn't be left.
+    static var releaseBusyLines: [String] {
+        ["The pair's command was still running after 10 minutes, so nothing was stopped or started. Try again, or run "
+            + "`\(cli) cluster` to see what's running."]
+    }
+
     /// `darkbloom start --solo` while this Mac's part of the pair serves.
     var soloBesideServingRefusal: [String] {
         [pairSentence, "This Mac's part of the pair holds its serving lock, so single-Mac serving can't start beside it. Stop "

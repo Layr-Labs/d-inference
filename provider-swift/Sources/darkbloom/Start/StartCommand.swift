@@ -312,7 +312,8 @@ struct Start: AsyncParsableCommand {
     /// Stops this Mac's leftover part of `pair` and clears its saved start (`ClusterService.releaseForSingleMac`), or
     /// says why it couldn't and fails (exit 1).
     static func releaseLeftoverPart(_ pair: ClusterPairSummary) async throws {
-        let waiting: @Sendable () -> Void = {}
+        // Flushed: the desktop app reads this output through a pipe while the command waits.
+        let waiting: @Sendable () -> Void = { print(ClusterPairSummary.releaseWaitLine); fflush(stdout) }
         let released: ClusterService.SingleMacRelease
         if let release = releaseForTesting {
             released = release(waiting)
@@ -322,7 +323,7 @@ struct Start: AsyncParsableCommand {
             released = await Task.detached { ClusterService.releaseForSingleMac(seconds: releaseSeconds, waiting: waiting) }.value
         }
         guard released != .released else { return }
-        for line in pair.releaseFailedLines { print(line) }
+        for line in released == .commandStillRunning ? ClusterPairSummary.releaseBusyLines : pair.releaseFailedLines { print(line) }
         throw ExitCode.failure
     }
 

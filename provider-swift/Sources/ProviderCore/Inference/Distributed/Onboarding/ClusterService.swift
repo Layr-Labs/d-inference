@@ -1577,6 +1577,7 @@ public final class ClusterService: @unchecked Sendable {
     /// within `seconds`, freeing the lock. The pairing stays: `darkbloom cluster` starts the pair again. It holds the
     /// control command lock, as every stop of the pair does (waiting up to 600 s for a cluster command that runs), so
     /// the service's steps that stop the pair only to start it again never put this start back (`restoreStart`).
+    /// `waiting` is called once, before that wait, so the person is told at once.
     public static func releaseForSingleMac(seconds: Double, waiting: () -> Void = {}) -> SingleMacRelease {
         guard let paths = try? ClusterUserPaths() else { return .partNotStopped }
         return releaseForSingleMac(seconds: seconds, paths: paths, waiting: waiting)
@@ -1588,8 +1589,13 @@ public final class ClusterService: @unchecked Sendable {
                                     waiting: () -> Void = {}) -> SingleMacRelease {
         let setup = ClusterSetupPaths(paths: paths)
         let store = ClusterSetupStore(paths: setup)
-        guard let held = ClusterControlCommandLock.acquire(seconds: commandSeconds,
-            file: setup.directory.appendingPathComponent("control.lock")) else { return .partNotStopped }
+        let file = setup.directory.appendingPathComponent("control.lock")
+        var taken = ClusterControlCommandLock.acquire(seconds: 0, file: file)
+        if taken == nil {
+            waiting()
+            taken = ClusterControlCommandLock.acquire(seconds: commandSeconds, file: file)
+        }
+        guard let held = taken else { return .commandStillRunning }
         defer { held.release() }
         do {
             if (try? store.readRecord())?.leadership?.serving == true {

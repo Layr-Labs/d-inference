@@ -426,6 +426,13 @@ other Mac (…), which isn't running here: serving this Mac alone, and its saved
 start is cleared (`darkbloom cluster` starts the pair again).`` A part that
 doesn't stop in time starts nothing (exit 1) and names `darkbloom cluster pair
 --status`, then `darkbloom cluster pair --forget <pin>`, then `darkbloom start`.
+While a cluster command is running it first says ``Waiting for the pair's
+running command to finish (up to 10 minutes; ^C stops waiting and leaves the
+pair as it is).``; one still running after 10 minutes starts nothing (exit 1)
+and says ``The pair's command was still running after 10 minutes, so nothing
+was stopped or started. Try again, or run `darkbloom cluster` to see what's
+running.`` `stop`, `restart` and `update` say the same when they stop a
+leftover part.
 While the other Mac answers but the pair hasn't served yet (it may still be
 loading), only `--solo` and the terminal's choice serve this Mac alone; the
 other forms act on the pair as while it runs.
@@ -2016,8 +2023,9 @@ While the pair doesn't run here (`Stop.PairedStop.stopHere`), plain `stop` stops
 what runs on this Mac: a leftover part of the pair (its saved start on this Mac
 is cleared) and single-Mac serving. It never asks the other Mac. It takes the
 cluster command lock first, as `darkbloom cluster stop` does (waiting up to 10
-minutes for a cluster command that is running), so no automatic step of the
-cluster service starts the pair again after it. While the
+minutes for a cluster command that is running, and saying so at once, as
+`start` does), so no automatic step of the cluster service starts the pair
+again after it. While the
 other Mac answers but the pair hasn't served yet, plain `stop` stops the pair
 on both Macs, as while it runs.
 

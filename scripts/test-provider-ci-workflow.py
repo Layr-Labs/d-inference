@@ -697,6 +697,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             "Run cluster model provisioning checks":
                 (focused, 2, "bash provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning"),
             "Run cluster onboarding checks": (focused, 2, "bash provider-swift/Tests/ClusterOnboardingChecks/run.sh"),
+            "Run cluster console checks": (focused, 2, "bash provider-swift/Tests/ClusterConsoleChecks/run.sh"),
+            "Run cluster pairing checks": (focused, 1, "bash provider-swift/Tests/ClusterPairingChecks/run.sh"),
             "Run cluster focused checks": (focused, 1, "python3 scripts/cluster-test-plan.py run focused 1"),
         }
         for job in (focused, release):

@@ -359,6 +359,11 @@ public actor EngineV2Bridge {
     /// Latest published calibration-cell isolated rate: measured idle at
     /// nominal posture with caching off. Anchors admission's isolated rate.
     var calibratedIsolatedPrefillTps: Double?
+    /// Prompt samples faster than this are dropped, calibration cells
+    /// included. Equal to the coordinator's bound on published prefill rates.
+    /// Tests of toy-weight models, which prefill near it, remove it, so
+    /// whether a sample counts does not depend on the runner's GPU speed.
+    var prefillRateCeiling = EngineV2Bridge.maxPlausiblePrefillTps
     var nativeMediaPrefillRates = NativeMediaPrefillRates()
     var nativeMediaBootstrapRequestID: String?
     var nativeMediaLearnedRequestIDs: Set<String> = []

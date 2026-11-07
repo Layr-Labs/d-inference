@@ -5,7 +5,8 @@ The runner compiles the console sources under
 `Sources/ProviderCore/Inference/Distributed/Console` with the cluster library
 modules, the configuration, installed-session and link sources they read, and
 the installed-session fixtures, using Swift 6 and warnings as errors, without
-SwiftPM or MLX. It takes under a minute.
+SwiftPM or MLX. It takes under a minute. CI runs it in shard 2 of the
+`Cluster Focused Checks` job (step `Run cluster console checks`).
 
 One console source is not built here: `ClusterConsoleLiveOperations.swift`
 needs the whole provider (the doctor, the provider configuration reader, the
@@ -15,6 +16,10 @@ compiled and parsed by the full Provider suite
 
 Checks cover:
 
+- The pseudo-terminal harness itself, first: a drain returns once every
+  byte written before it was read and the reader goes on reading, and a
+  closed terminal's reader has stopped before a new terminal reuses its
+  numbers.
 - `handoff/TUI-wiring.md` against `ClusterConsoleWiring`: the same elements in
   the same three states, so nothing can be shown as live without a wired row;
   and the admitted-model listing against the adapter's registered pairs and

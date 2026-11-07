@@ -25,40 +25,6 @@ private final class FailedPasses: @unchecked Sendable {
     }
 }
 
-/// Cancels the readers in `ending` (1 is the first reader the task opens)
-/// before their read number `read`, on the reader's queue between two reads,
-/// as the reader's own stop does. Each then ends `.cancelled` without having
-/// been stopped, as a reader that fails partway ends `.failed`.
-private final class ReaderEnder: @unchecked Sendable {
-    private let lock = NSLock()
-    private let ending: Set<Int>
-    private let read: Int
-    private var order: [ObjectIdentifier: (ordinal: Int, reads: Int)] = [:]
-    private var endedCount = 0
-
-    init(ending: Set<Int>, atRead read: Int) {
-        self.ending = ending
-        self.read = read
-    }
-
-    var ended: Int { lock.withLock { endedCount } }
-
-    var hook: @Sendable (AVAssetReader) -> Void {
-        { [self] reader in
-            let end = lock.withLock { () -> Bool in
-                let id = ObjectIdentifier(reader)
-                var entry = order[id] ?? (ordinal: order.count + 1, reads: 0)
-                entry.reads += 1
-                order[id] = entry
-                guard entry.reads == read, ending.contains(entry.ordinal) else { return false }
-                endedCount += 1
-                return true
-            }
-            if end { reader.cancelReading() }
-        }
-    }
-}
-
 /// The Super video reader over OpenRouter's MP4 readiness clip, with a reader
 /// ended partway through `VideoReaderRetry`'s read hook (the timing pass, or
 /// the frame reader that `Frames` replaces once) or one read held past the

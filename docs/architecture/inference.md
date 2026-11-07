@@ -2949,20 +2949,22 @@ errors instead of wrapping them as a retryable 503 construction refusal.
   `maxMediaDecodedBytes` 25 MiB, `maxVideoDurationSeconds` 600,
   `maxImagesPerRequest` 16, `maxVideosPerRequest` 8,
   `maxRequestVideoFramePixels` 384 Mpx; `decodeOverheadFactor = 4`.
-- **A failed video reader decodes again once.** An `AVAssetReader` can fail on a
-  valid video. When a reader pass of the GLM 5.3, MiMo V2.6, Qwen4 or Nemotron
-  Super decoder ends in a state other than `.completed`, the decoder keeps the
-  reader status and the domain and code of its error chain (`VideoReaderFailure`)
-  and decodes again with a new reader over the same in-memory asset
-  (`VideoReaderRetry`; the Super frame reader replaces its reader once and
-  decodes from the first frame again). A second success gives the same frames.
-  A second failure with an AVFoundation or VideoToolbox decoder, hardware or
-  interruption code (`VideoReaderFailure.isTransient`) refuses as a retryable
-  503 (failure code `capacity`), so the coordinator can send the request to
-  another provider. Any other second failure is the media's `invalid_media`
-  400. Each failed pass emits a WARN `engine_health` event, operation
-  `video_reader_failed`, with `retrying`, `transient`, `reader_status` and
-  `reader_error` (codes only)
+- **A failed video or audio reader decodes again once.** An `AVAssetReader` can
+  fail on a valid clip. When a reader pass of the GLM 5.3, MiMo V2.6, Qwen4 or
+  Nemotron Super video decoder, or of the MiMo V2.6 audiovisual decoder's audio
+  track (LPCM or AAC), ends in a state other than `.completed`, the decoder
+  keeps the track's medium, the reader status and the domain and code of its
+  error chain (`VideoReaderFailure`) and decodes again with a new reader over
+  the same in-memory asset (`VideoReaderRetry`; the Super frame reader replaces
+  its reader once and decodes from the first frame again). A second success
+  gives the same frames or samples. A second failure with an AVFoundation or
+  VideoToolbox decoder, hardware or interruption code
+  (`VideoReaderFailure.isTransient`) refuses as a retryable 503 (failure code
+  `capacity`), so the coordinator can send the request to another provider.
+  Any other second failure is the media's `invalid_media` 400. Each failed pass
+  emits a WARN `engine_health` event, operation `video_reader_failed` for a
+  video track and `audio_reader_failed` for an audio track, with `retrying`,
+  `transient`, `reader_status` and `reader_error` (codes only)
   (`libs/mlx-swift-lm/Libraries/MLXLMCommon/VideoReaderFailure.swift`,
   `provider-swift/Sources/ProviderCore/Inference/Vision/VideoReaderFailureReport.swift`).
 - Vision requests never stage SSD blocks and get no deadline projection; VLM
@@ -3753,8 +3755,8 @@ evidence, not a change to the normal final-row contract or the near-tie rule
 | Model dropped from advertised set | Unsupported `model_type` | `EngineV2SupportedModels.swift` |
 | Model advertised, capacity quotes rejected with reason `template` | Scan-time render check failed (`template_render_ok = false`) | `TemplateRenderCheck.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift` (`reject(.template)`) |
 | Image rejected | Over `MediaIngest` caps or over the N² tower budget | `MediaIngest.swift`, `VisionTowerBudget.swift` |
-| `video_reader_failed` WARN event, `retrying: true`, and the request served | A video reader pass failed and the second pass decoded the video; `reader_error` names the reader's error codes | `libs/mlx-swift-lm/Libraries/MLXLMCommon/VideoReaderFailure.swift` (`VideoReaderRetry`), `VideoReaderFailureReport.swift` |
-| Video refused after two `video_reader_failed` events (503 `capacity` or 400 `invalid_media`) | Both reader passes failed: 503 for a transient decoder, hardware or interruption code, 400 otherwise | `EngineV2VisionPrefill.swift` (`clientFault(for:)`), `EngineV2GLM5NextMediaPrefill.swift` (`glm5NextInputError`), `MiMoV26EncodedMediaIngress.swift` (`outwardFailure`), `NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
+| `video_reader_failed` or `audio_reader_failed` WARN event, `retrying: true`, and the request served | A video or audio reader pass failed and the second pass decoded the track; `reader_error` names the reader's error codes | `libs/mlx-swift-lm/Libraries/MLXLMCommon/VideoReaderFailure.swift` (`VideoReaderRetry`), `VideoReaderFailureReport.swift` |
+| Video refused after two `video_reader_failed` or `audio_reader_failed` events (503 `capacity` or 400 `invalid_media`) | Both reader passes failed: 503 for a transient decoder, hardware or interruption code, 400 otherwise | `EngineV2VisionPrefill.swift` (`clientFault(for:)`), `EngineV2GLM5NextMediaPrefill.swift` (`glm5NextInputError`), `MiMoV26EncodedMediaIngress.swift` (`outwardFailure`), `NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
 | Nemotron Super video refused with 503 `capacity` and no `video_reader_failed` event | The wait on the decoder outlasted `decodeAllowance` (wall time; a slow or loaded Mac), `NemotronSuperVideoDecode.Failure.decodeAllowanceSpent` | `NemotronSuperVideoDecode.swift` (`decodeAllowance`, `SerialReader.earlyEnd`), `NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
 | `missingUserQuery` (400) | Qwen 3.5/3.6/3.8 or Bonsai 2 history with no user turn beyond `<tool_response>` wrappers | `provider-swift/Sources/ProviderCore/Inference/Prompting/Qwen35TemplateFixes.swift` (`validateUserQuery`) |
 | `Inference failure: invalid request (<reason>)` in `darkbloom logs` (400) | The sealed request, its body decode or the model's native controls refused it before the inference task, or a prompt policy or engine admission refused it while its prompt was prepared; the reason is the closed [refusal line](../provider/cli-reference.md#refusal-lines) | `provider-swift/Sources/ProviderCore/Inference/Engine/InferenceRefusalReason.swift` (`InferenceRefusalReason`, `init(promptRefusal:)`); `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift` (`nativeControlsRefusal`) |

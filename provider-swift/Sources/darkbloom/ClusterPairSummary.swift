@@ -254,7 +254,7 @@ struct ClusterPairSummary: Sendable, Equatable {
     var pairIdle: Bool { paired && !pairingUnreadable && !partServes }
 
     /// A plain `darkbloom restart` restarts the pair (`Restart.pairRestart`): it runs here, or it is started and the other
-    /// Mac answers (it may still be loading). It never starts a pair that doesn't run here.
+    /// Mac answers (it may still be loading). Otherwise, stopped or with the other Mac gone, a restart never starts it.
     var restartRestartsPair: Bool { paired && !pairingUnreadable && (partServes || (started && otherMacReachable)) }
 
     /// `darkbloom start` (`--solo`, `--model`, the app's Go Online, a script) on a Mac whose pair doesn't run: one line.
@@ -282,7 +282,7 @@ struct ClusterPairSummary: Sendable, Equatable {
             + "and clearing its saved start (`\(Self.cli) cluster` starts the pair again)."
     }
 
-    /// `darkbloom restart` on a Mac whose pair doesn't run and that has no single-Mac serving.
+    /// `darkbloom restart` on a Mac where neither the pair nor single-Mac serving runs.
     var idleRestartRefusal: [String] {
         [pairNotRunning ?? pairSentence,
          "Nothing serves on this Mac, so nothing was restarted: `\(Self.cli) start` serves this Mac alone; "

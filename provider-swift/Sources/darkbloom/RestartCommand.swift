@@ -38,22 +38,23 @@ struct Restart: AsyncParsableCommand {
     enum PairRestart: Equatable {
         /// Restart the pair on both Macs (`ClusterPairCommands.restart`).
         case restartPair
-        /// Nothing restarts, and why: the pairing record can't be read, or `--solo` without single-Mac serving.
+        /// Nothing restarts, and why: the pairing record can't be read, `--solo` without single-Mac serving, or neither
+        /// the pair nor single-Mac serving runs here.
         case refuse([String])
-        /// Single-Mac serving as on any Mac (`--solo`, or not in a cluster).
+        /// Single-Mac serving as on any Mac: `--solo`, not in a cluster, or it runs here and the pair doesn't.
         case restartSingleMac
     }
 
-    /// `singleMacInstalled`: single-Mac serving's plist is on disk; `singleMacRunning`: its job is loaded. `stop` unloads
-    /// the job and keeps the plist, so only `--solo` starts an installed job that isn't running, as `restart` does on one Mac.
+    /// A plain `restart` on a Mac in a cluster acts only on what runs: the pair (`restartRestartsPair`), otherwise
+    /// single-Mac serving whose job is loaded (`singleMacRunning`). It never brings back single-Mac serving that `stop`
+    /// stopped: `stop` unloads the job but keeps its plist (`singleMacInstalled`). Only `--solo`, which names single-Mac
+    /// serving, starts an installed job that isn't loaded, as `restart` does on a Mac that isn't in a cluster.
     static func pairRestart(_ pair: ClusterPairSummary, singleMacInstalled: Bool, singleMacRunning: Bool,
                             solo: Bool) -> PairRestart {
         guard pair.paired else { return .restartSingleMac }
         if solo { return singleMacInstalled ? .restartSingleMac : .refuse(pair.restartRefusal) }
         if pair.pairingUnreadable { return .refuse(pair.unsureRefusal("restart", "restarted")) }
         if pair.restartRestartsPair { return .restartPair }
-        // The pair doesn't run here: what this Mac serves alone restarts; neither the pair nor stopped single-Mac serving
-        // is started by a restart.
         return singleMacRunning ? .restartSingleMac : .refuse(pair.idleRestartRefusal)
     }
 

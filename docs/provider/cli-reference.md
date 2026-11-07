@@ -1991,7 +1991,7 @@ both Macs, starts the current model again, waits until it serves, and ends with
 the same result block and exit status as `start` without a terminal
 (`Restart.pairRestart`, `ClusterPairCommands.restart`). `--solo` restarts
 single-Mac serving on this Mac only. While the pair doesn't run here (stopped,
-or `ClusterPairWatch` says it isn't running), plain `restart` never starts the
+or the other Mac isn't answering), plain `restart` never starts the
 pair: it restarts single-Mac serving that runs here, its launchd job loaded
 (after stopping a leftover part of the pair). Single-Mac serving that `stop`
 stopped keeps its plist on disk, but plain `restart` doesn't start it. With none

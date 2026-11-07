@@ -30,6 +30,16 @@ private func pair(running: Bool?, reachable: Bool = false, started: Bool = true,
     return pair
 }
 
+/// A pair stopped with `darkbloom stop`: no saved start, so no `ClusterPairWatch` line. Both cluster services stay up, so
+/// the other Mac answers.
+private func stoppedPair() -> ClusterPairSummary {
+    var stopped = pair(running: false, reachable: true, started: false)
+    stopped.pairNotRunning = nil
+    return stopped
+}
+
+private let stoppedSentence = "This Mac is in a two-Mac cluster with \(otherMac): it leads; stopped (last model Qwen 3.8 27B)."
+
 private let staleAlone = "This Mac is in a two-Mac cluster with \(otherMac), which isn't running here (\(otherMac) isn't "
     + "answering): serving this Mac alone, and its saved start is cleared (`\(cli) cluster` starts the pair again)."
 
@@ -129,25 +139,25 @@ struct UnpairedMacServesNormallyTests {
         #expect(Restart.pairRestart(pair(running: true), singleMacInstalled: true, singleMacRunning: true, solo: false)
             == .restartPair)
         // Single-Mac serving that `stop` stopped keeps its plist: a plain restart never starts it, on a stopped pair too.
-        var stopped = pair(running: false, reachable: true, started: false)
-        stopped.pairNotRunning = nil
         #expect(Restart.pairRestart(pair(running: false), singleMacInstalled: true, singleMacRunning: false, solo: false)
             == .refuse([notRunning, nothingServes]))
-        #expect(Restart.pairRestart(stopped, singleMacInstalled: true, singleMacRunning: false, solo: false)
-            == .refuse([stopped.pairSentence, nothingServes]))
-        #expect(Restart.pairRestart(stopped, singleMacInstalled: true, singleMacRunning: true, solo: false) == .restartSingleMac)
+        #expect(Restart.pairRestart(stoppedPair(), singleMacInstalled: true, singleMacRunning: false, solo: false)
+            == .refuse([stoppedSentence, nothingServes]))
+        #expect(Restart.pairRestart(stoppedPair(), singleMacInstalled: true, singleMacRunning: true, solo: false)
+            == .restartSingleMac)
         // --solo asks for single-Mac serving by name: an installed job starts, as `restart` does on one Mac.
-        #expect(Restart.pairRestart(stopped, singleMacInstalled: true, singleMacRunning: false, solo: true) == .restartSingleMac)
+        #expect(Restart.pairRestart(stoppedPair(), singleMacInstalled: true, singleMacRunning: false, solo: true)
+            == .restartSingleMac)
     }
 
     @Test("after a restart of single-Mac serving where the pair doesn't run, the words never send a plain restart to the pair")
     func restartWordsWhereThePairDoesNotRun() {
-        // A plain restart never starts a pair that doesn't run here, so "`darkbloom restart` restarts both Macs" is false there.
-        var stopped = pair(running: false, reachable: true, started: false)
-        stopped.pairNotRunning = nil
+        // A pair that doesn't run here, stopped or with the other Mac gone, is never started by a plain restart, so
+        // "`darkbloom restart` restarts both Macs" is false there.
         let notStarted = "The pair was not started; `\(cli) cluster` starts it."
-        #expect(stopped.restartAddendum == stopped.pairSentence + " " + notStarted)
-        #expect(stopped.restartRefusal.last == notStarted)
+        #expect(stoppedPair().restartAddendum == stoppedSentence + " " + notStarted)
+        #expect(stoppedPair().restartRefusal == [stoppedSentence,
+            "`\(cli) restart --solo` restarts single-Mac serving, and this Mac has none: nothing was restarted.", notStarted])
         #expect(pair(running: false).restartAddendum.hasSuffix(" " + notStarted), "started, the other Mac silent")
         // A pair that runs here, or may still be loading while the other Mac answers, restarts on a plain restart.
         let restartsBoth = "The pair was not restarted; `\(cli) restart` restarts both Macs."

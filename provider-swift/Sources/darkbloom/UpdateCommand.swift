@@ -240,10 +240,7 @@ struct Update: AsyncParsableCommand {
         guard release else { return }
         let pair = ClusterPairSummary.local()
         print(pair.servingAloneLine)
-        guard await Start.releaseLeftoverPart() else {
-            for line in pair.releaseFailedLines { print(line) }
-            throw ExitCode.failure
-        }
+        try await Start.releaseLeftoverPart(pair)
     }
 
     static var soloJobLeftLines: [String] {

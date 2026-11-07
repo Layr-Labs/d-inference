@@ -3464,7 +3464,10 @@ cluster service re-plans and re-adopts the same model by itself
 answer with the same worker build (`ClusterOnboardingUpdate.oneBuild`): the
 [pair's coordinated update](../provider/cluster-always-on.md#the-pairs-coordinated-update)
 restarts the two Macs seconds apart, and a plan made while one still runs the
-other build would fail and wait 600 s. A Mac that rolls a release back is followed by the other
+other build would fail and wait 600 s. It acts only once the other Mac confirmed
+the leader's claim (the Mac back first may have taken control meanwhile), and a
+failure, of its stop too, keeps the pair's saved start
+([planned cluster stop ordering](#planned-cluster-stop-ordering)). A Mac that rolls a release back is followed by the other
 Mac to the same release ([a rollback on one Mac](../provider/cluster-always-on.md#a-rollback-on-one-mac)),
 which the leader then plans the same way. A model change of
 a serving cluster (`m`, or `darkbloom cluster local <model>`) plans the same way:
@@ -7776,13 +7779,30 @@ recovery/reconciliation can continue. After a completed local retirement, a peer
 that does not answer (`ClusterOnboardingFailure.otherMacUnanswered`, set only by
 `localStop`) no longer keeps `cluster stop --service` from removing this Mac's
 service: the command says the other Mac was not asked to stop. Model-change and
-update callers still refuse to continue on either failure.
+update callers still refuse to continue on either failure. The control leader's
+automatic steps that stop the pair only to start it again (the re-plan after an
+update, `ClusterService.replanAfterUpdate`, and a change of cluster approval,
+`ClusterService.stopForApprovalChange`) then put the saved start back and drop
+the stop token (`ClusterService.restoreStart`), under the command lock: both
+steps act only while the start is saved, so stopped intent retained there would
+leave the pair stopped on both Macs until a person started it. A failed restart
+after an approval change puts it back too (`restartAfterApprovalChange`). Both
+steps also act only on a claim the other Mac confirmed
+(`ClusterService.leadershipConfirmed`), as forwarded commands do, checked again
+once they hold the command lock. The restore never undoes an owner's stop: every
+stop of the pair holds that lock, `ClusterService.releaseForSingleMac` too, and a
+step that waited for it stops and starts the pair only while the start is still
+saved (the re-plan reads it again; the approval change decides again). An
+approval change that would stop a serving pair waits while the other Mac
+doesn't answer its status, since every change is sent to it.
 A forwarded stop allows 330 seconds for the local retirement and peer command.
 
 Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingLive.swift`
 (`OnboardingLive.localStop`),
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift`
-(`ClusterService.stopLocalPart`, `syncMembers`), and
+(`ClusterService.stopLocalPart`, `syncMembers`, `checkForUpdate`, `checkApproval`, `releaseForSingleMac`),
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService+RestartingStop.swift`
+(`ClusterService.replanAfterUpdate`, `stopForApprovalChange`, `restartAfterApprovalChange`, `restoreStart`), and
 `provider-swift/Sources/darkbloom/ClusterServiceCommand.swift` (`Cluster.Stop.finishStop`).
 
 A live service acknowledges planned local stop only through a fresh private supervision-cycle publication (`service-supervision.json`) with its current PID and idle state. Ordinary status writes cannot acknowledge an in-flight child start; the stop waits boundedly for the actual supervisor to finish that start and retire it before peer stop.

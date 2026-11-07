@@ -1360,6 +1360,16 @@ cluster service asks the coordinator for its latest release:
    it waits for the leader's setup, and its log says `this Mac runs Darkbloom
    v<version>, but its saved setup is for an earlier build: waiting for the
    other Mac's setup for v<version> (the old setup is not started)`.
+5. The leader does this, and changes the pair's cluster approval, only once the
+   other Mac has confirmed that it leads, or hasn't answered for 30 seconds:
+   while one Mac restarts, the other may take the lead for a moment. Both steps
+   stop the pair to start it again. When that stop fails (the other Mac doesn't
+   answer, or refuses it), the pair stays started: the leader sets it up again
+   10 minutes later, or checks the approval again a minute later. The log says
+   `could not set the cluster up again after the update: <reason>` or `could not
+   stop the parts to change the cluster approval: <reason>`. While the other Mac
+   doesn't answer, the leader doesn't stop the pair to change its approval. A
+   `darkbloom stop` you run meanwhile holds: neither step starts the pair again.
 
 A pair still running a request after 120 seconds takes requests again and tries
 at the next slot. A release that one Mac cannot download or verify is installed

@@ -286,6 +286,8 @@ struct Start: AsyncParsableCommand {
 
     /// Tests stand in for stopping this Mac's leftover part (`ClusterService.releaseForSingleMac`).
     @TaskLocal static var releaseForTesting: (@Sendable () -> Bool)?
+    /// As `releaseForTesting`, with how it ended, given what it calls before it waits for a running cluster command.
+    @TaskLocal static var releaseOutcomeForTesting: (@Sendable (_ waiting: () -> Void) -> ClusterService.SingleMacRelease)?
 
     /// How long the leftover part gets to release its model and the serving lock.
     static let releaseSeconds: Double = 300
@@ -308,10 +310,24 @@ struct Start: AsyncParsableCommand {
         ClusterSoloChoice.clear(in: directory)
     }
 
-    static func releaseLeftoverPart() async -> Bool {
-        if let release = releaseForTesting { return release() }
-        guard ClusterPairSummary.readsThisMacsCluster else { return true }
-        return await Task.detached { ClusterService.releaseForSingleMac(seconds: releaseSeconds) }.value
+    /// Stops this Mac's leftover part of `pair` and clears its saved start (`ClusterService.releaseForSingleMac`), or
+    /// says why it couldn't and fails (exit 1).
+    static func releaseLeftoverPart(_ pair: ClusterPairSummary) async throws {
+        // Flushed: the desktop app reads this output through a pipe while the command waits.
+        let waiting: @Sendable () -> Void = { print(ClusterPairSummary.releaseWaitLine); fflush(stdout) }
+        let released: ClusterService.SingleMacRelease
+        if let release = releaseOutcomeForTesting {
+            released = release(waiting)
+        } else if let release = releaseForTesting {
+            released = release() ? .released : .partNotStopped
+        } else if !ClusterPairSummary.readsThisMacsCluster {
+            released = .released
+        } else {
+            released = await Task.detached { ClusterService.releaseForSingleMac(seconds: releaseSeconds, waiting: waiting) }.value
+        }
+        guard released != .released else { return }
+        for line in released == .commandStillRunning ? ClusterPairSummary.releaseBusyLines : pair.releaseFailedLines { print(line) }
+        throw ExitCode.failure
     }
 
     /// Tests answer the terminal's question (nil: the default).
@@ -388,11 +404,7 @@ struct Start: AsyncParsableCommand {
             case .serveAlone(let note):
                 print(note)
                 Self.recordSoloChoice()
-                let released = !pair.started || !pair.serviceRunning ? true : await Self.releaseLeftoverPart()
-                guard released else {
-                    for line in pair.releaseFailedLines { print(line) }
-                    throw ExitCode.failure
-                }
+                if pair.started, pair.serviceRunning { try await Self.releaseLeftoverPart(pair) }
             case .choose:
                 return
             case .refuse(let lines):

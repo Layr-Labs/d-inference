@@ -6,7 +6,8 @@ import Testing
 
 // 0.10.8: a Mac that stopped clustering was online with no traffic, and every ordinary way back to single-Mac serving
 // acted on the pair or was refused. Whether the pair runs here now comes from what runs (`ClusterPairWatch`); a Mac whose
-// pair doesn't run serves alone again. The pair is a fixture; no pairing, cluster service, launchd or ~/.darkbloom is read.
+// pair doesn't run serves alone again with `start --solo`. The pair is a fixture; no pairing, cluster service, launchd or
+// ~/.darkbloom is read.
 
 private let otherMac = "the other Mac (Apple M5 Max, 128 GB)"
 /// The CLI as this build names it (`darkbloom`, or `darkbloom-dev` for DevNet).
@@ -56,10 +57,10 @@ struct UnpairedMacServesNormallyTests {
     @Test("the app's Start serving (`start --model`) and Autopilot enroll (`start --autopilot`) need --solo to serve this Mac alone")
     func theAppAndAutopilotNeedSolo() throws {
         let stale = pair(running: false)
-        let goOnline = try Start.parse(["--model", "acme/Alpha-4bit", "--local-endpoint"]).singleMacOptions
-        #expect(Start.pairStart(stale, solo: false, terminal: false, singleMacOptions: goOnline)
-            == .refuseOptions(stale.singleMacOptionsRefusal(goOnline)))
-        #expect(Start.pairStart(stale, solo: true, terminal: false, singleMacOptions: goOnline) == .serveAlone(note: staleAlone))
+        let appStart = try Start.parse(["--model", "acme/Alpha-4bit", "--local-endpoint"]).singleMacOptions
+        #expect(Start.pairStart(stale, solo: false, terminal: false, singleMacOptions: appStart)
+            == .refuseOptions(stale.singleMacOptionsRefusal(appStart)))
+        #expect(Start.pairStart(stale, solo: true, terminal: false, singleMacOptions: appStart) == .serveAlone(note: staleAlone))
         let enroll = try Start.parse(["--autopilot"]).singleMacOptions
         #expect(Start.pairStart(stale, solo: false, terminal: false, singleMacOptions: enroll)
             == .refuseOptions(stale.singleMacOptionsRefusal(enroll)))
@@ -194,9 +195,13 @@ struct UnpairedMacServesNormallyTests {
                                      clusterServiceRunning: true) == .clusterService)
         #expect(Update.restartChoice(soloJobLoaded: true, soloJobIsMember: true, pairServes: false, leftoverPart: true,
                                      clusterServiceRunning: true) == .singleMac(releaseLeftover: false))
-        #expect(Update.leftoverPartHere(pair(running: false)))
-        #expect(!Update.leftoverPartHere(pair(running: true)))
-        #expect(!Update.leftoverPartHere(pair(running: false, started: false)))
+        #expect(pair(running: false).leftoverPartHere)
+        #expect(!pair(running: true).leftoverPartHere)
+        #expect(!pair(running: false, started: false).leftoverPartHere)
+        // With this Mac's cluster service down no part runs here, so there is nothing to stop.
+        var serviceDown = pair(running: false)
+        serviceDown.serviceRunning = false
+        #expect(!serviceDown.leftoverPartHere)
     }
 
     @Test("the watchdog revives single-Mac serving unless the pair actually runs here")
@@ -260,7 +265,8 @@ struct PairedMacStartTests {
             == "Next: `\(cli) start --solo` serves this Mac alone; \(startsThePair).")
         #expect(stoppedPair().servingAloneLine == "This Mac is in a two-Mac cluster with \(otherMac), which is stopped: serving "
             + "this Mac alone (\(startsThePair)).")
-        // Said before its leftover part stops, so never "cleared" yet (`releaseLeftoverPartToServeAlone` says that after).
+        // Never "cleared": where a leftover part runs here, `releaseLeftoverPartToServeAlone` says its own lines instead,
+        // the cleared one only once it is.
         #expect(pair(running: false).servingAloneLine == "This Mac is in a two-Mac cluster with \(otherMac), which isn't "
             + "running here (\(otherMac) isn't answering): serving this Mac alone (\(startsThePair)).")
     }

@@ -255,15 +255,20 @@ struct ClusterPairSummary: Sendable, Equatable {
     var partServes: Bool { (pairRunning ?? started) && serviceRunning && !pairingUnreadable }
 
     /// The pair doesn't run on this Mac (stopped, or started but not running: `pairNotRunning`): `darkbloom start --solo`
-    /// serves this Mac alone, after `servingAloneLine`.
+    /// serves this Mac alone.
     var pairIdle: Bool { paired && !pairingUnreadable && !partServes }
+
+    /// The pair doesn't run here, yet its saved start and this Mac's cluster service are left: its part may still run and
+    /// hold this Mac's serving lock. `stop`, and `start --solo`, `restart` and `update` before they serve this Mac alone,
+    /// stop that part and clear the start first (`Start.releaseLeftoverPart`).
+    var leftoverPartHere: Bool { pairIdle && started && serviceRunning }
 
     /// A plain `darkbloom restart` restarts the pair (`Restart.pairRestart`): it runs here, or it is started and the other
     /// Mac answers (it may still be loading). Otherwise, stopped or with the other Mac gone, a restart never starts it.
     var restartRestartsPair: Bool { paired && !pairingUnreadable && (partServes || (started && otherMacReachable)) }
 
-    /// `darkbloom start --solo` on a Mac whose pair doesn't run, where no leftover part is stopped first: one line. Where one
-    /// is, `leftoverStopLine` and `leftoverReleasedLine` say it instead.
+    /// `darkbloom start --solo` on a Mac whose pair doesn't run and where no leftover part runs: one line. Where one runs
+    /// (`leftoverPartHere`), `leftoverStopLine` and `leftoverReleasedLine` say it instead.
     var servingAloneLine: String {
         if started {
             return "This Mac is in a two-Mac cluster with \(otherMac), which isn't running here"

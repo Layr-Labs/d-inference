@@ -314,7 +314,7 @@ LaunchAgent with the arguments `--local-endpoint` has always used
   add --model <id> (`darkbloom models list` shows this Mac's models) or
   --all.`` **Only me** serves the models already on this Mac and needs none.
   On a paired Mac, `start --solo` says it before this Mac's part of the pair
-  is touched (`Start.modelsRefusalWithoutTerminal`).
+  is touched (`Start.requireModelsNamedWithoutTerminal`).
 - **The summary** gains, with a local API:
 
   ```text

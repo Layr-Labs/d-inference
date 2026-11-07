@@ -798,7 +798,7 @@ private func neverAnswering(_ sandbox: CLICommandSandbox) throws {
     alarm(60)
 }
 
-/// No start asks which models to serve without a terminal (journey 1, J-9): it says how to name them instead.
+/// No start asks which models to serve without a terminal: it says how to name them instead.
 private let modelsWithoutATerminal = "Without a terminal, `darkbloom start` can't ask which models to serve: add --model <id> "
     + "(`darkbloom models list` shows this Mac's models) or --all."
 
@@ -873,10 +873,11 @@ struct ClusterPairControlTests {
     }
 
     /// A terminal `darkbloom cluster` saves the pair's "Only me" (`cluster local`) as `[local] mode = "local"`, which a
-    /// single-Mac start on this Mac reads too. The desktop app's Start (`start --model <id> --config <path>`) and scripts
-    /// run without a terminal: on a Mac whose pair doesn't run here (the other Mac asleep or gone, this Mac's part
-    /// serving alone or waiting), the start is refused in `start`'s one line before this Mac's part is stopped or its
-    /// saved start cleared, as for one Mac (L4's C1). Before, the part was stopped and the start cleared first.
+    /// single-Mac start on this Mac reads too. A script's `start --solo` runs without a terminal: on a Mac whose pair
+    /// doesn't run here (the other Mac asleep or gone, this Mac's part serving alone or waiting), it is refused in
+    /// `start`'s one line before this Mac's part is stopped or its saved start cleared, as for one Mac. Before, the part
+    /// was stopped and the start cleared first. The desktop app's Start (`start --model <id> --config <path>`) is refused
+    /// by name before that.
     @Test("without a terminal, the pair's saved Only me is refused before this Mac's part is stopped")
     func nonTerminalStartWithThePairsOnlyMeLeavesThePart() async {
         let refusal = "error: This Mac is set to Only me, which serves in a terminal. Run `darkbloom start` in one, or name "
@@ -905,8 +906,8 @@ struct ClusterPairControlTests {
                 }
             }
         }
-        // On a paired Mac the app's Start is single-Mac serving without --solo: refused by name, before C1's check
-        // (`PairedMacStartTests`). Neither touches this Mac's part.
+        // On a paired Mac the app's Start is single-Mac serving without --solo: refused by name, before the saved Only
+        // me is checked (`PairedMacStartTests`). Neither touches this Mac's part.
         #expect(lines(app?.standardOutputContent) == stalePair().singleMacOptionsRefusal(["--model"]) + [""])
         let soloStderr = text(solo?.standardErrorContent)
         #expect(soloStderr.components(separatedBy: "\n").filter { $0 == refusal }.count == 1, "--solo: \(soloStderr)")
@@ -1285,9 +1286,9 @@ struct ClusterPairControlTests {
             + ClusterPairSummary.releaseBusyLines + [""])
     }
 
-    /// G1 (journey 1, J-9): on pair-2 a `darkbloom start --opencode` that got no answer hung on "Serve on this Mac alone /
-    /// Start the pair". No start asks a question without a terminal: on a paired Mac one starts the pair, with or without
-    /// the tool flags, and never reads standard input (`neverAnswering`).
+    /// On DevNet pair-2 a `darkbloom start --opencode` that got no answer hung on "Serve on this Mac alone / Start the
+    /// pair". No start asks a question without a terminal: on a paired Mac one starts the pair, with or without the tool
+    /// flags, and never reads standard input (`neverAnswering`).
     @Test("a start without a terminal on a paired Mac starts the pair and never reads standard input, with or without --opencode or --hermes")
     func nonTerminalStartsStartThePairAndAskNothing() async {
         let plain = await #expect(processExitsWith: .success, observing: [\.standardOutputContent, \.standardErrorContent]) {
@@ -1364,6 +1365,18 @@ struct ClusterPairControlTests {
         #expect(calls.isEmpty, "\(calls)")
     }
 
+    /// Only me serves the models already on this Mac, and launchd's `--foreground` child the ones its job names: neither
+    /// reaches the model picker, so neither is refused for naming no models.
+    @Test("without a terminal, Only me and launchd's child go on without naming models")
+    func onlyMeAndTheLaunchdChildNeedNoModels() async {
+        await #expect(processExitsWith: .success) {
+            try replaceStandardInput(with: "")
+            try Start.parse([]).requireModelsNamedWithoutTerminal(mode: .local)
+            try Start.parse(["--foreground"]).requireModelsNamedWithoutTerminal(mode: .network)
+            try Start.parse(["--foreground"]).requireModelsNamedWithoutTerminal(mode: .both)
+        }
+    }
+
     @Test("`darkbloom status` leads with the pair block, then this Mac's fields, and no single-Mac Daemon/Traffic lines")
     func statusShowsThePair() async {
         let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
@@ -1400,7 +1413,7 @@ struct ClusterPairControlTests {
         #expect(stdout.contains("\nSingle-Mac serving: off (this Mac serves in its two-Mac cluster: `darkbloom cluster status`)\n"))
     }
 
-    /// J-5 (journey 1): a paired Mac whose pair was stopped served alone, and `status` said only "Single-Mac serving:
+    /// On DevNet pair-2 a paired Mac whose pair was stopped served alone, and `status` said only "Single-Mac serving:
     /// running beside the pair (`darkbloom-dev status --solo` shows it)", 27 lines down, without its `Serving:` line.
     @Test("`darkbloom status` on a paired Mac that serves alone says so under the pair, then single-Mac serving's own lines")
     func statusSaysThisMacServesAlone() async {

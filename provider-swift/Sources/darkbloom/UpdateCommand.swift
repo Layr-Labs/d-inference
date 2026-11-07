@@ -226,15 +226,12 @@ struct Update: AsyncParsableCommand {
     static func restartChoice(soloJobLoaded: Bool = LaunchAgent.isLoaded(),
                               soloJobIsMember: Bool = LaunchAgent.installedJobIsClusterMember(),
                               pairServes: Bool = ClusterService.pairServesHere(),
-                              leftoverPart: Bool = leftoverPartHere(ClusterPairSummary.local()),
+                              leftoverPart: Bool = ClusterPairSummary.local().leftoverPartHere,
                               clusterServiceRunning: Bool = ClusterService.running()) -> RestartChoice {
         if soloJobBesidePair(soloJobLoaded: soloJobLoaded && !soloJobIsMember, pairServes: pairServes) { return .pair }
         if soloJobLoaded { return .singleMac(releaseLeftover: leftoverPart && !soloJobIsMember) }
         return clusterServiceRunning ? .clusterService : .nothing
     }
-
-    /// A pair that doesn't run here while its saved start and cluster service are left on this Mac.
-    static func leftoverPartHere(_ pair: ClusterPairSummary) -> Bool { pair.pairIdle && pair.started && pair.serviceRunning }
 
     private func releaseLeftoverPart(_ release: Bool) async throws {
         guard release else { return }

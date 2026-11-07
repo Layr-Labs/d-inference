@@ -99,13 +99,15 @@ public final class LocalRouter: Sendable {
         local.headers[LocalRouterPolicy.servedByHeader] = LocalRouterPolicy.thisMac
         guard LocalRouterPolicy.passesOn(localStatus: local.status) else { return local }
         // Only a request this Mac can't take reads the account key; without one, this Mac's answer stands.
-        let (route, key) = config.effectiveRoute()
+        let (saved, key) = config.effectiveRoute()
         guard let key else { return local }
         if local.status == .notFound,
            let answer = try await answerAliasHere(request, body: body, context: context, inner: inner) {
             local = answer
             guard LocalRouterPolicy.passesOn(localStatus: local.status) else { return local }
         }
+        let route = LocalRouterPolicy.route(saved, fromAnotherMachine: LocalHTTPClient.fromAnotherMachine)
+        if route != saved { log("the request came from another machine, which never uses the paid network") }
         return try await passOn(body: body, clientHeaders: request.headers, upstreamPath: upstreamPath,
                                 route: route, key: key, local: local)
     }
@@ -349,7 +351,9 @@ public final class LocalRouter: Sendable {
         for entry in list.data { localLimits[entry.id] = await self.localLimits(entry.id) }
         var upstream: [(ownedBy: String, entries: [LocalRouterModelEntry])] = []
         var catalog: LocalRouterCatalog?
-        let (route, key) = config.effectiveRoute()
+        let (saved, key) = config.effectiveRoute()
+        // Only what this client can reach: no network model for one on another machine.
+        let route = LocalRouterPolicy.route(saved, fromAnotherMachine: LocalHTTPClient.fromAnotherMachine)
         if let key {
             async let catalogRead = self.catalog()
             async let mine = upstreamModels(view: .mine, key: key)

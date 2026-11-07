@@ -49,12 +49,11 @@ where Inner.Context == BasicRequestContext {
         let scope = context.connection.makeScope()
         let task = Task<Response, Error> {
             try await LocalRequestCancellation.$current.withValue(scope) {
-                if observeConnection {
-                    return try await LocalHTTPConnectionScope.$current.withValue(context.rawChannel) {
-                        try await inner.respond(to: request, context: context.basic)
-                    }
+                // A client on another machine never gets the router's paid hop (`LocalHTTPClient`).
+                guard context.connection.fromAnotherMachine else { return try await respondInside(request, context) }
+                return try await LocalHTTPClient.$fromAnotherMachine.withValue(true) {
+                    try await respondInside(request, context)
                 }
-                return try await inner.respond(to: request, context: context.basic)
             }
         }
         let preparation = scope.register { task.cancel() }
@@ -73,5 +72,14 @@ where Inner.Context == BasicRequestContext {
         } onCancel: {
             scope.cancel()
         }
+    }
+
+    private func respondInside(_ request: Request, _ context: Context) async throws -> Response {
+        if observeConnection {
+            return try await LocalHTTPConnectionScope.$current.withValue(context.rawChannel) {
+                try await inner.respond(to: request, context: context.basic)
+            }
+        }
+        return try await inner.respond(to: request, context: context.basic)
     }
 }

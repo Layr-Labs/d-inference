@@ -15,6 +15,9 @@
 - `darkbloom status` and `darkbloom cluster status` say whether Darkbloom is paused for you, the pair's local address
   (never its key), and that the other Macs are part of the pair. On the other Mac they say that `darkbloom local` on
   the leading Mac shows the address and key. No line shows a speed.
+- Requests from other machines never use the paid network; they can use this Mac and your other Macs. A local API that
+  other machines reach (a pair's, or one started with `--bind`) passes their requests to your Macs only, even with
+  `route = "my-macs-first"`, and lists no network model to them. Programs on the Mac itself keep the route.
 - `darkbloom start --cluster-member` takes `--local-endpoint --port --bind` from the cluster service, never with
   `--no-auth`.
 - A pair's local API without a cluster approval (its leader registered with the coordinator, or serving locally because

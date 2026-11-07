@@ -170,6 +170,18 @@ take it (`LocalRouter`, `provider-swift/Sources/ProviderCore/Server/LocalRouter*
 | `my-macs` (the default once a key is saved) | Passed to the coordinator with `X-Darkbloom-Route: self`: only your Macs answer, free |
 | `my-macs-first` | Passed to the coordinator with `X-Darkbloom-Route: prefer`: your Macs first (free), then the network, billed to your balance. The coordinator picks among the Macs that can take the request now, so a busy Mac of yours doesn't hold it while another Mac, yours or the network's, can take it. `prefer` reserves the price up front even when one of your Macs answers: on any `402` (no balance, or the key's spend cap), the request is sent once more with `self` (your Macs only, free, never spending) |
 
+**Requests from other machines never use the paid network; they can use this
+Mac and your other Macs.** A local API that listens beyond loopback (a pair's
+Both or `cluster local` API on `0.0.0.0`, or any `--bind`) can be reached by
+anyone there with its key, and a request this Mac can't take would go on with
+this Mac's account key. So the router decides per connection, from its TCP
+peer and never from a header (`LocalHTTPClient`): a peer that isn't loopback
+(`127.0.0.0/8`, `::1`, or an IPv4 loopback peer seen as `::ffff:127.x.y.z`)
+gets `my-macs-first` as `my-macs` (`self` only, never `prefer`), and its
+`/v1/models` lists no network model. Programs on this Mac keep the route as
+saved. A connection's peer is read once, when it opens, and nothing is added to
+this Mac's own path.
+
 The route is read when the local API starts (a change needs a restart). The
 key is read once, by the first request that needs it, and kept in memory:
 `darkbloom route key` tells a running local API when it saves or removes the

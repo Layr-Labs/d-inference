@@ -87,6 +87,9 @@ busy, they can go on, like the Darkbloom iPhone app:
 | Only my Macs (free) | Your other Macs, at no cost |
 | My Macs first | Your other Macs, then the Darkbloom network, billed to your balance |
 
+Requests from other machines never use the paid network; they can use this Mac
+and your other Macs.
+
 This needs your account API key, from the Darkbloom console, saved with
 `darkbloom route key`. It goes into this Mac's Keychain and is never printed.
 With a key saved, the question asks this too; you can also start with

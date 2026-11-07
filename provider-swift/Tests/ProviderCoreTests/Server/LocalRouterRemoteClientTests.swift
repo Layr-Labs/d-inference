@@ -58,6 +58,18 @@ struct LocalRouterRemoteClientTests {
         }
     }
 
+    @Test func aLoopbackPeerIsThisMacAndEveryOtherPeerIsAnotherMachine() throws {
+        for peer in Self.thisMac {
+            #expect(!LocalHTTPClient.isAnotherMachine(peer: try SocketAddress(ipAddress: peer, port: 1)), "\(peer)")
+        }
+        for peer in Self.otherMachines + ["126.255.255.255", "128.0.0.1", "::2", "::ffff:192.168.1.20"] {
+            #expect(LocalHTTPClient.isAnotherMachine(peer: try SocketAddress(ipAddress: peer, port: 1)), "\(peer)")
+        }
+        // A channel without a peer (in process) and a Unix socket are this Mac's.
+        #expect(!LocalHTTPClient.isAnotherMachine(peer: nil))
+        #expect(!LocalHTTPClient.isAnotherMachine(peer: try SocketAddress(unixDomainSocketPath: "/tmp/darkbloom-router-test.sock")))
+    }
+
     /// The local API's responder stack answering one request on a connection whose TCP peer is `peer`.
     static func respond(_ fixture: RouterFixture, peer: String, method: HTTPRequest.Method, path: String,
                         body: String?) async throws -> (status: HTTPResponse.Status, routeUsed: String?) {

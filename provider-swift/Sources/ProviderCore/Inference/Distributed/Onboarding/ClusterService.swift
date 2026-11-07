@@ -152,6 +152,8 @@ public final class ClusterService: @unchecked Sendable {
     // and whether the running part is one.
     private var memberQuickEnds = 0
     private var childIsMember = false
+    /// The running coordinator-paired part's rank (nil for any other part): only rank 0 writes the pair's lines.
+    private var childMemberRank: Int?
     /// The running part is the link follower (`followerArguments`), the only part that writes a Local Network refusal.
     private var childIsLinkFollower = false
     /// The running follower's refusal as last read, by its log's size (`runningPartRefusal`).
@@ -1785,12 +1787,11 @@ public final class ClusterService: @unchecked Sendable {
     private func watchPair(_ want: PartWant, intent: Bool, scope: ClusterServingScope,
                            say: @escaping @Sendable (String) -> Void) -> PartWant {
         let now = Self.monotonicSeconds()
-        let (answered, partUp, member, offset) = lock.withLock {
-            (control?.otherAnsweredAt, child?.isRunning == true && childSetup?.hasPrefix("cluster:") == true, childIsMember, childLogOffset)
+        let (answered, partUp, memberRank, offset) = lock.withLock {
+            (control?.otherAnsweredAt, child?.isRunning == true && childSetup?.hasPrefix("cluster:") == true, childMemberRank, childLogOffset)
         }
-        var servingNow = partUp && answered.map { now - $0 < Self.leaseTTLSeconds } == true
-        if servingNow, member {
-            if case .serving = Self.pairReport(in: serviceFiles.rankLog, from: offset) {} else { servingNow = false }
+        let servingNow = Self.partServesNow(partUp: partUp, otherAnsweredAt: answered, now: now, memberRank: memberRank) {
+            Self.pairReport(in: serviceFiles.rankLog, from: offset)
         }
         let (verdict, previous) = lock.withLock { () -> (ClusterPairWatch.Verdict, ClusterPairWatch.Verdict) in
             let verdict = pairWatch.tick(raw: now, awake: ClusterControlClock.awakeSeconds(), intent: intent,
@@ -1810,6 +1811,19 @@ public final class ClusterService: @unchecked Sendable {
             say(line)
         }
         return part
+    }
+
+    /// Whether this Mac's part serves now, for `pairWatch`: it runs, and the other Mac answered within the lease's
+    /// time-to-live. Rank 0 of a coordinator-paired pair (`memberRank` 0), which hosts the pair's slot, must also have
+    /// said `Pair: serving` in its log (`pairReport`, read only then). The other rank writes no pair line: its link follower
+    /// reports to rank 0 over the cable. So it goes by what it knows, as every other part does, and never reads "the pair
+    /// hasn't served" from a log that can't say it.
+    static func partServesNow(partUp: Bool, otherAnsweredAt: Double?, now: Double, memberRank: Int?,
+                              pairReport: () -> ClusterOnboardingPairReport.State?) -> Bool {
+        guard partUp, let answered = otherAnsweredAt, now - answered < leaseTTLSeconds else { return false }
+        guard memberRank == 0 else { return true }
+        if case .serving = pairReport() { return true }
+        return false
     }
 
     /// The other Mac's name as control knows it; nil before control.
@@ -1989,6 +2003,7 @@ public final class ClusterService: @unchecked Sendable {
         let arguments: [String]
         let what: String
         var memberRoute = false, linkFollower = false
+        var memberRank: Int?
         var port: Int?
         if case .solo(let model) = want {
             arguments = ClusterLocalServing.soloArguments(settings.soloArguments, scope: scope) + ["--model", model, "--port", String(Self.soloPort)]
@@ -2028,6 +2043,7 @@ public final class ClusterService: @unchecked Sendable {
             }
             if offered {
                 memberRoute = true
+                memberRank = configuration.localRank
                 // Registered with the coordinator as a cluster member: both Macs run the coordinator-formed pair's member; the
                 // leader's rank hosts the link listener and the pair's slot, the other rank dials it. With Both, me first,
                 // the part that runs rank 0 (the slot's host) also runs the pair's local API, on a port that is never 8000
@@ -2089,7 +2105,7 @@ public final class ClusterService: @unchecked Sendable {
         let startedAt = ClusterProcessTable.startTime(of: process.processIdentifier)
         lock.withLock {
             child = process; childSetup = key; childPort = port; childStarted = Date(); childStartedAt = startedAt; starts += 1
-            childIsMember = memberRoute; childLogOffset = logOffset
+            childIsMember = memberRoute; childMemberRank = memberRank; childLogOffset = logOffset
             childIsLinkFollower = linkFollower; followerRefusalRead = nil
             if !memberRoute { memberQuickEnds = 0 }
         }

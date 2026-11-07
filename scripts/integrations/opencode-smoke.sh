@@ -260,8 +260,26 @@ check "opencode models lists $provider/qwen3.8-27b beside it" grep -q "^$provide
 check "the printed undo puts the owner's file back exactly" \
     [ "$(shasum -a 256 "$home/.config/opencode/opencode.json" | cut -d' ' -f1)" = "$original_sha" ]
 
-# 3. No file Darkbloom wrote holds the key: the configs and the backups (Darkbloom's own key files hold it by design).
-written="$(find "$work/home" "$work/home-owner" -type f \( -name 'opencode.json*' -o -path '*/integrations/backups/*' \))"
+# 3. Both global files, the owner's default in opencode.json: Darkbloom edits opencode.jsonc (OpenCode loads it last)
+#    and adds no model there, which would override the owner's.
+home="$work/home-both"
+prepare_home "$home"
+mkdir -p "$home/.config/opencode"
+printf '{\n  "model": "omlx/Qwen3.6-35B-A3B-4bit"\n}\n' > "$home/.config/opencode/opencode.json"
+printf '{\n  "theme": "dark"\n}\n' > "$home/.config/opencode/opencode.jsonc"
+write_config "$home" "$work/writer-both.log" || { tail -40 "$work/writer-both.log"; fail "the writer ran with both files"; }
+check "with both global files, opencode.jsonc is the file edited" \
+    [ "$(result "$home" file)" = "$home/.config/opencode/opencode.jsonc" ]
+check "no model is added there: the owner's default in opencode.json stays the one in effect" \
+    bash -c '! grep -q "\"model\"" "$1"' _ "$home/.config/opencode/opencode.jsonc"
+run_opencode "$home" debug config --standalone > "$work/debug-config-both.txt" 2>&1 || true
+check "OpenCode loads opencode.json, then opencode.jsonc, and only opencode.json sets the model" \
+    python3 -c 'import json,sys; t=open(sys.argv[1]).read(); docs=[d for d in json.loads(t[t.index("["):]) if d.get("type") == "document"]; names=[d["path"].rsplit("/", 1)[1] for d in docs]; models=[d["path"].rsplit("/", 1)[1] for d in docs if "model" in d.get("info", {})]; sys.exit(0 if names[-2:] == ["opencode.json", "opencode.jsonc"] and models == ["opencode.json"] else 1)' "$work/debug-config-both.txt"
+run_opencode "$home" models --standalone > "$work/models-both.txt" 2>&1 || true
+check "opencode models lists $provider/qwen3.8-27b from opencode.jsonc" grep -q "^$provider/qwen3.8-27b\$" "$work/models-both.txt"
+
+# 4. No file Darkbloom wrote holds the key: the configs and the backups (Darkbloom's own key files hold it by design).
+written="$(find "$work/home" "$work/home-owner" "$work/home-both" -type f \( -name 'opencode.json*' -o -path '*/integrations/backups/*' \))"
 check "no config or backup Darkbloom wrote holds the key" bash -c '! grep -lF "$1" $2' _ "$token" "$written"
 
 echo "$failures failure(s)"

@@ -14,7 +14,7 @@ enum HermesConfigPlan {
     /// them into Darkbloom's provider. The backup keeps them.
     static let previousEndpointKeys: Set<String> = [
         "base_url", "api_key", "key_env", "key_cmd", "api", "api_mode", "transport", "context_length", "max_tokens",
-        "supports_vision",
+        "supports_vision", "ollama_num_ctx",
     ]
 
     /// `$HERMES_HOME/config.yaml`, else `~/.hermes/config.yaml`.
@@ -313,6 +313,13 @@ private struct HermesEdit {
             if line.content.hasPrefix("...") || line.content.hasPrefix("%") {
                 throw HermesRefusal(reason: "it holds more than one YAML document, which Darkbloom doesn't edit")
             }
+            if isListItem(Substring(line.content)) {
+                // A list at its key's own indent (PyYAML's style, so oMLX's and older Hermes') belongs to that key.
+                guard entries.last?.value.isEmpty == true else {
+                    throw HermesRefusal(reason: "it isn't a YAML mapping of settings")
+                }
+                continue
+            }
             guard let entry = splitKey(Substring(line.content)) else {
                 throw HermesRefusal(reason: "it isn't a YAML mapping of settings")
             }
@@ -333,8 +340,13 @@ private struct HermesEdit {
             if lines[index].indent < indent {
                 throw HermesRefusal(reason: "its \"\(entry.key)\" section is indented unevenly")
             }
-            guard lines[index].indent == indent else {
-                if let last = children.indices.last { children[last].end = index + 1 }
+            let isListItem = Self.isListItem(Substring(lines[index].content).dropFirst(indent))
+            guard lines[index].indent == indent, !isListItem else {
+                // Deeper lines, and a list at its key's own indent, belong to the child above.
+                guard let last = children.indices.last, lines[index].indent > indent || children[last].value.isEmpty else {
+                    throw HermesRefusal(reason: "its \"\(entry.key)\" section isn't a mapping Darkbloom can edit")
+                }
+                children[last].end = index + 1
                 continue
             }
             guard let child = Self.splitKey(Substring(lines[index].content)) else {
@@ -404,6 +416,11 @@ private struct HermesEdit {
             }
             if value.first == "|" || value.first == ">" { textIndent = line.indent }
         }
+    }
+
+    /// A block list item, `- …` or a bare `-`, with the line's indent already removed.
+    static func isListItem(_ content: Substring) -> Bool {
+        content.first == "-" && (content.count == 1 || content.dropFirst().first == " " || content.dropFirst().first == "\t")
     }
 
     // MARK: - Scalars

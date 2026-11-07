@@ -168,6 +168,38 @@ struct OpenCodeConfigPlanTests {
         #expect(F.summary(set)?.defaultModel == "darkbloom/gemma-4-26b-qat-4bit")
     }
 
+    @Test("a default model set in another global file means none is added here, to a new file either")
+    func defaultModelSetElsewhere() throws {
+        let result = OpenCodeConfigPlan.plan(
+            existing: Data("{\n  \"theme\": \"dark\"\n}\n".utf8), fileName: "opencode.jsonc", endpoint: F.endpoint,
+            models: F.models, provider: F.provider, home: F.home, defaultModelElsewhere: true)
+        let text = try #require(F.newText(result))
+        #expect(!text.contains("\"model\""))
+        #expect(F.summary(result)?.defaultModel == nil)
+        let created = OpenCodeConfigPlan.plan(
+            existing: nil, fileName: "opencode.jsonc", endpoint: F.endpoint, models: F.models, provider: F.provider,
+            home: F.home, defaultModelElsewhere: true)
+        #expect(F.newText(created)?.contains("\"model\"") == false)
+    }
+
+    @Test("another global file sets a default: its own top-level model key, or it can't be read")
+    func otherGlobalConfigSetsModel() throws {
+        let directory = try TemporaryDirectory()
+        let folder = directory.file("opencode")
+        let jsonc = folder.appendingPathComponent("opencode.jsonc")
+        #expect(!OpenCodeConfigPlan.otherGlobalConfigSetsModel(besides: jsonc))
+        try directory.write("{\n  \"theme\": \"dark\"\n}\n", to: "opencode/opencode.json")
+        #expect(!OpenCodeConfigPlan.otherGlobalConfigSetsModel(besides: jsonc))
+        try directory.write("{ \"agent\": { \"build\": { \"model\": \"x/y\" } } }", to: "opencode/opencode.json")
+        #expect(!OpenCodeConfigPlan.otherGlobalConfigSetsModel(besides: jsonc))
+        try directory.write("{\n  // mine\n  \"model\": \"omlx/q\",\n}\n", to: "opencode/opencode.json")
+        #expect(OpenCodeConfigPlan.otherGlobalConfigSetsModel(besides: jsonc))
+        try directory.write("{ \"model\": ", to: "opencode/opencode.json")
+        #expect(OpenCodeConfigPlan.otherGlobalConfigSetsModel(besides: jsonc))
+        // The file being edited isn't another one: its own model is the planner's to read.
+        #expect(!OpenCodeConfigPlan.otherGlobalConfigSetsModel(besides: folder.appendingPathComponent("opencode.json")))
+    }
+
     @Test("an empty object and a one-line object get the provider on their own lines")
     func compactObjects() throws {
         let empty = try #require(F.newText(plan("{}", fileName: "opencode.json")))

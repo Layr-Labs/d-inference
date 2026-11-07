@@ -128,10 +128,11 @@ The pause is event-driven:
    pause outlasts the jump by one idle time at most.
 5. The pause cancels nothing. It has no drain bound: Darkbloom work accepted
    before it runs to the end, unlike under an add-on hold.
-6. A local request starts its use once and ends it once. `acquireModelForLocal`
-   and `releaseLocalReservation` call the hooks in the same actor turn as the
-   reservation and its release, and the request's `OneShotRelease` releases
-   once; a release that drops no reservation ends no use.
+6. A local request starts its use once and ends it once, however it ends.
+   `acquireModelForLocal` and `releaseLocalReservation` call the hooks in the
+   same actor turn as the reservation and its release. Nothing after the start
+   throws or suspends, so the request always gets its `OneShotRelease`, which
+   releases once; a release that drops no reservation ends no use.
 
 ## Known gaps
 

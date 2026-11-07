@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import Security
 
 /// Where the local router keeps the owner's account API key: the one credential that lets this Mac's local API pass
@@ -52,22 +53,30 @@ public struct KeychainLocalRouterAccountKeyStore: LocalRouterAccountKeyStore {
         self.calls = calls
     }
 
+    /// Never asks the user: a read that would need a Keychain dialog (a locked keychain, or an item this build may not
+    /// read without approval, as after an ad-hoc rebuild) fails at once instead, so a request never waits on one.
+    /// Data-protection items follow the query's `LAContext`, which may not ask. Legacy (login keychain) items ignore
+    /// the query's UI keys and follow the process-wide `SecKeychainSetUserInteractionAllowed` switch, which is off for
+    /// the read and put back after. Saving and removing (`route key`, at a terminal) may still ask.
     public func load() throws -> String? {
-        try withKeychain(operation: "read") { dataProtection in
-            var query = identity(dataProtection: dataProtection)
-            query[kSecReturnData as String] = true
-            query[kSecMatchLimit as String] = kSecMatchLimitOne
-            let (status, data) = calls.copyMatching(query)
-            switch status {
-            case errSecSuccess:
-                guard let data, let key = String(data: data, encoding: .utf8), !key.isEmpty else {
+        try withoutAskingTheUser {
+            try withKeychain(operation: "read") { dataProtection in
+                var query = identity(dataProtection: dataProtection)
+                query[kSecReturnData as String] = true
+                query[kSecMatchLimit as String] = kSecMatchLimitOne
+                if dataProtection { query[kSecUseAuthenticationContext as String] = Self.contextThatMayNotAsk() }
+                let (status, data) = calls.copyMatching(query)
+                switch status {
+                case errSecSuccess:
+                    guard let data, let key = String(data: data, encoding: .utf8), !key.isEmpty else {
+                        return .done(nil)
+                    }
+                    return .done(key)
+                case errSecItemNotFound:
                     return .done(nil)
+                default:
+                    return .failed(status)
                 }
-                return .done(key)
-            case errSecItemNotFound:
-                return .done(nil)
-            default:
-                return .failed(status)
             }
         }
     }
@@ -106,6 +115,34 @@ public struct KeychainLocalRouterAccountKeyStore: LocalRouterAccountKeyStore {
         return query
     }
 
+    /// One read at a time turns the switch off, as it is the whole process's.
+    private static let userInteractionSwitch = NSLock()
+
+    /// Runs `read` with the legacy keychain's switch for asking the user off, then puts back what was set. A switch
+    /// that can't be read or turned off means no read.
+    private func withoutAskingTheUser<T>(_ read: () throws -> T) throws -> T {
+        try Self.userInteractionSwitch.withLock {
+            let (status, allowed) = calls.userInteractionAllowed()
+            guard status == errSecSuccess else {
+                throw LocalRouterAccountKeyError.keychain(operation: "read", status: status)
+            }
+            if allowed {
+                let turnedOff = calls.setUserInteractionAllowed(false)
+                guard turnedOff == errSecSuccess else {
+                    throw LocalRouterAccountKeyError.keychain(operation: "read", status: turnedOff)
+                }
+            }
+            defer { if allowed { _ = calls.setUserInteractionAllowed(true) } }
+            return try read()
+        }
+    }
+
+    private static func contextThatMayNotAsk() -> LAContext {
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        return context
+    }
+
     private enum Outcome<T> {
         case done(T)
         case failed(OSStatus)
@@ -134,7 +171,9 @@ struct KeychainItemCalls: Sendable {
     var add: @Sendable ([String: Any]) -> OSStatus
     var update: @Sendable ([String: Any], [String: Any]) -> OSStatus
     var delete: @Sendable ([String: Any]) -> OSStatus
-    /// The legacy keychain's process-wide switch for asking the user, and setting it.
+    /// The legacy keychain's process-wide switch for asking the user, and setting it. Deprecated, but the only one
+    /// legacy (login keychain) items follow: the query's UI keys apply to the data-protection keychain only
+    /// (`SecItem.h`).
     var userInteractionAllowed: @Sendable () -> (OSStatus, Bool)
     var setUserInteractionAllowed: @Sendable (Bool) -> OSStatus
 

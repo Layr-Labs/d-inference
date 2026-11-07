@@ -10,8 +10,9 @@ import Testing
 /// The router against a real coordinator on loopback: the V0 harness (darkbloom-platform `90ee29fc0d` in development
 /// mode, memory store, seeded through its own routes, one stub provider for the owner's other Mac). Opt-in:
 /// `DARKBLOOM_ROUTER_E2E_BASE=http://127.0.0.1:<port>` and `DARKBLOOM_ROUTER_E2E_KEYS=<dir>` holding the seeded
-/// `owner-normal`, `consumer` and `owner3` (zero balance, its Mac offline) `.key.secret` files. This Mac is the stub
-/// engine; the coordinator, its `/v1/models` views and the upstream client are real.
+/// `owner-normal`, `consumer` and `owner3` (zero balance, its Mac offline) `.key.secret` files, and optionally
+/// `owner-capped` and `owner3-capped` (a key of each account with `limit_usd` 0.00001). This Mac is the stub engine;
+/// the coordinator, its `/v1/models` views and the upstream client are real.
 @Suite("Local router against the V0 coordinator", .serialized,
        .enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_ROUTER_E2E_BASE"] != nil))
 struct LocalRouterCoordinatorE2ETests {
@@ -21,6 +22,11 @@ struct LocalRouterCoordinatorE2ETests {
         let directory = try #require(ProcessInfo.processInfo.environment["DARKBLOOM_ROUTER_E2E_KEYS"])
         return try String(contentsOfFile: directory + "/\(name).key.secret", encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func hasKey(_ name: String) -> Bool {
+        guard let directory = ProcessInfo.processInfo.environment["DARKBLOOM_ROUTER_E2E_KEYS"] else { return false }
+        return FileManager.default.fileExists(atPath: directory + "/\(name).key.secret")
     }
 
     static func app(key: String, route: LocalSettings.Route, takesCoordinatorWork: Bool = false,
@@ -96,6 +102,43 @@ struct LocalRouterCoordinatorE2ETests {
                 #expect(response.status.code == 402)
                 #expect(response.headers[LocalRouterPolicy.routeUsedHeader] == "prefer")
                 #expect(text.contains("No balance for the network fallback") && text.contains("insufficient_quota"))
+            }
+        }
+    }
+
+    /// A key's spend cap refuses `prefer` with a 402 even when the owner's own Mac would answer; `self` never spends,
+    /// so the router's one `self` retry is answered by the owner's other Mac.
+    @Test(.enabled(if: LocalRouterCoordinatorE2ETests.hasKey("owner-capped")))
+    func aCappedKeyIsAnsweredByTheOwnersOtherMacThroughSelf() async throws {
+        let capped = try Self.key("owner-capped")
+        let log = RouterLogLines()
+        try await Self.app(key: capped, route: .myMacsFirst, log: log).test(.router) { client in
+            try await client.execute(uri: "/v1/chat/completions", method: .post, headers: RouterFixture.authorized,
+                                     body: ByteBuffer(string: Self.chat)) { response in
+                let text = String(buffer: response.body)
+                print("e2e capped key my-macs-first: \(response.status.code) route-used \(response.headers[LocalRouterPolicy.routeUsedHeader] ?? "-") sse-events \(text.components(separatedBy: "data:").count - 1)")
+                #expect(response.status == .ok)
+                #expect(response.headers[LocalRouterPolicy.routeUsedHeader] == "self")
+                #expect(text.contains("data:") && !text.contains(capped))
+            }
+        }
+        #expect(log.lines.contains("the network refused it (insufficient_quota); asking your Macs (self)"),
+                "\(log.lines)")
+    }
+
+    /// The same cap on an account whose Macs can't take the request (owner3's is offline): the 402 that stands gives
+    /// Darkbloom's own reason, not "no balance".
+    @Test(.enabled(if: LocalRouterCoordinatorE2ETests.hasKey("owner3-capped")))
+    func aCappedKeyWhoseMacsCantTakeItHearsDarkbloomsReason() async throws {
+        try await Self.app(key: try Self.key("owner3-capped"), route: .myMacsFirst).test(.router) { client in
+            try await client.execute(uri: "/v1/chat/completions", method: .post, headers: RouterFixture.authorized,
+                                     body: ByteBuffer(string: Self.chat)) { response in
+                let text = String(buffer: response.body)
+                print("e2e owner3 capped key my-macs-first: \(response.status.code) route-used \(response.headers[LocalRouterPolicy.routeUsedHeader] ?? "-") \(text.prefix(260))")
+                #expect(response.status.code == 402)
+                #expect(response.headers[LocalRouterPolicy.routeUsedHeader] == "prefer")
+                #expect(text.contains("Network fallback refused: ") && text.contains("spend limit"))
+                #expect(!text.contains("No balance"))
             }
         }
     }

@@ -24,7 +24,7 @@ public struct LocalSettings: Sendable, Equatable, Codable {
         /// Only my Macs: the coordinator with `X-Darkbloom-Route: self`, free.
         case myMacs = "my-macs"
         /// My Macs first, then the Darkbloom network: the coordinator with `X-Darkbloom-Route: prefer`, billed when the
-        /// network answers; at a zero balance, `self` once.
+        /// network answers; on its 402 (no balance, or the key's spend cap), `self` once.
         case myMacsFirst = "my-macs-first"
     }
 

@@ -678,7 +678,8 @@ data-protection Keychain in signed builds, the login keychain otherwise) and
 never printed (`RouteKeyFlow`, `provider-swift/Sources/darkbloom/RouteCommand.swift`;
 `KeychainLocalRouterAccountKeyStore`). When the local API running now has no
 local key (`--no-auth`), it says that this API keeps every request on this Mac
-and never uses the key. See
+and never uses the key. ^C at the hidden prompt gives the terminal its echo
+back before the command ends (`HiddenReadSignals`). See
 [the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router).
 
 ### Cluster placement request metadata

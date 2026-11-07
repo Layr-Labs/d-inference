@@ -11,8 +11,10 @@ import HTTPTypes
 /// | `my-macs-first`  | this Mac → `prefer` (the owner's Macs first, then the network, billed); on a 402, `self` |
 ///
 /// `prefer` lets the coordinator order "my other Macs, then others" itself, among the Macs that can take the request
-/// now, so a busy Mac of the owner's never holds it in `self`'s 120 s queue. `prefer` needs a funded account even
-/// when the owner's own Mac answers, so its 402 (no balance) asks `self` once: free, the owner's Macs only.
+/// now, so a busy Mac of the owner's doesn't hold it while another Mac, the owner's or the network's, can take it.
+/// When none can, the coordinator queues `prefer` too: up to 120 s, and kept while the owner has a Mac serving the
+/// model. `prefer` reserves the price up front even when the owner's own Mac answers (it charges nothing then), so
+/// its 402 (no balance, or the key's spend cap) asks `self` once: free, the owner's Macs only, never spending.
 ///
 /// A request this Mac serves never leaves the process: the router hands it to the engine and returns the engine's
 /// response as it is, adding one header. The upstream client exists only once a request needs it.
@@ -34,6 +36,8 @@ public struct LocalRouterConfig: Sendable {
     /// the router serves this Mac only and never reads or lends the account key. `makeLocalInferenceApplication` sets it
     /// from the endpoint's own key.
     public var localKeyRequired = true
+    /// Whether the last read of the account key failed, so a run of failures is said once.
+    let keyReads = LocalRouterKeyReads()
 
     public init(settings: LocalSettings, upstreamBaseURL: URL, takesCoordinatorWork: Bool,
                 accountKeys: any LocalRouterAccountKeyStore,
@@ -62,14 +66,43 @@ public struct LocalRouterConfig: Sendable {
     /// The route in effect now, and the key it uses. Without a saved key, or without a local key (`--no-auth`), nothing
     /// can go upstream, whatever the route. The key is read from the store on every call, so a key saved or removed
     /// with `route key` counts from the next request; a saved `this-mac`, or no local key, never reads the Keychain.
-    /// `[local] route` itself is read at start.
+    /// A key that can't be read (the Keychain won't hand it over without asking) is said once per run of failures,
+    /// in a line without the key, and keeps requests on this Mac. `[local] route` itself is read at start.
     func effectiveRoute() -> (route: LocalSettings.Route, accountKey: String?) {
         guard localKeyRequired, settings.route != .thisMac else { return (.thisMac, nil) }
-        let key = (try? accountKeys.load()).flatMap { $0.isEmpty ? nil : $0 }
+        let key: String?
+        do {
+            key = try accountKeys.load().flatMap { $0.isEmpty ? nil : $0 }
+            keyReads.succeeded()
+        } catch {
+            if keyReads.failed() {
+                // Only the store's own error is known to carry no key characters (an OSStatus only).
+                let reason = (error as? LocalRouterAccountKeyError)?.description ?? "the account key could not be read"
+                log("\(reason); requests stay on this Mac until it can be read (after a new build, save it again with "
+                    + "`\(BuildEnvironment.current.cliName) route key`)")
+            }
+            return (.thisMac, nil)
+        }
         let route = settings.resolvedRoute(accountKeySaved: key != nil)
         guard let key, route != .thisMac else { return (.thisMac, nil) }
         return (route, key)
     }
+}
+
+/// Whether the account key's last read failed: a run of failures is said once, and again after a read succeeds.
+final class LocalRouterKeyReads: @unchecked Sendable {
+    private let lock = NSLock()
+    private var failing = false
+
+    /// Notes a failed read; true when it starts a run of failures.
+    func failed() -> Bool {
+        lock.withLock {
+            defer { failing = true }
+            return !failing
+        }
+    }
+
+    func succeeded() { lock.withLock { failing = false } }
 }
 
 /// The value of `X-Darkbloom-Route` on an upstream hop.
@@ -140,15 +173,22 @@ public enum LocalRouterPolicy {
         status == .notFound || status == .tooManyRequests || status == .serviceUnavailable
     }
 
-    /// `my-macs-first` asks the owner's Macs (`self`, free) only when `prefer` answered 402: no balance for the
-    /// network, which `prefer`'s admission needs even when an owned Mac would answer.
+    /// `my-macs-first` asks the owner's Macs (`self`) once when `prefer` answered 402: its admission refused the
+    /// request for money (no balance, the key's spend cap, a promotion's limit), even when an owned Mac would have
+    /// answered. `self` never spends, so it may still take it.
     public static func asksYourMacs(afterNetworkStatus status: Int) -> Bool {
         status == 402
     }
 
+    /// The words before Darkbloom's own message when `prefer`'s 402 stands (none of the owner's Macs took the request
+    /// either), by its `error.type`: only `insufficient_funds` is a balance problem. Any other 402 (the key's spend
+    /// cap, a promotion's limit) is left to Darkbloom's own message, which names it.
     static func networkRefusalPrefix(errorType: String?) -> String {
-        "No balance for the network fallback: none of your Macs could take this request, and the Darkbloom network "
-            + "needs a positive balance. Darkbloom said: "
+        errorType == "insufficient_funds"
+            ? "No balance for the network fallback: none of your Macs could take this request, and the Darkbloom "
+                + "network needs a positive balance. Darkbloom said: "
+            : "Network fallback refused: none of your Macs could take this request, and Darkbloom would not send it "
+                + "to the network. Darkbloom said: "
     }
 
     /// `self`'s answer when none of the owner's Macs took the request: none linked (409), none online, none serving

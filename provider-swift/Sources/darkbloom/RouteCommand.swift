@@ -198,6 +198,9 @@ struct RouteKeyFlow {
         return readHidden(prompt: prompt, terminal: tty)
     }
 
+    /// One line typed on `terminal` without echo. The terminal gets its echo back however the read ends: when the line
+    /// is in, and when ^C, ^\, a hang-up or `kill` arrives first (`HiddenReadSignals`). `onSignal` then runs, with the
+    /// signal's own handling back: by default it raises the signal again, so the command ends as it would have.
     static func readHidden(prompt: String, terminal tty: Int32,
                            onSignal: @escaping @Sendable (Int32) -> Void = { _ = raise($0) }) -> String? {
         var saved = termios()
@@ -205,11 +208,14 @@ struct RouteKeyFlow {
         var silent = saved
         silent.c_lflag &= ~tcflag_t(ECHO)
         _ = prompt.withCString { write(tty, $0, strlen($0)) }
-        guard tcsetattr(tty, TCSAFLUSH, &silent) == 0 else { return nil }
-        defer {
-            tcsetattr(tty, TCSAFLUSH, &saved)
+        let echoing = saved
+        let signals = HiddenReadSignals(restore: {
+            var mode = echoing
+            tcsetattr(tty, TCSAFLUSH, &mode)
             _ = "\n".withCString { write(tty, $0, 1) }
-        }
+        }, onSignal: onSignal)
+        defer { signals.close() }
+        guard tcsetattr(tty, TCSAFLUSH, &silent) == 0 else { return nil }
         var bytes: [UInt8] = []
         var byte: UInt8 = 0
         while read(tty, &byte, 1) == 1, byte != UInt8(ascii: "\n"), byte != UInt8(ascii: "\r") {

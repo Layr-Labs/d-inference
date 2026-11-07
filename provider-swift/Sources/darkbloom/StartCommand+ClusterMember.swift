@@ -42,6 +42,9 @@ extension Start {
         // Hardware-only capabilities are honest here. Native/kernel capability
         // proof belongs to the selected installed adapter, not a solo GPU probe.
         let capabilities = DistributedServingEligibility.memberCapabilities(chipFamily: hardware.chipFamily)
+        let coordinator = coordinatorURL ?? config.coordinator.url
+        let endpoint = Self.clusterMemberLocalEndpoint(requested: localEndpoint, hostsPairSlot: prepared.hostsPairSlot,
+                                                       bind: bind, port: port, local: config.local, coordinatorURL: coordinator)
         // A setup saved for coordinator pairing yields this Mac's member
         // installation; every other setup yields none and registers no claim.
         let installation = try current.withCurrentReference { _ in
@@ -53,11 +56,12 @@ extension Start {
             return installation
         }
         let loopConfig = ProviderLoopConfig(
-            coordinatorURL: coordinatorURL ?? config.coordinator.url,
+            coordinatorURL: coordinator,
             hardware: hardware, models: [prepared.model], config: config,
             authToken: AuthTokenStore.load(), runtimeHashes: hashes,
             runtimeCapabilities: capabilities,
             modelHashes: prepared.model.weightHash.map { [prepared.model.id: $0] } ?? [:],
+            localEndpoint: endpoint,
             executionRole: .clusterMember, clusterMemberStopsOnDisconnect: stopOnDisconnect,
             clusterMemberAnswersUpdateDrain: answersUpdateDrain,
             pairServingGrantedModelIDs: [prepared.model.id])
@@ -74,11 +78,27 @@ extension Start {
         return (loop, prepared, installation != nil)
     }
 
+    /// The pair's local API beside Darkbloom (Both, me first), which the cluster service asks of the part that runs rank
+    /// 0 (`--local-endpoint --port --bind`): served by the member that hosts the pair's slot, on the address and port
+    /// the service chose, always with the pair's key (`cluster local`'s), and with the local router, for which this
+    /// Mac's engine is the pair. Every other member runs none and says so in one line; without `--local-endpoint`, the
+    /// member is today's. A key that can't be read leaves the pair serving Darkbloom without its local API, never with an
+    /// open one.
     static func clusterMemberLocalEndpoint(requested: Bool, hostsPairSlot: Bool, bind: String, port: UInt16,
                                            local: LocalSettings?, coordinatorURL: String?,
                                            loadToken: () throws -> String = { try LocalEndpoint.loadOrCreateClusterToken() },
                                            say: (String) -> Void = printError) -> LocalInferenceHTTPConfig? {
-        nil
+        guard requested else { return nil }
+        guard hostsPairSlot else {
+            say("This Mac's part doesn't host the pair's slot, so it runs no local API: the pair's API is on the Mac that runs rank 0.")
+            return nil
+        }
+        guard let token = try? loadToken(), !token.isEmpty else {
+            say("The pair's local API key could not be read or created, so this part serves Darkbloom without the local API.")
+            return nil
+        }
+        return LocalInferenceHTTPConfig(host: bind, port: port, authToken: token,
+            router: .host(local: local, coordinatorURL: coordinatorURL, takesCoordinatorWork: true))
     }
 
     /// What a member's start that failed with `error` ends with. Refused because another Darkbloom app holds this Mac's

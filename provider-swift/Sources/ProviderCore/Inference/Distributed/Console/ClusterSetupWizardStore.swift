@@ -211,8 +211,12 @@ public struct ClusterOnboardingLeadership: Codable, Sendable, Equatable {
     }
 
     public var scope: ClusterServingScope {
-        get { ClusterServingScope(localOnly: localOnly, bind: localBind) }
-        set { localOnly = newValue.isLocalOnly ? true : nil; localBind = newValue.bind }
+        get { ClusterServingScope(localOnly: localOnly, localAPI: localAPI, bind: localBind) }
+        set {
+            localOnly = newValue.isLocalOnly ? true : nil
+            localAPI = newValue.addsLocalAPI ? true : nil
+            localBind = newValue.localAPIBind
+        }
     }
 }
 

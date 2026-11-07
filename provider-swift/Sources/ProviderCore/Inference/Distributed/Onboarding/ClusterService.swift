@@ -719,12 +719,13 @@ public final class ClusterService: @unchecked Sendable {
                   self.leadsAndRunsCluster() else { return }
             switch ClusterOnboardingSync.action(leaderServing: leadership.serving, leaderModel: leadership.modelName,
                                                 memberServing: member?.serving, memberModel: member?.modelName,
-                                                leaderLocalOnly: leadership.scope.isLocalOnly, memberLocalOnly: member?.localOnly) {
+                                                leaderLocalOnly: leadership.scope.isLocalOnly, memberLocalOnly: member?.localOnly,
+                                                leaderLocalAPI: leadership.scope.addsLocalAPI, memberLocalAPI: member?.localAPI) {
             case .none: return
             case .serve(let model):
                 let runsIt = member?.serving == true && member?.modelName == model
                 var serve = ClusterServiceCommand(op: .serve, model: model, deployment: leadership.deployment, scope: leadership.scope)
-                if leadership.scope.isLocalOnly { serve.localToken = try? LocalEndpoint.loadOrCreateClusterToken() }
+                if leadership.scope.localAPIBind != nil { serve.localToken = try? LocalEndpoint.loadOrCreateClusterToken() }
                 if send(serve, seconds: 10) != nil {
                     say(runsIt ? "synced how the cluster serves to the member" : "the member had missed the start: started its part")
                 }
@@ -1072,6 +1073,7 @@ public final class ClusterService: @unchecked Sendable {
                 control: controlStatusLocked(model: record?.leadership?.modelName), servicePID: getpid())
             value.updating = updatingLine
             value.localOnly = record?.leadership.map { $0.scope.isLocalOnly }
+            value.localAPI = record?.leadership.map { $0.scope.addsLocalAPI }
             value.loggedIn = AuthTokenStore.load() != nil
             value.startsAtLogin = ClusterServiceAgent.startsAtLogin(environment: ProcessInfo.processInfo.environment,
                                                                     installedAgents: { ClusterServiceAgent.installedLabels() })
@@ -1911,7 +1913,8 @@ public final class ClusterService: @unchecked Sendable {
                 : solo ? "the cluster re-forms: stopping the solo server first"
                 : ClusterLocalServing.scopeChangedOnly(from: setup, to: key)
                     ? (scope.isLocalOnly ? "serving locally only now (no coordinator): restarting this Mac's part"
-                                         : "serving through Darkbloom now: restarting this Mac's part")
+                       : scope.addsLocalAPI ? "serving through Darkbloom with the pair's local API now: restarting this Mac's part"
+                       : "serving through Darkbloom now: restarting this Mac's part")
                 : "the setup changed: restarting this Mac's part")
             _ = running
             _ = stopChild(say: say, seconds: 300)
@@ -1994,8 +1997,16 @@ public final class ClusterService: @unchecked Sendable {
             if offered {
                 memberRoute = true
                 // Registered with the coordinator as a cluster member: both Macs run the coordinator-formed pair's member; the
-                // leader's rank hosts the link listener and the pair's slot, the other rank dials it.
-                arguments = settings.memberArguments
+                // leader's rank hosts the link listener and the pair's slot, the other rank dials it. With Both, me first,
+                // the part that runs rank 0 also runs the pair's local API, on a port that is never 8000.
+                if scope.addsLocalAPI, configuration.localRank == 0 {
+                    let apiPort = leaderAPIPort(scope: scope, say: say)
+                    port = apiPort
+                    arguments = ClusterLocalServing.memberArguments(settings.memberArguments, scope: scope,
+                                                                    localRank: configuration.localRank, port: apiPort)
+                } else {
+                    arguments = settings.memberArguments
+                }
             } else if configuration.role == .leader {
                 // This Mac is rank 0 now: the relay gives its port back first.
                 if let passing = lock.withLock({ () -> ClusterLocalRelay? in defer { relay = nil }; return relay }) {
@@ -2010,6 +2021,7 @@ public final class ClusterService: @unchecked Sendable {
             }
             what = "this Mac's part: " + (offered
                 ? "rank \(configuration.localRank), registered with the coordinator as a cluster member"
+                    + (port.map { " with the pair's local API on port \($0)" } ?? "")
                 : configuration.role == .leader
                 ? "rank 0 and the serving API" + (scope.isLocalOnly ? " (local only, no coordinator)" : "")
                 : "rank \(configuration.localRank)")
@@ -2088,10 +2100,18 @@ public final class ClusterService: @unchecked Sendable {
 
     /// The port rank 0's API takes on this Mac (another local server may hold 8000). Local only on every address (where
     /// the other Mac relays it), one free on both Macs (`ClusterLocalServing.sharedPort`), asked of the other Mac for
-    /// at most 5 s; otherwise, or when it does not answer, one free here.
+    /// at most 5 s; otherwise, or when it does not answer, one free here. Both, me first: the same, but never 8000 or a
+    /// pair port (`ClusterLocalServing.localAPIPort`), and never test-bound there.
     private func leaderAPIPort(scope: ClusterServingScope, say: @Sendable (String) -> Void) -> Int {
-        let peerFree = scope.bind == "0.0.0.0" ? peerFreePorts(seconds: 5) : nil
+        let peerFree = scope.localAPIBind == "0.0.0.0" ? peerFreePorts(seconds: 5) : nil
         let previous = lock.withLock { apiPort }
+        if scope.addsLocalAPI {
+            let port = ClusterLocalServing.localAPIPort(localFree: ClusterLocalServing.localAPIFreePorts(),
+                                                        peersFree: peerFree.map { [$0] }, preferred: previous)
+            lock.withLock { apiPort = port }
+            if port != previous { say("the pair's local API listens on port \(port) (never 8000, which other local apps use)") }
+            return port
+        }
         let port = ClusterLocalServing.sharedPort(localFree: ClusterLocalServing.freePorts(), peerFree: peerFree, preferred: previous)
         lock.withLock { apiPort = port }
         if port != previous, port != ClusterLocalServing.servingPorts.lowerBound {

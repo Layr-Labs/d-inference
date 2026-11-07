@@ -120,6 +120,7 @@ struct ClusterPairSummary: Sendable, Equatable {
     /// How the pair is set to serve; "not offered" while Darkbloom can't have it (never read as serving through it).
     var servesWords: String {
         localOnly ? "locally only" : "through Darkbloom" + (ClusterOnboardingReady.isNotOffered(reason) ? " (not offered)" : "")
+            + (localAPI == nil ? "" : ", and on its local API with you first")
     }
 
     /// The mode and each Mac's share, from the leader's deployment line ("pipeline", "M3 Ultra 40 layers / M5 Ultra 24
@@ -561,6 +562,7 @@ extension ClusterPairSummary {
             return out
         }
         out.append(contentsOf: stateLines)
+        out.append(contentsOf: localAPILines())
         if let next { out.append("Next: " + next) }
         return out
     }

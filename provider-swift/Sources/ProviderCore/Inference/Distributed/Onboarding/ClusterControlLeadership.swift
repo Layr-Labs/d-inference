@@ -789,12 +789,13 @@ public struct ClusterControlRequest: Codable, Sendable, Equatable {
     /// listed plan's, and from an older build.
     public var mode: String?
     public init(op: Operation, index: Int? = nil, model: String? = nil, scope: ClusterServingScope? = nil, mode: String? = nil) {
-        self.op = op; self.index = index; self.model = model; self.localOnly = scope.map(\.isLocalOnly); self.bind = scope?.bind
+        self.op = op; self.index = index; self.model = model; self.localOnly = scope.map(\.isLocalOnly); self.bind = scope?.localAPIBind
+        self.localAPI = scope?.addsLocalAPI == true ? true : nil
         self.mode = mode
     }
 
     /// `scope`'s value; nil when it names none or an address the local API does not take.
-    public var scope: ClusterServingScope? { ClusterServingScope.carried(localOnly: localOnly, bind: bind) }
+    public var scope: ClusterServingScope? { ClusterServingScope.carried(localOnly: localOnly, localAPI: localAPI, bind: bind) }
 }
 
 /// The leader's answer, shown as it is on the Mac that asked.

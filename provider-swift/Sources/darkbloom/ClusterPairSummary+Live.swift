@@ -104,6 +104,7 @@ extension ClusterPairSummary {
         summary.deployment = leadership.deployment
         summary.speculationNote = leadership.speculationNote
         let own = ClusterService.publishedLive()
+        if leadership.scope.addsLocalAPI { summary.localAPI = localAPIFacts(own: own) }
         (summary.state, summary.reason) = ownState(started: summary.started, own: own, localOnly: summary.localOnly)
         summary.pairRunning = summary.started && ClusterService.pairRuns(own)
         summary.pairNotRunning = own?.pairNotRunning

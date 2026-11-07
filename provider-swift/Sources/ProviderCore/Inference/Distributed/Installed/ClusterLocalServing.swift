@@ -34,7 +34,8 @@ public enum ClusterLocalServing {
 
     /// A part of a setup saved with a current cluster approval (`start --cluster-member`), once its member is
     /// registered: the coordinator may form the pair, which then serves its owner's own requests through Darkbloom.
-    /// There is no local API in this mode. The status line (`ClusterApprovalLifetime.offeredLine`) adds the approval.
+    /// There is no local API in this mode, except with Both, me first, where the part that runs rank 0 also serves the
+    /// pair's local API (`memberArguments`). The status line (`ClusterApprovalLifetime.offeredLine`) adds the approval.
     public static let offeredNotice = ClusterOnboardingReady.registeredNotice
     /// How such a part writes it to its log: not `registeredLogLine`, which a leader that serves on its local API as
     /// a control-only member writes.
@@ -96,16 +97,41 @@ public enum ClusterLocalServing {
         return base + [noCoordinatorFlag, "--bind", bind]
     }
 
+    /// The coordinator-paired part's start (`start --foreground --cluster-member` and the configuration). With Both, me
+    /// first, the part that runs rank 0, which hosts the pair's slot, also runs the pair's local API on `port`, on the
+    /// scope's address, with the pair's key (`darkbloom start` reads it). Every other rank, and the other two scopes,
+    /// start as before. Only the rank decides: nothing counts the Macs.
     public static func memberArguments(_ base: [String], scope: ClusterServingScope, localRank: Int, port: Int) -> [String] {
-        base
+        guard case .publicServingWithLocalAPI(let bind) = scope, localRank == 0 else { return base }
+        return base + ["--local-endpoint", "--port", String(port), "--bind", bind]
     }
 
+    /// Never taken by a new local API, a pair's or a single Mac's (`LocalSettings.neverChosenPorts`): 8000, where other
+    /// local AI apps listen (oMLX on the owner's Mac), and 47420–47423, which two-Mac pairs use.
+    public static let neverChosenPorts: Set<Int> = [8000, 47420, 47421, 47422, 47423]
+
+    /// The ports the pair's local API beside Darkbloom may take: `servingPorts` without `neverChosenPorts`.
+    public static var localAPIPorts: [Int] { servingPorts.filter { !neverChosenPorts.contains($0) } }
+
+    /// The ones of those no other program listens on here. 8000 and the pair ports are never even test-bound.
     public static func localAPIFreePorts(isFree: (Int) -> Bool = portIsFree) -> [Int] {
-        freePorts(isFree: isFree)
+        localAPIPorts.filter(isFree)
     }
 
+    /// One port for the pair's local API beside Darkbloom, chosen as `sharedPort` chooses `cluster local`'s: `preferred`
+    /// (the port used last) while it is free on every Mac, else the lowest free on every Mac, else this Mac's own. It is
+    /// never one of `neverChosenPorts`. `peersFree` holds each other Mac's free ports (nil when none
+    /// says), so nothing assumes two Macs. With nothing free here, the first port it may take: the part's bind then
+    /// fails and says so, and the pair keeps serving Darkbloom.
     public static func localAPIPort(localFree: [Int], peersFree: [[Int]]?, preferred: Int? = nil) -> Int {
-        sharedPort(localFree: localFree, peerFree: peersFree?.first, preferred: preferred)
+        let allowed = localAPIPorts
+        let here = localFree.filter(allowed.contains)
+        let everywhere = peersFree.map { peers in here.filter { port in peers.allSatisfy { $0.contains(port) } } } ?? []
+        for candidates in [everywhere, here] {
+            if let preferred, candidates.contains(preferred) { return preferred }
+            if let lowest = candidates.min() { return lowest }
+        }
+        return allowed[0]
     }
 
     /// The solo server (this Mac alone after the absence grace) is coordinator-less already; local-only serving gives
@@ -115,13 +141,19 @@ public enum ClusterLocalServing {
         return base + ["--bind", bind]
     }
 
-    /// What the cluster service keys this Mac's running part by: the saved setup, and the scope when it is local only,
-    /// so a change of scope stops the running part and starts it again that way (public keeps the earlier key).
+    /// What the cluster service keys this Mac's running part by: the saved setup, and the scope when it has a local API
+    /// (local only, or Both), so a change of scope stops the running part and starts it again that way (public keeps
+    /// the earlier key).
     public static func partKey(setupSHA256: String, scope: ClusterServingScope) -> String {
-        "cluster:" + setupSHA256 + (scope.bind.map { localOnlyKeyMarker + $0 } ?? "")
+        switch scope {
+        case .publicServing: return "cluster:" + setupSHA256
+        case .localOnly(let bind): return "cluster:" + setupSHA256 + localOnlyKeyMarker + bind
+        case .publicServingWithLocalAPI(let bind): return "cluster:" + setupSHA256 + localAPIKeyMarker + bind
+        }
     }
 
     private static let localOnlyKeyMarker = ":local-only@"
+    private static let localAPIKeyMarker = ":local-api@"
 
     /// The port the leading part's API listens on: `preferred` when no other program listens there, else the first
     /// free one of the next `span` ports, else `preferred` (the start then says the port is taken). Another server on
@@ -177,7 +209,10 @@ public enum ClusterLocalServing {
     /// Two part keys of the same saved setup that differ only by scope (the restart is the scope's, not a new setup).
     public static func scopeChangedOnly(from old: String?, to new: String?) -> Bool {
         guard let old, let new, old != new, old.hasPrefix("cluster:"), new.hasPrefix("cluster:") else { return false }
-        func setup(_ key: String) -> Substring { key.split(separator: localOnlyKeyMarker, maxSplits: 1).first ?? Substring(key) }
+        func setup(_ key: String) -> Substring {
+            let marker = [localOnlyKeyMarker, localAPIKeyMarker].compactMap { key.range(of: $0)?.lowerBound }.min()
+            return marker.map { key[..<$0] } ?? Substring(key)
+        }
         return setup(old) == setup(new)
     }
 }

@@ -183,7 +183,7 @@ public struct ClusterServiceCommand: Codable, Sendable, Equatable {
     public var bind: String?
     /// `serve`: true for Both, me first, with the local API's address in `bind`. Nil from an older build.
     public var localAPI: Bool?
-    /// `serve`, local only: the pair's local API key (`LocalEndpoint.loadOrCreateClusterToken`), kept by the member
+    /// `serve`, local only or Both: the pair's local API key (`LocalEndpoint.loadOrCreateClusterToken`), kept by the member
     /// so the key stays the same whichever Mac runs the API. Only inside the keyed link control session; never logged.
     public var localToken: String?
     /// A drained same-model replacement from the currently saved rank-0
@@ -200,11 +200,12 @@ public struct ClusterServiceCommand: Codable, Sendable, Equatable {
         self.op = op; self.model = model; self.text = text; self.cache = cache; self.clusterID = clusterID
         self.claim = claim; self.running = running; self.facts = facts
         self.alonePlan = alonePlan; self.control = control; self.serving = serving; self.deployment = deployment
-        self.localOnly = scope.map(\.isLocalOnly); self.bind = scope?.bind
+        self.localOnly = scope.map(\.isLocalOnly); self.bind = scope?.localAPIBind
+        self.localAPI = scope?.addsLocalAPI == true ? true : nil
     }
 
     /// The scope a `serve` carries; nil when the sender's build sends none or its address is not one the API takes.
-    public var scope: ClusterServingScope? { ClusterServingScope.carried(localOnly: localOnly, bind: bind) }
+    public var scope: ClusterServingScope? { ClusterServingScope.carried(localOnly: localOnly, localAPI: localAPI, bind: bind) }
 }
 
 /// A test request's answer, sent back over the link.

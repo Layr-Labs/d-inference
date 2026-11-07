@@ -27,12 +27,21 @@ TOOLCHAIN = {"versions": {"swift": "6.4.2", "xcode": "Xcode 27.2", "sdk": "27.2"
              "builds": {"swift": "Apple Swift version 6.4.2 (swiftlang-6.4.2.1.4)", "xcode": "Build version 27B5038j",
                         "sdk": "26B5110a"}}
 DEBUG = ".build/arm64-apple-macosx/debug"
-KEPT = (f"{DEBUG}/ProviderPackageTests.xctest/Contents/MacOS/ProviderPackageTests", f"{DEBUG}/darkbloom",
-        f"{DEBUG}/Provider_Resources.bundle/model.json", f"{DEBUG}/mlx.metallib",
+BUNDLE = f"{DEBUG}/ProviderPackageTests.xctest/Contents"
+KEPT = (f"{BUNDLE}/MacOS/ProviderPackageTests", f"{DEBUG}/darkbloom",
+        f"{DEBUG}/Provider_Resources.bundle/model.json", f"{DEBUG}/mlx.metallib", f"{BUNDLE}/MacOS/mlx.metallib",
+        f"{BUNDLE}/Resources/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib",
         ".build/checkouts/swift-nio/Sources/NIO.swift", ".build/checkouts/swift-nio/Tests.build/kept",
-        ".build/repositories/swift-nio-1234/HEAD", ".build/workspace-state.json")
+        ".build/checkouts/swift-nio/.git/objects/info/alternates", ".build/checkouts/swift-syntax/Macros-tool",
+        ".build/build.db", f"{DEBUG}/description.json", ".build/workspace-state.json")
+# The compile intermediates, the debug symbols (beside an executable and
+# inside the test bundle), the host tools and SwiftPM's bare clones.
 DROPPED = (f"{DEBUG}/ProviderCore.build/Engine.swift.o", f"{DEBUG}/ModuleCache/Foundation.pcm",
-           f"{DEBUG}/index/store/v5/units", f"{DEBUG}/Modules/ProviderCore.swiftmodule")
+           f"{DEBUG}/index/store/v5/units", f"{DEBUG}/Modules/ProviderCore.swiftmodule",
+           f"{DEBUG}/darkbloom.dSYM/Contents/Resources/DWARF/darkbloom",
+           f"{BUNDLE}/MacOS/ProviderPackageTests.dSYM/Contents/Resources/DWARF/ProviderPackageTests",
+           f"{DEBUG}/Macros-tool", f"{DEBUG}/Macros-tool.product/Objects.LinkFileList",
+           f"{DEBUG}/Modules-tool/SwiftSyntax.swiftmodule", ".build/repositories/swift-nio-1234/HEAD")
 
 
 def git(root, *args):
@@ -76,12 +85,15 @@ class TestProductsTests(unittest.TestCase):
         self.assertEqual(self.run_main("pack", "provider", str(self.archive))[0], 0)
         shutil.rmtree(self.package / ".build")
 
-    def test_round_trip_keeps_the_products_and_drops_the_compile_intermediates(self):
+    def test_round_trip_keeps_the_products_and_drops_what_no_test_step_reads(self):
         status, printed = self.run_main("pack", "provider", str(self.archive))
         self.assertEqual(status, 0, printed)
+        self.assertIn("MiB of files", printed)
         self.assertIn("MiB compressed", printed)
         self.assertIn(f"{products.STAMP}=", self.environment.read_text())
         shutil.rmtree(self.package / ".build")
+        # zstd packs from a pipe, so the frame declares the full 2 GiB window:
+        # the unpack fails unless it passes LONG_WINDOW too.
         with mock.patch.dict(os.environ, {products.STAMP: "0"}):
             status, printed = self.run_main("unpack", "provider", str(self.archive))
         self.assertEqual(status, 0, printed)

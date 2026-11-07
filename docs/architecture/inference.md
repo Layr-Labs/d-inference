@@ -621,7 +621,14 @@ a corrupt one is kept beside it under its own name (`incidents.corrupt.json`,
 reader and writer opens this build's with
 `ClusterIncidentLog.forThisInstall`. Each record also names the install that
 wrote it (`ClusterIncident.install`), and a build reads only its own, counting
-records without one as production's (`ClusterIncidentLog.install`). The
+records without one as production's (`ClusterIncidentLog.install`). A
+follower sends its status to the leader on the link edge once per interval
+(`ClusterLinkStatusPublisher.defaultInterval = .seconds(2)`) while the edge is
+connected, and none while it is down
+(`libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterLinkStatusExchange.swift`,
+`ClusterLinkStatusPublisher`). A send may come up to a tenth of the interval
+late, 100 ms at most (`min(nanoseconds / 10, 100_000_000)`), so a late send
+never merges with the next one. The
 leader's service log notes a following window's `status` requests once a minute
 (`ClusterService.logsControl`). Each Mac's cluster service tells the other
 whether it starts at login (`ClusterServiceStatus.startsAtLogin`: it runs under

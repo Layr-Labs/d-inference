@@ -25,36 +25,6 @@ func cpuNanoseconds() -> UInt64 {
 func now() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
 func milliseconds(_ value: UInt64) -> String { String(format: "%.3f", Double(value) / 1_000_000) }
 
-/// How late this host wakes a thread that waits for a deadline. The writer
-/// sleeps on a semaphore until its renewal is due, on a user-interactive
-/// queue; the probe does the same every 20 ms while the renewals run and
-/// keeps the worst overshoot. A renewal may be late by that much, which
-/// depends on the host (Blacksmith's VMs mostly wake within a few
-/// milliseconds but one was 46 ms late, a Darkbloom VM was 17 ms late once).
-final class WakeLatencyProbe: @unchecked Sendable {
-    private let lock = NSLock(), sleeper = DispatchSemaphore(value: 0), stopped = DispatchSemaphore(value: 0)
-    private var running = true, worst: UInt64 = 0, samples = 0
-
-    init(periodNanoseconds: UInt64 = 20_000_000) {
-        DispatchQueue(label: "owner-writer-wake.probe", qos: .userInteractive).async { [self] in
-            while lock.withLock({ running }) {
-                let deadline = now() + periodNanoseconds
-                _ = sleeper.wait(timeout: .init(uptimeNanoseconds: deadline))
-                let woke = now(), late = woke > deadline ? woke - deadline : 0
-                lock.withLock { worst = max(worst, late); samples += 1 }
-            }
-            stopped.signal()
-        }
-    }
-
-    /// Stops the probe; returns its worst overshoot and its number of waits.
-    func stop() -> (worst: UInt64, samples: Int) {
-        lock.withLock { running = false }
-        stopped.wait()
-        return lock.withLock { (worst, samples) }
-    }
-}
-
 @main struct OwnerWriterWakeTests {
     static func main() throws {
         let owner = URL(fileURLWithPath: CommandLine.arguments[1]), worker = CommandLine.arguments[2]
@@ -199,7 +169,9 @@ final class WakeLatencyProbe: @unchecked Sendable {
         let begin = now(), idleRest = ClusterWorkerLease.renewNanoseconds + 1_000_000_000
         let e = try endpoint(owner, worker, dir, behavior: "slow-exit", writerIdleNanoseconds: idleRest)
         guard case .ready = try event(e) else { throw OwnerWire.invalid("Expected readiness") }
-        let readyAt = now(), cpu = cpuNanoseconds(), probe = WakeLatencyProbe()
+        // The writer sleeps on a semaphore until its renewal is due, on a
+        // user-interactive queue; the probe waits the same way.
+        let readyAt = now(), cpu = cpuNanoseconds(), probe = WakeLatencyProbe(qos: .userInteractive)
         // Each renewal moves the grant to its own send time plus the time to live.
         var last = e.localLifetimeDeadlineUptimeNanoseconds, renewals: [UInt64] = []
         // Long enough for two renewals of a writer that rests whole idle waits.
@@ -210,9 +182,8 @@ final class WakeLatencyProbe: @unchecked Sendable {
         }
         let latency = probe.stop()
         let idleCPU = cpuNanoseconds() - cpu, idle = now() - readyAt
-        // A renewal may be as late as this host's slowest observed wake, with
-        // 5 ms to spare, and never less than the 15 ms a fast host gets.
-        let late = max(15_000_000, latency.worst + 5_000_000)
+        // A renewal may be as late as the probe allows a wake on this host.
+        let late = latency.allowedLateness
         try require(renewals.count == 2, "Expected two renewals in \(milliseconds(idle)) ms of idle, saw \(renewals.count)")
         let interval = renewals[1] - renewals[0]
         let afterReady = Double(Int64(bitPattern: renewals[0] &- readyAt)) / 1_000_000

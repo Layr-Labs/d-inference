@@ -53,13 +53,13 @@ next pass:
 - An idle writer renews every 5 s on time: each renewal is late by no more
   than this host wakes any thread that waits for a deadline (measured during
   the same 10 s on the writer's primitive and priority, plus 5 ms; at least
-  15 ms). This endpoint's writer rests up to 6 s when idle instead of 50 ms,
-  through the CPU-test seam, so only a writer that wakes for the renewal is on
-  time: one that rested a whole idle wait instead renews a second late,
-  whatever the host's wake latency. A host that wakes threads that late
-  refuses the check. After a fence it sends no renewal and does not spin on
-  the stale renewal time while the owner retires a child that needs three
-  seconds.
+  15 ms). Through the CPU-test seam, the check sets the writer's idle rest to
+  6 s instead of 50 ms. Thus only a writer that wakes for the renewal is on
+  time. A writer that rests a whole idle wait instead renews at least a second
+  late, whatever the host's wake latency. If this host wakes threads 995 ms
+  late or more, the check fails because it cannot tell the two writers apart.
+  After a fence the writer sends no renewal and does not spin on the stale
+  renewal time while the owner retires a child that needs three seconds.
 
 An owner signals its child only after the child's own hard deadline plus a
 margin; `ProcessChecks/RetirementPolicyTests.swift` checks that order directly.

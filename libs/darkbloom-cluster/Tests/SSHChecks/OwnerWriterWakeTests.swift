@@ -89,8 +89,8 @@ final class WakeLatencyProbe: @unchecked Sendable {
     /// the hello it is zero and after a fence it is stale, and either would
     /// otherwise put the wake in the past and spin the writer.
     static func idleWakeDeadline() throws {
-        let rest = ClusterRemoteWorkerEndpoint.writerWakeDeadline, idle = ClusterRemoteWorkerEndpoint.writerIdleNanoseconds
-        func wake(_ now: UInt64, _ renewal: UInt64, _ canBeSent: Bool) -> UInt64 { rest(now, renewal, canBeSent, idle) }
+        let deadline = ClusterRemoteWorkerEndpoint.writerWakeDeadline, idle = ClusterRemoteWorkerEndpoint.writerIdleNanoseconds
+        func wake(_ now: UInt64, _ renewal: UInt64, _ canBeSent: Bool) -> UInt64 { deadline(now, renewal, canBeSent, idle) }
         let t: UInt64 = 1_000_000_000_000
         try require(idle == 50_000_000, "The idle bound is not 50 ms")
         try require(wake(t, 0, false) == t + idle, "Before the hello the zero renewal time was used")
@@ -100,8 +100,8 @@ final class WakeLatencyProbe: @unchecked Sendable {
         try require(wake(t, t + 5_000_000_000, true) == t + idle, "A renewal beyond the idle bound was not capped")
         // The cadence check below rests its writer longer than a renewal interval.
         let renew = ClusterWorkerLease.renewNanoseconds, longRest = renew + 1_000_000_000
-        try require(rest(t, t + renew, true, longRest) == t + renew, "A renewal due within a longer idle rest was not the wake")
-        try require(rest(t, t + renew, false, longRest) == t + longRest, "A longer idle rest was not the wake when no renewal can be sent")
+        try require(deadline(t, t + renew, true, longRest) == t + renew, "A renewal due within a longer idle rest was not the wake")
+        try require(deadline(t, t + renew, false, longRest) == t + longRest, "A longer idle rest was not the wake when no renewal can be sent")
         try require(wake(t, t - 1, true) == t, "An overdue renewal that can be sent is not due now")
         try require(wake(UInt64.max - 10, UInt64.max - 5, false) == UInt64.max, "The idle bound overflowed")
         try require(wake(UInt64.max - 10, UInt64.max - 5, true) == UInt64.max - 5, "The renewal time near the end of the clock was lost")
@@ -189,11 +189,11 @@ final class WakeLatencyProbe: @unchecked Sendable {
     /// This writer's idle rest is one second longer than the renewal
     /// interval, so it renews on time only if it wakes for the renewal. One
     /// that rested a whole idle wait instead is woken last by the readiness
-    /// and next one rest later: its first renewal is a second late and its
-    /// interval a second long, whatever this host's wake latency. With the
-    /// 50 ms rest such a writer was late by anything from 0 to 50 ms, so it
-    /// could pass, and a host that wakes threads 46 ms late left no room for
-    /// the allowance at all.
+    /// and next one rest later: its first renewal is at least a second late
+    /// and its interval at least a second too long, whatever this host's wake
+    /// latency. With the 50 ms rest such a writer was late by anything from 0
+    /// to 50 ms, so it could pass, and a host that wakes threads 46 ms late
+    /// left no room for the allowance at all.
     static func renewalsKeepTheirCadenceAndAFencedWriterRests(_ owner: URL, _ worker: String) throws {
         let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
         let begin = now(), idleRest = ClusterWorkerLease.renewNanoseconds + 1_000_000_000

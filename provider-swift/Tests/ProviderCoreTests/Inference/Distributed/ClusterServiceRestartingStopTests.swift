@@ -64,7 +64,7 @@ struct ClusterServiceRestartingStopTests {
               adopt: { _ in .success([]) }, serve: { .success([]) }, restoreStart: { service.restoreStart() })
     }
 
-    /// The control command lock both steps take: beside the service's own files.
+    /// The control command lock the steps and the memory re-plan take: beside the service's own files.
     private static func commandLock(_ service: ClusterService) -> URL {
         service.store.paths.directory.appendingPathComponent("control.lock")
     }
@@ -454,9 +454,9 @@ struct ClusterServiceRestartingStopTests {
     }
 
     /// The memory re-plan (`noteMemoryRefusal`: this Mac's part refused at load twice) comes due when a part ends, so
-    /// also right after the owner stops the pair with `darkbloom stop`. It waits for the command lock that stop holds,
-    /// then plans, adopts and serves: `localServe` saves the start again, and the pair the owner stopped starts. Once it
-    /// holds the lock it acts only on a start still saved and a claim still confirmed.
+    /// also right after the owner stops the pair with `darkbloom stop`, and it waits for the command lock that stop
+    /// holds. Once it holds the lock it acts only on a start still saved and a claim still confirmed: its `localServe`
+    /// would save the start again, starting the pair the owner stopped.
     @Test(arguments: ["the owner stopped the pair", "control moved to the other Mac"])
     func aMemoryReplanRightAfterAStopOrAHandOverDoesNothing(_ meanwhile: String) throws {
         let (macs, service) = try leader()

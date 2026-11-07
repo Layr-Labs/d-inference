@@ -172,8 +172,10 @@ public final class ClusterService: @unchecked Sendable {
     private var apiPort: Int?
     /// The port the running part listens on: rank 0's API or the solo server's; nil for any other part.
     private var childPort: Int?
+    /// The memory re-plan's steps (`replanForMemory`); tests stand in. Nil: the control leader's onboarding operations.
+    var memoryReplan: MemoryReplan?
     /// Starts of this setup that ended on a memory-gate refusal (a Mac's memory moved after the plan was made), and
-    /// when the plan may next be made again (`memoryReplan`).
+    /// when the plan may next be made again (`noteMemoryRefusal`).
     private var memoryRefusals: (key: String, count: Int)?
     private var nextMemoryReplan = Date.distantPast
     private var memoryReplanInFlight = false
@@ -552,9 +554,6 @@ public final class ClusterService: @unchecked Sendable {
         var serve: () -> Result<[String], ClusterOnboardingFailure>
     }
 
-    /// Nil: `controlLive`'s.
-    var memoryReplan: MemoryReplan?
-
     private func noteMemoryRefusal(key: String, since: Date, model: String, say: @escaping @Sendable (String) -> Void) {
         let log = ClusterIncidentLog.forThisInstall()
         let refused = log.feed().incidents.contains { $0.ts >= since.timeIntervalSince1970 && $0.guidanceCode == "memory_gate_refused" }
@@ -579,12 +578,10 @@ public final class ClusterService: @unchecked Sendable {
     /// `noteMemoryRefusal`'s re-plan of `model` on the memory now, on a thread of its own: it holds the command lock so a
     /// person's command and this never run at once.
     func replanForMemory(model: String, say: @escaping @Sendable (String) -> Void) {
-        guard let held = ClusterControlCommandLock.acquire(seconds: 5,
-            file: store.paths.directory.appendingPathComponent("control.lock")) else { return }
+        // It comes due when a part ends, so also right after the owner's `darkbloom stop`, which holds the command
+        // lock: its `localServe` would start that pair again. A hand-over may have finished meanwhile too.
+        guard let held = commandLockIfStillStarted() else { return }
         defer { held.release() }
-        // It comes due when a part ends, so also right after the owner's `darkbloom stop`, which held this lock: its
-        // `localServe` would start that pair again. A hand-over may have finished meanwhile too.
-        guard leadershipConfirmed(), (try? store.readRecord())?.leadership?.serving == true else { return }
         say("a Mac's memory no longer holds its share of \(model) (refused at load twice): planning again on the memory now")
         let before = try? context.savedConfiguration().reference.get()?.sha256
         let live = controlLive
@@ -1196,10 +1193,8 @@ public final class ClusterService: @unchecked Sendable {
             self.lock.withLock { self.updateWaitLine = nil }
             // Held, the command lock keeps a hand-over and a person's stop off; either may have finished while the builds
             // were compared, and the re-plan's stop would put back a start the person cleared.
-            guard let held = ClusterControlCommandLock.acquire(seconds: 5,
-                file: self.store.paths.directory.appendingPathComponent("control.lock")) else { return }
+            guard let held = self.commandLockIfStillStarted() else { return }
             defer { held.release() }
-            guard self.leadershipConfirmed(), (try? self.store.readRecord())?.leadership?.serving == true else { return }
             self.lock.withLock { self.updatingLine = ClusterOnboardingUpdate.statusLine }
             self.publish()
             say("Darkbloom changed on \(macs): setting the cluster up again for \(model)")

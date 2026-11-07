@@ -45,6 +45,9 @@ where Inner.Context == BasicRequestContext {
     /// Counts model tokens in returned reasoning for
     /// `usage.completion_tokens_details.reasoning_tokens`; nil reports none.
     let reasoningTokenCounter: (@Sendable (String) async -> (@Sendable (String) -> Int)?)?
+    /// How often a streamed request's prompt is commented on until its first token (`LocalPrefillProgress`); nil
+    /// comments on none.
+    let prefillTicker: LocalPrefillTicker?
 
     init(
         inner: Inner,
@@ -56,11 +59,13 @@ where Inner.Context == BasicRequestContext {
         responseConversations: LocalResponseConversationStore = LocalResponseConversationStore(),
         serviceForLogprobs: (@Sendable (ChatTemplateControls, EngineV2LogprobsPlumbing) -> MLXOpenAIService)? = nil,
         reasoningTokenCounter: (@Sendable (String) async -> (@Sendable (String) -> Int)?)? = nil,
+        prefillTicker: LocalPrefillTicker? = nil,
         serviceForRawChat: (@Sendable (Data, OpenAIChatCompletionRequest, EngineV2LogprobsChannel?)
             -> MLXOpenAIService?)? = nil
     ) {
         self.serviceForLogprobs = serviceForLogprobs
         self.reasoningTokenCounter = reasoningTokenCounter
+        self.prefillTicker = prefillTicker
         self.reasoningParserFor = reasoningParserFor
         self.responseConversations = responseConversations
         self.inner = inner

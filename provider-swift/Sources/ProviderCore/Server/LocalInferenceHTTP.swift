@@ -73,7 +73,10 @@ public typealias LocalInferenceApplication =
 ///   (so a port collision never advertises a foreign process). If the bind
 ///   fails, `runService` throws instead and this never fires.
 /// - Parameter modelLimits: this Mac's engine limits for a model (context and
-///   output tokens), which the router's `/v1/models` carries; nil knows none.
+///   output tokens, input modalities), which the router's `/v1/models` carries;
+///   nil knows none.
+/// - Parameter prefillTicker: how often a streamed request's prompt is
+///   commented on until its first token (`LocalPrefillProgress`); nil, never.
 func makeLocalInferenceApplication(
     config: LocalInferenceHTTPConfig,
     defaultMaxTokens: Int,
@@ -89,7 +92,8 @@ func makeLocalInferenceApplication(
     nemotronSuperImageHTTP: NemotronSuperLocalImageHTTP? = nil,
     managedSuperEngine: (@Sendable (Data, OpenAIChatCompletionRequest, EngineV2LogprobsChannel?)
         -> (any MLXServerEngine)?)? = nil,
-    modelLimits: (@Sendable (String) async -> LocalModelLimits?)? = nil
+    modelLimits: (@Sendable (String) async -> LocalModelLimits?)? = nil,
+    prefillTicker: LocalPrefillTicker? = .standard
 ) -> LocalInferenceApplication {
     // The upstream OpenAI request shape intentionally ignores Qwen's
     // template-only controls. Build a lightweight engine/service facade per
@@ -175,6 +179,7 @@ func makeLocalInferenceApplication(
         responseConversations: LocalResponseConversationStore(),
         serviceForLogprobs: serviceForLogprobs,
         reasoningTokenCounter: reasoningTokenCounter,
+        prefillTicker: prefillTicker,
         serviceForRawChat: { body, request, logprobs in
             if let service = nemotronSuperImageHTTP?.service(body: body, request: request,
                 responseStore: responseStore, metrics: metrics, logprobs: logprobs) { return service }

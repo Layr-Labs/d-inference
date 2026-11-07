@@ -2,21 +2,35 @@ import Foundation
 import NIOCore
 import NIOFoundationCompat
 
-/// Context and output limits of one model, in tokens. nil: not known here.
+/// Context and output limits of one model, in tokens, and the input it takes. nil: not known here.
 public struct LocalModelLimits: Sendable, Equatable {
     public var contextLength: Int?
     public var maxOutputLength: Int?
+    /// What a request may carry, as this Mac's engine serves the model: `text`, then `image` and `video`.
+    public var inputModalities: [String]?
 
-    public init(contextLength: Int? = nil, maxOutputLength: Int? = nil) {
+    public init(contextLength: Int? = nil, maxOutputLength: Int? = nil, inputModalities: [String]? = nil) {
         self.contextLength = contextLength.flatMap { $0 > 0 ? $0 : nil }
         self.maxOutputLength = maxOutputLength.flatMap { $0 > 0 ? $0 : nil }
+        self.inputModalities = inputModalities.flatMap { $0.isEmpty ? nil : $0 }
     }
 
     /// A single Mac slot's limits: its model window bounds a request's prompt
     /// and its output alike (a `max_tokens` beyond what the prompt leaves is
     /// cut to it), so both are the window.
-    public init(window: Int?) {
-        self.init(contextLength: window, maxOutputLength: window)
+    public init(window: Int?, inputModalities: [String]? = nil) {
+        self.init(contextLength: window, maxOutputLength: window, inputModalities: inputModalities)
+    }
+
+    /// `text`, then `image` for a model whose engine takes images, and `video` for one that takes video as well.
+    public static func inputModalities(image: Bool, video: Bool = false) -> [String] {
+        ["text"]
+    }
+
+    /// What one Mac takes for a model it serves: images when the model advertises vision (`ModelInfo.isVision`, which
+    /// the coordinator routes images on).
+    static func inputModalities(of model: ModelInfo) -> [String] {
+        ["text"]
     }
 }
 
@@ -25,6 +39,7 @@ public struct LocalModelLimits: Sendable, Equatable {
 /// `owned_by` says where the model runs: `this-mac`, `my-macs` (the owner's other Macs, free) or `darkbloom` (the
 /// network, billed; listed only with `my-macs-first`). `context_length` and `max_output_length` are present when
 /// known: this Mac's engine first, else the Darkbloom catalog (the coordinator's own `self` list has no limits).
+/// `input_modalities` is this Mac's engine's for its models, and the coordinator's as it lists them for the others.
 struct LocalRouterModelEntry: Codable, Equatable, Sendable {
     var id: String
     var object = "model"
@@ -33,6 +48,7 @@ struct LocalRouterModelEntry: Codable, Equatable, Sendable {
     var name: String?
     var contextLength: Int?
     var maxOutputLength: Int?
+    var inputModalities: [String]?
 
     enum CodingKeys: String, CodingKey {
         case id, object, created, name
@@ -40,6 +56,7 @@ struct LocalRouterModelEntry: Codable, Equatable, Sendable {
         case contextLength = "context_length"
         case maxModelLen = "max_model_len"
         case maxOutputLength = "max_output_length"
+        case inputModalities = "input_modalities"
     }
 
     init(id: String, created: Int?, ownedBy: String, name: String? = nil, limits: LocalModelLimits = .init()) {

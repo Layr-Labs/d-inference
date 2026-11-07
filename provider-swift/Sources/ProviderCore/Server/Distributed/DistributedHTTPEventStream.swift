@@ -96,7 +96,8 @@ enum DistributedHTTPEventStream {
         return frame
     }
 
-    static func response(_ frames: AsyncThrowingStream<String, Error>, control: DistributedHTTPResponse) -> Response {
+    static func response(_ frames: AsyncThrowingStream<String, Error>, control: DistributedHTTPResponse,
+                         prefill: LocalPrefillProgress? = nil) -> Response {
         let lifetime = DistributedHTTPBodyLifetime(control)
         // The product's event-stream headers (`LocalChatUploadResponder.sseResponse`).
         return Response(status: .ok, headers: [.contentType: "text/event-stream; charset=utf-8", .cacheControl: "no-cache"],

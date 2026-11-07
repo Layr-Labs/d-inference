@@ -39,6 +39,8 @@ struct IntegrationModel: Equatable, Sendable {
     struct Fallback: Equatable, Sendable {
         /// The endpoint's output cap; nil when it gave none.
         var endpointOutputCap: Int?
+        /// The endpoint lists image input for the model: its engine takes images, whatever an entry says.
+        var endpointImageInput = false
     }
 
     /// A model's entry in a tool's config, as the tool has it now; nil for what the entry doesn't hold.
@@ -53,9 +55,9 @@ struct IntegrationModel: Equatable, Sendable {
     }
 
     /// The model with what the tool's `entry` already says in place of its fallbacks, so a run without the catalog
-    /// never downgrades what a run with it wrote: the name, tools, image input and reasoning, the context when the
-    /// endpoint gives none, and the output while the context is the one it was set for (unless the endpoint gives a
-    /// cap).
+    /// never downgrades what a run with it wrote: the name, tools, image input (unless the endpoint lists it) and
+    /// reasoning, the context when the endpoint gives none, and the output while the context is the one it was set for
+    /// (unless the endpoint gives a cap).
     func keeping(_ entry: Entry?) -> IntegrationModel {
         guard let fallback, let entry else { return self }
         let context = contextLength ?? entry.contextLength
@@ -91,12 +93,16 @@ struct EndpointModel: Decodable, Equatable, Sendable {
     let ownedBy: String?
     let contextLength: Int?
     let maxOutputLength: Int?
+    /// What a request may carry (`text`, `image`, `video`): this Mac's engine's for its models.
+    let inputModalities: [String]?
 
-    init(id: String, ownedBy: String? = nil, contextLength: Int? = nil, maxOutputLength: Int? = nil) {
+    init(id: String, ownedBy: String? = nil, contextLength: Int? = nil, maxOutputLength: Int? = nil,
+         inputModalities: [String]? = nil) {
         self.id = id
         self.ownedBy = ownedBy
         self.contextLength = contextLength
         self.maxOutputLength = maxOutputLength
+        self.inputModalities = inputModalities
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -105,6 +111,7 @@ struct EndpointModel: Decodable, Equatable, Sendable {
         case contextLength = "context_length"
         case maxModelLen = "max_model_len"
         case maxOutputLength = "max_output_length"
+        case inputModalities = "input_modalities"
     }
 
     init(from decoder: Decoder) throws {
@@ -114,7 +121,11 @@ struct EndpointModel: Decodable, Equatable, Sendable {
         contextLength = try container.decodeIfPresent(Int.self, forKey: .contextLength)
             ?? container.decodeIfPresent(Int.self, forKey: .maxModelLen)
         maxOutputLength = try container.decodeIfPresent(Int.self, forKey: .maxOutputLength)
+        inputModalities = nil
     }
+
+    /// The endpoint says the model takes images.
+    var takesImages: Bool { inputModalities?.contains { $0.lowercased() == "image" } == true }
 }
 
 /// Why the endpoint's models could not be read. No case carries the key.
@@ -177,8 +188,10 @@ enum IntegrationModels {
     /// - Context: the endpoint's (what this engine admits now), else the catalog's maximum, else unknown.
     /// - Output cap: `min(max output, context / 4)`, the max output being the endpoint's, else the catalog's, else
     ///   `defaultOutputCap`.
-    /// - Capabilities: the catalog's names; without them, tools on (Darkbloom serves tool calls on its chat models),
-    ///   text input only (the engine refuses images on text-only builds) and no reasoning claim.
+    /// - Capabilities: the catalog's names, and image input also when the endpoint lists `image` among the model's
+    ///   `input_modalities` (this Mac's engine says so, catalog or not). Without the catalog's names, tools on
+    ///   (Darkbloom serves tool calls on its chat models), text input unless the endpoint lists images (the engine
+    ///   refuses them on text-only builds) and no reasoning claim: reasoning comes from the catalog alone.
     /// - A model the catalog doesn't describe carries `fallback`: a tool's own entry for it keeps its values
     ///   (`keeping(_:entries:)`).
     static func resolve(_ listed: [EndpointModel], catalog: CatalogSnapshot?) -> [IntegrationModel] {

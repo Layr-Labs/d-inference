@@ -14,7 +14,8 @@ extension ClusterLocalRelay {
 
     /// Rank 0's cable address when this Mac (`memberID`) relays to it: the pair serves with its local API on every
     /// address (`ClusterServingScope.answersOnEveryMac`: local only by default, or Both, me first), this Mac's part runs,
-    /// and this Mac is in the roster but isn't rank 0. Nil when it doesn't relay.
+    /// and this Mac is in the roster but isn't rank 0. Nil when it doesn't relay. With a loopback or one-address bind,
+    /// rank 0's API isn't reachable over the cable, and this Mac must not open what the person kept closed.
     public static func rankZeroHost(serving: Bool, scope: ClusterServingScope, memberID: String, roster: [RosterMac],
                                     partRuns: Bool) -> String? {
         guard serving, partRuns, scope.answersOnEveryMac, let local = roster.first(where: { $0.id == memberID }),

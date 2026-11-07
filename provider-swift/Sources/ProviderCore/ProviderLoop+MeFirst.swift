@@ -10,15 +10,20 @@ import Foundation
 ///   draining` refusal, which coordinators fail over without a retry or a
 ///   derate. `load_model` and `prefetch_model` get the drain failures,
 ///   Autopilot commands are busy, and capacity quotes refuse.
-/// - `desired_models` waits, and is replayed when the pause ends.
-/// - Local requests are admitted as usual, and Darkbloom work accepted before
-///   the pause finishes.
+/// - Local requests are admitted as usual.
 ///
-/// It is event-driven and costs next to nothing. A local request's start and
-/// end are O(1) updates of `MeFirstPolicy`. Heartbeats go out only when the
-/// pause begins and ends, beside the usual baseline. The one timer is armed
-/// when the owner's idle time starts counting and is gone once the pause
-/// ends. With me first off, nothing here runs.
+/// Invariants:
+/// - The pause cancels nothing: Darkbloom work accepted before it finishes,
+///   with no drain bound (unlike an add-on hold).
+/// - An add-on hold outranks the pause. While both apply, the busy fields
+///   describe the hold (`publishBusy`), and the pause goes on under it.
+/// - `desired_models` waits. Whichever of a drain, a hold and the pause ends
+///   last replays it (`replayDesiredModels`).
+/// - Heartbeats go out only when the pause begins and ends, beside the usual
+///   baseline. A local request's start and end are O(1) updates of
+///   `MeFirstPolicy`, with no I/O.
+/// - At most one timer: armed when the owner's idle time starts counting,
+///   gone once the pause ends. With me first off, no timer or task exists.
 extension ProviderLoop {
     /// Darkbloom work is paused for the owner.
     var ownerPausesPublic: Bool { meFirst?.isPausingPublic == true }
@@ -63,10 +68,11 @@ extension ProviderLoop {
 
     /// Called for every fresh registration. The register carried the owner's
     /// busy fields, and the connection's first event heartbeat
-    /// (`setRetirementReconnectBarrier`) repeats the draining status. A pause
-    /// whose idle time passed while the connection was down ends here.
+    /// (`setRetirementReconnectBarrier`) repeats the draining status.
     internal func reassertOwnerPauseAfterReconnect() {
-        guard ownerPausesPublic, !resumeIfOwnerIdle() else { return }
+        guard ownerPausesPublic else { return }
+        // A pause whose idle time passed while the connection was down ends here.
+        if resumeIfOwnerIdle() { return }
         logger.info("Me first: Darkbloom requests stay paused on the new coordinator connection")
     }
 
@@ -104,16 +110,11 @@ extension ProviderLoop {
         Task { await self.announceOwnerPauseEnd() }
     }
 
-    /// Announces the routable status, then replays the desired_models
-    /// deferred during the pause. A drain or hold still on replays them when
-    /// it ends.
+    /// Announces the end of the pause, then replays the desired_models
+    /// deferred during it. A drain or hold still on replays them when it ends.
     private func announceOwnerPauseEnd() async {
         await coordinatorClient?.sendEventHeartbeat()
-        guard !ownerPausesPublic, !servingDrain.refusing, !addonHoldActive,
-              let entries = deferredDesiredModels, let send = outboundSend else { return }
-        deferredDesiredModels = nil
-        logger.info("Replaying desired_models deferred while you used this Mac (\(entries.count) entr(ies))")
-        await reconcileDesiredModels(entries, send: send)
+        await replayDesiredModels(deferred: "while you used this Mac")
     }
 
     // MARK: - Resume timer

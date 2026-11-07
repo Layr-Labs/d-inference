@@ -2,7 +2,10 @@ import Foundation
 
 /// The control leader's automatic steps that stop the pair only to start it again: the re-plan after a Darkbloom update
 /// (`checkForUpdate`) and a change of the pair's cluster approval (`checkApproval`). Their stop is a person's stop
-/// (`OnboardingLive.localStop`), which clears the pair's saved start before it stops anything.
+/// (`OnboardingLive.localStop`), which clears the pair's saved start before it stops anything, so a failed stop must put
+/// it back: both steps act only while the start is saved, and nothing else starts a pair again. DevNet pair-2, 2026-11-07
+/// (`0.10.10-dev.branch.135` → `.137`): such a stop failed right after both Macs restarted into the update, and the pair
+/// stayed stopped on both Macs until `darkbloom cluster` was run.
 extension ClusterService {
     /// The steps of the re-plan after an update, as the control leader's onboarding operations run them (`controlLive`);
     /// tests stand in.
@@ -23,13 +26,14 @@ extension ClusterService {
     /// chosen in its place. The model's choice as planned, or why the cluster was not set up again.
     static func replanAfterUpdate(model: String, _ steps: UpdateReplan) -> Result<ClusterOnboardingModelChoice, ClusterOnboardingFailure> {
         if case .failure(let failure) = steps.reachMembers() { return .failure(failure) }
-        if case .failure(let failure) = steps.stop() { return .failure(failure) }
-        steps.awaitReleased()
-        // A failure from here on keeps the serving intent, so the next check tries again.
+        // From the stop on, also when the stop itself fails, a failure keeps the serving intent, so the next check tries
+        // again.
         func failed(_ failure: ClusterOnboardingFailure) -> Result<ClusterOnboardingModelChoice, ClusterOnboardingFailure> {
             steps.restoreStart()
             return .failure(failure)
         }
+        if case .failure(let failure) = steps.stop() { return failed(failure) }
+        steps.awaitReleased()
         let choices: [ClusterOnboardingModelChoice]
         switch steps.planModels() {
         case .success(let value): choices = value
@@ -46,11 +50,13 @@ extension ClusterService {
     }
 
     /// `checkApproval`'s stop of both parts before it changes the cluster approval on both Macs (`ClusterApprovalSync.apply`):
-    /// nil once both stopped (or the pair was not serving), else the line why not, and the approval stays as it is.
+    /// nil once both stopped (or the pair was not serving), else the line why not, with the pair's saved start put back,
+    /// so it serves as before and the next check tries again.
     static func stopForApprovalChange(serving: Bool, stop: () -> Result<[String], ClusterOnboardingFailure>, drained: () -> Bool,
                                       restoreStart: () -> Void) -> String? {
         guard serving else { return nil }
         if case .failure(let failure) = stop() {
+            restoreStart()
             return "could not stop the parts to change the cluster approval: " + failure.lines.joined(separator: " ")
         }
         guard drained() else {
@@ -60,8 +66,11 @@ extension ClusterService {
         return nil
     }
 
-    /// Puts the pair's saved start back after an automatic step stopped it to start it again.
+    /// Puts the pair's saved start back after an automatic step stopped it to start it again, and drops the stop request a
+    /// stop that failed midway keeps (this Mac's part had not released yet): left in place, it would hold off every start,
+    /// sync and hand-over (`OnboardingLive.localServe`, `syncMembers`). Both steps call it under the control command lock,
+    /// so no person's stop is under way.
     func restoreStart() {
-        try? store.updateRecord { $0.leadership?.serving = true }
+        try? store.updateRecord { $0.leadership?.serving = true; $0.stopDrain = nil }
     }
 }

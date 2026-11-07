@@ -1121,8 +1121,10 @@ public final class ClusterService: @unchecked Sendable {
     }
 
     private func checkForUpdate(say: @escaping @Sendable (String) -> Void) {
+        // Only on a claim the other Mac confirmed: the Macs restart into an update seconds apart, and the one back first
+        // may take control meanwhile, so a restarted leader's saved claim may be superseded (and its stop refused).
         guard let leadership = (try? store.readRecord())?.leadership, leadership.serving, let model = leadership.modelName,
-              lock.withLock({ control?.leads == true }) else { return }
+              leadershipConfirmed() else { return }
         let begin: Bool = lock.withLock {
             guard !updateInFlight, !stopping, Date().timeIntervalSince(nextUpdateCheck) >= 0 else { return false }
             updateInFlight = true
@@ -1156,8 +1158,10 @@ public final class ClusterService: @unchecked Sendable {
                 return
             }
             self.lock.withLock { self.updateWaitLine = nil }
+            // Held, the command lock keeps a hand-over off; one may have finished while the builds were compared.
             guard let held = ClusterControlCommandLock.acquire(seconds: 5) else { return }
             defer { held.release() }
+            guard self.leadershipConfirmed() else { return }
             self.lock.withLock { self.updatingLine = ClusterOnboardingUpdate.statusLine }
             self.publish()
             say("Darkbloom changed on \(macs): setting the cluster up again for \(model)")
@@ -1196,8 +1200,11 @@ public final class ClusterService: @unchecked Sendable {
     /// serves nothing new changes nothing and stops nothing. An approval that ended is removed by each Mac itself
     /// before its part starts (`supervise`), never by stopping a running pair.
     private func checkApproval(say: @escaping @Sendable (String) -> Void) {
+        let now = Self.monotonicSeconds()
+        // Only on a claim the other Mac confirmed, as `checkForUpdate`: a change of approval stops the pair.
         let begin: Bool = lock.withLock {
-            guard !approvalInFlight, !updateInFlight, !stopping, control?.leads == true, Date().timeIntervalSince(nextApprovalCheck) >= 0 else { return false }
+            guard !approvalInFlight, !updateInFlight, !stopping, control?.leadershipConfirmed(now: now) == true,
+                  Date().timeIntervalSince(nextApprovalCheck) >= 0 else { return false }
             approvalInFlight = true
             return true
         }
@@ -1273,6 +1280,7 @@ public final class ClusterService: @unchecked Sendable {
             }
             defer { held.release() }
             checked()
+            guard self.leadershipConfirmed() else { return }
             // Decided again under the lock, with the same answer: a person's command may have changed the setup, the
             // scope or the other Mac while this check waited.
             guard let decided = decide(answer) else { return }

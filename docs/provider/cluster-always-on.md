@@ -1,6 +1,6 @@
 # Keep a cluster member always on
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-07
 
 `darkbloom cluster` on each Mac does all of this. Nothing below is needed: it
 explains what the onboarding sets up and how to check it.
@@ -317,7 +317,17 @@ rollback: roll back both Macs.
 After both Macs restarted, the leader's cluster service plans the same model
 again once both answer with the same worker build
 (`ClusterOnboardingUpdate.oneBuild`), and the pair registers again under the
-new release's cluster approval. Each step is one `cluster update:` line in
+new release's cluster approval. Both steps act only once the other Mac has
+confirmed the leader's claim (`ClusterControlNode.leadershipConfirmed`): the two
+Macs restart seconds apart, and the one that comes back first may take control
+after the lease's 30 s, so a restarted leader's saved claim may be superseded.
+Both steps stop the pair (`OnboardingLive.localStop`, which clears the pair's
+saved start first) only to start it again
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService+RestartingStop.swift`):
+when the stop fails, the saved start is put back and the stop request it left
+is dropped, so the next check tries again. Before, such a failure left the pair
+stopped on both Macs until `darkbloom cluster` ran.
+Each step is one `cluster update:` line in
 `~/.darkbloom/cluster-setup/service.log`, for example `cluster update: waiting
 for the other Mac to have v<version>`, `cluster update: this Mac's part finished
 its accepted requests`, `cluster update: installed v<version>`, `cluster update

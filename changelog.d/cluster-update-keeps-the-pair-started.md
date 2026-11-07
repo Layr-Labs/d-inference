@@ -1,0 +1,4 @@
+### A pair comes back by itself after an update
+
+- After both Macs of a pair restart into an update, the leading Mac stops the pair once to set it up again for the new release, and again to save the release's cluster approval. When that stop failed (the other Mac didn't answer in time, or refused it because it had taken the lead for a moment while the leading Mac restarted), the pair stayed stopped on both Macs ("Stopped; last model …") until someone ran `darkbloom cluster`. Now a failed stop keeps the pair started, and the leading Mac tries again: the setup 10 minutes later, the approval at its next check, a minute later.
+- The leading Mac now sets the pair up after an update, and changes its cluster approval, only once the other Mac has confirmed that it leads, as `darkbloom cluster` already did for a person's commands.

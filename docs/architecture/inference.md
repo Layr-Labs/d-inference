@@ -7663,28 +7663,29 @@ flowchart LR
    (`LocalEndpoint.loadOrCreateToken`, what its tools read) and the pair's
    (`LocalInferenceHTTPConfig.pairToken`; `LocalEndpoint.loadOrCreateClusterToken`,
    synced by the serve command), and the local router. The part key marks the
-   scope (`:local-api@`), so switching between Darkbloom network and Both
-   restarts only that part. An older record or serve command has no `localAPI`
-   and reads as the Darkbloom network.
-9. Every other Mac answers locally too, as for `cluster local`: with the API on
-   every address (`ClusterServingScope.answersOnEveryMac`), the cluster service
-   of each Mac whose part isn't rank 0 runs `ClusterLocalRelay` on its own port
-   (`ClusterLocalRelay.rankZeroHost`, from the roster by rank, not by counting
-   Macs) to rank 0's cable address, at the port rank 0's service reports
-   (`ClusterServiceStatus.pairAPIPort`, from its part's discovery record, once
-   bound; an older build's local session port otherwise). It takes that port
-   when free, else the first free of `ClusterLocalServing.localAPIPorts`
-   (`ClusterLocalRelay.port`), and writes this Mac's discovery record with this
-   Mac's own key (`ClusterService.relayDiscovery`). The relay reads each
-   request's head (`ClusterLocalRelay.relayedHead`): `Authorization: Bearer`
-   with this Mac's own key goes on with the pair's; every other byte goes on as
-   it came, a body by its Content-Length, so a kept-alive connection's every
-   request is read. A body framed otherwise (chunked, an upgrade) makes that
-   request the connection's last (`Connection: close`), and a head it can't
-   read passes unchanged. Answers are never read: that direction is the same
-   byte copy (`ClusterLocalRelay.pump`), so the relay adds nothing per token.
-   Rank 0's API sees each relayed request come from the relaying Mac's cable
-   address: another machine, so the router never takes the paid hop for it
+   scope (`:local-api@`), so switching between Darkbloom network and Both, me
+   first restarts only that part. An older record or serve command has no
+   `localAPI` and reads as the Darkbloom network.
+9. Every other Mac answers locally too, as with Only me (`cluster local`): with
+   the API on every address (`ClusterServingScope.answersOnEveryMac`), the
+   cluster service of each Mac whose part isn't rank 0 runs `ClusterLocalRelay`
+   on its own port (`ClusterLocalRelay.rankZeroHost`, from the roster by rank,
+   not by counting Macs) to rank 0's cable address, at the port rank 0's service
+   reports (`ClusterServiceStatus.pairAPIPort`, from its part's discovery
+   record, once bound; an older build's local session port otherwise). It takes
+   that port when free, else the first free of
+   `ClusterLocalServing.localAPIPorts` (`ClusterLocalRelay.port`), and writes
+   this Mac's discovery record with this Mac's own key
+   (`ClusterService.relayDiscovery`). The relay reads each request's head
+   (`ClusterLocalRelay.relayedHead`): `Authorization: Bearer` with this Mac's
+   own key goes on with the pair's; every other byte goes on as it came, a body
+   by its Content-Length, so a kept-alive connection's every request is read. A
+   body framed otherwise (chunked, an upgrade) makes that request the
+   connection's last (`Connection: close`), and a head it can't read passes
+   unchanged. Answers are never read: that direction is the same byte copy
+   (`ClusterLocalRelay.pump`), so the relay adds nothing per token. Rank 0's API
+   sees each relayed request come from the relaying Mac's cable address: another
+   machine, so the router never takes the paid hop for it
    (`LocalHTTPClient.isAnotherMachine`), and it is the owner's use like any
    local request (item 6).
 

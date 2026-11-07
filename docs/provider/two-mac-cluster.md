@@ -791,9 +791,9 @@ With **Both, me first**:
   Mac). With the macOS firewall on, macOS may ask once to let Darkbloom accept
   incoming connections.
 - **On every other Mac:** its cluster service passes its own port to that API
-  over the cable, as `darkbloom cluster local` does, so each Mac of the pair
-  answers at `http://127.0.0.1:<port>/v1`. The port is the API's own when it is
-  free there, else the first free one from 8001 (never 8000 or 47420–47423).
+  over the cable, as with **Only me**, so each Mac of the pair answers at
+  `http://127.0.0.1:<port>/v1`. The port is the API's own when it is free
+  there, else the first free one from 8001 (never 8000 or 47420–47423).
   Tools there use that Mac's own key: `darkbloom local` there prints the
   address and the key, and `darkbloom start --opencode` (or `--hermes`) there
   sets them up for it. The port passes each request on with the pair's key

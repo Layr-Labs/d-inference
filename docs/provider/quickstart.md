@@ -17,11 +17,10 @@ opencode                             # then /models → Darkbloom
 ```
 
 Two Macs: run `darkbloom cluster` on each, then `darkbloom start --opencode` on
-the leading Mac.
+either Mac.
 
 <!-- pending LS-1: choice 1, Only me, also offers the model list and the memory question, and serves in the background. -->
 <!-- pending LS-4: the start waits for the model to load, on one live line, before it sets OpenCode up. -->
-<!-- pending LS-3: in a pair, start with opencode on either Mac. -->
 
 ## Prerequisites
 
@@ -130,7 +129,7 @@ client: `darkbloom local` prints the address, the key and a `curl` to try
 - **Switch later:** `darkbloom start --choose` asks how this Mac serves again,
   then goes on as above.
 - **Two Macs:** run `darkbloom cluster` on each Mac to pair them and choose
-  how the pair serves, then `darkbloom start --opencode` on the leading Mac
+  how the pair serves, then `darkbloom start --opencode` on either Mac
   ([Two Macs as one provider](./two-mac-cluster.md)).
 
 <!-- pending LS-2: a one-step switch that keeps the models, the address and the key. -->

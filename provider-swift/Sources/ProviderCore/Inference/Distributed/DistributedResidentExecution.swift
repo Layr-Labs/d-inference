@@ -39,6 +39,14 @@ public struct DistributedResidentIdentity: Sendable, Equatable {
             }
         }
         // Two ranks or more, each named once: nothing here keys on a pair of two.
+        // This checks only the shape of the roster the provider expects, never a
+        // peer's claim. A repeated peer is refused at any size (for two, the same
+        // test as `peers[0].id != peers[1].id`); an impostor or any other roster
+        // is refused because the engine serves only an owner whose readiness
+        // equals this identity, peer for peer, and the owner checks it again on
+        // every reservation. Every roster formed today is still two distinct
+        // peers (`ClusterConfiguration`, `NativePairMemberInstallation`, each
+        // worker's readiness in `ClusterWorkerValidation`).
         guard !modelID.isEmpty, modelID.utf8.count <= 512,
             digest(artifactSHA256), digest(configurationSHA256),
             peers.count >= 2, Set(peers.map(\.id)).count == peers.count,

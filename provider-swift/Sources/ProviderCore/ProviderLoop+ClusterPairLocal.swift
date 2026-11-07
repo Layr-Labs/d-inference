@@ -4,21 +4,31 @@ import Foundation
 //
 // The leader member's unified local endpoint (`ProviderLoop+LocalEndpoint`)
 // serves the published pair slot: local and Darkbloom requests share its one
-// bridge and its lanes. No process, copy or buffer is added. A local request
-// that finds every lane busy waits in arrival order, bounded as `cluster
-// local`'s queue is (`DistributedRequestQueue`). A waiter costs nothing: it is
-// parked until something that can free a lane or refuse it wakes it (a local
-// request released one, the capacity refresh that follows every Darkbloom
-// request's end, admission opening after the warmup canary, a drain, the slot
-// retiring), its client goes away or its ceiling passes. Nothing polls, and a
-// Darkbloom request's path is unchanged: it never waits for this queue.
+// bridge and its lanes. No process, copy or buffer is added. What holds:
+//
+// - Only the member that hosts the slot runs a local API, and only with a key
+//   (`admitsClusterPairLocalAPI`). Every other member refuses one before
+//   `run()` binds anything.
+// - A local request that finds every lane busy waits in arrival order,
+//   bounded as `cluster local`'s queue is (`DistributedRequestQueue`): 429 when
+//   the queue is full, 503 past its ceiling. Nobody overtakes a waiter.
+// - A waiter costs nothing: it is parked until something that can free a lane
+//   or refuse it wakes it (a local request released one, the capacity refresh
+//   that follows every Darkbloom request's end, admission opening after the
+//   warmup canary, a drain, the slot retiring), its client goes away or its
+//   ceiling passes. Nothing polls.
+// - Darkbloom requests never enter this queue, and their path through the slot
+//   is unchanged. Their side only calls `wakeClusterPairLocalWaiters`, which
+//   does nothing while nobody waits.
 
 /// The owner's use of the pair through this Mac's local API began or ended.
 enum ClusterPairLocalUse { case began, ended }
 
 /// The leader's local requests on its pair's lanes: those waiting, oldest
 /// first, and the lanes the others hold, per published slot. Owned by the
-/// loop actor; every method is synchronous.
+/// loop actor; every method is synchronous. The queue is bounded
+/// (`enqueue`) and first in, first out: only the request `isNext` may take a
+/// free lane.
 struct ClusterPairLocalLanes {
     /// Fixed when the loop is made (`DARKBLOOM_CLUSTER_QUEUE_WAITING`).
     let limits: DistributedRequestQueue.Limits
@@ -36,8 +46,15 @@ struct ClusterPairLocalLanes {
     init(limits: DistributedRequestQueue.Limits) { self.limits = limits }
 
     var waitingCount: Int { waiting.count }
-    func isFirst(_ ticket: UUID) -> Bool { waiting.first == ticket }
+    private func isFirst(_ ticket: UUID) -> Bool { waiting.first == ticket }
     func lanesHeld(on slot: UUID) -> Int { grants.values.reduce(0) { $1 == slot ? $0 + 1 : $0 } }
+
+    /// Whether a request may take a free lane now: the first waiter, or one
+    /// not queued (nil) while nobody waits, so it never overtakes a waiter.
+    func isNext(_ ticket: UUID?) -> Bool {
+        guard let ticket else { return waiting.isEmpty }
+        return isFirst(ticket)
+    }
 
     /// A place at the back of the queue, or 429 when it is full.
     mutating func enqueue() throws -> UUID {
@@ -109,12 +126,14 @@ struct ClusterPairLocalLanes {
 
 extension ProviderLoop {
     /// Whether this member hosts its pair's slot: the serving host role only
-    /// a rank-0 installation gives (`installClusterPairServing`), whatever
-    /// the number of ranks.
+    /// a rank-0 installation gives (`installClusterPairServing`, before
+    /// `run()`), whatever the number of ranks.
     var hostsClusterPairSlot: Bool { clusterPairServing != nil }
 
     /// A member runs a local API only where its pair's slot is, and always
-    /// with a key, as `cluster local` does.
+    /// with a key, as `cluster local` does. `prepareClusterMemberControl` asks
+    /// first thing in `run()`, before the endpoint binds: any other member
+    /// refuses to start with one.
     func admitsClusterPairLocalAPI(_ endpoint: LocalInferenceHTTPConfig) -> Bool {
         hostsClusterPairSlot && !(endpoint.authToken ?? "").isEmpty
     }
@@ -134,8 +153,10 @@ extension ProviderLoop {
         .requestRejected(DistributedRequestQueue.unavailableMessage)
     }
 
-    /// A local request on the leader: one of the pair's lanes, taken at once
-    /// when one is free and nobody waits, otherwise after the requests ahead.
+    /// A local request on the leader: 404 for a model this member does not
+    /// serve, the drain's refusal as on a single Mac, 503 while the pair does
+    /// not serve, otherwise one of the pair's lanes (`takeClusterPairLane`).
+    /// The owner's use begins once the request is past those refusals.
     func acquireClusterPairForLocal(_ modelID: String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel {
         guard advertisedModels[modelID] != nil else { throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelID) }
         try throwIfRefusingNewLocalWork(modelId: modelID)
@@ -151,12 +172,12 @@ extension ProviderLoop {
         }
     }
 
+    /// The request's lane: taken at once when one is free and nobody waits,
+    /// otherwise in its place in the queue, until its ceiling. Every wake
+    /// checks the slot, the drain and the lanes again before parking again.
     private func takeClusterPairLane(_ handle: ClusterPairSlotHandle) async throws
         -> MultiModelBatchSchedulerEngine.AcquiredModel {
-        if clusterPairLocalLanes.waitingCount == 0,
-           let acquired = try await grantClusterPairLaneIfFree(handle, ticket: nil) {
-            return acquired
-        }
+        if let acquired = try await grantClusterPairLaneIfFree(handle, ticket: nil) { return acquired }
         let ticket = try clusterPairLocalLanes.enqueue()
         let ceiling = clusterPairLocalLanes.limits.waitCeiling(requestTimeout: handle.requestTimeout, lanes: handle.lanes)
         let expiry = Task { [weak self] in
@@ -170,35 +191,41 @@ extension ProviderLoop {
         }
         while true {
             try Task.checkCancellation()
-            guard clusterPairSlot === handle, clusterPairSlotServes(handle.modelID) else { throw Self.clusterPairNotServing }
+            guard clusterPairSlotStillServes(handle) else { throw Self.clusterPairNotServing }
             try throwIfRefusingNewLocalWork(modelId: handle.modelID)
-            if clusterPairLocalLanes.isFirst(ticket),
-               let acquired = try await grantClusterPairLaneIfFree(handle, ticket: ticket) {
-                return acquired
-            }
-            try await withTaskCancellationHandler {
-                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                    clusterPairLocalLanes.park(ticket, continuation)
-                }
-            } onCancel: {
-                Task { await self.refuseClusterPairWaiter(ticket, CancellationError()) }
-            }
+            if let acquired = try await grantClusterPairLaneIfFree(handle, ticket: ticket) { return acquired }
+            try await parkClusterPairWaiter(ticket)
         }
     }
 
-    /// A lane for this request when one is free, nil otherwise. The checks
-    /// after the engine's answer and the reservation have no suspension
-    /// between them, so a drain or retirement either refuses this request or
-    /// counts it (`hasInflightWork`).
+    /// Parks a waiter until it is woken (it then checks again) or refused (its
+    /// ceiling passed, or its client went away).
+    private func parkClusterPairWaiter(_ ticket: UUID) async throws {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                clusterPairLocalLanes.park(ticket, continuation)
+            }
+        } onCancel: {
+            Task { await self.refuseClusterPairWaiter(ticket, CancellationError()) }
+        }
+    }
+
+    /// A lane for this request when it is next and a lane is free, nil
+    /// otherwise. Free means both counts are below the pair's lanes: this
+    /// Mac's (`clusterPairLaneFreeHere`) and the engine's own. Every check is
+    /// made again after the engine's answer, and from there to the reservation
+    /// nothing suspends, so a drain or retirement either refuses this request
+    /// or counts it (`hasInflightWork`).
     private func grantClusterPairLaneIfFree(_ handle: ClusterPairSlotHandle, ticket: UUID?) async throws
         -> MultiModelBatchSchedulerEngine.AcquiredModel? {
-        guard clusterPairLaneFreeHere(handle), let bridge = modelSlots[handle.modelID]?.engineV2 else { return nil }
+        guard clusterPairLocalLanes.isNext(ticket), clusterPairLaneFreeHere(handle),
+              let bridge = modelSlots[handle.modelID]?.engineV2 else { return nil }
         // The engine's own count, read without waiting for its queue: a
         // request that ended here may still be retiring there.
         let engine = await bridge.capacitySnapshot()
-        guard engine.activeRequests + engine.waitingRequests < handle.lanes else { return nil }
-        let stillNext = ticket.map { clusterPairLocalLanes.isFirst($0) } ?? (clusterPairLocalLanes.waitingCount == 0)
-        guard stillNext, clusterPairLaneFreeHere(handle), let slot = modelSlots[handle.modelID] else { return nil }
+        guard engine.activeRequests + engine.waitingRequests < handle.lanes,
+              clusterPairLocalLanes.isNext(ticket), clusterPairLaneFreeHere(handle),
+              let slot = modelSlots[handle.modelID] else { return nil }
         try throwIfRefusingNewLocalWork(modelId: handle.modelID)
         let grant = clusterPairLocalLanes.grant(on: handle.id)
         localReservations.reserve(handle.modelID)
@@ -214,18 +241,26 @@ extension ProviderLoop {
             queueExitedAt: ticket == nil ? nil : .now)
     }
 
-    /// The slot is live, its admission opened, and fewer requests hold its
-    /// lanes than it has: local ones taken here and the Darkbloom ones this
-    /// member accepted.
+    /// Whether `handle` is still the published slot and serves now: a request
+    /// bound to it on arrival gets 503 once it does not.
+    private func clusterPairSlotStillServes(_ handle: ClusterPairSlotHandle) -> Bool {
+        clusterPairSlot === handle && clusterPairSlotServes(handle.modelID)
+    }
+
+    /// The slot still serves, its admission opened, and fewer requests hold
+    /// its lanes than it has: local ones taken here and the Darkbloom ones
+    /// this member accepted.
     private func clusterPairLaneFreeHere(_ handle: ClusterPairSlotHandle) -> Bool {
-        guard clusterPairAdmissionOpenSlotID == handle.id, clusterPairSlot === handle,
-              clusterPairSlotServes(handle.modelID) else { return false }
+        guard clusterPairAdmissionOpenSlotID == handle.id, clusterPairSlotStillServes(handle) else { return false }
         let darkbloom = requestToModel.reduce(0) { held, entry in
             entry.value == handle.modelID && !entry.key.hasPrefix(Self.engineV2RecoveryPinPrefix) ? held + 1 : held
         }
         return clusterPairLocalLanes.lanesHeld(on: handle.id) + darkbloom < handle.lanes
     }
 
+    /// The pair's own release, kept apart from a single Mac's
+    /// (`releaseLocalReservation`): here the owner's use ends, once, and the
+    /// first waiter checks the lane just freed.
     private func releaseClusterPairLane(_ grant: UUID, model: String) {
         clusterPairLocalLanes.release(grant)
         localReservations.release(model)
@@ -240,7 +275,10 @@ extension ProviderLoop {
 
     /// Something that can free a lane or refuse the waiters happened: the
     /// first waiter checks, or every waiter when they are to be refused.
-    /// Nothing to do while nobody waits.
+    /// The Darkbloom side calls this too (each request's end through
+    /// `refreshClusterPairCapacity`, and `beginServingDrain` on every Mac):
+    /// while nobody waits it is one count check, so their path costs nothing
+    /// more.
     func wakeClusterPairLocalWaiters() {
         guard clusterPairLocalLanes.waitingCount > 0 else { return }
         let serving = clusterPairSlot.map { clusterPairSlotServes($0.modelID) } ?? false

@@ -64,7 +64,8 @@ final class ClusterPairSlotHandle: @unchecked Sendable {
     let tokenizer: TokenizerHandle
     let sizing: SlotSizingSnapshot
     let owner: ClusterPairSlotOwner
-    /// The profile's request lifetime: a queued local request's ceiling.
+    /// The profile's request lifetime, the unit of a queued local request's
+    /// ceiling (`DistributedRequestQueue.Limits.waitCeiling`).
     let requestTimeout: Duration
     let publishedAt = ContinuousClock.now
 

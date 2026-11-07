@@ -140,19 +140,19 @@ private final class SlowRead: @unchecked Sendable {
     private let read: Int
     private let seconds: TimeInterval
     private var reads = 0
-    private var seen: Set<ObjectIdentifier> = []
+    private var order = ReaderOrder()
 
     init(atRead read: Int, seconds: TimeInterval) {
         self.read = read
         self.seconds = seconds
     }
 
-    var readers: Int { lock.withLock { seen.count } }
+    var readers: Int { lock.withLock { order.readerCount } }
 
     var hook: @Sendable (AVAssetReader) -> Void {
         { [self] reader in
             let hold = lock.withLock { () -> Bool in
-                seen.insert(ObjectIdentifier(reader))
+                order.count(readBy: reader)
                 reads += 1
                 return reads == read
             }

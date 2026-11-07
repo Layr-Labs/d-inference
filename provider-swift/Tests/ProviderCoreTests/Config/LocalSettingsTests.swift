@@ -269,6 +269,18 @@ struct LocalSettingsTests {
         #expect(section["future_choice"]?.int == 1)
     }
 
+    @Test("clearing the last key of a file that holds only [local] leaves an empty, valid config")
+    func clearingTheOnlySection() throws {
+        let onlyLocal = "[local]\nmode = \"local\"\n"
+        #expect(try ConfigManager.updatingLocal(onlyLocal, fallbackConfig: Self.fallback) { $0 = LocalSettings() } == "")
+
+        let path = try temporaryConfig(onlyLocal)
+        defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
+        #expect(try ConfigManager.updateLocal(at: path, fallbackConfig: Self.fallback) { $0.mode = nil })
+        #expect(try Data(contentsOf: path).isEmpty)
+        #expect(try ConfigManager.load(from: path).local == nil)
+    }
+
     @Test("without a file, the caller's configuration is written with the new [local]")
     func missingFile() throws {
         let fresh = ProviderConfig(provider: ProviderSettings(name: "fresh-mac"),

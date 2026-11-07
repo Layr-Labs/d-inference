@@ -360,6 +360,9 @@ public enum QwenTensorParallelRowsCheck {
         }
         var differing: [String] = []
         let members = lengths.keys.sorted()
+        // Each half's steps keep their place in the whole check, so `run` with
+        // both halves runs the steps it always ran, in the same order: the
+        // rows half's verify windows come after the segments half.
         var soloOne = Trace(), longSolo = Trace(), reserved = 0
         if parts.contains(.rows) {
             soloOne = try solo(lanes: 1, members: members, lengths: lengths, steps: steps)

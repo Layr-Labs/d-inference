@@ -125,6 +125,10 @@ struct QwenTensorParallelRealGeometryRowsTests {
                 + " reserved=\(report.reservedBytesAcrossSegments) differing=\(report.differing.count)"
                 + " first=\(report.differing.prefix(12))")
             #expect(report.passed)
+            // Every digest of the half: each row's prompt logits, its logits
+            // and its history after each solo step (8 rows of 12 steps; 8 long
+            // rows of 8 steps), 336 a rank for the whole check.
+            #expect(report.compared == (part == .rows ? 200 : 136))
         }
         #expect(results.reports.compactMap({ $0 }).count == 2)
     }

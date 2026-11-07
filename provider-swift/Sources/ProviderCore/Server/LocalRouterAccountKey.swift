@@ -39,6 +39,7 @@ public struct KeychainLocalRouterAccountKeyStore: LocalRouterAccountKeyStore {
     public let service: String
     public let account: String
 
+    /// The `SecItem` calls; a fake in tests.
     let calls: KeychainItemCalls
 
     public init(service: String = Self.defaultService, account: String = Self.defaultAccount) {
@@ -56,11 +57,10 @@ public struct KeychainLocalRouterAccountKeyStore: LocalRouterAccountKeyStore {
             var query = identity(dataProtection: dataProtection)
             query[kSecReturnData as String] = true
             query[kSecMatchLimit as String] = kSecMatchLimitOne
-            var result: CFTypeRef?
-            let status = SecItemCopyMatching(query as CFDictionary, &result)
+            let (status, data) = calls.copyMatching(query)
             switch status {
             case errSecSuccess:
-                guard let data = result as? Data, let key = String(data: data, encoding: .utf8), !key.isEmpty else {
+                guard let data, let key = String(data: data, encoding: .utf8), !key.isEmpty else {
                     return .done(nil)
                 }
                 return .done(key)
@@ -76,13 +76,13 @@ public struct KeychainLocalRouterAccountKeyStore: LocalRouterAccountKeyStore {
         try withKeychain(operation: "save") { dataProtection in
             let query = identity(dataProtection: dataProtection)
             let data = Data(key.utf8)
-            var status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+            var status = calls.update(query, [kSecValueData as String: data])
             if status == errSecItemNotFound {
                 var item = query
                 item[kSecValueData as String] = data
                 item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
                 item[kSecAttrLabel as String] = "Darkbloom account API key (local router)"
-                status = SecItemAdd(item as CFDictionary, nil)
+                status = calls.add(item)
             }
             return status == errSecSuccess ? .done(()) : .failed(status)
         }
@@ -90,7 +90,7 @@ public struct KeychainLocalRouterAccountKeyStore: LocalRouterAccountKeyStore {
 
     public func remove() throws {
         try withKeychain(operation: "remove") { dataProtection in
-            let status = SecItemDelete(identity(dataProtection: dataProtection) as CFDictionary)
+            let status = calls.delete(identity(dataProtection: dataProtection))
             return status == errSecSuccess || status == errSecItemNotFound ? .done(()) : .failed(status)
         }
     }
@@ -127,7 +127,8 @@ public struct KeychainLocalRouterAccountKeyStore: LocalRouterAccountKeyStore {
     }
 }
 
-/// The four `SecItem` calls the Keychain store makes.
+/// The four `SecItem` calls the Keychain store makes, so tests can run its logic (the fallback, the attributes) against
+/// a fake instead of a real Keychain.
 struct KeychainItemCalls: Sendable {
     var copyMatching: @Sendable ([String: Any]) -> (OSStatus, Data?)
     var add: @Sendable ([String: Any]) -> OSStatus

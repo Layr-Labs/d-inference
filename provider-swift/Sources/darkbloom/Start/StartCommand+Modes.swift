@@ -83,6 +83,7 @@ extension Start {
             print("  export OPENAI_API_KEY=\(token)")
         } else {
             print("  API key:  (auth disabled — --no-auth)")
+            print("  Requests: this Mac only. Without a local key nothing is passed on to your other Macs or the network.")
         }
         print()
         print("  Shareable any time with: \(BuildEnvironment.current.cliName) local")
@@ -347,7 +348,7 @@ extension Start {
                 host: bind, port: port, authToken: token,
                 router: .host(local: config.local, coordinatorURL: coordinatorURL, takesCoordinatorWork: true))
             let shownURL = "http://\(bind == "0.0.0.0" ? "127.0.0.1" : bind):\(port)/v1"
-            print("Local endpoint: \(shownURL)\(token != nil ? "  (API key from `\(BuildEnvironment.current.cliName) local`)" : "  (auth disabled)")")
+            print("Local endpoint: \(shownURL)\(token != nil ? "  (API key from `\(BuildEnvironment.current.cliName) local`)" : "  (auth disabled: requests stay on this Mac)")")
         }
 
         let loopConfig = ProviderLoopConfig(

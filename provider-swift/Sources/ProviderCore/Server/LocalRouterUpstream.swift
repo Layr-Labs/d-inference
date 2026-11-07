@@ -57,8 +57,8 @@ public enum LocalRouterUpstreamError: Error, Equatable, CustomStringConvertible 
 
 /// How the router reaches the coordinator. Tests substitute a stub; the product uses `URLSessionLocalRouterTransport`.
 public protocol LocalRouterTransport: Sendable {
-    /// Returns once the response head arrives. Cancelling the calling task, or ending iteration of the body, cancels
-    /// the request.
+    /// Returns once the response head arrives. Cancelling the calling task, letting go of the body before its end, or
+    /// calling the answer's `cancel` cancels the request.
     func send(_ request: LocalRouterUpstreamRequest) async throws -> LocalRouterUpstreamResponse
 }
 
@@ -75,6 +75,8 @@ public final class URLSessionLocalRouterTransport: LocalRouterTransport, @unchec
         configuration.urlCredentialStorage = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.waitsForConnectivity = false
+        // HTTP/2 multiplexes; an HTTP/1.1 coordinator (a test one) would otherwise hold a 7th concurrent pass-on.
+        configuration.httpMaximumConnectionsPerHost = 64
         // No total cap: a stream ends when the coordinator ends it. The idle limit is per request.
         configuration.timeoutIntervalForResource = 7 * 24 * 3600
         session = URLSession(configuration: configuration)
@@ -131,13 +133,17 @@ private final class UpstreamTaskHandler: NSObject, URLSessionDataDelegate, @unch
     private var _head: CheckedContinuation<LocalRouterUpstreamResponse, Error>?
     private var _receivedHead = false
     private var failure: Error?
-    private let body: AsyncThrowingStream<ByteBuffer, Error>
+    /// Handed out once, with the head: the handler keeps only the continuation, so the relay letting go of the stream
+    /// ends it (`onTermination`) and with it the request.
+    private var body: AsyncThrowingStream<ByteBuffer, Error>?
     private let continuation: AsyncThrowingStream<ByteBuffer, Error>.Continuation
 
     var receivedHead: Bool { lock.withLock { _receivedHead } }
 
     override init() {
-        (body, continuation) = AsyncThrowingStream<ByteBuffer, Error>.makeStream()
+        let (body, continuation) = AsyncThrowingStream<ByteBuffer, Error>.makeStream()
+        self.body = body
+        self.continuation = continuation
         super.init()
         continuation.onTermination = { [weak self] termination in
             // The relay stopped reading (the client left): stop the upstream request too.
@@ -168,14 +174,17 @@ private final class UpstreamTaskHandler: NSObject, URLSessionDataDelegate, @unch
         for (name, value) in http.allHeaderFields {
             if let name = name as? String, let value = value as? String { headers[name.lowercased()] = value }
         }
-        let pending: CheckedContinuation<LocalRouterUpstreamResponse, Error>? = lock.withLock {
-            guard !_receivedHead else { return nil }
+        let (pending, body): (CheckedContinuation<LocalRouterUpstreamResponse, Error>?,
+                              AsyncThrowingStream<ByteBuffer, Error>?) = lock.withLock {
+            guard !_receivedHead else { return (nil, nil) }
             _receivedHead = true
-            defer { _head = nil }
-            return _head
+            defer { _head = nil; self.body = nil }
+            return (_head, self.body)
         }
         completionHandler(.allow)
-        pending?.resume(returning: LocalRouterUpstreamResponse(status: http.statusCode, headers: headers, body: body))
+        guard let pending, let body else { return }
+        pending.resume(returning: LocalRouterUpstreamResponse(
+            status: http.statusCode, headers: headers, body: body, cancel: { [weak dataTask] in dataTask?.cancel() }))
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {

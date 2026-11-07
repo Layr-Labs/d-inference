@@ -76,6 +76,18 @@ final class RouterTransportFactory: @unchecked Sendable {
     }
 }
 
+/// An in-memory key store that counts its reads: this Mac's path reads none.
+final class CountingAccountKeyStore: LocalRouterAccountKeyStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var key: String?
+    private var reads = 0
+    init(_ key: String?) { self.key = key }
+    var loads: Int { lock.withLock { reads } }
+    func load() throws -> String? { lock.withLock { reads += 1; return key } }
+    func save(_ key: String) throws { lock.withLock { self.key = key } }
+    func remove() throws { lock.withLock { key = nil } }
+}
+
 /// Every line the router logs.
 final class RouterLogLines: @unchecked Sendable {
     private let lock = NSLock()
@@ -155,7 +167,7 @@ struct RouterFixture {
     let upstream: RouterStubUpstream
     let factory: RouterTransportFactory
     let log = RouterLogLines()
-    let keys: InMemoryLocalRouterAccountKeyStore
+    let keys: CountingAccountKeyStore
     /// nil: the endpoint without a router (today's endpoint).
     let routerConfig: LocalRouterConfig?
     let localModels: [String]
@@ -179,7 +191,7 @@ struct RouterFixture {
         self.localKey = localKey
         upstream = RouterStubUpstream(script)
         factory = RouterTransportFactory(upstream)
-        keys = InMemoryLocalRouterAccountKeyStore(key)
+        keys = CountingAccountKeyStore(key)
         self.localModels = localModels
         self.localLimits = localLimits
         let factory = factory, log = log

@@ -39,8 +39,9 @@ public final class LocalRouter: Sendable {
         public var connect: Duration = .seconds(10)
         /// The longest wait for a byte of a passed-on request's answer: `self` may queue for 120 s before its head.
         public var idle: Duration = .seconds(300)
-        /// The whole of a model-list read: `/v1/models` never waits long on an unreachable coordinator.
-        public var list: Duration = .seconds(5)
+        /// The whole of a model-list read: `/v1/models` never waits long on an unreachable coordinator, and answers
+        /// within the 5 s an integration gives it.
+        public var list: Duration = .seconds(3)
         public var listTTL: Duration = .seconds(30)
         public var catalogTTL: Duration = .seconds(300)
         /// How long a failed read is remembered, so an unreachable coordinator costs one try per period.
@@ -87,8 +88,10 @@ public final class LocalRouter: Sendable {
         do {
             body = try await request.collectBody(upTo: limit)
         } catch is NIOTooManyBytesError {
-            return Self.errorResponse(.contentTooLarge,
+            var response = Self.errorResponse(.contentTooLarge,
                 message: "request body exceeds the \(limit / (1024 * 1024)) MiB local endpoint limit")
+            response.headers[LocalRouterPolicy.servedByHeader] = LocalRouterPolicy.thisMac
+            return response
         }
         var local = try await inner.respond(to: request, context: context)
         local.headers[LocalRouterPolicy.servedByHeader] = LocalRouterPolicy.thisMac
@@ -96,46 +99,109 @@ public final class LocalRouter: Sendable {
         // Only a request this Mac can't take reads the account key; without one, this Mac's answer stands.
         let (route, key) = config.effectiveRoute()
         guard let key else { return local }
+        if local.status == .notFound,
+           let answer = try await answerAliasHere(request, body: body, context: context, inner: inner) {
+            local = answer
+            guard LocalRouterPolicy.passesOn(localStatus: local.status) else { return local }
+        }
         return try await passOn(body: body, clientHeaders: request.headers, upstreamPath: upstreamPath,
-                                hops: LocalRouterPolicy.hops(for: route), key: key, local: local)
+                                route: route, key: key, local: local)
+    }
+
+    /// A request that names a public alias of a build this Mac serves is this Mac's: its engine knows builds by their
+    /// own ids only, so it is asked once more under the build's id, before any byte. (The coordinator's `self` list
+    /// names the owner's builds by their aliases, and would otherwise send it back here.) Read only after this Mac's
+    /// 404, with a route that dials out: the catalog is a coordinator read.
+    private func answerAliasHere<Inner: HTTPResponder>(_ request: Request, body: ByteBuffer, context: Inner.Context,
+                                                      inner: Inner) async throws -> Response? {
+        guard let model = Self.model(in: body), let catalog = await catalog() else { return nil }
+        let local = Set(await localModels())
+        guard !local.contains(model), let build = catalog.aliasBuilds[model]?.first(where: local.contains),
+              let renamed = Self.replacingModel(in: body, with: build) else { return nil }
+        log("this Mac serves the requested alias as one of its own builds; answering here")
+        var retry = request
+        retry.body = RequestBody(buffer: renamed)
+        var answer = try await inner.respond(to: retry, context: context)
+        answer.headers[LocalRouterPolicy.servedByHeader] = LocalRouterPolicy.thisMac
+        return answer
     }
 
     private func passOn(body: ByteBuffer, clientHeaders: HTTPFields, upstreamPath: String,
-                        hops: [LocalRouterUpstreamRoute], key: String, local: Response) async throws -> Response {
-        var hops = hops
+                        route: LocalSettings.Route, key: String, local: Response) async throws -> Response {
         let model = Self.model(in: body)
-        // A `self` hop that could only come back to this Mac is not sent: the coordinator can't leave one Mac out of a
-        // `self` request, and would queue it here, where it can't be taken now, for 120 s before `machine_busy`.
-        if hops.first == .mine, let model, await selfHopWouldReturnHere(model: model, key: key) {
-            hops.removeFirst()
-            guard !hops.isEmpty else {
+        func send(_ hop: LocalRouterUpstreamRoute) async throws -> Hop {
+            try await self.send(hop, path: upstreamPath, body: body, clientHeaders: clientHeaders, key: key)
+        }
+        switch route {
+        case .thisMac:
+            return local  // Not reached: `effectiveRoute` gives a key only to a route that dials out.
+        case .myMacs:
+            // A `self` hop that could only come back to this Mac is not sent: the coordinator can't leave one Mac
+            // out of a `self` request, and would queue it here, where it can't be taken now, for 120 s.
+            if let model, await selfHopWouldReturnHere(model: model, key: key) {
                 log("this Mac can't take the request and is the only one of your Macs serving its model; not passed on")
                 return thisMacOnly(local, model: model)
             }
-            log("this Mac can't take the request and is the only one of your Macs serving its model; trying the network")
-        }
-        let transport = await state.transport(makeTransport)
-        for (index, hop) in hops.enumerated() {
-            log(index == 0 ? "this Mac answered \(local.status.code); passing the request on (\(hop.rawValue))"
-                : "your Macs could not take it; trying the network (\(hop.rawValue))")
-            let upstream: LocalRouterUpstreamResponse
-            do {
-                upstream = try await transport.send(upstreamRequest(
-                    hop: hop, path: upstreamPath, body: body, clientHeaders: clientHeaders, key: key))
-            } catch let error where error is CancellationError || Task.isCancelled {
-                throw CancellationError()
-            } catch {
-                log("Darkbloom could not be reached: \(Self.plain(error))")
-                return Self.errorResponse(.badGateway, message: "This Mac can't take this request, and Darkbloom "
-                    + "could not be reached to pass it on: \(Self.plain(error)).", code: "darkbloom_unreachable")
+            log("this Mac answered \(local.status.code); passing the request on (self)")
+            switch try await send(.mine) {
+            case .answer(let response): return response
+            case .refusal(let upstream, let bytes): return relayError(upstream, body: bytes, hop: .mine, key: key)
             }
-            if (200..<300).contains(upstream.status) { return relay(upstream, hop: hop) }
-            let errorBody = await Self.collect(upstream.body, limit: 1024 * 1024)
-            if index < hops.count - 1, LocalRouterPolicy.triesNextHop(after: upstream.status) { continue }
-            return relayError(upstream, body: errorBody, hop: hop, key: key)
+        case .myMacsFirst:
+            // `prefer`: the coordinator takes the owner's Macs first, then the network, among the Macs that can take
+            // the request now, with no 120 s queue for a busy Mac of the owner's.
+            log("this Mac answered \(local.status.code); passing the request on (prefer)")
+            let network: (upstream: LocalRouterUpstreamResponse, bytes: ByteBuffer?)
+            switch try await send(.prefer) {
+            case .answer(let response): return response
+            case .refusal(let upstream, let bytes):
+                guard LocalRouterPolicy.asksYourMacs(afterNetworkStatus: upstream.status) else {
+                    return relayError(upstream, body: bytes, hop: .prefer, key: key)
+                }
+                network = (upstream, bytes)
+            }
+            // No balance for the network: the owner's Macs, free, once.
+            if let model, await selfHopWouldReturnHere(model: model, key: key) {
+                log("no balance for the network, and this Mac is the only one of your Macs serving its model")
+                return relayError(network.upstream, body: network.bytes, hop: .prefer, key: key)
+            }
+            log("no balance for the network; asking your Macs (self)")
+            switch try await send(.mine) {
+            case .answer(let response): return response
+            case .refusal(let upstream, let bytes):
+                guard LocalRouterPolicy.yourMacsCouldNotTakeIt(status: upstream.status) else {
+                    return relayError(upstream, body: bytes, hop: .mine, key: key)
+                }
+                return relayError(network.upstream, body: network.bytes, hop: .prefer, key: key)
+            }
         }
-        // Not reached: a route that dials out has a hop, and its last hop always answers.
-        return local
+    }
+
+    /// One upstream hop's outcome: an answer to relay as it is (a 2xx stream, or this Mac's 502 when the coordinator
+    /// can't be reached), or the coordinator's refusal with its body read.
+    private enum Hop {
+        case answer(Response)
+        case refusal(LocalRouterUpstreamResponse, ByteBuffer?)
+    }
+
+    private func send(_ hop: LocalRouterUpstreamRoute, path: String, body: ByteBuffer, clientHeaders: HTTPFields,
+                      key: String) async throws -> Hop {
+        let transport = await state.transport(makeTransport)
+        let upstream: LocalRouterUpstreamResponse
+        do {
+            upstream = try await transport.send(upstreamRequest(
+                hop: hop, path: path, body: body, clientHeaders: clientHeaders, key: key))
+        } catch let error where error is CancellationError || Task.isCancelled {
+            throw CancellationError()
+        } catch {
+            log("Darkbloom could not be reached: \(Self.plain(error))")
+            var response = Self.errorResponse(.badGateway, message: "This Mac can't take this request, and Darkbloom "
+                + "could not be reached to pass it on: \(Self.plain(error)).", code: "darkbloom_unreachable")
+            response.headers[LocalRouterPolicy.routeUsedHeader] = hop.rawValue
+            return .answer(response)
+        }
+        if (200..<300).contains(upstream.status) { return .answer(relay(upstream, hop: hop)) }
+        return .refusal(upstream, await Self.collect(upstream.body, limit: 1024 * 1024))
     }
 
     /// The request's `model`, for the checks before a `self` hop; nil when the body isn't a JSON object naming one.
@@ -143,6 +209,16 @@ public final class LocalRouter: Sendable {
     private static func model(in body: ByteBuffer) -> String? {
         let object = (try? JSONSerialization.jsonObject(with: Data(buffer: body), options: [])) as? [String: Any]
         return object?["model"] as? String
+    }
+
+    /// `body` with its top-level `model` set to `model`; nil when the body isn't a JSON object.
+    private static func replacingModel(in body: ByteBuffer, with model: String) -> ByteBuffer? {
+        guard var object = (try? JSONSerialization.jsonObject(with: Data(buffer: body), options: [])) as? [String: Any]
+        else { return nil }
+        object["model"] = model
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.withoutEscapingSlashes])
+        else { return nil }
+        return ByteBuffer(data: data)
     }
 
     /// Whether a `self` request could land on this Mac: it takes coordinator work, it serves the model (or a build of
@@ -183,13 +259,26 @@ public final class LocalRouter: Sendable {
         URL(string: config.upstreamBaseURL.absoluteString + pathAndQuery) ?? config.upstreamBaseURL
     }
 
-    /// A streamed or collected answer, passed through chunk by chunk as it arrives.
+    /// A streamed or collected answer, passed through chunk by chunk as it arrives. A client that leaves stops the
+    /// request at the coordinator (on `prefer` the network would go on generating, billed): when a chunk can't be
+    /// written, and when its connection closes even while no chunk flows (the request's disconnect scope, which this
+    /// Mac's own streams use too; the server allows half-close, so a client that only half-closes is noticed at the
+    /// next chunk).
     private func relay(_ upstream: LocalRouterUpstreamResponse, hop: LocalRouterUpstreamRoute) -> Response {
-        let body = upstream.body
+        let body = upstream.body, cancel = upstream.cancel
+        let scope = LocalRequestCancellation.current
+        let registration = scope?.register(cancel)
         return Response(status: .init(code: upstream.status), headers: relayedHeaders(upstream, hop: hop),
                         body: ResponseBody { writer in
+                            var ended = false
+                            defer {
+                                registration?.remove()
+                                if !ended { cancel() }
+                                withExtendedLifetime(scope) {}
+                            }
                             for try await chunk in body { try await writer.write(chunk) }
                             try await writer.finish(nil)
+                            ended = true
                         })
     }
 
@@ -199,15 +288,20 @@ public final class LocalRouter: Sendable {
     private func relayError(_ upstream: LocalRouterUpstreamResponse, body: ByteBuffer?,
                             hop: LocalRouterUpstreamRoute, key: String) -> Response {
         guard var bytes = body else {
-            return Self.errorResponse(.badGateway, message: "Darkbloom answered \(upstream.status) with an error "
-                + "this Mac could not read.", code: "darkbloom_error_unreadable")
+            var response = Self.errorResponse(.badGateway, message: "Darkbloom answered \(upstream.status) with an "
+                + "error this Mac could not read.", code: "darkbloom_error_unreadable")
+            response.headers[LocalRouterPolicy.routeUsedHeader] = hop.rawValue
+            return response
         }
         bytes = Self.redacting(key, in: bytes)
         if upstream.status == 401 || upstream.status == 403 {
             log("Darkbloom refused the saved account key; save a new one with `\(BuildEnvironment.current.cliName) route key`")
             let detail = Self.errorMessage(in: bytes).map { " (\($0))" } ?? ""
-            return Self.errorResponse(.badGateway, message: "Darkbloom refused this Mac's saved account key\(detail). "
-                + "Save a new one with `\(BuildEnvironment.current.cliName) route key`.", code: "account_key_refused")
+            var response = Self.errorResponse(.badGateway, message: "Darkbloom refused this Mac's saved account key"
+                + "\(detail). Save a new one with `\(BuildEnvironment.current.cliName) route key`.",
+                code: "account_key_refused")
+            response.headers[LocalRouterPolicy.routeUsedHeader] = hop.rawValue
+            return response
         }
         if upstream.status == 402, hop == .prefer, let clarified = Self.prefixingMessage(in: bytes, with:
             "No balance for the network fallback: none of your Macs could take this request, and the Darkbloom "

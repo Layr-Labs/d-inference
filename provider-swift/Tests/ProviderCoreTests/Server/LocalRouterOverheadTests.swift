@@ -45,6 +45,8 @@ struct LocalRouterOverheadTests {
         let report = Report(name: "in process", without: without, with: with)
         print(report.lines.joined(separator: "\n"))
         #expect(routed.factory.count == 0 && routed.upstream.requests.isEmpty)
+        // This Mac's path never reads the Keychain.
+        #expect(routed.keys.loads == 0)
         // Negligible: under 0.5 ms added at the median, against first tokens of tens to hundreds of milliseconds.
         #expect(report.added(\.firstByte, 0.5) < .microseconds(500), "\(report.lines)")
     }

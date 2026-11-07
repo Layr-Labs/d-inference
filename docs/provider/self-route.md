@@ -131,12 +131,12 @@ Exclusive self-route fails fast with the real cause instead of queueing
 ## From a Mac that runs Darkbloom
 
 You don't need the header there. The Mac's local API sends a request it can't
-take on with `self` (or `self`, then `prefer`, when you chose "My Macs first")
-and your account key from its Keychain, so tools keep one local URL and the
-local key: see [the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router).
+take on with `self` (or `prefer`, when you chose "My Macs first") and your
+account key from its Keychain, so tools keep one local URL and the local key:
+see [the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router).
 `prefer` reserves the platform price of the request up front even when one of
 your Macs answers, so a zero balance refuses it with `402 insufficient_quota`;
-the router tries `self` first for that reason.
+the router then sends the request once more with `self`.
 
 ## Related
 

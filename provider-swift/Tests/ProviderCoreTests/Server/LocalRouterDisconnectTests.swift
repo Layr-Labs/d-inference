@@ -16,6 +16,7 @@ struct LocalRouterDisconnectTests {
         defer { endpoint.stop() }
         let left = try await RawRouterClient.postAndLeave(port: endpoint.port, after: "\"n\":2")
         let outcome = try await standIn.outcome(within: .seconds(10))
+        print("router disconnect (mid-stream): the coordinator's stream \(outcome), \(outcome.ended - left) after the client left")
         #expect(outcome.cut, "the coordinator's stream ran to its end: \(outcome)")
         #expect(outcome.ended - left < .milliseconds(1500), "\(outcome.ended - left) after the client left")
         #expect(outcome.written < 30)
@@ -32,6 +33,7 @@ struct LocalRouterDisconnectTests {
         defer { endpoint.stop() }
         let left = try await RawRouterClient.postAndLeave(port: endpoint.port, after: "\"n\":0", reset: true)
         let outcome = try await standIn.outcome(within: .seconds(10))
+        print("router disconnect (nothing flowing): the coordinator's stream \(outcome), \(outcome.ended - left) after the client left")
         #expect(outcome.cut, "the coordinator's stream ran to its end: \(outcome)")
         #expect(outcome.ended - left < .milliseconds(1500), "\(outcome.ended - left) after the client left")
         #expect(outcome.written == 1)
@@ -115,8 +117,8 @@ enum RawRouterClient {
     }
 }
 
-/// A coordinator stand-in on a plain socket: answers one request with a chunked SSE stream of `events` events,
-/// `gap` apart (`pauseAfterFirst` after the first), and notes when its connection closes under it, between writes
+/// A coordinator stand-in on a plain socket: answers the chat request with a chunked SSE stream of `events` events,
+/// `gap` apart (`pauseAfterFirst` after the first), and notes when that connection closes under it, between writes
 /// as well as on a write.
 final class RawSSEStandIn: @unchecked Sendable {
     struct Outcome: CustomStringConvertible {
@@ -150,9 +152,11 @@ final class RawSSEStandIn: @unchecked Sendable {
         self.listener = listener
         port = Int(UInt16(bigEndian: address.sin_port))
         Thread.detachNewThread { [weak self] in
-            let fd = accept(listener, nil, nil)
-            guard fd >= 0 else { return }
-            self?.serve(fd, events: events, gap: gap, pauseAfterFirst: pauseAfterFirst)
+            while true {
+                let fd = accept(listener, nil, nil)
+                guard fd >= 0 else { return }
+                Thread.detachNewThread { self?.serve(fd, events: events, gap: gap, pauseAfterFirst: pauseAfterFirst) }
+            }
         }
     }
 
@@ -167,11 +171,16 @@ final class RawSSEStandIn: @unchecked Sendable {
         throw POSIXError(.ETIMEDOUT)
     }
 
+    /// The chat request gets the stream; anything else (the router's catalog read) a plain 404.
     private func serve(_ fd: Int32, events: Int, gap: Duration, pauseAfterFirst: Duration?) {
         defer { close(fd) }
         var one: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
-        guard Self.readRequest(fd) else { return finish(written: 0, cut: true) }
+        guard let requestLine = Self.readRequest(fd) else { return }
+        guard requestLine.hasPrefix("POST /v1/chat/completions ") else {
+            _ = Self.write(fd, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            return
+        }
         guard Self.write(fd, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n"
             + "Transfer-Encoding: chunked\r\n\r\n") else { return finish(written: 0, cut: true) }
         for index in 0..<events {
@@ -189,20 +198,22 @@ final class RawSSEStandIn: @unchecked Sendable {
         lock.withLock { result = Outcome(ended: .now, written: written, cut: cut) }
     }
 
-    /// Reads the request head and its `Content-Length` body.
-    private static func readRequest(_ fd: Int32) -> Bool {
+    /// Reads the request head and its `Content-Length` body; returns the request line.
+    private static func readRequest(_ fd: Int32) -> String? {
         var received = [UInt8]()
         var buffer = [UInt8](repeating: 0, count: 4096)
         while true {
             let count = recv(fd, &buffer, buffer.count, 0)
-            guard count > 0 else { return false }
+            guard count > 0 else { return nil }
             received += buffer[0..<count]
             let text = String(decoding: received, as: UTF8.self)
             guard let headEnd = text.range(of: "\r\n\r\n") else { continue }
-            let head = text[..<headEnd.lowerBound].lowercased()
-            let length = head.split(separator: "\r\n").first { $0.hasPrefix("content-length:") }
+            let head = text[..<headEnd.lowerBound]
+            let length = head.lowercased().split(separator: "\r\n").first { $0.hasPrefix("content-length:") }
                 .flatMap { Int($0.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)) } ?? 0
-            if received.count - text[..<headEnd.upperBound].utf8.count >= length { return true }
+            if received.count - text[..<headEnd.upperBound].utf8.count >= length {
+                return head.split(separator: "\r\n").first.map(String.init)
+            }
         }
     }
 

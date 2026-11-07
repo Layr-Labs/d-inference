@@ -23,8 +23,8 @@ public struct LocalSettings: Sendable, Equatable, Codable {
         case thisMac = "this-mac"
         /// Only my Macs: the coordinator with `X-Darkbloom-Route: self`, free.
         case myMacs = "my-macs"
-        /// My Macs first, then the Darkbloom network: the coordinator with `X-Darkbloom-Route: self` first, then
-        /// `prefer`, billed when the network answers.
+        /// My Macs first, then the Darkbloom network: the coordinator with `X-Darkbloom-Route: prefer`, billed when the
+        /// network answers; at a zero balance, `self` once.
         case myMacsFirst = "my-macs-first"
     }
 

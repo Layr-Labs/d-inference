@@ -358,7 +358,7 @@ absent key keeps today's behaviour (`LocalSettings` in
 | `[local] mode` | `"local"` (only you, on this Mac), `"network"` (the Darkbloom network only), `"both"` (both, you first) | The launch flags decide, as today: plain `start` = `network`, `--local` = `local`, `--local-endpoint` = `both` (`launchMode`, `resolvedMode`) |
 | `[local] me_first` | `true` or `false` | On with `mode = "both"`, off otherwise; `false` keeps today's shared serving (`meFirstEnabled`) |
 | `[local] me_first_idle_minutes` | Whole minutes, `1`–`120` | `2` (`defaultMeFirstIdleMinutes`, `resolvedMeFirstIdleMinutes`) |
-| `[local] route` | `"this-mac"` (only this Mac), `"my-macs"` (only your Macs), `"my-macs-first"` (your Macs first, then the Darkbloom network) | `this-mac`; `my-macs` once an account key is saved with `darkbloom route key` (`resolvedRoute`). Without a saved key nothing leaves this Mac, whatever the route (`LocalRouterConfig.effectiveRoute`) |
+| `[local] route` | `"this-mac"` (only this Mac), `"my-macs"` (only your Macs), `"my-macs-first"` (your Macs first, then the Darkbloom network) | `this-mac`; `my-macs` once an account key is saved with `darkbloom route key` (`resolvedRoute`). Without a saved key, or without a local key (`--no-auth`), nothing leaves this Mac, whatever the route (`LocalRouterConfig.effectiveRoute`). `my-macs` sends `X-Darkbloom-Route: self`; `my-macs-first` sends `prefer`, then `self` once on a `402`. Read when the local API starts |
 | `[local] port` | Whole number, `1`–`65535` | The build's `defaultLocalPort` (`resolvedPort`) |
 | `[local] bind` | `localhost` or a numeric IPv4 or IPv6 address (`ClusterServingScope.isValidBind`) | `127.0.0.1` (`defaultBind`, `resolvedBind`) |
 

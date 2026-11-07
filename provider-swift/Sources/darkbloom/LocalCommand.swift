@@ -59,6 +59,7 @@ struct Local: AsyncParsableCommand {
         }
         if info.apiKey.isEmpty {
             print("  API key:  (auth disabled)")
+            print("  requests: this Mac only (without a local key nothing is passed on to your other Macs or the network)")
         } else {
             print("  API key:  \(info.apiKey)")
         }

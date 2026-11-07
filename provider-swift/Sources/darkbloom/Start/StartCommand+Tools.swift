@@ -70,22 +70,41 @@ extension Start {
         }
         print("Darkbloom already serves on \(live.host):\(live.port); setting up "
             + "\(ToolIntegrationStep.names(requestedTools)) for it.")
-        try await setUpToolsWithSavedSettings(endpoint, step: step)
+        // On a Mac of a pair, the live API may be this Mac's relay to the pair's API on another Mac.
+        let relayed = ClusterPairSummary.local().relaying?.port == live.port
+        try await setUpToolsWithSavedSettings(endpoint, step: step, relayed: relayed)
         return true
     }
 
-    /// Beside a pair that just started: for its local API on this Mac, when there is one. A pair starts only without
-    /// single-Mac options, so no option here changes what serves.
-    func setUpToolsBesidePair(pair: ClusterPairSummary? = nil,
-                              waitForAPI: (() async -> LocalAPIWait)? = nil,
+    /// Beside a pair that just started: once this Mac's local API for it answers (its part's own on the Mac that runs the
+    /// pair's API; on every other Mac, with that API on every address, its relay), waiting at most `toolWaitSeconds`. A
+    /// pair that serves only the Darkbloom network has none anywhere, said at once; one whose API stays on its own Mac
+    /// has none on another, said once the wait ends. A pair starts only without single-Mac options, so no option here
+    /// changes what serves.
+    func setUpToolsBesidePair(pair given: ClusterPairSummary? = nil,
+                              waitForAPI: () async -> LocalAPIWait = {
+                                  await Start.waitForLocalAPI(port: nil, seconds: Start.toolWaitSeconds)
+                              },
                               step: ToolIntegrationStep? = nil) async throws {
         guard !requestedTools.isEmpty else { return }
-        guard let endpoint = IntegrationEndpoint.live() else {
-            print(ToolIntegrationStep.noPairAPI(requestedTools))
+        func fail(_ line: String) throws -> Never {
+            print(line)
             print(ToolIntegrationStep.keepsServing)
             throw ExitCode.failure
         }
-        try await setUpToolsWithSavedSettings(endpoint, step: step)
+        let pair = given ?? ClusterPairSummary.local()
+        guard let bind = pair.localAPIBind else { try fail(ToolIntegrationStep.noPairAPI(requestedTools)) }
+        switch await waitForAPI() {
+        case .ready(let endpoint):
+            let relayed = pair.relaying != nil || pair.localAPI?.runsRankZero == false
+            try await setUpToolsWithSavedSettings(endpoint, step: step, relayed: relayed)
+        case .noKeyFile:
+            try fail(ToolIntegrationStep.noKeyFile(requestedTools, port: LocalEndpoint.readLiveInfo()?.port ?? 0))
+        case .notUp:
+            try fail(bind == ClusterServingScope.localOnlyDefaultBind
+                ? ToolIntegrationStep.notUp(requestedTools, seconds: Self.toolWaitSeconds)
+                : ToolIntegrationStep.pairAPIElsewhere(requestedTools, bind: bind))
+        }
     }
 
     /// Beside the coordinator-less server, once it is bound, on a task of its own: the server keeps serving whatever
@@ -129,12 +148,19 @@ extension Start {
 
     /// For a local API this start didn't resolve (one already running, or the pair's): where your requests go comes
     /// from the saved `[local] route`, and the catalog from `--coordinator-url`, else the config's, else the build's.
-    /// Reads the config once, without detecting hardware.
-    private func setUpToolsWithSavedSettings(_ endpoint: IntegrationEndpoint, step: ToolIntegrationStep?) async throws {
+    /// Reads the config once, without detecting hardware. `relayed`: the API is this Mac's relay to a pair's API on
+    /// another Mac, whose route decides, and which never takes the paid network for a relayed request: this Mac's
+    /// route and account key aren't read.
+    private func setUpToolsWithSavedSettings(_ endpoint: IntegrationEndpoint, step: ToolIntegrationStep?,
+                                             relayed: Bool = false) async throws {
         let saved = try? savedConfig(configPath: configOptions.config)
         let coordinator = coordinatorURL ?? saved?.coordinator.url ?? BuildEnvironment.current.coordinatorWebSocketURL
-        guard await setUpTools(endpoint: endpoint, route: saved?.local?.route, accountKeySaved: nil,
-                               coordinatorURL: coordinator, step: step) else { throw ExitCode.failure }
+        let ready = relayed
+            ? await (step ?? ToolIntegrationStep.live(tools: requestedTools, coordinatorURL: coordinator))
+                .run(endpoint: endpoint, requests: LocalFirstWords.relayedRequests)
+            : await setUpTools(endpoint: endpoint, route: saved?.local?.route, accountKeySaved: nil,
+                               coordinatorURL: coordinator, step: step)
+        guard ready else { throw ExitCode.failure }
     }
 
     /// Sets the requested tools up for `endpoint` with `step` (nil: the tools on this Mac, `ToolIntegrationStep.live`);
@@ -157,16 +183,16 @@ extension Start {
         case notUp
     }
 
-    /// Waits for the background provider's local API on `port`: it writes `local.json` once bound. Bounded, and only
-    /// at start.
-    static func waitForLocalAPI(port: UInt16, seconds: Int,
+    /// Waits for the background provider's local API on `port` (nil: on any port, a pair's): it writes `local.json` once
+    /// bound. Bounded, and only at start.
+    static func waitForLocalAPI(port: UInt16?, seconds: Int,
                                 live: () -> LocalEndpoint.Info? = { LocalEndpoint.readLiveInfo() },
                                 keyFile: (UInt16) -> URL? = { LocalEndpoint.keyFile(forPort: Int($0)) },
                                 pause: () async -> Void = { try? await Task.sleep(nanoseconds: 250_000_000) })
         async -> LocalAPIWait {
         let deadline = Date().addingTimeInterval(TimeInterval(seconds))
         repeat {
-            if let info = live(), info.port == port {
+            if let info = live(), port.map({ info.port == $0 }) ?? true {
                 if let endpoint = IntegrationEndpoint.live(info, keyFile: keyFile) { return .ready(endpoint) }
                 if !info.apiKey.isEmpty { return .noKeyFile }
             }

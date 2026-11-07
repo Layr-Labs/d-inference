@@ -1207,10 +1207,12 @@ public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
     public static let offeredAPILine = "No local API: requests reach the pair through Darkbloom"
 
     /// The same for a pair offered with its local API beside Darkbloom (Both, me first): the Mac whose part runs rank 0
-    /// (`servedBy`) has it, with the pair's key.
+    /// (`servedBy`) has it, and, `relayed`, every other Mac answers on its own port too, so each screen names its own
+    /// Mac's API.
     public var bothAPILine: String {
-        "Local API: on \(servedBy), you first (Darkbloom pauses while you use it; `darkbloom local`"
-            + (servesHere ? "" : " there") + " shows its address and key)"
+        let here = servesHere || relayed == true
+        return "Local API: on \(here ? ClusterOnboardingMacName.this : servedBy), you first (Darkbloom pauses while you use it; "
+            + "`darkbloom local`" + (here ? "" : " there") + " shows its address and key)"
     }
 
     /// Said instead of the test request when the pair is offered for pairing (and the answer of `t` then).

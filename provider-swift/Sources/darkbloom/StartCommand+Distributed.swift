@@ -39,8 +39,10 @@ extension Start {
         // is still inside a collective when its peer went away needs its
         // progress limit to do so; nothing signals it sooner.
         let stopAllowance = session.cooperativeStopAllowanceNanoseconds
-        // `darkbloom cluster local`: the pair's one key, whichever Mac the plan makes rank 0.
-        let token = try noAuth ? nil : noCoordinator ? LocalEndpoint.loadOrCreateClusterToken() : LocalEndpoint.loadOrCreateToken()
+        // This Mac's own key, which its tools read. `darkbloom cluster local` also takes the pair's one key, which every
+        // other Mac's relay passes requests on with, whichever Mac the plan makes rank 0.
+        let token = try noAuth ? nil : LocalEndpoint.loadOrCreateToken()
+        let pairToken = try noAuth || !noCoordinator ? nil : LocalEndpoint.loadOrCreateClusterToken()
         // From the selected registered model's row, like the stop allowance.
         let budget = try session.firstTokenBudgetPolicy()
         let batching = try DistributedAutomaticBatchFactory(providerConfiguration: configPath, stopNotice: announce)
@@ -51,7 +53,7 @@ extension Start {
         let router = LocalRouterConfig.pairLeaderOutsideDarkbloom(
             local: providerConfig?.local, coordinatorURL: coordinatorURL ?? providerConfig?.coordinator.url)
         let server = DistributedLocalServer(
-            session: session, config: .init(host: bind, port: port, authToken: token, router: router),
+            session: session, config: .init(host: bind, port: port, authToken: token, pairToken: pairToken, router: router),
             firstTokenBudgetPolicy: budget, batchReplacement: { try await batching.replacement(for: $0) })
 
         // Keep the existing endpoint/PID and sleep-prevention ownership. The

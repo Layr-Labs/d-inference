@@ -20,17 +20,27 @@ struct ClusterPairLocalAPI: Sendable, Equatable {
 
 extension ClusterPairSummary {
     /// `status` and `cluster status` on a pair that serves Both, me first: whether Darkbloom is paused for you, where the
-    /// pair's local API listens, and that the other members are part of the pair and run none. The Mac whose part runs
-    /// rank 0 says it from its own part; another Mac says where to look. Nothing while the pair is stopped, and nothing
-    /// for the other two ways to serve. No key and no speed.
+    /// pair's local API listens, and what the other Macs do. The Mac whose part runs rank 0 says it from its own part.
+    /// With the API on every address, every other Mac names its own relay's address, which passes your requests to it;
+    /// otherwise it says where to look. Nothing while the pair is stopped, and nothing for the other two ways to serve.
+    /// No key and no speed.
     func localAPILines(now: Date = Date(), timeZone: TimeZone = .current) -> [String] {
         guard let localAPI, started, paired, !pairingUnreadable else { return [] }
+        let everyMac = localAPIBind == ClusterServingScope.localOnlyDefaultBind
         guard localAPI.runsRankZero else {
-            return ["Local API: on \(otherMac), which runs the pair's API; `\(Self.cli) local` there shows its address and key, "
-                        + "and `\(Self.cli) status` there whether Darkbloom is paused for you",
-                    "Members: this Mac is part of the pair; it runs no local API"]
+            guard everyMac else {
+                return ["Local API: on \(otherMac), which runs the pair's API; `\(Self.cli) local` there shows its address and key, "
+                            + "and `\(Self.cli) status` there whether Darkbloom is paused for you",
+                        "Members: this Mac is part of the pair; it runs no local API"]
+            }
+            let passes = "Members: \(otherMac) runs the pair's API; this Mac passes your requests to it, and Darkbloom pauses for them too"
+            guard let relaying else {
+                return ["Local API: not listening on this Mac yet; it starts once the pair's API on \(otherMac) answers", passes]
+            }
+            return [Self.addressLine(relaying), passes]
         }
-        let members = "Members: \(otherMac) is part of the pair; it runs no local API"
+        let members = "Members: \(otherMac) is part of the pair; "
+            + (everyMac ? "its own port passes your requests to this API" : "it runs no local API")
         guard let address = localAPI.listening else {
             return ["Local API: not listening yet; it starts with this Mac's part of the pair", members]
         }
@@ -67,9 +77,11 @@ extension ClusterPairSummary {
         }
     }
 
-    /// This Mac's relay, from its own files: the discovery record its cluster service wrote (`live`); nil when none.
+    /// This Mac's relay, from its own files: the discovery record (`live`) its cluster service wrote (`own`, its status
+    /// with its pid), never its part's or another server's; nil when none.
     static func relayAddress(own: ClusterServiceStatus?, live: LocalEndpoint.Info?) -> ClusterPairLocalAPI.Address? {
-        nil
+        guard let service = own?.servicePID, let live, live.pid == service else { return nil }
+        return .init(host: live.host, port: live.port)
     }
 
     /// This Mac's view of the pair's local API, read from its own files: whether its part runs rank 0 (its cluster

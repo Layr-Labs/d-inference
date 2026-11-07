@@ -1,10 +1,12 @@
 import Foundation
 import Darwin
 
-/// `darkbloom cluster local` on the Mac that is not rank 0: its own port answers too, by passing each connection
-/// over the cable to the API on the rank 0 Mac, byte for byte (the API's key is checked there). Which Mac is rank 0
-/// follows the plan and can change between starts; without this the API's address changed with it (M4 Max rank 0 on
-/// one start, M5 Max on the next, 2026-10-16). TCP only: no HTTP is read, nothing is kept.
+/// A pair with its local API on every address (`darkbloom cluster local`, or Both, me first) on each Mac that is not
+/// rank 0: its own port answers too, by passing each connection over the cable to the API on the rank 0 Mac. Which Mac
+/// is rank 0 follows the plan and can change between starts; without this the API's address changed with it (M4 Max
+/// rank 0 on one start, M5 Max on the next, 2026-10-16), and a member had no API at all beside Darkbloom. With `keys`,
+/// each request's head is read on its way so this Mac's own key goes on as the pair's (`ClusterLocalRelay+Requests`);
+/// every other byte, and every byte of every answer, passes as it comes. The API checks the key. Nothing is kept.
 ///
 /// Each descriptor is closed only by the thread that uses it (`stop` only shuts them down), so a stopped relay never
 /// closes a number another socket of this process has taken since. At most `maximumConnections` pass at once, and a
@@ -121,12 +123,16 @@ public final class ClusterLocalRelay: @unchecked Sendable {
         guard track(upstream) else { close(upstream); return }
         defer { untrack(upstream); close(upstream) }
         let done = DispatchGroup()
-        for (from, to) in [(client, upstream), (upstream, client)] {
-            done.enter()
-            Thread.detachNewThread {
-                Self.pump(from: from, to: to)
-                done.leave()
-            }
+        let keys = self.keys
+        done.enter()
+        Thread.detachNewThread {
+            if let keys { Self.pumpRequests(from: client, to: upstream, keys: keys) } else { Self.pump(from: client, to: upstream) }
+            done.leave()
+        }
+        done.enter()
+        Thread.detachNewThread {
+            Self.pump(from: upstream, to: client)
+            done.leave()
         }
         done.wait()
     }

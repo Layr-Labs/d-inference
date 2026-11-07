@@ -449,8 +449,9 @@ enum LocalFirstWords {
     static func idleMinutes(milliseconds: Int64) -> UInt64 { UInt64(max(1, (milliseconds + 59_999) / 60_000)) }
 
     /// Where the owner's requests go when this Mac can't take them, in the iPhone app's words.
-    /// Where requests to a pair member's own port go (`ClusterLocalRelay`).
-    static let relayedRequests = ""
+    /// Where requests to a Mac's relay go (`ClusterLocalRelay`): to the pair's API on another Mac, whose route decides
+    /// the rest; it sees them come from this Mac, another machine, so never to the paid network.
+    static let relayedRequests = "the pair, on its API on the other Mac; never the paid Darkbloom network"
 
     static func requests(route: LocalSettings.Route?, accountKeySaved: Bool) -> String {
         guard accountKeySaved else { return "this Mac only" }

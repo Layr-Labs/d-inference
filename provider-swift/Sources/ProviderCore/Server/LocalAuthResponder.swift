@@ -49,7 +49,8 @@ public enum LocalAuthPolicy {
     ///   * nil/empty token              → open (no auth configured)
     ///   * OPTIONS                      → allowed (CORS preflight)
     ///   * GET/HEAD /health, /v1/health, / → allowed (liveness)
-    ///   * else                         → requires `Bearer <token>` (constant-time)
+    ///   * else                         → requires `Bearer <token>`, or on a pair's API `Bearer <pairToken>`
+    ///                                    (constant-time)
     static func authorize(
         method: HTTPRequest.Method,
         path: String,
@@ -65,7 +66,10 @@ public enum LocalAuthPolicy {
         let prefix = "Bearer "
         guard header.hasPrefix(prefix) else { return false }
         let provided = String(header.dropFirst(prefix.count))
-        return constantTimeEquals(provided, token)
+        // Both keys are always compared: the time taken says nothing of which one came close.
+        let own = constantTimeEquals(provided, token)
+        let pair = constantTimeEquals(provided, pairToken ?? "") && !(pairToken ?? "").isEmpty
+        return own || pair
     }
 
     /// Length-checked constant-time comparison. Tokens are fixed-length, so the

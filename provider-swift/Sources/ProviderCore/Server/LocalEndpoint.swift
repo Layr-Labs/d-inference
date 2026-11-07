@@ -46,8 +46,9 @@ public enum LocalEndpoint {
 
     // MARK: - The cluster's local API key
 
-    /// The key `darkbloom cluster local` serves with, one for the pair: the Mac where requests enter follows the
-    /// plan and can change between starts, and each Mac's own `local_token` then gave clients another key each time.
+    /// The pair's one key, the same on every Mac of it: a pair's API (`darkbloom cluster local`, or Both, me first) takes
+    /// it beside that Mac's own `local_token` (`LocalInferenceHTTPConfig.pairToken`), and every other Mac's relay passes
+    /// requests on with it in place of its own Mac's key (`ClusterLocalRelay.Keys`), whichever Mac the plan made rank 0.
     /// The control leader sends it to the member with each start (inside the keyed link control session).
     static func clusterTokenPath() -> URL { directory().appendingPathComponent("cluster_local_token") }
 
@@ -61,8 +62,9 @@ public enum LocalEndpoint {
         return token
     }
 
-    /// The key of the server listening on `port` on this Mac: its discovery file's when that names the port (a
-    /// cluster serving locally only uses the pair's key, others this Mac's own), else the pair's, else this Mac's own.
+    /// The key of the server listening on `port` on this Mac: its discovery file's when that names the port (this Mac's
+    /// own, whatever serves: a pair's API and a relay take it too; a pair API an older build started names the pair's),
+    /// else the pair's, else this Mac's own.
     public static func token(forPort port: Int) -> String? {
         if let info = readLiveInfo(), Int(info.port) == port, !info.apiKey.isEmpty { return info.apiKey }
         return existingClusterToken() ?? readToken()

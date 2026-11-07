@@ -2181,7 +2181,7 @@ final class OnboardingLive: @unchecked Sendable {
         }
         if registered(own), registered(peer) {
             return (.init(servedBy: here, port: 0, deployment: savedDeployment(perspective: true) ?? leadership?.deployment,
-                          offered: offered, split: savedSplit()), "ready")
+                          offered: offered, split: savedSplit(), relayed: leadership?.scope.answersOnEveryMac == true ? true : nil), "ready")
         }
         var line = "registering both Macs with the coordinator for pairing"
         for (mac, child) in [(hereShort, own), (thereShort, peer)] where child?.running == false {

@@ -91,7 +91,10 @@ extension LocalSettings {
     /// share this Mac: a coordinator connection, which `--local` never has, with the local API beside it, in a mode
     /// where `meFirstEnabled` holds.
     public func meFirstIdle(local: Bool, localEndpoint: Bool) -> Duration? {
-        nil
+        guard !local, localEndpoint, meFirstEnabled(in: resolvedMode(local: local, localEndpoint: localEndpoint))
+        else { return nil }
+        // Validation keeps the minutes in range; the bound only keeps the arithmetic total.
+        return .seconds(60 * Int64(Swift.min(resolvedMeFirstIdleMinutes, Self.meFirstIdleMinutesRange.upperBound)))
     }
 
     /// The saved route, else this Mac only (today's behaviour) or, once an account key is saved, only my Macs.

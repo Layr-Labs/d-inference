@@ -51,6 +51,13 @@ struct LocalUseOwnerPauseTests {
             await loop.makeLocalEndpointApplication(LocalUseOwnerPauseTests.endpoint)
         }
 
+        /// The owner's idle time has passed on the test clock: the pause ends,
+        /// by this call or by the resume timer if it woke first.
+        func ownerIdleTimeIsUp() async {
+            _ = await loop.resumeIfOwnerIdle()
+            #expect(!state.ownerPausesPublic)
+        }
+
         func remove() { sandbox.remove() }
     }
 
@@ -132,7 +139,7 @@ struct LocalUseOwnerPauseTests {
         #expect(await !h.loop.resumeIfOwnerIdle())
         #expect(try await h.heartbeat()["status"] as? String == "draining")
         h.clock.advance(ms: 1)
-        #expect(await h.loop.resumeIfOwnerIdle())
+        await h.ownerIdleTimeIsUp()
         let resumed = try await h.heartbeat()
         #expect(resumed["status"] as? String == "idle")
         for key in Self.busyKeys { #expect(resumed[key] == nil) }
@@ -158,6 +165,8 @@ struct LocalUseOwnerPauseTests {
             }
         }
         _ = try #require(try await mock.awaitFirstRegister(timeout: .seconds(10)))
+        // Event heartbeats go out once the client counts its session registered.
+        #expect(await modelLoadingWaitUntil { await client.sessionRegistered })
         await h.loop.setCoordinatorClientForTesting(client)
 
         let start = h.clock.now
@@ -173,7 +182,7 @@ struct LocalUseOwnerPauseTests {
         #expect(await modelLoadingWaitUntil { await h.loop.meFirstSnapshot?.localRequestsInFlight == 0 })
 
         h.clock.advance(ms: Self.twoMinutesMs)
-        #expect(await h.loop.resumeIfOwnerIdle())
+        await h.ownerIdleTimeIsUp()
         let resumed = try #require(try await mock.waitForSnapshot { $0.heartbeats.count == 2 })
         #expect(resumed.heartbeats[1].status == .idle && resumed.heartbeats[1].busy == nil)
     }
@@ -372,7 +381,7 @@ struct LocalUseOwnerPauseTests {
         await witness.releaseToken.fire()
         #expect(await modelLoadingWaitUntil { await h.inFlight() == [0, 0] })
         h.clock.advance(ms: Self.twoMinutesMs)
-        #expect(await h.loop.resumeIfOwnerIdle())
+        await h.ownerIdleTimeIsUp()
     }
 
     /// The hook runs when a request takes its model and when it lets it go,
@@ -408,8 +417,8 @@ struct LocalUseOwnerPauseTests {
     /// production uses, and write nothing. Measured against me first off.
     @Test func theHookCostsNextToNothing() async throws {
         let pairs = 100_000
-        func measure(meFirst: Bool) async throws -> (pairNs: Double, acquireP50Ns: UInt64, acquireP99Ns: UInt64,
-                                                     stateUnchanged: Bool) {
+        func measure(meFirst: Bool) async throws -> (entryNs: UInt64, pairNs: Double, acquireP50Ns: UInt64,
+                                                     acquireP99Ns: UInt64, stateUnchanged: Bool) {
             let sandbox = try ModelLoadingSandbox()
             defer { sandbox.remove() }
             let loop = try await ModelLoadingFixtures.makeLoop(
@@ -417,8 +426,11 @@ struct LocalUseOwnerPauseTests {
             await loop.skipCapacityRebuildForTesting()
             await loop.enableMeFirstIfConfigured()
             await Self.installSlot(LocalUseEngine(), on: loop)
-            // The owner is at work: one request holds the model throughout.
+            // The owner's first request (the pause's entry with me first on)
+            // then holds the model throughout: the owner is at work.
+            let entryBegin = DispatchTime.now().uptimeNanoseconds
             let held = try await loop.acquireModelForLocal(Self.model)
+            let entryNs = DispatchTime.now().uptimeNanoseconds - entryBegin
             #expect(await loop.ownerPausesPublic == meFirst)
             await loop.writeDaemonState()
             let before = try? Data(contentsOf: sandbox.daemonStateFile)
@@ -426,11 +438,11 @@ struct LocalUseOwnerPauseTests {
             let acquire = try await loop.localAcquireReleaseNanos(Self.model, count: 2_000)
             let after = try? Data(contentsOf: sandbox.daemonStateFile)
             await held.releaseToken.fire()
-            return (pairNs, acquire[acquire.count / 2], acquire[acquire.count * 99 / 100], before == after)
+            return (entryNs, pairNs, acquire[acquire.count / 2], acquire[acquire.count * 99 / 100], before == after)
         }
         let off = try await measure(meFirst: false)
         let on = try await measure(meFirst: true)
-        print("me first hook: \(Int(on.pairNs)) ns per start/end pair on, \(Int(off.pairNs)) ns off; local acquire+release p50 \(on.acquireP50Ns / 1_000) µs on, \(off.acquireP50Ns / 1_000) µs off; p99 \(on.acquireP99Ns / 1_000) µs on, \(off.acquireP99Ns / 1_000) µs off")
+        print("me first hook: \(Int(on.pairNs)) ns per start/end pair on, \(Int(off.pairNs)) ns off; local acquire+release p50 \(on.acquireP50Ns / 1_000) µs on, \(off.acquireP50Ns / 1_000) µs off; p99 \(on.acquireP99Ns / 1_000) µs on, \(off.acquireP99Ns / 1_000) µs off; first request \(on.entryNs / 1_000) µs on (pause entry), \(off.entryNs / 1_000) µs off")
         #expect(on.pairNs < 5_000)
         #expect(on.stateUnchanged && off.stateUnchanged)
         #expect(Double(on.acquireP50Ns) < Double(off.acquireP50Ns) + 50_000)

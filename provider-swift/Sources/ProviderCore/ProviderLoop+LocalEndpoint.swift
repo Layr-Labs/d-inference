@@ -142,6 +142,9 @@ extension ProviderLoop {
     /// the idle monitor and load-gate eviction can't pull it mid-stream. Loading
     /// goes through the same `ensureModelLoaded` gate as coordinator requests, so
     /// the shared `GlobalKVCacheBudget` and memory admission apply uniformly.
+    /// The reservation is the owner's use of this Mac for me first, from the
+    /// moment it is taken until `releaseLocalReservation`; a request refused
+    /// before it is never counted.
     func acquireModelForLocal(_ modelId: String, managedSuper: Bool = false) async throws
         -> MultiModelBatchSchedulerEngine.AcquiredModel {
         // The generic engine never serves Super: its owner renders and parses.
@@ -180,6 +183,7 @@ extension ProviderLoop {
             diffusionContainer: slot.modelContainer.diffusion, isVLM: slot.isVLM,
             engineV2Bridge: slot.engineV2, visionGate: slot.visionGate(kvBudget: kvBudget)))
         localReservations.reserve(modelId)
+        noteLocalUse(.start)
         modelSlots[modelId]?.lastInferenceAt = .now
         let release: @Sendable (String) async -> Void = { [weak self] mid in
             await self?.releaseLocalReservation(mid)
@@ -214,10 +218,14 @@ extension ProviderLoop {
         return .init(owner: owner, release: { await release.fire() })
     }
 
-    /// Drop one local in-flight reservation for a model.
+    /// Drop one local in-flight reservation for a model, which ends that
+    /// request's use for me first. The request's `OneShotRelease` calls this
+    /// once; a release with no reservation to drop ends no use.
     func releaseLocalReservation(_ modelId: String) {
+        let held = localReservations.isReserved(modelId)
         localReservations.release(modelId)
         modelSlots[modelId]?.lastInferenceAt = .now
+        if held { noteLocalUse(.end) }
     }
 
     /// Whether a model currently has a local request in flight. Used by the idle

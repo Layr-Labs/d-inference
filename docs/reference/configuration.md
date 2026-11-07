@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-07
 
 Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -346,16 +346,20 @@ defines DST adjustment, merged windows, full-week coverage and fail-closed parsi
 ### Local-first use (`[local]`)
 
 `[local]` in `provider.toml` holds how this Mac serves its owner beside, or
-instead of, Darkbloom. This build parses, checks and writes the section;
-serving does not read it yet. Every key is optional, and an absent key keeps
-today's behaviour (`LocalSettings` in
+instead of, Darkbloom. This build parses, checks and writes the section.
+Serving reads `mode`, `me_first` and `me_first_idle_minutes` for the local
+endpoint beside Darkbloom (`--local-endpoint`): there they decide the
+[owner pause](../architecture/owner-pause.md), which stops Darkbloom requests
+while the owner's local requests run (`LocalSettings.meFirstIdle`). It does
+not read `route`, `port` or `bind` yet. Every key is optional, and an absent
+key keeps the defaults below (`LocalSettings` in
 `provider-swift/Sources/ProviderCore/Config/LocalSettings.swift`).
 
 | `provider.toml` key | Accepted values | When absent (`LocalSettings` resolver) |
 |---|---|---|
 | `[local] mode` | `"local"` (only you, on this Mac), `"network"` (the Darkbloom network only), `"both"` (both, you first) | The launch flags decide, as today: plain `start` = `network`, `--local` = `local`, `--local-endpoint` = `both` (`launchMode`, `resolvedMode`) |
-| `[local] me_first` | `true` or `false` | On with `mode = "both"`, off otherwise; `false` keeps today's shared serving (`meFirstEnabled`) |
-| `[local] me_first_idle_minutes` | Whole minutes, `1`–`120` | `2` (`defaultMeFirstIdleMinutes`, `resolvedMeFirstIdleMinutes`) |
+| `[local] me_first` | `true` or `false` | On with `mode = "both"`, off otherwise; `false` keeps today's shared serving (`meFirstEnabled`). It applies only to the local endpoint beside the coordinator, never to `--local` (`meFirstIdle`) |
+| `[local] me_first_idle_minutes` | Whole minutes, `1`–`120` | `2` (`defaultMeFirstIdleMinutes`, `resolvedMeFirstIdleMinutes`): Darkbloom requests return this long after the owner's last local request ends |
 | `[local] route` | `"this-mac"` (only this Mac), `"my-macs"` (only your Macs), `"my-macs-first"` (your Macs first, then the Darkbloom network) | `this-mac`; `my-macs` once an account key is saved (`resolvedRoute`) |
 | `[local] port` | Whole number, `1`–`65535` | The build's `defaultLocalPort` (`resolvedPort`) |
 | `[local] bind` | `localhost` or a numeric IPv4 or IPv6 address (`ClusterServingScope.isValidBind`) | `127.0.0.1` (`defaultBind`, `resolvedBind`) |

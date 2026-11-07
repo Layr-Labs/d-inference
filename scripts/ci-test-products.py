@@ -8,12 +8,18 @@ paths (`#filePath`, resource bundle paths, the package graph in
 fixed path, FIXED_ROOT; Blacksmith and Darkbloom runners check out to
 different paths (.github/workflows/provider-tests.yml).
 
-The archive holds the lane's `.build` directory without the compile
-intermediates that no test step reads: each target's `<Target>.build`
-directory (object files and dependency records), `ModuleCache`, `index` and
-`Modules`. It keeps the test bundles, the executables, the resource bundles,
-the staged matched `mlx.metallib`, and the checkouts, repositories and
-`workspace-state.json` that load the package graph without a fetch. A
+The archive holds the lane's `.build` directory without what no test step
+reads: each target's `<Target>.build` directory (object files and dependency
+records), `ModuleCache`, `index`, `Modules` and `Modules-tool`; the host tools
+(macros and plugins, which SwiftPM builds with a `-tool` suffix and only the
+compiler runs); the `.dSYM` bundles (the coverage report reads the coverage
+maps in the binaries, not DWARF); and `repositories`, SwiftPM's bare clones,
+which it reads only to check out a dependency whose checkout is missing or at
+another revision. It keeps the test bundles, the executables, the resource
+bundles, the staged matched `mlx.metallib`, the build database, and the
+checkouts and `workspace-state.json`, which load the package graph without a
+fetch. The test bundle's copies of `mlx.metallib` cost nearly nothing: zstd's
+long-distance mode (LONG_WINDOW) stores each repeat as a reference. A
 manifest records the commit and the toolchain; a test job refuses products of
 another commit or of another Swift, Xcode or SDK version, and warns when only
 the builds of that version differ (the runner images of Blacksmith and
@@ -41,7 +47,15 @@ import time
 FIXED_ROOT = Path("/private/tmp/dinf")
 LANES = {"provider": "provider-swift", "cluster": "libs/darkbloom-cluster"}
 # Directories inside .build/<triple>/<configuration>/ that only the compiler reads.
-INTERMEDIATES = ("ModuleCache", "index", "Modules")
+INTERMEDIATES = ("ModuleCache", "index", "Modules", "Modules-tool")
+# zstd's long-distance mode with a 2 GiB window: content repeated far apart
+# (the metallib copies, the code that the test bundle and the executables
+# share) is stored once. Unpacking needs the same window and about 2 GiB of
+# memory. On the provider products of run 42318853015, level 9 with it packs
+# 265 MiB, against 400 MiB at level 3 without it, for about 7 s more on 10
+# cores; a 1 GiB window packs 282 MiB.
+LONG_WINDOW = "--long=31"
+COMPRESSION = ("-9", LONG_WINDOW)
 MANIFEST = "ci-test-products.json"
 STAMP = "CI_TEST_PRODUCTS_STARTED"
 
@@ -85,11 +99,22 @@ def package(root, lane):
     return directory
 
 
-def intermediate(relative):
-    """Whether .build/<relative> is a compile intermediate directory."""
+def unread(relative):
+    """Whether no test step reads .build/<relative> (see the module docstring).
+
+    A test bundle holds its own `.dSYM` (`<Bundle>.xctest/Contents/MacOS/`),
+    so a `.dSYM` is unread at any depth of the build tree.
+    """
     parts = relative.parts
-    return (len(parts) == 3 and "-apple-" in parts[0]
-            and (parts[2].endswith(".build") or parts[2] in INTERMEDIATES))
+    if parts == ("repositories",):
+        return True
+    if len(parts) < 3 or "-apple-" not in parts[0]:
+        return False
+    name = parts[-1]
+    if name.endswith(".dSYM"):
+        return True
+    return len(parts) == 3 and (name in INTERMEDIATES or name.endswith(".build")
+                                or name.removesuffix(".product").endswith("-tool"))
 
 
 def product_paths(directory):
@@ -103,13 +128,14 @@ def product_paths(directory):
         kept = []
         for name in sorted(directories):
             path = base / name
-            if not intermediate(path.relative_to(build)):
+            if not unread(path.relative_to(build)):
                 paths.append(path.relative_to(directory))
                 # os.walk does not descend into links; a linked directory is one entry.
                 if not path.is_symlink():
                     kept.append(name)
         directories[:] = kept
-        paths.extend((base / name).relative_to(directory) for name in sorted(files))
+        paths.extend((base / name).relative_to(directory) for name in sorted(files)
+                     if not unread((base / name).relative_to(build)))
     return paths
 
 
@@ -152,6 +178,8 @@ def pack(root, lane, archive):
     directory = package(root, lane)
     started = time.monotonic()
     paths = product_paths(directory)
+    files = sum(entry.lstat().st_size for entry in (directory / path for path in paths)
+                if entry.is_file() and not entry.is_symlink())
     manifest = {"lane": lane, "commit": commit(root), "toolchain": toolchain(), "entries": len(paths)}
     (directory / ".build" / MANIFEST).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     paths.append(Path(".build") / MANIFEST)
@@ -160,10 +188,10 @@ def pack(root, lane, archive):
         listing.write(b"".join(os.fsencode(path) + b"\0" for path in paths))
         listing.flush()
         stream(["tar", "--null", "--no-recursion", "-T", listing.name, "-cf", "-"], directory,
-               ["zstd", "-T0", "-3", "-q", "-f", "-o", str(archive)])
+               ["zstd", "-T0", *COMPRESSION, "-q", "-f", "-o", str(archive)])
     start_clock()
-    print(f"{lane} test products: {len(paths)} entries, {mebibytes(archive)} compressed, "
-          f"packed in {time.monotonic() - started:.1f} s")
+    print(f"{lane} test products: {len(paths)} entries, {files / 2**20:.1f} MiB of files, "
+          f"{mebibytes(archive)} compressed, packed in {time.monotonic() - started:.1f} s")
 
 
 def uploaded(archive):
@@ -179,7 +207,7 @@ def unpack(root, lane, archive):
     build = directory / ".build"
     if build.exists():
         raise ProductsError(f"{build} already exists; the test job must not build")
-    stream(["zstd", "-dc", "-q", str(archive)], directory, ["tar", "-xpf", "-"])
+    stream(["zstd", "-dc", LONG_WINDOW, "-q", str(archive)], directory, ["tar", "-xpf", "-"])
     manifest = json.loads((build / MANIFEST).read_text())
     current = toolchain()
     built = manifest.get("toolchain") or {}

@@ -74,6 +74,12 @@ Starts without a terminal never ask:
   API and no new port.
 - **A saved Only me** serves in a terminal, so a start without one says so and
   stops before it changes anything.
+- **The models:** a start for **Darkbloom network** or **Both, me first** that
+  names none (`--model <id>`, `--all`) can't pick them without a terminal, so it
+  says in one line to add them and stops, instead of waiting for an answer.
+- **On a Mac in a pair,** a start without a terminal starts the pair, with or
+  without `--opencode` or `--hermes`. The app's Start buttons serve one Mac, so
+  they are refused there by name ([Two Macs](#two-macs)).
 - **Some app buttons choose for you:** the app's onboarding, its Autopilot and
   Studio's "Alongside the network" start **Both, me first** (`--local-endpoint`)
   whatever you saved; Studio's "Local only" starts **Only me** in the
@@ -274,8 +280,10 @@ list's **Change how the pair serves** asks again. Then run
   asked, and a pair keeps serving as it did
   ([Both, me first](./two-mac-cluster.md#both-me-first-the-pairs-own-api-beside-darkbloom)).
 
-On a Mac in a pair, `darkbloom start` starts the pair, and the flags above are
-for serving this Mac alone: add `--solo`
+On a Mac in a pair, `darkbloom start` starts the pair, in a terminal or not,
+also after `darkbloom stop`. The flags above are for serving this Mac alone:
+add `--solo`. Without it they start nothing and say why, and so do the app's
+Start buttons. `darkbloom status` says under the pair when the Mac serves alone
 ([Two Macs as one provider](./two-mac-cluster.md)).
 
 ## Related

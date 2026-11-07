@@ -111,6 +111,7 @@ and `provider-swift/Sources/darkbloom/Diagnostics/DoctorRunner.swift`, using
 | `Cannot start: …` | `Start.prepareServeRuntime` — `GPUEnforcement.requireMetal` failed, or the Gemma runtime environment could not be applied (`GemmaOptimizationEnvironment.apply`) | Confirm a Metal GPU (`system_profiler SPDisplaysDataType`); retry |
 | `Cannot start: hardware detection failed …` | `sysctl`/`system_profiler` failed | Retry; report the output of `sysctl machdep.cpu.brand_string hw.memsize` |
 | `No models selected.` | Picker cancelled or `--model` ids not local | `darkbloom models list`; `darkbloom models download <id>` |
+| ``Without a terminal, `darkbloom start` can't ask which models to serve: …`` (exit 64) | A script, an agent or a start with its input redirected named no models; no start asks a question without a terminal | Add `--model <id>` (`darkbloom models list`) or `--all`, or run `darkbloom start` in a terminal to pick |
 | `No engine-v2-capable models available to serve.` (`--local`) | Every local model's family lacks a CBv2 adapter | Download a supported family (gpt-oss, gemma-4) |
 | `Local server failed to bind <addr>:<port> within 5s` | Port in use | `--port <other>`, or stop the other process |
 | `Cannot start --local-endpoint: failed to create the local API token …` | `~/.darkbloom` not writable | Fix permissions, or `--no-auth` on a trusted network |

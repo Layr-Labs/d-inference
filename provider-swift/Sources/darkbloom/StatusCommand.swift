@@ -7,7 +7,8 @@ struct Status: AsyncParsableCommand {
         abstract: "Show local provider configuration and hardware status.",
         discussion: "On a Mac in a two-Mac cluster it starts with the pair, in the words of `\(ClusterPairSummary.cli) cluster status` "
             + "(who leads, the model, whether it serves now and what to do), then this Mac's configuration and hardware. "
-            + "With --solo it shows single-Mac serving on this Mac instead."
+            + "When this Mac serves alone instead of the pair, it says so under the pair and shows that serving's own lines. "
+            + "With --solo it shows single-Mac serving on this Mac instead of the pair."
     )
 
     @OptionGroup var configOptions: ConfigOptions
@@ -31,13 +32,16 @@ struct Status: AsyncParsableCommand {
         let config = snapshot.config
         let models = advertisedModels(from: snapshot.models, config: config)
 
-        // On a Mac in a cluster the pair comes first, as `darkbloom cluster status` says it.
+        // On a Mac in a cluster the pair comes first, as `darkbloom cluster status` says it, then whether this Mac serves
+        // alone instead (`start --solo`), in plain words.
         let pair = ClusterPairSummary.local()
         let showsPair = pair.paired && !solo
+        let servingAlone = showsPair ? soloServingHere() : nil
         if showsPair {
             for line in await ClusterPairSummary.live(config: configOptions.config, bounded: ClusterPairCommands.printLine).clusterStatusLines {
                 print(line)
             }
+            if let state = servingAlone { print(Self.servingAloneLine(pid: state.pid)) }
             print("")
         }
 
@@ -92,9 +96,11 @@ struct Status: AsyncParsableCommand {
         }
         for line in Self.clusterServiceLines() { print(line) }
         if showsPair {
-            // The daemon lines would be the cluster's own part's, read as single-Mac serving: only say whether
-            // single-Mac serving runs beside the pair.
-            if let line = soloBesidePairLine() { print(line) }
+            // The daemon lines are single-Mac serving's only when it runs here; otherwise they would be the cluster's own
+            // part's, read as single-Mac serving.
+            if servingAlone != nil {
+                printDaemonStatus(config: config, models: snapshot.models, hardware: snapshot.hardware, pair: pair)
+            }
         } else {
             if pair.paired { print(pair.statusLine) }
             printDaemonStatus(config: config, models: snapshot.models, hardware: snapshot.hardware, pair: pair)
@@ -113,13 +119,18 @@ struct Status: AsyncParsableCommand {
         }
     }
 
-    /// On a Mac in a cluster: single-Mac serving that runs beside the pair (`start --solo`), in one line; nil when none.
-    private func soloBesidePairLine() -> String? {
+    /// On a Mac in a cluster: single-Mac serving that runs here (`start --solo`), never the cluster's own part; nil when
+    /// none runs.
+    private func soloServingHere() -> DaemonState? {
         guard let state = ServiceDrain.soloProviderState(), daemonProcessAlive(pid: state.pid) else { return nil }
-        return Self.soloBesidePairLine
+        return state
     }
 
-    static let soloBesidePairLine = "Single-Mac serving: running beside the pair (`\(ClusterPairSummary.cli) status --solo` shows it)"
+    /// Under the pair's block when this Mac serves alone: the pair and single-Mac serving share its one serving lock, so
+    /// it serves one or the other, never both.
+    static func servingAloneLine(pid: Int32) -> String {
+        "This Mac serves alone (single-Mac serving, process \(pid)), not the pair; its status is below."
+    }
 
     /// One-line summary of crash-recovery state: the config opt-out plus whether
     /// the launchd watchdog agent is actually armed.

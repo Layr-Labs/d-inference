@@ -1601,7 +1601,7 @@ they control single-Mac serving on one Mac
 | `darkbloom stop` (or `darkbloom cluster stop`) | Stops serving on both Macs. They stay stopped after a restart, and both cluster services stay up, idle, so the next start needs no visit to the other Mac. It waits until both Macs' parts have ended and says so (`Memory freed on both Macs ✓`) |
 | `darkbloom start` | Starts the pair, whatever its state, also after `darkbloom stop`: in a terminal, the same screen as `darkbloom cluster`; in a script, starts the saved model on both Macs and waits until it serves. `darkbloom start --solo` serves this Mac alone instead: see [going back to serving on one Mac](#going-back-to-serving-on-one-mac) |
 | `darkbloom restart` | Stops and starts the pair with its current model. While the pair doesn't run here, restarts single-Mac serving that runs here instead, and never starts the pair or single-Mac serving that was stopped |
-| `darkbloom status` | The pair first (who leads, the model, whether it serves now and what to do), then this Mac's fields; `darkbloom cluster status` gives the pair alone, with `--json` and exit codes |
+| `darkbloom status` | The pair first (who leads, the model, whether it serves now and what to do), then this Mac's fields. When this Mac serves alone instead (`start --solo`), a line under the pair says so, and single-Mac serving's own lines follow. `darkbloom cluster status` gives the pair alone, with `--json` and exit codes |
 
 Each says first that it acts on the pair. `--solo` on any of them acts on
 single-Mac serving on this Mac only and never touches the pair.
@@ -1666,10 +1666,12 @@ doesn't run here (it was stopped, or the other Mac is unplugged, off, or serving
 on its own), `darkbloom start --solo` serves this Mac alone:
 
 - It takes single-Mac options as on any Mac, for example `darkbloom start --solo
-  --model <id>`. Without `--solo`, single-Mac options start nothing on a paired
-  Mac, in every state of the pair: `darkbloom start --model <id>`, the app's
-  **Start serving** and `darkbloom autopilot enable` are refused by name (exit
-  64), and the app shows that refusal.
+  --model <id>`. Without a terminal it asks nothing: one that names no models
+  (`--model`, `--all`) says in one line to add them, before this Mac's part of
+  the pair is touched. Without `--solo`, single-Mac options start nothing on a
+  paired Mac, in every state of the pair: `darkbloom start --model <id>`, the
+  app's **Start serving** and `darkbloom autopilot enable` are refused by name
+  (exit 64), and the app shows that refusal.
 - A pair that is merely stopped gives one line: ``This Mac is in a two-Mac
   cluster with the other Mac (…), which is stopped: serving this Mac alone
   (`darkbloom start` starts the pair again).``

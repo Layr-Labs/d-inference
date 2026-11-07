@@ -31,6 +31,16 @@ extension Start {
         return StartModelSelection(hostedModels: hosted, autopilotModels: cached)
     }
 
+    /// A start that names no models (`--model`, `--all`) picks them in the picker (`selectStartupModels`), which would
+    /// wait on standard input without a terminal, forever when it stays open (journey 1, J-9). No start asks without a
+    /// terminal: the one line that names the flags instead; nil when the start may go on.
+    func modelsRefusalWithoutTerminal(terminal: Bool) -> String? {
+        guard !terminal, model.isEmpty, !all else { return nil }
+        let cli = BuildEnvironment.current.cliName
+        return "Without a terminal, `\(cli) start` can't ask which models to serve: add --model <id> (`\(cli) models list` "
+            + "shows this Mac's models) or --all."
+    }
+
     func selectStartupModels(snapshot: RuntimeSnapshot, config: ProviderConfig,
                              coordinatorURL: String,
                              runtimeCapabilities: Set<ProviderRuntimeCapability>,

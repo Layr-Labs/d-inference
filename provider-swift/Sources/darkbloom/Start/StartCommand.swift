@@ -353,8 +353,15 @@ struct Start: AsyncParsableCommand {
                 // cleared): the refusals of how this Mac would serve alone, such as a saved "Only me" (also the pair's,
                 // from `darkbloom cluster`) without a terminal. `resolveServing` makes the same ones again below.
                 if pair.paired {
-                    _ = try localFirstOptions.modeStep(saved: try savedLocalSettings(configPath: configOptions.config),
-                                                       terminal: ClusterPairCommands.isTerminal())
+                    let step = try localFirstOptions.modeStep(saved: try savedLocalSettings(configPath: configOptions.config),
+                                                              terminal: ClusterPairCommands.isTerminal())
+                    // Likewise the models (`modelsRefusalWithoutTerminal`, said again after `resolveServing` for a Mac
+                    // that isn't paired): before this Mac's part of the pair is stopped. Only me picks none.
+                    if case .decided(let mode, _) = step, mode != .local,
+                       let refusal = modelsRefusalWithoutTerminal(terminal: isatty(STDIN_FILENO) != 0) {
+                        printError(refusal)
+                        throw ExitCode.validationFailure
+                    }
                 }
                 if opensLook { look.open(Self.lookTitle) }
             default: break
@@ -427,6 +434,11 @@ struct Start: AsyncParsableCommand {
             return
         }
         let localOnly = serving.mode == .local
+        // No start asks without a terminal, the models' picker included; Only me serves the models already on this Mac.
+        if !localOnly, !foreground, let refusal = modelsRefusalWithoutTerminal(terminal: isatty(STDIN_FILENO) != 0) {
+            printError(refusal)
+            throw ExitCode.validationFailure
+        }
 
         var scheduleEdit: (current: ScheduleSettings, draft: ScheduleSettings)?
         if schedule {

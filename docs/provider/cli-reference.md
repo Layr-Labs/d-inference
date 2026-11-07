@@ -306,6 +306,15 @@ LaunchAgent with the arguments `--local-endpoint` has always used
   `--no-me-first` or `--me-first-idle` with `--foreground`. `--local` with
   `--local-endpoint` is still refused after the terms notice (exit 1).
   `--choose` without a terminal exits 64 and names the three flags.
+- **No terminal, no model list:** no start asks a question without a terminal
+  (stdin). One that names no models (`--model`, `--all`) for **Darkbloom
+  network** or **Both, me first** would ask in the model picker, so it stops
+  before anything is stopped or started, in one line on standard error (exit
+  64): ``Without a terminal, `darkbloom start` can't ask which models to serve:
+  add --model <id> (`darkbloom models list` shows this Mac's models) or
+  --all.`` **Only me** serves the models already on this Mac and needs none.
+  On a paired Mac, `start --solo` says it before this Mac's part of the pair
+  is touched (`Start.modelsRefusalWithoutTerminal`).
 - **The summary** gains, with a local API:
 
   ```text
@@ -2260,11 +2269,15 @@ darkbloom status [--solo]
 On a Mac in a two-Mac cluster, `status` starts with the pair in the words of
 `darkbloom cluster status` (who leads, the model, whether it serves now and what
 to do; on the Mac that follows, the leading Mac is asked over the cable), then
-this Mac's configuration and hardware. The single-Mac `Daemon:` and `Traffic:`
-lines, which there would be the cluster's own part's, are left out; single-Mac
-serving that runs beside the pair is one line. `status --solo` shows single-Mac
-serving instead, with the pair in one `Cluster:` line
-(`ClusterPairSummary.statusLine`). `darkbloom status` exits 0;
+this Mac's configuration and hardware. The pair and single-Mac serving share
+the Mac's one serving lock, so a paired Mac serves one or the other. When it
+serves alone (`start --solo`), a line under the pair block says so plainly
+(``This Mac serves alone (single-Mac serving, process <N>), not the pair; its
+status is below.``, `Status.servingAloneLine`), and single-Mac serving's own
+`Daemon:`, `Serving:`, `Trust:` and traffic lines follow, as `status --solo`
+shows them. Otherwise those lines, which would be the cluster's own part's, are
+left out. `status --solo` shows single-Mac serving instead of the pair, with the
+pair in one `Cluster:` line (`ClusterPairSummary.statusLine`). `darkbloom status` exits 0;
 `darkbloom cluster status` gives the same pair block with `--json` and exit
 statuses for scripts. `darkbloom doctor` prints the same `Cluster:` line under
 its `Daemon:` line, which reads `Daemon: single-Mac serving off (this Mac serves in its two-Mac cluster)`

@@ -352,12 +352,15 @@ They run once, at `start`:
    The endpoint's `GET /v1/models` (15 s, `ToolIntegrationStep.modelListTimeout`:
    well over the router's own wait for the coordinator's lists, which an
    unreachable coordinator runs out) and the catalog (5 s) give the models;
-   `ToolIntegration.configure` writes the block with a backup. Without the
-   catalog (offline, or a model it doesn't list), a model the tool's file
-   already lists keeps that entry's name, image input, reasoning and limits
-   (`IntegrationModel.keeping`), so a re-run changes nothing and says the catalog
-   wasn't reachable; a model new to the file gets its ID and text input only, and
-   one line says to run the start again online for names and image support.
+   `ToolIntegration.configure` writes the block with a backup. A model the
+   endpoint lists with `image` among its `input_modalities` (this Mac serves it
+   with vision) gets image input, catalog or not; reasoning comes from the
+   catalog only. Without the catalog (offline, or a model it doesn't list), a
+   model the tool's file already lists keeps that entry's name, image input,
+   reasoning and limits (`IntegrationModel.keeping`), so a re-run changes nothing
+   and says the catalog wasn't reachable; a model new to the file gets its ID,
+   and text input unless the endpoint lists images, and one line says to run the
+   start again online for names and image support.
    The result block names the file changed, the backup and a one-line undo,
    then `Requests:` (where your requests go) and
    `Other tools:` (`OPENAI_BASE_URL` and `OPENAI_API_KEY="$(cat <key file>)"`).

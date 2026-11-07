@@ -41,16 +41,20 @@ flowchart LR
    chat model from the catalog (`display_name`, with where it runs: this Mac, your Macs, the network), takes its
    context from the endpoint, else the catalog's maximum, its output cap as `min(max output, context / 4)` with
    `defaultOutputCap = 32_768`, and its capabilities from the catalog's names (tools on and text-only input when the
-   catalog is unreachable). A model the catalog doesn't describe (offline, or one it doesn't list) carries
-   `IntegrationModel.fallback`, and each planner first reads its own entry for the model back from the file
+   catalog is unreachable). Image input comes from the engine as well: a model the endpoint lists with `image` among
+   its `input_modalities` (this Mac's engine for its models, `EndpointModel.takesImages`) gets it whatever the
+   catalog says, so MiMo V2.6, whose catalog row is text only, gets it, offline too. Reasoning stays the catalog's: the
+   engine doesn't say which models reason. A model the catalog doesn't describe (offline, or one it doesn't list)
+   carries `IntegrationModel.fallback`, and each planner first reads its own entry for the model back from the file
    (`OpenCodeConfigPlan.modelEntries`, `HermesEdit.modelEntries`): `IntegrationModel.keeping` takes the entry's name,
-   capabilities and vision, its context when the endpoint gives none, and its output while the context is the one it
-   was set for. A model with no entry keeps the fallbacks and is named in `ToolConfigSummary.undescribed`.
+   capabilities and vision (image input the endpoint lists stays), its context when the endpoint gives none, and its
+   output while the context is the one it was set for. A model with no entry keeps the fallbacks and is named in
+   `ToolConfigSummary.undescribed`.
    For a model this Mac has loaded, the endpoint lists its whole context window as both the context and the max
    output (`LocalModelLimits(window:)`, `provider-swift/Sources/ProviderCore/Server/LocalRouterModels.swift`), so
    the writers give it its full context window and a quarter of it as output, not the catalog's smaller output cap
    (65,536 for a 262,144-token window whose catalog row says 32,768).
-   <!-- pending R-FULL: the writers give each model its full output length (the cap is a quarter of the context) and its capabilities from the engine as well as the catalog; only the Mac's memory bounds a request; OpenRouter is separate. -->
+   <!-- pending R-FULL: the writers give each model its full output length (the cap is a quarter of the context); only the Mac's memory bounds a request; OpenRouter is separate. -->
 3. **OpenCode.** `OpenCodeConfigPlan.plan` reads the file into byte ranges with `JSONCDocument` and replaces only the
    `providers.<id>` value, or appends it in the file's indentation and trailing-comma style. The block has the base
    URL, `apiKey: "{file:<key file>}"` (under `~` in the home directory), `compatibility.maxTokensField: "max_tokens"`

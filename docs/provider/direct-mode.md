@@ -307,6 +307,7 @@ coordinator's `self` list names this Mac's own builds by their aliases.
 | `owned_by` | `this-mac`, `my-macs` (your other Macs, free) or `darkbloom` (the network, billed). Before the router, this Mac's entries said `local` |
 | `context_length`, `max_model_len` | This Mac's engine for its resident models; else the Darkbloom catalog (`/v1/models/catalog`), by model or by the alias's build; omitted when unknown |
 | `max_output_length` | This Mac's loaded models: their context window too, as a request's prompt and output together may fill it ([each model's whole window](#each-models-whole-window-on-this-mac)); else the catalog's (a pair's: its profile's); omitted when unknown |
+| `input_modalities` | What a request may carry, as this Mac's engine serves the model, loaded or not: `["text", "image"]` for a model it serves with vision (`is_vision`, which the coordinator routes images on), else `["text"]`. On a pair's leader, the media the pair takes in its mode: `["text", "image", "video"]` for GLM-5.3-Flash and Qwen 3.8 27B in tensor parallel, `["text"]` for every other pair. Your Macs' and the network's models keep the coordinator's, when its list has one. Reasoning isn't listed: the catalog says which models reason (`LocalModelLimits.inputModalities`, `EngineV2Bridge.pairInputModalities`) |
 | `name` | The coordinator's or the catalog's display name for your Macs' and the network's models |
 
 The coordinator's lists are cached for 30 s and the catalog for 5 minutes; a
@@ -327,7 +328,11 @@ says which bound a request met ([refused request shapes](#refused-request-shapes
 the window (400 `context_length_exceeded`, in words that name it) or this Mac's
 memory (503, which the router passes on when a route dials out).
 
-<!-- pending R-FULL: GLM-5.3-Flash and Nemotron Super at their 1,048,576-token configs on one Mac; each model's capabilities (image, video and audio input, reasoning) in this list; a memory refusal that names how many tokens this Mac holds; the same for direct use through the network; OpenRouter is separate. -->
+Each model's input is in the list too (`input_modalities`, above), so a tool
+offers images for a model this Mac serves with vision, whatever the catalog
+says of it.
+
+<!-- pending R-FULL: GLM-5.3-Flash and Nemotron Super at their 1,048,576-token configs on one Mac; video and audio input for the models this Mac serves them for, in this list; a memory refusal that names how many tokens this Mac holds; the same for direct use through the network; OpenRouter is separate. -->
 
 ## Routes
 
@@ -374,6 +379,34 @@ with text, a streamed tool call that fails validation) while the pair is still
 finishing the cancelled request
 (`provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPEventStream.swift`,
 `DistributedHTTPEventStream`).
+
+### A long prompt's progress
+
+A long prompt takes minutes before its first token: a 255K-token prompt took 9
+minutes on an M3 Ultra. While it is processed, a streamed request (chat
+completions or Responses) gets an SSE comment every 5 seconds, from the moment
+the engine accepts the request until its first token:
+
+```text
+: prefill 0/254953 tokens
+```
+
+OpenAI clients ignore comments; to curl and to a client that reads the stream
+they say the request is still working through its prompt, and connections that
+end after a silence stay open. `<total>` is the prompt's tokens as the engine
+counts them, after the chat template and with any media; `<done>` is what the
+engine has reported computed. Today's engines report the prompt only when it is
+done, so `<done>` reads 0 until the first token, which ends the comments. A
+prompt done within 5 seconds gets none. The local router and a pair member's
+relay pass them on unchanged. On a pair's own API (`darkbloom cluster local`)
+the comment takes the place of the leader's 500 ms keep-alive probe every 5
+seconds (`LocalPrefillProgress`,
+`provider-swift/Sources/ProviderCore/Server/LocalPrefillProgress.swift`).
+
+Each streamed request has one timer, from its first frame to its first token,
+and nothing runs per token. A request that isn't streamed gets nothing until its
+answer, as HTTP has no interim bytes: give such a client a timeout of minutes
+for a long prompt (the OpenAI SDKs wait 10 minutes by default), or stream.
 
 ### Refused request shapes
 

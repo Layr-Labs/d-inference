@@ -1110,6 +1110,12 @@ only requests within them; it sends any other request to a single Mac. From the
 first request it serves, the pair's slot also reports its measured prefill and
 decode speeds, as a single Mac's slot does. The warmup canary is not counted.
 
+A long prompt on the pair's own API shows its progress as on one Mac: a
+streamed request gets `: prefill <done>/<total> tokens` every 5 seconds until
+its first token ([a long prompt's progress](./direct-mode.md#a-long-prompts-progress)).
+With `darkbloom cluster local`, it takes the place of the leader's 500 ms
+keep-alive probe every 5 seconds.
+
 After updating, let the normal cluster setup refresh both worker capabilities
 and the derived request deadline before serving. For adapters such as GLM that
 reserve their whole request scope at load time, automatic placement prices that
@@ -1122,7 +1128,10 @@ A pair takes image and video input only where its placed mode serves it:
 GLM-5.3-Flash and Qwen3.8 27B in tensor parallel. In every other mode (any
 pipeline, other models) it registers with the coordinator as text only, so no
 media request is routed to it, and a pair registered for media serves only
-while both Macs' parts report media. GLM-5.3-Flash answers its output
+while both Macs' parts report media. The pair's own API says the same in its
+`/v1/models`: `input_modalities` is `["text", "image", "video"]` where the
+pair's mode serves media (`["text", "image"]` on the GLM image candidate's
+profile) and `["text"]` otherwise (`EngineV2Bridge.pairInputModalities`). GLM-5.3-Flash answers its output
 controls as one Mac does: hidden reasoning is withheld, with or without media,
 and with images or video a `response_format` JSON answer or a required or
 named tool call is refused. Content parts of an unknown type are refused,

@@ -15,7 +15,9 @@ extension DaemonState {
         case configPath, runtimeCapabilities, inferenceActive, requestWorkPending, loadTransitionActive
         case stats, system, capacity, lastModelLoadError, slots
         case connectivity, autopilot, autopilotPhase, autopilotOperation, appAttest
-        case autopilotState, coordinatorConnection, addonHold, meFirst, localAPIFailure
+        case autopilotState, coordinatorConnection, addonHold, meFirst
+        // The state file's snake-case coder writes `local_api_failure` and reads it back as `localApiFailure`.
+        case localAPIFailure = "localApiFailure"
     }
 
     public init(from decoder: Decoder) throws {

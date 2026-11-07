@@ -82,7 +82,8 @@ struct Desktop: AsyncParsableCommand {
     /// The drain's options, as `darkbloom stop` would take them with none given.
     static func drainOptions() throws -> DrainOptions { try DrainOptions.parse([]) }
 
-    /// The local API the app's local mode serves: this Mac's port and `[local] bind`.
+    /// The local API the app's local mode serves: this Mac's one port (`LocalAPIPort.thisMac`: the saved one, else one
+    /// chosen and saved now), and `[local] bind`.
     static func localAPI(configPath: String?,
                          ownLivePort: () -> UInt16? = { LocalEndpoint.readLiveInfo()?.port },
                          isFree: (UInt16) -> Bool = { ClusterLocalServing.portIsFree(Int($0)) })
@@ -108,6 +109,13 @@ struct Desktop: AsyncParsableCommand {
         for line in refusal { printError(line) }
         throw ExitCode.failure
       }
+      // Before anything stops: no free port starts nothing.
+      let api: (choice: LocalAPIPort.Choice, bind: String)
+      do {
+        api = try Self.localAPI(configPath: configOptions.config)
+      } catch let none as LocalAPIPortError {
+        throw ValidationError(none.description)
+      }
       if DesktopLocalLifecycle.isActive {
         try await DesktopLocalLifecycle.stop(configPath: configOptions.config)
       }
@@ -115,7 +123,9 @@ struct Desktop: AsyncParsableCommand {
       defer { session.release() }
       try await ServiceDrain.stopDrainedProvider()
       try LaunchAgent.installLocalAndStart(
-        models: model, configPath: configOptions.config.map { URL(fileURLWithPath: $0) })
+        models: model, configPath: configOptions.config.map { URL(fileURLWithPath: $0) }, port: api.choice.port,
+        bind: api.bind, noAuth: false)
+      if let note = api.choice.note { print(note) }
       print("Local inference service started")
     }
   }

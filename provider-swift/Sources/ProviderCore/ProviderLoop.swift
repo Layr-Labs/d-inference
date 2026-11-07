@@ -436,6 +436,9 @@ public actor ProviderLoop {
 
     /// The running local OpenAI HTTP server task (unified mode), if any.
     internal var localServerTask: Task<Void, Never>?
+    /// Why that server couldn't listen, for `status` and `local` (`DaemonState.localAPIFailure`); nil while it
+    /// listens or there is none.
+    internal var localEndpointFailure: DaemonState.LocalAPIFailure?
 
     /// Guards against concurrent loads. `modelsLoading` tracks which models
     /// are mid-load; waiters suspend until the first loader finishes.

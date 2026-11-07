@@ -30,6 +30,8 @@ struct Local: AsyncParsableCommand {
         guard let info = LocalEndpoint.readLiveInfo() else {
             if json {
                 print("{}")
+            } else if let failure = Self.runningProviderLocalAPIFailure() {
+                printError(Self.notUpLine(failure, nextFree: LocalAPIPort.nextFree(besides: failure.port)))
             } else {
                 printError("No local server running.")
                 if let key = LocalEndpoint.existingClusterToken() {
@@ -112,7 +114,13 @@ struct Local: AsyncParsableCommand {
 
     /// What `local` says when the running provider's local API couldn't listen (`DaemonState.localAPIFailure`).
     static func notUpLine(_ failure: DaemonState.LocalAPIFailure, nextFree: UInt16?) -> String {
-        "No local server running."
+        "The local API isn't up: " + LocalFirstWords.whyNotUp(failure, nextFree: nextFree) + "."
+    }
+
+    /// The running provider's local API that couldn't listen; nil when none runs or nothing failed.
+    static func runningProviderLocalAPIFailure() -> DaemonState.LocalAPIFailure? {
+        guard let state = DaemonStateFile.read(), daemonProcessAlive(pid: state.pid) else { return nil }
+        return state.localAPIFailure
     }
 
     /// What `local` says to start a local API when none runs.

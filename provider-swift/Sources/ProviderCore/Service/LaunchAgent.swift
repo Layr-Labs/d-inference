@@ -137,12 +137,14 @@ public enum LaunchAgent: Sendable {
         }
     }
 
-    /// Desktop local mode uses the same canonical launchd owner as network serving.
-    /// The caller must complete the normal drain and hold the lifecycle lock.
-    public static func installLocalAndStart(models: [String], configPath: URL?) throws {
+    /// Desktop local mode uses the same canonical launchd owner as network serving, on this Mac's local API port
+    /// (`LocalAPIPort`), which the caller resolved. The caller must complete the normal drain and hold the lifecycle
+    /// lock.
+    public static func installLocalAndStart(models: [String], configPath: URL?, port: UInt16, bind: String,
+                                            noAuth: Bool) throws {
         guard !isLoaded() else { throw LaunchAgentError.bootstrapFailed("Existing provider must be drained first") }
         let arguments = localProgramArguments(binaryPath: currentExecutablePath(), models: models,
-                                              configPath: configPath, port: 0, bind: "", noAuth: false)
+                                              configPath: configPath, port: port, bind: bind, noAuth: noAuth)
         let contents = makeServicePlist(label: label, programArguments: arguments,
             logPath: logPath().path, environment: ProcessInfo.processInfo.environment)
         try FileManager.default.createDirectory(at: plistPath().deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -151,12 +153,14 @@ public enum LaunchAgent: Sendable {
         try loadService()
     }
 
-    /// The local-only job's argv, without touching launchd or the filesystem.
+    /// The local-only job's argv, without touching launchd or the filesystem: launchd's child (`--foreground`) serves
+    /// only the local API on the port and address given, and never asks, probes or saves.
     static func localProgramArguments(binaryPath: String, models: [String], configPath: URL?, port: UInt16,
                                       bind: String, noAuth: Bool) -> [String] {
-        var arguments = [binaryPath, "start", "--local"]
+        var arguments = [binaryPath, "start", "--foreground", "--local", "--port", "\(port)", "--bind", bind]
+        if noAuth { arguments.append("--no-auth") }
         for model in models { arguments += ["--model", model] }
-        if let configPath { arguments += ["--config", configPath.path] }
+        if let configPath { arguments += ["--config", configPath.standardizedFileURL.path] }
         return arguments
     }
 

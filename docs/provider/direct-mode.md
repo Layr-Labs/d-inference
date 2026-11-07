@@ -30,11 +30,12 @@ See [inference and logprob admission](../architecture/inference.md).
 - At least one model downloaded with an engine-v2 adapter (gpt-oss, gemma-4
   families); `darkbloom models list`. **Only me** serves the models already
   here; for **Both, me first**, `darkbloom start`'s model list also downloads.
-- A free port. `--local` and `--local-endpoint` use `[local] port`, else `8000`;
-  the start question, a saved choice and `--me-first` take the first free port
-  from 8001 and save it. `--port` picks one yourself.
+- A free port: this Mac's one local API port, `[local] port`. The first start
+  that serves a local API, whichever way it starts, chooses the first free port
+  from 8001 and saves it; every later start uses it. `--port` picks another and
+  saves it.
 
-<!-- pending LS-1: one port per Mac, chosen once from 8001 and used by every start; Only me also gets the model list with downloads. -->
+<!-- pending LS-1: Only me also gets the model list with downloads. -->
 
 ## Steps
 
@@ -59,10 +60,13 @@ See [inference and logprob admission](../architecture/inference.md).
    darkbloom start --local --port 8080 --bind 0.0.0.0   # another port / every interface
    ```
 
-   `--port` defaults to `[local] port`, else `8000` (`defaultLocalPort`; a dev
-   build uses its own port, see
+   The port is this Mac's one local API port (`LocalAPIPort`,
+   `provider-swift/Sources/ProviderCore/Config/LocalAPIPort.swift`):
+   `[local] port`, else the first free port from 8001 (from the build's
+   `defaultLocalPort`, never `8000`; a dev build starts from its own, see
    [Dev build identity](../operations/provider-release.md#dev-build-identity)),
-   `--bind` to `127.0.0.1`. Before serving,
+   chosen once and saved; a `--port` you name is saved too. `--bind` defaults to
+   `127.0.0.1`. Before serving,
    `Start.runLocalStandalone` (`provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift`)
    loads or creates the API token, filters the chosen models to those with an
    engine-v2 adapter (exit 1 with `No engine-v2-capable models available to
@@ -88,7 +92,9 @@ See [inference and logprob admission](../architecture/inference.md).
    kernels. `DARKBLOOM_TTFT_SHAPE_WARMUP=0` disables the warmup. Ctrl-C during preload cancels startup
    without opening the listener. It then waits for the socket to bind (`waitUntilBound`,
    bounded by the local bind wait in [runtime constants](./cli-reference.md#runtime-constants);
-   `Local server failed to bind <addr>:<port> within 5s` otherwise), writes the
+   otherwise it stops with ``This Mac's local API couldn't listen on
+   127.0.0.1:8001: another program may use port 8001. Free it, or run
+   `darkbloom start --port 8002`.``, naming the next free port), writes the
    discovery file and holds a fan-control lease while running
    ([fan control](./fan-control.md)). Ctrl-C stops it and removes the
    discovery file, and so does `darkbloom stop`. Closing the terminal window
@@ -106,9 +112,13 @@ See [inference and logprob admission](../architecture/inference.md).
    ```
 
    The provider daemon starts the local server in a child task once it is
-   running. If the port is busy the daemon logs `Local OpenAI endpoint did NOT
-   bind on <host>:<port> (port already in use?)` and keeps serving the fleet;
-   restart with a free `--port`. The discovery file is written only after the
+   running, on the same port as Only me. If the port is busy the daemon logs
+   `Local OpenAI endpoint did NOT bind on <host>:<port> (port already in use?)`
+   and keeps serving the fleet, and its state records why
+   (`DaemonState.localAPIFailure`, cleared once the API listens or stops), so
+   `darkbloom status` and `darkbloom local` say ``the local API isn't up: port
+   8001 is in use (`darkbloom start --port 8002`)`` instead of "network only".
+   The discovery file is written only after the
    provider's own socket is bound, never on a probe another process could
    answer (`ProviderLoop.onLocalEndpointBound`). With Both, me first a local
    request first loads the model if needed and then holds a reservation until
@@ -431,6 +441,7 @@ writes too (`StandaloneServer.startLifecycleControl`).
 | `401 Unauthorized` | Send `Authorization: Bearer $(cat ~/.darkbloom/local_token)`; the token in `local.json` is authoritative |
 | `413` on a chat request with images | Body above `localInferenceMaxUploadBytes`; downscale or send fewer images |
 | `darkbloom local` says no server is running but a process is listening | The listener is not a Darkbloom server (foreign process on the port) or a stale `local.json` was cleaned; restart with a free port |
+| ``the local API isn't up: port 8001 is in use (`darkbloom start --port 8002`)`` (`status`, `local`) | Another program listens on this Mac's local API port. Free it and run `darkbloom restart`, or run the command it names: the new port is saved, and tools set up for the old one need `darkbloom start --opencode` or `--hermes` again |
 | Model not in `/v1/models` | Only models with an engine-v2 adapter are advertised; `darkbloom models list` |
 | Endpoint unreachable from another machine | Default bind is loopback; `--bind 0.0.0.0` and open the port, then set a reverse proxy with TLS |
 | A DevNet build (`darkbloom-dev`) fails a request for a model it hasn't loaded with ``The production Darkbloom on this Mac holds this Mac's GPU: … no model of this build loads here until production stops serving`` | The production app serves on this Mac, and two models don't fit one Mac's memory: a DevNet build refuses each cold load at its start, before any eviction, weight hash or reservation (`StandaloneServer.ensureModelLoaded`, `ClusterGPUHold.productionServesHere`). A model it loaded before production started keeps serving. Retry once production stops serving here; production's own build never refuses this way |

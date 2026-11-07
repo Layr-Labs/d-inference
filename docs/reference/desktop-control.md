@@ -199,7 +199,7 @@ that cleanup completes, then the operation becomes `cancelled`.
 
 | Action | Additional fields | Behavior |
 |---|---|---|
-| `start` | `models`; optional `local`, `endpoint` | Existing start path; `local` (Only me, the app's "Local only") uses the same canonical provider LaunchAgent, and `endpoint` (Both, me first, the app's "Alongside the network") passes `--local-endpoint` |
+| `start` | `models`; optional `local`, `endpoint` | Existing start path; `local` (Only me, the app's "Local only") uses the same canonical provider LaunchAgent, on this Mac's one local API port (`[local] port`, else one chosen and saved first; `desktop start-local`), and `endpoint` (Both, me first, the app's "Alongside the network") passes `--local-endpoint` |
 | `autopilot` | `models`, `pinned`; optional `downloads`, `endpoint` | Complete selected native downloads, then verified `start --autopilot --model …`; pin only after successful start. Fail before enrollment when a download fails. Every startup model must be a network model (`models[].network`) |
 | `autopilot_pin`, `autopilot_unpin` | `models` | Existing CLI pin/unpin; pin budget is rechecked against downloaded estimates and configured slots |
 | `autopilot_pause`, `autopilot_resume`, `autopilot_disable` | — | Existing CLI policy commands |

@@ -9,14 +9,19 @@ extension DaemonState {
 
 extension Status {
     /// How this Mac serves now, from the running provider: a `Serving:` line (and one more while Darkbloom requests
-    /// finish under a pause), then, with a local API, where your requests go. `accountKeySaved` is asked only for a
-    /// local API with a key. No key and no speed.
+    /// finish under a pause), then, with a local API, where your requests go. A local API the provider couldn't open
+    /// says why, never "network only"; `nextFreePort` gives the port its line suggests. `accountKeySaved` is asked
+    /// only for a local API with a key. No key and no speed.
     static func servingLines(state: DaemonState, liveEndpoint: LocalEndpoint.Info?, route: LocalSettings.Route?,
                              accountKeySaved: () -> Bool,
                              nextFreePort: (UInt16) -> UInt16? = { LocalAPIPort.nextFree(besides: $0) },
                              now: Date = Date(), timeZone: TimeZone = .current) -> [String] {
         guard let liveEndpoint, liveEndpoint.pid == state.pid else {
-            return ["Serving: Darkbloom network only — this Mac has no local API"]
+            guard let failure = state.localAPIFailure else {
+                return ["Serving: Darkbloom network only — this Mac has no local API"]
+            }
+            return ["Serving: Darkbloom and you, \(state.meFirst == nil ? "shared" : "me first") — the local API isn't "
+                + "up: " + LocalFirstWords.whyNotUp(failure, nextFree: nextFreePort(failure.port))]
         }
         var lines: [String]
         if state.servesOnlyItsOwner {

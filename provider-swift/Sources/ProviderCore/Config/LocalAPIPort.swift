@@ -15,6 +15,11 @@ public enum LocalAPIPort {
     /// Where a choice starts: the build's default local port. Production's is 8000, never chosen, so its first is 8001.
     public static var firstTried: UInt16 { BuildEnvironment.current.defaultLocalPort }
 
+    /// The first port a choice can take (8001 on production), for the words that name it.
+    public static var firstCandidate: UInt16 {
+        (firstTried...last(from: firstTried)).first { !neverChosen.contains($0) } ?? firstTried
+    }
+
     /// This Mac's port for one start, and whether `[local] port` gets it.
     public struct Choice: Equatable, Sendable {
         public let port: UInt16
@@ -35,8 +40,16 @@ public enum LocalAPIPort {
     /// running local API, which the new start replaces) and `isFree` are asked only for a new choice.
     public static func choose(named: UInt16?, saved: UInt16?, ownLivePort: () -> UInt16?,
                               isFree: (UInt16) -> Bool) throws -> Choice {
-        // Today's `--local` and `--local-endpoint`: the named port, else the saved one, else the build's default.
-        Choice(port: named ?? saved ?? firstTried, saves: false, note: nil)
+        if let named {
+            guard named != saved else { return Choice(port: named, saves: false, note: nil) }
+            return Choice(port: named, saves: true, note: note(named: named, saved: saved))
+        }
+        if let saved { return Choice(port: saved, saves: false, note: nil) }
+        let start = firstTried
+        guard let chosen = pick(from: start, ownLivePort: ownLivePort(), isFree: isFree) else {
+            throw LocalAPIPortError(start: start)
+        }
+        return Choice(port: chosen, saves: true, note: note(chosen: chosen, start: start))
     }
 
     /// This Mac's port for a local API that starts now (the desktop app's local mode; a pair's local API): the saved
@@ -49,7 +62,13 @@ public enum LocalAPIPort {
                                isFree: (UInt16) -> Bool = { ClusterLocalServing.portIsFree(Int($0)) }) throws -> Choice {
         let config = try FileManager.default.fileExists(atPath: configPath.path)
             ? ConfigManager.load(from: configPath) : fallbackConfig
-        return try choose(named: nil, saved: config.local?.port, ownLivePort: ownLivePort, isFree: isFree)
+        let choice = try choose(named: nil, saved: config.local?.port, ownLivePort: ownLivePort, isFree: isFree)
+        guard choice.saves else { return choice }
+        var stands: UInt16?
+        try ConfigManager.updateLocal(at: configPath, fallbackConfig: fallbackConfig) { local in
+            if let saved = local.port { stands = saved } else { local.port = choice.port }
+        }
+        return stands.map { Choice(port: $0, saves: false, note: nil) } ?? choice
     }
 
     /// The first of `start`…`start + span` that isn't one of `neverChosen` and that no other program listens on, or
@@ -85,7 +104,7 @@ public enum LocalAPIPort {
     /// now, for the line that names `start --port`; nil when none is free.
     public static func nextFree(besides port: UInt16,
                                 isFree: (UInt16) -> Bool = { ClusterLocalServing.portIsFree(Int($0)) }) -> UInt16? {
-        nil
+        pick(from: firstTried, ownLivePort: nil, isFree: { $0 != port && isFree($0) })
     }
 }
 

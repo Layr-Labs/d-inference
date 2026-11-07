@@ -43,7 +43,7 @@ clock the caller supplies. `ProviderLoop+MeFirst.swift` in
 | `enableMeFirst(idle:)` | Turns the pause on with the owner's idle time (`[local] me_first_idle_minutes`, 2 minutes by default). The first call wins; a changed setting applies at the next start. The local endpoint calls it as it starts, where me first applies (below). |
 | `noteLocalUse(.start)` | A local request acquired a model: `acquireModelForLocal` calls it right after taking the request's reservation. The first one pauses Darkbloom work. |
 | `noteLocalUse(.end)` | It released the model: `releaseLocalReservation` calls it when it drops that reservation. The end of the last one starts the idle countdown. Every start is paired with one end; an unmatched end changes nothing. |
-| `resumeIfOwnerIdle()` | Ends the pause once the idle time has passed. The resume timer calls it, and so does a fresh coordinator connection. |
+| `resumeIfOwnerIdle()` | Ends the pause once the idle time has passed. The resume timer calls it. A fresh coordinator connection makes the same check before its first heartbeat (`reassertOwnerPauseAfterReconnect`). |
 | `meFirstSnapshot` | What `status` reads (`DaemonState.meFirst`). |
 
 While paused:
@@ -58,7 +58,7 @@ While paused:
 | `desired_models` | Deferred; replayed when the pause ends |
 | Darkbloom work accepted before the pause | Finishes normally; never cancelled |
 | Local requests and models | Admitted and kept as usual |
-| A fresh registration | `register` carries the owner's busy fields, and the connection's first event heartbeat repeats the draining status |
+| A fresh registration | `register` carries the owner's busy fields, and the connection's first event heartbeat repeats the draining status. A pause whose idle time passed while the connection was down ends first, so that one heartbeat says `idle` or `serving` |
 
 When the idle time has passed with no local request in flight, the provider
 clears the flag, sends an `idle` or `serving` event heartbeat, and replays the
@@ -104,7 +104,11 @@ The pause is event-driven:
   heartbeat, no task. They run in the same actor turn as the reservation and
   its release, once per request, never per token.
 - Heartbeats go out only when the pause begins and ends, beside the usual
-  baseline. The daemon state file is written on the same transitions.
+  baseline.
+- The end of the pause writes the daemon state file at once. Its start doesn't:
+  the start lands on the owner's request, and the loop already rewrites the
+  file every 2 s while serving, so `status` shows the pause within 2 s, as it
+  shows the request counts.
 - The one timer is armed when the owner's idle time starts counting. It sleeps
   until the deadline, wakes at most once per idle time while the owner keeps
   working, and is gone once the pause ends.
@@ -128,7 +132,10 @@ The pause is event-driven:
    pause outlasts the jump by one idle time at most.
 5. The pause cancels nothing. It has no drain bound: Darkbloom work accepted
    before it runs to the end, unlike under an add-on hold.
-6. A local request starts its use once and ends it once, however it ends.
+6. The pause belongs to the serving process and isn't saved, unlike an add-on
+   hold. A restart or update during a pause comes back open, and the owner's
+   next request pauses again.
+7. A local request starts its use once and ends it once, however it ends.
    `acquireModelForLocal` and `releaseLocalReservation` call the hooks in the
    same actor turn as the reservation and its release. Nothing after the start
    throws or suspends, so the request always gets its `OneShotRelease`, which
@@ -136,14 +143,15 @@ The pause is event-driven:
 
 ## Known gaps
 
-- **A model switch during the pause can report an unconfirmed result.** After
-  a switch, the coordinator reopens routing only on an `idle` or `serving`
-  heartbeat ([model replacement](../reference/protocol-messages.md#models_replace--models_replace_ack--models_replace_ready--models_replace_resumed)),
+- **`darkbloom switch` during the pause can exit with an error, though the
+  switch completes.** After a switch, the coordinator reopens routing only on
+  an `idle` or `serving` heartbeat ([model replacement](../reference/protocol-messages.md#models_replace--models_replace_ack--models_replace_ready--models_replace_resumed)),
   and every heartbeat of the pause says `draining`. If the pause outlasts the
-  provider's 30-second readiness wait (`resumeAfterModelSwitch`), `switch`
-  reports "Model selection applied locally, but coordinator routing readiness
-  is unconfirmed". The selection is applied, and the heartbeat that ends the
-  pause reopens routing.
+  provider's 30-second readiness wait (`resumeAfterModelSwitch`), `darkbloom
+  switch` exits with the error "Model selection applied locally, but
+  coordinator routing readiness is unconfirmed". The new selection is already
+  serving locally, and the heartbeat that ends the pause reopens Darkbloom
+  routing to it: nothing needs redoing.
 - **Model revision activations and MTP idle upgrades** don't wait for the
   pause. They wait for an idle model, so one can start in a gap between the
   owner's requests.

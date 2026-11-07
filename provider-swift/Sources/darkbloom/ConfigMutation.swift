@@ -18,7 +18,8 @@ func withMutableConfig<Result>(
     }
 }
 
-/// Changes `[local]` (`LocalSettings`) and nothing else in the config, so keys this build does not know survive.
+/// Changes the values of `[local]` (`LocalSettings`) and no other value in the config, so keys this build does not
+/// know keep their values; comments are dropped and keys re-sorted, as with every config writer (`updateLocal`).
 /// Shaped like `setIdleUnloadMinutes`: the same config path, the config lock with a re-read inside it, a plain
 /// refusal before anything is written, and an explicit value written even when it equals the default. Returns the
 /// config path and whether the file changed.

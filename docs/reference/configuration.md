@@ -378,15 +378,17 @@ bind = "127.0.0.1"
   plain line that names the key, what it takes and what the file has, for
   example `[local] me_first_idle_minutes must be a whole number of minutes from
   1 to 120, not 0.` (`LocalSettingsError`). Unknown keys in `[local]` are
-  accepted and kept.
+  accepted when the file loads.
 - **Writing:** `ConfigManager.updateLocal` (CLI: `setLocalSettings` in
   `provider-swift/Sources/darkbloom/ConfigMutation.swift`) changes only the
   `[local]` keys it is given, under the config lock. It edits the raw TOML table,
-  so every other value, unknown keys included, keeps its value; comments and
-  layout may change. It refuses a bad value before writing, writes nothing when
-  the file already holds the change, and writes an explicit value even when it
-  equals the default. Other config writers re-encode the known keys, as for
-  every section.
+  so every other value keeps its value, unknown keys included. Like every
+  config writer, it rewrites the whole file: comments are dropped and sections
+  and keys are re-sorted. It refuses a bad value before writing, writes nothing
+  when the file already holds the change, and writes an explicit value even
+  when it equals the default. Other config writers (`ConfigManager.save`, used
+  by `idle`, `beta` and `start`) re-encode only the keys this build knows, so
+  they drop unknown keys, in `[local]` as in every section.
 
 ### Model cache location
 

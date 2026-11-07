@@ -362,6 +362,26 @@ struct StartLocalFirstTests {
         #expect(serving.portNote == LocalAPIPort.note(chosen: firstNewPort, start: defaultPort))
     }
 
+    @Test("the serving process's me first follows the mode it serves, not a saved choice its flags overrode")
+    func servedModeDecidesMeFirst() {
+        let both = StartServing(mode: .both, source: .flag("--me-first"), meFirst: true, meFirstIdleMinutes: 5,
+                                route: nil, accountKeySaved: nil, port: 8001, bind: "127.0.0.1", noAuth: false)
+        var config = ProviderConfig(provider: ProviderSettings(name: "l4"))
+        config.local = LocalSettings(mode: .network, meFirstIdleMinutes: 5)
+        // L2 reads `[local] mode` first: a saved "network" would keep me first off beside --local-endpoint.
+        #expect(config.local?.meFirstIdle(local: false, localEndpoint: true) == nil)
+        let served = both.servedConfig(config)
+        #expect(served.local == LocalSettings(mode: .both, meFirstIdleMinutes: 5))
+        #expect(served.local?.meFirstIdle(local: false, localEndpoint: true) == .seconds(300))
+        // A saved me_first = false still turns it off; no [local] and a matching mode stay as they are.
+        config.local = LocalSettings(mode: .local, meFirst: false)
+        #expect(both.servedConfig(config).local?.meFirstIdle(local: false, localEndpoint: true) == nil)
+        config.local = nil
+        #expect(both.servedConfig(config) == config)
+        config.local = LocalSettings(mode: .both, port: 8001)
+        #expect(both.servedConfig(config) == config)
+    }
+
     // MARK: - Flag exclusivity
 
     @Test("--local with --me-first is refused, before anything runs")

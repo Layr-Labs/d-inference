@@ -180,6 +180,19 @@ struct StartServing: Equatable, Sendable {
     }
 }
 
+extension StartServing {
+    /// The configuration the serving process runs with: its `[local] mode` is the mode it serves, so me first
+    /// (`ProviderLoopConfig.meFirstIdle`, which reads the saved mode first) follows what serves, never a saved choice
+    /// this start's flags overrode, such as a saved "network" with `--me-first`. Only a saved mode is replaced: the
+    /// file then exists, so the model-switch writer edits its table and never encodes this configuration.
+    func servedConfig(_ config: ProviderConfig) -> ProviderConfig {
+        guard let saved = config.local?.mode, saved != mode else { return config }
+        var served = config
+        served.local?.mode = mode
+        return served
+    }
+}
+
 /// What resolving a start may touch: tests stand in for the terminal, the Keychain and the ports.
 struct ServingEnvironment {
     var terminal: Bool

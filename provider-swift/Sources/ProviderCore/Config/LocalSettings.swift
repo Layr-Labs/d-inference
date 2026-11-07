@@ -87,6 +87,17 @@ extension LocalSettings {
 
     public var resolvedMeFirstIdleMinutes: UInt64 { meFirstIdleMinutes ?? Self.defaultMeFirstIdleMinutes }
 
+    /// How long the owner stays idle before Darkbloom traffic resumes, for a provider started with these launch flags
+    /// (as `launchMode` reads them); nil where me first does not apply. It applies only where Darkbloom and the owner
+    /// share this Mac: a coordinator connection, which `--local` never has, with the local API beside it, in a mode
+    /// where `meFirstEnabled` holds.
+    public func meFirstIdle(local: Bool, localEndpoint: Bool) -> Duration? {
+        guard !local, localEndpoint, meFirstEnabled(in: resolvedMode(local: local, localEndpoint: localEndpoint))
+        else { return nil }
+        // Validation keeps the minutes in range; the bound only keeps the arithmetic total.
+        return .seconds(60 * Int64(Swift.min(resolvedMeFirstIdleMinutes, Self.meFirstIdleMinutesRange.upperBound)))
+    }
+
     /// The saved route, else this Mac only (today's behaviour) or, once an account key is saved, only my Macs.
     public func resolvedRoute(accountKeySaved: Bool) -> Route {
         route ?? (accountKeySaved ? .myMacs : .thisMac)

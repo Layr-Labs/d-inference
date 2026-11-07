@@ -477,12 +477,33 @@ func protocolChecks() throws {
 
 // MARK: E. Status mirror
 
+/// The link a publisher under check sends on. Each timer tick asks
+/// `isConnected` once (`tick`), so this records every tick: when it ran and
+/// whether it was told the link was up.
 final class Captured: @unchecked Sendable {
+    struct Tick { let at: Int; let connected: Bool }
     private let lock = NSLock()
     private var values: [ClusterLinkControlMessage] = []
-    var connected = true
+    private var up = true
+    private var recorded: [Tick] = []
     func append(_ value: ClusterLinkControlMessage) { lock.withLock { values.append(value) } }
     var messages: [ClusterLinkControlMessage] { lock.withLock { values } }
+    var ticks: [Tick] { lock.withLock { recorded } }
+    func disconnect() { lock.withLock { up = false } }
+    func tick() -> Bool {
+        lock.withLock {
+            recorded.append(.init(at: Int(DispatchTime.now().uptimeNanoseconds), connected: up)); return up
+        }
+    }
+    /// Waits until the ticks so far satisfy `condition`, for 10 s at most.
+    func waitForTicks(_ condition: ([Tick]) -> Bool) -> Bool {
+        let deadline = DispatchTime.now().uptimeNanoseconds + 10_000_000_000
+        while !condition(ticks) {
+            if DispatchTime.now().uptimeNanoseconds > deadline { return false }
+            usleep(1_000)
+        }
+        return true
+    }
 }
 
 final class Clock: @unchecked Sendable {
@@ -535,20 +556,41 @@ func statusChecks() throws {
     board.receive(restarted)
     check(board.entries().first?.status.sequence == 1, "E11 a restarted sender (sequence and uptime reset) is accepted")
 
-    // The publisher sends only while connected, with increasing sequences.
+    // The publisher sends once per interval while connected, nothing after,
+    // with increasing sequences. The check counts the publisher's ticks, not
+    // the messages that arrived in a stretch of wall time.
+    let interval = 200_000_000, leeway = interval / 10   // the publisher's leeway: a tenth of the interval
     let captured = Captured()
-    let publisher = ClusterLinkStatusPublisher(epoch: epoch, rank: 1, interval: .milliseconds(100),
-        send: { captured.append($0) }, isConnected: { captured.connected },
+    // The publisher's queue names no quality of service: the probe waits at the default one.
+    let probe = WakeLatencyProbe(qos: .default, periodNanoseconds: 5_000_000)
+    let publisher = ClusterLinkStatusPublisher(epoch: epoch, rank: 1, interval: .nanoseconds(interval),
+        send: { captured.append($0) }, isConnected: { captured.tick() },
         snapshot: { .init(state: .ready, modelID: "m", requestsServed: 2, incidentEpoch: "e", incidents: [summary]) },
         sample: { .init(freeBytes: 1, wiredBytes: 2, physicalBytes: 3, thermalState: "nominal") })
     publisher.start()
-    usleep(450_000)
-    captured.connected = false
+    let sawUp = captured.waitForTicks { $0.filter(\.connected).count >= 4 }
+    captured.disconnect()
+    // The ticks run one at a time on the publisher's queue: once one was told
+    // the link is down, every tick told it was up has finished its send.
+    let sawDown = captured.waitForTicks { $0.contains { !$0.connected } }
+    let latency = probe.stop()
     let sentWhileConnected = captured.messages.count
-    usleep(350_000)
+    let upTicks = captured.ticks.filter(\.connected).map(\.at)
+    let sawDownAgain = captured.waitForTicks { $0.filter { !$0.connected }.count >= 3 }
     publisher.stop()
+    // A tick may be late by its leeway plus the lateness the probe allows a
+    // wake on this host. That must stay under one interval, so a tick on time
+    // is told apart from one a whole interval late (a skipped interval).
+    let late = leeway + Int(latency.allowedLateness)
+    let gaps = zip(upTicks.dropFirst(), upTicks).map { $0 - $1 }
+    let span = (upTicks.last ?? 0) - (upTicks.first ?? 0)
+    let onCadence = late < interval && gaps.allSatisfy { $0 <= interval + late } && span >= gaps.count * interval - late
+    output.write(Data(String(format: "INFO E12 %ld ticks while connected, longest gap %.1f ms, span %.1f ms; "
+        + "host wake latency worst %.1f ms in %ld waits; a tick may be %.1f ms late\n", upTicks.count,
+        Double(gaps.max() ?? 0) / 1e6, Double(span) / 1e6, Double(latency.worst) / 1e6, latency.samples, Double(late) / 1e6).utf8))
     let sequences = captured.messages.compactMap { message -> UInt64? in if case .status(let s) = message { return s.sequence }; return nil }
-    check(sentWhileConnected >= 3 && captured.messages.count == sentWhileConnected, "E12 sent every interval while connected, nothing after")
+    check(sawUp && sawDown && sawDownAgain && onCadence && upTicks.count >= 4 && sentWhileConnected == upTicks.count
+          && captured.messages.count == sentWhileConnected, "E12 sent every interval while connected, nothing after")
     check(zip(sequences, sequences.dropFirst()).allSatisfy { $0 < $1 }, "E13 sequences increase")
     check(publisher.counters.skipped >= 2, "E14 ticks while disconnected are counted as skipped")
 

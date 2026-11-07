@@ -352,7 +352,7 @@ copy of the stream (`provider-swift/Sources/ProviderCore/ProviderLoop+ClusterPai
 | A member that does not host the slot, or a local API without a key | The member refuses to start (`ClusterMemberControlError.incompatibleConfiguration`), as before | `ProviderLoop.prepareClusterMemberControl`, `admitsClusterPairLocalAPI` |
 | The pair is not serving (forming, re-forming, retired) | HTTP `503`, as `darkbloom cluster local` answers (`DistributedRequestQueue.unavailableMessage`) | `ProviderLoop.clusterPairNotServing` |
 | A model the pair does not serve | HTTP `404` | `acquireClusterPairForLocal` |
-| Every lane busy | Waits in arrival order with at most `DARKBLOOM_CLUSTER_QUEUE_WAITING` (default `64`) others; `429` when the queue is full; `503` after waiting longer than `requestTimeout * ((waiting + lanes) / lanes)` (`DistributedRequestQueue.Limits.waitCeiling`); a client that goes away leaves the queue | `ClusterPairLocalLanes` |
+| Every lane busy | Waits in arrival order with at most `DARKBLOOM_CLUSTER_QUEUE_WAITING` (default `64`) others; `429` when the queue is full; `503` after waiting longer than `requestTimeout * ((waiting + lanes) / lanes)` (`DistributedRequestQueue.Limits.waitCeiling`); a cancelled request or a reset connection leaves the queue at once, a connection closed normally only at its turn (below) | `ClusterPairLocalLanes` |
 | The pair's warm-up request is running | Waits until admission opens; `503` if the slot retires instead | `ProviderLoop.publishClusterPairSlot` |
 | A stop or an update drain | Waiting requests get `429` at once, as new ones do; running ones finish before the slot retires | `ProviderLoop.beginServingDrain` |
 | A lost rank | Waiting requests get `503`; running ones end with their terminal | `ProviderLoop.retireClusterPairSlot` |
@@ -362,6 +362,15 @@ request releases a lane, a Darkbloom request ends (the capacity refresh that
 follows it), admission opens, a drain begins or the slot retires. A request
 that finds a lane free and nobody waiting takes it at once. Darkbloom requests
 never wait for this queue, and their path through the pair is unchanged.
+
+A client that closes its connection normally while it waits, as curl and
+URLSession do when they give up, keeps its place in the queue until its turn,
+then reaches the pair, the same as on `darkbloom cluster local`. Only a
+cancelled request or a reset connection frees the place at once. The close is
+noticed at the request's first write, which ends the request and frees its
+lane: that bounds the waste to its turn, up to its first write. A stream
+writes as its answer starts; an answer sent whole is written when it is done
+(`provider-swift/Sources/ProviderCore/Server/LocalHTTPConnectionCancellation.swift`).
 
 Me first applies to the whole pair. From the moment one of your requests
 starts waiting for a lane, the leader's heartbeat says `draining` with

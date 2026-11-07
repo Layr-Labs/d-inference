@@ -36,13 +36,14 @@ extension ProviderLoop {
     /// request must be dropped because we're draining — for the update
     /// hot-swap, or across the post-retirement reconnect (the socket is
     /// about to close; admitting now would only hand the request to the
-    /// `.disconnected` cancel).
+    /// `.disconnected` cancel) — or because the owner pause holds Darkbloom
+    /// work while the owner uses this Mac (local admission stays open).
     internal func rejectIfDraining(
         requestId: String,
         send: SendHandle,
         lookupReceiptFinalizer: PrefixCacheLookupReceiptFinalizer
     ) -> Bool {
-        guard isDraining || isShuttingDown || isReconnectingAfterRetirement else { return false }
+        guard isDraining || isShuttingDown || isReconnectingAfterRetirement || ownerPausesPublic else { return false }
         lookupReceiptFinalizer.sendTerminal(
             .inferenceError(
                 requestId: requestId,

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-07
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -559,7 +559,11 @@ build's CLI (`ClusterConsoleInstanceLock.lockFileName`), the pair's prefix cache
 is in the build's cache namespace (`ClusterPrefixCacheSettings.rootDirectoryName`),
 and every port on the cable adds the build's `BuildEnvironment.clusterPortOffset`
 (`ClusterCablePorts`). Two builds' pairs on the same Macs therefore never read,
-stop or answer each other. Their device leases and journals are separate, but
+stop or answer each other. A new local API that `darkbloom start` creates never
+takes 8000 or the cable ports pairs pair and talk on, production's and this
+build's own (`ClusterLocalServing.neverChosenPorts`,
+`LocalSettings.neverChosenPorts`); its refusal names production's, 47420–47423,
+as the owner's rule does (`ClusterLocalServing.pairPortsWords`). Their device leases and journals are separate, but
 every build's device scope (a pair's owner session, a member's preparation, a
 GLM calibration) also takes one lock all builds share
 (`ClusterMachineDeviceLock`: `~/Library/Application Support/io.darkbloom.cluster/native-device.lock`,

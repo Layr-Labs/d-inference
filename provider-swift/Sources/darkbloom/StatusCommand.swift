@@ -166,6 +166,10 @@ struct Status: AsyncParsableCommand {
         if pair.paired, ServiceDrain.soloProviderState(state) == nil { print(Self.clusterPartLine) }
         if let drain = Self.lifecycleDrainLine(state.lifecycle) { print(drain) }
         if let hold = Self.addonHoldLine(state.addonHold) { print(hold) }
+        for line in Self.servingLines(state: state, liveEndpoint: LocalEndpoint.readLiveInfo(), route: config.local?.route,
+                                      accountKeySaved: { Start.accountKeySaved() }) {
+            print(line)
+        }
         if state.autopilotPhase != nil {
             let fresh = Autopilot.Status.snapshotIsFresh(state,
                 heartbeatIntervalSecs: config.coordinator.heartbeatIntervalSecs, now: now)

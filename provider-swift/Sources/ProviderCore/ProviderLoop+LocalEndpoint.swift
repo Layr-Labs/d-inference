@@ -11,6 +11,7 @@ import MLXLLM
 import MLXLMCommon
 import MLXLMServer
 import MLXVLM
+import NIOCore
 #if canImport(os)
 import os
 #endif
@@ -26,13 +27,53 @@ import os
 /// registry / load path without loosening their access for the whole module.
 extension ProviderLoop {
     /// Start the local endpoint (idempotent). Runs the shared HTTP app in a
-    /// child task; its registry closures reach back into this actor.
+    /// child task; its registry closures reach back into this actor. Me first
+    /// is on before the endpoint can take a request.
     func startLocalEndpoint(_ cfg: LocalInferenceHTTPConfig) {
         guard localServerTask == nil else { return }
+        enableMeFirstIfConfigured()
+        // Fires only once OUR server has actually bound the socket — the
+        // authoritative bind signal. We publish discovery here (never from a
+        // best-effort HTTP probe that a foreign process on the same port
+        // could answer). If the bind fails, runService throws below and this
+        // never runs, so no stale/foreign discovery record is written.
+        let app = makeLocalEndpointApplication(cfg, onServerRunning: { [weak self] _ in
+            await self?.onLocalEndpointBound(cfg)
+        })
+        let log = logger
+        localServerTask = Task {
+            do {
+                try await app.runService(gracefulShutdownSignals: [])
+            } catch is CancellationError {
+                // expected on shutdown
+            } catch {
+                // A bind failure (e.g. port already in use) lands here. We do NOT
+                // kill the provider — coordinator serving must stay up — but make
+                // the local-endpoint failure loud and operator-actionable.
+                log.error("Local OpenAI endpoint did NOT bind on \(cfg.host):\(cfg.port) (port already in use?): \(error.localizedDescription). Coordinator serving is unaffected; restart with a free --port to enable the local endpoint.")
+            }
+        }
+    }
+
+    /// Turns me first on where the owner's settings want it
+    /// (`ProviderLoopConfig.meFirstIdle`): the endpoint's requests are then
+    /// owner use (`acquireModelForLocal`, `releaseLocalReservation`).
+    func enableMeFirstIfConfigured() {
+        guard let idle = loopConfig.meFirstIdle else { return }
+        enableMeFirst(idle: idle)
+    }
+
+    /// The local endpoint's application over this loop's models. Its registry
+    /// closures reach back into this actor; `onServerRunning` fires once the
+    /// socket is bound.
+    func makeLocalEndpointApplication(
+        _ cfg: LocalInferenceHTTPConfig,
+        onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in }
+    ) -> LocalInferenceApplication {
         // One partition for this local application's Super prefix reuse,
         // separate from every authenticated coordinator scope.
         let superCacheScope = "local-super-" + UUID().uuidString
-        let app = makeLocalInferenceApplication(
+        return makeLocalInferenceApplication(
             config: cfg,
             defaultMaxTokens: Self.schedulerDefaultMaxTokens,
             acquire: { [weak self] modelId in
@@ -51,15 +92,8 @@ extension ProviderLoop {
                 guard let self else { return [] }
                 return await self.mtpSlotMetricsSamplesForLocal()
             },
-            // Fires only once OUR server has actually bound the socket — the
-            // authoritative bind signal. We publish discovery here (never from a
-            // best-effort HTTP probe that a foreign process on the same port
-            // could answer). If the bind fails, runService throws below and this
-            // never runs, so no stale/foreign discovery record is written.
             responseTracker: localResponseTracker,
-            onServerRunning: { [weak self] _ in
-                await self?.onLocalEndpointBound(cfg)
-            },
+            onServerRunning: onServerRunning,
             modelTypeProvider: { [weak self] modelId in
                 await self?.localModelTypeForAudioAdmission(modelId)
             },
@@ -70,26 +104,22 @@ extension ProviderLoop {
                         guard let self else { throw MultiModelBatchSchedulerEngineError.modelNotLoaded(request.model) }
                         return try await self.acquireNemotronSuperForLocal(request.model)
                     }, logprobs: logprobs)
+            },
+            modelLimits: { [weak self] modelId in
+                await self?.localModelLimits(modelId)
             }
         )
-        let log = logger
-        localServerTask = Task {
-            do {
-                try await app.runService(gracefulShutdownSignals: [])
-            } catch is CancellationError {
-                // expected on shutdown
-            } catch {
-                // A bind failure (e.g. port already in use) lands here. We do NOT
-                // kill the provider — coordinator serving must stay up — but make
-                // the local-endpoint failure loud and operator-actionable.
-                log.error("Local OpenAI endpoint did NOT bind on \(cfg.host):\(cfg.port) (port already in use?): \(error.localizedDescription). Coordinator serving is unaffected; restart with a free --port to enable the local endpoint.")
-            }
-        }
     }
 
     /// Resident identity wins during a catalog/slot transition; no load occurs.
     func localModelTypeForAudioAdmission(_ modelId: String) -> String? {
         modelSlots[modelId]?.modelType ?? advertisedModels[modelId]?.modelType
+    }
+
+    /// A resident model's context as its engine admits it, for the router's `/v1/models`; nil while not loaded.
+    func localModelLimits(_ modelId: String) -> LocalModelLimits? {
+        guard let slot = modelSlots[modelId] else { return nil }
+        return LocalModelLimits(contextLength: slot.engineV2.advertisedContextTokens ?? slot.sizing.maxContextLength)
     }
 
     /// Invoked by Hummingbird once the local endpoint socket is bound and
@@ -121,6 +151,9 @@ extension ProviderLoop {
     /// the idle monitor and load-gate eviction can't pull it mid-stream. Loading
     /// goes through the same `ensureModelLoaded` gate as coordinator requests, so
     /// the shared `GlobalKVCacheBudget` and memory admission apply uniformly.
+    /// The reservation is the owner's use of this Mac for me first, from the
+    /// moment it is taken until `releaseLocalReservation`; a request refused
+    /// before it is never counted.
     func acquireModelForLocal(_ modelId: String, managedSuper: Bool = false) async throws
         -> MultiModelBatchSchedulerEngine.AcquiredModel {
         // The generic engine never serves Super: its owner renders and parses.
@@ -158,7 +191,11 @@ extension ProviderLoop {
             tokenizer: slot.tokenizer, modelType: slot.modelType, container: slot.container,
             diffusionContainer: slot.modelContainer.diffusion, isVLM: slot.isVLM,
             engineV2Bridge: slot.engineV2, visionGate: slot.visionGate(kvBudget: kvBudget)))
+        // The owner's use starts with the reservation, past every refusal.
+        // Nothing below throws or suspends, so the request always gets the
+        // release token that ends its use (`releaseLocalReservation`).
         localReservations.reserve(modelId)
+        noteLocalUse(.start)
         modelSlots[modelId]?.lastInferenceAt = .now
         let release: @Sendable (String) async -> Void = { [weak self] mid in
             await self?.releaseLocalReservation(mid)
@@ -193,9 +230,16 @@ extension ProviderLoop {
         return .init(owner: owner, release: { await release.fire() })
     }
 
-    /// Drop one local in-flight reservation for a model.
+    /// Drop one local in-flight reservation for a model, which ends that
+    /// request's use for me first. The request's `OneShotRelease` calls this
+    /// once, however the request ends: it completes, the engine fails it, it
+    /// is cancelled or its client disconnects. A release with no reservation
+    /// to drop ends no use.
     func releaseLocalReservation(_ modelId: String) {
-        localReservations.release(modelId)
+        if localReservations.isReserved(modelId) {
+            localReservations.release(modelId)
+            noteLocalUse(.end)
+        }
         modelSlots[modelId]?.lastInferenceAt = .now
     }
 

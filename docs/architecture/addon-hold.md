@@ -1,6 +1,6 @@
 # Add-on hold
 
-> Last updated: 2026-10-27
+> Last updated: 2026-11-06
 
 How a local add-on, such as the Darkbloom Sandbox VM host, takes a Mac away
 from inference without disconnecting the provider, and how the provider
@@ -94,6 +94,10 @@ stateDiagram-v2
 11. The drain bound cancels only the coordinator requests it found still
     running, and stops when the hold is released: work accepted after a release
     keeps its task and tracking (`cancelRequestsOutlivingAddonHoldDrain`).
+12. A hold outranks the [owner pause](owner-pause.md): while both apply the busy
+    fields describe the hold, and its release hands them back to the pause,
+    which goes on with `desired_models` still deferred (`publishBusy` in
+    `provider-swift/Sources/ProviderCore/ProviderLoop+MeFirst.swift`).
 
 ## Failure modes
 
@@ -133,3 +137,4 @@ stateDiagram-v2
 - [Protocol busy fields](../reference/protocol-messages.md#add-on-hold-busy-fields)
 - [`darkbloom addon`](../provider/cli-reference.md#darkbloom-addon)
 - [Provider Autopilot](model-autopilot.md)
+- [Owner pause ("me first")](owner-pause.md)

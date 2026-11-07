@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-07
 
 Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -342,6 +342,72 @@ coordinator serving and attached `--local-endpoint`, not standalone `--local`
 There is no saved timezone or wake-up setting: keep the Mac awake and use its
 local timezone. [Scheduling architecture](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/scheduling.md#provider-availability-windows)
 defines DST adjustment, merged windows, full-week coverage and fail-closed parsing.
+
+### Local-first use (`[local]`)
+
+`[local]` in `provider.toml` holds how this Mac serves its owner beside, or
+instead of, Darkbloom ([Use your Mac yourself, first](../provider/local-first.md)).
+`darkbloom start` reads `mode`, `port` and `bind`. A provider serving Darkbloom
+with the local API beside it reads `me_first` and `me_first_idle_minutes`: they
+decide the [owner pause](../architecture/owner-pause.md), which stops Darkbloom
+requests while the owner's local requests run (`LocalSettings.meFirstIdle`), for
+the mode that process serves. The local API's router reads `route` (see
+[the local router](../provider/direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
+Every key is optional, and an absent key keeps today's behaviour
+(`LocalSettings` in `provider-swift/Sources/ProviderCore/Config/LocalSettings.swift`;
+`StartServingResolver` in `provider-swift/Sources/darkbloom/Start/StartLocalFirst.swift`).
+
+| `provider.toml` key | Accepted values | When absent (`LocalSettings` resolver) |
+|---|---|---|
+| `[local] mode` | `"local"` (only you, on this Mac), `"network"` (the Darkbloom network only), `"both"` (both, you first) | The launch flags decide, as today: plain `start` = `network`, `--local` = `local`, `--local-endpoint` = `both` (`launchMode`, `resolvedMode`). In a terminal, `darkbloom start` asks once and saves the answer |
+| `[local] me_first` | `true` or `false` | On with `mode = "both"`, off otherwise; `false` keeps today's shared serving (`meFirstEnabled`). It applies only to the local endpoint beside the coordinator, never to `--local` (`meFirstIdle`) |
+| `[local] me_first_idle_minutes` | Whole minutes, `1`–`120` | `2` (`defaultMeFirstIdleMinutes`, `resolvedMeFirstIdleMinutes`): Darkbloom requests return this long after the owner's last local request ends |
+| `[local] route` | `"this-mac"` (only this Mac), `"my-macs"` (only your Macs), `"my-macs-first"` (your Macs first, then the Darkbloom network) | `this-mac`; `my-macs` once an account key is saved with `darkbloom route key` (`resolvedRoute`). Without a saved key, or without a local key (`--no-auth`), nothing leaves this Mac, whatever the route (`LocalRouterConfig.effectiveRoute`). `my-macs` sends `X-Darkbloom-Route: self`; `my-macs-first` sends `prefer`, then `self` once on a `402`. Read when the local API starts |
+| `[local] port` | Whole number, `1`–`65535` | The build's `defaultLocalPort` (`resolvedPort`). A local API that the start question, a saved `mode` or `--me-first` creates takes the first free port from there instead, never `8000` or `47420`–`47423`, and saves it (`LocalAPIPort`) |
+| `[local] bind` | `localhost` or a numeric IPv4 or IPv6 address (`ClusterServingScope.isValidBind`) | `127.0.0.1` (`defaultBind`, `resolvedBind`) |
+
+Who writes which key (`Start.saveServingChoice`, once the start goes ahead; a
+cancelled picker or a refused start writes nothing):
+
+| Writer | Keys |
+|---|---|
+| The start question, in a terminal (no saved `mode`, or `--choose`) | `mode`; `route` from its follow-up, asked only with an account key saved; `port` for a local API |
+| `--no-me-first`, `--me-first` (only to undo a saved `me_first = false`), `--me-first-idle <min>`, `--route <route>` | `me_first`, `me_first_idle_minutes`, `route`, as `--idle-timeout` writes `idle_timeout_mins` |
+| `--me-first` without a saved port | `port` (the first free one, as above) |
+| `--local`, `--network`, `--local-endpoint`, `--port`, `--bind`, `--no-auth`, and every other start | Nothing: a flag's mode is for that start only, and a start with no saved `mode` and no terminal keeps today's behaviour exactly |
+
+The LaunchAgent keeps the arguments `--local-endpoint` has always baked
+(`--local-endpoint --port <n> --bind <address>`, plus `--no-auth`), built from
+the resolved mode, port and address (`StartServing.launchAgentEndpoint`), so a
+rolled-back older provider reads the same plist. Its `--foreground` child serves
+as those arguments say, reads `me_first`, `me_first_idle_minutes` and `route`,
+and never asks or writes.
+
+```toml
+[local]
+mode = "both"
+me_first = true
+me_first_idle_minutes = 2
+route = "my-macs"
+port = 8001
+bind = "127.0.0.1"
+```
+
+- **Refusals:** a value outside these is refused when the file loads, with one
+  plain line that names the key, what it takes and what the file has, for
+  example `[local] me_first_idle_minutes must be a whole number of minutes from
+  1 to 120, not 0.` (`LocalSettingsError`). Unknown keys in `[local]` are
+  accepted when the file loads.
+- **Writing:** `ConfigManager.updateLocal` (CLI: `setLocalSettings` in
+  `provider-swift/Sources/darkbloom/ConfigMutation.swift`) changes only the
+  `[local]` keys it is given, under the config lock. It edits the raw TOML table,
+  so every other value keeps its value, unknown keys included. Like every
+  config writer, it rewrites the whole file: comments are dropped and sections
+  and keys are re-sorted. It refuses a bad value before writing, writes nothing
+  when the file already holds the change, and writes an explicit value even
+  when it equals the default. Other config writers (`ConfigManager.save`, used
+  by `idle`, `beta` and `start`) re-encode only the keys this build knows, so
+  they drop unknown keys, in `[local]` as in every section.
 
 ### Model cache location
 
@@ -740,6 +806,7 @@ variable; its required input and backend are documented in the
 | `DARKBLOOM_QWEN_FCFS_LIVE` | `1` | unset | `provider-swift/Sources/ProviderBenchmark/SchedulerPrefillDecisionCLI.swift` | Enables the live Qwen FCFS harness. |
 | `DARKBLOOM_QWEN_FCFS_MODEL_PATH`, `DARKBLOOM_QWEN_FCFS_MODEL_ID`, `DARKBLOOM_QWEN_FCFS_EXPECTED_MODEL_HASH`, `DARKBLOOM_QWEN_FCFS_SOURCE_SHA`, `DARKBLOOM_QWEN_FCFS_ITERATIONS`, `DARKBLOOM_QWEN_FCFS_KV_BACKEND`, `DARKBLOOM_QWEN_FCFS_OUTPUT` | strings | unset | `provider-swift/Sources/ProviderBenchmark/SchedulerPrefillDecisionCLI.swift` | Harness inputs. |
 | `DARKBLOOM_QWEN_MTP_SERIAL` | affirmative | off | `provider-swift/Tests/ProviderCoreTests/Inference/Live/Fixtures/Qwen38ProductionCanarySupport.swift` (tests only) | Forces serial MTP verification in the Qwen canary. |
+| `DARKBLOOM_OPENCODE_SMOKE_HOME` | temp directory | unset | `provider-swift/Tests/DarkbloomCLITests/ToolIntegration/OpenCodeSmokeSetup.swift` (tests only) | Runs the writer step of `scripts/integrations/opencode-smoke.sh`, which writes OpenCode's config into that throwaway home; the test refuses a path outside the temp folder. |
 
 ### Retired (parsed only to warn)
 
@@ -754,6 +821,8 @@ variable; its required input and backend are documented in the
 | `SUDO_UID` | uid | set by `sudo` | `provider-swift/Sources/darkbloom/Fan/FanServiceManager.swift` | Resolves the invoking user when `darkbloom fan` runs under `sudo`. |
 | `SUDO_USER` | user name | set by `sudo` | `provider-swift/Sources/darkbloom/Diagnostics/ReportAppAttestEvidence.swift` | Under `sudo darkbloom report`, selects the invoking user's state, config and read-only canonical token lookup instead of root's; explicit config/token overrides retain precedence. |
 | `GITHUB_SHA` | commit | unset | `provider-swift/Sources/ProviderBenchmark/SchedulerPrefillDecisionCLI.swift` | Fallback source SHA in benchmark reports. |
+| `XDG_CONFIG_HOME` | directory | `~/.config` | `provider-swift/Sources/darkbloom/ToolIntegration/OpenCodeConfigPlan.swift` (`configFile`) | Where the OpenCode config writer finds OpenCode's global config: `<dir>/opencode/opencode.jsonc`, else an existing `opencode.json`, as OpenCode itself does ([config writers](../architecture/tool-integrations.md)). |
+| `HERMES_HOME` | directory | `~/.hermes` | `provider-swift/Sources/darkbloom/ToolIntegration/HermesConfigPlan.swift` (`configFile`) | Where the Hermes config writer finds `config.yaml`, as Hermes itself does. |
 | `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, `DYLD_FRAMEWORK_PATH`, `LD_PRELOAD`, `MallocStackLogging`, `MallocStackLoggingNoCompact`, `MallocScribble`, `MallocGuardEdges`, `MallocLogFile`, `MallocErrorAbort`, `NSZombieEnabled`, `OBJC_DEBUG_POOL_ALLOCATION`, `CFNETWORK_DIAGNOSTICS` | — | — | `provider-swift/Sources/ProviderCore/Security/EnvironmentScrubber.swift` | Removed from the daemon's environment at start; reported as the `env_scrubbed` capability. |
 
 `scripts/install.sh` additionally reads `COORD_URL` (substituted by the coordinator when it serves `/install.sh`; required when the script is run from source), `HOME` (install root `$HOME/.darkbloom`), `TMPDIR` (enrollment-profile temp dir only) and the two code-signing requirement constants `DARKBLOOM_DESIGNATED_REQUIREMENT` and `DARKBLOOM_FAN_HELPER_REQUIREMENT`. See [`../provider/installation.md`](../provider/installation.md).

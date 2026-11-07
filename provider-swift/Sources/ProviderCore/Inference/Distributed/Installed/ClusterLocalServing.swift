@@ -96,6 +96,24 @@ public enum ClusterLocalServing {
         return base + [noCoordinatorFlag, "--bind", bind]
     }
 
+    /// Never taken by a new local API, a pair's or a single Mac's (`LocalSettings.neverChosenPorts`): 8000, where other
+    /// local AI apps listen (oMLX on the owner's Mac), and the cable ports pairs pair and talk on: production's
+    /// (`pairPortsWords`) and this build's own.
+    public static let neverChosenPorts: Set<Int> =
+        Set([8000] + [ClusterCablePorts(environment: .prod), .current].flatMap(pairPorts))
+
+    /// A pair's cable ports that a new local API never takes: the link control channel, the pairing ceremony, the
+    /// setup exchange and the control lease.
+    static func pairPorts(_ cable: ClusterCablePorts) -> [Int] {
+        [cable.linkControl, cable.pairing, cable.exchange, cable.control].map(Int.init)
+    }
+
+    /// Production's of those in words ("47420–47423"), as the owner's rule names them.
+    public static var pairPortsWords: String {
+        let ports = pairPorts(ClusterCablePorts(environment: .prod)).sorted()
+        return "\(ports[0])–\(ports[ports.count - 1])"
+    }
+
     /// The solo server (this Mac alone after the absence grace) is coordinator-less already; local-only serving gives
     /// it the same address as the cluster's API.
     public static func soloArguments(_ base: [String], scope: ClusterServingScope) -> [String] {

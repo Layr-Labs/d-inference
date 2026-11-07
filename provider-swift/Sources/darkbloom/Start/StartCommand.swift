@@ -12,6 +12,11 @@ struct Start: AsyncParsableCommand {
         Scans local MLX models, lets you pick which to serve, then launches
         a launchd background service. Use --model to skip the interactive picker.
 
+        In a terminal, the first start asks how this Mac serves: only you (--local),
+        the Darkbloom network (--network), or both with you first (--me-first). The
+        answer is saved; --choose asks again. Without a terminal and without a saved
+        answer, it serves the Darkbloom network as before.
+
         On a Mac in a two-Mac cluster whose pair runs, it starts the pair instead: in a
         terminal the `darkbloom cluster` screen; without one the pair's saved model,
         waiting until it serves (exit 0 serving, 3 not serving yet, 5 the other Mac isn't
@@ -48,17 +53,83 @@ struct Start: AsyncParsableCommand {
     @Flag(help: "Run a local OpenAI-compatible HTTP server only; do not connect to the coordinator.")
     var local = false
 
-    @Flag(help: "Serve a local OpenAI endpoint ALONGSIDE the coordinator (unified mode): same loaded models serve both the public fleet and local clients.")
+    @Flag(help: "Serve a local OpenAI endpoint ALONGSIDE the coordinator (unified mode): same loaded models serve both the public fleet and local clients. Darkbloom pauses while you use it unless --no-me-first.")
     var localEndpoint = false
 
-    @Option(help: "Local server port (used with --local / --local-endpoint).")
-    var port: UInt16 = BuildEnvironment.current.defaultLocalPort
+    @Flag(help: "Serve the Darkbloom network only, with no local API, for this start.")
+    var network = false
 
-    @Option(help: "Bind address for --local / --local-endpoint (default 127.0.0.1; a tailnet IP exposes it to same-account devices, still API-key gated).")
-    var bind: String = "127.0.0.1"
+    @Flag(inversion: .prefixedNo, exclusivity: .exclusive,
+          help: "--me-first: Darkbloom and you, you first. Darkbloom pauses while you use this Mac's local API and comes back once you're idle. --no-me-first: Darkbloom keeps serving while you use it (saved).")
+    var meFirst: Bool?
+
+    @Option(name: .customLong("me-first-idle"),
+            help: ArgumentHelp("Minutes with none of your requests before Darkbloom comes back (1–120, default 2; saved). Not the model memory setting (--idle-timeout).", valueName: "minutes"))
+    var meFirstIdle: UInt64?
+
+    @Option(help: ArgumentHelp("Where your requests go when this Mac can't take them: this-mac, my-macs (your other Macs, free) or my-macs-first (then the Darkbloom network, billed). Saved; needs an account key (`\(BuildEnvironment.current.cliName) route key`).", valueName: "route"),
+            transform: Start.parseRoute)
+    var route: LocalSettings.Route?
+
+    @Flag(help: "Ask how this Mac serves again, although a choice is saved (in a terminal).")
+    var choose = false
+
+    @Flag(help: "Set up OpenCode to use Darkbloom: adds a provider to ~/.config/opencode (with a backup) pointing at this Mac's local API. Starts Darkbloom only if no local API runs.")
+    var opencode = false
+
+    @Flag(help: "Set up Hermes Agent to use Darkbloom: adds a provider to ~/.hermes/config.yaml (with a backup) and makes it the main model. Starts Darkbloom only if no local API runs.")
+    var hermes = false
+
+    /// The tools `--opencode` / `--hermes` set up, in a fixed order.
+    var requestedTools: [IntegrationTool] {
+        IntegrationTool.allCases.filter { tool in
+            switch tool {
+            case .opencode: opencode
+            case .hermes: hermes
+            }
+        }
+    }
+
+    @Option(name: .customLong("port"), help: ArgumentHelp("Local server port (default: [local] port, else \(BuildEnvironment.current.defaultLocalPort); a new local API from the start question or --me-first gets the first free port from there, never 8000).", valueName: "port"))
+    var portOption: UInt16?
+
+    @Option(name: .customLong("bind"), help: ArgumentHelp("Bind address for the local API (default [local] bind, else 127.0.0.1; a tailnet IP exposes it to same-account devices, still API-key gated).", valueName: "bind"))
+    var bindOption: String?
 
     @Flag(help: "Disable local API-key auth for --local / --local-endpoint (NOT recommended; trusted/airgapped use only).")
     var noAuth = false
+
+    /// `--port`, else the build's default: what `--local` and `--local-endpoint` take without `[local] port`.
+    var port: UInt16 { portOption ?? BuildEnvironment.current.defaultLocalPort }
+
+    /// `--bind`, else loopback.
+    var bind: String { bindOption ?? LocalSettings.defaultBind }
+
+    /// The options that decide how this Mac serves (`[local]`).
+    var localFirstOptions: LocalFirstOptions {
+        LocalFirstOptions(local: local, localEndpoint: localEndpoint, network: network, meFirst: meFirst,
+                          meFirstIdleMinutes: meFirstIdle, route: route, choose: choose, port: portOption,
+                          bind: bindOption, noAuth: noAuth, foreground: foreground)
+    }
+
+    /// How this start serves from its flags alone, as before `[local]`: for callers that resolved nothing (tests that
+    /// call a serving mode directly).
+    var servingFromFlags: StartServing {
+        let flag = localFirstOptions.modeFlag
+        let mode = flag?.mode ?? LocalSettings.launchMode(local: local, localEndpoint: localEndpoint)
+        return StartServing(mode: mode, source: flag.map { .flag($0) } ?? .today,
+                            meFirst: mode == .both && meFirst != false,
+                            meFirstIdleMinutes: meFirstIdle ?? LocalSettings.defaultMeFirstIdleMinutes, route: route,
+                            accountKeySaved: nil, port: port, bind: bind, noAuth: noAuth)
+    }
+
+    @Sendable static func parseRoute(_ text: String) throws -> LocalSettings.Route {
+        guard let route = LocalSettings.Route(rawValue: text) else {
+            throw ValidationError("--route must be this-mac (only this Mac), my-macs (your other Macs, free) or "
+                + "my-macs-first (then the Darkbloom network, billed), not \"\(text)\".")
+        }
+        return route
+    }
 
     @Flag(help: "Register a foreground control-only cluster member; requires a saved cluster and never serves solo inference.")
     var clusterMember = false
@@ -84,7 +155,10 @@ struct Start: AsyncParsableCommand {
     /// Both cluster modes are control-only: they take the saved cluster's
     /// model and lifecycle, so every solo serving option is refused at parse.
     mutating func validate() throws {
+        if let conflict = localFirstOptions.conflict { throw ValidationError(conflict) }
+        if let refusal = toolFlagsRefusal { throw ValidationError(refusal) }
         let soloOverrides = !model.isEmpty || all || idleTimeout != nil || schedule || autopilot != nil
+            || network || meFirst != nil || meFirstIdle != nil || route != nil || choose
         if clusterMember {
             guard !distributed, !local, !localEndpoint, !soloOverrides else {
                 throw ValidationError("--cluster-member cannot be combined with solo serving or local distributed mode.")
@@ -165,8 +239,13 @@ struct Start: AsyncParsableCommand {
         if schedule { given.append("--schedule") }
         if local { given.append("--local") }
         if localEndpoint { given.append("--local-endpoint") }
-        if port != BuildEnvironment.current.defaultLocalPort { given.append("--port") }
-        if bind != "127.0.0.1" { given.append("--bind") }
+        if network { given.append("--network") }
+        if let meFirst { given.append(meFirst ? "--me-first" : "--no-me-first") }
+        if meFirstIdle != nil { given.append("--me-first-idle") }
+        if route != nil { given.append("--route") }
+        if choose { given.append("--choose") }
+        if portOption != nil { given.append("--port") }
+        if bindOption != nil { given.append("--bind") }
         if noAuth { given.append("--no-auth") }
         if drain.timeout != DrainOptions.defaultTimeout { given.append("--timeout") }
         if drain.force { given.append("--force") }
@@ -262,6 +341,11 @@ struct Start: AsyncParsableCommand {
 
     mutating func run() async throws {
         Darkbloom.ensureLogging()
+        // Line-buffer stdout: in a log or a pipe (`start … > log`, nohup) it is block-buffered, and a start that serves
+        // never exits, so its banner, "Listening on" and the tool lines would wait in the buffer.
+        setvbuf(stdout, nil, _IOLBF, 0)
+        // `--opencode` / `--hermes` beside a running local API: set the tools up for it, and start nothing.
+        if try await setUpToolsForRunningLocalAPI() { return }
         let look = DarkbloomCommandLook.forCommand()
         // Decided first: only a start that goes ahead opens with the mark, never one its flags refuse.
         let opensLook = !flagsRefuseStart
@@ -303,12 +387,14 @@ struct Start: AsyncParsableCommand {
                 Self.clearSoloChoice()
                 print(pair.actingLine("starting the pair"))
                 try await ClusterPairCommands.openScreen(config: configOptions.config)
+                try await setUpToolsBesidePair()
                 return
             case .startPair:
                 Self.clearSoloChoice()
                 let code = await ClusterPairCommands.start(pair, actions: ClusterPairActions.live(config: configOptions.config),
                                                            config: configOptions.config)
                 if code != 0 { throw ExitCode(code) }
+                try await setUpToolsBesidePair()
                 return
             }
         }
@@ -342,9 +428,16 @@ struct Start: AsyncParsableCommand {
             return
         }
 
+        // How this Mac serves: a flag, the saved choice, or the question in a terminal.
+        guard let serving = try resolveServing() else {
+            print(ServingQuestion.cancelled)
+            return
+        }
+        let localOnly = serving.mode == .local
+
         var scheduleEdit: (current: ScheduleSettings, draft: ScheduleSettings)?
         if schedule {
-            guard !local, !foreground else {
+            guard !localOnly, !foreground else {
                 throw ValidationError("--schedule configures a background provider. Use `\(BuildEnvironment.current.cliName) schedule` before --foreground; standalone --local does not use availability windows.")
             }
             try AvailabilitySchedule.requireInteractiveTerminal()
@@ -364,8 +457,8 @@ struct Start: AsyncParsableCommand {
         let effectiveCoordinator = coordinatorURL ?? snapshot.config.coordinator.url
         var effectiveConfig = snapshot.config
         scheduleEdit?.draft.apply(to: &effectiveConfig)
-        if !local { try effectiveConfig.schedule?.validate() }
-        if local {
+        if !localOnly { try effectiveConfig.schedule?.validate() }
+        if localOnly {
             if autopilot == true { throw ValidationError("Autopilot requires a network provider.") }
             // A standalone local invocation does not inherit network residency
             // restrictions or change the saved network enrollment.
@@ -433,19 +526,21 @@ struct Start: AsyncParsableCommand {
             printError("warning: \(notice)")
         }
 
-        if local {
+        if localOnly {
             try await runLocalStandalone(
                 snapshot: snapshot,
                 config: effectiveConfig,
-                runtimeCapabilities: runtimeCapabilities
+                runtimeCapabilities: runtimeCapabilities,
+                serving: serving
             )
         } else if foreground {
             try await runForeground(
                 snapshot: snapshot,
                 hardware: hardware,
-                config: effectiveConfig,
+                config: serving.servedConfig(effectiveConfig),
                 coordinatorURL: effectiveCoordinator,
-                runtimeCapabilities: runtimeCapabilities
+                runtimeCapabilities: runtimeCapabilities,
+                serving: serving
             )
         } else {
             try await launchDaemon(
@@ -454,9 +549,49 @@ struct Start: AsyncParsableCommand {
                 coordinatorURL: effectiveCoordinator,
                 configPath: configOptions.config == nil ? nil : snapshot.configPath,
                 runtimeCapabilities: runtimeCapabilities,
-                scheduleEdit: scheduleEdit
+                scheduleEdit: scheduleEdit,
+                serving: serving
             )
+            try await setUpToolsBesideDaemon(serving: serving, coordinatorURL: effectiveCoordinator)
         }
+    }
+
+    /// How this start serves (`StartServingResolver`), with the question asked in a terminal; nil when the person
+    /// cancelled at the question. Nothing is saved yet: `saveServingChoice` saves once the start goes ahead.
+    func resolveServing(environment: ServingEnvironment = .live) throws -> StartServing? {
+        guard var serving = try StartServingResolver.resolve(
+            localFirstOptions, saved: try savedLocalSettings(configPath: configOptions.config), environment: environment)
+        else { return nil }
+        if serving.mode == .local, !local {
+            // `--local` is refused with these before anything is asked; an answer is refused before it's saved.
+            if schedule {
+                throw ValidationError("--schedule configures a background provider; \"Only me, on this Mac\" does not "
+                    + "use availability windows. Nothing was saved.")
+            }
+            if autopilot == true { throw ValidationError("Autopilot requires a network provider. Nothing was saved.") }
+        }
+        if !requestedTools.isEmpty {
+            guard serving.hasLocalAPI else {
+                throw ValidationError(ToolIntegrationStep.noLocalAPI(requestedTools) + " Nothing was started or saved.")
+            }
+            // `--local` alone never asks the Keychain. With a tool flag, its banner and the tool block both say where
+            // requests go, so the account key is read once, here, for both.
+            if serving.accountKeySaved == nil { serving.accountKeySaved = environment.accountKeySaved() }
+        }
+        return serving
+    }
+
+    /// Saves what this start chose in `[local]` (only the question saves a mode) and says which port a new local API
+    /// got. Called once the start goes ahead: a cancelled picker or a refused start saves nothing.
+    func saveServingChoice(_ serving: StartServing) throws {
+        guard !serving.change.isEmpty else { return }
+        try setLocalSettings(configPath: configOptions.config) { serving.change.apply(to: &$0) }
+        if let note = serving.portNote { print(note) }
+    }
+
+    /// Whether the local router's account key is in this Mac's Keychain. Never prints it.
+    static func accountKeySaved(_ store: any LocalRouterAccountKeyStore = KeychainLocalRouterAccountKeyStore()) -> Bool {
+        (try? store.load())?.isEmpty == false
     }
 
     /// Backward-compatible forwarding shim for the process-start environment

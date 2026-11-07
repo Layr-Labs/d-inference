@@ -788,9 +788,12 @@ and exits 1; an unreachable coordinator saves it with a note. It is kept in the
 Keychain (service `<keychain prefix>.route`, account `account-api-key`; the
 data-protection Keychain in signed builds, the login keychain otherwise) and
 never printed (`RouteKeyFlow`, `provider-swift/Sources/darkbloom/RouteCommand.swift`;
-`KeychainLocalRouterAccountKeyStore`). When the local API running now has no
-local key (`--no-auth`), it says that this API keeps every request on this Mac
-and never uses the key. See
+`KeychainLocalRouterAccountKeyStore`). After it saves or removes the key, it
+posts the Darwin notification `<keychain prefix>.route-key-changed`: a running
+local API keeps the key in memory and reads it again on its next request that
+needs it. When the local API running now has no local key (`--no-auth`), it
+says that this API keeps every request on this Mac and never uses the key. ^C at the hidden prompt gives the terminal its echo
+back before the command ends (`HiddenReadSignals`). See
 [the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router).
 
 ### Cluster placement request metadata

@@ -109,6 +109,59 @@ struct LocalRouterStreamingTests {
         }
     }
 
+    @Test func theUpstreamSessionKeepsNothingAndOpensEnoughConnectionsPerHost() {
+        let configuration = URLSessionLocalRouterTransport.sessionConfiguration()
+        #expect(configuration.httpMaximumConnectionsPerHost >= 32)
+        #expect(configuration.httpCookieStorage == nil && !configuration.httpShouldSetCookies)
+        #expect(configuration.urlCache == nil && configuration.urlCredentialStorage == nil)
+        #expect(!configuration.waitsForConnectivity)
+    }
+
+    /// A plain-HTTP coordinator (HTTP/1.1, as the V0 harness through a tunnel) takes one request per connection, so
+    /// URLSession's default of 6 connections per host would hold a 7th concurrent pass-on until one ended, and the
+    /// connect watchdog would fail it. Each stand-in stream here stays open until all ten requests have arrived.
+    @Test func tenConcurrentPassOnsReachAPlainHTTPCoordinatorAtOnce() async throws {
+        let concurrent = 10
+        let arrivals = Arrivals()
+        let router = Router()
+        router.post("/v1/chat/completions") { _, _ -> Response in
+            arrivals.arrive()
+            let body = AsyncStream<ByteBuffer> { continuation in
+                Task {
+                    continuation.yield(ByteBuffer(string: "data: one\n\n"))
+                    await arrivals.all(concurrent, within: .seconds(6))
+                    continuation.yield(ByteBuffer(string: "data: two\n\n"))
+                    continuation.finish()
+                }
+            }
+            return Response(status: .ok, headers: [.contentType: "text/event-stream"], body: .init(asyncSequence: body))
+        }
+        let app = Application(router: router, configuration: .init(address: .hostname("127.0.0.1", port: 0)))
+        try await app.test(.live) { client in
+            let port = try #require(client.port)
+            let transport = URLSessionLocalRouterTransport()
+            let request = LocalRouterUpstreamRequest(
+                url: URL(string: "http://localhost:\(port)/v1/chat/completions")!, method: "POST",
+                headers: ["Content-Type": "application/json"], body: ByteBuffer(string: "{}"),
+                connectTimeout: .seconds(3), idleTimeout: .seconds(10))
+            let started = ContinuousClock.now
+            let answers = try await withThrowingTaskGroup(of: String.self) { group in
+                for _ in 0..<concurrent {
+                    group.addTask {
+                        let response = try await transport.send(request)
+                        var text = "\(response.status) "
+                        for try await chunk in response.body { text += String(buffer: chunk) }
+                        return text
+                    }
+                }
+                return try await group.reduce(into: [String]()) { $0.append($1) }
+            }
+            #expect(answers == Array(repeating: "200 data: one\n\ndata: two\n\n", count: concurrent))
+            #expect(arrivals.received == concurrent)
+            #expect(ContinuousClock.now - started < .seconds(3))
+        }
+    }
+
     @Test func aClosedPortFailsPlainlyAndQuickly() async throws {
         // A port that was just free; nothing listens there.
         let port = try LocalRouterStreamingTests.freePort()
@@ -141,6 +194,22 @@ struct LocalRouterStreamingTests {
         }
         guard bound else { throw POSIXError(.EADDRNOTAVAIL) }
         return Int(UInt16(bigEndian: address.sin_port))
+    }
+}
+
+/// The requests a stand-in has received, and a wait until all have.
+final class Arrivals: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var received: Int { lock.withLock { count } }
+
+    func arrive() { lock.withLock { count += 1 } }
+
+    /// Waits until `expected` requests have arrived, or `limit` passes.
+    func all(_ expected: Int, within limit: Duration) async {
+        let deadline = ContinuousClock.now + limit
+        while received < expected, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(10)) }
     }
 }
 

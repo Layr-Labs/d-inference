@@ -135,8 +135,10 @@ take on with `self` (or `prefer`, when you chose "My Macs first") and your
 account key from its Keychain, so tools keep one local URL and the local key:
 see [the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router).
 `prefer` reserves the platform price of the request up front even when one of
-your Macs answers, so a zero balance refuses it with `402 insufficient_quota`;
-the router then sends the request once more with `self`.
+your Macs answers (and charges nothing when one does), so a zero balance
+(`402`, type `insufficient_funds`) or the key's spend cap (`402`, type
+`insufficient_quota`) refuses it; the router then sends the request once more
+with `self`, which needs neither.
 
 ## Related
 

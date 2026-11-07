@@ -285,10 +285,10 @@ struct Start: AsyncParsableCommand {
 
     var startsSingleMacServing: Bool { !foreground && !clusterMember && !distributed }
 
-    /// Whether this start is a service's child that serves as its arguments say, as `--foreground` does: launchd's,
-    /// or `start --local` that a service started, launchd's provider job (the app's local mode wrote that job without
-    /// --foreground before this Mac had one local API port) or the cluster service's solo part. It never asks,
-    /// chooses or saves a port, and its banner, in a log, shows no key.
+    /// Whether this start is a service's child, which serves exactly as its arguments say: launchd's `--foreground`
+    /// child, or `start --local` that a service runs (the app's local-mode job an older version wrote without
+    /// `--foreground`, or the cluster service's solo part). It never asks, and never chooses, probes or saves a port,
+    /// so an updated Mac's services keep theirs; its banner, which goes to a log, shows no key.
     static func isServiceChild(local: Bool, foreground: Bool, distributed: Bool, startedByAService: () -> Bool) -> Bool {
         foreground || (local && !distributed && startedByAService())
     }
@@ -379,6 +379,7 @@ struct Start: AsyncParsableCommand {
         // Line-buffer stdout: in a log or a pipe (`start … > log`, nohup) it is block-buffered, and a start that serves
         // never exits, so its banner, "Listening on" and the tool lines would wait in the buffer.
         setvbuf(stdout, nil, _IOLBF, 0)
+        // From here on, a service's child is the --foreground service (`isServiceChild`).
         foreground = Self.isServiceChild(local: local, foreground: foreground, distributed: distributed, startedByAService: {
             LaunchAgent.isCurrentProcessJob() || ClusterPairSummary.startedByClusterService()
         })

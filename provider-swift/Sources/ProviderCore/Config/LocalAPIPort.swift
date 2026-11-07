@@ -15,10 +15,16 @@ public enum LocalAPIPort {
     /// Where a choice starts: the build's default local port. Production's is 8000, never chosen, so its first is 8001.
     public static var firstTried: UInt16 { BuildEnvironment.current.defaultLocalPort }
 
-    /// The first port a choice can take (8001 on production), for the words that name it.
+    /// The port a choice takes when every port is free (8001 on production), for the words that name it.
     public static var firstCandidate: UInt16 {
-        (firstTried...last(from: firstTried)).first { !neverChosen.contains($0) } ?? firstTried
+        pick(from: firstTried, ownLivePort: nil, isFree: { _ in true }) ?? firstTried
     }
+
+    /// The port of this install's running local API (`local.json`), which a new start takes over; nil when none runs.
+    public static func ownLivePort() -> UInt16? { LocalEndpoint.readLiveInfo()?.port }
+
+    /// Whether no other program listens on `port` on this Mac: a test bind (`ClusterLocalServing.portIsFree`).
+    public static func isFreeOnThisMac(_ port: UInt16) -> Bool { ClusterLocalServing.portIsFree(Int(port)) }
 
     /// This Mac's port for one start, and whether `[local] port` gets it.
     public struct Choice: Equatable, Sendable {
@@ -36,8 +42,9 @@ public enum LocalAPIPort {
         }
     }
 
-    /// The named port; else the saved one; else the first free one from `firstTried`. `ownLivePort` (this install's
-    /// running local API, which the new start replaces) and `isFree` are asked only for a new choice.
+    /// The named port; else the saved one, used as it is, never probed or moved (even 8000, or one another program
+    /// holds: tools point at it); else the first free one from `firstTried`. `ownLivePort` (this install's running
+    /// local API, which the new start replaces) and `isFree` are asked only for a new choice.
     public static func choose(named: UInt16?, saved: UInt16?, ownLivePort: () -> UInt16?,
                               isFree: (UInt16) -> Bool) throws -> Choice {
         if let named {
@@ -58,8 +65,8 @@ public enum LocalAPIPort {
     /// free, and the config's own errors.
     @discardableResult
     public static func thisMac(configPath: URL, fallbackConfig: ProviderConfig,
-                               ownLivePort: () -> UInt16? = { LocalEndpoint.readLiveInfo()?.port },
-                               isFree: (UInt16) -> Bool = { ClusterLocalServing.portIsFree(Int($0)) }) throws -> Choice {
+                               ownLivePort: () -> UInt16? = LocalAPIPort.ownLivePort,
+                               isFree: (UInt16) -> Bool = LocalAPIPort.isFreeOnThisMac) throws -> Choice {
         let config = try FileManager.default.fileExists(atPath: configPath.path)
             ? ConfigManager.load(from: configPath) : fallbackConfig
         let choice = try choose(named: nil, saved: config.local?.port, ownLivePort: ownLivePort, isFree: isFree)
@@ -95,6 +102,7 @@ public enum LocalAPIPort {
             + "`\(cli) start --opencode` or `--hermes` again)."
     }
 
+    /// Says that no port from `start` is free for a new choice, and what to do.
     public static func noneFree(from start: UInt16) -> String {
         "No free port for this Mac's API from \(start) to \(last(from: start)) (8000 and "
             + "\(ClusterLocalServing.pairPortsWords) are never chosen). Free one, or name one with --port <n>."
@@ -103,7 +111,7 @@ public enum LocalAPIPort {
     /// For a local API that couldn't listen on `port`, which another program holds: the port a new choice would take
     /// now, for the line that names `start --port`; nil when none is free.
     public static func nextFree(besides port: UInt16,
-                                isFree: (UInt16) -> Bool = { ClusterLocalServing.portIsFree(Int($0)) }) -> UInt16? {
+                                isFree: (UInt16) -> Bool = LocalAPIPort.isFreeOnThisMac) -> UInt16? {
         pick(from: firstTried, ownLivePort: nil, isFree: { $0 != port && isFree($0) })
     }
 }

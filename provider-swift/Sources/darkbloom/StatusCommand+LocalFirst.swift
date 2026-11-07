@@ -20,8 +20,8 @@ extension Status {
             guard let failure = state.localAPIFailure else {
                 return ["Serving: Darkbloom network only — this Mac has no local API"]
             }
-            return ["Serving: Darkbloom and you, \(state.meFirst == nil ? "shared" : "me first") — the local API isn't "
-                + "up: " + LocalFirstWords.whyNotUp(failure, nextFree: nextFreePort(failure.port))]
+            return ["Serving: Darkbloom and you, \(state.meFirst == nil ? "shared" : "me first") — "
+                + "the local API isn't up: " + LocalFirstWords.whyNotUp(failure, nextFree: nextFreePort(failure.port))]
         }
         var lines: [String]
         if state.servesOnlyItsOwner {

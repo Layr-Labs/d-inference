@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import NIOCore
 import Testing
 
 @testable import ProviderCore
@@ -64,6 +65,23 @@ struct LocalEndpointBindFailureTests {
         #expect(written?.localAPIFailure == recorded)
         await loop.stopLocalEndpoint()
         #expect(await loop.currentDaemonState().localAPIFailure == nil, "stopped: nothing to say")
+    }
+
+    /// An error known only by its words, as a layer that wraps the system's error gives it.
+    private struct Words: Error, CustomStringConvertible { let description: String }
+
+    @Test("a bind error is the port in use only when it says so; any other keeps what the system answered")
+    func bindErrorsAreTold() {
+        let cfg = LocalInferenceHTTPConfig(host: "100.64.0.9", port: 8001, authToken: "dk-local-fixture")
+        let inUse = DaemonState.LocalAPIFailure(host: "100.64.0.9", port: 8001, portInUse: true)
+        #expect(ProviderLoop.localAPIFailure(cfg, error: IOError(errnoCode: EADDRINUSE, reason: "bind")) == inUse)
+        #expect(ProviderLoop.localAPIFailure(cfg, error: Words(description: "bind failed: Address already in use"))
+            == inUse)
+        #expect(ProviderLoop.localAPIFailure(cfg, error: IOError(errnoCode: EADDRNOTAVAIL, reason: "bind"))
+            == DaemonState.LocalAPIFailure(host: "100.64.0.9", port: 8001, portInUse: false,
+                                           reason: "Can't assign requested address"))
+        let long = ProviderLoop.localAPIFailure(cfg, error: Words(description: String(repeating: "x", count: 300)))
+        #expect(!long.portInUse && long.reason == String(repeating: "x", count: 200))
     }
 
     @Test("the failure round-trips through the state file, and an older file without it still reads")

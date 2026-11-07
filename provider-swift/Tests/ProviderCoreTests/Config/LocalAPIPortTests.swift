@@ -29,6 +29,7 @@ struct LocalAPIPortTests {
         #expect(choice == LocalAPIPort.Choice(port: Self.first, saves: true,
                                               note: LocalAPIPort.note(chosen: Self.first, start: LocalAPIPort.firstTried)))
         #expect(!probed.contains(8000) && !probed.contains { (47_420...47_423).contains($0) })
+        #expect(LocalAPIPort.firstCandidate == Self.first, "the port `--port`'s help names")
         // Another program holds it: the next one. This install's own running API holds it: kept.
         #expect(try LocalAPIPort.choose(named: nil, saved: nil, ownLivePort: { nil },
                                         isFree: { $0 != Self.first }).port == Self.first + 1)

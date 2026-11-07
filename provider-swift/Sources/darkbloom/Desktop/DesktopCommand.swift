@@ -84,9 +84,8 @@ struct Desktop: AsyncParsableCommand {
 
     /// The local API the app's local mode serves: this Mac's one port (`LocalAPIPort.thisMac`: the saved one, else one
     /// chosen and saved now), and `[local] bind`.
-    static func localAPI(configPath: String?,
-                         ownLivePort: () -> UInt16? = { LocalEndpoint.readLiveInfo()?.port },
-                         isFree: (UInt16) -> Bool = { ClusterLocalServing.portIsFree(Int($0)) })
+    static func localAPI(configPath: String?, ownLivePort: () -> UInt16? = LocalAPIPort.ownLivePort,
+                         isFree: (UInt16) -> Bool = LocalAPIPort.isFreeOnThisMac)
       throws -> (choice: LocalAPIPort.Choice, bind: String) {
       let loaded = try loadRuntimeConfiguration(configPath: configPath)
       let choice = try LocalAPIPort.thisMac(configPath: loaded.configPath, fallbackConfig: loaded.config,
@@ -104,7 +103,8 @@ struct Desktop: AsyncParsableCommand {
     mutating func run() async throws {
       guard !model.isEmpty else { throw ValidationError("Select a model") }
       try model.forEach(DesktopAction.validateModel)
-      // Its launchd job runs `start --local --model …`, which a paired Mac refuses: say so now, never "started".
+      // Its launchd job (`start --foreground --local …`) serves this Mac alone, and as launchd's child it skips the
+      // checks `start` makes on a paired Mac: say so now, never "started".
       if let refusal = Self.pairRefusal(ClusterPairSummary.local()) {
         for line in refusal { printError(line) }
         throw ExitCode.failure

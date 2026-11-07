@@ -62,15 +62,14 @@ extension ProviderLoop {
         }
     }
 
-    /// The local API that couldn't listen on `cfg`'s address: another program holds the port (`EADDRINUSE`), or what
-    /// the system answered otherwise.
+    /// The local API that couldn't listen on `cfg`'s address: another program holds the port (`EADDRINUSE`, or an
+    /// error that says so), or what the system answered otherwise, at most 200 characters for `status`'s line.
     static func localAPIFailure(_ cfg: LocalInferenceHTTPConfig, error: Error) -> DaemonState.LocalAPIFailure {
-        let errno = (error as? IOError)?.errnoCode
-        let inUse = String(cString: strerror(EADDRINUSE))
-        guard errno != EADDRINUSE, !String(describing: error).contains(inUse) else {
+        let code = (error as? IOError)?.errnoCode
+        if code == EADDRINUSE || String(describing: error).contains(String(cString: strerror(EADDRINUSE))) {
             return .init(host: cfg.host, port: cfg.port, portInUse: true)
         }
-        let reason = errno.map { String(cString: strerror($0)) } ?? String(describing: error)
+        let reason = code.map { String(cString: strerror($0)) } ?? String(describing: error)
         return .init(host: cfg.host, port: cfg.port, portInUse: false, reason: String(reason.prefix(200)))
     }
 

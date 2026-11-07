@@ -238,10 +238,10 @@ struct ServingEnvironment {
     var emit: (String) -> Void
     /// Whether the local router's account key is saved; asked only when this start has a local API.
     var accountKeySaved: () -> Bool
-    /// The port of this install's running local API, which the new start takes over; asked only when a new local
-    /// API needs a port.
+    /// The port of this install's running local API, which the new start takes over; asked only when this Mac's port
+    /// is chosen (none saved, none named).
     var ownLivePort: () -> UInt16?
-    /// No other program listens on the port; asked only about ports a new local API may take.
+    /// No other program listens on the port; asked only about the ports a choice may take.
     var isFree: (UInt16) -> Bool
 
     /// This Mac's terminal, Keychain, `local.json` and ports.
@@ -249,8 +249,7 @@ struct ServingEnvironment {
         ServingEnvironment(terminal: ClusterPairCommands.isTerminal(), readInput: { readLine() },
                            emit: { print($0, terminator: ""); fflush(stdout) },
                            accountKeySaved: { Start.accountKeySaved() },
-                           ownLivePort: { LocalEndpoint.readLiveInfo()?.port },
-                           isFree: { ClusterLocalServing.portIsFree(Int($0)) })
+                           ownLivePort: LocalAPIPort.ownLivePort, isFree: LocalAPIPort.isFreeOnThisMac)
     }
 }
 
@@ -296,6 +295,10 @@ enum StartServingResolver {
             if let minutes = options.meFirstIdleMinutes { change.meFirstIdleMinutes = minutes }
         }
 
+        // This Mac's one port, for a local API only. Darkbloom network chooses, probes and saves none, so a start
+        // without a terminal and without `[local]` (today's Darkbloom network) stays today's, byte for byte. A
+        // service's child (`--foreground`) serves on the port its arguments name, else `[local] port`, else the
+        // build's default.
         var port = options.port ?? saved.resolvedPort
         var portNote: String?
         if mode != .network, !options.foreground {

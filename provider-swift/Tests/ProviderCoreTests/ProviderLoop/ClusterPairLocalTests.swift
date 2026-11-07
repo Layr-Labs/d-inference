@@ -120,11 +120,13 @@ private struct PairLeaderFixture {
         let hardware = HardwareInfo(machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4, chipTier: .max,
             memoryGb: 64, memoryAvailableGb: 64, cpuCores: .init(total: 16, performance: 12, efficiency: 4),
             gpuCores: 40, memoryBandwidthGbs: 546)
+        // Shared serving (`me_first = false`): these tests are about the lanes, and a
+        // pause would refuse the Darkbloom requests they push (`ClusterPairMeFirstTests`).
         let loop = try ProviderLoop(
             config: .init(coordinatorURL: url, hardware: hardware,
                 models: [.init(id: clusterPairFixtureModel, modelType: "qwen3_5", sizeBytes: 1, estimatedMemoryGb: 1)],
                 config: .init(provider: .init(name: "cluster-pair-local", autoUpdate: false), backend: .init(),
-                    coordinator: .init(url: url, heartbeatIntervalSecs: 1)),
+                    coordinator: .init(url: url, heartbeatIntervalSecs: 1), local: LocalSettings(meFirst: false)),
                 localEndpoint: localAPI ? .init(host: "127.0.0.1", port: 0, authToken: pairLocalToken) : nil,
                 executionRole: .clusterMember),
             attestationSigner: ServeLoopTestSigner())

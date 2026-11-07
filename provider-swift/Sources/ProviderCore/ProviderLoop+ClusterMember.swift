@@ -6,7 +6,8 @@ extension ProviderLoop {
     /// Called before any solo subsystem can start. No model, GPU probe, cache
     /// maintenance, update/relaunch, capacity monitor or device lease is started.
     /// Only the member that hosts its pair's slot may run a local API
-    /// (`ProviderLoop+ClusterPairLocal`).
+    /// (`ProviderLoop+ClusterPairLocal`), and its me first is set here
+    /// (`ProviderLoop+ClusterPairMeFirst`).
     internal func prepareClusterMemberControl() throws {
         guard loopConfig.localEndpoint.map({ admitsClusterPairLocalAPI($0) }) ?? true, modelSlots.isEmpty,
               modelsLoading.isEmpty, preloadTasks.isEmpty else {
@@ -16,6 +17,7 @@ extension ProviderLoop {
         state.backendCapacity = BackendCapacity(slots: [], gpuMemoryActiveGb: 0,
             gpuMemoryPeakGb: 0, gpuMemoryCacheGb: 0,
             totalMemoryGb: Double(loopConfig.hardware.memoryGb), freeForLoadGb: 0)
+        enableClusterPairMeFirstIfConfigured()
         writeDaemonState()
     }
 

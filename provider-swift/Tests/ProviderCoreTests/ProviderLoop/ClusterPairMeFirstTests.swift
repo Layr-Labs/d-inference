@@ -438,9 +438,9 @@ struct ClusterPairMeFirstTests {
     /// The pause costs O(1) per request and nothing polls. On the wire, fifty
     /// local requests send one heartbeat when the pause begins and none of
     /// their own; a hundred member beats send nothing; the resume sends one.
-    /// The only task is the owner pause's one timer, armed once for all fifty
-    /// requests, after the first ends. With me first off, nothing is sent or
-    /// started. The hook takes as long with ten thousand of the owner's
+    /// The only task is the owner pause's one timer: none while the first
+    /// request runs, at most one arming per request's end, and one left once
+    /// the idle time counts. With me first off, nothing is sent or started. The hook takes as long with ten thousand of the owner's
     /// requests in flight as with one, and a whole local acquire and release
     /// costs about the same with me first on as off (both printed).
     @Test func thePauseCostsO1PerRequestAndNothingPolls() async throws {
@@ -475,8 +475,9 @@ struct ClusterPairMeFirstTests {
                 }
                 await acquired.releaseToken.fire()
             }
-            #expect(await leader.meFirstTimerGenerationForTesting - generation == (meFirst ? 1 : 0),
-                    "one timer for fifty requests")
+            // The timer stands down when it finds a request running, and the next end arms it again.
+            let armed = await leader.meFirstTimerGenerationForTesting - generation
+            #expect(meFirst ? (1...50).contains(armed) : armed == 0, "timer armings for fifty requests: \(armed)")
             try await Task.sleep(for: .milliseconds(300))
             #expect(mock.snapshot().heartbeats.count == base + (meFirst ? 1 : 0))
             #expect(await leader.meFirstResumeTimerArmedForTesting == meFirst, "one timer, while the idle time counts")

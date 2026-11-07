@@ -493,6 +493,7 @@ extension ProviderLoop {
             // No grant or key is retained across a control connection boundary.
             memberConnectionID = nil
             state.refusingNewWork = true
+            cancelMeFirstResumeTimer()
             // A refused or unanswered negotiation ended the client: a waiting
             // start reports that, not a plain connection end.
             let roleRefused = await coordinator.memberRoleFailure

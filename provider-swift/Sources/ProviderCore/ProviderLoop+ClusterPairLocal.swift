@@ -122,9 +122,11 @@ extension ProviderLoop {
     /// The owner-pause hook (me first): the owner's use of the pair begins
     /// when a local request starts waiting for a lane, or takes one at once,
     /// before it can wait behind Darkbloom work, and ends exactly once: when
-    /// it leaves without a lane, or when its lane is released.
+    /// it leaves without a lane, or when its lane is released. With me first
+    /// on, it pauses the pair's Darkbloom work (`ProviderLoop+ClusterPairMeFirst`).
     func noteClusterPairLocalUse(_ use: ClusterPairLocalUse) {
         clusterPairLocalLanes.note(use)
+        noteLocalUse(use == .began ? .start : .end)
     }
 
     /// The pair's refusal while it does not serve (forming, re-forming,

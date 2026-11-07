@@ -37,9 +37,9 @@ VERSIONS = {
 PROMPT_ROLES = {"tokenizer", "template", "config"}
 DOWNLOAD_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = (1, 3)
-# A contract's downloads must finish within 120 s (the former flat limit) plus
-# the time its missing bytes take at 128 KiB/s, at most 900 s. Run 42330647893
-# moved the 17 MB Nemotron contract at under 142 KB/s and hit the flat 120 s.
+# A contract's downloads must finish within 120 s plus the time its missing
+# bytes take at 128 KiB/s (just below the slowest CI transfers), at most 900 s
+# (the audio fixture script's per-attempt limit), so a stall still fails.
 BASE_DOWNLOAD_SECONDS = 120
 MIN_DOWNLOAD_BYTES_PER_SECOND = 128 << 10
 MAX_DOWNLOAD_SECONDS = 900

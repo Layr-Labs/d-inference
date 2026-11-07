@@ -368,7 +368,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
       # The prompt artifacts both parity steps download (tokenizers, templates
-      # and configs, 104 MB once deduplicated), one file per pinned SHA-256
+      # and configs), one file per pinned SHA-256
       # (scripts/verified_download_cache.py). The key hashes the manifests that
       # pin them; prepare-prompt-fixtures.py uses an entry only if its bytes
       # still have the pinned size and digest, and downloads any other.

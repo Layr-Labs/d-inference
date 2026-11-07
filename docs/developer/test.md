@@ -1223,10 +1223,9 @@ timeout, a body that ends before its declared size, or HTTP 5xx), at most 3
 attempts per artifact with 1 s and 3 s backoff inside the contract's deadline.
 The deadline is 120 s plus the time the contract's missing bytes take at
 128 KiB/s, at most 900 s: 256 s for the 17 MB Nemotron contract and 376 s for a
-32 MB Gemma 4 contract. Before, a flat 120 s failed the Nemotron contract at
-under 142 KB/s (run 42330647893). A full-size body with the wrong SHA-256, an
-oversize body, a Content-Length mismatch, a cross-origin response, another
-non-200 status or the deadline fails at once.
+32 MB Gemma 4 contract. A full-size body with the wrong SHA-256, an oversize
+body, a Content-Length mismatch, a cross-origin response, another non-200
+status or the deadline fails at once.
 
 With `PROMPT_PARITY_DOWNLOAD_CACHE` set (CI sets it for both parity scripts),
 `--download-cache` names a directory with one file per pinned SHA-256

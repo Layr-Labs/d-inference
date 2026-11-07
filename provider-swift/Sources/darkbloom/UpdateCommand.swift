@@ -215,7 +215,7 @@ struct Update: AsyncParsableCommand {
         /// The pair, which runs here; a single-Mac job beside it is left as it is (`soloJobLeftLines`).
         case pair
         /// Single-Mac serving, which this Mac has; `releaseLeftover`: a pair that doesn't run here first gives back the
-        /// serving lock its leftover part holds (`Start.releaseLeftoverPart`).
+        /// serving lock its leftover part holds (`Start.releaseLeftoverPartToServeAlone`).
         case singleMac(releaseLeftover: Bool)
         case clusterService
         case nothing
@@ -238,9 +238,7 @@ struct Update: AsyncParsableCommand {
 
     private func releaseLeftoverPart(_ release: Bool) async throws {
         guard release else { return }
-        let pair = ClusterPairSummary.local()
-        print(pair.servingAloneLine)
-        try await Start.releaseLeftoverPart(pair)
+        try await Start.releaseLeftoverPartToServeAlone(ClusterPairSummary.local())
     }
 
     static var soloJobLeftLines: [String] {

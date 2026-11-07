@@ -12,7 +12,7 @@ private let otherMac = "the other Mac (Apple M5 Max, 128 GB)"
 /// The CLI as this build names it (`darkbloom`, or `darkbloom-dev` for DevNet).
 private let cli = ClusterPairSummary.cli
 private let notRunning = "The other Mac (Apple M5 Max, 128 GB) hasn't answered for 15 min; this Mac's part stopped. Run "
-    + "`\(cli) start` to serve this Mac alone, or `\(cli) cluster` to start the pair again."
+    + "`\(cli) start --solo` to serve this Mac alone, or `\(cli) start` to start the pair again."
 
 /// A Mac whose saved start is on and whose cluster service runs: `running` is the service's verdict.
 private func pair(running: Bool?, reachable: Bool = false, started: Bool = true, role: ClusterPairSummary.Role = .leader)
@@ -41,7 +41,7 @@ private func stoppedPair() -> ClusterPairSummary {
 private let stoppedSentence = "This Mac is in a two-Mac cluster with \(otherMac): it leads; stopped (last model Qwen 3.8 27B)."
 
 private let staleAlone = "This Mac is in a two-Mac cluster with \(otherMac), which isn't running here (\(otherMac) isn't "
-    + "answering): serving this Mac alone, and its saved start is cleared (`\(cli) cluster` starts the pair again)."
+    + "answering): serving this Mac alone (`\(cli) start` starts the pair again)."
 
 @Suite("A Mac that stopped clustering serves normally")
 struct UnpairedMacServesNormallyTests {
@@ -53,21 +53,23 @@ struct UnpairedMacServesNormallyTests {
         if case .refuse = Start.pairStart(pair(running: true), solo: true, terminal: false) {} else { Issue.record("not refused") }
     }
 
-    @Test("a script, the app's Go Online (`start --model`) and Autopilot enroll (`start --autopilot`) serve this Mac alone")
-    func scriptsAndTheAppServeAlone() throws {
+    @Test("the app's Start serving (`start --model`) and Autopilot enroll (`start --autopilot`) need --solo to serve this Mac alone")
+    func theAppAndAutopilotNeedSolo() throws {
         let stale = pair(running: false)
-        #expect(Start.pairStart(stale, solo: false, terminal: false) == .serveAlone(note: staleAlone))
         let goOnline = try Start.parse(["--model", "acme/Alpha-4bit", "--local-endpoint"]).singleMacOptions
-        #expect(Start.pairStart(stale, solo: false, terminal: false, singleMacOptions: goOnline) == .serveAlone(note: staleAlone))
+        #expect(Start.pairStart(stale, solo: false, terminal: false, singleMacOptions: goOnline)
+            == .refuseOptions(stale.singleMacOptionsRefusal(goOnline)))
+        #expect(Start.pairStart(stale, solo: true, terminal: false, singleMacOptions: goOnline) == .serveAlone(note: staleAlone))
         let enroll = try Start.parse(["--autopilot"]).singleMacOptions
-        #expect(Start.pairStart(stale, solo: false, terminal: false, singleMacOptions: enroll) == .serveAlone(note: staleAlone))
-        // The app's own arguments for Go Online are exactly a `start --model` (`DesktopBackend.arguments`).
+        #expect(Start.pairStart(stale, solo: false, terminal: false, singleMacOptions: enroll)
+            == .refuseOptions(stale.singleMacOptionsRefusal(enroll)))
+        // The app's own arguments for Start serving are exactly a `start --model` (`DesktopBackend.arguments`).
         let request = try JSONDecoder().decode(DesktopAction.self, from: Data(#"{"id":"x","action":"start","models":["acme/Alpha-4bit"]}"#.utf8))
         #expect(try DesktopBackend.arguments(for: request, configPath: nil, localActive: false) == ["start", "--model", "acme/Alpha-4bit"])
-        // A pair that is merely stopped: the same, in words that say so.
-        #expect(Start.pairStart(pair(running: false, started: false), solo: false, terminal: false, singleMacOptions: ["--model"])
+        // A pair that is merely stopped: --solo serves alone, in words that say so.
+        #expect(Start.pairStart(stoppedPair(), solo: true, terminal: false, singleMacOptions: ["--model"])
             == .serveAlone(note: "This Mac is in a two-Mac cluster with \(otherMac), which is stopped: serving this Mac alone "
-                + "(`\(cli) cluster` starts the pair again)."))
+                + "(`\(cli) start` starts the pair again)."))
     }
 
     @Test("a pair that runs here keeps today's behaviour")
@@ -85,7 +87,7 @@ struct UnpairedMacServesNormallyTests {
     @Test("a pair whose other Mac answers but hasn't served yet (a long first load) is never stopped without asking")
     func loadingPairIsNotStoppedUnasked() throws {
         let loading = pair(running: false, reachable: true)
-        // The app's Go Online and Autopilot enroll clicked by mistake: refused, as for a pair that runs.
+        // The app's Start serving and Autopilot enroll clicked by mistake: refused, as in every state of the pair.
         for arguments in [["--model", "acme/Alpha-4bit"], ["--autopilot"]] {
             let options = try Start.parse(arguments).singleMacOptions
             if case .refuseOptions = Start.pairStart(loading, solo: false, terminal: false, singleMacOptions: options) {} else {
@@ -94,9 +96,9 @@ struct UnpairedMacServesNormallyTests {
         }
         // A script starts (waits for) the pair, as before.
         #expect(Start.pairStart(loading, solo: false, terminal: false) == .startPair)
-        // The person's explicit ways back stay: --solo, and the terminal's choice.
+        // The person's explicit way back stays: --solo. In a terminal, start opens the pair's screen.
         #expect(Start.pairStart(loading, solo: true, terminal: false) == .serveAlone(note: loading.servingAloneLine))
-        #expect(Start.pairStart(loading, solo: false, terminal: true) == .choose(aloneByDefault: false))
+        #expect(Start.pairStart(loading, solo: false, terminal: true) == .openScreen)
         // The app's Restart restarts the pair; it doesn't stop it for single-Mac serving.
         #expect(Restart.pairRestart(loading, singleMacInstalled: true, singleMacRunning: true, solo: false) == .restartPair)
         // Stop stops the pair on both Macs: a follower's own cleared start would come back with the leader's next lease.
@@ -107,31 +109,22 @@ struct UnpairedMacServesNormallyTests {
     func followerServingAloneIsTruthful() {
         let follower = pair(running: false, reachable: true, role: .member)
         #expect(follower.servingAloneLine == "This Mac is in a two-Mac cluster with \(otherMac), which isn't running here: "
-            + "serving this Mac alone, and its saved start is cleared (`\(cli) cluster` starts the pair again). "
+            + "serving this Mac alone (`\(cli) start` starts the pair again). "
             + "While \(otherMac) leads with the pair started, it may start this Mac's part again once single-Mac serving "
             + "stops here: `\(cli) stop` on \(otherMac) stops the pair.")
+        // After its leftover part stopped, the line that says so carries the same note.
+        #expect(follower.leftoverReleasedLine.hasSuffix(" `\(cli) stop` on \(otherMac) stops the pair."))
         #expect(Start.pairStart(follower, solo: true, terminal: false) == .serveAlone(note: follower.servingAloneLine))
         // The leading Mac's line is unchanged.
         #expect(pair(running: false, reachable: true).servingAloneLine.hasSuffix("starts the pair again)."))
-    }
-
-    @Test("in a terminal: serve alone (the default when the other Mac isn't answering) or start the pair")
-    func terminalChoice() {
-        #expect(Start.pairStart(pair(running: false), solo: false, terminal: true) == .choose(aloneByDefault: true))
-        let answering = pair(running: false, reachable: true)
-        #expect(Start.pairStart(answering, solo: false, terminal: true) == .choose(aloneByDefault: false))
-        #expect(Start.choice("", pair: pair(running: false), aloneByDefault: true) == .serveAlone(note: staleAlone))
-        #expect(Start.choice("", pair: answering, aloneByDefault: false) == .openScreen)
-        #expect(Start.choice("1", pair: answering, aloneByDefault: false) == .serveAlone(note: answering.servingAloneLine))
-        #expect(Start.choice("2", pair: pair(running: false), aloneByDefault: true) == .openScreen)
     }
 
     @Test("stop and restart act on what runs here")
     func stopAndRestart() {
         #expect(Stop.pairedStop(pair(running: false), solo: false, uninstall: false) == .stopHere)
         #expect(Stop.pairedStop(pair(running: true), solo: false, uninstall: false) == .stopPair)
-        let nothingServes = "Nothing serves on this Mac, so nothing was restarted: `\(cli) start` serves this Mac alone; "
-            + "`\(cli) cluster` starts the pair."
+        let nothingServes = "Nothing serves on this Mac, so nothing was restarted: `\(cli) start` starts the pair again; "
+            + "`\(cli) start --solo` serves this Mac alone."
         #expect(Restart.pairRestart(pair(running: false), singleMacInstalled: true, singleMacRunning: true, solo: false)
             == .restartSingleMac)
         #expect(Restart.pairRestart(pair(running: false), singleMacInstalled: false, singleMacRunning: false, solo: false)
@@ -154,7 +147,7 @@ struct UnpairedMacServesNormallyTests {
     func restartWordsWhereThePairDoesNotRun() {
         // A pair that doesn't run here, stopped or with the other Mac gone, is never started by a plain restart, so
         // "`darkbloom restart` restarts both Macs" is false there.
-        let notStarted = "The pair was not started; `\(cli) cluster` starts it."
+        let notStarted = "The pair was not started; `\(cli) start` starts it."
         #expect(stoppedPair().restartAddendum == stoppedSentence + " " + notStarted)
         #expect(stoppedPair().restartRefusal == [stoppedSentence,
             "`\(cli) restart --solo` restarts single-Mac serving, and this Mac has none: nothing was restarted.", notStarted])
@@ -168,7 +161,7 @@ struct UnpairedMacServesNormallyTests {
     @Test("restart's words never say that a started pair whose other Mac is gone serves")
     func restartWordsWhenTheOtherMacIsGone() {
         // It doesn't run here, and a plain restart has just cleared its saved start: never "This Mac serves …".
-        let notStarted = "The pair was not started; `\(cli) cluster` starts it."
+        let notStarted = "The pair was not started; `\(cli) start` starts it."
         let gone = pair(running: false)
         let goneSentence = "This Mac is in a two-Mac cluster with \(otherMac), which isn't running here (\(otherMac) isn't answering)."
         #expect(gone.restartAddendum == goneSentence + " " + notStarted)
@@ -218,7 +211,7 @@ struct UnpairedMacServesNormallyTests {
         let stale = pair(running: false)
         #expect(stale.statusLine == "Cluster: " + notRunning)
         #expect(stale.clusterStatusLines.suffix(2) == [notRunning,
-            "Next: `\(cli) start` serves this Mac alone; `\(cli) cluster` starts the pair again."])
+            "Next: `\(cli) start --solo` serves this Mac alone; `\(cli) start` starts the pair again."])
         #expect(pair(running: true).startedButNotRunningLine == nil)
         #expect(pair(running: false, started: false).startedButNotRunningLine == nil)
     }

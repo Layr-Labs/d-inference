@@ -17,12 +17,11 @@ struct Start: AsyncParsableCommand {
         answer is saved; --choose asks again. Without a terminal and without a saved
         answer, it serves the Darkbloom network as before.
 
-        On a Mac in a two-Mac cluster whose pair runs, it starts the pair instead: in a
+        On a Mac in a two-Mac cluster it starts the pair instead, also after `stop`: in a
         terminal the `darkbloom cluster` screen; without one the pair's saved model,
         waiting until it serves (exit 0 serving, 3 not serving yet, 5 the other Mac isn't
-        answering). Single-Mac options there need --solo, refused while the pair runs.
-        While the pair doesn't run on this Mac (stopped, or the other Mac gone), it serves
-        this Mac alone; in a terminal it asks first.
+        answering). --solo serves this Mac alone instead, while the pair doesn't run here;
+        single-Mac options there need it.
         """
     )
 
@@ -215,19 +214,16 @@ struct Start: AsyncParsableCommand {
         print()
     }
 
-    /// What `darkbloom start` does on a Mac in a two-Mac cluster: it starts the pair, as `darkbloom cluster` does (the
-    /// same screen in a terminal; the saved model for a script), unless `--solo` asks for single-Mac serving. `run`
-    /// never asks the cluster's own starts (`--cluster-member`, `--distributed`, the cluster service's solo part) or
-    /// launchd's (`--foreground`).
+    /// What `darkbloom start` does on a Mac in a two-Mac cluster: it starts the pair, whatever its state, as `darkbloom
+    /// cluster` does (the same screen in a terminal; the saved model for a script), unless `--solo` asks for single-Mac
+    /// serving. `run` never asks the cluster's own starts (`--cluster-member`, `--distributed`, the cluster service's solo
+    /// part) or launchd's (`--foreground`).
     enum PairStart: Equatable {
         /// Single-Mac serving as on any Mac, after the one line (nil: not in a cluster).
         case single(note: String?)
-        /// The pair doesn't run here: this Mac's leftover part is stopped and its saved start cleared
-        /// (`ClusterService.releaseForSingleMac`), then single-Mac serving starts, after the one line.
+        /// `--solo` where the pair doesn't run here: a started pair's leftover part is stopped and its saved start cleared
+        /// (`Start.releaseLeftoverPartToServeAlone`), then single-Mac serving starts.
         case serveAlone(note: String)
-        /// A terminal, and the pair doesn't run here: "Serve on this Mac alone" or "Start the pair"; alone is the
-        /// default when the other Mac isn't answering.
-        case choose(aloneByDefault: Bool)
         /// This Mac's pairing record can't be read: refused without `--solo`, and why.
         case refuse([String])
         /// A terminal: the screen `darkbloom cluster` shows on this Mac.
@@ -262,22 +258,13 @@ struct Start: AsyncParsableCommand {
         return given
     }
 
-    static func pairStart(_ pair: ClusterPairSummary, solo: Bool, terminal: Bool,
-                          singleMacOptions: [String] = [], soloBlocked: Bool = false) -> PairStart {
+    /// A plain `start` starts the pair whatever its state (stopped, given up here, loading or running), as `stop` and
+    /// `cluster status` say; `--solo` is the one way to serve this Mac alone, never refused while the pair doesn't run
+    /// here. Single-Mac options without it start nothing and say why (never ignored).
+    static func pairStart(_ pair: ClusterPairSummary, solo: Bool, terminal: Bool, singleMacOptions: [String] = []) -> PairStart {
         guard pair.paired else { return .single(note: nil) }
         if pair.pairingUnreadable { return solo ? .single(note: pair.startNote) : .refuse(pair.startRefusal) }
-        // Single-Mac serving blocks a started pair whose other Mac answers: `start` (the ✗'s "Then run `darkbloom start`")
-        // starts the pair, whose screen offers to stop it; never "Serve on this Mac alone", which would recreate the block.
-        if soloBlocked, !solo, singleMacOptions.isEmpty, pair.started, pair.otherMacReachable { return terminal ? .openScreen : .startPair }
-        // The pair doesn't run here (stopped, or left from a pair whose other Mac stopped taking part): the way back to
-        // single-Mac serving is never refused. A person at a terminal chooses; everything else serves this Mac alone,
-        // unless the other Mac answers: a pair that hasn't served yet may still be loading, so only --solo stops it then.
-        if pair.pairIdle {
-            if solo { return .serveAlone(note: pair.servingAloneLine) }
-            if terminal, singleMacOptions.isEmpty { return .choose(aloneByDefault: !pair.otherMacReachable) }
-            if !pair.started || !pair.otherMacReachable { return .serveAlone(note: pair.servingAloneLine) }
-        }
-        if solo { return .refuse(pair.soloBesideServingRefusal) }
+        if solo { return pair.pairIdle ? .serveAlone(note: pair.servingAloneLine) : .refuse(pair.soloBesideServingRefusal) }
         if !singleMacOptions.isEmpty { return .refuseOptions(pair.singleMacOptionsRefusal(singleMacOptions)) }
         return terminal ? .openScreen : .startPair
     }
@@ -291,12 +278,6 @@ struct Start: AsyncParsableCommand {
 
     /// How long the leftover part gets to release its model and the serving lock.
     static let releaseSeconds: Double = 300
-
-    /// Single-Mac serving blocks the pair: on this Mac (its serving lock), or as the pair's status says.
-    static func soloBlocksPair(_ pair: ClusterPairSummary) -> Bool {
-        guard pair.paired, ClusterPairSummary.readsThisMacsCluster else { return false }
-        return ProviderInstanceHolder.singleMacServing() != nil || pair.reason.map(ClusterOnboardingSoloServing.isBlock) == true
-    }
 
     /// The person chose single-Mac serving on this paired Mac (`ClusterSoloChoice`): it doesn't step aside for the pair.
     static func recordSoloChoice() {
@@ -330,29 +311,14 @@ struct Start: AsyncParsableCommand {
         throw ExitCode.failure
     }
 
-    /// Tests answer the terminal's question (nil: the default).
-    @TaskLocal static var answerForTesting: String??
-
-    /// `darkbloom start` in a terminal on a Mac whose pair doesn't run: serve alone, or open the pair's screen.
-    static func chooseInTerminal(_ pair: ClusterPairSummary, aloneByDefault: Bool) -> PairStart {
-        let alone = "Serve on this Mac alone", both = "Start the pair (`\(ClusterPairSummary.cli) cluster`)"
-        print(pair.pairNotRunning ?? pair.pairSentence)
-        print("  1. \(alone)\(aloneByDefault ? " (default)" : "")")
-        print("  2. \(both)\(aloneByDefault ? "" : " (default)")")
-        print("Choose 1 or 2 [\(aloneByDefault ? 1 : 2)]: ", terminator: "")
+    /// `releaseLeftoverPart` before single-Mac serving (`start --solo`, `restart`, `update`): what it does first, then
+    /// that the saved start is cleared, only once it is. A running cluster command can make it wait and end with nothing
+    /// changed (`releaseBusyLines`).
+    static func releaseLeftoverPartToServeAlone(_ pair: ClusterPairSummary) async throws {
+        print(pair.leftoverStopLine)
         fflush(stdout)
-        let answer = (answerForTesting ?? readLine())?.trimmingCharacters(in: .whitespaces) ?? ""
-        return choice(answer, pair: pair, aloneByDefault: aloneByDefault)
-    }
-
-    static func choice(_ answer: String, pair: ClusterPairSummary, aloneByDefault: Bool) -> PairStart {
-        let alone: Bool
-        switch answer.lowercased() {
-        case "1": alone = true
-        case "2": alone = false
-        default: alone = aloneByDefault
-        }
-        return alone ? .serveAlone(note: pair.servingAloneLine) : .openScreen
+        try await releaseLeftoverPart(pair)
+        print(pair.leftoverReleasedLine)
     }
 
     /// The title beside the mark as `darkbloom start` opens in a terminal (`DarkbloomCommandLook`).
@@ -377,14 +343,10 @@ struct Start: AsyncParsableCommand {
         let opensLook = !flagsRefuseStart
         if startsSingleMacServing, !ClusterPairSummary.startedByClusterService() {
             let pair = ClusterPairSummary.local()
-            let pairStart = Self.pairStart(pair, solo: solo, terminal: ClusterPairCommands.isTerminal(),
-                                           singleMacOptions: singleMacOptions, soloBlocked: Self.soloBlocksPair(pair))
+            let choice = Self.pairStart(pair, solo: solo, terminal: ClusterPairCommands.isTerminal(),
+                                        singleMacOptions: singleMacOptions)
             // Only single-Mac serving opens with the mark here: a refusal starts nothing, and the cluster's screen
             // draws the mark itself.
-            var choice = pairStart
-            if case .choose(let aloneByDefault) = pairStart {
-                choice = Self.chooseInTerminal(pair, aloneByDefault: aloneByDefault)
-            }
             switch choice {
             case .single, .serveAlone:
                 // Before the pair is touched (the solo choice recorded, this Mac's part stopped and its saved start
@@ -402,11 +364,12 @@ struct Start: AsyncParsableCommand {
                 if let note { print(note) }
                 if pair.paired { Self.recordSoloChoice() }
             case .serveAlone(let note):
-                print(note)
+                if pair.started, pair.serviceRunning {
+                    try await Self.releaseLeftoverPartToServeAlone(pair)
+                } else {
+                    print(note)
+                }
                 Self.recordSoloChoice()
-                if pair.started, pair.serviceRunning { try await Self.releaseLeftoverPart(pair) }
-            case .choose:
-                return
             case .refuse(let lines):
                 for line in lines { print(line) }
                 throw ExitCode.failure

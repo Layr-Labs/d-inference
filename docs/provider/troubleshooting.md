@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-07
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models, the
@@ -276,7 +276,8 @@ On a paired Mac `darkbloom stop`, `start`, `restart` and `status` control the pa
 | Symptom | Cause | Fix |
 |---|---|---|
 | `darkbloom stop` says `stopping both Macs` on a Mac in a cluster | On a paired Mac `stop` controls the pair, as on one Mac it controls single-Mac serving (`Stop.pairedStop`) | Expected: both Macs stop and stay stopped; `darkbloom start` on either Mac starts the pair again. `darkbloom stop --solo` stops single-Mac serving only |
-| `darkbloom start` opens the cluster's screen, or in a script ends with `✗ Not serving: …` | On a paired Mac `start` starts the pair (`Start.pairStart`); a script gets `darkbloom cluster status`'s exit status | Follow the result block's `Next:` line. `darkbloom start --solo` serves this Mac alone |
+| `darkbloom start` opens the cluster's screen, or in a script ends with `✗ Not serving: …` | On a paired Mac `start` starts the pair whatever its state, also after `darkbloom stop` (`Start.pairStart`); a script gets `darkbloom cluster status`'s exit status | Follow the result block's `Next:` line. `darkbloom start --solo` serves this Mac alone |
+| The app's **Start serving**, `darkbloom start --model <id>` or `darkbloom autopilot enable` says ``This Mac is in a two-Mac cluster with the other Mac (…): `--model` is for single-Mac serving, so nothing was started.`` (exit 64) | On a paired Mac single-Mac options need `--solo`, in every state of the pair; nothing was started or stopped | To start the pair: `darkbloom start`. To serve this Mac alone: `darkbloom start --solo --model <id>` (stop the pair first while it runs) |
 | Is the pair serving? Why not? | `darkbloom cluster` needs a terminal | `darkbloom cluster status` (or `--json`; exit 0 only while it serves) |
 | `This Mac's pairing record couldn't be read (…), so it may be in a two-Mac cluster.` (`cluster status` exit 7) | The pairing store can't be read (a damaged or unsafe file); the commands treat the Mac as maybe in a cluster, so `start`, `stop` and `restart` need `--solo` (`ClusterPairSummary.membership`) | `darkbloom cluster` on this Mac checks the pairing |
 | `darkbloom cluster link --remove` asks `Remove it? [y/N]` | The Mac is paired; removing the port setup stops the cluster on both Macs until it is set up again | Answer `n` unless the cable port must go; never remove it because of a doctor line alone. `--yes` for scripts |

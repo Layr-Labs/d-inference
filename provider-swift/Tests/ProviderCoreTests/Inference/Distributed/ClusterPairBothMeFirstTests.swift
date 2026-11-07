@@ -148,7 +148,11 @@ struct ClusterPairBothMeFirstTests {
         for port in LocalSettings.neverChosenPorts.map(Int.init) {
             #expect(ClusterLocalServing.localAPIPort(localFree: [port], peersFree: [[port]], preferred: port) != port)
         }
-        #expect(LocalSettings.neverChosenPorts == [8000, 47420, 47421, 47422, 47423])
+        // The owner's rule, whatever build: 8000 and production's pair ports, plus this build's own pair ports.
+        #expect(LocalSettings.neverChosenPorts.isSuperset(of: [8000, 47420, 47421, 47422, 47423]))
+        #expect(ClusterLocalServing.pairPortsWords == "47420–47423")
+        let cable = ClusterCablePorts.current
+        #expect(LocalSettings.neverChosenPorts.isSuperset(of: [cable.linkControl, cable.pairing, cable.exchange, cable.control]))
     }
 
     /// This Mac's own free ports for the pair's API: 8000 and the pair ports are never even test-bound.

@@ -310,7 +310,7 @@ enum LocalAPIPort {
     }
 
     static func noneFree(from start: UInt16) -> String {
-        "No free port for this Mac's API from \(start) to \(last(from: start)) (8000 and 47420–47423 are never chosen). "
+        "No free port for this Mac's API from \(start) to \(last(from: start)) (8000 and \(ClusterLocalServing.pairPortsWords) are never chosen). "
             + "Free one, or name one with --port <n>."
     }
 }

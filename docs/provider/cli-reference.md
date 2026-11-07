@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-07
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -1990,17 +1990,24 @@ On a Mac in a two-Mac cluster, `restart` restarts the pair: it stops serving on
 both Macs, starts the current model again, waits until it serves, and ends with
 the same result block and exit status as `start` without a terminal
 (`Restart.pairRestart`, `ClusterPairCommands.restart`). `--solo` restarts
-single-Mac serving on this Mac only. While the pair doesn't run here, plain
-`restart` restarts single-Mac serving (after stopping a leftover part of the
-pair), or, with none set up, restarts nothing and says `darkbloom start` serves
-this Mac alone.
+single-Mac serving on this Mac only. While the pair doesn't run here (stopped,
+or `ClusterPairWatch` says it isn't running), plain `restart` never starts the
+pair: it restarts single-Mac serving that runs here, its launchd job loaded
+(after stopping a leftover part of the pair). Single-Mac serving that `stop`
+stopped keeps its plist on disk, but plain `restart` doesn't start it. With none
+running, it restarts nothing, exit 1, and says `darkbloom start` serves this Mac
+alone and `darkbloom cluster` starts the pair (`ClusterPairSummary.idleRestartRefusal`).
+After it restarts single-Mac serving there, or after `--solo` there, it says
+``The pair was not started; `darkbloom cluster` starts it.``
+(`ClusterPairSummary.restartRestartsPair`).
 
 A drain timeout returns non-success and leaves the old process draining with
 automatic restart disabled; repeat the command with a new deadline or explicitly
 choose `--force`. A startup timeout returns non-success while the new service
 keeps starting, without issuing another restart. Inspect `darkbloom status` to
-check its progress. An installed, stopped service is started; a missing service
-returns non-success. The watchdog is re-armed according to `provider.auto_restart`.
+check its progress. An installed, stopped service is started (on a Mac in a
+two-Mac cluster, only with `--solo`); a missing service returns non-success.
+The watchdog is re-armed according to `provider.auto_restart`.
 A foreground/local process is explicitly terminated after draining before the
 saved launchd configuration starts. If no launchd configuration exists, restart
 refuses before disturbing that process; use `start` to choose a replacement.

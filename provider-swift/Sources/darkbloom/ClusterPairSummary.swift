@@ -253,6 +253,10 @@ struct ClusterPairSummary: Sendable, Equatable {
     /// serves this Mac alone, after `servingAloneLine`.
     var pairIdle: Bool { paired && !pairingUnreadable && !partServes }
 
+    /// A plain `darkbloom restart` restarts the pair (`Restart.pairRestart`): it runs here, or it is started and the other
+    /// Mac answers (it may still be loading). It never starts a pair that doesn't run here.
+    var restartRestartsPair: Bool { paired && !pairingUnreadable && (partServes || (started && otherMacReachable)) }
+
     /// `darkbloom start` (`--solo`, `--model`, the app's Go Online, a script) on a Mac whose pair doesn't run: one line.
     var servingAloneLine: String {
         if started {
@@ -314,14 +318,17 @@ struct ClusterPairSummary: Sendable, Equatable {
          soloLeftPair("restart")]
     }
 
-    /// After `darkbloom restart --solo` restarted single-Mac serving on a Mac in a cluster.
+    /// After `darkbloom restart` restarted single-Mac serving on a Mac in a cluster: with --solo, or while the pair doesn't
+    /// run here.
     var restartAddendum: String {
         pairSentence + (pairingUnreadable ? " No cluster was restarted." : " " + soloLeftPair("restart"))
     }
 
-    /// `--solo` left the pair alone: "The pair was not stopped; `darkbloom stop` stops both Macs."
+    /// `--solo` left the pair alone: "The pair was not stopped; `darkbloom stop` stops both Macs." A pair that a plain
+    /// restart wouldn't restart (`restartRestartsPair`) is named with the command that starts it.
     private func soloLeftPair(_ command: String) -> String {
         if pairingUnreadable { return Self.checkPairingLine }
+        if command == "restart", !restartRestartsPair { return "The pair was not started; `\(Self.cli) cluster` starts it." }
         return "The pair was not \(command == "stop" ? "stopped" : "restarted"); `\(Self.cli) \(command)` \(command)s both Macs."
     }
 

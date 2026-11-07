@@ -11,10 +11,13 @@ struct Restart: AsyncParsableCommand {
         picker or change what you serve. Use this to pick up a new binary or
         recover a wedged provider.
 
-        If the service is installed but not running, it is started.
+        If the service is installed but not running, it is started (on a Mac in a two-Mac
+        cluster, only with --solo).
 
         On a Mac in a two-Mac cluster it restarts the pair on both Macs with its current model, then
-        waits until it serves. With --solo it restarts single-Mac serving on this Mac only.
+        waits until it serves. While the pair doesn't run on this Mac (stopped, or the other Mac gone),
+        it restarts single-Mac serving that runs here and never starts the pair. With --solo it
+        restarts single-Mac serving on this Mac only.
         """
     )
 
@@ -41,21 +44,24 @@ struct Restart: AsyncParsableCommand {
         case restartSingleMac
     }
 
-    static func pairRestart(_ pair: ClusterPairSummary, singleMacInstalled: Bool, solo: Bool) -> PairRestart {
+    /// `singleMacInstalled`: single-Mac serving's plist is on disk; `singleMacRunning`: its job is loaded. `stop` unloads
+    /// the job and keeps the plist, so only `--solo` starts an installed job that isn't running, as `restart` does on one Mac.
+    static func pairRestart(_ pair: ClusterPairSummary, singleMacInstalled: Bool, singleMacRunning: Bool,
+                            solo: Bool) -> PairRestart {
         guard pair.paired else { return .restartSingleMac }
         if solo { return singleMacInstalled ? .restartSingleMac : .refuse(pair.restartRefusal) }
         if pair.pairingUnreadable { return .refuse(pair.unsureRefusal("restart", "restarted")) }
-        // The pair doesn't run here: what this Mac serves alone restarts; the pair is never started by a restart.
-        // One whose other Mac answers may still be loading: the pair restarts, as for a pair that runs.
-        guard pair.pairIdle, !pair.started || !pair.otherMacReachable else { return .restartPair }
-        return singleMacInstalled ? .restartSingleMac : .refuse(pair.idleRestartRefusal)
+        if pair.restartRestartsPair { return .restartPair }
+        // The pair doesn't run here: what this Mac serves alone restarts; neither the pair nor stopped single-Mac serving
+        // is started by a restart.
+        return singleMacRunning ? .restartSingleMac : .refuse(pair.idleRestartRefusal)
     }
 
     mutating func run() async throws {
         let pair = ClusterPairSummary.local()
         let wasLoaded = LaunchAgent.isLoaded()
         let installed = LaunchAgent.isInstalled() || wasLoaded
-        let restart = Self.pairRestart(pair, singleMacInstalled: installed, solo: solo)
+        let restart = Self.pairRestart(pair, singleMacInstalled: installed, singleMacRunning: wasLoaded, solo: solo)
         if case .refuse(let lines) = restart {
             for line in lines { print(line) }
             throw ExitCode.failure

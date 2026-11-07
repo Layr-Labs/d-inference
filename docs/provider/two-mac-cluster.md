@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-07
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -1479,7 +1479,7 @@ they control single-Mac serving on one Mac
 |---|---|
 | `darkbloom stop` (or `darkbloom cluster stop`) | Stops serving on both Macs. They stay stopped after a restart, and both cluster services stay up, idle, so the next start needs no visit to the other Mac. It waits until both Macs' parts have ended and says so (`Memory freed on both Macs ✓`) |
 | `darkbloom start` | While the pair runs: in a terminal, the same screen as `darkbloom cluster`; in a script, starts the saved model on both Macs and waits until it serves. While it doesn't run here, see [going back to serving on one Mac](#going-back-to-serving-on-one-mac) |
-| `darkbloom restart` | Stops and starts the pair with its current model. While the pair doesn't run here, restarts single-Mac serving instead |
+| `darkbloom restart` | Stops and starts the pair with its current model. While the pair doesn't run here, restarts single-Mac serving that runs here instead, and never starts the pair or single-Mac serving that was stopped |
 | `darkbloom status` | The pair first (who leads, the model, whether it serves now and what to do), then this Mac's fields; `darkbloom cluster status` gives the pair alone, with `--json` and exit codes |
 
 Each says first that it acts on the pair. `--solo` on any of them acts on
@@ -1559,7 +1559,9 @@ this Mac alone:
 
 While the pair doesn't run here, `darkbloom stop` stops what runs on this Mac
 (single-Mac serving, and a leftover part of the pair) and never asks the other
-Mac, and `darkbloom restart` restarts single-Mac serving. `darkbloom update`
+Mac, and `darkbloom restart` restarts single-Mac serving if it runs: with none
+running it changes nothing and names `darkbloom start` (serve this Mac alone) and
+`darkbloom cluster` (start the pair). `darkbloom update`
 restarts single-Mac serving if this Mac has it. The watchdog brings it back if it
 stopped. While the pair does run here, all of these act on the pair as above,
 and so do `stop`, `restart` and `update` while the other Mac answers.

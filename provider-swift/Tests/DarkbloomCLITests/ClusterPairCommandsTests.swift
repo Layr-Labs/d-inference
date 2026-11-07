@@ -155,15 +155,15 @@ struct ClusterPairHabitCommandsTests {
 
     @Test("restart on a Mac in a cluster restarts the pair; --solo restarts single-Mac serving only")
     func restartDecision() throws {
-        #expect(Restart.pairRestart(pair(), singleMacInstalled: false, solo: false) == .restartPair)
-        #expect(Restart.pairRestart(pair(), singleMacInstalled: true, solo: false) == .restartPair)
-        #expect(Restart.pairRestart(pair(), singleMacInstalled: true, solo: true) == .restartSingleMac)
-        #expect(Restart.pairRestart(pair(), singleMacInstalled: false, solo: true) == .refuse([
+        #expect(Restart.pairRestart(pair(), singleMacInstalled: false, singleMacRunning: false, solo: false) == .restartPair)
+        #expect(Restart.pairRestart(pair(), singleMacInstalled: true, singleMacRunning: true, solo: false) == .restartPair)
+        #expect(Restart.pairRestart(pair(), singleMacInstalled: true, singleMacRunning: false, solo: true) == .restartSingleMac)
+        #expect(Restart.pairRestart(pair(), singleMacInstalled: false, singleMacRunning: false, solo: true) == .refuse([
             "This Mac serves in a two-Mac cluster with \(otherMac): it leads; Qwen 3.8 27B through Darkbloom.",
             "`darkbloom restart --solo` restarts single-Mac serving, and this Mac has none: nothing was restarted.",
             "The pair was not restarted; `darkbloom restart` restarts both Macs.",
         ]))
-        #expect(Restart.pairRestart(.notPaired, singleMacInstalled: false, solo: false) == .restartSingleMac)
+        #expect(Restart.pairRestart(.notPaired, singleMacInstalled: false, singleMacRunning: false, solo: false) == .restartSingleMac)
         #expect(pair().restartAddendum == "This Mac serves in a two-Mac cluster with \(otherMac): it leads; Qwen 3.8 27B "
             + "through Darkbloom. The pair was not restarted; `darkbloom restart` restarts both Macs.")
         #expect(try Restart.parse(["--solo"]).solo)
@@ -638,13 +638,13 @@ struct ClusterPairTruthTests {
         #expect(Start.pairStart(unreadable(), solo: false, terminal: false) == .refuse([unsureSentence, startLine]))
         #expect(Start.pairStart(unreadable(), solo: true, terminal: false) == .single(note: "Starting single-Mac serving "
             + "(--solo) although this Mac's pairing record couldn't be read: if it is in a two-Mac cluster, both use this Mac's memory."))
-        #expect(Restart.pairRestart(unreadable(), singleMacInstalled: true, solo: false) == .refuse([unsureSentence,
+        #expect(Restart.pairRestart(unreadable(), singleMacInstalled: true, singleMacRunning: true, solo: false) == .refuse([unsureSentence,
             "`darkbloom restart` can't tell which pair to restart, so nothing was restarted.",
             "To restart single-Mac serving on this Mac only: `darkbloom restart --solo`. Run `darkbloom cluster` on this Mac to check it."]))
-        #expect(Restart.pairRestart(unreadable(), singleMacInstalled: false, solo: true) == .refuse([unsureSentence,
+        #expect(Restart.pairRestart(unreadable(), singleMacInstalled: false, singleMacRunning: false, solo: true) == .refuse([unsureSentence,
             "`darkbloom restart --solo` restarts single-Mac serving, and this Mac has none: nothing was restarted.",
             "Run `darkbloom cluster` on this Mac to check it."]))
-        #expect(Restart.pairRestart(unreadable(), singleMacInstalled: true, solo: true) == .restartSingleMac)
+        #expect(Restart.pairRestart(unreadable(), singleMacInstalled: true, singleMacRunning: false, solo: true) == .restartSingleMac)
         #expect(unreadable().restartAddendum == unsureSentence + " No cluster was restarted.")
         #expect(Stop.pairedStop(unreadable(), solo: false, uninstall: false) == .refuse([unsureSentence,
             "`darkbloom stop` can't tell which pair to stop, so nothing was stopped.",

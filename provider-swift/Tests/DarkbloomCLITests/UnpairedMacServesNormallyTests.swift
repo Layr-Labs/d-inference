@@ -88,7 +88,7 @@ struct UnpairedMacServesNormallyTests {
         #expect(Start.pairStart(loading, solo: true, terminal: false) == .serveAlone(note: loading.servingAloneLine))
         #expect(Start.pairStart(loading, solo: false, terminal: true) == .choose(aloneByDefault: false))
         // The app's Restart restarts the pair; it doesn't stop it for single-Mac serving.
-        #expect(Restart.pairRestart(loading, singleMacInstalled: true, solo: false) == .restartPair)
+        #expect(Restart.pairRestart(loading, singleMacInstalled: true, singleMacRunning: true, solo: false) == .restartPair)
         // Stop stops the pair on both Macs: a follower's own cleared start would come back with the leader's next lease.
         #expect(Stop.pairedStop(loading, solo: false, uninstall: false) == .stopPair)
     }
@@ -120,11 +120,24 @@ struct UnpairedMacServesNormallyTests {
     func stopAndRestart() {
         #expect(Stop.pairedStop(pair(running: false), solo: false, uninstall: false) == .stopHere)
         #expect(Stop.pairedStop(pair(running: true), solo: false, uninstall: false) == .stopPair)
-        #expect(Restart.pairRestart(pair(running: false), singleMacInstalled: true, solo: false) == .restartSingleMac)
-        #expect(Restart.pairRestart(pair(running: false), singleMacInstalled: false, solo: false) == .refuse([notRunning,
-            "Nothing serves on this Mac, so nothing was restarted: `\(cli) start` serves this Mac alone; `\(cli) cluster` "
-                + "starts the pair."]))
-        #expect(Restart.pairRestart(pair(running: true), singleMacInstalled: true, solo: false) == .restartPair)
+        let nothingServes = "Nothing serves on this Mac, so nothing was restarted: `\(cli) start` serves this Mac alone; "
+            + "`\(cli) cluster` starts the pair."
+        #expect(Restart.pairRestart(pair(running: false), singleMacInstalled: true, singleMacRunning: true, solo: false)
+            == .restartSingleMac)
+        #expect(Restart.pairRestart(pair(running: false), singleMacInstalled: false, singleMacRunning: false, solo: false)
+            == .refuse([notRunning, nothingServes]))
+        #expect(Restart.pairRestart(pair(running: true), singleMacInstalled: true, singleMacRunning: true, solo: false)
+            == .restartPair)
+        // Single-Mac serving that `stop` stopped keeps its plist: a plain restart never starts it, on a stopped pair too.
+        var stopped = pair(running: false, reachable: true, started: false)
+        stopped.pairNotRunning = nil
+        #expect(Restart.pairRestart(pair(running: false), singleMacInstalled: true, singleMacRunning: false, solo: false)
+            == .refuse([notRunning, nothingServes]))
+        #expect(Restart.pairRestart(stopped, singleMacInstalled: true, singleMacRunning: false, solo: false)
+            == .refuse([stopped.pairSentence, nothingServes]))
+        #expect(Restart.pairRestart(stopped, singleMacInstalled: true, singleMacRunning: true, solo: false) == .restartSingleMac)
+        // --solo asks for single-Mac serving by name: an installed job starts, as `restart` does on one Mac.
+        #expect(Restart.pairRestart(stopped, singleMacInstalled: true, singleMacRunning: false, solo: true) == .restartSingleMac)
     }
 
     @Test("after a restart of single-Mac serving where the pair doesn't run, the words never send a plain restart to the pair")

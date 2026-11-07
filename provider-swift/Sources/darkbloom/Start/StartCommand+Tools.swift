@@ -3,7 +3,8 @@ import Foundation
 import ProviderCore
 
 // `darkbloom start --opencode` / `--hermes`: start Darkbloom only if no local API runs, then point the tools at it
-// (ToolIntegrationStep). They run once, at start: never in the launchd child, never per request.
+// (ToolIntegrationStep). They run once, at start: never in the launchd child, never per request. A start without a
+// tool flag reads nothing here. No line, and no tool file, holds a key.
 extension Start {
     /// Why `--opencode` / `--hermes` can't go with these flags; nil when they can.
     var toolFlagsRefusal: String? {
@@ -34,46 +35,85 @@ extension Start {
 
     /// The running local API the tools can use as it is, so nothing starts: it answers on the `--port` and `--bind`
     /// given, if any, and no option changes what serves. Nil when the start must run.
-    func runningLocalAPI(_ live: LocalEndpoint.Info?, keyFile: (UInt16) -> URL?,
-                         ignoringWhatServes: Bool = false) -> IntegrationEndpoint? {
-        guard !requestedTools.isEmpty, ignoringWhatServes || !changesWhatServes, let live, !live.apiKey.isEmpty,
-              portOption.map({ $0 == live.port }) ?? true, bindOption.map({ $0 == live.host }) ?? true,
-              let file = keyFile(live.port) else { return nil }
-        return IntegrationEndpoint(baseURL: live.baseURL, keyFile: file)
+    func runningLocalAPI(_ live: LocalEndpoint.Info?, keyFile: (UInt16) -> URL?) -> IntegrationEndpoint? {
+        guard !requestedTools.isEmpty, !changesWhatServes, let live,
+              portOption.map({ $0 == live.port }) ?? true, bindOption.map({ $0 == live.host }) ?? true
+        else { return nil }
+        return IntegrationEndpoint.live(live, keyFile: keyFile)
     }
 
-    /// `--coordinator-url`, else the config's, else the build's: where the catalog's model names come from. Reads the
-    /// config without detecting hardware.
-    func configuredCoordinatorURL() -> String {
-        if let coordinatorURL { return coordinatorURL }
-        let path = configOptions.config.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
-            ?? (try? ConfigManager.defaultConfigPath())
-        return path.flatMap { try? ConfigManager.load(from: $0) }?.coordinator.url
-            ?? BuildEnvironment.current.coordinatorWebSocketURL
+    /// Sets the tools up for a local API that already serves as this start would, and says so; false when there is
+    /// none, and the start runs.
+    func setUpToolsForRunningLocalAPI() async throws -> Bool {
+        guard !requestedTools.isEmpty, let live = LocalEndpoint.readLiveInfo(),
+              let endpoint = runningLocalAPI(live, keyFile: { LocalEndpoint.keyFile(forPort: Int($0)) })
+        else { return false }
+        print("Darkbloom already serves on \(live.host):\(live.port); setting up "
+            + "\(ToolIntegrationStep.names(requestedTools)) for it.")
+        try await setUpToolsWithSavedSettings(endpoint)
+        return true
     }
 
-    /// Runs the tools' step beside a pair that just started: for its local API on this Mac, when there is one.
+    /// Beside a pair that just started: for its local API on this Mac, when there is one. A pair starts only without
+    /// single-Mac options, so no option here changes what serves.
     func setUpToolsBesidePair() async throws {
         guard !requestedTools.isEmpty else { return }
-        guard let endpoint = runningLocalAPI(LocalEndpoint.readLiveInfo(),
-                                             keyFile: { LocalEndpoint.keyFile(forPort: Int($0)) },
-                                             ignoringWhatServes: true) else {
+        guard let endpoint = IntegrationEndpoint.live() else {
             print(ToolIntegrationStep.noPairAPI(requestedTools))
-            print("Darkbloom keeps serving.")
+            print(ToolIntegrationStep.keepsServing)
             throw ExitCode.failure
         }
-        let saved: LocalSettings? = (try? savedLocalSettings(configPath: configOptions.config)) ?? nil
-        guard await setUpTools(endpoint: endpoint, route: saved?.route, accountKeySaved: nil,
-                               coordinatorURL: configuredCoordinatorURL()) else { throw ExitCode.failure }
+        try await setUpToolsWithSavedSettings(endpoint)
     }
 
-    /// Sets the requested tools up for `endpoint`; false when one couldn't be.
+    /// Beside the coordinator-less server, once it is bound, on a task of its own: the server keeps serving whatever
+    /// happens there.
+    func setUpToolsBesideLocalServer(_ info: LocalEndpoint.Info, serving: StartServing, coordinatorURL: String) {
+        guard !requestedTools.isEmpty else { return }
+        guard let endpoint = IntegrationEndpoint.live(info) else {
+            print("✗ \(ToolIntegrationStep.names(requestedTools)) couldn't be set up: no key file holds this server's "
+                + "key. \(ToolIntegrationStep.keepsServing)")
+            return
+        }
+        Task { _ = await setUpTools(endpoint: endpoint, route: serving.route, accountKeySaved: serving.accountKeySaved,
+                                    coordinatorURL: coordinatorURL) }
+    }
+
+    /// After the background provider started: once its local API is bound, which `local.json` says, waiting at most
+    /// `toolWaitSeconds`.
+    func setUpToolsBesideDaemon(serving: StartServing, coordinatorURL: String) async throws {
+        guard !requestedTools.isEmpty else { return }
+        guard let endpoint = await Self.waitForLocalAPI(port: serving.port, seconds: Self.toolWaitSeconds) else {
+            print(ToolIntegrationStep.notUp(requestedTools, seconds: Self.toolWaitSeconds))
+            print(ToolIntegrationStep.keepsServing)
+            throw ExitCode.failure
+        }
+        print()
+        guard await setUpTools(endpoint: endpoint, route: serving.route, accountKeySaved: serving.accountKeySaved,
+                               coordinatorURL: coordinatorURL) else { throw ExitCode.failure }
+    }
+
+    /// For a local API this start didn't resolve (one already running, or the pair's): where your requests go comes
+    /// from the saved `[local] route`, and the catalog from `--coordinator-url`, else the config's, else the build's.
+    /// Reads the config once, without detecting hardware.
+    private func setUpToolsWithSavedSettings(_ endpoint: IntegrationEndpoint) async throws {
+        let saved = try? savedConfig(configPath: configOptions.config)
+        let coordinator = coordinatorURL ?? saved?.coordinator.url ?? BuildEnvironment.current.coordinatorWebSocketURL
+        guard await setUpTools(endpoint: endpoint, route: saved?.local?.route, accountKeySaved: nil,
+                               coordinatorURL: coordinator) else { throw ExitCode.failure }
+    }
+
+    /// Sets the requested tools up for `endpoint`; false when one couldn't be. `accountKeySaved` nil asks the
+    /// Keychain (never printed).
     func setUpTools(endpoint: IntegrationEndpoint, route: LocalSettings.Route?, accountKeySaved: Bool?,
                     coordinatorURL: String) async -> Bool {
         let keySaved = accountKeySaved ?? Start.accountKeySaved()
         return await ToolIntegrationStep.live(tools: requestedTools, coordinatorURL: coordinatorURL)
             .run(endpoint: endpoint, requests: LocalFirstWords.requests(route: route, accountKeySaved: keySaved))
     }
+
+    /// How long a background start waits for its local API before setting tools up.
+    static let toolWaitSeconds = 30
 
     /// Waits for the background provider's local API on `port`: it writes `local.json` once bound. Bounded, and only
     /// at start.
@@ -84,8 +124,8 @@ extension Start {
         async -> IntegrationEndpoint? {
         let deadline = Date().addingTimeInterval(TimeInterval(seconds))
         repeat {
-            if let info = live(), info.port == port, !info.apiKey.isEmpty, let file = keyFile(info.port) {
-                return IntegrationEndpoint(baseURL: info.baseURL, keyFile: file)
+            if let info = live(), info.port == port, let endpoint = IntegrationEndpoint.live(info, keyFile: keyFile) {
+                return endpoint
             }
             await pause()
         } while Date() < deadline

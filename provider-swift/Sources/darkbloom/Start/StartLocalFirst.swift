@@ -350,13 +350,18 @@ enum LocalAPIPort {
     }
 }
 
-/// `[local]` from the config at `configPath` (the default config when nil), read without detecting hardware; nil
-/// when the file or the section is absent. A section this build refuses throws its plain refusal.
-func savedLocalSettings(configPath rawPath: String?) throws -> LocalSettings? {
+/// The config at `configPath` (the default config when nil), read without detecting hardware; nil when the file is
+/// absent. A file this build refuses throws its plain refusal.
+func savedConfig(configPath rawPath: String?) throws -> ProviderConfig? {
     let path = try rawPath.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
         ?? ConfigManager.defaultConfigPath()
     guard FileManager.default.fileExists(atPath: path.path) else { return nil }
-    return try ConfigManager.load(from: path).local
+    return try ConfigManager.load(from: path)
+}
+
+/// `[local]` from `savedConfig(configPath:)`; nil when the file or the section is absent.
+func savedLocalSettings(configPath: String?) throws -> LocalSettings? {
+    try savedConfig(configPath: configPath)?.local
 }
 
 /// The start screen's question, and the route follow-up. Plain words; never a speed.

@@ -58,12 +58,12 @@ struct IntegrationEndpoint: Equatable, Sendable {
     let baseURL: String
     let keyFile: URL
 
-    /// The live local server from `local.json` (its own port, never an assumed one) with the key file for that port;
-    /// nil when no server runs, it serves without a key, or no key file holds its key.
-    static func live() -> IntegrationEndpoint? {
-        guard let info = LocalEndpoint.readLiveInfo(), !info.apiKey.isEmpty,
-              let keyFile = LocalEndpoint.keyFile(forPort: Int(info.port)) else { return nil }
-        return IntegrationEndpoint(baseURL: info.baseURL, keyFile: keyFile)
+    /// The live local server `info`, by default the one in `local.json` (its own port, never an assumed one), with the
+    /// key file for that port; nil when no server runs, it serves without a key, or no key file holds its key.
+    static func live(_ info: LocalEndpoint.Info? = LocalEndpoint.readLiveInfo(),
+                     keyFile: (UInt16) -> URL? = { LocalEndpoint.keyFile(forPort: Int($0)) }) -> IntegrationEndpoint? {
+        guard let info, !info.apiKey.isEmpty, let file = keyFile(info.port) else { return nil }
+        return IntegrationEndpoint(baseURL: info.baseURL, keyFile: file)
     }
 }
 

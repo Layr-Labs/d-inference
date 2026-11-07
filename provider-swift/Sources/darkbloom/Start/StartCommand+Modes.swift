@@ -187,17 +187,7 @@ extension Start {
         defer { LocalEndpoint.removeInfo() }
 
         // `--opencode` / `--hermes`: set the tools up for this server, beside it; whatever happens there, it serves.
-        if !requestedTools.isEmpty {
-            if let keyFile = LocalEndpoint.keyFile(forPort: Int(port)) {
-                let endpoint = IntegrationEndpoint(baseURL: info.baseURL, keyFile: keyFile)
-                let coordinator = coordinatorURL ?? config.coordinator.url
-                Task { _ = await setUpTools(endpoint: endpoint, route: serving.route,
-                                            accountKeySaved: serving.accountKeySaved, coordinatorURL: coordinator) }
-            } else {
-                print("✗ \(ToolIntegrationStep.names(requestedTools)) couldn't be set up: no key file holds this "
-                    + "server's key. Darkbloom keeps serving.")
-            }
-        }
+        setUpToolsBesideLocalServer(info, serving: serving, coordinatorURL: coordinatorURL ?? config.coordinator.url)
 
         // The optional fan helper receives a renewable activity lease only
         // after the server has successfully bound, and only for the lifetime

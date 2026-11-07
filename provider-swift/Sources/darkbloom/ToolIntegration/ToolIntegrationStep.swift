@@ -129,7 +129,7 @@ struct ToolIntegrationStep {
         if !ready.isEmpty {
             failed = await configure(ready, endpoint: endpoint, requests: requests) == false || failed
         }
-        if failed { say("Darkbloom keeps serving.") }
+        if failed { say(Self.keepsServing) }
         return !failed
     }
 
@@ -140,7 +140,7 @@ struct ToolIntegrationStep {
             listed = try await fetchModels(endpoint)
         } catch {
             say("✗ Couldn't read the models of this Mac's local API (\(Self.describe(error))), so "
-                + "\(Self.names(ready.map(\.tool))) \(ready.count == 1 ? "wasn't" : "weren't") set up.")
+                + "\(Self.notSetUp(ready.map(\.tool))).")
             return false
         }
         let catalog = await fetchCatalog()
@@ -215,28 +215,36 @@ struct ToolIntegrationStep {
 
     /// The line when this start has no local API for the tools.
     static func noLocalAPI(_ tools: [IntegrationTool]) -> String {
-        let flags = tools.map(\.flag).joined(separator: " ")
-        return "This Mac serves only the Darkbloom network, so \(names(tools)) \(tools.count == 1 ? "has" : "have") no "
-            + "local address to use. Choose \"Both, me first\" (`\(cli) start --me-first \(flags)`) or \"Only me\" "
-            + "(`\(cli) start --local \(flags)`)."
+        "This Mac serves only the Darkbloom network, so \(names(tools)) \(tools.count == 1 ? "has" : "have") no local "
+            + "address to use. Choose \"Both, me first\" (`\(cli) start --me-first \(flags(tools))`) or \"Only me\" "
+            + "(`\(cli) start --local \(flags(tools))`)."
     }
 
     /// The line when the local API didn't come up in time after a background start.
     static func notUp(_ tools: [IntegrationTool], seconds: Int) -> String {
-        "✗ This Mac's local API didn't answer within \(seconds) seconds, so \(names(tools)) "
-            + "\(tools.count == 1 ? "wasn't" : "weren't") set up. Run `\(cli) start \(tools.map(\.flag).joined(separator: " "))` "
-            + "again once `\(cli) local` shows it."
+        "✗ This Mac's local API didn't answer within \(seconds) seconds, so \(notSetUp(tools)). Run "
+            + "`\(cli) start \(flags(tools))` again once `\(cli) local` shows it."
     }
 
     /// The line on a paired Mac whose pair has no local API on this Mac.
     static func noPairAPI(_ tools: [IntegrationTool]) -> String {
-        "✗ This Mac has no local API for the pair, so \(names(tools)) \(tools.count == 1 ? "wasn't" : "weren't") set "
-            + "up. `\(cli) cluster local` serves the pair on the leading Mac's own API; run this there."
+        "✗ This Mac has no local API for the pair, so \(notSetUp(tools)). `\(cli) cluster local` serves the pair on "
+            + "the leading Mac's own API; run this there."
     }
+
+    /// The last line when a tool couldn't be set up: the start never stops Darkbloom for a tool.
+    static let keepsServing = "Darkbloom keeps serving."
 
     static var cli: String { BuildEnvironment.current.cliName }
 
     static func names(_ tools: [IntegrationTool]) -> String { tools.map(\.displayName).joined(separator: " and ") }
+
+    static func flags(_ tools: [IntegrationTool]) -> String { tools.map(\.flag).joined(separator: " ") }
+
+    /// "OpenCode wasn't set up", "OpenCode and Hermes weren't set up".
+    static func notSetUp(_ tools: [IntegrationTool]) -> String {
+        "\(names(tools)) \(tools.count == 1 ? "wasn't" : "weren't") set up"
+    }
 
     static func count(_ models: Int) -> String { models == 1 ? "1 model" : "\(models) models" }
 

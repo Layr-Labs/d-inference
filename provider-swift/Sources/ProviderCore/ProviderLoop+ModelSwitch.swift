@@ -186,9 +186,9 @@ extension ProviderLoop {
             // A known gap of the owner pause (docs/architecture/owner-pause.md):
             // the coordinator reopens routing on an `idle` or `serving`
             // heartbeat only, and the pause's heartbeats say `draining`. A
-            // pause that outlasts `readyTimeout` lands in the catch below; the
-            // selection holds, and the heartbeat that ends the pause reopens
-            // routing.
+            // pause that outlasts `readyTimeout` lands in the catch below, so
+            // `darkbloom switch` exits with an error. The selection holds, and
+            // the heartbeat that ends the pause reopens routing.
             do {
                 try await client.confirmModelReplacementReady(
                     requestID: requestID, drainID: drainID, capacitySeq: capacitySeq,

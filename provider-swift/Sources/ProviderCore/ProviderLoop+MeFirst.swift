@@ -41,9 +41,9 @@ extension ProviderLoop {
 
     /// A local request acquired a model on this Mac (`.start`) or released it
     /// (`.end`); every start is paired with one end. The first start pauses
-    /// Darkbloom work and announces it at once; the end of the last one
-    /// starts the idle countdown. Anything else is an O(1) update with no I/O,
-    /// and nothing at all while me first is off.
+    /// Darkbloom work and announces it with one event heartbeat; the end of
+    /// the last one starts the idle countdown. Every edge is an O(1) update
+    /// with no I/O, and nothing at all happens while me first is off.
     func noteLocalUse(_ use: MeFirstPolicy.LocalUse) {
         guard meFirst != nil else { return }
         let now = meFirstNowMs()
@@ -57,8 +57,7 @@ extension ProviderLoop {
     }
 
     /// Ends the pause once the owner's idle time has passed, and returns
-    /// whether it ended. The resume timer calls it, and so does a fresh
-    /// coordinator connection.
+    /// whether it ended. The resume timer calls it.
     @discardableResult
     func resumeIfOwnerIdle() -> Bool {
         guard meFirst?.tick(atMs: meFirstNowMs()) == .resumed else { return false }
@@ -66,13 +65,17 @@ extension ProviderLoop {
         return true
     }
 
-    /// Called for every fresh registration. The register carried the owner's
-    /// busy fields, and the connection's first event heartbeat
-    /// (`setRetirementReconnectBarrier`) repeats the draining status.
+    /// Called for every fresh registration, before the connection's first
+    /// event heartbeat (`setRetirementReconnectBarrier`). The register carried
+    /// the owner's busy fields, and that heartbeat repeats the draining status.
     internal func reassertOwnerPauseAfterReconnect() {
         guard ownerPausesPublic else { return }
-        // A pause whose idle time passed while the connection was down ends here.
-        if resumeIfOwnerIdle() { return }
+        // A pause whose idle time passed while the connection was down ends
+        // here, and the connection's first heartbeat announces it.
+        if meFirst?.tick(atMs: meFirstNowMs()) == .resumed {
+            leaveOwnerPause(announce: false)
+            return
+        }
         logger.info("Me first: Darkbloom requests stay paused on the new coordinator connection")
     }
 
@@ -92,28 +95,30 @@ extension ProviderLoop {
 
     // MARK: - Transitions
 
+    /// Runs on the owner's first request, so it writes no file: the loop's
+    /// regular daemon-state write (every 2 s while serving) carries the pause.
     private func enterOwnerPause() {
         state.ownerPausesPublic = true
         publishBusy()
         logger.info("Me first: Darkbloom requests pause while you use this Mac; the \(coordinatorRequestsInFlight) already running finish")
         // Announce now: routing stops on the status, not on refusals.
         if let client = coordinatorClient { Task { await client.sendEventHeartbeat() } }
-        writeDaemonState()
     }
 
-    private func leaveOwnerPause() {
+    /// `announce: false` when a heartbeat about to go out says it anyway.
+    private func leaveOwnerPause(announce: Bool = true) {
         cancelMeFirstResumeTimer()
         state.ownerPausesPublic = false
         publishBusy()
         logger.info("Me first: Darkbloom requests resume; you have been idle for \((meFirst?.idleMs ?? 0) / 1_000) s")
         writeDaemonState()
-        Task { await self.announceOwnerPauseEnd() }
+        Task { await self.announceOwnerPauseEnd(heartbeat: announce) }
     }
 
     /// Announces the end of the pause, then replays the desired_models
     /// deferred during it. A drain or hold still on replays them when it ends.
-    private func announceOwnerPauseEnd() async {
-        await coordinatorClient?.sendEventHeartbeat()
+    private func announceOwnerPauseEnd(heartbeat: Bool) async {
+        if heartbeat { await coordinatorClient?.sendEventHeartbeat() }
         await replayDesiredModels(deferred: "while you used this Mac")
     }
 

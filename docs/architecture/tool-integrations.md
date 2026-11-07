@@ -4,8 +4,9 @@
 
 How Darkbloom points OpenCode 2 and Hermes Agent at its local endpoint by editing their own config files: the
 endpoint and key file, the models, the two planners and the safe-edit rules. This explanation is for provider
-developers. These writers are the edit half of the planned `darkbloom start --opencode` / `--hermes` flags; no
-command calls them yet.
+developers. `darkbloom start --opencode` / `--hermes` call them (`ToolIntegrationStep`,
+`provider-swift/Sources/darkbloom/ToolIntegration/ToolIntegrationStep.swift`); for users, see
+[Use it from OpenCode or Hermes](../provider/local-first.md#use-it-from-opencode-or-hermes).
 
 ## Context
 

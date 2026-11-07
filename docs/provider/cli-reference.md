@@ -225,6 +225,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `--me-first-idle <min>` | `UInt64?`, 1–120 | `[local] me_first_idle_minutes` (`2`) | Minutes with none of your requests before Darkbloom comes back; saved. Not `--idle-timeout` (model memory) |
 | `--route <route>` | `this-mac`, `my-macs`, `my-macs-first` | `[local] route` | Where your requests go when this Mac can't take them ([the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)); saved; needs an account key (`darkbloom route key`) |
 | `--choose` | flag | `false` | In a terminal: ask how this Mac serves again, although a choice is saved |
+| `--opencode`, `--hermes` | flag | `false` | Set OpenCode 2 or Hermes Agent up to use this Mac's local API ([below](#set-up-opencode-or-hermes)); not with `--network`, `--no-auth`, `--cluster-member` or `--foreground` |
 | `--port <n>` | `UInt16?` | `[local] port`, else `8000` | Local server port. A new local API from the start question, a saved choice or `--me-first` takes the first free port from there instead, never `8000` or `47420`–`47423` |
 | `--bind <addr>` | `String?` | `[local] bind`, else `127.0.0.1` | Local server bind address |
 | `--no-auth` | flag | `false` | Disable the local bearer-token check |
@@ -309,6 +310,42 @@ LaunchAgent with the arguments `--local-endpoint` has always used
 
   No start screen prints the key, except `--local`'s own banner, as before. A
   start that nothing chose (step 5) prints today's summary.
+
+#### Set up OpenCode or Hermes
+
+`--opencode` and `--hermes` point the tools at this Mac's local API with the
+config writers ([OpenCode and Hermes config writers](../architecture/tool-integrations.md);
+`ToolIntegrationStep`, `provider-swift/Sources/darkbloom/ToolIntegration/ToolIntegrationStep.swift`).
+They run once, at `start`:
+
+1. **A local API already runs** (`local.json`, with a key, on the `--port` and
+   `--bind` given, if any) and no option changes what serves (`--model`,
+   `--all`, `--idle-timeout`, `--schedule`, `--autopilot`/`--no-autopilot`,
+   `--coordinator-url`, `--choose`, `--no-me-first`, `--me-first-idle`,
+   `--route`): nothing starts. `Darkbloom already serves on <host>:<port>;
+   setting up OpenCode for it.`, then the tools (`Start.runningLocalAPI`).
+2. **Otherwise `start` runs as above**, then: `--local` and Only me set the tools
+   up beside the server once it is bound; a background start waits up to 30 s
+   for its own local API (`Start.waitForLocalAPI`); a paired Mac sets them up
+   for a local API on this Mac after the pair starts, else says that
+   `darkbloom cluster local` serves one. A start that would serve no local API
+   (Darkbloom network: no terminal and no saved choice, or the answer 2) is
+   refused before anything starts or is saved (exit 64), naming `--me-first`
+   and `--local`.
+3. **Each tool:** found on `PATH`, else in `~/.opencode/bin` or `~/.local/bin`
+   (`ToolLocator`), never installed; `opencode --version` below 2 is refused.
+   The endpoint's `GET /v1/models` and the catalog (5 s; offline, the tools get
+   the models without catalog names) give the models; `ToolIntegration.configure`
+   writes the block with a backup. The result block names the file changed, the
+   backup and a one-line undo, then `Requests:` (where your requests go) and
+   `Other tools:` (`OPENAI_BASE_URL` and `OPENAI_API_KEY="$(cat <key file>)"`).
+   No line or file holds the key, and the `--local` banner shows no key when a
+   tool flag is given.
+
+A tool it can't set up prints `✗` and why, writes nothing and ends with
+`Darkbloom keeps serving.`; the start then exits 1 (a background start keeps
+running; `--local` keeps serving in the terminal). They are not single-Mac
+options: on a paired Mac they apply to the pair's local API.
 
 On a Mac in a two-Mac cluster (one that holds a pairing; a cluster service left
 without one is a leftover, which `darkbloom cluster status` names), `start` starts the pair, as `darkbloom cluster` does
@@ -757,7 +794,8 @@ A server bound to `0.0.0.0` or `::` also prints a `network:` line with this
 Mac's Bonjour (`.local`) URL (`Local.networkURL`). When the running provider
 serves that endpoint, two lines follow `pid:`: `serving:` (how it serves, in
 the start summary's words) and `requests:` (where your requests go)
-(`Local.servingLines`). `--json` is unchanged.
+(`Local.servingLines`), and a keyed server adds `tools:    darkbloom start
+--opencode · --hermes`. `--json` is unchanged.
 
 ### `darkbloom route key`
 

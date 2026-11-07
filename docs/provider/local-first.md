@@ -108,6 +108,48 @@ for example `http://127.0.0.1:8001/v1`, and this Mac's local key.
 - **On your network:** the local API listens on this Mac only, unless you start
   with `--bind <address>`; it always needs the key unless you add `--no-auth`.
 
+## Use it from OpenCode or Hermes
+
+Add `--opencode` or `--hermes` (or both) to `darkbloom start`, as you would run
+`ollama launch` or `omlx launch`:
+
+```bash
+darkbloom start --opencode          # set OpenCode up
+darkbloom start --hermes            # set Hermes Agent up
+darkbloom start --me-first --opencode --hermes
+```
+
+- **Starts Darkbloom only if needed.** If this Mac's local API already runs,
+  nothing restarts: `Darkbloom already serves on 127.0.0.1:8001; setting up
+  OpenCode for it.` Otherwise `start` runs as usual, and the tools are set up
+  once the local API answers.
+- **What it changes:** one `darkbloom` provider in OpenCode's
+  `~/.config/opencode/opencode.jsonc` (or your existing `opencode.json`), and
+  in Hermes' `~/.hermes/config.yaml`, where it also becomes the main model, as
+  Ollama and oMLX do. Everything else in those files stays as it was.
+- **Your key stays out of them.** The tools read it from Darkbloom's own key
+  file, and no screen prints it.
+- **Undo in one line:** every change is backed up first, and the start prints
+  the file it changed, the backup and the command that puts it back:
+
+  ```text
+  ✓ OpenCode can use Darkbloom: 3 models.
+    Changed: ~/.config/opencode/opencode.jsonc (added the "darkbloom" provider; nothing else changed)
+    Backup:  ~/.darkbloom/integrations/backups/opencode/opencode.jsonc.20261106T221500Z
+    Use it:  in OpenCode, /models → Darkbloom. Your default model is unchanged.
+    Undo:    cp '<backup>' '<file>'
+  ```
+
+- **Run it again** when your models change; with nothing new, it changes
+  nothing.
+- **When it can't:** it says why and changes nothing: the tool isn't installed
+  (Darkbloom never installs it), OpenCode 1 (upgrade to OpenCode 2), Hermes
+  needs a model with at least 64K context, or this Mac serves only the
+  Darkbloom network (choose **Both, me first** or **Only me**). Darkbloom keeps
+  serving either way.
+- **Not with** `--network` (no local API) or `--no-auth` (the API would need no
+  key).
+
 ## Check how this Mac serves
 
 `darkbloom status` says it in one line, for example:

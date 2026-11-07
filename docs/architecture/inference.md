@@ -442,7 +442,7 @@ start, `OnboardingLive.markRegistrationPending`, never by `serve` alone as `dark
 it; cleared by `localRegister`, a failed test or a stop; honoured only while that start's process runs, the same
 process by its start time) and the leader's status says a start line, "checking with Darkbloom before it offers
 the pair" (`ClusterOnboardingReady.offerPendingLine`), which the Mac that joins follows as a start not yet over
-and no screen shows as ✓. Every screen start, local only too, marks itself
+and no screen shows as ✓. Every screen start, Only me too, marks itself
 the same way until its test is answered (locally the status says `ClusterOnboardingReady.testingLine`, never
 "checking with Darkbloom") and publishes that test's outcome, compare-and-set on the mark's pid and start time
 (`OnboardingLive.settleTest`): a pass as `ClusterSetupRecord.startTestPassed`, the time under the serving line
@@ -1218,7 +1218,7 @@ decode-window peak above idle at 131,041 prompt tokens fell from 3.80 to
 recall degrades beyond about 32K tokens. The slot still serves the whole
 window; whether a long prompt's prefill time suits a request is the
 coordinator's routing decision, not a provider cap. On the default owner (paged KV,
-prefix bank, MTP) a 258,036-token needle through the managed local endpoint
+prefix bank, MTP) a 258,036-token needle through the managed local API
 returned its passphrase exactly in 888.8 s (2026-10-21, M3 Ultra).
 
 Coordinator requests on the slot (`ProviderLoop+InferenceHandler`) and unified
@@ -4253,7 +4253,7 @@ away; mixed pairs are first-class).
   (`ClusterOnboardingMode.defaultIndex`). The list names it first and a model
   named on the command line starts in it. The question's cursor starts on the
   recommendation, else on the mode the pair serves in, else on the default; a
-  model started again the other way (local only or through Darkbloom) keeps
+  model started again the other way (Only me or through Darkbloom) keeps
   its mode.
 - **Local Network truth:** the follower the service runs is the process that
   dials the other Mac, so its last dial decides (`ClusterService.followerRefusal`:
@@ -7591,9 +7591,9 @@ candidate choice),
 
 The member that hosts a pair's slot (`ProviderLoop.hostsClusterPairSlot`, the
 serving host role a rank-0 installation gives through
-`installClusterPairServing`) can serve that slot on its unified local API while
-the pair serves through Darkbloom
-([direct mode](../provider/direct-mode.md#a-pairs-leader-beside-darkbloom)).
+`installClusterPairServing`) can serve that slot on its local API while the
+pair serves through Darkbloom (Both, me first)
+([the local API](../provider/direct-mode.md#a-pairs-leader-beside-darkbloom)).
 Local requests reach the slot's one bridge, the one Darkbloom requests reach, so
 both share the pair's lanes (`ClusterPairSlotOwner.concurrentRequests`), its
 capacity report and its admission. Nothing is loaded, no session forms and no
@@ -7743,7 +7743,7 @@ configuration declares, and answers each request shape as one Mac does.
    construction faults (processor configuration, MLX, tower budget, span
    agreement) remain the retriable 503 refusal. Wire and HTTP details:
    [protocol messages](../reference/protocol-messages.md#unserved-content-part-types),
-   [direct mode](../provider/direct-mode.md#refused-request-shapes).
+   [the local API](../provider/direct-mode.md#refused-request-shapes).
 
 ### Cross-stream fence ordering
 

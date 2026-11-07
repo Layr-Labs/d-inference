@@ -481,6 +481,13 @@ struct StartLocalFirstTests {
 
     @Test("a new local API never takes 8000 or 47420–47423, and never probes them")
     func portPickerSkipsReservedPorts() {
+        // The owner's rule on every build: 8000 and production's pair ports, plus this build's own pair ports; under
+        // production's identity exactly those five, as before.
+        #expect(LocalAPIPort.neverChosen.isSuperset(of: [8000, 47_420, 47_421, 47_422, 47_423]))
+        let cable = ClusterCablePorts.current
+        #expect(LocalAPIPort.neverChosen.isSuperset(of: [cable.linkControl, cable.pairing, cable.exchange, cable.control]))
+        #expect(BuildEnvironment.current != .prod || LocalAPIPort.neverChosen == [8000, 47_420, 47_421, 47_422, 47_423])
+        #expect(ClusterLocalServing.pairPortsWords == "47420–47423")
         var probed: [UInt16] = []
         #expect(LocalAPIPort.pick(from: 8000, ownLivePort: nil, isFree: { probed.append($0); return true }) == 8001)
         #expect(probed == [8001])

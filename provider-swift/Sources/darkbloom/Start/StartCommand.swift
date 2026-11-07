@@ -74,6 +74,15 @@ struct Start: AsyncParsableCommand {
     @Flag(help: "Ask how this Mac serves again, although a choice is saved (in a terminal).")
     var choose = false
 
+    @Flag(help: "Set up OpenCode to use Darkbloom: adds a provider to ~/.config/opencode (with a backup) pointing at this Mac's local API. Starts Darkbloom only if no local API runs.")
+    var opencode = false
+
+    @Flag(help: "Set up Hermes Agent to use Darkbloom: adds a provider to ~/.hermes/config.yaml (with a backup) and makes it the main model. Starts Darkbloom only if no local API runs.")
+    var hermes = false
+
+    /// The tools `--opencode` / `--hermes` set up, in a fixed order.
+    var requestedTools: [IntegrationTool] { IntegrationTool.allCases.filter { $0 == .opencode ? opencode : hermes } }
+
     @Option(name: .customLong("port"), help: ArgumentHelp("Local server port (default: [local] port, else \(BuildEnvironment.current.defaultLocalPort); a new local API from the start question or --me-first gets the first free port from there, never 8000).", valueName: "port"))
     var portOption: UInt16?
 
@@ -139,6 +148,7 @@ struct Start: AsyncParsableCommand {
     /// model and lifecycle, so every solo serving option is refused at parse.
     mutating func validate() throws {
         if let conflict = localFirstOptions.conflict { throw ValidationError(conflict) }
+        if let refusal = toolFlagsRefusal { throw ValidationError(refusal) }
         let soloOverrides = !model.isEmpty || all || idleTimeout != nil || schedule || autopilot != nil
             || network || meFirst != nil || meFirstIdle != nil || route != nil || choose
         if clusterMember {
@@ -323,6 +333,16 @@ struct Start: AsyncParsableCommand {
 
     mutating func run() async throws {
         Darkbloom.ensureLogging()
+        // `--opencode` / `--hermes` beside a running local API: set the tools up for it, and start nothing.
+        if !requestedTools.isEmpty, let live = LocalEndpoint.readLiveInfo(),
+           let endpoint = runningLocalAPI(live, keyFile: { LocalEndpoint.keyFile(forPort: Int($0)) }) {
+            print("Darkbloom already serves on \(live.host):\(live.port); setting up "
+                + "\(ToolIntegrationStep.names(requestedTools)) for it.")
+            let saved: LocalSettings? = (try? savedLocalSettings(configPath: configOptions.config)) ?? nil
+            guard await setUpTools(endpoint: endpoint, route: saved?.route, accountKeySaved: nil,
+                                   coordinatorURL: configuredCoordinatorURL()) else { throw ExitCode.failure }
+            return
+        }
         let look = DarkbloomCommandLook.forCommand()
         // Decided first: only a start that goes ahead opens with the mark, never one its flags refuse.
         let opensLook = !flagsRefuseStart
@@ -364,12 +384,14 @@ struct Start: AsyncParsableCommand {
                 Self.clearSoloChoice()
                 print(pair.actingLine("starting the pair"))
                 try await ClusterPairCommands.openScreen(config: configOptions.config)
+                try await setUpToolsBesidePair()
                 return
             case .startPair:
                 Self.clearSoloChoice()
                 let code = await ClusterPairCommands.start(pair, actions: ClusterPairActions.live(config: configOptions.config),
                                                            config: configOptions.config)
                 if code != 0 { throw ExitCode(code) }
+                try await setUpToolsBesidePair()
                 return
             }
         }
@@ -528,8 +550,22 @@ struct Start: AsyncParsableCommand {
                 scheduleEdit: scheduleEdit,
                 serving: serving
             )
+            if !requestedTools.isEmpty {
+                // The background provider writes `local.json` once its local API is bound.
+                guard let endpoint = await Self.waitForLocalAPI(port: serving.port, seconds: Self.toolWaitSeconds) else {
+                    print(ToolIntegrationStep.notUp(requestedTools, seconds: Self.toolWaitSeconds))
+                    print("Darkbloom keeps serving.")
+                    throw ExitCode.failure
+                }
+                print()
+                guard await setUpTools(endpoint: endpoint, route: serving.route, accountKeySaved: serving.accountKeySaved,
+                                       coordinatorURL: effectiveCoordinator) else { throw ExitCode.failure }
+            }
         }
     }
+
+    /// How long a background start waits for its local API before setting tools up.
+    static let toolWaitSeconds = 30
 
     /// How this start serves (`StartServingResolver`), with the question asked in a terminal; nil when the person
     /// cancelled at the question. Nothing is saved yet: `saveServingChoice` saves once the start goes ahead.

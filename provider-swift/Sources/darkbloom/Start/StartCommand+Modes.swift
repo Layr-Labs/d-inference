@@ -70,8 +70,9 @@ extension Start {
         }
 
         let baseURL = serving.baseURL
-        // `--local` prints its key as it always has; "Only me" chosen at the question or saved says where it is.
-        let printsKey = serving.source == .flag("--local")
+        // `--local` prints its key as it always has; "Only me" chosen at the question or saved, and a start that sets
+        // tools up, say where it is.
+        let printsKey = serving.source == .flag("--local") && requestedTools.isEmpty
         print("\(BuildEnvironment.current.cliName) \(ProviderCore.version) (local / direct mode)")
         if !printsKey { print("Serving: " + LocalFirstWords.serving(mode: .local, meFirst: false, idleMinutes: 0)) }
         print("Preparing local server on \(bind):\(port)")
@@ -183,6 +184,19 @@ extension Start {
         )
         try? LocalEndpoint.writeInfo(info)
         defer { LocalEndpoint.removeInfo() }
+
+        // `--opencode` / `--hermes`: set the tools up for this server, beside it; whatever happens there, it serves.
+        if !requestedTools.isEmpty {
+            if let keyFile = LocalEndpoint.keyFile(forPort: Int(port)) {
+                let endpoint = IntegrationEndpoint(baseURL: info.baseURL, keyFile: keyFile)
+                let coordinator = coordinatorURL ?? config.coordinator.url
+                Task { _ = await setUpTools(endpoint: endpoint, route: serving.route,
+                                            accountKeySaved: serving.accountKeySaved, coordinatorURL: coordinator) }
+            } else {
+                print("✗ \(ToolIntegrationStep.names(requestedTools)) couldn't be set up: no key file holds this "
+                    + "server's key. Darkbloom keeps serving.")
+            }
+        }
 
         // The optional fan helper receives a renewable activity lease only
         // after the server has successfully bound, and only for the lifetime

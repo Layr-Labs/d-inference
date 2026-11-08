@@ -21,7 +21,8 @@ struct Start: AsyncParsableCommand {
         terminal the `darkbloom cluster` screen; without one the pair's saved model,
         waiting until it serves (exit 0 serving, 3 not serving yet, 5 the other Mac isn't
         answering). --solo serves this Mac alone instead, while the pair doesn't run here;
-        single-Mac options there need it.
+        single-Mac options there need it, except the app's Start (--model, --local-endpoint,
+        no terminal), which starts the pair with its own model and says so.
         """
     )
 
@@ -230,11 +231,16 @@ struct Start: AsyncParsableCommand {
         case refuse([String])
         /// A terminal: the screen `darkbloom cluster` shows on this Mac.
         case openScreen
-        /// No terminal: the pair starts with its saved model.
+        /// No terminal: the pair starts with its saved model. The desktop app's Start too (`appStartOptions`): a model it
+        /// named other than the pair's is said after the start (`ClusterPairSummary.appStartModelLine`).
         case startPair
         /// Single-Mac options without `--solo`: nothing starts, and why (never ignored).
         case refuseOptions([String])
     }
+
+    /// The single-Mac options the desktop app's Start passes (`DesktopBackend.arguments`). The app has no `--solo` and no
+    /// terminal, so on a paired Mac they start the pair, as a plain start does; never this Mac alone.
+    static let appStartOptions: Set<String> = ["--model", "--local-endpoint"]
 
     /// The single-Mac options given, by name. On a Mac in a cluster each needs `--solo`; `--config` applies to the pair.
     var singleMacOptions: [String] {
@@ -267,7 +273,9 @@ struct Start: AsyncParsableCommand {
         guard pair.paired else { return .single(note: nil) }
         if pair.pairingUnreadable { return solo ? .single(note: pair.startNote) : .refuse(pair.startRefusal) }
         if solo { return pair.pairIdle ? .serveAlone(note: pair.servingAloneLine) : .refuse(pair.soloBesideServingRefusal) }
-        if !singleMacOptions.isEmpty { return .refuseOptions(pair.singleMacOptionsRefusal(singleMacOptions)) }
+        if !singleMacOptions.isEmpty, terminal || !appStartOptions.isSuperset(of: singleMacOptions) {
+            return .refuseOptions(pair.singleMacOptionsRefusal(singleMacOptions))
+        }
         return terminal ? .openScreen : .startPair
     }
 
@@ -403,6 +411,8 @@ struct Start: AsyncParsableCommand {
                 Self.clearSoloChoice()
                 let code = await ClusterPairCommands.start(pair, actions: ClusterPairActions.live(config: configOptions.config),
                                                            config: configOptions.config)
+                // Started (0 serving, 3 still loading) with the pair's model, which the app's Start may not have named.
+                if code == 0 || code == 3, let line = pair.appStartModelLine(named: model) { print(line) }
                 if code != 0 { throw ExitCode(code) }
                 try await setUpToolsBesidePair()
                 return

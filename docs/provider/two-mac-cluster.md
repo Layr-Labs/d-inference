@@ -1669,9 +1669,12 @@ on its own), `darkbloom start --solo` serves this Mac alone:
   --model <id>`. Without a terminal it asks nothing: one that names no models
   (`--model`, `--all`) says in one line to add them, before this Mac's part of
   the pair is touched. Without `--solo`, single-Mac options start nothing on a
-  paired Mac, in every state of the pair: `darkbloom start --model <id>`, the
-  app's **Start serving** and `darkbloom autopilot enable` are refused by name
-  (exit 64), and the app shows that refusal.
+  paired Mac, in every state of the pair: `darkbloom start --model <id>` in a
+  terminal and `darkbloom autopilot enable` are refused by name (exit 64). The
+  app's **Start serving** has no `--solo`, so it starts the pair, as a plain
+  `darkbloom start` does, never this Mac alone. When it named another model
+  than the pair's, it ends with ``This Mac serves in a pair: started the pair
+  with <the pair's model>; `darkbloom cluster` changes its model.``
 - A pair that is merely stopped gives one line: ``This Mac is in a two-Mac
   cluster with the other Mac (…), which is stopped: serving this Mac alone
   (`darkbloom start` starts the pair again).``

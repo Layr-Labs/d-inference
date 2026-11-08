@@ -268,11 +268,12 @@ struct ClusterPairSummary: Sendable, Equatable {
     var restartRestartsPair: Bool { paired && !pairingUnreadable && (partServes || (started && otherMacReachable)) }
 
     /// `darkbloom start --solo` on a Mac whose pair doesn't run and where no leftover part runs: one line. Where one runs
-    /// (`leftoverPartHere`), `leftoverStopLine` and `leftoverReleasedLine` say it instead.
+    /// (`leftoverPartHere`), `leftoverStopLine` and `leftoverReleasedLine` say it instead. The other Mac's silence is said
+    /// only when this Mac's cluster service runs, and so asked it (`otherMacReachable` is false when nothing asked).
     var servingAloneLine: String {
         if started {
             return "This Mac is in a two-Mac cluster with \(otherMac), which isn't running here"
-                + (otherMacReachable ? "" : " (\(otherMac) isn't answering)")
+                + (serviceRunning && !otherMacReachable ? " (\(otherMac) isn't answering)" : "")
                 + ": serving this Mac alone (`\(Self.cli) start` starts the pair again)."
                 + (role == .member ? followerRestartNote : "")
         }
@@ -285,6 +286,13 @@ struct ClusterPairSummary: Sendable, Equatable {
     private var followerRestartNote: String {
         " While \(otherMac) leads with the pair started, it may start this Mac's part again once single-Mac serving stops "
             + "here: `\(Self.cli) stop` on \(otherMac) stops the pair."
+    }
+
+    /// The desktop app's Start on a paired Mac named `models` (`start --model <id>`); the pair started with its own. One
+    /// line the app shows when that isn't the one model named; nil when it is, or when no model was named.
+    func appStartModelLine(named models: [String]) -> String? {
+        guard !models.isEmpty, let saved = modelID, models != [saved] else { return nil }
+        return "This Mac serves in a pair: started the pair with \(modelName ?? saved); `\(Self.cli) cluster` changes its model."
     }
 
     /// `darkbloom stop`, `start --solo`, `restart` and `update` on a Mac whose pair doesn't run, before its leftover part

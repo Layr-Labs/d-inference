@@ -452,10 +452,16 @@ This Mac is in a two-Mac cluster with the other Mac (Apple M5 Max, 128 GB): star
 `--solo` starts single-Mac serving on this Mac instead: it is the one way to
 serve this Mac alone on a paired Mac. Single-Mac serving and this Mac's part of
 the pair take the same serving lock, so `start --solo` while the pair runs here
-is refused (stop the pair first). Single-Mac options such as `--model` (the
-app's **Start serving**, `start --model <id> --config <path>` with no
-terminal, and `autopilot enable`) need `--solo` too: without it nothing starts,
-and they are named (exit 64, below). The app shows that refusal at once.
+is refused (stop the pair first). Single-Mac options such as `--model` and
+`autopilot enable`'s need `--solo` too: without it nothing starts, and they are
+named (exit 64, below). The desktop app's **Start serving** is the exception
+(`Start.appStartOptions`): it runs `start --model <id> [--local-endpoint]
+--config <path>` with no terminal, and has no `--solo`, so on a paired Mac it
+starts the pair as a plain `start` does, never this Mac alone. The pair serves
+its own model and its own way. When the app named another model, the start ends
+with one line the app shows: ``This Mac serves in a pair: started the pair with <the pair's model>; `darkbloom cluster` changes its model.``
+(`ClusterPairSummary.appStartModelLine`, after a start that serves or is
+loading).
 
 While the pair doesn't run here (`ClusterPairWatch`: stopped, or its other Mac
 hasn't answered for 15 minutes, or it never served in its first 15 minutes),
@@ -466,6 +472,9 @@ without a terminal is refused in one line, as on one Mac (exit 64), before
 anything here is stopped or cleared. A pair that is merely stopped gives one
 line: ``This Mac is in a two-Mac cluster with the other Mac (…), which is
 stopped: serving this Mac alone (`darkbloom start` starts the pair again).``
+So does a started pair while this Mac's cluster service is down, as ``… which
+isn't running here: serving this Mac alone (…)``: nothing asked the other Mac,
+so it never says the other Mac isn't answering.
 A started pair's part still running here is stopped first, and the pair's saved
 start on this Mac is cleared (`ClusterService.releaseForSingleMac`, up to 5
 minutes, after up to 10 for a cluster command that is running). It says
@@ -503,7 +512,7 @@ Options on a paired Mac (`Start.singleMacOptions`, `ClusterPairSummary.singleMac
 | Options | Without `--solo` on a paired Mac |
 |---|---|
 | `--config` | Applies to the pair (its cluster service settings) |
-| `--model`, `--all`, `--idle-timeout`, `--schedule`, `--autopilot`/`--no-autopilot`, `--coordinator-url`, `--timeout`, `--force`, `--local-endpoint`, `--network`, `--me-first`/`--no-me-first`, `--me-first-idle`, `--route`, `--choose`, `--port`, `--bind`, `--no-auth` | Refused by name in every state of the pair, nothing starts, exit 64: ``This Mac is in a two-Mac cluster with the other Mac (…): `--model` is for single-Mac serving, so nothing was started.`` then ``To choose the pair's model, run `darkbloom start` in a terminal; to serve this Mac alone with it, add --solo.`` With `--solo` they serve this Mac alone while the pair doesn't run here, as above |
+| `--model`, `--all`, `--idle-timeout`, `--schedule`, `--autopilot`/`--no-autopilot`, `--coordinator-url`, `--timeout`, `--force`, `--local-endpoint`, `--network`, `--me-first`/`--no-me-first`, `--me-first-idle`, `--route`, `--choose`, `--port`, `--bind`, `--no-auth` | Refused by name in every state of the pair, nothing starts, exit 64: ``This Mac is in a two-Mac cluster with the other Mac (…): `--model` is for single-Mac serving, so nothing was started.`` then ``To choose the pair's model, run `darkbloom start` in a terminal; to serve this Mac alone with it, add --solo.`` Without a terminal, `--model` and `--local-endpoint` alone (the app's Start) start the pair instead, as above. With `--solo` they serve this Mac alone while the pair doesn't run here, as above |
 | `--local` | Refused the same way, plus ``To serve the pair on the leading Mac's own API only: `darkbloom cluster local`.`` (also said for `--local-endpoint`) |
 | `--cluster-member`, `--distributed`, `--foreground` | The cluster's own starts and launchd's child: never redirected to the pair |
 | `--always-on`, `--supervise`, `--no-coordinator` | Valid only with `--cluster-member` or `--distributed` (refused at parse otherwise) |

@@ -1079,11 +1079,14 @@ struct ClusterPairControlTests {
         ])
     }
 
-    @Test("`darkbloom start --model X` on a Mac in a cluster starts nothing and says why; exit 64")
+    /// In a terminal a person can add --solo; without one (the app's Start) the pair starts (`appStartStartsThePair`).
+    @Test("`darkbloom start --model X` in a terminal on a Mac in a cluster starts nothing and says why; exit 64")
     func startWithAModelOnThePair() async {
         let result = await #expect(processExitsWith: .exitCode(64), observing: [\.standardOutputContent, \.standardErrorContent]) {
             try await exitWithPair(servingPair(), actions: pairActions()) { _ in
-                try await runCLICommand(Start.self, ["start", "--model", "acme/Alpha-4bit"])
+                try await ClusterPairCommands.$terminalForTesting.withValue(true) {
+                    try await runCLICommand(Start.self, ["start", "--model", "acme/Alpha-4bit"])
+                }
             }
         }
         #expect(lines(result?.standardOutputContent) == [
@@ -1823,7 +1826,9 @@ struct DarkbloomCommandLookRunTests {
         let options = await #expect(processExitsWith: .exitCode(64), observing: [\.standardOutputContent]) {
             try await DarkbloomCommandLook.$forTesting.withValue(terminalLook()) {
                 try await exitWithPair(servingPair(), actions: pairActions()) { _ in
-                    try await runCLICommand(Start.self, ["start", "--model", "acme/Alpha-4bit"])
+                    try await ClusterPairCommands.$terminalForTesting.withValue(true) {
+                        try await runCLICommand(Start.self, ["start", "--model", "acme/Alpha-4bit"])
+                    }
                 }
             }
         }

@@ -128,12 +128,11 @@ extension ProviderLoop {
                                 inputModalities: input)
     }
 
-    /// The input a local request for a model may carry. On a pair's leader, the media its slot takes
-    /// (`EngineV2Bridge.pairInputModalities`); unknown until the slot is published. On one Mac, images when the model
-    /// advertises vision (`ModelInfo.isVision`, as the coordinator routes images on it).
+    /// The input a local request for a model may carry (`LocalInputModalities`): on a pair's leader, what its slot
+    /// takes, unknown until the slot is published; on one Mac, what the model it advertises takes.
     func localInputModalities(_ modelId: String) -> [String]? {
-        if isClusterMember { return modelSlots[modelId]?.engineV2.pairInputModalities }
-        return advertisedModels[modelId].map(LocalModelLimits.inputModalities(of:))
+        if isClusterMember { return modelSlots[modelId].map { LocalInputModalities.of(pair: $0.engineV2) } }
+        return advertisedModels[modelId].map { LocalInputModalities.of($0) }
     }
 
     /// Invoked by Hummingbird once the local endpoint socket is bound and

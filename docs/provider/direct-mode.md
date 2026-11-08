@@ -1,6 +1,6 @@
 # The local API: an OpenAI-compatible server on your Mac
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 Your Mac's models as an OpenAI-compatible HTTP server for your own tools,
 served two ways: **Only me** (`darkbloom start --local`: no coordinator, no
@@ -307,7 +307,7 @@ coordinator's `self` list names this Mac's own builds by their aliases.
 | `owned_by` | `this-mac`, `my-macs` (your other Macs, free) or `darkbloom` (the network, billed). Before the router, this Mac's entries said `local` |
 | `context_length`, `max_model_len` | This Mac's engine for its resident models; else the Darkbloom catalog (`/v1/models/catalog`), by model or by the alias's build; omitted when unknown |
 | `max_output_length` | This Mac's loaded models: their context window too, as a request's prompt and output together may fill it ([each model's whole window](#each-models-whole-window-on-this-mac)); else the catalog's (a pair's: its profile's); omitted when unknown |
-| `input_modalities` | What a request may carry, as this Mac's engine serves the model, loaded or not: `["text", "image"]` for a model it serves with vision (`is_vision`, which the coordinator routes images on), else `["text"]`. On a pair's leader, the media the pair takes in its mode: `["text", "image", "video"]` for GLM-5.3-Flash and Qwen 3.8 27B in tensor parallel, `["text"]` for every other pair. Your Macs' and the network's models keep the coordinator's, when its list has one. Reasoning isn't listed: the catalog says which models reason (`LocalModelLimits.inputModalities`, `EngineV2Bridge.pairInputModalities`) |
+| `input_modalities` | What a request may carry, as this Mac's engine serves the model, loaded or not: `["text", "image"]` for a model it serves with vision (`is_vision`, which the coordinator routes images on), else `["text"]`. On a pair's leader, the media the pair takes in its mode: `["text", "image", "video"]` for GLM-5.3-Flash and Qwen 3.8 27B in tensor parallel, `["text"]` for every other pair. Your Macs' and the network's models keep the coordinator's, when its list has one. Reasoning isn't listed: the catalog says which models reason (`provider-swift/Sources/ProviderCore/Server/LocalInputModalities.swift`, `LocalInputModalities`) |
 | `name` | The coordinator's or the catalog's display name for your Macs' and the network's models |
 
 The coordinator's lists are cached for 30 s and the catalog for 5 minutes; a
@@ -388,19 +388,20 @@ completions or Responses) gets an SSE comment every 5 seconds, from the moment
 the engine accepts the request until its first token:
 
 ```text
-: prefill 0/254953 tokens
+: prefill in progress, 254953 prompt tokens
 ```
 
 OpenAI clients ignore comments; to curl and to a client that reads the stream
 they say the request is still working through its prompt, and connections that
-end after a silence stay open. `<total>` is the prompt's tokens as the engine
-counts them, after the chat template and with any media; `<done>` is what the
-engine has reported computed. Today's engines report the prompt only when it is
-done, so `<done>` reads 0 until the first token, which ends the comments. A
-prompt done within 5 seconds gets none. The local router and a pair member's
-relay pass them on unchanged. On a pair's own API (`darkbloom cluster local`)
-the comment takes the place of the leader's 500 ms keep-alive probe every 5
-seconds (`LocalPrefillProgress`,
+end after a silence stay open. The number is the prompt's tokens as the engine
+counts them, after the chat template and with any media. Once the engine
+reports how much of the prompt it has computed, the comment gives that count
+instead, `: prefill <done>/<total> tokens`. Today's engines report it only when
+the prompt is done, so a long prompt reads "in progress" until its first token,
+which ends the comments. A prompt done within 5 seconds gets none. The local
+router and a pair member's relay pass them on unchanged. On a pair's own API
+(`darkbloom cluster local`) the comment takes the place of the leader's 500 ms
+keep-alive probe every 5 seconds (`LocalPrefillProgress`,
 `provider-swift/Sources/ProviderCore/Server/LocalPrefillProgress.swift`).
 
 Each streamed request has one timer, from its first frame to its first token,

@@ -208,8 +208,10 @@ extension EngineV2Bridge {
         // timestamp. Local engines are unaffected by the distributed-only context.
         let httpResponse = DistributedHTTPResponseScope.current
         // A streamed local request's prompt progress: what the engine reports of
-        // its prompt, from acceptance to the first token. Nil on every other request.
-        let prefill = LocalPrefillProgress.current
+        // its prompt, from acceptance to the first token. Only the local API's
+        // streamed requests bind it; nil on every other request, the coordinator's
+        // included.
+        let prefillProgress = LocalPrefillProgress.current
         let distributedOrigin = DistributedRequestOrigin.earliest(
             handler: distributedRequestOrigin, profile: profile?.continuousAnchor,
             now: ContinuousClock.now)
@@ -716,7 +718,7 @@ extension EngineV2Bridge {
             nativeRateEvidence: nativeMediaEvidence)
         cbv2Request.onPrefillCompleted = { [weak self, prefillReceipt] usage in
             prefillReceipt.complete(usage)
-            prefill?.advance(to: usage.promptTokens)
+            prefillProgress?.advance(to: usage.promptTokens)
             Task { await self?.consumePrefillReceipt(id: id, receipt: prefillReceipt) }
         }
         // Accepted requests transfer interval ownership to active state or its
@@ -1095,7 +1097,7 @@ extension EngineV2Bridge {
         }
 
         // The engine has the prompt: a streamed local request says so until its first token.
-        prefill?.accept(promptTokens: promptTokens.count)
+        prefillProgress?.accept(promptTokens: promptTokens.count)
 
         // The pump owns these resources through engine terminal; each cache
         // manages pending durable publication and receipt retention.
@@ -1112,7 +1114,7 @@ extension EngineV2Bridge {
             profile: profile,
             nativeRetirement: nativeRetirement,
             httpResponse: distributed == nil ? nil : httpResponse,
-            prefill: prefill
+            prefillProgress: prefillProgress
         )
 
         let bridge = self

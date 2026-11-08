@@ -54,10 +54,10 @@ struct LocalModelInputTests {
     @Test func oneMacTakesImagesForAModelThatAdvertisesVision() {
         let vision = ModelInfo(id: "org/vision", modelType: "mimo_v2", sizeBytes: 1, estimatedMemoryGb: 1, isVision: true)
         let text = ModelInfo(id: "org/text", modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1)
-        #expect(LocalModelLimits.inputModalities(of: vision) == ["text", "image"])
-        #expect(LocalModelLimits.inputModalities(of: text) == ["text"])
-        #expect(LocalModelLimits.inputModalities(image: true, video: true) == ["text", "image", "video"])
-        #expect(LocalModelLimits.inputModalities(image: false, video: true) == ["text"])
+        #expect(LocalInputModalities.of(vision) == ["text", "image"])
+        #expect(LocalInputModalities.of(text) == ["text"])
+        #expect(LocalInputModalities.list(image: true, video: true) == ["text", "image", "video"])
+        #expect(LocalInputModalities.list(image: false, video: true) == ["text"])
         #expect(LocalModelLimits(window: 8, inputModalities: []) == LocalModelLimits(window: 8))
     }
 
@@ -69,7 +69,7 @@ struct LocalModelInputTests {
             maxConcurrentRequests: 1, kvBudget: GlobalKVCacheBudget(memorySnapshot: {
                 .init(total: 256 << 30, active: 0, cache: 0, systemAvailable: 256 << 30)
             }))
-        #expect(bridge.pairInputModalities == ["text"])
+        #expect(LocalInputModalities.of(pair: bridge) == ["text"])
         await bridge.shutdown()
     }
 }

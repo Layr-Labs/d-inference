@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -1111,8 +1111,8 @@ first request it serves, the pair's slot also reports its measured prefill and
 decode speeds, as a single Mac's slot does. The warmup canary is not counted.
 
 A long prompt on the pair's own API shows its progress as on one Mac: a
-streamed request gets `: prefill <done>/<total> tokens` every 5 seconds until
-its first token ([a long prompt's progress](./direct-mode.md#a-long-prompts-progress)).
+streamed request gets `: prefill in progress, <total> prompt tokens` every 5
+seconds until its first token ([a long prompt's progress](./direct-mode.md#a-long-prompts-progress)).
 With `darkbloom cluster local`, it takes the place of the leader's 500 ms
 keep-alive probe every 5 seconds.
 
@@ -1131,7 +1131,7 @@ media request is routed to it, and a pair registered for media serves only
 while both Macs' parts report media. The pair's own API says the same in its
 `/v1/models`: `input_modalities` is `["text", "image", "video"]` where the
 pair's mode serves media (`["text", "image"]` on the GLM image candidate's
-profile) and `["text"]` otherwise (`EngineV2Bridge.pairInputModalities`). GLM-5.3-Flash answers its output
+profile) and `["text"]` otherwise (`LocalInputModalities`). GLM-5.3-Flash answers its output
 controls as one Mac does: hidden reasoning is withheld, with or without media,
 and with images or video a `response_format` JSON answer or a required or
 named tool call is refused. Content parts of an unknown type are refused,

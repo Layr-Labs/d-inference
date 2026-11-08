@@ -149,12 +149,14 @@ where Inner.Context == BasicRequestContext {
             }
             let responseService = serviceForTemplateControls(item.templateControls)
             if item.request.stream == true {
-                let prefill = prefillTicker.map(LocalPrefillProgress.init)
-                let frames = try await LocalPrefillProgress.$current.withValue(prefill) {
+                // The engine reports the prompt into this from acceptance to the first token.
+                let prefillProgress = prefillTicker.map(LocalPrefillProgress.init)
+                let frames = try await LocalPrefillProgress.$current.withValue(prefillProgress) {
                     try await responseService.streamResponseFrames(request: item.request)
                 }
-                guard let inputItems else { return Self.sseResponse(frames, prefill: prefill) }
-                return Self.sseResponse(responseConversations.recording(frames, inputItems: inputItems), prefill: prefill)
+                guard let inputItems else { return Self.sseResponse(frames, prefillProgress: prefillProgress) }
+                return Self.sseResponse(responseConversations.recording(frames, inputItems: inputItems),
+                                        prefillProgress: prefillProgress)
             }
             let response = try await responseService.createResponse(request: item.request)
             if let inputItems {
@@ -227,7 +229,7 @@ where Inner.Context == BasicRequestContext {
         // `CORSResponder`'s status mapping unchanged.
         if item.request.stream == true {
             // The engine reports the prompt into this from acceptance to the first token.
-            let prefill = prefillTicker.map(LocalPrefillProgress.init)
+            let prefillProgress = prefillTicker.map(LocalPrefillProgress.init)
             if let distributedResponses {
                 let response = try distributedResponses.begin()
                 do {
@@ -244,25 +246,28 @@ where Inner.Context == BasicRequestContext {
                     }
                     if !channel.isActive { response.disconnect(); response.finish(); throw CancellationError() }
                     let frames = try await DistributedHTTPResponseScope.$current.withValue(response) {
-                        try await LocalPrefillProgress.$current.withValue(prefill) {
+                        try await LocalPrefillProgress.$current.withValue(prefillProgress) {
                             try await requestService.streamChatCompletionFrames(
                                 request: item.request, frameGenerationErrors: true)
                         }
                     }
                     return DistributedHTTPEventStream.response(
-                        Self.decorating(frames, countTokens: countTokens), control: response, prefill: prefill)
+                        Self.decorating(frames, countTokens: countTokens), control: response,
+                        prefillProgress: prefillProgress)
                 } catch {
                     response.disconnect(); response.finish(); throw error
                 }
             }
-            let frames = try await LocalPrefillProgress.$current.withValue(prefill) {
+            let frames = try await LocalPrefillProgress.$current.withValue(prefillProgress) {
                 try await requestService.streamChatCompletionFrames(request: item.request, frameGenerationErrors: true)
             }
             // A raw-body owner's entries are spliced as the coordinator relay
             // splices them; every other response takes the usage decoration,
             // as the collected path below does.
-            if let logprobs { return Self.sseResponse(Self.splicingLogprobs(frames, from: logprobs), prefill: prefill) }
-            return Self.sseResponse(Self.decorating(frames, countTokens: countTokens), prefill: prefill)
+            if let logprobs {
+                return Self.sseResponse(Self.splicingLogprobs(frames, from: logprobs), prefillProgress: prefillProgress)
+            }
+            return Self.sseResponse(Self.decorating(frames, countTokens: countTokens), prefillProgress: prefillProgress)
         }
         let completion = try await requestService.createChatCompletion(request: item.request)
         if let logprobs { return try Self.jsonResponse(completion, logprobs: logprobs.drain()) }
@@ -434,16 +439,18 @@ where Inner.Context == BasicRequestContext {
         )
     }
 
-    /// `prefill`: the request's prompt progress, said in the same body from its first frame until the first token.
+    /// `prefillProgress`: the request's prompt progress, said in the same body from its first frame until its first
+    /// token (`LocalPrefillProgress.startComments`). Without it the bytes are the upstream helper's; with it the
+    /// frames are still written as they come, and the comments go between them from their own timer.
     static func sseResponse(_ frames: AsyncThrowingStream<String, Error>,
-                            prefill: LocalPrefillProgress? = nil) -> Response {
+                            prefillProgress: LocalPrefillProgress?) -> Response {
         let body = AsyncThrowingStream<ByteBuffer, Error> { continuation in
             let task = Task {
                 do {
                     var iterator = frames.makeAsyncIterator()
                     if let first = try await iterator.next() {
                         continuation.yield(ByteBuffer(string: first))
-                        prefill?.start { continuation.yield(ByteBuffer(string: $0)) }
+                        prefillProgress?.startComments { continuation.yield(ByteBuffer(string: $0)) }
                     }
                     while let frame = try await iterator.next() {
                         continuation.yield(ByteBuffer(string: frame))
@@ -455,7 +462,7 @@ where Inner.Context == BasicRequestContext {
             }
             continuation.onTermination = { _ in
                 task.cancel()
-                prefill?.end()
+                prefillProgress?.end()
             }
         }
         return Response(

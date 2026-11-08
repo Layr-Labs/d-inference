@@ -6,7 +6,7 @@ import NIOFoundationCompat
 public struct LocalModelLimits: Sendable, Equatable {
     public var contextLength: Int?
     public var maxOutputLength: Int?
-    /// What a request may carry, as this Mac's engine serves the model: `text`, then `image` and `video`.
+    /// What a request may carry, as this Mac's engine serves the model (`LocalInputModalities`).
     public var inputModalities: [String]?
 
     public init(contextLength: Int? = nil, maxOutputLength: Int? = nil, inputModalities: [String]? = nil) {
@@ -20,17 +20,6 @@ public struct LocalModelLimits: Sendable, Equatable {
     /// cut to it), so both are the window.
     public init(window: Int?, inputModalities: [String]? = nil) {
         self.init(contextLength: window, maxOutputLength: window, inputModalities: inputModalities)
-    }
-
-    /// `text`, then `image` for a model whose engine takes images, and `video` for one that takes video as well.
-    public static func inputModalities(image: Bool, video: Bool = false) -> [String] {
-        ["text"] + (image ? ["image"] : []) + (image && video ? ["video"] : [])
-    }
-
-    /// What one Mac takes for a model it serves: images when the model advertises vision (`ModelInfo.isVision`, which
-    /// the coordinator routes images on).
-    static func inputModalities(of model: ModelInfo) -> [String] {
-        inputModalities(image: model.isVision == true)
     }
 }
 

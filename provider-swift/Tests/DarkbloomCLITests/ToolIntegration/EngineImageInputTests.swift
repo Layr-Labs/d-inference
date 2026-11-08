@@ -43,6 +43,8 @@ struct EngineImageInputTests {
         let models = try await Self.fetched()
         #expect(models.map(\.inputModalities) == [["text", "image"], ["text"], nil], "a malformed list reads as none")
         #expect(models.map(\.contextLength) == [1_048_576, 131_072, 65_536])
+        #expect(models.map(\.takesImages) == [true, false, false])
+        #expect(EndpointModel(id: "upper", inputModalities: ["TEXT", "Image"]).takesImages, "in any case")
     }
 
     @Test func aModelTheEngineSaysTakesImagesGetsImageInputOfflineAndOverATextOnlyCatalog() async throws {

@@ -15,12 +15,12 @@ extension DistributedLocalServer {
             modelLimits: { await self.localModelLimits($0) })
     }
 
-    /// The pair's model as the router's `/v1/models` lists it: its profile's limits, and the media its slot takes
-    /// (`EngineV2Bridge.pairInputModalities`) once the slot is ready.
+    /// The pair's model as the router's `/v1/models` lists it: its profile's limits, and the input its slot takes
+    /// (`LocalInputModalities`) once the slot is ready.
     func localModelLimits(_ modelID: String) -> LocalModelLimits? {
         guard modelID == binding.publicModelID else { return nil }
         return LocalModelLimits(contextLength: binding.maxContextTokens, maxOutputLength: binding.maxOutputTokens,
-                                inputModalities: entry?.engineV2Bridge?.pairInputModalities)
+                                inputModalities: entry?.engineV2Bridge.map { LocalInputModalities.of(pair: $0) })
     }
 
     func clusterStatus(nonce: String) throws -> ClusterLiveStatus {

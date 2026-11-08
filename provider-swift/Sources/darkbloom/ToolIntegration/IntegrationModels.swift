@@ -93,7 +93,8 @@ struct EndpointModel: Decodable, Equatable, Sendable {
     let ownedBy: String?
     let contextLength: Int?
     let maxOutputLength: Int?
-    /// What a request may carry (`text`, `image`, `video`): this Mac's engine's for its models.
+    /// What a request may carry (`text`, `image`, `video`): this Mac's engine's for its models
+    /// (`LocalInputModalities`), the coordinator's for the others.
     let inputModalities: [String]?
 
     init(id: String, ownedBy: String? = nil, contextLength: Int? = nil, maxOutputLength: Int? = nil,
@@ -125,7 +126,7 @@ struct EndpointModel: Decodable, Equatable, Sendable {
     }
 
     /// The endpoint says the model takes images.
-    var takesImages: Bool { inputModalities?.contains { $0.lowercased() == "image" } == true }
+    var takesImages: Bool { LocalInputModalities.takesImages(inputModalities) }
 }
 
 /// Why the endpoint's models could not be read. No case carries the key.

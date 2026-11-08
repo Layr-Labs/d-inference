@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -2024,7 +2024,8 @@ bridge reports into it what the engine reports of the prompt: its tokens once th
 (`accept(promptTokens:)`), all of them from `CBv2Request.onPrefillCompleted`, and the end at the
 first committed token (the pump's first-token branch) or when the pump ends without one. The engine
 publishes no count in between (`EngineLoopV2` keeps each row's `numComputedTokens` for its prefill
-lease only), so `<done>` in the API's comments reads 0 until the prompt is done. Coordinator
+lease only), so until the prompt is done the API's comments give only its size
+(`: prefill in progress, <total> prompt tokens`), never a count the engine didn't report. Coordinator
 requests have none, and nothing runs per token
 ([prefill progress](../provider/direct-mode.md#a-long-prompts-progress)).
 

@@ -8,10 +8,11 @@ import Testing
 @testable import ProviderCore
 
 /// A long prompt on the local API shows progress: from the moment this Mac's engine accepts a streamed request until
-/// its first token, an SSE comment every 5 s (`: prefill <done>/<total> tokens`, which OpenAI clients ignore), through
-/// the local router unchanged. Before, a 255K-token prompt streamed nothing for 9 minutes after its first chunk. The
-/// timer runs only during the prefill, never for a request that is not streamed, and writes nothing for a prompt done
-/// within 5 s. The clock is the test's and the engine a gate the test opens.
+/// its first token, an SSE comment every 5 s, which OpenAI clients ignore, through the local router unchanged:
+/// `: prefill in progress, <total> prompt tokens` until the engine reports how much of the prompt it has computed, then
+/// `: prefill <done>/<total> tokens`. Before, a 255K-token prompt streamed nothing for 9 minutes after its first chunk.
+/// The timer runs only during the prefill, never for a request that is not streamed, and writes nothing for a prompt
+/// done within 5 s. The clock is the test's and the engine a gate the test opens.
 @Suite("The local API says a streamed request's prompt progress", .timeLimit(.minutes(1)))
 struct LocalPrefillProgressTests {
     private static let model = "prefill/model"
@@ -73,7 +74,7 @@ struct LocalPrefillProgressTests {
         #expect(clock.sleeping == 0 && clock.cancelled == 1)
         let events = Self.events(response.body)
         let comments = events.filter { $0.hasPrefix(":") }
-        #expect(comments == [": prefill 0/8 tokens", ": prefill 8/8 tokens"])
+        #expect(comments == [": prefill in progress, 8 prompt tokens", ": prefill 8/8 tokens"])
         // After the role chunk and before the first content, and only there.
         let role = try #require(events.firstIndex { $0.contains(#""role":"assistant""#) })
         let content = try #require(events.firstIndex { $0.contains(#""content":"Hi""#) })
@@ -94,6 +95,24 @@ struct LocalPrefillProgressTests {
         #expect(response.status == .ok)
         #expect(!String(buffer: response.body).contains(": prefill"))
         #expect(clock.sleeping == 0, "no timer outlives the prefill")
+    }
+
+    /// The first token stops the timer at once, not the end of the answer: nothing is said while a long answer streams.
+    @Test func nothingIsSaidAfterTheFirstToken() async throws {
+        let engine = PrefillGateEngine(), clock = PrefillTestClock()
+        let response = try await Self.app(engine, clock: clock).test(.router) { client in
+            async let answer = client.execute(uri: "/v1/chat/completions", method: .post, headers: Self.headers,
+                                              body: Self.chat(stream: true))
+            #expect(await clock.eventually { $0.sleeping == 1 })
+            engine.firstToken()
+            #expect(await clock.eventually { $0.sleeping == 0 && $0.cancelled == 1 }, "stopped by the first token")
+            clock.tick()
+            engine.finish()
+            return try await answer
+        }
+        #expect(response.status == .ok)
+        #expect(!String(buffer: response.body).contains(": prefill"))
+        #expect(clock.sleeps == 1)
     }
 
     @Test func aRequestThatIsNotStreamedHasNoTimer() async throws {
@@ -125,8 +144,8 @@ struct LocalPrefillProgressTests {
         }
         #expect(response.status == .ok)
         let events = Self.events(response.body)
-        #expect(events.filter { $0.hasPrefix(":") } == [": prefill 0/8 tokens"])
-        let comment = try #require(events.firstIndex(of: ": prefill 0/8 tokens"))
+        #expect(events.filter { $0.hasPrefix(":") } == [": prefill in progress, 8 prompt tokens"])
+        let comment = try #require(events.firstIndex(of: ": prefill in progress, 8 prompt tokens"))
         let delta = try #require(events.firstIndex { $0.contains("response.output_text.delta") })
         #expect(comment < delta)
     }
@@ -152,7 +171,7 @@ struct LocalPrefillProgressTests {
         }
         #expect(response.status == .ok)
         #expect(response.headers[LocalRouterPolicy.servedByHeader] == LocalRouterPolicy.thisMac)
-        #expect(String(buffer: response.body).contains("\n\n: prefill 0/8 tokens\n\ndata: "))
+        #expect(String(buffer: response.body).contains("\n\n: prefill in progress, 8 prompt tokens\n\ndata: "))
         #expect(upstream.requests.isEmpty)
     }
 
@@ -164,10 +183,12 @@ struct LocalPrefillProgressTests {
         let prefill = LocalPrefillProgress(ticker: LocalPrefillTicker(interval: .zero, sleep: { _ in }))
         prefill.accept(promptTokens: Self.promptTokens)
         let (frames, source) = AsyncThrowingStream<String, Error>.makeStream()
-        let response = DistributedHTTPEventStream.response(frames, control: control, prefill: prefill)
+        let response = DistributedHTTPEventStream.response(frames, control: control, prefillProgress: prefill)
         let writing = Task { try await response.body.write(HTTPDeliveryWriter(capture: capture)) }
         source.yield(try httpDeliveryFrame(role: "assistant"))
-        #expect(try await httpDeliveryEventually { capture.values.contains(": prefill 0/8 tokens\n\n") })
+        #expect(try await httpDeliveryEventually {
+            capture.values.contains(": prefill in progress, 8 prompt tokens\n\n")
+        })
         #expect(!capture.values.contains(": keep-alive\n\n"))
         prefill.end()
         let said = capture.values.count
@@ -186,7 +207,8 @@ struct LocalPrefillProgressTests {
         #expect(prefill.comment == nil, "nothing before the engine accepts the request")
         prefill.advance(to: 3)
         prefill.accept(promptTokens: 255_000)
-        #expect(prefill.comment == ": prefill 0/255000 tokens\n\n")
+        #expect(prefill.comment == ": prefill in progress, 255000 prompt tokens\n\n",
+                "no count until the engine reports one, and none from before it accepted the request")
         prefill.advance(to: 128_000)
         prefill.advance(to: 1_000)
         #expect(prefill.comment == ": prefill 128000/255000 tokens\n\n", "never backwards")
@@ -196,6 +218,11 @@ struct LocalPrefillProgressTests {
         #expect(prefill.comment == nil, "nothing after the first token")
         prefill.accept(promptTokens: 9)
         #expect(prefill.comment == nil)
+        // A count the engine reports is said as it is, none computed yet included.
+        let starting = LocalPrefillProgress()
+        starting.accept(promptTokens: 10)
+        starting.advance(to: 0)
+        #expect(starting.comment == ": prefill 0/10 tokens\n\n")
     }
 }
 
@@ -281,8 +308,18 @@ final class PrefillGateEngine: CBv2Engine, @unchecked Sendable {
 
     /// Each request's first token, then its end.
     func answer() {
+        firstToken()
+        finish()
+    }
+
+    /// Each request's first token, its end left to `finish`.
+    func firstToken() {
+        for (_, events) in lock.withLock({ held }) { events.yield(.delta(text: "Hi", tokens: [1], logprobs: nil)) }
+    }
+
+    /// Each request's end, after its first token.
+    func finish() {
         for (request, events) in lock.withLock({ held }) {
-            events.yield(.delta(text: "Hi", tokens: [1], logprobs: nil))
             events.yield(.finished(reason: .stop,
                                    usage: CBv2Usage(promptTokens: request.promptTokens.count, completionTokens: 1)))
             events.finish()

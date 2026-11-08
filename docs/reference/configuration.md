@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -364,7 +364,7 @@ Every key is optional, and an absent key keeps today's behaviour
 | `[local] me_first` | `true` or `false` | On with `mode = "both"`, off otherwise; `false` keeps today's shared serving (`meFirstEnabled`). It applies only to Both, me first, never to Only me (`--local`, `meFirstIdle`) |
 | `[local] me_first_idle_minutes` | Whole minutes, `1`–`120` | `2` (`defaultMeFirstIdleMinutes`, `resolvedMeFirstIdleMinutes`): Darkbloom requests return this long after the owner's last local request ends |
 | `[local] route` | `"this-mac"` (only this Mac), `"my-macs"` (only your Macs), `"my-macs-first"` (your Macs first, then the Darkbloom network) | `this-mac`; `my-macs` once an account key is saved with `darkbloom route key` (`resolvedRoute`). Without a saved key, or without a local key (`--no-auth`), nothing leaves this Mac, whatever the route (`LocalRouterConfig.effectiveRoute`). `my-macs` sends `X-Darkbloom-Route: self`; `my-macs-first` sends `prefer`, then `self` once on a `402`, and only `self` for a client on another machine (a TCP peer that isn't loopback, `LocalRouterPolicy.route`). Read when the local API starts |
-| `[local] port` | Whole number, `1`–`65535` | The build's `defaultLocalPort` (`resolvedPort`). A local API that the start question, a saved `mode` or `--me-first` creates takes the first free port from there instead, never `8000` or `47420`–`47423`, and saves it (`LocalAPIPort`) |
+| `[local] port` | Whole number, `1`–`65535` | This Mac's one local API port, for every local API it serves (`LocalAPIPort`, `provider-swift/Sources/ProviderCore/Config/LocalAPIPort.swift`). When absent, the first start that serves a local API keeps the port this Mac's local API already uses: its running API's, else its installed LaunchAgent job's (`LaunchAgent.installedLocalAPIPort`), even `8000`, so a Mac updated from 0.10.10 keeps `8000`. Only a Mac with no local API at all chooses the first free port from the build's `defaultLocalPort` (production's `8000`, so `8001`), never `8000` or `47420`–`47423`. Either is saved (`LocalAPIPort.choose`); the desktop app's local mode saves it once its service started (`Desktop.StartLocal.serve`). Once saved it is used as it is, never moved; only `--port <n>` replaces it |
 | `[local] bind` | `localhost` or a numeric IPv4 or IPv6 address (`ClusterServingScope.isValidBind`) | `127.0.0.1` (`defaultBind`, `resolvedBind`) |
 
 Who writes which key (`Start.saveServingChoice`, once the start goes ahead; a
@@ -372,17 +372,19 @@ cancelled picker or a refused start writes nothing):
 
 | Writer | Keys |
 |---|---|
-| The start question, in a terminal (no saved `mode`, or `--choose`) | `mode`; `route` from its follow-up, asked only with an account key saved; `port` for a local API |
+| The start question, in a terminal (no saved `mode`, or `--choose`) | `mode`; `route` from its follow-up, asked only with an account key saved |
 | `--no-me-first`, `--me-first` (only to undo a saved `me_first = false`), `--me-first-idle <min>`, `--route <route>` | `me_first`, `me_first_idle_minutes`, `route`, as `--idle-timeout` writes `idle_timeout_mins` |
-| `--me-first` without a saved port | `port` (the first free one, as above) |
-| `--local`, `--network`, `--local-endpoint`, `--port`, `--bind`, `--no-auth`, and every other start | Nothing: a flag's mode isn't saved here (the LaunchAgent's arguments keep it until the next start, below), and a start with no saved `mode` and no terminal keeps today's behaviour exactly |
+| Any start that serves a local API (the question's Only me or Both, a saved `mode`, `--me-first`, `--local`, `--local-endpoint`, the desktop app's starts), except a service's child (`--foreground`, or `start --local` a service runs) | `port`, when none is saved (the one this Mac's local API already uses, else the first free one, as above) or `--port <n>` names another |
+| `--network`, `--bind`, `--no-auth`, a mode flag's mode, and every other start | Nothing: a flag's mode isn't saved here (the LaunchAgent's arguments keep it until the next start, below), and a start with no saved `mode` and no terminal keeps today's behaviour exactly (no local API, so no port) |
 
 The LaunchAgent keeps the arguments `--local-endpoint` has always baked
 (`--local-endpoint --port <n> --bind <address>`, plus `--no-auth`), built from
 the resolved mode, port and address (`StartServing.launchAgentEndpoint`), so a
-rolled-back older provider reads the same plist. Its `--foreground` child serves
-as those arguments say, reads `me_first`, `me_first_idle_minutes` and `route`,
-and never asks or writes.
+rolled-back older provider reads the same plist. The desktop app's local mode
+bakes `--foreground --local --port <n> --bind <address>` the same way
+(`LaunchAgent.localProgramArguments`). The `--foreground` child serves as those
+arguments say, reads `me_first`, `me_first_idle_minutes` and `route`, and never
+asks or writes.
 
 ```toml
 [local]

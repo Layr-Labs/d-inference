@@ -7,15 +7,33 @@ extension DaemonState {
     var servesOnlyItsOwner: Bool { runtimeCapabilities == nil }
 }
 
+extension LocalFirstWords.LocalAPIServer {
+    /// Whose API the provider that wrote `state` serves: on a Mac in a two-Mac cluster, the pair's when the cluster's
+    /// part wrote it (`ServiceDrain.soloProviderState`), else single-Mac serving's.
+    static func of(_ state: DaemonState, paired: Bool,
+                   clusterPart: @autoclosure () -> Int32? = ClusterPairSummary.runningPartPID()) -> Self {
+        guard paired else { return .singleMac(paired: false) }
+        return ServiceDrain.soloProviderState(state, clusterPart: clusterPart()) == nil ? .pair : .singleMac(paired: true)
+    }
+}
+
 extension Status {
     /// How this Mac serves now, from the running provider: a `Serving:` line (and one more while Darkbloom requests
-    /// finish under a pause), then, with a local API, where your requests go. `accountKeySaved` is asked only for a
-    /// local API with a key. No key and no speed.
+    /// finish under a pause), then, with a local API, where your requests go. A local API the provider couldn't open
+    /// says why, never "network only"; `nextFreePort` gives the port its line suggests, and `server` whose API it is.
+    /// `accountKeySaved` is asked only for a local API with a key. No key and no speed.
     static func servingLines(state: DaemonState, liveEndpoint: LocalEndpoint.Info?, route: LocalSettings.Route?,
-                             accountKeySaved: () -> Bool, now: Date = Date(),
-                             timeZone: TimeZone = .current) -> [String] {
+                             accountKeySaved: () -> Bool,
+                             nextFreePort: (UInt16) -> UInt16? = { LocalAPIPort.nextFree(besides: $0) },
+                             server: LocalFirstWords.LocalAPIServer = .singleMac(paired: false),
+                             now: Date = Date(), timeZone: TimeZone = .current) -> [String] {
         guard let liveEndpoint, liveEndpoint.pid == state.pid else {
-            return ["Serving: Darkbloom network only — this Mac has no local API"]
+            guard let failure = state.localAPIFailure else {
+                return ["Serving: Darkbloom network only — this Mac has no local API"]
+            }
+            return ["Serving: Darkbloom and you, \(state.meFirst == nil ? "shared" : "me first") — "
+                + "the local API isn't up: "
+                + LocalFirstWords.whyNotUp(failure, nextFree: nextFreePort(failure.port), server: server)]
         }
         var lines: [String]
         if state.servesOnlyItsOwner {

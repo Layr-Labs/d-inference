@@ -151,7 +151,10 @@ public final class ClusterService: @unchecked Sendable {
     // This Mac's coordinator-paired parts that ended in a row right after starting (`ClusterApprovalCheck.memberQuickEnds`),
     // and whether the running part is one.
     private var memberQuickEnds = 0
-    private var childIsMember = false
+    private var childIsMember: Bool { childMemberRank != nil }
+    /// The running coordinator-paired part's rank (nil for any other part): only rank 0, which hosts the pair's slot,
+    /// writes the pair's `Pair: …` lines.
+    private var childMemberRank: Int?
     /// The running part is the link follower (`followerArguments`), the only part that writes a Local Network refusal.
     private var childIsLinkFollower = false
     /// The running follower's refusal as last read, by its log's size (`runningPartRefusal`).
@@ -172,11 +175,13 @@ public final class ClusterService: @unchecked Sendable {
     private var apiPort: Int?
     /// The port the running part listens on: rank 0's API or the solo server's; nil for any other part.
     private var childPort: Int?
+    /// The memory re-plan's steps (`replanForMemory`); tests stand in. Nil: the control leader's onboarding operations.
+    var memoryReplan: MemoryReplan?
     /// Starts of this setup that ended on a memory-gate refusal (a Mac's memory moved after the plan was made), and
-    /// when the plan may next be made again (`memoryReplan`).
+    /// when the plan may next be made again (`noteMemoryRefusal`); tests read whether one is under way.
     private var memoryRefusals: (key: String, count: Int)?
     private var nextMemoryReplan = Date.distantPast
-    private var memoryReplanInFlight = false
+    var memoryReplanInFlight = false
     /// Re-plans in a row that came back with the same split: after `memoryReplansWithSameSplit` the service stops
     /// re-planning (the memory is short for every split) until a re-plan finds another one or the service restarts.
     private var sameSplitReplans = 0
@@ -543,8 +548,19 @@ public final class ClusterService: @unchecked Sendable {
     static let memoryRefusalsBeforeReplan = 2
     static let memoryReplanSeconds: Double = 600
 
-    private func noteMemoryRefusal(key: String, since: Date, model: String, say: @escaping @Sendable (String) -> Void) {
-        let log = ClusterIncidentLog.forThisInstall()
+    /// The memory re-plan's steps (`replanForMemory`), as the control leader's onboarding operations run them
+    /// (`controlLive`); tests stand in.
+    struct MemoryReplan {
+        var reachMembers: () -> Result<[ClusterOnboardingMachine], ClusterOnboardingFailure>
+        var planModels: () -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure>
+        var adopt: (Int) -> Result<[String], ClusterOnboardingFailure>
+        var serve: () -> Result<[String], ClusterOnboardingFailure>
+        /// Puts the pair's saved start back (`ClusterService.restoreStart`).
+        var restoreStart: () -> Void
+    }
+
+    func noteMemoryRefusal(key: String, since: Date, model: String, say: @escaping @Sendable (String) -> Void) {
+        let log = ClusterIncidentLog.forThisInstall(homeDirectory: context.paths.homeDirectory)
         let refused = log.feed().incidents.contains { $0.ts >= since.timeIntervalSince1970 && $0.guidanceCode == "memory_gate_refused" }
         let due = lock.withLock { () -> Bool in
             guard refused else { memoryRefusals = nil; return false }
@@ -560,31 +576,55 @@ public final class ClusterService: @unchecked Sendable {
         Thread.detachNewThread { [weak self] in
             guard let self else { return }
             defer { self.lock.withLock { self.memoryReplanInFlight = false; self.memoryRefusals = nil } }
-            guard let held = ClusterControlCommandLock.acquire(seconds: 5) else { return }
-            defer { held.release() }
-            say("a Mac's memory no longer holds its share of \(model) (refused at load twice): planning again on the memory now")
-            let before = try? self.context.savedConfiguration().reference.get()?.sha256
-            let live = self.controlLive
-            func failed(_ lines: [String]) { say("could not plan \(model) again: " + lines.joined(separator: " ")) }
-            if case .failure(let failure) = live.localReachMembers({ _ in }) { return failed(failure.lines) }
-            let choices: [ClusterOnboardingModelChoice]
-            switch live.localPlanModels() {
-            case .success(let value): choices = value
-            case .failure(let failure): return failed(failure.lines)
-            }
-            guard let index = ClusterOnboardingUpdate.servableIndex(of: model, in: choices) else {
-                return failed(["\(model) does not fit these Macs' memory now: \(choices.first { ($0.modelID ?? $0.title) == model }?.blocker ?? "not offered")"])
-            }
-            if case .failure(let failure) = live.localAdopt(index) { return failed(failure.lines) }
-            if case .failure(let failure) = live.localServe() { return failed(failure.lines) }
-            let after = try? self.context.savedConfiguration().reference.get()?.sha256
-            self.lock.withLock { self.sameSplitReplans = before == after ? self.sameSplitReplans + 1 : 0 }
-            // `localAdopt` stops the serving parts and plans once more when their memory is back, so the split adopted
-            // need not be `choices[index]` (planned while they ran): it is said from the setup the start recorded.
-            let deployment = (try? self.store.readRecord())?.leadership?.deployment
-            say(before == after ? "planned \(model) again: the same split is still the one that fits; trying it again"
-                                : "planned \(model) again on the memory now: a new split is starting on both Macs" + (deployment.map { " (\($0))" } ?? ""))
+            self.replanForMemory(model: model, say: say)
         }
+    }
+
+    /// `noteMemoryRefusal`'s re-plan of `model` on the memory now, on a thread of its own: it holds the command lock so a
+    /// person's command and this never run at once.
+    func replanForMemory(model: String, say: @escaping @Sendable (String) -> Void) {
+        // It comes due when a part ends, so also right after the owner's `darkbloom stop`, which holds the command
+        // lock: its `localServe` would start that pair again. A hand-over may have finished meanwhile too.
+        guard let held = commandLockIfStillStarted() else {
+            // The owner stopped the pair: this re-plan did nothing, so its slot is given back, and a start of theirs
+            // within the 10 minutes is re-planned at its next refusals instead of being refused until the slot passes.
+            if (try? store.readRecord())?.leadership?.serving != true { lock.withLock { nextMemoryReplan = .distantPast } }
+            return
+        }
+        defer { held.release() }
+        say("a Mac's memory no longer holds its share of \(model) (refused at load twice): planning again on the memory now")
+        let before = try? context.savedConfiguration().reference.get()?.sha256
+        let live = controlLive
+        let steps = memoryReplan ?? .init(reachMembers: { live.localReachMembers({ _ in }) }, planModels: { live.localPlanModels() },
+                                          adopt: { live.localAdopt($0) }, serve: { live.localServe() },
+                                          restoreStart: { self.restoreStart() })
+        func failed(_ lines: [String]) { say("could not plan \(model) again: " + lines.joined(separator: " ")) }
+        if case .failure(let failure) = steps.reachMembers() { return failed(failure.lines) }
+        let choices: [ClusterOnboardingModelChoice]
+        switch steps.planModels() {
+        case .success(let value): choices = value
+        case .failure(let failure): return failed(failure.lines)
+        }
+        guard let index = ClusterOnboardingUpdate.servableIndex(of: model, in: choices) else {
+            return failed(["\(model) does not fit these Macs' memory now: \(choices.first { ($0.modelID ?? $0.title) == model }?.blocker ?? "not offered")"])
+        }
+        // On a serving pair `localAdopt` stops both parts first, and that stop clears the saved start. From there every
+        // failure, the stop's own included, puts it back (`restoreStart`), so the pair serves as before and the next
+        // refusals bring the next re-plan. Always before `held` is let go: every stop of the pair takes this lock, so an
+        // owner's stop can't land just before the restore and be undone.
+        func restored(_ lines: [String]) {
+            steps.restoreStart()
+            failed(lines + ["The pair stays started."])
+        }
+        if case .failure(let failure) = steps.adopt(index) { return restored(failure.lines) }
+        if case .failure(let failure) = steps.serve() { return restored(failure.lines) }
+        let after = try? context.savedConfiguration().reference.get()?.sha256
+        lock.withLock { sameSplitReplans = before == after ? sameSplitReplans + 1 : 0 }
+        // `localAdopt` stops the serving parts and plans once more when their memory is back, so the split adopted
+        // need not be `choices[index]` (planned while they ran): it is said from the setup the start recorded.
+        let deployment = (try? store.readRecord())?.leadership?.deployment
+        say(before == after ? "planned \(model) again: the same split is still the one that fits; trying it again"
+                            : "planned \(model) again on the memory now: a new split is starting on both Macs" + (deployment.map { " (\($0))" } ?? ""))
     }
 
     /// Local only, on the Mac whose part is not rank 0: the same port as rank 0's API (else 8000 or the next free one)
@@ -1172,10 +1212,8 @@ public final class ClusterService: @unchecked Sendable {
             self.lock.withLock { self.updateWaitLine = nil }
             // Held, the command lock keeps a hand-over and a person's stop off; either may have finished while the builds
             // were compared, and the re-plan's stop would put back a start the person cleared.
-            guard let held = ClusterControlCommandLock.acquire(seconds: 5,
-                file: self.store.paths.directory.appendingPathComponent("control.lock")) else { return }
+            guard let held = self.commandLockIfStillStarted() else { return }
             defer { held.release() }
-            guard self.leadershipConfirmed(), (try? self.store.readRecord())?.leadership?.serving == true else { return }
             self.lock.withLock { self.updatingLine = ClusterOnboardingUpdate.statusLine }
             self.publish()
             say("Darkbloom changed on \(macs): setting the cluster up again for \(model)")
@@ -1785,12 +1823,11 @@ public final class ClusterService: @unchecked Sendable {
     private func watchPair(_ want: PartWant, intent: Bool, scope: ClusterServingScope,
                            say: @escaping @Sendable (String) -> Void) -> PartWant {
         let now = Self.monotonicSeconds()
-        let (answered, partUp, member, offset) = lock.withLock {
-            (control?.otherAnsweredAt, child?.isRunning == true && childSetup?.hasPrefix("cluster:") == true, childIsMember, childLogOffset)
+        let (answered, partUp, memberRank, offset) = lock.withLock {
+            (control?.otherAnsweredAt, child?.isRunning == true && childSetup?.hasPrefix("cluster:") == true, childMemberRank, childLogOffset)
         }
-        var servingNow = partUp && answered.map { now - $0 < Self.leaseTTLSeconds } == true
-        if servingNow, member {
-            if case .serving = Self.pairReport(in: serviceFiles.rankLog, from: offset) {} else { servingNow = false }
+        let servingNow = Self.partServesNow(partUp: partUp, otherAnsweredAt: answered, now: now, memberRank: memberRank) {
+            Self.pairReport(in: serviceFiles.rankLog, from: offset)
         }
         let (verdict, previous) = lock.withLock { () -> (ClusterPairWatch.Verdict, ClusterPairWatch.Verdict) in
             let verdict = pairWatch.tick(raw: now, awake: ClusterControlClock.awakeSeconds(), intent: intent,
@@ -1810,6 +1847,19 @@ public final class ClusterService: @unchecked Sendable {
             say(line)
         }
         return part
+    }
+
+    /// Whether this Mac's part serves now, as far as this Mac can tell (`pairWatch`'s `serving`): it runs, and the other
+    /// Mac answered within the lease's time-to-live. Rank 0 of a coordinator-paired pair (`memberRank` 0), which hosts the
+    /// pair's slot, must also have written `Pair: serving` to its log (`pairReport`, read only then). The other rank writes
+    /// no pair line (its link follower reports to rank 0 over the cable), so its log can never say the pair serves: it
+    /// goes by its running part and the other Mac's answers, as every part that isn't coordinator-paired does.
+    static func partServesNow(partUp: Bool, otherAnsweredAt: Double?, now: Double, memberRank: Int?,
+                              pairReport: () -> ClusterOnboardingPairReport.State?) -> Bool {
+        guard partUp, let answered = otherAnsweredAt, now - answered < leaseTTLSeconds else { return false }
+        guard memberRank == 0 else { return true }
+        if case .serving = pairReport() { return true }
+        return false
     }
 
     /// The other Mac's name as control knows it; nil before control.
@@ -1988,7 +2038,8 @@ public final class ClusterService: @unchecked Sendable {
         else { return }
         let arguments: [String]
         let what: String
-        var memberRoute = false, linkFollower = false
+        var linkFollower = false
+        var memberRank: Int?
         var port: Int?
         if case .solo(let model) = want {
             arguments = ClusterLocalServing.soloArguments(settings.soloArguments, scope: scope) + ["--model", model, "--port", String(Self.soloPort)]
@@ -2027,7 +2078,7 @@ public final class ClusterService: @unchecked Sendable {
                 return
             }
             if offered {
-                memberRoute = true
+                memberRank = configuration.localRank
                 // Registered with the coordinator as a cluster member: both Macs run the coordinator-formed pair's member; the
                 // leader's rank hosts the link listener and the pair's slot, the other rank dials it. With Both, me first,
                 // the part that runs rank 0 (the slot's host) also runs the pair's local API, on a port that is never 8000
@@ -2089,9 +2140,9 @@ public final class ClusterService: @unchecked Sendable {
         let startedAt = ClusterProcessTable.startTime(of: process.processIdentifier)
         lock.withLock {
             child = process; childSetup = key; childPort = port; childStarted = Date(); childStartedAt = startedAt; starts += 1
-            childIsMember = memberRoute; childLogOffset = logOffset
+            childMemberRank = memberRank; childLogOffset = logOffset
             childIsLinkFollower = linkFollower; followerRefusalRead = nil
-            if !memberRoute { memberQuickEnds = 0 }
+            if memberRank == nil { memberQuickEnds = 0 }
         }
         say("started \(what) (pid \(process.processIdentifier))")
     }

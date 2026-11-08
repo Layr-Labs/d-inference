@@ -356,14 +356,21 @@ public struct SelfUpdater: Sendable {
         var pause: @Sendable (TimeInterval) async -> Void = { seconds in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
         }
+        /// Draws each pause from its range.
+        var random: @Sendable (ClosedRange<TimeInterval>) -> TimeInterval = { Double.random(in: $0) }
         /// Where a failed try is said: the process's log (the provider's, the cluster service's or the watchdog's), or
         /// standard error for a command, below its live line.
         var log: @Sendable (String) -> Void = { line in
             DarkbloomCommandLook.say(line) { releaseCheckLog.info("\($0)") }
         }
+        /// A test's stand-in for what `next(after:tries:round:cancelled:)` decided after a failed try; nil outside tests.
+        var nextForTesting: (@Sendable (Next) -> Next)? = nil
 
         static let standard = ReleaseCheck()
         static let pairCycle = ReleaseCheck(rounds: 2)
+
+        /// Every try a check can make: `attempts` in each of its `rounds`.
+        var maximumTries: Int { max(1, attempts) * max(1, rounds) }
 
         /// What follows a failed try.
         enum Next: Equatable, Sendable {
@@ -425,7 +432,8 @@ public struct SelfUpdater: Sendable {
                 let (data, response) = try await urlSession.data(for: request, delegate: connection)
                 return Self.latestRelease(data: data, response: response, coordinator: coordinator)
             } catch {
-                let next = releaseCheck.next(after: error, tries: tries, round: round, cancelled: Task.isCancelled)
+                let decided = releaseCheck.next(after: error, tries: tries, round: round, cancelled: Task.isCancelled)
+                let next = releaseCheck.nextForTesting?(decided) ?? decided
                 let pause: TimeInterval? = switch next {
                 case .askAgain: Double.random(in: backoff.nextDelayRange())
                 case .nextRound: Double.random(in: releaseCheck.roundPause)

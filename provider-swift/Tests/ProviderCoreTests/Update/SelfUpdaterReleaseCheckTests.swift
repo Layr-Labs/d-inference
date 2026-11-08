@@ -9,7 +9,7 @@ import Foundation
 import Testing
 @testable import ProviderCore
 
-@Suite("Release check")
+@Suite("Release check", .timeLimit(.minutes(1)))
 struct SelfUpdaterReleaseCheckTests {
 
     @Test("a check that times out asks again and finds the release")
@@ -214,7 +214,7 @@ struct SelfUpdaterReleaseCheckTests {
         #expect(check.lines.allSatisfy { !$0.contains("/v1/") && !$0.contains("platform=") && !$0.contains("://") })
     }
 
-    @Test("a coordinator that never answers is given up after each try's bound", .timeLimit(.minutes(1)))
+    @Test("a coordinator that never answers is given up after each try's bound")
     func silentCoordinatorIsGivenUp() async throws {
         let peer = try SilentPeer()
         let port = try await peer.start()
@@ -334,6 +334,73 @@ struct SelfUpdaterReleaseCheckTests {
         #expect(rounds(automatic: true) == 2)
         #expect(rounds(automatic: false) == 1)
         #expect(!FileManager.default.fileExists(atPath: directory.path))
+    }
+
+    // MARK: - Random pauses, and a bound on the tries
+
+    /// Macs that lost the coordinator together don't ask again together, nor do a pair's two Macs start their second
+    /// rounds together: each pause is drawn from its range. Here the source is injected and answers a quarter of the
+    /// way into each range.
+    @Test("each pause is drawn from its range, within a round and between rounds")
+    func pausesAreDrawnFromTheirRanges() async throws {
+        let check = try ReleaseCheckFixture(Array(repeating: .fail(.timedOut), count: 6))
+        defer { check.cleanUp() }
+        let ranges = Recorded<ClosedRange<TimeInterval>>()
+
+        _ = await check.updater(rounds: 2) {
+            $0.random = { range in
+                ranges.record(range)
+                return range.lowerBound + (range.upperBound - range.lowerBound) / 4
+            }
+        }.checkForUpdate()
+
+        #expect(ranges.all == [0.5...1, 1...2, 60...120, 0.5...1, 1...2])
+        #expect(check.pauses == [0.625, 1.25, 75, 0.625, 1.25])
+    }
+
+    @Test("the pauses' own source draws across each range and stays inside it")
+    func pausesSpreadAcrossTheirRanges() {
+        for releaseCheck in [SelfUpdater.ReleaseCheck.standard, .pairCycle] {
+            for range: ClosedRange<TimeInterval> in [0.5...1, 1...2, 60...120] {
+                let draws = (0..<200).map { _ in releaseCheck.random(range) }
+                #expect(draws.allSatisfy { range.contains($0) }, "\(range): \(draws)")
+                // 200 uniform draws spread over less than half their range: about once in 10^58 runs.
+                let spread = (draws.max() ?? 0) - (draws.min() ?? 0)
+                #expect(spread > (range.upperBound - range.lowerBound) / 2, "\(range): \(draws)")
+            }
+        }
+    }
+
+    /// `UpdateCheckCommandTests` spun for 1 h 50 min in a review's run, under a mutant whose rounds never ended: its
+    /// coordinator fails every try at once and its updater doesn't pause, so only the decision could end the check. The
+    /// tries of its rounds bound a check whatever the decision. The stand-in here keeps asking, but stops by itself
+    /// after 100 tries, so this test ends either way.
+    @Test("a check whose every decision is to ask again still stops after its rounds' tries",
+          arguments: [SelfUpdater.ReleaseCheck.Next.askAgain, .nextRound])
+    func triesAreBoundedWhateverTheDecision(decision: SelfUpdater.ReleaseCheck.Next) async throws {
+        let check = try ReleaseCheckFixture(Array(repeating: .fail(.timedOut), count: 100))
+        defer { check.cleanUp() }
+        let decided = Recorded<SelfUpdater.ReleaseCheck.Next>()
+        let updater = check.updater(rounds: 2) {
+            $0.nextForTesting = { next in
+                decided.record(next)
+                return decided.all.count < 100 ? decision : .stop
+            }
+        }
+        #expect(updater.releaseCheck.maximumTries == 6)
+        #expect(SelfUpdater.ReleaseCheck.standard.maximumTries == 3)
+
+        let result = await updater.checkForUpdate()
+
+        guard case .checkFailed(let failure) = result else {
+            Issue.record("expected a failed check, got \(result)")
+            return
+        }
+        #expect(failure == .init(.noAnswer, "\(check.host) didn't answer within 15 s (6 tries)"))
+        #expect(check.requests.count == 6)
+        #expect(check.pauses.count == 5)
+        #expect(check.lines.count == 6)
+        #expect(check.lines.last?.hasSuffix("; giving up") == true, "\(check.lines.suffix(1))")
     }
 }
 

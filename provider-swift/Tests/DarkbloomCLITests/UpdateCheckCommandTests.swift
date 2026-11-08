@@ -16,6 +16,7 @@ struct UpdateCheckCommandTests {
         let result = try await #require(
             processExitsWith: .success, observing: [\.standardOutputContent]
         ) {
+            endChildAfter(seconds: 60)
             let sandbox = try CLICommandSandbox.enter()
             defer { sandbox.remove() }
             let arguments = ["update", "--check-only", "--config", sandbox.config.path]
@@ -70,6 +71,7 @@ struct UpdateCheckCommandTests {
         let result = try await #require(
             processExitsWith: .success, observing: [\.standardErrorContent]
         ) {
+            endChildAfter(seconds: 60)
             let sandbox = try CLICommandSandbox.enter()
             defer { sandbox.remove() }
             let install = sandbox.root.appendingPathComponent("install", isDirectory: true)
@@ -100,12 +102,29 @@ struct UpdateCheckCommandTests {
         #expect(!errors.contains("download failed"))
     }
 
+    /// Under a mutant whose rounds never ended, `unansweredCheckSaysWhatToDo`'s child asked again for 1 h 50 min (its
+    /// coordinator fails every try at once, and its updater doesn't pause), and a time limit doesn't end an exit test's
+    /// child. So each child here ends itself after a minute (`endChildAfter`): its test fails instead of the run hanging.
+    @Test("a child that doesn't end by itself is ended after its time, and says so")
+    func childEndsAfterItsTime() async throws {
+        let result = try await #require(
+            processExitsWith: .exitCode(124), observing: [\.standardErrorContent]
+        ) {
+            endChildAfter(seconds: 1)
+            let started = Date()
+            while Date().timeIntervalSince(started) < 30 {}
+        }
+        let errors = decodedText(result.standardErrorContent)
+        #expect(errors.contains("the exit test's child didn't end within 1 s, so it was ended\n"), "\(errors)")
+    }
+
     /// The coordinator answered, so the network isn't what failed: the lines say what the answer was instead.
     @Test("a check the coordinator refuses says so, and doesn't point at the network")
     func refusedCheckSaysWhatWasRefused() async throws {
         let result = try await #require(
             processExitsWith: .success, observing: [\.standardErrorContent]
         ) {
+            endChildAfter(seconds: 60)
             let sandbox = try CLICommandSandbox.enter()
             defer { sandbox.remove() }
             let install = sandbox.root.appendingPathComponent("install", isDirectory: true)
@@ -137,6 +156,7 @@ struct UpdateCheckCommandTests {
         let result = try await #require(
             processExitsWith: .success, observing: [\.standardErrorContent]
         ) {
+            endChildAfter(seconds: 60)
             let sandbox = try CLICommandSandbox.enter()
             defer { sandbox.remove() }
             let install = sandbox.root.appendingPathComponent("install", isDirectory: true)
@@ -187,6 +207,7 @@ struct UpdateCheckCommandTests {
         let result = try await #require(
             processExitsWith: .success, observing: [\.standardOutputContent]
         ) {
+            endChildAfter(seconds: 60)
             let sandbox = try CLICommandSandbox.enter()
             defer { sandbox.remove() }
             CoordinatorStub.install([

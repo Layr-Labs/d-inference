@@ -80,11 +80,17 @@ extension Cluster {
 
         /// The supervisor updates the pair as the single-Mac updater updates one Mac: the same `auto_update` and
         /// `DARKBLOOM_NO_UPDATE_CHECK` gate and the same coordinator (`Watchdog.settings`), at the update slot of the
-        /// pairing's cluster ID, which both Macs share (`ClusterPairUpdateCycle`).
+        /// pairing's cluster ID, which both Macs share (`ClusterPairUpdateCycle`). `runCycle` runs one cycle in the
+        /// environment built for it; a test stands in for it.
         static func supervisorConfiguration(
             executable: String, serviceOptions: [String], configPath: String?, environment: [String: String],
             serviceDirectory: URL, reexecArguments: [String],
-            clusterID: @escaping @Sendable () -> String? = { try? ClusterSetupLinkExchange.pairing()?.clusterID }
+            clusterID: @escaping @Sendable () -> String? = { try? ClusterSetupLinkExchange.pairing()?.clusterID },
+            runCycle: @escaping @Sendable (_ environment: ClusterPairUpdateCycle.Environment, _ request: String?,
+                                           _ restart: @escaping @Sendable (String) async throws -> Void) async
+                -> AutoUpdateController.Outcome = { environment, request, restart in
+                    await ClusterPairUpdateCycle(environment: environment).run(request: request, restart: restart)
+                }
         ) -> ClusterMemberSupervisor.Configuration {
             let settings = Watchdog.settings(configPath: configPath, environment: environment)
             let coordinatorURL = settings.coordinatorURL
@@ -108,7 +114,7 @@ extension Cluster {
                     run: { request, log, restart in
                         let environment = ClusterPairUpdateCycle.Environment.live(
                             serviceDirectory: serviceDirectory, coordinatorURL: coordinatorURL, automatic: request == nil, log: log)
-                        return await ClusterPairUpdateCycle(environment: environment).run(request: request, restart: restart)
+                        return await runCycle(environment, request, restart)
                     },
                     requestPath: ClusterServiceAgent.updateRequestPath(serviceDirectory: serviceDirectory),
                     progressPath: ClusterServiceAgent.updateProgressPath(serviceDirectory: serviceDirectory),

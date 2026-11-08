@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import ProviderCore
 
-@Suite("Watchdog update and rollback integration", .serialized)
+@Suite("Watchdog update and rollback integration", .serialized, .timeLimit(.minutes(2)))
 struct WatchdogRecoveryIntegrationTests {
     @Test("down provider installs signed release before restart")
     func forwardUpdateWhileDown() async throws {

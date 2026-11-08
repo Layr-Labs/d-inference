@@ -31,13 +31,41 @@ enum ToolAddress {
         }
     }
 
+    /// The names loopback answers to, as every local API on this Mac does.
+    static let loopbackNames: Set<String> = ["localhost", "127.0.0.1", "::1"]
+
+    /// The names a tool on this Mac reaches its local API listening on `bind` by: loopback's, and this Mac's Bonjour
+    /// name (`localHostName`, with `.local`) when it listens on every address, as `darkbloom local` prints it then.
+    static func thisMacsNames(listeningOn bind: String, localHostName: () -> String?) -> Set<String> {
+        guard bind == "0.0.0.0" || bind == "::", let name = localHostName() else { return loopbackNames }
+        return loopbackNames.union(["\(name.lowercased()).local"])
+    }
+
+    /// Whether two base URLs reach the same local API: the same scheme, port (the scheme's own when none is given) and
+    /// path (one `/` at its end aside), and the same host in any case, `thisMac`'s names counting as one.
+    static func sameAddress(_ one: String, _ other: String, thisMac: Set<String> = loopbackNames) -> Bool {
+        guard let first = URLComponents(string: one), let second = URLComponents(string: other),
+              first.host != nil, second.host != nil else { return trimmed(one) == trimmed(other) }
+        func scheme(_ url: URLComponents) -> String? { url.scheme?.lowercased() }
+        func host(_ url: URLComponents) -> String {
+            let name = (url.host ?? "").lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+            return thisMac.contains(name) ? "this Mac" : name
+        }
+        func port(_ url: URLComponents) -> Int? {
+            url.port ?? ["http": 80, "https": 443][scheme(url) ?? ""]
+        }
+        return scheme(first) == scheme(second) && host(first) == host(second) && port(first) == port(second)
+            && trimmed(first.path) == trimmed(second.path)
+    }
+
     /// The tools set up for Darkbloom whose provider block misses the local API at `baseURL` that takes the key in
-    /// `keyFile` (nil: the API takes no key, so any file does), and how.
+    /// `keyFile` (nil: the API takes no key, so any file does), and how. `thisMac`: the names it answers to.
     static func misses(baseURL: String, keyFile: URL?, environment: ToolIntegrationEnvironment,
-                       provider: IntegrationProvider) -> [(tool: IntegrationTool, miss: Miss)] {
+                       provider: IntegrationProvider,
+                       thisMac: Set<String> = loopbackNames) -> [(tool: IntegrationTool, miss: Miss)] {
         IntegrationTool.allCases.compactMap { tool in
             guard let pointer = pointer(of: tool, environment: environment, provider: provider) else { return nil }
-            if let url = pointer.baseURL, trimmed(url) != trimmed(baseURL) { return (tool, .address(url)) }
+            if let url = pointer.baseURL, !sameAddress(url, baseURL, thisMac: thisMac) { return (tool, .address(url)) }
             if let keyFile, let theirs = pointer.keyFile, !sameKey(theirs, keyFile) {
                 return (tool, .key(theirs.standardizedFileURL.path))
             }
@@ -70,9 +98,11 @@ enum ToolAddress {
     }
 
     /// The line for a start that serves its local API at `baseURL`, with the key in `keyFile` (nil: no key).
+    /// `thisMac`: the names the API answers to.
     static func notice(baseURL: String, keyFile: URL?, environment: ToolIntegrationEnvironment = .current,
-                       provider: IntegrationProvider = .current) -> String? {
-        notice(misses(baseURL: baseURL, keyFile: keyFile, environment: environment, provider: provider),
+                       provider: IntegrationProvider = .current, thisMac: Set<String> = loopbackNames) -> String? {
+        notice(misses(baseURL: baseURL, keyFile: keyFile, environment: environment, provider: provider,
+                      thisMac: thisMac),
                baseURL: baseURL, keyFile: keyFile, home: environment.home)
     }
 

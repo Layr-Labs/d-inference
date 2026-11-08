@@ -217,7 +217,10 @@ struct StartToolIntegrationTests {
         let coordinator = "wss://coordinator.invalid/ws/provider"
         let sandbox = try StepSandbox()
         try await start.setUpToolsBesideDaemon(serving: serving, coordinatorURL: coordinator,
-                                               waitForAPI: { _ in .ready(sandbox.endpoint) },
+                                               waitForAPI: { port, seconds in
+                                                   #expect(port == 8123 && seconds == Start.toolWaitSeconds)
+                                                   return .ready(sandbox.endpoint)
+                                               },
                                                step: sandbox.step([.opencode]))
         #expect(FileManager.default.fileExists(atPath: sandbox.openCodeFile.path), "the step ran")
         // The tool block says where requests go from the key this start read, without reading it again.
@@ -226,15 +229,19 @@ struct StartToolIntegrationTests {
         let missing = try StepSandbox()
         await #expect(throws: ExitCode.failure) {
             try await start.setUpToolsBesideDaemon(serving: serving, coordinatorURL: coordinator,
-                                                   waitForAPI: { _ in .ready(missing.endpoint) },
+                                                   waitForAPI: { _, _ in .ready(missing.endpoint) },
                                                    step: missing.step([.opencode], installed: []))
         }
         #expect(missing.said.last == "Darkbloom keeps serving.")
         for wait in [Start.LocalAPIWait.noKeyFile, .notUp] {
             let untouched = try StepSandbox()
+            // A longer wait (Only me's, which listens once its models are loaded) reaches the wait as given.
             await #expect(throws: ExitCode.failure) {
-                try await start.setUpToolsBesideDaemon(serving: serving, coordinatorURL: coordinator,
-                                                       waitForAPI: { _ in wait }, step: untouched.step([.opencode]))
+                try await start.setUpToolsBesideDaemon(serving: serving, coordinatorURL: coordinator, waitSeconds: 150,
+                                                       waitForAPI: { _, seconds in
+                                                           #expect(seconds == 150)
+                                                           return wait
+                                                       }, step: untouched.step([.opencode]))
             }
             #expect(untouched.said.isEmpty && untouched.filesOtherThanTheKey().isEmpty, "\(wait)")
         }
@@ -242,7 +249,7 @@ struct StartToolIntegrationTests {
             + "but no key file holds its key, so OpenCode wasn't set up.")
     }
 
-    @Test("start --local --opencode reads the account key once, for the banner and the tool block; no key shown")
+    @Test("start --local reads the account key once, with or without a tool flag; no start screen shows the key")
     func localWithAToolReadsTheAccountKeyOnce() throws {
         let directory = try TemporaryDirectory("start-tools-local")
         let config = try directory.write("[provider]\nname = \"d2b\"\n\n[local]\nroute = \"my-macs-first\"\n",
@@ -257,11 +264,13 @@ struct StartToolIntegrationTests {
         // The banner's words come from that one read: requests can leave this Mac, so it doesn't say "this Mac only".
         #expect(LocalFirstWords.requests(route: serving.route, accountKeySaved: serving.accountKeySaved ?? false)
             == "this Mac first, then your other Macs (free), then the Darkbloom network (billed)")
-        #expect(!start.bannerShowsKey(serving), "no key in the banner with a tool flag")
-        // `--local` alone keeps its banner, key included, and still never asks the Keychain.
+        let key = "dk-local-fixture"
+        #expect(!start.localServerBanner(serving: serving, models: [], token: key).contains { $0.contains(key) })
+        // `--local` alone says where requests go too, from one read of the Keychain, and shows no key either.
         let plain = try Start.parse(["--local", "--config", config.path])
         let plainServing = try #require(try plain.resolveServing(environment: environment))
-        #expect(plain.bannerShowsKey(plainServing) && plainServing.accountKeySaved == nil && lookups == 1)
+        #expect(plainServing.accountKeySaved == true && lookups == 2)
+        #expect(!plain.localServerBanner(serving: plainServing, models: [], token: key).contains { $0.contains(key) })
     }
 
     /// The local API's `/v1/models` waits for the coordinator's lists up to the router's own deadline

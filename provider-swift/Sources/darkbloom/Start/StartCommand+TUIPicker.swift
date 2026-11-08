@@ -19,6 +19,7 @@ extension Start {
         memoryGb: Double,
         reserveMode: PickerReserveMode = .selectedModels,
         preselectDownloaded: Bool = true,
+        lastUsed: [String] = [],
         inputFD: Int32 = STDIN_FILENO,
         outputFD: Int32 = STDOUT_FILENO
     ) throws -> [Int] {
@@ -70,9 +71,11 @@ extension Start {
                 selectedEntries(selection) + [entry], memoryGb: memoryGb, reserveMode: reserveMode)
         }
 
-        // Pre-select the largest downloaded model that can fit on this machine.
-        if preselectDownloaded, let idx = entries.firstIndex(where: { $0.downloaded && canFitIndividually($0) }) {
-            selected[idx] = true
+        if preselectDownloaded {
+            for index in Start.pickerPreselection(entries: entries, memoryGb: memoryGb, reserveMode: reserveMode,
+                                                  lastUsed: lastUsed) {
+                selected[index] = true
+            }
         }
 
         /// Render the picker UI, returning the number of lines written.

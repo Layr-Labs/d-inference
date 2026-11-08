@@ -992,7 +992,7 @@ or Hermes config, or this Mac's cluster service.
 
 ```bash
 swift test --skip-build --no-parallel \
-  --filter 'OpenCodeConfigPlanTests|HermesConfigPlanTests|HermesVersionTests|ToolConfigWriterTests|IntegrationModelsTests|ToolIntegrationTests|ToolSetupWordsTests|AtomicFileTests|keyFileIsTheFileHoldingThePortsKey'
+  --filter 'OpenCodeConfigPlanTests|HermesConfigPlanTests|HermesVersionTests|ToolConfigWriterTests|IntegrationModelsTests|ToolIntegrationTests|ToolSetupWordsTests|ModelLoadWaitTests|ToolAddressTests|AtomicFileTests|keyFileIsTheFileHoldingThePortsKey'
 ```
 
 | Coverage | Suites |
@@ -1002,6 +1002,7 @@ swift test --skip-build --no-parallel \
 | Backups (exact bytes, 0600, five kept), unchanged writes nothing, atomic replace, symlinks, a concurrent edit, dry run, the undo command run through `/bin/sh` | `ToolConfigWriterTests`, `AtomicFileTests` |
 | Catalog names, limits and capability aliases; a pair's models named `(your pair)`; the fetch with the key file's key; `local.json`'s endpoint and key file; the modes of new files; the owner's default in the other global OpenCode file; no written file holds the key | `IntegrationModelsTests`, `ToolIntegrationTests`, `keyFileIsTheFileHoldingThePortsKey` |
 | What a start says, in a temp home with a user's two OpenCode files and his Hermes config: the default model's own line (none set, set in either file, set without a name, OpenCode 1's `config.json`), Hermes' main model before, the URL for an API on `0.0.0.0`, a pair's API (`(your pair)`, a run again online and offline changes nothing); every `Changed:` wording and default line | `ToolSetupWordsTests` |
+| The wait for this Mac's models (a scripted process and a clock that moves only between looks; every fake ends a wait at its bound, so a regression fails instead of hanging, and each suite has a one-minute limit), Ctrl-C (SIGUSR2 stands in for SIGINT), the run-again line; a plain start's notice, the address rule and the start's two hooks | `ModelLoadWaitTests`, `ToolAddressTests` |
 
 `scripts/integrations/opencode-smoke.sh` then runs the real OpenCode 2 on the
 written config. It runs the writer through the opt-in `OpenCodeSmokeSetup`
@@ -1264,10 +1265,25 @@ weights. The downloader identifies itself as `darkbloom-prompt-fixtures/1` to
 the CDN and retains same-origin HTTPS, byte-budget and integrity checks.
 It retries only a cut or failed transfer (a TLS, socket or connection error, a
 timeout, a body that ends before its declared size, or HTTP 5xx), at most 3
-attempts per artifact with 1 s and 3 s backoff inside the 120 s deadline. A
-full-size body with the wrong SHA-256, an oversize body, a Content-Length
-mismatch, a cross-origin response, another non-200 status or the deadline fails
-at once. `scripts/prepare-mimo-prompt-fixtures.py` and
+attempts per artifact with 1 s and 3 s backoff inside the contract's deadline.
+The deadline is 120 s plus the time the contract's missing bytes take at
+128 KiB/s, at most 900 s: 256 s for the 17 MB Nemotron contract and 376 s for a
+32 MB Gemma 4 contract. A full-size body with the wrong SHA-256, an oversize
+body, a Content-Length mismatch, a cross-origin response, another non-200
+status or the deadline fails at once.
+
+With `PROMPT_PARITY_DOWNLOAD_CACHE` set (CI sets it for both parity scripts),
+`--download-cache` names a directory with one file per pinned SHA-256
+(`scripts/verified_download_cache.py`). An artifact is copied from it only if
+the entry is a regular file with the pinned size and digest; a missing, linked,
+special, short, long or changed entry, or one that cannot be read, is
+downloaded, and the verified download replaces it. A failure to store an entry
+is printed and ignored. The cache's bytes do not count toward the deadline, and
+the Gemma 4 and Qwen contracts that share a `tokenizer.json` download it once.
+For each contract the script prints how many artifacts came from the cache, how
+many it downloaded, their bytes and the seconds it took.
+
+`scripts/prepare-mimo-prompt-fixtures.py` and
 `scripts/prepare-mimo-image-http-fixtures.py` apply the same retry rule to each
 metadata file, with these differences. The MiMo prompt script refuses a
 redirect to plain HTTP but follows a redirect to a different HTTPS host: Hugging

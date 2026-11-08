@@ -157,7 +157,7 @@ struct Update: AsyncParsableCommand {
             case .clusterService:
                 try await restartClusterService(into: to, look: look)
             case .nothing:
-                print("Restart the provider for the new version to take effect.")
+                print(Self.nothingRestartedLine(version: to))
             }
 
         case .restartRequired(let from, let to):
@@ -172,7 +172,7 @@ struct Update: AsyncParsableCommand {
             case .clusterService:
                 try await restartClusterService(into: to, look: look)
             case .nothing:
-                print("Restart the provider for v\(to) to take effect.")
+                print(Self.nothingRestartedLine(version: to))
             }
 
         case .quarantined(let version, let reason):
@@ -280,11 +280,12 @@ struct Update: AsyncParsableCommand {
             return
         }
         print("Accepted requests drained. Restarting the installed provider...")
+        let restarted: SavedChoiceService.Alignment
         do {
-            try await look.working("Restarting the provider") {
+            restarted = try await look.working("Restarting the provider") {
                 try updater.prepareCandidateLaunch(session: session, baseline: LaunchAgent.launchSnapshot())
                 try await ServiceDrain.stopDrainedProvider(unloadService: false)
-                try LaunchAgent.restartAfterDrain()
+                return try SavedChoiceService.restartAsSaved(configPath: configOptions.config)
             }
             ServiceDrain.rearmWatchdog(explicitConfig: configOptions.config)
         } catch {
@@ -292,10 +293,21 @@ struct Update: AsyncParsableCommand {
             try? updater.cancelPendingCandidateAttempt(operation: operation + "-failure")
             throw error
         }
+        if let line = restarted.line { print(line) }
         session.release()
-        try await look.working("Waiting for the restarted provider's fresh authorization") {
-            try await ServiceDrain.waitForRestart(previous: previous, timeout: 180)
+        try await ServiceDrain.waitForRestartedService(serving: restarted.mode, previous: previous, timeout: 180,
+                                                       look: look)
+    }
+
+    /// Nothing serves in the background to restart into `version`: Only me in a terminal, or nothing at all.
+    static func nothingRestartedLine(version: String, terminalOnlyMe: Bool = Restart.terminalOnlyMe(
+        ServiceDrain.soloProviderState())) -> String {
+        let cli = BuildEnvironment.current.cliName
+        guard terminalOnlyMe else {
+            return "Nothing serves in the background now; your next `\(cli) start` serves v\(version)."
         }
+        return "Only me serves in a terminal now (`\(cli) start --local --here`): press Ctrl-C there, then "
+            + "`\(cli) start` serves v\(version) in the background."
     }
 
     /// A `darkbloom cluster` Mac: its cluster service supervisor restarts into the installed release together with

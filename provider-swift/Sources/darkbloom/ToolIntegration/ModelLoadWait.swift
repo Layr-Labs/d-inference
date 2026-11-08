@@ -61,12 +61,13 @@ final class InterruptWatch: @unchecked Sendable {
 
     func begin() {
         guard let signalNumber, source == nil else { return }
-        sigaction(signalNumber, nil, &previous)
-        signal(signalNumber, SIG_IGN)
+        // The source first: a signal before it is set up still does what it did, and none after it is lost.
         let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .global(qos: .userInitiated))
         source.setEventHandler { [weak self] in self?.press() }
         source.resume()
         self.source = source
+        sigaction(signalNumber, nil, &previous)
+        signal(signalNumber, SIG_IGN)
     }
 
     func end() {
@@ -110,8 +111,10 @@ struct LiveLine {
 struct ModelLoadWait {
     enum Outcome: Equatable, Sendable {
         /// Nothing of this Mac's is loading now: set the tools up. `waited`: it waited for models that have loaded
-        /// since this Mac's list was read, so the list is read again for their limits.
-        case ready(waited: Bool)
+        /// since this Mac's list was read, so the list is read again for their limits. `loaded`: the models the
+        /// process has loaded, by its own word; nil when it gave none (no state of its own, or Only me's server, whose
+        /// state names none).
+        case ready(waited: Bool, loaded: Set<String>? = nil)
         /// The model it waited for didn't load.
         case notLoaded(model: String)
         /// The model is still loading at the deadline.
@@ -138,9 +141,12 @@ struct ModelLoadWait {
     static let settleSeconds: TimeInterval = 1
     static let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
-    /// As `start` waits: the local API's own process, the terminal's live line, and Ctrl-C.
-    static func live() -> ModelLoadWait {
-        ModelLoadWait(loads: { ModelLoads.live() }, interrupt: .ctrlC(), liveLine: .standardOutput())
+    /// As `start` waits: the local API's own process, the terminal's live line (`LiveLine.standardOutput`'s rule for
+    /// `isTerminal` and `environment`), and Ctrl-C.
+    static func live(isTerminal: Bool = isatty(STDOUT_FILENO) != 0,
+                     environment: [String: String] = ProcessInfo.processInfo.environment) -> ModelLoadWait {
+        ModelLoadWait(loads: { ModelLoads.live() }, interrupt: .ctrlC(),
+                      liveLine: .standardOutput(isTerminal: isTerminal, environment: environment))
     }
 
     /// Waits while the local API's process loads any of `thisMac` (this Mac's models as its `/v1/models` lists them)
@@ -158,19 +164,20 @@ struct ModelLoadWait {
             let now = clock()
             let report = loads()
             let loading = report?.loading(among: thisMac) ?? []
+            let model = loading.first ?? awaited.first ?? thisMac[0]
+            // Ctrl-C first, whatever this look says: one pressed since the last look stops the wait even when the model
+            // has loaded since, so nothing is written.
+            if interrupt.wasPressed { return erasingLiveLine(.interrupted(model: model)) }
             if loading.isEmpty {
                 // Nothing is loading. That stands at once after models this wait saw loading, or when the process
                 // names a model loaded or loads before it listens. Any other answer, or none, may come before the
                 // process has said what it loads: it stands once nothing has been loading for `settleSeconds`.
                 let settled = !awaited.isEmpty || report.map { $0.loadsBeforeListening || !$0.loaded.isEmpty } == true
                 if settled || emptySince.map({ now - $0 >= Self.settleSeconds }) == true {
-                    return nothingLoading(awaited: awaited, loaded: report?.loaded ?? [], elapsed: now - start,
-                                          name: name, say: say)
+                    return nothingLoading(awaited: awaited, report: report, elapsed: now - start, name: name, say: say)
                 }
                 if emptySince == nil { emptySince = now }
             }
-            let model = loading.first ?? awaited.first ?? thisMac[0]
-            if interrupt.wasPressed { return erasingLiveLine(.interrupted(model: model)) }
             if !loading.isEmpty {
                 if now - start >= timeout { return erasingLiveLine(.timedOut(model: model)) }
                 if awaited.isEmpty, liveLine == nil { say(Self.startLine(name(model), tools: tools, timeout: timeout)) }
@@ -184,16 +191,17 @@ struct ModelLoadWait {
         }
     }
 
-    /// The wait ended with nothing loading: the models it waited for that loaded, or the first that didn't (its
-    /// process may have ended).
-    private func nothingLoading(awaited: [String], loaded: Set<String>, elapsed: TimeInterval,
+    /// The wait ended with nothing loading, as the process's last `report` says: the models it waited for that loaded,
+    /// or the first that didn't (its process may have ended).
+    private func nothingLoading(awaited: [String], report: ModelLoads?, elapsed: TimeInterval,
                                 name: (String) -> String, say: (String) -> Void) -> Outcome {
-        guard !awaited.isEmpty else { return .ready(waited: false) }
-        let done = awaited.filter(loaded.contains)
+        let loaded = report.flatMap { $0.loadsBeforeListening ? nil : $0.loaded }
+        guard !awaited.isEmpty else { return .ready(waited: false, loaded: loaded) }
+        let done = awaited.filter { loaded?.contains($0) == true }
         guard !done.isEmpty else { return erasingLiveLine(.notLoaded(model: awaited[0])) }
         liveLine?.erase()
         say(Self.loadedLine(done.map(name), elapsed: elapsed))
-        return .ready(waited: true)
+        return .ready(waited: true, loaded: loaded)
     }
 
     private func erasingLiveLine(_ outcome: Outcome) -> Outcome {
@@ -235,6 +243,12 @@ struct ModelLoadWait {
     static func stopped(_ model: String, tools: [IntegrationTool]) -> String {
         "Stopped waiting for \(model) to load, so \(ToolIntegrationStep.notSetUp(tools)); nothing was written. Run "
             + "`\(ToolIntegrationStep.command(tools))` again once `\(ToolIntegrationStep.cli) status` shows it loaded."
+    }
+
+    /// Ctrl-C as the wait ended, after its last look; nothing was written.
+    static func stoppedBeforeWriting(_ tools: [IntegrationTool]) -> String {
+        "Stopped before setting up \(ToolIntegrationStep.names(tools)); nothing was written. Run "
+            + "`\(ToolIntegrationStep.command(tools))` again."
     }
 
     /// `42s`, `1m 12s`, `10m 0s`.

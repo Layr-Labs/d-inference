@@ -16,8 +16,8 @@ import Foundation
 /// - The pause itself cancels nothing: Darkbloom work accepted before it
 ///   finishes, with no drain bound (unlike an add-on hold). Only while one of
 ///   the owner's requests waits in an engine's queue does Darkbloom work on
-///   that model that has sent no output give way, to be served elsewhere
-///   (`giveWayToOwner`); work that has sent output still finishes.
+///   that model that is still queued give way, to be served elsewhere
+///   (`giveWayToOwner`); work the engine has admitted still finishes.
 /// - An add-on hold outranks the pause. While both apply, the busy fields
 ///   describe the hold (`publishBusy`), and the pause goes on under it.
 /// - `desired_models` waits. Whichever of a drain, a hold and the pause ends
@@ -61,21 +61,28 @@ extension ProviderLoop {
 
     /// The owner's request on `modelId` is waiting in its engine's queue
     /// (`EngineV2Bridge.watchOwnerWait`). Each Darkbloom request on that
-    /// model that has sent no output gives way: it is cancelled and ends with
-    /// the typed drain refusal (`drainRefusal`), which the coordinator
-    /// re-routes to another provider before anything reaches its client, with
-    /// no retry charge or health strike.
+    /// model that is still queued gives way: it is cancelled and ends with the
+    /// typed drain refusal (`drainRefusal`), with no retry charge or health
+    /// strike. The coordinator re-routes it to another Mac, or answers its
+    /// client with a retryable 429 when no other Mac can take it.
+    /// - Only queued work: a request the engine has admitted, in its prompt or
+    ///   past it, keeps its work and finishes
+    ///   (`EngineV2Bridge.hasAdmitted(darkbloomRequest:)`). One not yet in the
+    ///   engine, or put back in its queue, is queued.
     /// - Only before its first output: `InferenceCancellationToken.giveWay()`
     ///   fails once the request has claimed it, so a Darkbloom request that is
-    ///   streaming is never touched and finishes.
+    ///   streaming is never touched.
     /// - Only the owner's requests on a Mac with me first on call it: the
     ///   closure that does exists only then (`acquireModelForLocal`).
     /// - A request still being admitted has no token yet and is skipped; the
     ///   owner's request asks again at its next look while it still waits.
     func giveWayToOwner(modelId: String) async {
+        let bridge = modelSlots[modelId]?.engineV2
         for (requestId, model) in requestToModel where model == modelId {
-            guard let token = await cancellationRegistry.token(for: requestId), token.giveWay() else { continue }
-            logger.info("Me first: Darkbloom request \(requestId) had sent nothing; it goes back to the network so your request can start")
+            guard let token = await cancellationRegistry.token(for: requestId) else { continue }
+            if let bridge, await bridge.hasAdmitted(darkbloomRequest: requestId) { continue }
+            guard token.giveWay() else { continue }
+            logger.info("Me first: Darkbloom request \(requestId) was still queued; it goes back to the network so your request can start")
             await handleCancellation(requestId: requestId, receivedFromCoordinator: false)
         }
     }

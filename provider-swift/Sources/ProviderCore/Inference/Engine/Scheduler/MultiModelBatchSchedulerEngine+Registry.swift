@@ -111,7 +111,7 @@ public extension MultiModelBatchSchedulerEngine {
         /// request that arrived at that moment.
         public let queueExitedAt: ContinuousClock.Instant?
         /// Me first, for the owner's request on a Mac that serves both: asks
-        /// Darkbloom work on this model that hasn't answered to give way while
+        /// Darkbloom work on this model that is still queued to give way while
         /// the request waits in the engine's queue (`MeFirstOwnerRequest`).
         /// Nil otherwise.
         public let makeRoomForOwner: (@Sendable () async -> Void)?

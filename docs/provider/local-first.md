@@ -126,11 +126,13 @@ With **Both, me first**, Darkbloom pauses while you use this Mac:
   before you started that have begun answering finish normally; none of them
   is cut off. Your models stay loaded.
 - **When your request has to wait:** if this Mac's memory, or its room for
-  requests, is taken when you send one, Darkbloom requests that haven't sent
-  any output yet go back to the network, which serves them on another Mac.
-  Their users see nothing of it, and it doesn't count against this Mac. Your
-  request then waits only for requests that are already answering, Darkbloom's
-  or your own. If they don't make room within 2 minutes, it fails, as before.
+  requests, is taken when you send one, Darkbloom requests still waiting in
+  this Mac's queue go back to the network. Each is served by another Mac, or
+  gets a retryable "busy" error if the whole network is full, and it doesn't
+  count against this Mac. Darkbloom requests this Mac has started, in their
+  prompt or answering, finish. Your request then waits only for requests this
+  Mac has started, Darkbloom's or your own. If they don't make room within 2
+  minutes, it fails, as before.
 - **When you stop:** Darkbloom traffic comes back by itself once none of your
   requests has run for 2 minutes.
 

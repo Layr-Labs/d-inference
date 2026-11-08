@@ -1099,10 +1099,11 @@ extension EngineV2Bridge {
             maxTokens: cbv2Request.maxTokens,
             submittedAt: engineAdmittedAt,
             profile: profile,
-            prefillReceipt: prefillReceipt
+            prefillReceipt: prefillReceipt,
+            darkbloomRequestId: MeFirstDarkbloomRequest.id
         )
         consumePrefillReceipt(id: id, receipt: prefillReceipt)
-        // Me first: while the owner's request waits in the queue, Darkbloom work that hasn't answered gives way.
+        // Me first: while the owner's request waits in the queue, Darkbloom work still queued gives way.
         if let makeRoom = MeFirstOwnerRequest.makeRoom { watchOwnerWait(id: id, makeRoom: makeRoom) }
         // Wedge instrumentation: the request is now in the engine's hands.
         wedgeMonitor.recordAdmit(

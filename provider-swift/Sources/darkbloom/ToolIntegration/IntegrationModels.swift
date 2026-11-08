@@ -39,8 +39,9 @@ struct IntegrationModel: Equatable, Sendable {
     struct Fallback: Equatable, Sendable {
         /// The endpoint's output cap; nil when it gave none.
         var endpointOutputCap: Int?
-        /// The endpoint lists image input for the model: its engine takes images, whatever an entry says.
-        var endpointImageInput = false
+        /// The endpoint settles the model's image input, so an entry can't change it: the engine's word for a model
+        /// served here, either way, or `image` listed for a model served elsewhere.
+        var endpointSettlesImageInput = false
     }
 
     /// A model's entry in a tool's config, as the tool has it now; nil for what the entry doesn't hold.
@@ -55,7 +56,7 @@ struct IntegrationModel: Equatable, Sendable {
     }
 
     /// The model with what the tool's `entry` already says in place of its fallbacks, so a run without the catalog
-    /// never downgrades what a run with it wrote: the name, tools, image input (unless the endpoint lists it) and
+    /// never downgrades what a run with it wrote: the name, tools, image input (unless the endpoint settles it) and
     /// reasoning, the context when the endpoint gives none, and the output while the context is the one it was set for
     /// (unless the endpoint gives a cap).
     func keeping(_ entry: Entry?) -> IntegrationModel {
@@ -69,7 +70,8 @@ struct IntegrationModel: Equatable, Sendable {
             id: id, name: fallbackName ? entry.displayName.map { Self.name($0, at: location) } ?? name : name,
             location: location, contextLength: context,
             outputLimit: keptOutput ?? context.map { max(1, min(cap, $0 / 4)) },
-            tools: entry.tools ?? tools, imageInput: fallback.endpointImageInput || (entry.imageInput ?? imageInput),
+            tools: entry.tools ?? tools,
+            imageInput: fallback.endpointSettlesImageInput ? imageInput : entry.imageInput ?? imageInput,
             reasoning: entry.reasoning ?? reasoning, fallback: fallback)
     }
 
@@ -189,10 +191,13 @@ enum IntegrationModels {
     /// - Context: the endpoint's (what this engine admits now), else the catalog's maximum, else unknown.
     /// - Output cap: `min(max output, context / 4)`, the max output being the endpoint's, else the catalog's, else
     ///   `defaultOutputCap`.
-    /// - Capabilities: the catalog's names, and image input also when the endpoint lists `image` among the model's
-    ///   `input_modalities` (this Mac's engine says so, catalog or not). Without the catalog's names, tools on
-    ///   (Darkbloom serves tool calls on its chat models), text input unless the endpoint lists images (the engine
-    ///   refuses them on text-only builds) and no reasoning claim: reasoning comes from the catalog alone.
+    /// - Image input: for a model served here (this Mac, or the pair it leads or relays to), what its engine lists in
+    ///   `input_modalities`, catalog or not: the catalog can't add an input the engine refuses (a Gemma 4 pair serves
+    ///   text only), and the engine adds one the catalog lacks (MiMo V2.6). For a model served elsewhere (your Macs,
+    ///   the network), or one whose engine gives no word yet (a pair whose slot isn't up), the catalog's names, with
+    ///   `image` the list adds.
+    /// - Other capabilities: the catalog's names. Without them, tools on (Darkbloom serves tool calls on its chat
+    ///   models) and no reasoning claim: reasoning comes from the catalog alone.
     /// - A model the catalog doesn't describe carries `fallback`: a tool's own entry for it keeps its values
     ///   (`keeping(_:entries:)`).
     static func resolve(_ listed: [EndpointModel], catalog: CatalogSnapshot?) -> [IntegrationModel] {
@@ -210,14 +215,18 @@ enum IntegrationModels {
             let cap = positive(entry.maxOutputLength) ?? positive(details.model?.maxOutputLength) ?? defaultOutputCap
             let capabilities = Set((details.model?.capabilities ?? []).map { $0.lowercased() })
             let display = details.name.flatMap { $0.isEmpty ? nil : $0 } ?? entry.id
+            // The engine's word, for a model served here.
+            let engineImageInput = location == .thisMac
+                ? entry.inputModalities.map { LocalInputModalities.takesImages($0) } : nil
             return IntegrationModel(
                 id: entry.id, name: IntegrationModel.name(display, at: location), location: location,
                 contextLength: context, outputLimit: context.map { max(1, min(cap, $0 / 4)) },
                 tools: capabilities.isEmpty || !capabilities.isDisjoint(with: toolCapabilities),
-                imageInput: entry.takesImages || !capabilities.isDisjoint(with: imageCapabilities),
+                imageInput: engineImageInput ?? (entry.takesImages || !capabilities.isDisjoint(with: imageCapabilities)),
                 reasoning: !capabilities.isDisjoint(with: reasoningCapabilities),
                 fallback: details.model == nil
-                    ? .init(endpointOutputCap: positive(entry.maxOutputLength), endpointImageInput: entry.takesImages)
+                    ? .init(endpointOutputCap: positive(entry.maxOutputLength),
+                            endpointSettlesImageInput: engineImageInput != nil || entry.takesImages)
                     : nil)
         }
         return ordered(models)

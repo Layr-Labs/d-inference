@@ -2026,7 +2026,10 @@ first committed token (the pump's first-token branch) or when the pump ends with
 publishes no count in between (`EngineLoopV2` keeps each row's `numComputedTokens` for its prefill
 lease only), so until the prompt is done the API's comments give only its size
 (`: prefill in progress, <total> prompt tokens`), never a count the engine didn't report. Coordinator
-requests have none, and nothing runs per token
+requests have none, and neither do calibration probes: a calibration session that a streamed request's
+model load starts (`scheduleLoadedModelCalibration`) inherits the request's task-locals, so
+`runModelCalibrationRequest` unbinds `current` around its submit, and the probe neither says nor ends
+the request's progress. Nothing runs per token
 ([prefill progress](../provider/direct-mode.md#a-long-prompts-progress)).
 
 The SSD stage runs before `engine.submit`, off the engine queue, while the

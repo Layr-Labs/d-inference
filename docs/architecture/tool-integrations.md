@@ -41,15 +41,18 @@ flowchart LR
    chat model from the catalog (`display_name`, with where it runs: this Mac, your Macs, the network), takes its
    context from the endpoint, else the catalog's maximum, its output cap as `min(max output, context / 4)` with
    `defaultOutputCap = 32_768`, and its capabilities from the catalog's names (tools on and text-only input when the
-   catalog is unreachable). Image input comes from the engine as well: a model the endpoint lists with `image` among
-   its `input_modalities` (this Mac's engine for its models, `EndpointModel.takesImages`) gets it whatever the
-   catalog says, so MiMo V2.6, whose catalog row is text only, gets it, offline too. Reasoning stays the catalog's: the
-   engine doesn't say which models reason. A model the catalog doesn't describe (offline, or one it doesn't list)
-   carries `IntegrationModel.fallback`, and each planner first reads its own entry for the model back from the file
+   catalog is unreachable). Image input for a model served here (this Mac, or the pair it leads or relays to) is its
+   engine's: the `input_modalities` of its `this-mac` entry decide, catalog or not. So MiMo V2.6, whose catalog row
+   is text only, gets image input, offline too, and a Gemma 4 pair, which serves text alone though the catalog lists
+   vision, gets none (an image would be refused with 400). For a model served elsewhere (your Macs, the network), or
+   one this Mac lists without `input_modalities` (a pair whose slot isn't up), the catalog's names decide, with the
+   `image` the list adds (`EndpointModel.takesImages`). Reasoning stays the catalog's: the engine doesn't say which
+   models reason. A model the catalog doesn't describe (offline, or one it doesn't list) carries
+   `IntegrationModel.fallback`, and each planner first reads its own entry for the model back from the file
    (`OpenCodeConfigPlan.modelEntries`, `HermesEdit.modelEntries`): `IntegrationModel.keeping` takes the entry's name,
-   capabilities and vision (image input the endpoint lists stays), its context when the endpoint gives none, and its
-   output while the context is the one it was set for. A model with no entry keeps the fallbacks and is named in
-   `ToolConfigSummary.undescribed`.
+   capabilities and vision (unless the endpoint settles image input, `Fallback.endpointSettlesImageInput`), its
+   context when the endpoint gives none, and its output while the context is the one it was set for. A model with no
+   entry keeps the fallbacks and is named in `ToolConfigSummary.undescribed`.
    For a model this Mac has loaded, the endpoint lists its whole context window as both the context and the max
    output (`LocalModelLimits(window:)`, `provider-swift/Sources/ProviderCore/Server/LocalRouterModels.swift`), so
    the writers give it its full context window and a quarter of it as output, not the catalog's smaller output cap

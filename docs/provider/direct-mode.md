@@ -307,7 +307,7 @@ coordinator's `self` list names this Mac's own builds by their aliases.
 | `owned_by` | `this-mac`, `my-macs` (your other Macs, free) or `darkbloom` (the network, billed). Before the router, this Mac's entries said `local` |
 | `context_length`, `max_model_len` | This Mac's engine for its resident models (a pair's leader: the context the pair's mode serves); else the Darkbloom catalog (`/v1/models/catalog`), by model or by the alias's build; omitted when unknown |
 | `max_output_length` | This Mac's loaded models: their context window too, as a request's prompt and output together may fill it ([each model's whole window](#each-models-whole-window-on-this-mac)). A pair's leader lists the output the pair's mode serves, which the pair holds every `max_tokens` to (it refuses a larger one, `output_too_long`), as its slot reports to the coordinator (`ProviderLoop.localModelLimits`). Else the catalog's; omitted when unknown |
-| `input_modalities` | What a request may carry, as this Mac's engine serves the model, loaded or not: `["text", "image"]` for a model it serves with vision (`is_vision`, which the coordinator routes images on), else `["text"]`. On a pair's leader, the media the pair takes in its mode: `["text", "image", "video"]` for GLM-5.3-Flash and Qwen 3.8 27B in tensor parallel, `["text"]` for every other pair. Your Macs' and the network's models keep the coordinator's, when its list has one. Reasoning isn't listed: the catalog says which models reason (`provider-swift/Sources/ProviderCore/Server/LocalInputModalities.swift`, `LocalInputModalities`) |
+| `input_modalities` | What a request may carry, as this Mac's engine serves the model, loaded or not: `["text", "image"]` for a model it serves with vision (`is_vision`, which the coordinator routes images on), else `["text"]`. On a pair's leader, the media the pair takes in its mode: `["text", "image", "video"]` for GLM-5.3-Flash and Qwen 3.8 27B in tensor parallel, `["text", "image"]` on the GLM and MiMo image candidate profiles, `["text"]` for every other pair, and nothing until its slot is up. Your Macs' and the network's models keep the coordinator's, when its list has one. Reasoning isn't listed: the catalog says which models reason (`provider-swift/Sources/ProviderCore/Server/LocalInputModalities.swift`, `LocalInputModalities`) |
 | `name` | The coordinator's or the catalog's display name for your Macs' and the network's models |
 
 The coordinator's lists are cached for 30 s and the catalog for 5 minutes; a
@@ -328,9 +328,13 @@ says which bound a request met ([refused request shapes](#refused-request-shapes
 the window (400 `context_length_exceeded`, in words that name it) or this Mac's
 memory (503, which the router passes on when a route dials out).
 
-Each model's input is in the list too (`input_modalities`, above), so a tool
-offers images for a model this Mac serves with vision, whatever the catalog
-says of it.
+Each model's input is in the list too (`input_modalities`, above), and for a
+model served here (this Mac, or the pair it leads or relays to) the engine's
+word is the one the tools follow: `start --opencode` and `--hermes` offer images
+for it exactly when its engine takes them, whatever the catalog says. A Gemma 4
+pair, which serves text alone, gets none (an image would be refused with 400);
+MiMo V2.6 on one Mac gets them, though its catalog row lists text only. For your
+other Macs' and the network's models, the catalog decides.
 
 <!-- pending R-FULL: GLM-5.3-Flash and Nemotron Super at their 1,048,576-token configs on one Mac; video and audio input for the models this Mac serves them for, in this list; a memory refusal that names how many tokens this Mac holds; the same for direct use through the network; OpenRouter is separate. -->
 
@@ -408,6 +412,10 @@ Each streamed request has one timer, from its first frame to its first token,
 and nothing runs per token. A request that isn't streamed gets nothing until its
 answer, as HTTP has no interim bytes: give such a client a timeout of minutes
 for a long prompt (the OpenAI SDKs wait 10 minutes by default), or stream.
+Before the engine accepts a request, nothing is sent either, not even the
+headers: while the model loads for it, while it waits for a pair's lane, and
+while its prompt is tokenized. A client that limits how long it waits for
+headers must allow a cold model load.
 
 ### Refused request shapes
 

@@ -17,11 +17,13 @@ public enum LocalInputModalities {
     }
 
     /// A pair's slot: images and video on the tensor-parallel GLM and Qwen pairs whose ranks serve their media
-    /// contracts (`ClusterGLMMedia`, `ClusterQwenMedia`), images on the GLM image profile, and text alone otherwise
-    /// (every pipeline, and the Gemma and MiMo pairs), whatever the model takes on one Mac.
+    /// contracts (`ClusterGLMMedia`, `ClusterQwenMedia`), still images on the GLM and MiMo image candidate profiles,
+    /// and text alone otherwise (every pipeline, and the other Gemma and MiMo pairs), whatever the model takes on one
+    /// Mac.
     static func of(pair slot: EngineV2Bridge) -> [String] {
         let media = slot.clusterGLMMediaIngress != nil || slot.clusterQwenMediaIngress != nil
-        return list(image: media || slot.clusterGLMImageConfiguration != nil, video: media)
+        let stillImages = slot.clusterGLMImageConfiguration != nil || slot.draftMiMoImageConfiguration != nil
+        return list(image: media || stillImages, video: media)
     }
 
     /// A model whose list entry says `modalities` takes images (`image`, in any case).

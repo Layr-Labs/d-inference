@@ -1130,8 +1130,11 @@ pipeline, other models) it registers with the coordinator as text only, so no
 media request is routed to it, and a pair registered for media serves only
 while both Macs' parts report media. The pair's own API says the same in its
 `/v1/models`: `input_modalities` is `["text", "image", "video"]` where the
-pair's mode serves media (`["text", "image"]` on the GLM image candidate's
-profile) and `["text"]` otherwise (`LocalInputModalities`). GLM-5.3-Flash answers its output
+pair's mode serves media (`["text", "image"]` on the GLM and MiMo image
+candidates' profiles) and `["text"]` otherwise (`LocalInputModalities`).
+`darkbloom start --opencode` and `--hermes` follow it for the pair's model,
+whatever the catalog says, so a Gemma 4 pair gets no image input in the tools.
+GLM-5.3-Flash answers its output
 controls as one Mac does: hidden reasoning is withheld, with or without media,
 and with images or video a `response_format` JSON answer or a required or
 named tool call is refused. Content parts of an unknown type are refused,

@@ -431,8 +431,8 @@ They run once, at `start`:
    (``Stopped waiting for Gemma 4 26B to load, so OpenCode wasn't set up;
    nothing was written. …``). A model that isn't loading (unloaded when idle,
    or one that loads on a request) isn't waited for: it gets the catalog's
-   limits, and one line says to run the start again once `darkbloom status`
-   shows it loaded.
+   limits, and one line says to run `darkbloom --opencode` again once
+   `darkbloom status` shows it loaded.
 
 A tool it can't set up prints `✗` and why, writes nothing and ends with
 `Darkbloom keeps serving.`; the start then exits 1 (a background start keeps

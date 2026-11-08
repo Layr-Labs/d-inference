@@ -54,11 +54,14 @@ flowchart LR
    this Mac lists for its start: this Mac's `/v1/models` gives a model's own limits only once it is loaded, and the
    router may fill the catalog's in until then. `ModelLoads.reported` believes only the daemon state that process
    wrote (its pid is `local.json`'s): `startupPreloadPendingModels` and `warmModels`; the coordinator-less server
-   (Only me) writes none of them and loads before it listens. An answer naming nothing loaded and nothing to load is
-   asked again `settleSeconds` (1 s) later, for a provider whose API answered before it said what it loads. Then the
-   list is read again. The wait draws one `LiveLine` on a terminal (else a start and an end line), takes SIGINT only
-   while it runs (`InterruptWatch`) and ends after `defaultTimeout` (600 s); a timeout, a model that didn't load, or
-   Ctrl-C writes nothing (`ToolIntegrationStep.waitForModels`).
+   (Only me) writes none of them and loads before it listens. Where that state can't tell (there is none, it is
+   another process's or another schema's, or the API is a pair's, whose process preloads nothing or writes no state),
+   nothing is waited for, as before the wait; only a state that keeps naming a model as pending holds the start, for
+   at most the deadline. An answer naming nothing loaded and nothing to load is asked again `settleSeconds` (1 s)
+   later, for a provider whose API answered before it said what it loads. Then the list is read again. The wait draws
+   one `LiveLine` on a terminal (else a start and an end line), takes SIGINT only while it runs (`InterruptWatch`) and
+   ends after `defaultTimeout` (600 s); a timeout, a model that didn't load, or Ctrl-C writes nothing
+   (`ToolIntegrationStep.waitForModels`).
 3. **OpenCode.** `OpenCodeConfigPlan.plan` reads the file into byte ranges with `JSONCDocument` and replaces only the
    `providers.<id>` value, or appends it in the file's indentation and trailing-comma style. The block has the base
    URL, `apiKey: "{file:<key file>}"` (under `~` in the home directory), `compatibility.maxTokensField: "max_tokens"`

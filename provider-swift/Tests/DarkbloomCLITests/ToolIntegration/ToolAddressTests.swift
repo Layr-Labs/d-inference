@@ -103,6 +103,19 @@ struct ToolAddressTests {
             + "(http://127.0.0.1:8123/v1): `darkbloom --opencode --hermes` points them there.")
     }
 
+    @Test("a base URL with a slash at its end is the same address")
+    func aTrailingSlashIsTheSameAddress() throws {
+        let sandbox = try AddressSandbox()
+        let settings = #"{ "baseURL": "http://127.0.0.1:8123/v1/", "apiKey": "{file:~/.darkbloom/local_token}" }"#
+        try sandbox.directory.write(#"{ "providers": { "darkbloom": { "settings": \#(settings) } } }"#,
+                                    to: "home/.config/opencode/opencode.jsonc")
+        try sandbox.directory.write("providers:\n  darkbloom:\n    api: \"http://127.0.0.1:8123/v1/\"\n"
+            + "    key_cmd: \"/bin/cat \(sandbox.keyFile.path)\"\n", to: "home/.hermes/config.yaml")
+        #expect(try sandbox.notice(port: 8123).isEmpty)
+        #expect(try sandbox.notice(port: 8124).last?.hasPrefix("OpenCode and Hermes point at "
+            + "http://127.0.0.1:8123/v1/, not this Mac's local API") == true, "another port still is another address")
+    }
+
     @Test("no line with a tool flag (the start points the tools there itself) or without a local API")
     func noLineWhenTheStartSetsToolsUpOrServesNoAPI() async throws {
         let sandbox = try AddressSandbox()
@@ -135,5 +148,21 @@ struct ToolAddressTests {
                                            home: F.home) == nil)
         #expect(HermesConfigPlan.pointer(in: Data("providers:\n  other:\n    api: x\n".utf8), provider: F.provider)
             == nil)
+    }
+
+    @Test("a key command or file reference Darkbloom doesn't write names no key file")
+    func otherKeyFormsNameNoFile() {
+        let api = "http://127.0.0.1:8001/v1"
+        for command in ["pass show darkbloom", "/bin/cat .darkbloom/local_token", "/bin/cat '/Users/tester/unclosed"] {
+            let text = "providers:\n  darkbloom:\n    api: \"\(api)\"\n    key_cmd: \"\(command)\"\n"
+            #expect(HermesConfigPlan.pointer(in: Data(text.utf8), provider: F.provider)
+                == ToolPointer(baseURL: api, keyFile: nil), "\(command)")
+        }
+        for reference in ["{file:.darkbloom/local_token}", "dk-local-written-in-the-file"] {
+            let settings = #"{ "baseURL": "\#(api)", "apiKey": "\#(reference)" }"#
+            let text = #"{ "providers": { "darkbloom": { "settings": \#(settings) } } }"#
+            #expect(OpenCodeConfigPlan.pointer(in: Data(text.utf8), provider: F.provider, home: F.home)
+                == ToolPointer(baseURL: api, keyFile: nil), "\(reference)")
+        }
     }
 }

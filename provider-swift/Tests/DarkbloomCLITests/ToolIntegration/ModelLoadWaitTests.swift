@@ -128,6 +128,7 @@ struct ModelLoadWaitTests {
             #expect(quiet.now - 1_000 >= ModelLoadWait.settleSeconds && quiet.now - 1_000 < 2, "\(String(describing: answer))")
             #expect(quiet.reads == 1 && quiet.said.first == "✓ OpenCode can use Darkbloom: 1 model.")
         }
+        #expect(ModelLoadWait.settleSeconds == 1, "a second, as the docs say")
     }
 
     // MARK: - Nothing written
@@ -207,6 +208,14 @@ struct ModelLoadWaitTests {
             == "Gemma 4 26B, Qwen 3.8 27B and GLM-5.3-Flash loaded after 2m 5s.")
     }
 
+    @Test("no terminal, no live line: a pipe, a log or a dumb terminal gets whole lines only")
+    func noLiveLineWithoutATerminal() {
+        #expect(LiveLine.standardOutput(isTerminal: false, environment: ["TERM": "xterm-256color"]) == nil)
+        #expect(LiveLine.standardOutput(isTerminal: true, environment: ["TERM": "dumb"]) == nil)
+        #expect(LiveLine.standardOutput(isTerminal: true, environment: ["TERM": "xterm-256color"]) != nil)
+        #expect(LiveLine.standardOutput(isTerminal: true, environment: [:]) != nil, "a terminal that names no TERM")
+    }
+
     // MARK: - What the local API's process says
 
     @Test("only the local API's own process is believed, and Only me's server has loaded before it listens")
@@ -219,6 +228,15 @@ struct ModelLoadWaitTests {
         #expect(ModelLoads.reported(by: nil, apiPID: 42) == nil)
         let onlyMe = DaemonState(pid: 42, version: "test", writtenAt: 0, startedAt: 0)
         #expect(ModelLoads.reported(by: onlyMe, apiPID: 42) == ModelLoads(loadsBeforeListening: true))
+    }
+
+    @Test("still loading: pending, listed by this Mac and not loaded yet, in the order the process loads them")
+    func whatStillLoads() {
+        // The process keeps a model pending through its warm-up, after it is loaded.
+        #expect(ModelLoads(loaded: ["a"], pending: ["a", "b", "c"]).loading(among: ["a", "b", "d"]) == ["b"])
+        #expect(ModelLoads(pending: ["b", "a"]).loading(among: ["a", "b"]) == ["b", "a"])
+        #expect(ModelLoads(loaded: ["a"]).loading(among: ["a"]).isEmpty)
+        #expect(ModelLoads(loadsBeforeListening: true).loading(among: ["a"]).isEmpty)
     }
 
     @Test("the step `start` runs waits")

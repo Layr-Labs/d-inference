@@ -4,10 +4,17 @@ import ProviderCore
 
 /// What the local API's own process says about loading the models it serves: its daemon state (`DaemonStateFile`),
 /// read only when that process wrote it (its pid is the one in `local.json`).
+///
+/// When it can't tell, nothing is waited for and the tools are set up as before this wait: there is no state, it is
+/// another process's, this build can't read it (another schema), or an older provider's lacks the pending list. A
+/// pair's API can't tell either: its process preloads nothing (the pair's own processes load its model) or writes no
+/// state. Only a state that keeps naming a model as pending holds the start, and then for at most the wait's deadline,
+/// even when its process has stopped writing it.
 struct ModelLoads: Equatable, Sendable {
     /// Loaded now (`DaemonState.warmModels`).
     var loaded: Set<String> = []
-    /// Its start's models still to load, the first loading now (`DaemonState.startupPreloadPendingModels`).
+    /// Its start's models still to load, the first loading now (`DaemonState.startupPreloadPendingModels`). A model
+    /// stays in the list until a later one starts or the preload ends, so through its warm-up too.
     var pending: [String] = []
     /// The coordinator-less server (Only me) loads its models before its API listens, and its state names none.
     var loadsBeforeListening = false
@@ -23,10 +30,16 @@ struct ModelLoads: Equatable, Sendable {
     static func live() -> ModelLoads? {
         reported(by: DaemonStateFile.read(), apiPID: LocalEndpoint.readLiveInfo()?.pid)
     }
+
+    /// Those of `thisMac` that its start still loads: pending and not loaded yet.
+    func loading(among thisMac: [String]) -> [String] {
+        pending.filter { thisMac.contains($0) && !loaded.contains($0) }
+    }
 }
 
 /// Ctrl-C while the start waits for a model (`ModelLoadWait`). Between `begin` and `end` the signal only presses this
-/// watch; before and after, it does what it did.
+/// watch; before and after, it does what it did. `begin` and `end` run on the wait's own task; the signal's handler
+/// only presses.
 final class InterruptWatch: @unchecked Sendable {
     private let lock = NSLock()
     private let signalNumber: Int32?
@@ -77,29 +90,27 @@ struct LiveLine {
 
     func erase() { write("\r\u{1B}[2K") }
 
-    /// Standard output, when it is a terminal that can draw a line again (not `TERM=dumb`); nil otherwise.
-    static var standardOutput: LiveLine? {
-        guard isatty(STDOUT_FILENO) != 0, ProcessInfo.processInfo.environment["TERM"] != "dumb" else { return nil }
-        return LiveLine(write: { text in
-            print(text, terminator: "")
-            fflush(stdout)
-        }, columns: {
-            var size = winsize()
-            guard ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0, size.ws_col > 0 else { return 80 }
-            return Int(size.ws_col)
-        })
+    /// Standard output, when it is a terminal that can draw a line again (not `TERM=dumb`); nil without one (a pipe or
+    /// a log), where nothing is drawn in place.
+    static func standardOutput(isTerminal: Bool = isatty(STDOUT_FILENO) != 0,
+                               environment: [String: String] = ProcessInfo.processInfo.environment) -> LiveLine? {
+        guard isTerminal, environment["TERM"] != "dumb" else { return nil }
+        return LiveLine(write: DarkbloomCommandLook.writeToStandardOutput,
+                        columns: { DarkbloomCommandLook.standardOutputColumns(fallback: 80) })
     }
 }
 
 /// Before `darkbloom --opencode` / `--hermes` write a tool's config, they wait while the local API's process still loads
 /// this Mac's models at its start: until a model is loaded, this Mac's `/v1/models` gives none of its own limits, and
-/// the tools would get the catalog's. One live line on a terminal, else one line as it starts and one as it ends; at most
+/// the tools would get the catalog's. That list can't say which models are loading: it lists a model being loaded just
+/// as one that isn't loaded, and its router can fill in the catalog's limits for both. So the wait asks the process
+/// itself (`ModelLoads`). One live line on a terminal, else one line as it starts and one as it ends; at most
 /// `timeout`; Ctrl-C ends it. A model that isn't loading (one that unloads when idle, or loads on a request) isn't
 /// waited for.
 struct ModelLoadWait {
     enum Outcome: Equatable, Sendable {
-        /// Nothing of this Mac's is loading now: set the tools up with what it lists. `waited`: after a wait, when this
-        /// Mac's list has changed since it was read.
+        /// Nothing of this Mac's is loading now: set the tools up. `waited`: it waited for models that have loaded
+        /// since this Mac's list was read, so the list is read again for their limits.
         case ready(waited: Bool)
         /// The model it waited for didn't load.
         case notLoaded(model: String)
@@ -117,7 +128,7 @@ struct ModelLoadWait {
     /// Between two looks; the spinner turns once per look.
     var pause: () async -> Void = { try? await Task.sleep(for: .milliseconds(250)) }
     var interrupt = InterruptWatch()
-    /// Nil without a terminal.
+    /// Nil without a terminal: then nothing is drawn in place, and the wait says one line as it starts instead.
     var liveLine: LiveLine?
 
     /// The longest wait. A model's load takes from seconds to a few minutes; past this, something else is wrong.
@@ -129,7 +140,7 @@ struct ModelLoadWait {
 
     /// As `start` waits: the local API's own process, the terminal's live line, and Ctrl-C.
     static func live() -> ModelLoadWait {
-        ModelLoadWait(loads: { ModelLoads.live() }, interrupt: .ctrlC(), liveLine: .standardOutput)
+        ModelLoadWait(loads: { ModelLoads.live() }, interrupt: .ctrlC(), liveLine: .standardOutput())
     }
 
     /// Waits while the local API's process loads any of `thisMac` (this Mac's models as its `/v1/models` lists them)
@@ -146,23 +157,22 @@ struct ModelLoadWait {
         while true {
             let now = clock()
             let report = loads()
-            let loading = report.map { report in
-                report.pending.filter { thisMac.contains($0) && !report.loaded.contains($0) }
-            } ?? []
+            let loading = report?.loading(among: thisMac) ?? []
             if loading.isEmpty {
-                // An answer that names a model loaded, or that follows the models this wait saw loading, stands; any
-                // other stands once it is given again a second later.
+                // Nothing is loading. That stands at once after models this wait saw loading, or when the process
+                // names a model loaded or loads before it listens. Any other answer, or none, may come before the
+                // process has said what it loads: it stands once nothing has been loading for `settleSeconds`.
                 let settled = !awaited.isEmpty || report.map { $0.loadsBeforeListening || !$0.loaded.isEmpty } == true
                 if settled || emptySince.map({ now - $0 >= Self.settleSeconds }) == true {
-                    return finish(awaited: awaited, loaded: report?.loaded ?? [], elapsed: now - start, name: name,
-                                  say: say)
+                    return nothingLoading(awaited: awaited, loaded: report?.loaded ?? [], elapsed: now - start,
+                                          name: name, say: say)
                 }
                 if emptySince == nil { emptySince = now }
             }
             let model = loading.first ?? awaited.first ?? thisMac[0]
-            if interrupt.wasPressed { return end(.interrupted(model: model)) }
+            if interrupt.wasPressed { return erasingLiveLine(.interrupted(model: model)) }
             if !loading.isEmpty {
-                if now - start >= timeout { return end(.timedOut(model: model)) }
+                if now - start >= timeout { return erasingLiveLine(.timedOut(model: model)) }
                 if awaited.isEmpty, liveLine == nil { say(Self.startLine(name(model), tools: tools, timeout: timeout)) }
                 for id in loading where !awaited.contains(id) { awaited.append(id) }
                 emptySince = nil
@@ -174,18 +184,19 @@ struct ModelLoadWait {
         }
     }
 
-    /// The wait ended with nothing loading: the models it waited for that loaded, or the first that didn't.
-    private func finish(awaited: [String], loaded: Set<String>, elapsed: TimeInterval, name: (String) -> String,
-                        say: (String) -> Void) -> Outcome {
+    /// The wait ended with nothing loading: the models it waited for that loaded, or the first that didn't (its
+    /// process may have ended).
+    private func nothingLoading(awaited: [String], loaded: Set<String>, elapsed: TimeInterval,
+                                name: (String) -> String, say: (String) -> Void) -> Outcome {
         guard !awaited.isEmpty else { return .ready(waited: false) }
         let done = awaited.filter(loaded.contains)
-        guard !done.isEmpty else { return end(.notLoaded(model: awaited[0])) }
+        guard !done.isEmpty else { return erasingLiveLine(.notLoaded(model: awaited[0])) }
         liveLine?.erase()
         say(Self.loadedLine(done.map(name), elapsed: elapsed))
         return .ready(waited: true)
     }
 
-    private func end(_ outcome: Outcome) -> Outcome {
+    private func erasingLiveLine(_ outcome: Outcome) -> Outcome {
         liveLine?.erase()
         return outcome
     }

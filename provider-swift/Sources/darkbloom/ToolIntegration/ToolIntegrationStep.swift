@@ -145,12 +145,14 @@ struct ToolIntegrationStep {
 
     private func configure(_ ready: [(tool: IntegrationTool, executable: URL)], endpoint: IntegrationEndpoint,
                            requests: String) async -> Bool {
-        guard var listed = await readModels(endpoint, tools: ready.map(\.tool)) else { return false }
+        let tools = ready.map(\.tool)
+        guard let read = await readModels(endpoint, tools: tools) else { return false }
         let catalog = await fetchCatalog()
-        if let modelLoadWait {
-            guard let loaded = await waitForModels(listed, endpoint: endpoint, tools: ready.map(\.tool),
-                                                   catalog: catalog, wait: modelLoadWait) else { return false }
-            listed = loaded
+        // No tool's config is written while the local API's process still loads a model this Mac lists for its start:
+        // a wait that ends before it is loaded (the deadline, a model that didn't load, Ctrl-C) returns here, before
+        // any file is touched.
+        guard let listed = await waitForModels(read, endpoint: endpoint, tools: tools, catalog: catalog) else {
+            return false
         }
         let models = IntegrationModels.resolve(listed, catalog: catalog)
         var ok = true
@@ -178,7 +180,7 @@ struct ToolIntegrationStep {
         }
         if catalog == nil, !summaries.isEmpty {
             say(summaries.allSatisfy(\.undescribed.isEmpty) ? Self.catalogUnreachableKept
-                : Self.catalogUnreachable(ready.map(\.tool)))
+                : Self.catalogUnreachable(tools))
         }
         // This Mac lists a model's context only while it is loaded, so the tools got the catalog's limits for the rest.
         let unloaded = listed.filter {
@@ -186,7 +188,7 @@ struct ToolIntegrationStep {
         }
         if !unloaded.isEmpty {
             say(Self.runAgainOnceLoaded(unloaded.map { IntegrationModels.displayName(of: $0.id, in: catalog) },
-                                        tools: ready.map(\.tool)))
+                                        tools: tools))
         }
         let keyFile = ToolIntegration.displayPath(endpoint.keyFile, home: environment.home)
         say("  Requests: \(requests)")
@@ -205,11 +207,12 @@ struct ToolIntegrationStep {
         }
     }
 
-    /// Waits while the local API's process still loads this Mac's models in `listed`, then gives what the endpoint
-    /// lists now, their own limits included; nil, said in one line, when nothing may be written: the model didn't
-    /// load, is still loading at the deadline, or Ctrl-C stopped the wait.
+    /// Waits (`modelLoadWait`; none without it) while the local API's process still loads this Mac's models in
+    /// `listed`, then gives what the endpoint lists now, their own limits included; nil, said in one line, when nothing
+    /// may be written: the model didn't load, is still loading at the deadline, or Ctrl-C stopped the wait.
     private func waitForModels(_ listed: [EndpointModel], endpoint: IntegrationEndpoint, tools: [IntegrationTool],
-                               catalog: CatalogSnapshot?, wait: ModelLoadWait) async -> [EndpointModel]? {
+                               catalog: CatalogSnapshot?) async -> [EndpointModel]? {
+        guard let wait = modelLoadWait else { return listed }
         let thisMac = listed.filter { IntegrationModels.location(ownedBy: $0.ownedBy) == .thisMac }.map(\.id)
         let name = { (id: String) in IntegrationModels.displayName(of: id, in: catalog) }
         switch await wait.run(thisMac: thisMac, tools: tools, name: name, say: say) {

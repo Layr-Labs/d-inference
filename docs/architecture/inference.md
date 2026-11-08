@@ -4101,9 +4101,13 @@ other Mac stops taking part (unplugged, off, or serving on its own). Each tick,
 the cluster service asks `ClusterPairWatch` whether the pair actually runs here,
 from the intent, the other Mac's last real answer over the link
 (`ClusterControlNode.otherAnsweredAt`, set only by a lease or an answer, never at
-start) and whether this Mac's part serves (a coordinator-paired part's pair line
-says serving, or a part runs while the other Mac answers within the lease's
-time-to-live). Every start gets 15 minutes (`ClusterPairWatch.giveUpSeconds`).
+start) and whether this Mac's part serves (`ClusterService.partServesNow`: it
+runs while the other Mac answers within the lease's time-to-live, and on rank 0
+of a coordinator-paired pair its pair line says serving too). Only rank 0, which
+hosts the pair's slot, writes pair lines; the other rank's link follower reports
+to it over the cable, so on the Mac that follows the verdict never waits for a
+line it can't write. Every start gets 15 minutes
+(`ClusterPairWatch.giveUpSeconds`).
 
 | Verdict | When | The service |
 |---|---|---|

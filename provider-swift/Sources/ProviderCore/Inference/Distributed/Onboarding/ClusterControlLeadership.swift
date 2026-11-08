@@ -663,7 +663,7 @@ public struct ClusterPairWatch: Sendable, Equatable {
     }
 
     /// One supervision tick. `otherAnsweredAt`: `ClusterControlNode.otherAnsweredAt` (nil: not in this process's
-    /// lifetime). `serving`: this Mac's part runs and its pair serves now.
+    /// lifetime). `serving`: this Mac's part serves now, as far as this Mac can tell (`ClusterService.partServesNow`).
     public mutating func tick(now: Double, intent: Bool, otherAnsweredAt: Double?, serving: Bool) -> Verdict {
         guard intent else { startedAt = nil; servedAt = nil; return .stopped }
         let start = startedAt ?? now

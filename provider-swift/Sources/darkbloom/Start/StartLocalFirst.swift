@@ -408,10 +408,10 @@ enum ServingQuestion {
 /// Plain words for how this Mac serves, shared by `start`, `status` and `local`. Never a speed.
 enum LocalFirstWords {
     /// "1 minute", "2 minutes".
-    static func minutes(_ count: UInt64) -> String { count == 1 ? "1 minute" : "\(count) minutes" }
+    static func minutes(_ count: UInt64) -> String { MeFirstWords.minutes(count) }
 
     /// A running provider's idle time (`MeFirstSnapshot.idleMs`) in whole minutes, at least one.
-    static func idleMinutes(milliseconds: Int64) -> UInt64 { UInt64(max(1, (milliseconds + 59_999) / 60_000)) }
+    static func idleMinutes(milliseconds: Int64) -> UInt64 { MeFirstWords.idleMinutes(milliseconds: milliseconds) }
 
     /// Where the owner's requests go when this Mac can't take them, in the iPhone app's words.
     static func requests(route: LocalSettings.Route?, accountKeySaved: Bool) -> String {

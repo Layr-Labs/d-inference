@@ -183,6 +183,17 @@ struct ClusterPairSummary: Sendable, Equatable {
     /// "This Mac is in a two-Mac cluster with the other Mac (Apple M5 Max, 128 GB): stopping both Macs."
     func actingLine(_ action: String) -> String { "This Mac is in a two-Mac cluster with \(otherMac): \(action)." }
 
+    /// The line `darkbloom start` says in a terminal before the pair's screen, as that screen goes on: on the leading Mac
+    /// of a stopped pair, its model list, where Enter starts the model last used (with none chosen yet, the choice);
+    /// otherwise the pair's screen as it is, where the Mac that follows starts nothing. Never "starting": nothing starts
+    /// there before a choice (journey 2a on pair-2, J2-d).
+    var screenLine: String {
+        guard role == .leader, !started else { return actingLine("opening the pair's screen") }
+        let stopped = "This Mac is in a two-Mac cluster with \(otherMac), which is stopped."
+        guard let model else { return stopped + " Choose its model to start it." }
+        return stopped + " Press Enter to start it with \(model) (last used), or choose another model."
+    }
+
     static let stoppedLine =
         "Stopped on both Macs. They stay stopped after a restart; `\(Self.cli) start` on either Mac starts the pair again."
     /// A stop both Macs accepted whose parts haven't all ended yet (`stop` waits for them, bounded).
@@ -472,7 +483,8 @@ extension ClusterPairSummary {
     /// (`ClusterControlNode.mode`: running the cluster, or confirming its claim).
     static let otherMacPresentModes: Set<String> = ["cluster", "confirming"]
 
-    /// The coordinator's pairing, in the status line's reason place: progress, not a reason (`pairLook`'s wait).
+    /// The coordinator's pairing, in the status line's reason place: progress, not a reason (`pairLook`'s wait), as is
+    /// Apple's check of new parts (`ClusterOnboardingAppleCheck.isChecking`).
     static let pairingProgress: Set<String> = ["the coordinator paired both Macs", "waiting for the coordinator to pair both Macs"]
 
     /// A reason that ends a start's wait: one that needs a person (a login, the clock, a coordinator rule, matching
@@ -496,7 +508,8 @@ extension ClusterPairSummary {
         }
         if first.hasPrefix("Serving ") { return (.serving, nil) }
         if let reason = ClusterOnboardingNotServing.reason(inStatusLine: first) {
-            return (Self.pairingProgress.contains(reason) ? .loading : .notServing, reason)
+            let progress = Self.pairingProgress.contains(reason) || ClusterOnboardingAppleCheck.isChecking(reason)
+            return (progress ? .loading : .notServing, reason)
         }
         if first.hasPrefix("Stopped") { return (.stopped, nil) }
         if first.hasPrefix("Loading ") || first.hasPrefix("Starting ") || first == ClusterOnboardingUpdate.statusLine

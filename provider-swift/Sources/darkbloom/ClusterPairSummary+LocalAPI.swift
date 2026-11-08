@@ -20,35 +20,26 @@ struct ClusterPairLocalAPI: Sendable, Equatable {
 
 extension ClusterPairSummary {
     /// `status` and `cluster status` on a pair that serves Both, me first: whether Darkbloom is paused for you, where the
-    /// pair's local API listens, and that the other members are part of the pair and run none. The Mac whose part runs
-    /// rank 0 says it from its own part; another Mac says where to look. Nothing while the pair is stopped, and nothing
-    /// for the other two ways to serve. No key and no speed.
-    func localAPILines(now: Date = Date(), timeZone: TimeZone = .current) -> [String] {
+    /// pair's local API listens, and that the other members are part of the pair and run none. Nothing while the pair is
+    /// stopped, and nothing for the other ways to serve. No key and no speed.
+    ///
+    /// The pause comes from the part that runs rank 0. The leading Mac's status carries it when that part is its own
+    /// (`OnboardingLive.pauseLines`), and every Mac shows those lines under the pair's line: it is said once, there. A
+    /// status that doesn't carry it (that part runs on the Mac that follows, or the leading Mac's build is older) leaves
+    /// it to the Mac whose part runs rank 0, from its own part, and the other Mac says where to look.
+    func localAPILines(now: Date = Date()) -> [String] {
         guard let localAPI, started, paired, !pairingUnreadable else { return [] }
+        let statusSaysPause = lines.contains { $0.hasPrefix(MeFirstWords.pairPrefix) }
         guard localAPI.runsRankZero else {
-            return ["Local API: on \(otherMac), which runs the pair's API; `\(Self.cli) local` there shows its address and key, "
-                        + "and `\(Self.cli) status` there whether Darkbloom is paused for you",
+            return ["Local API: on \(otherMac), which runs the pair's API; `\(Self.cli) local` there shows its address and key"
+                        + (statusSaysPause ? "" : ", and `\(Self.cli) status` there whether Darkbloom is paused for you"),
                     "Members: this Mac is part of the pair; it runs no local API"]
         }
         let members = "Members: \(otherMac) is part of the pair; it runs no local API"
         guard let address = localAPI.listening else {
             return ["Local API: not listening yet; it starts with this Mac's part of the pair", members]
         }
-        return Self.pauseLines(localAPI.meFirst, now: now, timeZone: timeZone) + [Self.addressLine(address), members]
-    }
-
-    /// Whether Darkbloom is paused for you, in `status`'s single-Mac words for "the pair" (`Status.meFirstLines`).
-    static func pauseLines(_ meFirst: MeFirstSnapshot?, now: Date, timeZone: TimeZone) -> [String] {
-        guard let meFirst else {
-            return ["Pair: Darkbloom and you, shared — Darkbloom keeps serving while you use the pair (me first is off)"]
-        }
-        let serving = "Serving: ", pair = "Pair: "
-        return Status.meFirstLines(meFirst, now: now, timeZone: timeZone).map { line in
-            if line.hasPrefix(serving) { return pair + line.dropFirst(serving.count) }
-            // The line under it keeps its words under the first one's.
-            let indent = String(repeating: " ", count: serving.count)
-            return line.hasPrefix(indent) ? String(repeating: " ", count: pair.count) + line.dropFirst(indent.count) : line
-        }
+        return (statusSaysPause ? [] : MeFirstWords.pairLines(localAPI.meFirst, now: now)) + [Self.addressLine(address), members]
     }
 
     /// Where the pair's API listens on this Mac, as a tool dials it.

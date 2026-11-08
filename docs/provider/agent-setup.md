@@ -700,10 +700,18 @@ model and end with ``This Mac serves in a pair: the pair serves <model>;
 `darkbloom cluster` changes its model.`` when that isn't `<id>` (after exit
 status 3: ``This Mac is in a pair: the pair was asked to start with <model>, and
 isn't serving (above); …``).
-Without a terminal it looks like this:
+Without a terminal, a stopped pair's start looks like this. `checking both
+Macs with Apple` is the usual first minute of each part, not a failure: wait
+through it. On a pair that already serves, the first line is ``…: the pair
+already serves.``, the result block follows at once, and nothing is asked of
+either Mac.
 
 ```text
 This Mac is in a two-Mac cluster with the other Mac (Apple M5 Max, 128 GB): starting the pair.
+  Qwen 3.8 27B: registering both Macs with the coordinator for pairing.
+  Waiting until the pair serves (up to 10 min).
+  Qwen 3.8 27B is not serving yet: checking both Macs with Apple.
+  Qwen 3.8 27B is not serving yet: the coordinator paired both Macs.
 ✓ Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel).
   Model:   Qwen 3.8 27B · tensor parallel · M3 Ultra 50% / M5 Max 50%
   Macs:    this Mac (Mac Studio) leads · the other Mac (Apple M5 Max, 128 GB) follows
@@ -796,7 +804,7 @@ port setup and the shared models for the other app, so it asks for no password
 
 | Signal | Cause | Do |
 |---|---|---|
-| The console says the Mac is waiting for verification, or `✗ Not serving: <Mac> isn't verified by Apple yet; Darkbloom retries by itself at about HH:MM. Don't restart either Mac until then.` | Apple's App Attest has not verified that Mac yet. The coordinator sends work only to verified Macs, and pairs only those | Run `darkbloom doctor` on that Mac. If `app attest key — no usable key; the local key-generation safeguard clears in <time>` appears, wait that long. Don't restart, stop or start anything, and don't delete Keychain items. Leave the Macs alone: Darkbloom retries by itself. Check every few minutes with `darkbloom status` (one Mac) or `darkbloom cluster status` (a pair). From 0.10.8, a stop, an update or a lost connection during Apple's call keeps the attestation, but a crash or a forced kill still blocks a new key for up to an hour |
+| The console says the Mac is waiting for verification, or `✗ Not serving: <Mac> isn't verified by Apple yet; Darkbloom retries by itself at about HH:MM. Don't restart either Mac until then.` | Apple's App Attest has not verified that Mac yet. The coordinator sends work only to verified Macs, and pairs only those. On a pair the ✗ comes only once a Mac's part has run 2 minutes without it, or its key-generation safeguard holds it back; before that, `… is not serving yet: checking both Macs with Apple.` is the usual first minute (`loading`, nothing to do) | Run `darkbloom doctor` on that Mac. If `app attest key — no usable key; the local key-generation safeguard clears in <time>` appears, wait that long. Don't restart, stop or start anything, and don't delete Keychain items. Leave the Macs alone: Darkbloom retries by itself. Check every few minutes with `darkbloom status` (one Mac) or `darkbloom cluster status` (a pair). From 0.10.8, a stop, an update or a lost connection during Apple's call keeps the attestation, but a crash or a forced kill still blocks a new key for up to an hour |
 | doctor: ``[FAIL] app attest support — Apple reports App Attest as unsupported for this provider process (`is_supported_false`), although it already runs in the logged-in GUI session …``, usually right after an update | macOS still describes the app that the update replaced. 0.10.8 refreshes that record after an update, and again when Apple first says unsupported | Wait up to 10 minutes, then run `darkbloom doctor` again. If the line stays, tell the human, then run the `lsregister -f` command that doctor prints under `↳ fix:`. It changes no Darkbloom file or key. Then wait for the next check (up to 10 minutes) instead of restarting (rule 8) |
 | `Traffic: NOT receiving coordinator work: …` with `→ fix: …` | The coordinator doesn't route work to this Mac | Do what the fix line says |
 | Anything else, or no progress | — | [Report it](#report-a-problem) |

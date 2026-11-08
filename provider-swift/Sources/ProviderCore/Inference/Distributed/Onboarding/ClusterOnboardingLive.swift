@@ -2223,8 +2223,9 @@ final class OnboardingLive: @unchecked Sendable {
 
     /// One look at a pair offered for pairing, from both Macs' reports: whether it serves (rank 0's part runs the pair's
     /// slot and says so, with its first request's time), what it is doing, and why it does not serve when the Macs know
-    /// (a Mac without a Darkbloom login, which the coordinator never pairs; a member the coordinator's trust status gives
-    /// no App Attest authorization, which pair membership requires; a committed start that stopped).
+    /// (a Mac without a Darkbloom login, which the coordinator never pairs; a member still without the App Attest
+    /// authorization pair membership requires once its check is slow or held back, `ClusterOnboardingAppleCheck`, while
+    /// a new part's check is progress; a committed start that stopped).
     func pairLook() -> (serving: Bool, test: String?, progress: String, reason: String?) {
         let own = ClusterService.published()
         let peer = try? JSONDecoder().decode(ClusterServiceStatus.self, from: command(.init(op: .status), seconds: 10))
@@ -2245,18 +2246,22 @@ final class OnboardingLive: @unchecked Sendable {
                 : registered ? "registered; waiting for the coordinator" : "registering with the coordinator"
             return ClusterOnboardingMacName.sentence(mac) + ": " + state
         }
-        let progress = (rankZero == .starting ? "the coordinator paired both Macs" : "waiting for the coordinator to pair both Macs")
-            + "\n" + row(here, own?.child) + "\n" + row(there, peer?.child)
+        let apple = ClusterOnboardingAppleCheck.look([(here, own?.child), (there, peer?.child)].map { mac, child in
+            ClusterOnboardingAppleCheck.Mac(name: mac, verified: child?.appAttest, retryAt: child?.appAttestRetryAt,
+                                            startedAt: child?.startedAt)
+        }, now: Date().timeIntervalSince1970)
+        var wait = rankZero == .starting ? "the coordinator paired both Macs" : "waiting for the coordinator to pair both Macs"
+        if rankZero != .starting, case .checking(let words) = apple { wait = words }
+        let progress = wait + "\n" + row(here, own?.child) + "\n" + row(there, peer?.child)
         let missing = missingLogins(peer: peer)
         if !missing.isEmpty { return (false, nil, progress, ClusterOnboardingNotServing.notLoggedIn(missing)) }
-        // Not verified by Apple yet: with when this Mac's key-generation safeguard lets it try again, when it says.
-        for (mac, child) in [(here, own?.child), (there, peer?.child)] where child?.appAttest == false {
-            return (false, nil, progress,
-                    ClusterOnboardingNotServing.notVerified(mac, retryAt: child?.appAttestRetryAt.map { Date(timeIntervalSince1970: $0) }))
-        }
+        // Not verified by Apple, slow or held back: with when this Mac's key-generation safeguard lets it try again, when
+        // it says. A new part's check is the progress above.
+        if case .slow(let reason) = apple { return (false, nil, progress, reason) }
         if case .stopped(let why)? = rankZero {
-            // Apple verification is named only when a Mac reports it missing (none does here: that returned above).
-            return (false, nil, progress, ClusterOnboardingNotServing.words(reason: why, mac: "one of the Macs", anyUnverified: false))
+            // Apple verification is named only when a Mac reports it missing.
+            return (false, nil, progress, ClusterOnboardingNotServing.words(reason: why, mac: "one of the Macs",
+                                                                              anyUnverified: apple != .verified))
         }
         // The coordinator refuses every pair for a model its catalog does not list, and tells neither Mac.
         for child in [own?.child, peer?.child] {
@@ -2378,6 +2383,18 @@ final class OnboardingLive: @unchecked Sendable {
             displayNames: Dictionary(catalog.map { ($0.id, $0.displayName) }, uniquingKeysWith: { first, _ in first }))
     }
 
+    /// While the pair serves Both, me first: whether Darkbloom is paused for its owner, for how long and until when
+    /// (`MeFirstWords.pairLines`), from this Mac's part when it runs the pair's API (rank 0). The status every Mac shows
+    /// is the leading Mac's, so the Mac that follows says it too (journey 2a on pair-2, J2-h: it said "✓ Serving …
+    /// through Darkbloom" through the whole pause). One read of that part's own state file per status: nothing per
+    /// request. Nothing for the other ways to serve, nor where this Mac's part doesn't run rank 0: that Mac's own status
+    /// says it then (`ClusterPairSummary.localAPILines`).
+    static func pauseLines(scope: ClusterServingScope?, own: ClusterServiceStatus?, state: DaemonState?, now: Date = Date()) -> [String] {
+        guard scope?.addsLocalAPI == true, let own, own.sessionLeader, own.child.running, let part = own.child.pid,
+              let state, state.pid == part else { return [] }
+        return MeFirstWords.pairLines(state.meFirst, now: now)
+    }
+
     func localStatus() -> [String] {
         var lines = [String]()
         // After a Darkbloom update this Mac's service sets the cluster up again by itself; said first while it runs.
@@ -2421,6 +2438,7 @@ final class OnboardingLive: @unchecked Sendable {
                 let look = pairLook()
                 if look.serving {
                     lines.append(registered.pairServingLine(model: model) + ".")
+                    lines += Self.pauseLines(scope: leadership?.scope, own: ClusterService.published(), state: DaemonStateFile.read())
                 } else {
                     let wait = look.progress.components(separatedBy: "\n").first ?? look.progress
                     lines += Self.offeredWaitLines(model: model, reason: look.reason, wait: wait)

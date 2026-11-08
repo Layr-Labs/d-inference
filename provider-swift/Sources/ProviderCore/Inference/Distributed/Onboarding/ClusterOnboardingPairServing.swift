@@ -271,6 +271,60 @@ public enum ClusterOnboardingNotServing {
     }
 }
 
+/// Apple's check of each Mac of a pair the coordinator forms (App Attest), which pair membership requires. A part that
+/// just started has none: its authorization lands about a minute after it registers, so the coordinator's first trust
+/// status for it carries none. While every Mac without one is that new, the status says so in progress words; the
+/// warning (`ClusterOnboardingNotServing.notVerified`) waits until a Mac's check is slow or held back. Journey 2a on
+/// pair-2 (J2-c): every healthy 45-second start said "isn't verified by Apple yet … Don't restart either Mac" for both.
+public enum ClusterOnboardingAppleCheck {
+    /// How long a Mac's part may run without App Attest before its check is slow: the usual minute, twice over.
+    public static let slowSeconds: Double = 120
+
+    /// One Mac, as its cluster service reports its running part (`ClusterServiceStatus.Child`).
+    public struct Mac: Sendable, Equatable {
+        /// As the screens name it ("this Mac", "the other Mac (Apple M5 Max, 128 GB)").
+        public var name: String
+        /// `appAttest`: whether the coordinator's latest trust status for the part carries it; nil before the first.
+        public var verified: Bool?
+        /// `appAttestRetryAt`: when this Mac's key-generation safeguard lets it try again, while it holds it back.
+        public var retryAt: Double?
+        /// `startedAt`: when its part started (seconds since 1970); nil when not known.
+        public var startedAt: Double?
+
+        public init(name: String, verified: Bool?, retryAt: Double? = nil, startedAt: Double? = nil) {
+            self.name = name
+            self.verified = verified
+            self.retryAt = retryAt
+            self.startedAt = startedAt
+        }
+    }
+
+    public enum Look: Sendable, Equatable {
+        /// No Mac reports it missing.
+        case verified
+        /// Every Mac without it is new to the check: words for the status line's reason place, read as loading.
+        case checking(String)
+        /// A Mac's check is slow or held back: the warning, as the reason.
+        case slow(String)
+    }
+
+    /// The pair's check now. A part of unknown age (an older build's status) is counted slow, as before.
+    public static func look(_ macs: [Mac], now: Double, timeZone: TimeZone = .current) -> Look {
+        let unverified = macs.filter { $0.verified == false }
+        if let slow = unverified.first(where: { $0.retryAt != nil || $0.startedAt.map { now - $0 >= slowSeconds } ?? true }) {
+            return .slow(ClusterOnboardingNotServing.notVerified(slow.name, retryAt: slow.retryAt.map { Date(timeIntervalSince1970: $0) },
+                                                                 timeZone: timeZone))
+        }
+        guard !unverified.isEmpty else { return .verified }
+        let named = unverified.count > 1 && unverified.count == macs.count ? "both Macs"
+            : ClusterOnboardingNotServing.joined(unverified.map(\.name))
+        return .checking("checking \(named) with Apple")
+    }
+
+    /// Whether a status line's reason is `look`'s progress words.
+    public static func isChecking(_ reason: String) -> Bool { reason.hasPrefix("checking ") && reason.hasSuffix(" with Apple") }
+}
+
 /// The leading Mac's wait for the coordinator to pair both Macs (`OnboardingLive.pairServing`), decided look by look:
 /// a reason the Macs report now ends it (a missing login at once, any other after the settle), and at the bound the ✗
 /// says what the last look said. A reason seen earlier and gone since (a new key's App Attest authorization, which

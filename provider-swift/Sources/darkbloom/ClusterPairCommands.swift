@@ -158,12 +158,27 @@ enum ClusterPairCommands {
 
     /// `darkbloom start` without a terminal (scripts): the pair starts with its saved model on both Macs; then the command
     /// waits until it serves, or says why not, and ends with a result block like single-Mac start's. The exit status is
-    /// `darkbloom cluster status`'s.
+    /// `darkbloom cluster status`'s. A pair that already serves is kept as it is, and said so (`servingLook`).
     static func start(_ pair: ClusterPairSummary, actions: ClusterPairActions?, config: String?,
                       say: Say = printLine) async -> Int32 {
+        if actions != nil, let serving = await servingLook(pair, config: config) {
+            say(pair.actingLine("the pair already serves"))
+            for line in serving.resultLines { say(line) }
+            return serving.exitCode
+        }
         say(pair.actingLine("starting the pair"))
         guard let actions = startable(pair, actions: actions, say: say) else { return 1 }
         return await serve(actions, config: config, say: say)
+    }
+
+    /// The pair's own look, nil unless it serves: a start then asks nothing of either Mac (journey 2a on pair-2, J2-b: a
+    /// script's start on a serving pair said "starting the pair"). Asked only while this Mac's own view says the pair
+    /// runs here and the other Mac answers, so a start whose other Mac is away goes on at once, as before. Like the
+    /// wait's looks (`waitUntilServing`), it waits for the answer as long as it takes, never cut short.
+    private static func servingLook(_ pair: ClusterPairSummary, config: String?) async -> ClusterPairSummary? {
+        guard pair.started, pair.partServes, pair.otherMacReachable else { return nil }
+        let look = await ClusterPairSummary.live(config: config)
+        return look.state == .serving ? look : nil
     }
 
     /// `darkbloom restart`: the pair stops serving on both Macs, then starts again with its current model. What a start

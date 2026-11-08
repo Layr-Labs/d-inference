@@ -249,10 +249,14 @@ model.
 `darkbloom status` says it in one line, for example:
 
 ```text
-Serving: you first — Darkbloom paused since 14:02 (your last request 1 minute ago; back at about 14:13 if you stay idle)
+Serving: you first — Darkbloom paused for 10 minutes (your last request 1 minute ago; back in about 1 minute if you stay idle)
          2 Darkbloom requests are finishing
 Your requests: this Mac first, then your other Macs (free) · account key saved
 ```
+
+Times are said from now ("paused for under a minute", "back in about 2
+minutes", "back any moment now"), never as a clock time, which an SSH session
+or another Mac would read in a zone it doesn't see.
 
 Other lines you may see:
 
@@ -288,7 +292,10 @@ list's **Change how the pair serves** asks again. Then run
   ([a pair's leader beside Darkbloom](./direct-mode.md#a-pairs-leader-beside-darkbloom)).
   The pair's API answers on your local network (LAN or tailnet), always with
   the key. The other Mac has no API of its own: tools there use the leading
-  Mac's LAN or tailnet address.
+  Mac's LAN or tailnet address. `darkbloom status` on either Mac says whether
+  the pair is paused for you, for how long and when it comes back (``Pair: you
+  first — Darkbloom paused for 1 minute (…; back in about 2 minutes if you stay
+  idle)``): the leading Mac's status carries it to the other Mac.
   <!-- pending LS-3: the other Mac relays its own port in Both, me first too, so start with opencode works on either Mac. -->
 - Your answer is saved in `[local] mode` too. Without a terminal nothing is
   asked, and a pair keeps serving as it did

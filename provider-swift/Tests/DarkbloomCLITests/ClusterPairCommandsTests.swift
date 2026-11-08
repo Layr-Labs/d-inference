@@ -779,6 +779,8 @@ private func pairActionCalls(_ stderr: String) -> [String] {
 
 private func servingPair(role: ClusterPairSummary.Role = .leader) -> ClusterPairSummary {
     var summary = pair(role: role)
+    // Its other Mac answers this Mac's cluster service, as it does while the pair serves.
+    summary.otherMacReachable = true
     summary.state = .serving
     summary.lines = ["Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel)."]
     return summary
@@ -2775,8 +2777,9 @@ struct PairStartFirstLineTests {
     }
 
     /// Without a terminal, the pair's own look decides: one that serves is kept on either Mac; one that runs here and
-    /// doesn't serve yet is started as before.
-    @Test("without a terminal, a pair that serves is kept on either Mac; one still loading starts as before")
+    /// doesn't serve yet is started as before. The look is asked only while the other Mac answers this Mac's cluster
+    /// service: one whose other Mac is away starts at once, as before, without waiting on a look first.
+    @Test("without a terminal, a pair that serves is kept on either Mac; one still loading, or whose other Mac is away, starts as before")
     func scriptWordsMatchWhatHappens() async {
         let member = await #expect(processExitsWith: .success, observing: [\.standardOutputContent, \.standardErrorContent]) {
             try await exitWithPair(servingPair(role: .member), actions: pairActions(role: .member)) { sandbox in
@@ -2791,10 +2794,11 @@ struct PairStartFirstLineTests {
         #expect(memberCalls.isEmpty, "\(memberCalls)")
         // Started here, and the pair's look says it still loads: asked to start, and waited for.
         let loading = await #expect(processExitsWith: .success, observing: [\.standardOutputContent, \.standardErrorContent]) {
-            try await exitWithPair(pair(), actions: pairActions()) { sandbox in
+            try await exitWithPair(answeringPair(), actions: pairActions()) { sandbox in
                 try neverAnswering(sandbox)
-                let looks = Looks([loadingPair(), servingPair()])
-                try await ClusterPairSummary.$readerForTesting.withValue({ live in live ? looks.next() : pair() }) {
+                // The first look is before the start, the others the start's wait.
+                let looks = Looks([loadingPair(), loadingPair(), servingPair()])
+                try await ClusterPairSummary.$readerForTesting.withValue({ live in live ? looks.next() : answeringPair() }) {
                     try await ClusterPairCommands.$waitForTesting.withValue(.init(seconds: 60, interval: 0)) {
                         try await runCLICommand(Start.self, ["start"])
                     }
@@ -2803,9 +2807,32 @@ struct PairStartFirstLineTests {
         }
         let loadingOut = lines(loading?.standardOutputContent)
         #expect(loadingOut.first == "This Mac is in a two-Mac cluster with \(otherMac): starting the pair.", "\(loadingOut)")
+        #expect(loadingOut.contains("  Loading Qwen 3.8 27B on both Macs."), "\(loadingOut)")
         #expect(loadingOut.contains("✓ Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel)."), "\(loadingOut)")
         #expect(pairActionCalls(text(loading?.standardErrorContent)) == ["ensureService", "serve"])
+        // Its other Mac doesn't answer this Mac's cluster service: no look first, and the start goes on as before.
+        let away = await #expect(processExitsWith: .success, observing: [\.standardOutputContent, \.standardErrorContent]) {
+            try await exitWithPair(pair(), actions: pairActions()) { sandbox in
+                try neverAnswering(sandbox)
+                try await ClusterPairSummary.$readerForTesting.withValue({ live in live ? servingPair() : pair() }) {
+                    try await ClusterPairSummary.$liveReadForTesting.withValue({ _ in print("live read") }) {
+                        try await runCLICommand(Start.self, ["start"])
+                    }
+                }
+            }
+        }
+        let awayOut = lines(away?.standardOutputContent)
+        #expect(Array(awayOut.prefix(2)) == ["This Mac is in a two-Mac cluster with \(otherMac): starting the pair.", "live read"],
+                "\(awayOut)")
+        #expect(pairActionCalls(text(away?.standardErrorContent)) == ["ensureService", "serve"])
     }
+}
+
+/// A started pair whose other Mac answers this Mac's cluster service (its own view; the live status is the test's).
+private func answeringPair() -> ClusterPairSummary {
+    var summary = pair()
+    summary.otherMacReachable = true
+    return summary
 }
 
 /// `darkbloom start` in a terminal, its input closed, with the screen standing in as one line ("screen").

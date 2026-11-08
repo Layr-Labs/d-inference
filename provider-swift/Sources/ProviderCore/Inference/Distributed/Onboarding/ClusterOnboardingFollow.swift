@@ -441,6 +441,8 @@ extension ClusterOnboardingDriver {
     /// What this Mac waits for while the pair is offered to Darkbloom and not serving yet: a reason the leading Mac's
     /// status gives, which clears by itself or ends in the leading Mac's ✗.
     static func offeredWaitingWords(_ reason: String) -> String {
+        // Apple's check of new parts, going as usual: said as it is ("Checking both Macs with Apple").
+        if ClusterOnboardingAppleCheck.isChecking(reason) { return reason.prefix(1).uppercased() + reason.dropFirst() }
         if let mac = reason.components(separatedBy: " isn't verified by Apple yet").first, mac != reason {
             return "Waiting for Apple to verify \(mac.prefix(1).lowercased() + mac.dropFirst()) (Darkbloom retries by itself)"
         }

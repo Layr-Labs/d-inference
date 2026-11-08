@@ -229,7 +229,8 @@ struct Start: AsyncParsableCommand {
         case serveAlone(note: String)
         /// This Mac's pairing record can't be read: refused without `--solo`, and why.
         case refuse([String])
-        /// A terminal: the screen `darkbloom cluster` shows on this Mac.
+        /// A terminal: the screen `darkbloom cluster` shows on this Mac, after the line that says what it does there
+        /// (`ClusterPairSummary.screenLine`).
         case openScreen
         /// No terminal: the pair starts with its saved model. The desktop app's Start too (`appStartOptions`): a model it
         /// named other than the pair's, or a local API the pair doesn't give this Mac, is said after the start
@@ -404,7 +405,7 @@ struct Start: AsyncParsableCommand {
                 throw ExitCode.validationFailure
             case .openScreen:
                 Self.clearSoloChoice()
-                print(pair.actingLine("starting the pair"))
+                print(pair.screenLine)
                 try await ClusterPairCommands.openScreen(config: configOptions.config)
                 try await setUpToolsBesidePair()
                 return

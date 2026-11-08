@@ -4468,8 +4468,10 @@ Mac holding this pairing's edge secret answers; it is not asked right after
 pairing, nor when the cable is on a port that is not set up. Silence cannot
 tell a Mac that is only away (asleep, at its login window after a restart, its
 cluster service stopped) from one that no longer holds the pairing. So the
-screen names that Mac, its likely reasons and the command to run there
-(`ClusterOnboardingDriver.otherMacSilentLine`), and keeps **Start over** with its question: both Macs offer **Try again**, **Start over** and **Quit** (the leader's list needs the other Mac). It never offers **Pair
+screen names that Mac, its likely reasons and the command to run there, then,
+for a Mac that left the pair (`darkbloom cluster leave`), **Start over** or
+`darkbloom cluster leave` here (`ClusterOnboardingDriver.otherMacSilentLine`),
+and keeps **Start over** with its question: both Macs offer **Try again**, **Start over** and **Quit** (the leader's list needs the other Mac). It never offers **Pair
 again**, which does not ask.
 
 **Start over** is in every resumed Mac's list, after one

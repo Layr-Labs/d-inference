@@ -86,5 +86,9 @@ extension Cluster {
                 throw ValidationError(failure.description)
             }
         }
+
+        /// Forgets the pairing with the Mac whose pin it is, as `cluster pair --forget <pin>` does, saying what each
+        /// step did. `darkbloom cluster leave` and `darkbloom uninstall` unpair this way.
+        static func forget(pin: String) throws { try parse(["--forget", pin]).run() }
     }
 }

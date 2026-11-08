@@ -461,6 +461,8 @@ extension Start {
             printError("auto-update skipped: another update/recovery operation is active (\(reason))")
         case .cancelled(let reason):
             printError("auto-update cancelled: \(reason)")
+        case .checkFailed(let failure):
+            printError("auto-update skipped: update check failed: \(failure.reason)")
         case .downloadFailed(let reason):
             printError("auto-update skipped: \(reason)")
         case .hashMismatch(let expected, let got):

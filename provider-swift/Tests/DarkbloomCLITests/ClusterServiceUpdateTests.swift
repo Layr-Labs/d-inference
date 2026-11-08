@@ -108,6 +108,32 @@ struct ClusterServiceUpdateTests {
         #expect(configured.childArguments == ["cluster", "service", "--config", path.path])
     }
 
+    /// A cycle at the slot or catching up with the other Mac (no request) asks a second round when the first gets no
+    /// answer; a cycle that `darkbloom update` asked for doesn't (`ReleaseCheck.pairCycle`). Through the supervisor's
+    /// own `run`, with a stand-in for the cycle that reads the release check of the environment it was given.
+    @Test func onlyTheAutomaticCyclesOfTheServiceAskASecondRound() async throws {
+        let directory = try temporaryDirectory("cluster-update-rounds")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("provider.toml")
+        var config = ProviderConfig(provider: ProviderSettings(name: "pair"))
+        config.coordinator.url = "wss://coordinator.example.invalid/ws/provider"
+        try ConfigManager.save(config, to: path)
+        let cycles = Recorder()
+        let configured = Cluster.Service.supervisorConfiguration(executable: "/A/darkbloom", serviceOptions: ["--config", path.path],
+            configPath: path.path, environment: [:], serviceDirectory: directory,
+            reexecArguments: ["/A/darkbloom", "cluster", "service", "--supervise"], clusterID: { "pair-7f3a" },
+            runCycle: { environment, request, _ in
+                cycles.add("\(request ?? "slot"): rounds \(environment.updater.releaseCheck.rounds)")
+                return .upToDate
+            })
+        let pair = try #require(configured.pairUpdate)
+
+        #expect(await pair.run(nil, { _ in }, { _ in }) == .upToDate)
+        #expect(await pair.run("update-request-1", { _ in }, { _ in }) == .upToDate)
+
+        #expect(cycles.all == ["slot: rounds 2", "update-request-1: rounds 1"])
+    }
+
     // MARK: - Following the other Mac's rollback
 
     /// While no cycle runs (here with automatic updates off, which do not stop it), the supervisor checks at once whether

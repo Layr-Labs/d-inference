@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { methodFor, startAction } from '../src/renderer/components/onboarding/startPlan';
+import { methodFor, pairModel, startAction } from '../src/renderer/components/onboarding/startPlan';
 import { pinnedMemory, startingModel } from '../src/renderer/models/selection';
-import { models, snapshot } from './onboardingFixtures';
+import { models, pairedMac, snapshot } from './onboardingFixtures';
 
 const undownloaded = models.map((model) => ({ ...model, downloaded: false }));
 // A model the scan found on disk that the catalog doesn't list, like a leftover Hugging Face
@@ -108,5 +108,20 @@ describe('pinned memory', () => {
     expect(
       pinnedMemory(snapshot({ memory: { total_gb: 64, max_model_slots: 2 } }), pins).limit,
     ).toBeUndefined();
+  });
+});
+
+describe('a paired Mac', () => {
+  it('starts the pair with its own model: no model and no local API of its own', () => {
+    expect(startAction(pairedMac(), 'manual', ['gpt-oss-20b'])).toEqual({
+      action: 'start',
+      models: [],
+      local: false,
+    });
+  });
+
+  it('names the pair’s model, or “its model” before the pair has one', () => {
+    expect(pairModel({ model: 'Qwen 3.8 27B' })).toBe('Qwen 3.8 27B');
+    expect(pairModel({ model: null })).toBe('its model');
   });
 });

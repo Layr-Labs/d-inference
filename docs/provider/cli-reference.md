@@ -468,10 +468,19 @@ named (exit 64, below). The desktop app's **Start serving** is the exception
 (`Start.appStartOptions`): it runs `start --model <id> [--local-endpoint]
 --config <path>` with no terminal, and has no `--solo`, so on a paired Mac it
 starts the pair as a plain `start` does, never this Mac alone. The pair serves
-its own model and its own way. When the app named another model, the start ends
-with one line the app shows: ``This Mac serves in a pair: started the pair with <the pair's model>; `darkbloom cluster` changes its model.``
-(`ClusterPairSummary.appStartModelLine`, after a start that serves or is
-loading).
+its own model and its own way, and after a start that serves (exit 0) or isn't
+serving yet (exit 3) the app's lines say what it asked for and the pair didn't
+take (`ClusterPairSummary.appStartLines`):
+
+- another model: ``This Mac serves in a pair: the pair serves <the pair's model>; `darkbloom cluster` changes its model.`` (exit 0), or ``This Mac is in a pair: the pair was asked to start with <the pair's model>, and isn't serving (above); `darkbloom cluster` changes its model.`` (exit 3);
+- a local API (`--local-endpoint`) on a Mac the pair gives none (through
+  Darkbloom only, or the Mac that follows in Both, me first): ``No local API was added on this Mac: a pair's local API comes from how the pair serves (`darkbloom cluster` on the leading Mac changes it).``
+
+The app's Autopilot enroll and its model refresh (`autopilot`,
+`autopilot_models`) are refused on a paired Mac before any download, in one
+line the app shows: ``This Mac serves in a pair; Autopilot isn't available for pairs yet. Use Start serving.`` (`DesktopBackend.pairAutopilotRefusal`).
+Its snapshot then reports no `autopilot` capability and the pair's model
+(`pair`), so the app offers **Start serving** instead ([desktop control](../reference/desktop-control.md)).
 
 While the pair doesn't run here (`ClusterPairWatch`: stopped, or its other Mac
 hasn't answered for 15 minutes, or it never served in its first 15 minutes),
@@ -1081,7 +1090,7 @@ Next: Leave both Macs running: Darkbloom retries by itself. Or serve locally onl
 | `0` | `serving` | The pair serves: through Darkbloom once the coordinator has it, or on the leading Mac's local API when it serves Only me |
 | `3` | `loading`, `not_serving`, `unknown` | Not serving yet: loading, or a reason in `reason` (such as macOS keeping a Mac off the local network, or a pair not offered to Darkbloom, below). A load whose part keeps ending gives that end as its reason, as the start's screen says it: "this Mac's part ended (exit 1: deadline) and starts again by itself" |
 | `4` | `stopped` | Stopped (Stop in `darkbloom cluster`, or `darkbloom cluster stop`), also while the other Mac isn't answering |
-| `5` | `other_mac_away` | The pair is started and the other Mac isn't answering over the cable (its cluster service is off, it sleeps, or waits for a login) |
+| `5` | `other_mac_away` | The pair is started and the other Mac isn't answering over the cable (its cluster service is off, it sleeps, or waits for a login). Once this Mac's part was given up (15 minutes), `next` also says ``Or serve this Mac alone: `darkbloom start --solo`.`` |
 | `6` | `not_paired` | This Mac isn't in a cluster |
 | `7` | `pairing_unreadable` | This Mac's pairing record couldn't be read, so it may be in a cluster; `reason` says why when known |
 

@@ -27,6 +27,13 @@ extension DesktopBackend {
     return result
   }
 
+  /// Autopilot chooses the models of one Mac. On a Mac in a two-Mac pair its enroll and its model refresh would end in
+  /// the pair's refusal of single-Mac options, the enroll only after downloading its models. So `arguments(for:)` refuses
+  /// them first, in words the app shows, and the snapshot leaves Autopilot out there (`snapshotCapabilities`): the app
+  /// then offers its Start, which starts the pair.
+  static let pairRefusedActions: Set<String> = ["autopilot", "autopilot_models"]
+  static let pairAutopilotRefusal = "This Mac serves in a pair; Autopilot isn't available for pairs yet. Use Start serving."
+
   static func autopilotArguments(for request: DesktopAction, config: [String]) -> [String]? {
     switch request.action {
     case "autopilot":

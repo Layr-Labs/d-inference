@@ -27,26 +27,13 @@ enum Qwen4SupportPolicy {
         }
     }
 
-    /// Validate this owned artifact's template contract after the existing
-    /// boolean/effort precedence has resolved. Other Qwen4 artifacts may ship
-    /// different templates, so architecture identity alone is insufficient;
-    /// the concrete Qwen3.8-27B builds ship the same effort contract.
-    /// Never coerce an unsupported effort or change disabled-thinking behavior.
-    static func validateReasoningContext(
-        modelID: String,
-        modelType: String?,
-        additionalContext: [String: any Sendable]?
-    ) throws {
-        guard (isOwnedModelID(modelID) && isQwen4ModelType(modelType))
-                || ModelRuntimeRequirements.qwen38ConcreteModelIDs.contains(modelID),
-            additionalContext?["enable_thinking"] as? Bool != false,
-            let effort = additionalContext?["reasoning_effort"] as? String
-        else { return }
-        // The original template defaults to xhigh and accepts these exact
-        // spellings. Preserve that behavior rather than inventing aliases.
-        guard ["low", "medium", "xhigh"].contains(effort) else {
-            throw MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort
-        }
+    /// Whether a request renders this owned artifact's template, whose effort
+    /// contract the concrete Qwen3.8-27B builds share
+    /// (`ReasoningEffortPolicy.qwen38Levels`). Other Qwen4 artifacts may ship
+    /// different templates, so architecture identity alone is insufficient.
+    static func ownsEffortTemplate(modelID: String, modelType: String?) -> Bool {
+        (isOwnedModelID(modelID) && isQwen4ModelType(modelType))
+            || ModelRuntimeRequirements.qwen38ConcreteModelIDs.contains(modelID)
     }
 
     /// An explicit operator limit can narrow the native window. Unset or

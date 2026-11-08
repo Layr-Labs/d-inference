@@ -7,8 +7,8 @@ import MLXLMServer
 /// caller's choice not to receive reasoning is honored, by withholding the
 /// reasoning Flint still generates. Output length is not a reasoning effort.
 enum FlintRequestPolicy {
-    /// OpenRouter's reasoning effort names.
-    static let acceptedEfforts: Set<String> = ["none", "minimal", "low", "medium", "high", "xhigh"]
+    /// The effort names, exactly as written (`ReasoningEffort`).
+    static func acceptsEffort(_ effort: String) -> Bool { ReasoningEffort(rawValue: effort) != nil }
 
     /// Request-local evidence from the original body, captured before the
     /// permissive extension decoder and the typed request drop wrong-typed or
@@ -17,6 +17,8 @@ enum FlintRequestPolicy {
     struct RawControls: Sendable, Equatable, Decodable {
         /// A malformed value, unknown effort or unsupported reasoning key.
         var invalid = false
+        /// The field of an effort that is none of the names.
+        var unknownEffort: ReasoningEffortField?
         /// `reasoning.exclude` true, `include_reasoning` false or
         /// `reasoning.enabled` false.
         var withholdsReasoning = false
@@ -42,14 +44,17 @@ enum FlintRequestPolicy {
                     guard values.contains(Key(name)) else { return nil }
                     return try values.decode(Bool.self, forKey: Key(name)) // No numeric truthiness.
                 }
-                func effort(_ values: KeyedDecodingContainer<Key>, _ name: String) throws {
+                func effort(_ values: KeyedDecodingContainer<Key>, _ name: String,
+                            _ field: ReasoningEffortField) throws {
                     guard values.contains(Key(name)) else { return }
-                    let value = try values.decode(String.self, forKey: Key(name))
-                    guard FlintRequestPolicy.acceptedEfforts.contains(value) else { throw Malformed() }
+                    guard FlintRequestPolicy.acceptsEffort(try values.decode(String.self, forKey: Key(name))) else {
+                        result.unknownEffort = field
+                        throw Malformed()
+                    }
                 }
                 if root.contains(Key("preserve_thinking")) { result.invalid = true }
                 _ = try boolean(root, "enable_thinking")
-                try effort(root, "reasoning_effort")
+                try effort(root, "reasoning_effort", .reasoningEffort)
                 if try boolean(root, "include_reasoning") == false { result.withholdsReasoning = true }
                 if root.contains(Key("chat_template_kwargs")) {
                     let kwargs = try root.nestedContainer(keyedBy: Key.self, forKey: Key("chat_template_kwargs"))
@@ -64,7 +69,7 @@ enum FlintRequestPolicy {
                     if reasoning.allKeys.contains(where: { !["effort", "enabled", "exclude"].contains($0.stringValue) }) {
                         result.invalid = true
                     }
-                    try effort(reasoning, "effort")
+                    try effort(reasoning, "effort", .reasoningObject)
                     if try boolean(reasoning, "enabled") == false { result.withholdsReasoning = true }
                     if try boolean(reasoning, "exclude") == true { result.withholdsReasoning = true }
                 }
@@ -79,12 +84,14 @@ enum FlintRequestPolicy {
         guard modelType == "flint" else { return }
         // Raw evidence is authoritative; the typed fields cover programmatic
         // controls. The media-only evidence bit is unrelated.
-        guard !controls.rawFlintControls.invalid, controls.preserveThinking == nil,
-            controls.reasoningEffort.map(acceptedEfforts.contains) ?? true
-        else {
+        if let field = controls.rawFlintControls.unknownEffort
+            ?? (controls.reasoningEffort.map(acceptsEffort) == false ? ReasoningEffortField.reasoningEffort : nil)
+        {
+            throw MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(field)
+        }
+        guard !controls.rawFlintControls.invalid, controls.preserveThinking == nil else {
             throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                "Flint reasoning controls require an effort of none, minimal, low, medium, high or xhigh and Boolean switches"
-            )
+                "Flint reasoning controls require Boolean switches and known reasoning keys")
         }
     }
 
@@ -93,9 +100,8 @@ enum FlintRequestPolicy {
     ) throws {
         guard modelType == "flint" else { return }
         try validateControls(controls, modelType: modelType)
-        if let effort = request.reasoning?.effort, !acceptedEfforts.contains(effort) {
-            throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                "Flint reasoning effort must be none, minimal, low, medium, high or xhigh")
+        if let effort = request.reasoning?.effort, !acceptsEffort(effort) {
+            throw MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(.reasoningObject)
         }
         if MediaIngest.hasMedia(request) {
             throw MultiModelBatchSchedulerEngineError.mediaUnsupportedByModel(request.model)

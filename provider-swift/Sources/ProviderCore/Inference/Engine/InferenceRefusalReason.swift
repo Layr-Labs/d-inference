@@ -48,7 +48,7 @@ public enum InferenceRefusalReason: String, CaseIterable, Sendable, Equatable {
         switch engineError {
         case .invalidToolPayload(_, let refusal?): self = refusal
         case .invalidRole: self = .unsupportedMessageRole
-        case .unsupportedReasoningEffort, .unsupportedNativeReasoningEffort: self = .unsupportedReasoningControl
+        case .unsupportedReasoningEffort: self = .unsupportedReasoningControl
         case .advertisedContextExceeded, .promptExceedsContext: self = .requestExceedsContext
         case .unsupportedOutputControl: self = .unsupportedOutputControl
         default: return nil

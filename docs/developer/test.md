@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -1290,6 +1290,18 @@ repository copies the file byte-for-byte and records the source revision and
 SHA-256 in the commit. A provider change to the rendered prompt, such as the
 Qwen JSON `response_format` thinking default, lands with the regenerated
 vectors and must pass `scripts/verify-prompt-parity.sh` before review.
+
+`fixtures/prompt-contract/v1/native_reasoning_vectors.json` (28 cases) is this
+repository's: the template context the provider gives each reasoning control,
+or its refusal. `CachePromptParityTests` checks the provider against it, and
+the platform's prompt sidecar and first-party pool read the same cases, so a
+change lands here first and the platform follows. Since the reasoning-effort
+levels ([reasoning effort](../architecture/inference.md#reasoning-effort)),
+Qwen 3.8 Flash-Next's `high`, `max`, `minimal` and ` low ` render a level and
+`turbo` is refused. `ReasoningEffortValuesTests` sends every effort to every
+family through the production prompt pipeline, and
+`ReasoningEffortLocalAPITests` sends them to one Mac's local API and a pair
+leader's over the `ClusterAPIParityTests` harness.
 
 darkbloom-platform keeps byte-identical copies of the provider's
 `paged_footprint_wire.json` and `process_memory_wire.json` for its own

@@ -16,10 +16,15 @@ enum NemotronSuperPromptContract {
     static let imageStartTokenID = 19
     static let imageEndTokenID = 20
 
-    enum Failure: Error {
+    enum Failure: Error, Equatable {
         case templateMismatch, unsupportedControl, conflictingControls, unsupportedMedia
         case invalidToolArguments, toolDeclarationMismatch, invalidTokens, contextExceeded
+        /// An effort that is none of the names, in this field.
+        case unknownReasoningEffort(ReasoningEffortField)
     }
+
+    /// The template's two reasoning depths: `medium_effort`, and its default.
+    static let effortLevels: [ReasoningEffort] = [.medium, .high]
 
     /// Effective template and parser controls. Absent values take the pinned
     /// template's defaults; `forceNonemptyContent` is the ultra_v3 parser option.
@@ -120,16 +125,19 @@ enum NemotronSuperPromptContract {
     }
 
     /// The official template defaults thinking on even for images. Medium effort
-    /// is a separate template boolean, not the generic reasoning_effort key.
+    /// is a separate template boolean, not the generic reasoning_effort key:
+    /// an effort renders the nearer of its two depths (`effortLevels`).
     /// Contradictory spellings of one control are refused, never reconciled.
     static func controls(body: Data) throws -> Controls {
         let raw = try JSONDecoder().decode(RawControls.self, from: body)
         func normalized(_ value: String?) -> String? {
             value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         }
-        let effort = normalized(raw.nestedEffort ?? raw.effort)
-        if let effort, !["none", "off", "0", "medium", "high"].contains(effort) {
-            throw Failure.unsupportedControl
+        let effort = try (raw.nestedEffort ?? raw.effort).map { value in
+            guard let effort = ReasoningEffort(clientValue: value) else {
+                throw Failure.unknownReasoningEffort(raw.nestedEffort != nil ? .reasoningObject : .reasoningEffort)
+            }
+            return effort
         }
         if let top = normalized(raw.effort), let nested = normalized(raw.nestedEffort), top != nested {
             throw Failure.conflictingControls
@@ -137,13 +145,13 @@ enum NemotronSuperPromptContract {
         if let top = raw.enabled, let nested = raw.nestedEnabled, top != nested {
             throw Failure.conflictingControls
         }
-        let disabled = ["none", "off", "0"].contains(effort ?? "")
+        let disabled = effort == ReasoningEffort.none
         let enabled = raw.nestedEnabled ?? raw.enabled ?? !disabled
         if let explicit = raw.nestedEnabled ?? raw.enabled, effort != nil,
             explicit == disabled { throw Failure.conflictingControls }
-        if let medium = raw.medium, effort == "medium" || effort == "high",
-            medium != (effort == "medium") { throw Failure.conflictingControls }
-        let medium = raw.medium ?? (effort == "medium")
+        let depth = disabled ? nil : effort?.level(in: effortLevels)
+        if let medium = raw.medium, let depth, medium != (depth == .medium) { throw Failure.conflictingControls }
+        let medium = raw.medium ?? (depth == .medium)
         guard !(medium && !enabled) else { throw Failure.conflictingControls }
         return Controls(enableThinking: enabled, mediumEffort: medium,
             truncateHistoryThinking: raw.truncate ?? true,

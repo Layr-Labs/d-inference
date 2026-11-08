@@ -11,10 +11,13 @@ import MLXLMServer
 struct MiMoV26RawControlEvidence: Sendable, Equatable, Decodable {
     enum Surface: Equatable { case chat, responses }
     var invalid = false
+    /// The field of the first effort that is none of the names.
+    var unknownEffort: ReasoningEffortField?
     var unsupportedMediaRichControls = false
     var templateThinkingAlias: Bool?
     var responseEnableThinking: Bool?
-    var responseEffortDisablesThinking: Bool?
+    /// The thinking switch a Responses body's top-level effort implies.
+    var responseEffortThinking: Bool?
 
     private struct Key: CodingKey {
         let stringValue: String
@@ -68,15 +71,20 @@ struct MiMoV26RawControlEvidence: Sendable, Equatable, Decodable {
                 guard values.contains(Key(name)) else { return nil }
                 return try values.decode(Bool.self, forKey: Key(name)) // No numeric truthiness.
             }
-            func effort(_ values: KeyedDecodingContainer<Key>, _ name: String) throws -> Bool? {
+            // The checkpoint has one reasoning depth: every effort but `none` thinks.
+            func effort(_ values: KeyedDecodingContainer<Key>, _ name: String,
+                        _ field: ReasoningEffortField) throws -> Bool? {
                 guard values.contains(Key(name)) else { return nil }
-                let value = try values.decode(String.self, forKey: Key(name))
-                guard ["none", "off", "0"].contains(value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
-                else { evidence.invalid = true; return nil }
-                return false
+                guard let effort = ReasoningEffort(clientValue: try values.decode(String.self, forKey: Key(name)))
+                else {
+                    evidence.invalid = true
+                    evidence.unknownEffort = evidence.unknownEffort ?? field
+                    return nil
+                }
+                return effort != ReasoningEffort.none
             }
             let top = try boolean(root, "enable_thinking")
-            let topEffort = try effort(root, "reasoning_effort")
+            let topEffort = try effort(root, "reasoning_effort", .reasoningEffort)
             if root.contains(Key("preserve_thinking")) { evidence.invalid = true }
             var alias: Bool?
             if root.contains(Key("chat_template_kwargs")) {
@@ -90,11 +98,11 @@ struct MiMoV26RawControlEvidence: Sendable, Equatable, Decodable {
                 let allowed = surface == .chat ? ["enabled", "effort"] : ["effort"]
                 if nested.allKeys.contains(where: { !allowed.contains($0.stringValue) }) { evidence.invalid = true }
                 _ = try boolean(nested, "enabled")
-                _ = try effort(nested, "effort")
+                _ = try effort(nested, "effort", .reasoningObject)
             }
             if surface == .responses {
                 evidence.responseEnableThinking = top ?? alias
-                evidence.responseEffortDisablesThinking = topEffort
+                evidence.responseEffortThinking = topEffort
             }
         } catch {
             evidence.invalid = true
@@ -104,6 +112,7 @@ struct MiMoV26RawControlEvidence: Sendable, Equatable, Decodable {
 
     func validate(modelType: String?) throws {
         guard modelType == "mimo_v2", invalid else { return }
+        if let unknownEffort { throw MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(unknownEffort) }
         throw MultiModelBatchSchedulerEngineError.invalidToolPayload("MiMo: invalid or unsupported reasoning controls")
     }
     func validateMedia(modelType: String?) throws {
@@ -164,18 +173,21 @@ enum MiMoV26TemplateFix {
     /// permissive extension decoder discards wrong-typed controls. This does
     /// not rewrite body bytes or mutate another family's decoding behavior.
     static func validateRawControls(_ body: Data) throws {
+        let evidence: MiMoV26RawControlEvidence
         do {
-            let evidence = try JSONDecoder().decode(MiMoV26RawControlEvidence.self, from: body)
-            try evidence.validate(modelType: "mimo_v2")
+            evidence = try JSONDecoder().decode(MiMoV26RawControlEvidence.self, from: body)
         } catch {
             throw invalid("invalid or unsupported reasoning controls")
         }
+        try evidence.validate(modelType: "mimo_v2")
     }
 
     /// API controls are projected to the native Boolean; the checkpoint itself
-    /// does not consume effort. Absence retains the native ON default. Keep
-    /// the existing nested > top-level > kwargs Boolean precedence. Granular
-    /// effort and preserve_thinking are explicit refusals, not ignored knobs.
+    /// does not consume effort, and has one reasoning depth: every effort but
+    /// `none` is ON. Absence retains the native ON default. Keep the existing
+    /// nested > top-level > kwargs Boolean precedence. An effort that is none
+    /// of the names and preserve_thinking are explicit refusals, not ignored
+    /// knobs.
     static func additionalContext(
         request: OpenAIChatCompletionRequest,
         controls: ChatTemplateControls
@@ -201,18 +213,18 @@ enum MiMoV26TemplateFix {
         guard controls.preserveThinking == nil else {
             throw invalid("preserve_thinking is unsupported; native history always preserves reasoning_content")
         }
-        let rawEffort = try controls.reasoningEffort.map(thinkingFromEffort)
-        let nestedEffort = try request.reasoning?.effort.map(thinkingFromEffort)
+        let rawEffort = try controls.reasoningEffort.map { try thinkingFromEffort($0, .reasoningEffort) }
+        let nestedEffort = try request.reasoning?.effort.map { try thinkingFromEffort($0, .reasoningObject) }
         return request.reasoning?.enabled ?? controls.rawMiMoControls.responseEnableThinking
             ?? controls.enableThinking ?? controls.rawMiMoControls.templateThinkingAlias ?? nestedEffort
-            ?? controls.rawMiMoControls.responseEffortDisablesThinking ?? rawEffort
+            ?? controls.rawMiMoControls.responseEffortThinking ?? rawEffort
     }
 
-    private static func thinkingFromEffort(_ effort: String) throws -> Bool {
-        switch effort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "none", "off", "0": return false
-        default: throw invalid("native MiMo supports binary thinking, not granular reasoning effort")
+    private static func thinkingFromEffort(_ effort: String, _ field: ReasoningEffortField) throws -> Bool {
+        guard let effort = ReasoningEffort(clientValue: effort) else {
+            throw MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(field)
         }
+        return effort != ReasoningEffort.none
     }
 
     private static func validateValues(_ values: any Sendable) throws {

@@ -438,6 +438,26 @@ headers: while the model loads for it, while it waits for a pair's lane, and
 while its prompt is tokenized. A client that limits how long it waits for
 headers must allow a cold model load.
 
+### Reasoning effort
+
+Every model this Mac serves that reasons takes each effort your tool sends,
+as `reasoning_effort` or `reasoning: {"effort": …}` (Responses:
+`reasoning.effort`): `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or
+`max`. The model gets the nearest of its own levels, the higher one between
+two; `minimal` is its lowest and `max` its highest; `none` switches thinking
+off where it can. So Hermes's `max` and an OpenAI client's `high` on Qwen 3.8
+27B reach its template as `xhigh`, its highest level. One Mac, a pair and the
+[local router](#when-this-mac-cant-take-a-request-the-local-router) answer
+alike. Each family's levels are in
+[reasoning effort](../architecture/inference.md#reasoning-effort). A model
+that doesn't reason ignores the effort.
+
+```bash
+curl -s "$OPENAI_BASE_URL/chat/completions" \
+  -H "Authorization: Bearer $OPENAI_API_KEY" -H "Content-Type: application/json" \
+  -d '{"model":"EigenLabs/Qwen3.8-27B-4bit-mtp","reasoning_effort":"max","messages":[{"role":"user","content":"hi"}]}'
+```
+
 ### Refused request shapes
 
 The chat routes and Responses input answer these shapes with an OpenAI error
@@ -448,6 +468,7 @@ envelope, the same on one Mac and on a [two-Mac cluster](./two-mac-cluster.md):
 | On one Mac, a prompt that fills the model's context window: the context it advertises (GLM-5.3-Flash and Nemotron Super: 262,144; MiMo V2.6, Qwen4, Flint, Bonsai 9B and Diffusion Gemma: their configs'), else its model's own (Gemma 4, Qwen 3.5, 3.6 and 3.8, GPT-OSS, Nemotron Lightning) | HTTP `400`, code `context_length_exceeded`, before the engine and before any SSE header: `The prompt fills this model's context window of <N> tokens, leaving no room for an answer. Shorten the prompt or start a new conversation.` A `max_tokens` beyond what a shorter prompt leaves is cut to it instead, on every model, and the answer ends with `finish_reason: length` if it gets there | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Translation.swift` (`outputTokens(requested:promptTokens:)`, `promptExceedsContextMessage`) |
 | On one Mac, a request its memory can't hold now: the shared KV reservation of a contiguous slot, the engine's own admission of a paged slot (the automatic backend; it refuses one that can never fit and queues the rest), or the whole Mac's request limit | HTTP `503` before any SSE header, streamed or not: `This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt (or send less media), or retry when this Mac's other requests finish.` The local router passes it on when a route dials out. A request a paged slot queued and then couldn't admit (the 120 s admission lease, or the pool full through its requeues) fails later: a streamed answer, whose head is already sent, ends with an error event, and a non-streamed one gets 503 (after the lease, with the older `Provider capacity is temporarily unavailable.`) | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
 | A content part whose `type` is none of `text`, `input_text`, `output_text`, `image_url`, `input_image`, `video_url`, `input_audio` (for example `input_file`, `input_video`, `refusal`) | HTTP `400` before model acquisition or SSE headers: `Content part type "<type>" is not supported. Send text, image_url, video_url or input_audio parts.` The type is shown with at most 64 of its letters, digits and `_.-:/`. Models without native audio still refuse `input_audio` | `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/OpenAIRequestValidation.swift` (`OpenAIRequestValidationError.unsupportedContentPart`) |
+| A reasoning effort that is none of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` (for example `turbo`), on a model that reasons | HTTP `400` before anything renders or is reserved, code `invalid_reasoning_effort`, `param` the field it came in (`reasoning_effort`, `reasoning.effort`, or GLM-5.3-Flash's `chat_template_kwargs.reasoning_effort`): `reasoning_effort must be one of: none, minimal, low, medium, high, xhigh, max.` Through the coordinator the same request gets HTTP `400` `invalid inference request` | `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningEffort.swift` (`ReasoningEffortPolicy.validate`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
 | `response_format` `json_object`/`json_schema` whose answer stopped at `max_tokens` before it was complete (a reasoning model can spend the whole budget thinking) | HTTP `422`: `The output was cut off by max_tokens before the structured (response_format) answer was complete. Raise max_tokens or lower the reasoning effort, and retry.` Invalid JSON at a natural stop keeps its `422` with the closed internal-failure message. GLM-5.3-Flash validates its withheld JSON answer itself (`GLM5NextResponseFormat`) and answers a truncated one with that closed `422` | `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXOpenAIService.swift` (`MLXOpenAIServiceError.responseFormatCutOffByMaxTokens`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`); `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`validatedContent`) |
 | GLM-5.3-Flash with images or video and `response_format` `json_object`/`json_schema` or a required or named `tool_choice` | HTTP `400` `Invalid inference request.` (failure code `invalid_request`) before any media decode: only the text path withholds and validates such an answer or call. Hidden reasoning (`reasoning.exclude: true`, `include_reasoning: false`, `thinking.display: "omitted"`) is served with media too, its reasoning withheld | `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` (`prepareCompletion`); `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextPromptPolicy.swift` (`withholdsOutput`, `withholdsReasoning`) |
 | An image or video the model's processor refuses: for Qwen 3.5 and 3.8 a side below `patch_size × merge_size` (32 pixels) or an aspect ratio above 200:1, which it does not upscale; a video without a decodable track; more images or videos than the processor takes | HTTP `400` `Invalid media input.` (failure code `invalid_media`), before the vision tower or any native reservation, never the retryable `503` | `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` (`clientFault(for:)`) |

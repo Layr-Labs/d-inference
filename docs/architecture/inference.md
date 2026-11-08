@@ -2720,8 +2720,7 @@ spends the caller's `max_tokens` before any JSON is written. A nested
 `reasoning.enabled`, a raw `enable_thinking` or `chat_template_kwargs`
 switch, any reasoning effort, or a positive `reasoning.max_tokens` budget
 keeps the caller's choice. The family predicate also matches Qwen3.8
-Flash-Next by model ID; `Qwen4SupportPolicy.validateReasoningContext` accepts
-the closed block. Other families keep their thinking defaults because the
+Flash-Next by model ID, whose template takes the closed block. Other families keep their thinking defaults because the
 predicate excludes them; GLM5-Next, MiMo and Nemotron Super also build their
 own template context, and Flint's template ignores the switch.
 The coordinator prompt sidecar mirrors the rule so cache planning renders the
@@ -2944,14 +2943,53 @@ and the coordinator can refuse to route
 
 A template `raise_exception` at request time is classified `jinja_template`
 and returned as HTTP 500, the provider-fault class, so a caller control that
-a template is known to reject must be validated before rendering. The
-Flash-Next and Qwen3.8-27B templates accept only `low`, `medium` and `xhigh`
-while thinking is enabled; any other active effort, such as OpenAI's `high`
-or `minimal`, is a typed HTTP 400 `client_error` and never reaches Jinja, on
-text and media requests alike
-(`provider-swift/Sources/ProviderCore/Inference/Qwen4SupportPolicy.swift`,
-`validateReasoningContext`). Media preparation rethrows such typed request
-errors instead of wrapping them as a retryable 503 construction refusal.
+a template is known to reject must be resolved before rendering. The
+Flash-Next and Qwen3.8-27B templates raise for any effort but `low`, `medium`
+and `xhigh` while thinking; they receive one of those for every effort a
+client sends ([reasoning effort](#reasoning-effort)), on text and media
+requests alike. Media preparation rethrows typed request errors instead of
+wrapping them as a retryable 503 construction refusal.
+
+### Reasoning effort
+
+Every model that reasons takes each effort a client names (`none`,
+`minimal`, `low`, `medium`, `high`, `xhigh`, `max`) as `reasoning_effort` or
+`reasoning.effort`; Responses' `reasoning.effort` arrives as the latter, which
+wins over the top-level spelling. Its template receives one of the model's own
+levels: its own where the model has it, else the next one up (an effort
+between two levels rounds up, toward more reasoning), and the highest past
+them all. So `minimal` selects the lowest level and `max` the highest. `none`
+(also `off` or `0`) switches thinking off where the model can, and selects the
+lowest level where it can't. Spellings are trimmed and read in any case,
+except by GLM-5.3-Flash and Flint, which read the names exactly as written.
+The rule is `ReasoningEffort.level(in:)`
+(`provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningEffort.swift`);
+one Mac, a pair's leader (tensor parallel and pipeline) and the coordinator
+path render through the same prompt pipeline.
+
+| Family | Its levels | What each effort renders | Source |
+|---|---|---|---|
+| The Qwen 3.5 template family (`qwen3_5`, `qwen3_5_moe`, `prism_hadamard_qwen35`: Qwen 3.5, 3.6 and 3.8, Bonsai 2) and the owned Qwen 3.8 Flash-Next build | Qwen 3.8's `low`, `medium` and `xhigh` (its default), and a thinking switch | While thinking: `minimal` and `low` render `low`, `medium` renders `medium`, `high`, `xhigh` and `max` render `xhigh`, as the coordinator's first-party pool sends `high`. Thinking off: the effort as sent, which the template ignores. The 3.5, 3.6 and Bonsai templates read only the switch | `ReasoningEffortPolicy` (`qwen38Levels`, `templateEffort`), `Qwen4SupportPolicy.ownsEffortTemplate` |
+| GLM-5.3-Flash | `low`, `high` and `max` (its default); thinking off closes `<think>` | `minimal` and `low` render `low`, `medium` and `high` render `high`, `xhigh` and `max` render `max`, as the platform sidecar maps them | `GLM5NextPromptPolicy.Effort` |
+| Nemotron 3.5 Super | `medium_effort`, and the template's default depth | `minimal`, `low` and `medium` set `medium_effort`; `high`, `xhigh` and `max` keep the default | `NemotronSuperPromptContract.controls(body:)` |
+| MiMo V2.6, DiffusionGemma | one depth, and a thinking switch | Every effort but `none` thinks | `MiMoV26TemplateFix`, `DiffusionGemmaReasoningControl` |
+| Gemma 4, Nemotron 3.5 Lightning | a thinking switch | `none` switches thinking off; any other effort keeps the template's default (Gemma 4: off) | `MultiModelBatchSchedulerEngine.templateAdditionalContext` |
+| GPT-OSS | Harmony's `low`, `medium` and `high` | The effort as sent, except `high`, which renders `medium` | `GPTOSSHarmonyTemplateFix.effectiveReasoningEffort` |
+| Flint | none: Flint decides whether to reason | Every effort is taken, with no effect | `FlintRequestPolicy` |
+
+An effort that is none of the names is refused before anything renders or is
+reserved, on any model that reasons, with
+`MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(field)` (HTTP
+400): the local API answers `invalid_reasoning_effort` naming the field and
+the names ([direct mode](../provider/direct-mode.md#reasoning-effort)); the
+coordinator receives the closed `invalid_request` failure, which it shows as
+"invalid inference request". A model of no family above ignores any effort
+(`ReasoningEffortPolicy.validate`).
+
+Gemma 4 and GPT-OSS keep the prompts they rendered before: the coordinator's
+prompt sidecar plans those prompts for cache-aware routing, so changing one
+needs the sidecar's matching change and a new normalization version.
+<!-- pending B-J2-1: Gemma 4 thinks for an effort other than none, and GPT-OSS renders each effort as its nearest Harmony level, once the platform's prompt sidecar renders them so. -->
 
 ### Vision constraints
 
@@ -3789,7 +3827,7 @@ evidence, not a change to the normal final-row contract or the near-tie rule
 | Request cancelled by lease | No admission/prefill/decode progress within 120 s, or a step over 30 s. On the local API this comes after the response head, so a queued request that waits out the admission lease ends a streamed answer with an error event (as does a paged pool that stays full through its requeues) | `EngineLoopV2.swift`; `EngineV2Bridge+Events.swift` |
 | `promptExceedsContext` (400) | The prompt alone fills the slot's window (its advertised context, else its model's); a larger output is cut, never refused | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`) |
 | `advertisedContextExceeded` (400) | Candidate output reservation is negative or overflows; with the output cut to the window, nothing larger reaches it on one Mac | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`); `provider-swift/Sources/ProviderCore/ProviderLoop+ErrorMapping.swift` (`sanitizedInferenceFailure`) |
-| `unsupportedReasoningEffort` (400) | Active effort outside `low`/`medium`/`xhigh` on a restricted-effort template (Flash-Next, Qwen3.8-27B) | `provider-swift/Sources/ProviderCore/Inference/Qwen4SupportPolicy.swift` (`validateReasoningContext`) |
+| `unsupportedReasoningEffort` (400; on the local API `invalid_reasoning_effort`) | A model that reasons received an effort that is none of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` ([reasoning effort](#reasoning-effort)) | `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningEffort.swift` (`ReasoningEffortPolicy.validate`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
 | Model dropped from advertised set | Unsupported `model_type` | `EngineV2SupportedModels.swift` |
 | Model advertised, capacity quotes rejected with reason `template` | Scan-time render check failed (`template_render_ok = false`) | `TemplateRenderCheck.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift` (`reject(.template)`) |
 | Image rejected | Over `MediaIngest` caps or over the N² tower budget | `MediaIngest.swift`, `VisionTowerBudget.swift` |
@@ -3892,10 +3930,11 @@ Flint always decides for itself whether to reason; it has no trained switch,
 effort level or budget, and its pinned template reads none of these controls
 ([Recursive's serving guide](https://github.com/RecursiveSI/flint/blob/2a247be0c0aec895ccb0ac7ca92229ec6df37288/sglang/README.md)).
 `FlintRequestPolicy` accepts `reasoning_effort` and `reasoning.effort` (none,
-minimal, low, medium, high or xhigh), `reasoning.enabled`, `enable_thinking`
-and `chat_template_kwargs.enable_thinking`/`thinking` with no effect on the
-prompt. Malformed values, unknown efforts, `preserve_thinking`, other reasoning
-keys and media are refused. When a request sets `reasoning.exclude` true,
+minimal, low, medium, high, xhigh or max, exactly as written),
+`reasoning.enabled`, `enable_thinking` and
+`chat_template_kwargs.enable_thinking`/`thinking` with no effect on the
+prompt. Malformed values, unknown efforts (`invalid_reasoning_effort`),
+`preserve_thinking`, other reasoning keys and media are refused. When a request sets `reasoning.exclude` true,
 `include_reasoning` false or `reasoning.enabled` false, `NativeToolStreamRouter`
 withholds the generated reasoning, so chat completions, the Responses API and
 the coordinator relay return only content and tool calls. The withheld tokens

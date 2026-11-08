@@ -13,24 +13,9 @@ enum DiffusionGemmaReasoningControl {
             ?? enabled(for: request.reasoning?.effort ?? controls.reasoningEffort) ?? false
     }
 
+    /// Every effort but `none` thinks; nil names no effort
+    /// (`ReasoningEffortPolicy.validate` refuses it).
     static func enabled(for effort: String?) -> Bool? {
-        guard let effort else { return nil }
-        switch effort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "none", "off", "0": return false
-        case "minimal", "low", "medium", "high", "xhigh": return true
-        default: return nil
-        }
-    }
-
-    static func validate(request: OpenAIChatCompletionRequest,
-        controls: ChatTemplateControls, modelType: String?) throws
-    {
-        guard modelType == "diffusion_gemma",
-            request.reasoning?.enabled == nil, controls.enableThinking == nil,
-            let effort = request.reasoning?.effort ?? controls.reasoningEffort
-        else { return }
-        guard enabled(for: effort) != nil else {
-            throw MultiModelBatchSchedulerEngineError.unsupportedNativeReasoningEffort
-        }
+        effort.flatMap(ReasoningEffort.init(clientValue:)).map { $0 != ReasoningEffort.none }
     }
 }

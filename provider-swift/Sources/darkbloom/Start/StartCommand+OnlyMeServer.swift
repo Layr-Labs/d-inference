@@ -20,10 +20,12 @@ protocol OnlyMeServer: Actor {
 extension StandaloneServer: OnlyMeServer {}
 
 extension Start {
-    /// Only me's own server from its construction until it listens: the preload, the listener, then its heartbeat (the
-    /// daemon state, kept fresh, and the lifecycle mailbox), the idle unload and, for launchd's job alone
-    /// (`launchdJob`; never `--here` or a cluster's solo part), the release confirmation (`confirmRelease`) and the
-    /// update loop. False when a stop came first.
+    /// Only me's own server from its construction until it listens. First, as the network provider does
+    /// (`runForeground`, `ProviderLoop.run`): for launchd's job alone (`launchdJob`; never `--here` or a cluster's solo
+    /// part) the release confirmation (`confirmRelease`), then the heartbeat (the daemon state, kept fresh, and the
+    /// lifecycle mailbox). So the preload, which waits for every model with no time limit, never reads as a hung start
+    /// to the watchdog, and `stop` or `restart` can drain it. Then the preload, the listener, the idle unload and, for
+    /// launchd's job, the update loop. False when a stop came first.
     func startOnlyMeServer<Server: OnlyMeServer>(
         _ server: Server, config: ProviderConfig, serving: StartServing,
         termination: ProviderTermination = .shared, stateFile: URL = DaemonStateFile.path(),
@@ -32,6 +34,8 @@ extension Start {
     ) async throws -> Bool {
         let coordinator = coordinatorURL ?? config.coordinator.url
         let updatesItself = foreground && launchdJob
+        if updatesItself { confirmRelease(coordinator) }
+        await server.startLifecycleControl(stateFile: stateFile)
         guard await runLocalStartupPreload(server: server, config: config, termination: termination) else { return false }
         try await server.start()
         await termination.install {
@@ -62,14 +66,12 @@ extension Start {
         // for `--here`, which saves no mode, and for a service's child, which saves nothing.
         try saveServingChoice(serving)
 
-        await server.startLifecycleControl(stateFile: stateFile)
         // Models idle past the saved memory setting are unloaded, as the other two choices do.
         await server.startIdleUnload(minutes: config.backend.idleTimeoutMins,
                                      every: StandaloneServer.idleUnloadCheckInterval)
-        // Only me's background service confirms a new release once it listens, and updates itself as the network
-        // provider does; `--here` and a cluster's solo part don't.
+        // Only me's background service updates itself as the network provider does; `--here` and a cluster's solo part
+        // don't.
         if updatesItself {
-            confirmRelease(coordinator)
             await server.startAutoUpdateMonitor(coordinatorURL: coordinator, enabled: config.provider.autoUpdate,
                                                 environment: ProcessInfo.processInfo.environment)
         }

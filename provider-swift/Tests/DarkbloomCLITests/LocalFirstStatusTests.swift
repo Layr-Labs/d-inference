@@ -161,6 +161,12 @@ struct LocalFirstStatusTests {
                 "Serving: only you, on this Mac — starting: its local API opens once its models are loaded",
             ])
         }
+        // A network provider waiting for its schedule's window writes a coordinator and no capabilities: not Only me.
+        let waiting = DaemonState(pid: 4_242, version: "test", writtenAt: 0, startedAt: 0,
+                                  coordinatorURL: "wss://coordinator.invalid/ws/provider")
+        #expect(!waiting.servesOnlyItsOwner)
+        #expect(Status.servingLines(state: waiting, liveEndpoint: nil, route: nil, accountKeySaved: { false })
+            == ["Serving: Darkbloom network only — this Mac has no local API"])
     }
 
     @Test("a local API that couldn't listen is never \"network only\": status and local say why, and the next step")

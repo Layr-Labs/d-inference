@@ -23,23 +23,18 @@ extension Cluster {
 
         mutating func run() async throws {
             Darkbloom.ensureLogging()
-            let executable = URL(fileURLWithPath: Start.currentExecutablePath())
-            let flow = ClusterLeaveFlow(
-                pair: ClusterPairSummary.local(), pairing: ProviderUninstallPairing.read(),
-                terminal: ClusterPairCommands.isTerminal(), yes: yes,
-                ask: { question in
-                    print(question, terminator: "")
-                    fflush(stdout)
-                    let answer = readLine()
-                    if answer == nil { print() }
-                    return answer
-                },
-                stopPart: { try await Cluster.Stop.beforeUnpairing(executable: executable, say: ClusterPairCommands.printLine) },
-                forget: Cluster.Pair.forget(pin:),
-                soloServing: { ServiceDrain.soloProviderState().map { daemonProcessAlive(pid: $0.pid) } ?? false },
-                say: ClusterPairCommands.printLine)
-            let code = await flow.run()
+            let code = await flow(.live()).run()
             if code != 0 { throw ExitCode(code) }
+        }
+
+        /// `base` (this Mac's pair, services and pairing store) as this command runs it: with its own --yes, asking in
+        /// this Mac's terminal (`ClusterPairCommands.isTerminal`). The one place both are wired, so a leave without
+        /// --yes always asks first, and refuses where it can't ask.
+        func flow(_ base: ClusterLeaveFlow) -> ClusterLeaveFlow {
+            var flow = base
+            flow.yes = yes
+            flow.terminal = ClusterPairCommands.isTerminal()
+            return flow
         }
     }
 }
@@ -56,10 +51,10 @@ struct ClusterLeaveFlow {
     var yes: Bool
     /// Asks `question` in the terminal and reads the answer; nil when the input ends.
     var ask: (String) -> String?
-    /// Stops this Mac's part and turns its cluster service off (`Cluster.Stop.beforeUnpairing`): `.done(nil)` when the
-    /// pair stopped together, `.done(note)` when the other Mac was not asked, `.skipped` with no cluster service here.
-    /// It must return only once this Mac's cluster service, and with it its part, has ended, and throw otherwise.
-    var stopPart: () async throws -> ProviderUninstall.Outcome
+    /// Stops this Mac's part and turns its cluster service off (`Cluster.Stop.beforeUnpairing`), saying what the other
+    /// Mac was asked. It must return only once this Mac's cluster service, and with it its part, has ended, and throw
+    /// otherwise.
+    var stopPart: () async throws -> Cluster.Stop.BeforeUnpairing
     /// Forgets the pairing with the Mac whose pin it is (`cluster pair --forget <pin>`).
     var forget: (String) throws -> Void
     /// Single-Mac serving runs on this Mac (beside, not in, the pair).
@@ -68,6 +63,26 @@ struct ClusterLeaveFlow {
 
     static var cli: String { ClusterPairSummary.cli }
     static let question = "Leave the pair? [y/N] "
+
+    /// This Mac's pair, cluster service and pairing store, and its terminal's question. It asks nothing and leaves
+    /// nothing until `Cluster.Leave.flow` gives it the command's --yes and this Mac's terminal: as made here, with
+    /// neither, it refuses.
+    static func live(pair: ClusterPairSummary = .local(), pairing: ProviderUninstallPairing? = .read()) -> ClusterLeaveFlow {
+        let executable = URL(fileURLWithPath: Start.currentExecutablePath())
+        return ClusterLeaveFlow(
+            pair: pair, pairing: pairing, terminal: false, yes: false,
+            ask: { question in
+                print(question, terminator: "")
+                fflush(stdout)
+                let answer = readLine()
+                if answer == nil { print() }
+                return answer
+            },
+            stopPart: { try await Cluster.Stop.beforeUnpairing(executable: executable, say: ClusterPairCommands.printLine) },
+            forget: Cluster.Pair.forget(pin:),
+            soloServing: { ServiceDrain.soloProviderState().map { daemonProcessAlive(pid: $0.pid) } ?? false },
+            say: ClusterPairCommands.printLine)
+    }
 
     func run() async -> Int32 {
         let cli = Self.cli
@@ -99,7 +114,7 @@ struct ClusterLeaveFlow {
         }
 
         say("→ Stopping this Mac's part of the pair")
-        let stopped: ProviderUninstall.Outcome
+        let stopped: Cluster.Stop.BeforeUnpairing
         do {
             stopped = try await stopPart()
         } catch {
@@ -107,7 +122,7 @@ struct ClusterLeaveFlow {
             say("This Mac is still paired. Try `\(cli) cluster leave` again; `\(cli) cluster status` shows what still runs.")
             return 1
         }
-        if case .skipped(let reason) = stopped { say("  Nothing to stop: \(reason).") }
+        if stopped == .noService { say("  Nothing to stop: no cluster service on this Mac.") }
 
         // Only now, with this Mac's part stopped: a Mac whose part still runs is never unpaired.
         say("→ Forgetting this Mac's pairing")
@@ -134,15 +149,15 @@ struct ClusterLeaveFlow {
     }
 
     /// What happens to the other Mac: it keeps its pairing until it leaves too.
-    func otherMacLine(_ stopped: ProviderUninstall.Outcome) -> String {
+    func otherMacLine(_ stopped: Cluster.Stop.BeforeUnpairing) -> String {
         let cli = Self.cli
         let other = ClusterOnboardingMacName.sentence(
             ClusterOnboardingMacName.other(named: pairing?.otherMacName ?? pair.otherMacName))
         let what: String
         switch stopped {
-        case .done(nil): what = "\(other) stopped serving the pair too."
-        case .done: what = "\(other) wasn't reached, so it wasn't asked to stop."
-        case .skipped: what = "\(other) wasn't asked anything."
+        case .stopped: what = "\(other) stopped serving the pair too."
+        case .stoppedAlone: what = "\(other) wasn't reached, so it wasn't asked to stop."
+        case .noService: what = "\(other) wasn't asked anything."
         }
         return what + " It keeps its pairing until you run `\(cli) cluster leave` on it; then `\(cli) start` there serves "
             + "it alone."

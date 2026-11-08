@@ -133,7 +133,7 @@ struct Uninstall: AsyncParsableCommand {
                 return wasLoaded ? .done() : .skipped("the provider service was not running")
             },
             // As `darkbloom cluster leave` stops it: the summary's last line says what to do on the other Mac.
-            stopClusterPart: { try await Cluster.Stop.beforeUnpairing(executable: executable, say: { print($0) }) },
+            stopClusterPart: { try await Cluster.Stop.beforeUnpairing(executable: executable, say: { print($0) }).outcome },
             removeServices: [
                 ("Remove the provider service", {
                     try ProviderUninstall.removeAgent(plist: LaunchAgent.plistPath(), loaded: LaunchAgent.isLoaded(),

@@ -360,7 +360,10 @@ Provider Unit Tests shards 1 and 2 (with the MiMo audio gate), Cluster Runtime
 Tests shards 1 to 5, Cluster Focused Checks shards 1 and 2, Cluster Release
 Build Checks, Cluster GPU Tests (non-blocking) shards 1 to 3, Check the CI plans
 and the `Provider Tests` gate. It uses the lanes and sizes of a push to `dev`
-and restores `dev`'s caches; like a pull request, it saves none. Dispatched
+and restores and saves `dev`'s caches as a push to `dev` does. Every
+dispatch selects the MiMo audio gate, so the hourly run keeps the 1.87 GB
+audio codec cache (`mimo-audio-source-v2-*`) on `dev`: without it, each run
+downloads the codec again, and a slow download fails the shard. Dispatched
 runs share the concurrency group `ci-dev-hourly`. A new dispatch never cancels
 a running one; it waits. GitHub keeps one waiting run per group, so a newer
 dispatch replaces one that already waits.
@@ -639,9 +642,9 @@ asked, the runner, and the decision with its reason.
 
 `.github/workflows/provider-tests.yml`, `.github/workflows/ci-master.yml` and
 `.github/actions/provider-ci-build/action.yml` restore caches in every run.
-Only pushes to `master` and `dev` save them, when
-the exact key missed: the workflow's `SAVE_CACHES` is
-`github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/dev')`,
+Only pushes to `master` and `dev`, and dispatches on `dev` (the hourly full
+run), save them, when the exact key missed: the workflow's `SAVE_CACHES` is
+`(github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/dev')) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev')`,
 and `provider-tests.yml` passes it to the composite action as `save-caches`
 (CI (master)'s own jobs save only on `master` pushes). An entry saved
 by a pull request is scoped to its merge ref, so only that pull request could

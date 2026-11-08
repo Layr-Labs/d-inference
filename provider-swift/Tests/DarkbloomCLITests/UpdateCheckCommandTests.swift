@@ -104,7 +104,7 @@ struct UpdateCheckCommandTests {
 
     /// Under a mutant whose rounds never ended, `unansweredCheckSaysWhatToDo`'s child asked again for 1 h 50 min (its
     /// coordinator fails every try at once, and its updater doesn't pause), and a time limit doesn't end an exit test's
-    /// child. So each child here ends itself after a minute (`endChildAfter`): its test fails instead of the run hanging.
+    /// child. So each child here ends itself after a minute (`endChildAfter`): its test fails, and the run goes on.
     @Test("a child that doesn't end by itself is ended after its time, and says so")
     func childEndsAfterItsTime() async throws {
         let result = try await #require(

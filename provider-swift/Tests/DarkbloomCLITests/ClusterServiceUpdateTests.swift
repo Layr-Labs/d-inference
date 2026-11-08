@@ -109,8 +109,8 @@ struct ClusterServiceUpdateTests {
     }
 
     /// A cycle at the slot or catching up with the other Mac (no request) asks a second round when the first gets no
-    /// answer; a cycle that `darkbloom update` asked for doesn't (`ReleaseCheck.pairCycle`). Through the supervisor's own
-    /// `run`, with a stand-in for the cycle that reads the release check of the environment it was given.
+    /// answer; a cycle that `darkbloom update` asked for doesn't (`ReleaseCheck.pairCycle`). Through the supervisor's
+    /// own `run`, with a stand-in for the cycle that reads the release check of the environment it was given.
     @Test func onlyTheAutomaticCyclesOfTheServiceAskASecondRound() async throws {
         let directory = try temporaryDirectory("cluster-update-rounds")
         defer { try? FileManager.default.removeItem(at: directory) }

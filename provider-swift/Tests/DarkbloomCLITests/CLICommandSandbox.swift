@@ -193,8 +193,8 @@ func keepCommandsOffThisMacsCluster() {
 
 /// Ends this exit test's child after `seconds`, with exit code 124 and a line on standard error. A time limit doesn't
 /// end an exit test: the test waits for its child to exit, and a child whose command never returns kept a review's
-/// whole run waiting for 1 h 50 min. Its own thread, so a child spinning on every other thread still ends. Process-wide,
-/// so only inside an exit test's body.
+/// whole run waiting for 1 h 50 min. Its own thread, so a child spinning on every other thread still ends.
+/// Process-wide, so only inside an exit test's body.
 func endChildAfter(seconds: Double) {
     Thread.detachNewThread {
         Thread.sleep(forTimeInterval: seconds)

@@ -338,7 +338,9 @@ public struct SelfUpdater: Sendable {
     /// - at most `attempts` (3) tries in a round: a coordinator that never answers gets 3 requests, and the check ends
     ///   within about 48 s (3 × 15 s, and at most 3 s of pauses);
     /// - an answer is final, an HTTP error or a release for another platform included;
-    /// - each failed try is logged, with how it connected (`log`).
+    /// - each failed try is logged, with how it connected (`log`);
+    /// - whatever is decided after a failed try, a check makes at most `maximumTries` (`attempts` in each of its
+    ///   `rounds`): the loop counts them, so a check that fails at once and pauses for nothing still ends.
     ///
     /// Every caller makes one round, but a pair's automatic cycle (`pairCycle`), at its update slot or catching up with
     /// the other Mac: a failed check there costs both Macs the slot, so it makes a second round 1–2 min later (at most
@@ -356,14 +358,15 @@ public struct SelfUpdater: Sendable {
         var pause: @Sendable (TimeInterval) async -> Void = { seconds in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
         }
-        /// Draws each pause from its range.
+        /// Draws each pause from its range, so two Macs that failed together don't ask again together.
         var random: @Sendable (ClosedRange<TimeInterval>) -> TimeInterval = { Double.random(in: $0) }
         /// Where a failed try is said: the process's log (the provider's, the cluster service's or the watchdog's), or
         /// standard error for a command, below its live line.
         var log: @Sendable (String) -> Void = { line in
             DarkbloomCommandLook.say(line) { releaseCheckLog.info("\($0)") }
         }
-        /// A test's stand-in for what `next(after:tries:round:cancelled:)` decided after a failed try; nil outside tests.
+        /// A test's stand-in for what `next(after:tries:round:cancelled:)` decided after a failed try (nil outside
+        /// tests). `maximumTries` bounds the check all the same.
         var nextForTesting: (@Sendable (Next) -> Next)? = nil
 
         static let standard = ReleaseCheck()
@@ -422,10 +425,11 @@ public struct SelfUpdater: Sendable {
         var request = URLRequest(url: url)
         request.timeoutInterval = releaseCheck.requestTimeout
         var backoff = releaseCheck.backoff
-        var (tries, made, round) = (0, 0, 1)
-        while true {
+        var (tries, round) = (0, 1)
+        var failure = UpdateCheckFailure(.noAnswer, "\(coordinator) wasn't asked")
+        // At most `maximumTries`, whatever `next` decides: tries that fail at once, with no pause between, still end.
+        for made in 1...releaseCheck.maximumTries {
             tries += 1
-            made += 1
             let started = ContinuousClock.now
             let connection = ReleaseCheckConnection()
             do {
@@ -433,16 +437,17 @@ public struct SelfUpdater: Sendable {
                 return Self.latestRelease(data: data, response: response, coordinator: coordinator)
             } catch {
                 let decided = releaseCheck.next(after: error, tries: tries, round: round, cancelled: Task.isCancelled)
-                let next = releaseCheck.nextForTesting?(decided) ?? decided
+                let next = made < releaseCheck.maximumTries ? (releaseCheck.nextForTesting?(decided) ?? decided) : .stop
                 let pause: TimeInterval? = switch next {
-                case .askAgain: Double.random(in: backoff.nextDelayRange())
-                case .nextRound: Double.random(in: releaseCheck.roundPause)
+                case .askAgain: releaseCheck.random(backoff.nextDelayRange())
+                case .nextRound: releaseCheck.random(releaseCheck.roundPause)
                 case .stop: nil
                 }
                 releaseCheck.log(failedTryLine(tries: tries, round: round, coordinator: coordinator,
                                                elapsed: ContinuousClock.now - started, error: error,
                                                connection: connection.summary, next: next, pause: pause))
-                guard let pause else { return .failed(releaseCheck.failure(error, tries: made, coordinator: coordinator)) }
+                failure = releaseCheck.failure(error, tries: made, coordinator: coordinator)
+                guard let pause else { break }
                 if next == .nextRound {
                     round += 1
                     tries = 0
@@ -450,9 +455,10 @@ public struct SelfUpdater: Sendable {
                 }
                 await releaseCheck.pause(pause)
                 // A cancellation during the pause (the process stops) is not followed by another request.
-                if Task.isCancelled { return .failed(releaseCheck.failure(error, tries: made, coordinator: coordinator)) }
+                if Task.isCancelled { break }
             }
         }
+        return .failed(failure)
     }
 
     /// A failed try for the log: which try, where it got to (its connection's HTTP version, new or reused, direct or

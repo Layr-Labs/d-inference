@@ -375,7 +375,7 @@ cancelled picker or a refused start writes nothing):
 | The start question, in a terminal (no saved `mode`, or `--choose`) | `mode`; `route` from its follow-up, asked only with an account key saved |
 | A mode flag: `--local`, `--network`, `--me-first`, `--local-endpoint` (`LocalFirstOptions.savesModeFlag`) | `mode`, so the background service, `restart` and `update` serve it from now on; never with `--local --here` (one terminal session) or for a service's child |
 | `--no-me-first`, `--me-first` (only to undo a saved `me_first = false`), `--me-first-idle <min>`, `--route <route>` | `me_first`, `me_first_idle_minutes`, `route`, as `--idle-timeout` writes `idle_timeout_mins` |
-| Any start that serves a local API (the question's Only me or Both, a saved `mode`, `--me-first`, `--local`, `--local-endpoint`, the desktop app's starts), except a service's child (`--foreground`, or `start --local` a service runs) | `port`, when none is saved (the first free one, as above) or `--port <n>` names another |
+| Any start that serves a local API (the question's Only me or Both, a saved `mode`, `--me-first`, `--local`, `--local-endpoint`, the desktop app's starts), except a service's child (`--foreground`, or `start --local` a service runs) | `port`, when none is saved (the one this Mac's local API already uses, else the first free one, as above) or `--port <n>` names another |
 | `--bind`, `--no-auth`, and every other start; the mode of `--local --here` and of the desktop app's local mode | Nothing: a start with no saved `mode`, no mode flag and no terminal keeps today's behaviour exactly (no local API, so no port) |
 
 The LaunchAgent keeps the arguments `--local-endpoint` has always baked

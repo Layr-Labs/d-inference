@@ -24,7 +24,13 @@ struct Darkbloom: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: BuildEnvironment.current.cliName,
         abstract: "Swift-native provider CLI for Darkbloom.",
-        discussion: "Runs on Apple Silicon Macs. Connects to the coordinator, serves inference requests via mlx-swift.",
+        discussion: """
+        Runs on Apple Silicon Macs. Connects to the coordinator, serves inference requests via mlx-swift.
+
+        Shortcuts (any `start` option can be added):
+          \(BuildEnvironment.current.cliName) --opencode   Set up OpenCode (same as `start --opencode`)
+          \(BuildEnvironment.current.cliName) --hermes     Set up Hermes Agent (same as `start --hermes`)
+        """,
         version: ProviderCore.version,
         subcommands: [
             Start.self,
@@ -72,6 +78,30 @@ struct Darkbloom: AsyncParsableCommand {
     static func ensureLogging() {
         _ = _bootstrapLogging
     }
+}
+
+// MARK: - `darkbloom --opencode` and `darkbloom --hermes`
+
+extension Darkbloom {
+    /// `arguments`, as typed after `darkbloom`, with `start` put first when they are a tool shortcut:
+    /// `darkbloom --opencode --me-first` runs `darkbloom start --opencode --me-first`.
+    ///
+    /// The root forwards to `start` when no subcommand is named (the first argument is an option) and `--opencode` or
+    /// `--hermes` comes before any `--`. Every other argument then goes to `start` too, in any order, so `start`'s
+    /// errors and help apply. Anything else is parsed as typed: plain `darkbloom`, `--help` or `--version` without a
+    /// tool flag, a subcommand and its options (`darkbloom models --opencode` is refused), and a mistyped flag
+    /// (`darkbloom --opencod` gets the root's unknown-option error). ArgumentParser's default subcommand isn't used:
+    /// it would also run `start` for plain `darkbloom` and for `darkbloom --me-first`.
+    static func expandingToolShortcuts(_ arguments: [String]) -> [String] {
+        let toolFlags = Set(IntegrationTool.allCases.map(\.flag))
+        guard arguments.first?.hasPrefix("-") == true,
+              arguments.prefix(while: { $0 != "--" }).contains(where: toolFlags.contains) else { return arguments }
+        return ["start"] + arguments
+    }
+
+    /// This process's arguments as `main` hosts and parses them (`expandingToolShortcuts`), for a later check that
+    /// must agree with `main`, such as whether the AppKit host runs.
+    static var commandLineArguments: [String] { expandingToolShortcuts(Array(CommandLine.arguments.dropFirst())) }
 }
 
 // MARK: - Update banner (best-effort, non-blocking)

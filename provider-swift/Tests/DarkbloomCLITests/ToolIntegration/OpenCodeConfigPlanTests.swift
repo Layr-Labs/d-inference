@@ -45,7 +45,7 @@ private func darkbloomValue(indent: String) -> String {
     """.replacingOccurrences(of: "\n", with: "\n" + indent)
 }
 
-private let addedComment = "// Added by `darkbloom start --opencode`. Run it again to refresh Darkbloom's models."
+private let addedComment = "// Added by `darkbloom --opencode`. Run it again to refresh Darkbloom's models."
 
 @Suite("OpenCode config plan")
 struct OpenCodeConfigPlanTests {

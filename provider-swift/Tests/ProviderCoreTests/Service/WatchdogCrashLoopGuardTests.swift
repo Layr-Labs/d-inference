@@ -718,7 +718,7 @@ struct CrashLoopGuardRecoveryWiringTests {
             coordinatorBaseURL: "http://127.0.0.1:1",
             installRoot: fixture.installRoot,
             verifyCodeSignatures: false,
-            currentVersion: fixture.oldVersion)
+            currentVersion: fixture.oldVersion, releaseCheck: .withoutPauses)
     }
 
     @Test("at the threshold the guard trips BEFORE the kickstart")

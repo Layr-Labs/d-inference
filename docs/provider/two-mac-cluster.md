@@ -1393,7 +1393,12 @@ cluster service asks the coordinator for its latest release:
 
 A pair still running a request after 120 seconds takes requests again and tries
 at the next slot. A release that one Mac cannot download or verify is installed
-on neither Mac; both try again at the next slot. Until a new
+on neither Mac; both try again at the next slot. A Mac whose check gets no
+answer from the coordinator (3 tries of 15 seconds) asks once more 1 to 2
+minutes later, within the same slot, while the other Mac waits; only when that
+fails too do both Macs wait for the next slot. So a new release reaches the pair
+at its next slot, up to 30 minutes after it is published, and each failed try
+waits 30 minutes more; `darkbloom update` on both Macs updates at once. Until a new
 release's cluster service has stayed healthy for 10 minutes, three of its starts
 that end by themselves bring back the previous release and quarantine the new
 one, as the watchdog does for a single Mac. A Mac never restarts into a new

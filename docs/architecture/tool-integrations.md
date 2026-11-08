@@ -44,24 +44,36 @@ flowchart LR
    chat model from the catalog (`display_name`, with where it runs: this Mac, your Macs, the network), takes its
    context from the endpoint, else the catalog's maximum, its output cap as `min(max output, context / 4)` with
    `defaultOutputCap = 32_768`, and its capabilities from the catalog's names (tools on and text-only input when the
-   catalog is unreachable). A model the catalog doesn't describe (offline, or one it doesn't list) carries
+   catalog is unreachable). Image input for a model served here (this Mac, or the pair it leads or relays to) is its
+   engine's: the `input_modalities` of its `this-mac` entry decide, catalog or not. So MiMo V2.6, whose catalog row
+   is text only, gets image input, offline too, and a Gemma 4 pair, which serves text alone though the catalog lists
+   vision, gets none (an image would be refused with 400). For a model served elsewhere (your Macs, the network), or
+   one this Mac lists without `input_modalities` (a pair whose slot isn't up), the catalog's names decide, with the
+   `image` the list adds (`EndpointModel.takesImages`). Reasoning stays the catalog's: the engine doesn't say which
+   models reason. A model the catalog doesn't describe (offline, or one it doesn't list) carries
    `IntegrationModel.fallback`, and each planner first reads its own entry for the model back from the file
    (`OpenCodeConfigPlan.modelEntries`, `HermesEdit.modelEntries`): `IntegrationModel.keeping` takes the entry's name,
-   capabilities and vision, its context when the endpoint gives none, and its output while the context is the one it
-   was set for. A model with no entry keeps the fallbacks and is named in `ToolConfigSummary.undescribed`.
-   <!-- pending R-FULL: the writers give each model its full context window, output length and capabilities; only the Mac's memory bounds a request; OpenRouter is separate. -->
+   capabilities and vision (unless the endpoint settles image input, `Fallback.endpointSettlesImageInput`), its
+   context when the endpoint gives none, and its output while the context is the one it was set for. A model with no
+   entry keeps the fallbacks and is named in `ToolConfigSummary.undescribed`.
+   For a model this Mac has loaded, the endpoint lists its whole context window as both the context and the max
+   output (`LocalModelLimits(window:)`, `provider-swift/Sources/ProviderCore/Server/LocalRouterModels.swift`), so
+   the writers give it its full context window and a quarter of it as output, not the catalog's smaller output cap
+   (65,536 for a 262,144-token window whose catalog row says 32,768). A pair's leader lists the pair's own context and
+   output instead (what its mode serves; it refuses a larger `max_tokens`), so a GLM pair's output stays 65,536.
+   <!-- pending R-FULL: the writers give each model its full output length (the cap is a quarter of the context); only the Mac's memory bounds a request; OpenRouter is separate. -->
    Before the models are resolved, `ModelLoadWait.run` waits while the local API's own process still loads a model
-   this Mac lists for its start: this Mac's `/v1/models` gives a model's own limits only once it is loaded, and the
-   router may fill the catalog's in until then. `ModelLoads.reported` believes only the daemon state that process
-   wrote (its pid is `local.json`'s): `startupPreloadPendingModels` and `warmModels`; the coordinator-less server
-   (Only me) writes none of them and loads before it listens. Where that state can't tell (there is none, it is
-   another process's or another schema's, or the API is a pair's, whose process preloads nothing or writes no state),
-   nothing is waited for, as before the wait; only a state that keeps naming a model as pending holds the start, for
-   at most the deadline. An answer naming nothing loaded and nothing to load is asked again `settleSeconds` (1 s)
-   later, for a provider whose API answered before it said what it loads. Then the list is read again. The wait draws
-   one `LiveLine` on a terminal (else a start and an end line), takes SIGINT only while it runs (`InterruptWatch`) and
-   ends after `defaultTimeout` (600 s); a timeout, a model that didn't load, or Ctrl-C writes nothing
-   (`ToolIntegrationStep.waitForModels`).
+   this Mac lists for its start: this Mac's `/v1/models` gives a model's own limits (its window, above) only once it
+   is loaded, and the router may fill the catalog's in until then (on one Mac its `input_modalities` are listed loaded
+   or not). `ModelLoads.reported` believes only the daemon state that process wrote (its pid is `local.json`'s):
+   `startupPreloadPendingModels` and `warmModels`; the coordinator-less server (Only me) writes none of them and loads
+   before it listens. Where that state can't tell (there is none, it is another process's or another schema's, or the
+   API is a pair's, whose process preloads nothing or writes no state), nothing is waited for, as before the wait;
+   only a state that keeps naming a model as pending holds the start, for at most the deadline. An answer naming
+   nothing loaded and nothing to load is asked again `settleSeconds` (1 s) later, for a provider whose API answered
+   before it said what it loads. Then the list is read again. The wait draws one `LiveLine` on a terminal (else a
+   start and an end line), takes SIGINT only while it runs (`InterruptWatch`) and ends after `defaultTimeout`
+   (600 s); a timeout, a model that didn't load, or Ctrl-C writes nothing (`ToolIntegrationStep.waitForModels`).
 3. **OpenCode.** `OpenCodeConfigPlan.plan` reads the file into byte ranges with `JSONCDocument` and replaces only the
    `providers.<id>` value, or appends it in the file's indentation and trailing-comma style. The block has the base
    URL, `apiKey: "{file:<key file>}"` (under `~` in the home directory), `compatibility.maxTokensField: "max_tokens"`

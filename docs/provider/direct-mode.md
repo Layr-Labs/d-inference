@@ -253,6 +253,23 @@ next request reads it again, with no restart.
   serves this Mac only, never reads the account key and never dials the
   coordinator, whatever the route. The start banner, `darkbloom local` and
   `darkbloom route key` say so.
+- **A route that needs the key, with none saved, says why.** That is a saved
+  `my-macs` or `my-macs-first` with no account key, or no route saved after
+  `darkbloom route key --remove` removed a key this local API had used. A
+  request this Mac can't take stays on this Mac. Its answer keeps this Mac's
+  status (`404`, `429` or `503`), `Retry-After` and
+  `X-Darkbloom-Served-By: this-mac`, with code `account_key_needed`:
+  ``This Mac doesn't serve <model>, and reaching your other Macs needs an
+  account key: run `darkbloom route key`.`` A `429` or `503` starts `This Mac
+  can't take this request right now`. With `my-macs-first` it says `your other
+  Macs or the Darkbloom network`, except to a client on another machine. The
+  log says it once, until a key is read again, never with the key:
+  ``local router: a request this Mac can't take stays on this Mac: reaching
+  your other Macs needs an account key, and none is saved (`darkbloom route
+  key` saves one)``. With no route saved and no key read while the local API
+  ran, or with `this-mac`, the answer is this Mac's own, as before
+  (`LocalRouter.needsAccountKey`,
+  `provider-swift/Sources/ProviderCore/Server/LocalRouterResponder.swift`).
 - **What passes a request on:** only this Mac's own `404` (it doesn't serve
   the model), `429` (its queue is full) or `503` (draining, an add-on hold, a
   refused load, no capacity), before any byte reached the client. A client

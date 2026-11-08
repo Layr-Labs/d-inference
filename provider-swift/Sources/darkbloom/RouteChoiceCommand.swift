@@ -84,16 +84,18 @@ struct RouteChoiceFlow {
             say("✗ Not saved: \(error)")
             return 1
         }
-        // A local API without a local key (`--no-auth`) passes nothing on, whatever the route.
-        let keyless = pair == nil && liveEndpoint?.apiKey.isEmpty == true
+        // A local API without a local key (`--no-auth`) passes nothing on, whatever the route, the pair's on the leading
+        // Mac included. On the Mac that follows, the pair's API is the leading Mac's, whatever this Mac runs.
+        let keyless = pair?.follows != true && liveEndpoint?.apiKey.isEmpty == true
         let head = changed ? "✓ Saved." : "✓ Already saved."
         say(keyless ? head : head + " " + RouteSaved.when(running: liveEndpoint != nil, pair: pair))
         for line in Self.meaning(route) { say(line) }
         if keyless {
             say("The local API running now has no local key (--no-auth): it keeps every request on this Mac, "
                 + "whatever the route.")
+        } else if let pair {
+            say(RouteSaved.pairRouteLine(pair, route: route))
         }
-        if let pair { say(RouteSaved.pairRouteLine(pair, route: route)) }
         return 0
     }
 
@@ -162,8 +164,9 @@ enum RouteSaved {
     static func pairRouteLine(_ pair: PairPart, route: LocalSettings.Route) -> String {
         switch pair {
         case .leads(let other):
-            return "In this pair, this Mac's route applies: the pair's local API runs here and passes on what the pair "
-                + "can't take, including requests \(other) forwards to it."
+            let passes = route == .thisMac ? "passes nothing on" : "passes on what the pair can't take"
+            return "In this pair, this Mac's route applies: the pair's local API runs here and \(passes), including "
+                + "requests \(other) forwards to it."
         case .follows(let leader):
             return "In this pair, the leading Mac's route applies (\(leader)): its local API passes on what the pair can't "
                 + "take, including requests this Mac forwards to it. Run `\(BuildEnvironment.current.cliName) route "
@@ -171,14 +174,20 @@ enum RouteSaved {
         }
     }
 
-    /// Whose account key the pair's local API uses.
-    static func pairKeyLine(_ pair: PairPart) -> String {
+    /// Whose account key the pair's local API uses, once `route key` saved this Mac's key or `removed` it.
+    /// `routePassesOn`: this Mac's route passes requests on with a key.
+    static func pairKeyLine(_ pair: PairPart, removed: Bool, routePassesOn: Bool) -> String {
+        let cli = BuildEnvironment.current.cliName
         switch pair {
         case .leads:
-            return "In this pair, the pair's local API runs on this Mac and passes requests on with this key."
+            let runsHere = "In this pair, the pair's local API runs on this Mac"
+            if !routePassesOn { return runsHere + " and uses this Mac's key once its route passes requests on." }
+            return removed ? runsHere + ", so the pair passes nothing on until a key is saved here again."
+                : runsHere + " and passes requests on with this key."
         case .follows(let leader):
-            return "In this pair, the pair's local API passes requests on with the leading Mac's key (\(leader)): run "
-                + "`\(BuildEnvironment.current.cliName) route key` there."
+            return "In this pair, the pair's local API uses the leading Mac's key (\(leader)), not this one: "
+                + (removed ? "to stop the pair passing requests on, run `\(cli) route key --remove` there."
+                    : "run `\(cli) route key` there.")
         }
     }
 }

@@ -129,7 +129,7 @@ struct RouteKeyFlow {
         } else {
             say(RouteSaved.when(running: localAPIRunning, pair: pair))
         }
-        if let pair { say(RouteSaved.pairKeyLine(pair)) }
+        if let line = pairKeyLine(removed: false) { say(line) }
         return 0
     }
 
@@ -143,17 +143,28 @@ struct RouteKeyFlow {
         say("✓ Account key removed from this Mac's Keychain.")
         for line in Self.routeLines(savedRoute: savedRoute, keySaved: false) { say(line) }
         // A local API without a local key (`--no-auth`) never used the key, so nothing changes for it. Any other one
-        // whose route passed requests on with the key stops doing so from its next request.
-        let routeWithTheKey = LocalSettings(route: savedRoute).resolvedRoute(accountKeySaved: true)
+        // whose route passed requests on with the key stops doing so from its next request: on the leading Mac of a
+        // pair, the pair's.
         if localAPIRunning, pair?.follows != true, routeWithTheKey != .thisMac {
-            say("\(RouteSaved.usesItNow) From its next request, one this Mac can't take gets this Mac's own answer "
+            let here = pair == nil ? "this Mac" : "the pair"
+            say("\(RouteSaved.usesItNow) From its next request, one \(here) can't take gets \(here)'s own answer "
                 + "instead of going to your other Macs"
                 + (routeWithTheKey == .myMacsFirst ? " or the Darkbloom network." : "."))
         } else if !liveEndpointHasNoLocalKey {
             say(RouteSaved.when(running: localAPIRunning, pair: pair))
         }
-        if let pair { say(RouteSaved.pairKeyLine(pair)) }
+        if let line = pairKeyLine(removed: true) { say(line) }
         return 0
+    }
+
+    /// Where a request this Mac can't take goes while a key is saved: what the key lets the route do.
+    var routeWithTheKey: LocalSettings.Route { LocalSettings(route: savedRoute).resolvedRoute(accountKeySaved: true) }
+
+    /// Whose key the pair's local API uses, after this save or removal; nil outside a pair, and on a leading Mac whose
+    /// running API has no local key, which never uses one.
+    func pairKeyLine(removed: Bool) -> String? {
+        guard let pair, pair.follows || !liveEndpointHasNoLocalKey else { return nil }
+        return RouteSaved.pairKeyLine(pair, removed: removed, routePassesOn: routeWithTheKey != .thisMac)
     }
 
     /// Where requests go with this route and key, in the iPhone app's words. Never a speed.

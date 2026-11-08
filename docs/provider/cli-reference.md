@@ -947,10 +947,12 @@ The same choice again writes nothing (`✓ Already saved. …`).
   whatever the route, and the command says so.
 - **In a two-Mac cluster,** the leading Mac's route applies: the pair's local
   API runs there and passes on what the pair can't take, including requests
-  the other Mac forwards to it. On the leading Mac the command says so; on the
-  other Mac it saves the route for when that Mac serves alone (``It applies
-  when this Mac serves alone (`darkbloom start --solo`).``) and names the
-  command to run on the leading Mac.
+  the other Mac forwards to it. On the leading Mac the command says so, or,
+  with `this-mac`, that the pair's local API passes nothing on. A pair's API
+  without a local key (`cluster local --no-auth`) gets the `--no-auth` line
+  instead. On the other Mac it saves the route for when that Mac serves alone
+  (``It applies when this Mac serves alone (`darkbloom start --solo`).``) and
+  names the command to run on the leading Mac.
 - A `provider.toml` that doesn't load is refused with its reason, and nothing
   is written (exit 1).
 
@@ -980,12 +982,23 @@ needs it, so it says `Your local API uses it now.` (or, with none running, `It
 applies when your local API starts.`). A key removed while the route passes
 requests on says what the next request does: ``Your local API uses it now.
 From its next request, one this Mac can't take gets this Mac's own answer
-instead of going to your other Macs or the Darkbloom network.`` On the Mac that
-follows in a two-Mac cluster, it says that the pair's local API passes requests
-on with the leading Mac's key, and to run `darkbloom route key` there. When the
-local API running now has no local key (`--no-auth`), it says that this API
-keeps every request on this Mac and never uses the key. ^C at the hidden prompt gives the terminal its echo
-back before the command ends (`HiddenReadSignals`). See
+instead of going to your other Macs or the Darkbloom network.`` That answer
+says an account key is needed (code `account_key_needed`, see
+[the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
+
+In a two-Mac cluster it says whose key the pair's local API uses:
+
+| This Mac | Saved | Removed |
+|---|---|---|
+| Leads (the pair's local API runs here) | `In this pair, the pair's local API runs on this Mac and passes requests on with this key.` | ``From its next request, one the pair can't take gets the pair's own answer …``, then `In this pair, the pair's local API runs on this Mac, so the pair passes nothing on until a key is saved here again.` |
+| Leads, with `[local] route = "this-mac"` | `In this pair, the pair's local API runs on this Mac and uses this Mac's key once its route passes requests on.` | The same |
+| Follows | ``In this pair, the pair's local API uses the leading Mac's key (…), not this one: run `darkbloom route key` there.`` | ``… not this one: to stop the pair passing requests on, run `darkbloom route key --remove` there.`` |
+
+When the local API running now has no local key (`--no-auth`), it says that
+this API keeps every request on this Mac and never uses the key; on the
+leading Mac it then says nothing of the pair's key. ^C at the hidden prompt
+gives the terminal its echo back before the command ends
+(`HiddenReadSignals`). See
 [the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router).
 
 ### Cluster placement request metadata

@@ -83,7 +83,7 @@ public struct LocalRouterConfig: Sendable {
         return routeFile.route(in: settingsFile, startingWith: settings.route, log: log)
     }
 
-    /// The route in effect now, and the key it uses; `(.thisMac, nil)` whenever nothing may leave this Mac.
+    /// The route in effect now, and the key it uses; `.thisMacOnly` whenever nothing may leave this Mac.
     ///
     /// - Only a request this Mac can't take, and a model list, call this, once each. A request this Mac serves never
     ///   looks at the config file or the Keychain, and nothing here runs per token. A request passed on keeps, through
@@ -94,16 +94,17 @@ public struct LocalRouterConfig: Sendable {
     ///   Keychain.
     /// - The key is read once, by the first call that needs it, and kept in memory (`LocalRouterKeyCache`); `route key`
     ///   announces a change, and the next call reads it again, so a change counts from the next request without a
-    ///   restart. Without a saved key, nothing is passed on, whatever the route. A key that can't be read (the Keychain
-    ///   won't hand it over without asking) isn't kept: it is said once per run of failures, in a line without the key,
-    ///   and keeps requests on this Mac.
+    ///   restart. Without a saved key, nothing is passed on, whatever the route; `routeNeedingKey` then names the route
+    ///   that asked for one, so the answer can say why. A key that can't be read (the Keychain won't hand it over
+    ///   without asking) isn't kept: it is said once per run of failures, in a line without the key, and keeps requests
+    ///   on this Mac.
     /// - Whatever route the file says, the caller then serves a client on another machine `my-macs-first` as `my-macs`
     ///   (`LocalRouterPolicy.route`): a client on the LAN never uses the paid network.
-    func effectiveRoute() -> (route: LocalSettings.Route, accountKey: String?) {
+    func effectiveRoute() -> LocalRouterEffectiveRoute {
         // First: without a local key the route doesn't matter, so the file isn't even looked at.
-        guard localKeyRequired else { return (.thisMac, nil) }
+        guard localKeyRequired else { return .thisMacOnly }
         let saved = savedRoute()
-        guard saved != .thisMac else { return (.thisMac, nil) }
+        guard saved != .thisMac else { return .thisMacOnly }
         let key: String?
         do {
             key = try keyCache.key(from: accountKeys, changes: keyChangeNotification)
@@ -114,12 +115,31 @@ public struct LocalRouterConfig: Sendable {
                 log("\(reason); requests stay on this Mac until it can be read (after a new build, save it again with "
                     + "`\(BuildEnvironment.current.cliName) route key`)")
             }
-            return (.thisMac, nil)
+            return .thisMacOnly
         }
-        let route = LocalSettings(route: saved).resolvedRoute(accountKeySaved: key != nil)
-        guard let key, route != .thisMac else { return (.thisMac, nil) }
-        return (route, key)
+        let route = LocalSettings(route: saved).resolvedRoute(accountKeySaved: true)
+        guard let key else {
+            // A saved `my-macs` or `my-macs-first` asks for a key. With no route saved, only a key read while this
+            // router ran did, and `route key --remove` removed it since.
+            let asked = saved != nil || keyCache.keySeenThisRun
+            return LocalRouterEffectiveRoute(route: .thisMac, routeNeedingKey: asked ? route : nil)
+        }
+        guard route != .thisMac else { return .thisMacOnly }
+        return LocalRouterEffectiveRoute(route: route, accountKey: key)
     }
+}
+
+/// Where a request this Mac can't take goes now (`LocalRouterConfig.effectiveRoute`).
+struct LocalRouterEffectiveRoute: Sendable {
+    /// The route in effect; `.thisMac` whenever nothing may leave this Mac.
+    var route: LocalSettings.Route
+    /// The account key `route` passes requests on with; nil with `.thisMac`.
+    var accountKey: String?
+    /// The route that would pass the request on, but no account key is saved: a saved `my-macs` or `my-macs-first`,
+    /// or, with no route saved, `my-macs` once a key read while this router ran was removed. nil otherwise.
+    var routeNeedingKey: LocalSettings.Route?
+
+    static let thisMacOnly = LocalRouterEffectiveRoute(route: .thisMac)
 }
 
 /// `[local] route` as the provider config file says it now, for a running router: the one place that decides when the
@@ -205,7 +225,8 @@ final class LocalRouterRouteFile: @unchecked Sendable {
 ///
 /// The copy is kept only while the store's changes are watched: the store posts a Darwin notification when `route key`
 /// saves or removes the key, and this drops the copy on it (`notify_register_dispatch`), so the next request reads the
-/// key again. A failed read isn't kept, so the next request tries again; a run of failures is said once.
+/// key again. A failed read isn't kept, so the next request tries again; a run of failures is said once. A request kept
+/// on this Mac because no key is saved is said once too, until a key is read again.
 final class LocalRouterKeyCache: @unchecked Sendable {
     private let lock = NSLock()
     /// nil: no copy; `.some(nil)`: read, and no key is saved.
@@ -216,11 +237,27 @@ final class LocalRouterKeyCache: @unchecked Sendable {
     private var watchTried = false
     /// The registration for the change notification; nil when there is none to watch, or it couldn't be made.
     private var watch: Int32?
+    /// Whether a read found a saved key while this router ran.
+    private var sawAKey = false
+    /// Whether a request kept on this Mac for want of a key was said since this router started or a key was last read.
+    private var missingSaid = false
 
     deinit { if let watch { notify_cancel(watch) } }
 
     /// Whether a copy is kept now.
     var keepsACopy: Bool { lock.withLock { copy != nil } }
+
+    /// Whether a read found a saved key while this router ran: with no route saved, that key passed requests on.
+    var keySeenThisRun: Bool { lock.withLock { sawAKey } }
+
+    /// Notes a request kept on this Mac for want of a key; true for the first since this router started or a key was
+    /// last read, so the log says it once for each time the key goes.
+    func missingKeyNoted() -> Bool {
+        lock.withLock {
+            defer { missingSaid = true }
+            return !missingSaid
+        }
+    }
 
     /// The saved key, nil when none is saved: the kept copy, else a read of `store`, kept while `changes` (the store's
     /// change notification) is watched.
@@ -236,6 +273,10 @@ final class LocalRouterKeyCache: @unchecked Sendable {
         let key = try store.load().flatMap { $0.isEmpty ? nil : $0 }
         lock.withLock {
             failing = false
+            if key != nil {
+                sawAKey = true
+                missingSaid = false
+            }
             if keeps, changes == seen { copy = .some(key) }
         }
         return key

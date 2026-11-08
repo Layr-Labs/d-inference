@@ -145,6 +145,34 @@ struct MeFirstGiveWayTests {
         await h.remove()
     }
 
+    /// A Darkbloom request the engine admitted keeps its work while the owner's request asks; once the engine puts it
+    /// back in its queue (preempted for memory, its prompt's work gone), it gives way at the owner's next look.
+    @Test func aRequestTheEnginePutsBackInItsQueueGivesWayAtTheOwnersNextLook() async throws {
+        let h = try await Self.harness(meFirst: true)
+        try await h.network("streaming")
+        try await h.network("prefilling")
+        h.engine.token(0)
+        try #require(await eventually { h.outbound.contentFrames(for: "streaming", decryptingWith: h.sender) == 1 })
+
+        let owner = try await h.owner()
+        let looks = h.engine.capacityReads
+        #expect(await eventually { h.engine.capacityReads >= looks + 10 }, "the owner's request asked several times")
+        #expect(h.outbound.terminals(for: "prefilling") == 0, "admitted, it keeps its work")
+
+        h.engine.preempt(1)
+        #expect(await eventually { h.gaveWay("prefilling") }, "back in the queue, it gives way")
+        #expect(h.engine.cancelledIndices == [1])
+        h.engine.token(0)
+        h.engine.finish(0)
+        #expect(await eventually { h.engine.running == [2] }, "the owner's request runs once the streaming one ends")
+        h.engine.token(2)
+        h.engine.finish(2)
+        for try await _ in owner {}
+        #expect(await eventually { h.outbound.completed(for: "streaming") })
+        #expect(h.outbound.failure(for: "streaming") == nil)
+        await h.remove()
+    }
+
     /// A request that gives way while its handler still admits it ends with the one drain refusal and never reaches the
     /// engine: right after its token is registered, when the give-way also cancelled it (the handler's first exit), and
     /// when only its token says so as its stream would start (the last exit).
@@ -347,7 +375,7 @@ final class GiveWayOutbound: @unchecked Sendable {
 /// index.
 final class GiveWayEngine: CBv2Engine, @unchecked Sendable {
     private let lock = NSLock()
-    private let slots: Int
+    private var slots: Int
     private let manualSteps: Bool
     private var reads = 0
     private var arrivals: [CBv2Request] = []
@@ -379,6 +407,17 @@ final class GiveWayEngine: CBv2Engine, @unchecked Sendable {
             if runningIDs.count < slots { runningIDs.append(request.id) } else { waitingIDs.append(request.id) }
         }
         return stream
+    }
+
+    /// The `index`-th request, running, goes back to the front of the queue, as when the engine preempts one for
+    /// memory; the engine runs one request fewer from then on.
+    func preempt(_ index: Int) {
+        lock.withLock {
+            let id = arrivals[index].id
+            runningIDs.removeAll { $0 == id }
+            waitingIDs.insert(id, at: 0)
+            slots -= 1
+        }
     }
 
     /// The `index`-th request's next token, "a".
@@ -415,7 +454,7 @@ final class GiveWayEngine: CBv2Engine, @unchecked Sendable {
         waitingIDs.removeAll { $0 == id }
         if let at = runningIDs.firstIndex(of: id) {
             runningIDs.remove(at: at)
-            if !waitingIDs.isEmpty { runningIDs.append(waitingIDs.removeFirst()) }
+            if !waitingIDs.isEmpty, runningIDs.count < slots { runningIDs.append(waitingIDs.removeFirst()) }
         }
     }
 

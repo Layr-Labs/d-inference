@@ -324,9 +324,10 @@ public actor EngineV2Bridge {
     /// bridge-side limit would just shadow the engine's admission with a
     /// second constant to keep in sync.
     var pumpTasks: [String: Task<Void, Never>] = [:]
-    /// Me first: how often the owner's request, while it has no first token, looks whether it waits in the engine's
-    /// queue (`EngineV2Bridge+OwnerWait.swift`).
-    var ownerWaitPollInterval: Duration = .milliseconds(250)
+    /// How often a request watched while it has no first token looks whether it still waits in the engine's queue
+    /// (`queueState(of:)`): the owner's request under me first (`EngineV2Bridge+OwnerWait.swift`), and a streamed
+    /// local request whose head is held (`EngineV2Bridge+HeadHold.swift`).
+    var queuePollInterval: Duration = .milliseconds(250)
     /// Streamed local requests whose response head waits for the engine to admit them
     /// (`EngineV2Bridge+HeadHold.swift`), and the memory refusal of each one the engine ended before admitting it.
     var headHeldIDs: Set<String> = []

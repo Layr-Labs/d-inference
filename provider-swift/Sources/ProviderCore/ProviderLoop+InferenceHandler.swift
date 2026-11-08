@@ -47,22 +47,19 @@ extension ProviderLoop {
         lookupReceiptFinalizer.sendTerminal(
             .inferenceError(
                 requestId: requestId,
-                failure: CapacityRejectionEnrichment.enrich(
-                    InferenceFailure(code: .capacity, statusCode: 503, errorReason: .draining),
-                    modelId: nil,
-                    published: state.publishedCapacity,
-                    fallbackReason: .slotState),
+                failure: Self.drainRefusal(modelId: nil, published: state.publishedCapacity),
                 profile: inflightProfiles[requestId]),
             fallbackFailure: .capacity,
             send: send)
         return true
     }
 
-    /// Me first: the terminal of a Darkbloom request that gave way to the owner
-    /// before it sent output (`giveWayToOwner`). It is the drain refusal
-    /// above, which the coordinator re-routes before anything reaches its
-    /// client, with no retry charge or health strike.
-    static func ownerYieldFailure(modelId: String?, published: BackendCapacity?) -> InferenceFailure {
+    /// The typed drain refusal, `capacity / 503 / draining`: coordinators
+    /// serve the request elsewhere before anything reaches its client, with
+    /// no retry charge or health strike. A dispatch refused at admission
+    /// above gets it, and so does a Darkbloom request that gave way to the
+    /// owner before it sent output (`giveWayToOwner`).
+    static func drainRefusal(modelId: String?, published: BackendCapacity?) -> InferenceFailure {
         CapacityRejectionEnrichment.enrich(
             InferenceFailure(code: .capacity, statusCode: 503, errorReason: .draining),
             modelId: modelId, published: published, fallbackReason: .slotState)
@@ -560,14 +557,13 @@ extension ProviderLoop {
         powerAssertion.acquire()
         syncWarmModelState()
         let token = await cancellationRegistry.register(requestId: requestId)
-        // Me first: a request that gave way to the owner before its stream
-        // started still owes the coordinator its re-route refusal.
-        func sendOwnerYieldIfGivenWay() {
-            guard token.yieldedToOwner else { return }
+        // Me first: a request that gave way to the owner (`giveWayToOwner`)
+        // ends with this one terminal, before or after its stream started.
+        let sendGaveWayRefusal: @Sendable () -> Void = { [state] in
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
                     requestId: requestId,
-                    failure: Self.ownerYieldFailure(modelId: modelId, published: state.publishedCapacity),
+                    failure: Self.drainRefusal(modelId: modelId, published: state.publishedCapacity),
                     profile: profile),
                 fallbackFailure: .capacity,
                 send: send)
@@ -575,7 +571,7 @@ extension ProviderLoop {
         guard requestToModel[requestId] == modelId else {
             await cancellationRegistry.finish(requestId: requestId)
             logger.info("[\(requestId)] Request cancelled during admission")
-            sendOwnerYieldIfGivenWay()
+            if token.gaveWay { sendGaveWayRefusal() }
             return
         }
         if await rejectAcceptedRequestIfFirstContentDeadlineExpired(
@@ -649,7 +645,7 @@ extension ProviderLoop {
         guard requestToModel[requestId] == modelId else {
             await cancellationRegistry.finish(requestId: requestId)
             logger.info("[\(requestId)] Request cancelled during model load")
-            sendOwnerYieldIfGivenWay()
+            if token.gaveWay { sendGaveWayRefusal() }
             return
         }
 
@@ -751,11 +747,13 @@ extension ProviderLoop {
         }
 
         // Me first: a request that gave way to the owner during the awaits
-        // above never starts its stream.
-        if token.yieldedToOwner {
+        // above never starts its stream. No await separates this check from
+        // the task's registration below, so one that gives way later finds
+        // the task to cancel, and the task ends with the same refusal.
+        if token.gaveWay {
             await cancellationRegistry.finish(requestId: requestId)
             logger.info("[\(requestId)] Request gave way to the owner before its stream started")
-            sendOwnerYieldIfGivenWay()
+            sendGaveWayRefusal()
             return
         }
 
@@ -844,16 +842,10 @@ extension ProviderLoop {
 
             /// Me first: this request gave way to the owner before it sent
             /// output (`giveWayToOwner`), so it ends with the re-route refusal.
-            let sendOwnerYield: @Sendable (Int, Int) -> Void = { framesEmitted, bytesEmitted in
+            let endAfterGivingWay: @Sendable (Int, Int) -> Void = { framesEmitted, bytesEmitted in
                 log.info("[\(requestId)] Gave way to the owner before any output; the coordinator re-routes it")
                 finalizeProfile(framesEmitted, bytesEmitted, false, nil)
-                lookupReceiptFinalizer.sendTerminal(
-                    .inferenceError(
-                        requestId: requestId,
-                        failure: Self.ownerYieldFailure(modelId: modelId, published: me.state.publishedCapacity),
-                        profile: profile),
-                    fallbackFailure: .capacity,
-                    send: send)
+                sendGaveWayRefusal()
             }
 
             if rejectExpiredDeadline() { return }
@@ -1048,8 +1040,8 @@ extension ProviderLoop {
                 // (provider, model) 5xx routing cooldown for a client's own
                 // cancel.
                 if error is CancellationError || token.isCancelled {
-                    if token.yieldedToOwner {
-                        sendOwnerYield(0, 0)
+                    if token.gaveWay {
+                        endAfterGivingWay(0, 0)
                         return
                     }
                     log.info("[\(requestId)] Request cancelled while starting the stream")
@@ -1287,15 +1279,17 @@ extension ProviderLoop {
                             frameHadContent = true
                         }
                         if frameHadContent {
-                            // Me first: the first output is claimed before it
-                            // is sent, so one that gave way to the owner sends none.
-                            if contentFrameCount == 0, !token.claimOutput() {
-                                sendOwnerYield(framesEmitted, bytesEmitted)
-                                return
-                            }
                             // First content frame (both counters flip here,
                             // so one check suffices).
                             if contentFrameCount == 0 {
+                                // Me first: claimed before the first output
+                                // frame goes out, once per request, so one
+                                // that gave way to the owner sends none and
+                                // one that streams never gives way.
+                                guard token.claimOutput() else {
+                                    endAfterGivingWay(framesEmitted, bytesEmitted)
+                                    return
+                                }
                                 // Withheld output was the first generated output.
                                 let firstOutputAt = v2UsageSignal.firstWithheldOutputAt ?? .now
                                 let elapsed = firstOutputAt - dispatchReceivedAt
@@ -1444,9 +1438,9 @@ extension ProviderLoop {
                 )
             }
 
-            if cancelledMidStream, token.yieldedToOwner {
+            if cancelledMidStream, token.gaveWay {
                 // It gave way before its first output, so it sent none.
-                sendOwnerYield(framesEmitted, bytesEmitted)
+                endAfterGivingWay(framesEmitted, bytesEmitted)
                 return
             }
             if cancelledMidStream {

@@ -13,7 +13,7 @@ enum LocalHeadHold {
 
 extension EngineV2Bridge {
     /// Holds a streamed local request (`submitTokenized`) until the engine admits it: until it no longer waits in the
-    /// engine's queue (`ownerWaitView`, the same inference me first uses), or its first token, or its end. Its response
+    /// engine's queue (`queueState(of:)`, the same inference me first uses), or its first token, or its end. Its response
     /// head goes out only after this returns. If the engine ended it before admitting it for this Mac's memory, its
     /// 120 s admission lease or a full paged pool's requeues (`recordHeadHoldRefusal`), this throws
     /// `tokenBudgetExhausted`, which the local API answers with the memory 503 before any SSE header. Any other end
@@ -27,9 +27,9 @@ extension EngineV2Bridge {
             if let refusal = headHoldRefusals.removeValue(forKey: id) {
                 throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(refusal)
             }
-            guard let view = ownerWaitView(id: id), view.waiting else { return }
+            guard let view = queueState(of: id), view.waiting else { return }
             do {
-                try await Task.sleep(for: ownerWaitPollInterval)
+                try await Task.sleep(for: queuePollInterval)
             } catch {
                 cancel(requestId: id)
                 throw error

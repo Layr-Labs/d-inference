@@ -80,7 +80,7 @@ struct MeFirstGiveWayTests {
         let bridge = EngineV2Bridge(engine: engine, modelId: model,
             tokenizer: TokenizerHandle(tokenizer), eosTokenIds: [],
             kvBytesPerToken: 4_000, kvBudget: budget)
-        await bridge.setOwnerWaitPollIntervalForTesting(.milliseconds(10))
+        await bridge.setQueuePollIntervalForTesting(.milliseconds(10))
         let runtime = EngineV2Runtime()
         await runtime.register(modelId: model, bridge: bridge)
         await loop.setEngineV2RuntimeForTesting(runtime)
@@ -164,18 +164,18 @@ struct MeFirstGiveWayTests {
     @Test func outputAndGivingWayExcludeEachOther() {
         let streaming = InferenceCancellationToken()
         #expect(streaming.claimOutput())
-        #expect(!streaming.yieldToOwner())
-        #expect(!streaming.isCancelled && !streaming.yieldedToOwner)
+        #expect(!streaming.giveWay())
+        #expect(!streaming.isCancelled && !streaming.gaveWay)
 
         let waiting = InferenceCancellationToken()
-        #expect(waiting.yieldToOwner())
-        #expect(waiting.isCancelled && waiting.yieldedToOwner)
+        #expect(waiting.giveWay())
+        #expect(waiting.isCancelled && waiting.gaveWay)
         #expect(!waiting.claimOutput())
-        #expect(!waiting.yieldToOwner(), "once")
+        #expect(!waiting.giveWay(), "once")
 
         let cancelled = InferenceCancellationToken()
         cancelled.cancel()
-        #expect(!cancelled.yieldToOwner(), "a request the coordinator cancelled ends as a cancel")
+        #expect(!cancelled.giveWay(), "a request the coordinator cancelled ends as a cancel")
     }
 }
 

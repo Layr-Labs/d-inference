@@ -26,7 +26,7 @@ struct LocalHeadHoldTests {
             kvBudget: GlobalKVCacheBudget(memorySnapshot: {
                 .init(total: 256 << 30, active: 0, cache: 0, systemAvailable: 256 << 30)
             }))
-        await bridge.setOwnerWaitPollIntervalForTesting(.milliseconds(5))
+        await bridge.setQueuePollIntervalForTesting(.milliseconds(5))
         return makeLocalInferenceApplication(
             config: .init(host: "127.0.0.1", port: 0, authToken: key),
             defaultMaxTokens: StandaloneServer.slotDefaultMaxTokens,

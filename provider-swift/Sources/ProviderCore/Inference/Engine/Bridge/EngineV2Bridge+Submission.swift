@@ -259,13 +259,13 @@ extension EngineV2Bridge {
         }
         try checkBeforeServiceAdmission(firstContentDeadline, profile: profile, usageSignal: usageSignal)
         let retirementTransfer = EngineV2RetirementTransfer()
+        let maxOutputTokens = outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count)
         guard acquireServiceAllowance(requestID: id, serviceReservationID: serviceReservationID,
             serviceReservation: serviceReservation, promptTokens: promptTokens.count,
-            maxOutputTokens: max(0, outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count)),
+            maxOutputTokens: max(0, maxOutputTokens),
             qualifiedTextWork: multimodal == nil && mediaKind == nil,
             recoverPrefillEvidence: canRecoverPrefillEvidence(
-                promptTokens: promptTokens.count,
-                maxOutputTokens: outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count),
+                promptTokens: promptTokens.count, maxOutputTokens: maxOutputTokens,
                 deadline: firstContentDeadline,
                 isMultimodal: multimodal != nil || mediaKind != nil)) else {
             // A full Mac refuses as capacity before any stream exists, so
@@ -331,13 +331,15 @@ extension EngineV2Bridge {
             // The same coordinator hint that gates the write also tells the
             // engine which fork boundary is worth staging.
             prefixCheckpointTargetTokens: donationDemand?.repeatedPrefixTokens,
-            defaultMaxTokensContextLimit: defaultOutputContextLimit,
             // The native block engine's decoder matches stops over the whole
             // output, so its requests carry no scope and the reported stop
             // agrees with the one that matched.
             stopStringScope: ownedEngine is CBv2NativeBlockEngine
                 ? nil : stopStringScope ?? self.stopStringScope
         )
+        // The engine is asked for the output resolved above, which the service
+        // allowance was sized for, not the translation's `max_tokens ?? default`.
+        cbv2Request.maxTokens = maxOutputTokens
         cbv2Request.mimoClusterImages = mimoClusterImages
         cbv2Request.clusterStillImages = clusterStillImages
         cbv2Request.clusterGLMMedia = clusterGLMMedia
@@ -354,16 +356,14 @@ extension EngineV2Bridge {
             ssdStaged: false,
             readyReceiptRegistered: false,
             usageSignal: usageSignal)
-        // A slot that holds requests to its model window refuses a prompt that
-        // fills it, naming the window, and writes at most what the prompt leaves.
-        if let window = outputWindowTokens {
-            guard promptTokens.count < window else {
-                usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
-                continuation.finish()
-                throw MultiModelBatchSchedulerEngineError.promptExceedsContext(
-                    Self.promptExceedsContextMessage(contextTokens: window))
-            }
-            cbv2Request.maxTokens = outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count)
+        // A slot held to its model window refuses a prompt that fills it, naming
+        // the window: no output fits after it. Any other prompt's output is
+        // already cut to what it leaves (`outputTokens(requested:promptTokens:)`).
+        if let window = modelWindowTokens, promptTokens.count >= window {
+            usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
+            continuation.finish()
+            throw MultiModelBatchSchedulerEngineError.promptExceedsContext(
+                Self.promptExceedsContextMessage(contextTokens: window))
         }
         let (worstCaseTokens, tokenCountOverflow) = promptTokens.count.addingReportingOverflow(
             cbv2Request.maxTokens)

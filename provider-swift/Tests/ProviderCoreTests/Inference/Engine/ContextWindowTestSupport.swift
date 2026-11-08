@@ -1,0 +1,40 @@
+import Foundation
+import MLXLMCommon
+@testable import ProviderCore
+
+// Shared by `LocalDefaultOutputTests` and `LocalContextWindowTests`.
+
+/// A 256 GiB Mac with nothing else resident: its memory holds every request.
+func roomyKVBudget() -> GlobalKVCacheBudget {
+    GlobalKVCacheBudget(memorySnapshot: {
+        .init(total: 256 << 30, active: 0, cache: 0, systemAvailable: 256 << 30)
+    })
+}
+
+/// No tensors or token generation: records the output each admitted request asks for.
+final class OutputRecordingEngine: CBv2Engine, @unchecked Sendable {
+    private let lock = NSLock()
+    private var outputs: [Int] = []
+    var submittedOutputs: [Int] { lock.withLock { outputs } }
+    func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
+        lock.withLock { outputs.append(request.maxTokens) }
+        return AsyncStream { $0.finish() }
+    }
+    func cancel(_ id: CBv2RequestID) {}
+    func capacity() -> CBv2CapacitySnapshot {
+        .init(activeRequests: 0, waitingRequests: 0, kvBytesInUse: 0, kvBytesCapacity: 0, activeTokens: 0)
+    }
+    func shutdown() async {}
+}
+
+/// Renders every conversation to `count` tokens.
+struct FixedLengthTokenizer: MLXLMCommon.Tokenizer {
+    var count = 1
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] { Array(repeating: 1, count: count) }
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { "" }
+    func convertTokenToId(_ token: String) -> Int? { nil }
+    func convertIdToToken(_ id: Int) -> String? { nil }
+    var bosToken: String? { nil }; var eosToken: String? { nil }; var unknownToken: String? { nil }
+    func applyChatTemplate(messages: [[String: any Sendable]], tools: [[String: any Sendable]]?,
+        additionalContext: [String: any Sendable]?) throws -> [Int] { Array(repeating: 1, count: count) }
+}

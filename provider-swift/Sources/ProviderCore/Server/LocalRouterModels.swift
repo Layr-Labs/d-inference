@@ -15,9 +15,10 @@ public struct LocalModelLimits: Sendable, Equatable {
         self.inputModalities = inputModalities.flatMap { $0.isEmpty ? nil : $0 }
     }
 
-    /// A single Mac slot's limits: its model window bounds a request's prompt
-    /// and its output alike (a `max_tokens` beyond what the prompt leaves is
-    /// cut to it), so both are the window.
+    /// A single Mac slot's limits: its window holds a request's prompt and output
+    /// together, so either may be at most the window and both are listed as it.
+    /// (A `max_tokens` past what the prompt leaves is cut to fit, or refused
+    /// past an advertised context.)
     public init(window: Int?, inputModalities: [String]? = nil) {
         self.init(contextLength: window, maxOutputLength: window, inputModalities: inputModalities)
     }

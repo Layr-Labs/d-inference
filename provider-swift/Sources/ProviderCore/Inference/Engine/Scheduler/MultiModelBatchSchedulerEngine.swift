@@ -295,7 +295,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             let bridge = entry?.engineV2Bridge
             return MLXServerModel(
                 id: id,
-                contextLength: bridge?.advertisedContextTokens ?? bridge?.outputWindowTokens
+                contextLength: bridge?.advertisedContextTokens ?? bridge?.modelWindowTokens
                     ?? Qwen4SupportPolicy.contextLimit(
                         modelID: id, modelType: entry?.modelType))
         }
@@ -966,14 +966,6 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             throw error
         }
 
-        // The output the bridge resolves for this prompt (an omitted max_tokens
-        // is its default cut to the window; a slot that holds requests to its
-        // window cuts one that would pass it), named on the request so the
-        // token constraint is sized for the engine request's budget: the engine
-        // refuses a constraint whose budget differs (tokenConstraintBudgetMismatch).
-        if let bridge = engineV2Bridge {
-            request.maxTokens = bridge.outputTokens(requested: request.maxTokens, promptTokens: promptTokens.count)
-        }
         // Parser resolution precedes both text and qualified native media.
         let tokenConstraint: (any CBv2TokenConstraint)?
         do {
@@ -982,6 +974,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 throw MultiModelBatchSchedulerEngineError.generationFailed(
                     "internal error: model '\(modelId)' has no serving engine (no v2 bridge)")
             }
+            // The output the bridge resolves for this prompt (an omitted
+            // max_tokens is its default cut to the window; a slot held to its
+            // model window cuts one that would pass it), named on the request so
+            // the token constraint is sized for the engine request's budget: the
+            // engine refuses a constraint whose budget differs
+            // (tokenConstraintBudgetMismatch).
+            request.maxTokens = bridge.outputTokens(requested: request.maxTokens, promptTokens: promptTokens.count)
             let toolConstraintStart = SuspendingClock.now
             tokenConstraint = try ToolConstraintFactory.make(
                 prepared: prepared,

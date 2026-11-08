@@ -133,15 +133,18 @@ public actor EngineV2Bridge {
     /// that has not been admitted.
     let samplingDefaults: EngineV2SamplingDefaults
     let defaultMaxTokens: Int
-    /// The context an omitted `max_tokens` is cut to fit after the prompt: a
-    /// cluster pair's, or a single Mac slot's own model window (nil when unknown).
-    let defaultMaxTokensContextLimit: Int?
-    /// The model window a single Mac slot without an advertised context holds
-    /// every request to: a prompt that fills it is refused, naming it, and a
-    /// `max_tokens` that would pass it is cut to what the prompt leaves. Nil on a
-    /// pair (its engine refuses by its own limits) and on a slot with an
-    /// advertised context, which refuses a request beyond it.
-    nonisolated let outputWindowTokens: Int?
+    /// The context an omitted `max_tokens` is cut to fit after the prompt: the
+    /// smaller of the advertised context and the limit the slot was built with
+    /// (`defaultMaxTokensContextLimit`: a cluster pair's context, or a single
+    /// Mac slot's model window); nil when neither is known.
+    nonisolated let defaultOutputContextLimit: Int?
+    /// The model window (from its config) that a single Mac slot without an
+    /// advertised context holds every request to: a prompt that fills it is
+    /// refused, naming it, and a `max_tokens` past what the prompt leaves is cut
+    /// to fit (`outputTokens(requested:promptTokens:)`). Nil on a pair, whose
+    /// engine refuses by its own limits, and on a slot with an advertised
+    /// context, which refuses a request past that context.
+    nonisolated let modelWindowTokens: Int?
     let maxConcurrentRequests: Int
     nonisolated let performanceProfile: ServingPerformanceProfile?
     nonisolated let deadlineProfile: DeadlinePerformanceProfile?
@@ -471,7 +474,9 @@ public actor EngineV2Bridge {
             ?? performanceProfile?.contextTokensMax
             ?? deadlineProfile?.configuredContextTokens
         self.advertisedContextTokens = advertised
-        self.outputWindowTokens = advertised == nil && !(engine is DistributedCBv2Engine)
+        self.defaultOutputContextLimit = advertised.map { min($0, defaultMaxTokensContextLimit ?? $0) }
+            ?? defaultMaxTokensContextLimit
+        self.modelWindowTokens = advertised == nil && !(engine is DistributedCBv2Engine)
             ? defaultMaxTokensContextLimit.flatMap { $0 > 0 ? $0 : nil } : nil
         self.clampedKVBackendFallbackReason =
             Self.heartbeatFallbackReason(kvBackendFallbackReason)
@@ -484,7 +489,6 @@ public actor EngineV2Bridge {
         self.stopStringScope = stopStringScope
         self.samplingDefaults = samplingDefaults
         self.defaultMaxTokens = defaultMaxTokens
-        self.defaultMaxTokensContextLimit = defaultMaxTokensContextLimit
         self.maxConcurrentRequests = maxConcurrentRequests
         self.performanceProfile = performanceProfile
         self.deadlineProfile = deadlineProfile

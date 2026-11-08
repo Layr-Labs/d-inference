@@ -120,10 +120,16 @@ extension ProviderLoop {
     }
 
     /// What the router's `/v1/models` says of a model this Mac serves: the input it takes, and once it is loaded its
-    /// window as its engine admits it, the most a prompt or its output may be.
+    /// limits as its engine admits them. A single Mac lists its window as the context and the output: a prompt and
+    /// its output together may fill it. A pair lists its own limits, the context and the output its mode serves (what
+    /// its slot reports to the coordinator): it refuses a `max_tokens` past its output (`output_too_long`).
     func localModelLimits(_ modelId: String) -> LocalModelLimits? {
         let input = localInputModalities(modelId)
         guard let slot = modelSlots[modelId] else { return input.map { LocalModelLimits(inputModalities: $0) } }
+        if let pair = slot.modelContainer.clusterPair {
+            return LocalModelLimits(contextLength: pair.served.contextTokens, maxOutputLength: pair.served.outputTokens,
+                                    inputModalities: input)
+        }
         return LocalModelLimits(window: slot.engineV2.advertisedContextTokens ?? slot.sizing.maxContextLength,
                                 inputModalities: input)
     }

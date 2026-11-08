@@ -1,6 +1,6 @@
 # Use your Mac yourself, first
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 How your Mac serves is one choice: **Only me**, **Darkbloom network** or
 **Both, me first**. This page says what each one runs, costs and earns, how to
@@ -203,10 +203,11 @@ model.
   <!-- pending LS-4: the start waits for the model to load before it writes the limits, and the tools follow the address and the key by themselves. -->
   Once a model is loaded, the tools get its whole context window from this
   Mac, and a quarter of it as their output limit (65,536 tokens for a
-  262,144-token window), not the catalog's smaller one. They get image input
-  for every model this Mac serves with vision, loaded or not, even where
-  Darkbloom's catalog lists it as text only (MiMo V2.6); which models reason
-  still comes from the catalog.
+  262,144-token window), not the catalog's smaller one. On a pair, they get
+  the pair's own limits, which it serves. They get image input for every model
+  this Mac serves with vision, loaded or not, even where Darkbloom's catalog
+  lists it as text only (MiMo V2.6); which models reason still comes from the
+  catalog.
   <!-- pending R-FULL: the tools get each model's full output length. -->
 - **Offline** (Darkbloom's catalog unreachable), a run again keeps the names,
   image support and limits already set up. A model set up for the first time

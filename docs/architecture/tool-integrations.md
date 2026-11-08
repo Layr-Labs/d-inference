@@ -1,6 +1,6 @@
 # OpenCode and Hermes config writers
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 How Darkbloom points OpenCode 2 and Hermes Agent at its local API (Only me or Both, me first) by editing their own config files: the
 endpoint and key file, the models, the two planners and the safe-edit rules. This explanation is for provider
@@ -53,7 +53,8 @@ flowchart LR
    For a model this Mac has loaded, the endpoint lists its whole context window as both the context and the max
    output (`LocalModelLimits(window:)`, `provider-swift/Sources/ProviderCore/Server/LocalRouterModels.swift`), so
    the writers give it its full context window and a quarter of it as output, not the catalog's smaller output cap
-   (65,536 for a 262,144-token window whose catalog row says 32,768).
+   (65,536 for a 262,144-token window whose catalog row says 32,768). A pair's leader lists the pair's own context and
+   output instead (what its mode serves; it refuses a larger `max_tokens`), so a GLM pair's output stays 65,536.
    <!-- pending R-FULL: the writers give each model its full output length (the cap is a quarter of the context); only the Mac's memory bounds a request; OpenRouter is separate. -->
 3. **OpenCode.** `OpenCodeConfigPlan.plan` reads the file into byte ranges with `JSONCDocument` and replaces only the
    `providers.<id>` value, or appends it in the file's indentation and trailing-comma style. The block has the base

@@ -53,19 +53,18 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
     /// The model's configured context window (`max_position_embeddings`),
     /// or 0 when unknown. Bounds re-slice weights and vision KV clamps.
     public let maxContextLength: Int
-    /// Default `max_tokens` for requests that omit it (`defaultOutput(maxContext:fallback:)`);
-    /// the bridge cuts it to the context the prompt leaves.
+    /// Default `max_tokens` for requests that omit it: `defaultOutputTokens`
+    /// within the model's context, else the builder's fallback. The bridge cuts
+    /// it to the context the prompt leaves.
     public let defaultMaxTokens: Int
 
-    /// The output a request that names no `max_tokens` may write: the
-    /// standard request's output, as on a pair (`DistributedEngineFactory.defaultOutputTokens`).
-    /// Not a cap: an explicit `max_tokens` is never cut.
-    public static let defaultOutputTokens = 32_768
-
-    /// `defaultOutputTokens` within a known context, else `fallback`.
-    public static func defaultOutput(maxContext: Int, fallback: Int) -> Int {
-        maxContext > 0 ? min(maxContext, defaultOutputTokens) : fallback
-    }
+    /// The output a request that names no `max_tokens` may write: the standard
+    /// request's output, the same as on a pair (32,768 tokens). Not the whole
+    /// window: a request reserves memory for its prompt and its `max_tokens`
+    /// when it starts, so a whole-window default would reserve the whole window
+    /// for every short request. Not a cap either: a request that names
+    /// `max_tokens` may ask for the rest of the window.
+    public static let defaultOutputTokens = DistributedEngineFactory.defaultOutputTokens
 
     /// `auxiliaryWeightBytes`: resident weight bytes that live OUTSIDE the
     /// model container (the MTP drafter — never scanned, advertised, or
@@ -202,7 +201,7 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
         }
 
         let maxContext = architecture.maxContextLength ?? 0
-        let defaultMaxTokens = defaultOutput(maxContext: maxContext, fallback: fallbackDefaultMaxTokens)
+        let defaultMaxTokens = maxContext > 0 ? min(maxContext, defaultOutputTokens) : fallbackDefaultMaxTokens
 
         return SlotSizingSnapshot(
             weightsBytes: facts.bytes,

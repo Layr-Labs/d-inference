@@ -86,7 +86,7 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// advertised context. Deterministic client fault; no request content carried.
     case advertisedContextExceeded
     /// The prompt leaves no room in the model window of a slot that holds every
-    /// request to it (`EngineV2Bridge.outputWindowTokens`). Deterministic client
+    /// request to it (`EngineV2Bridge.modelWindowTokens`). Deterministic client
     /// fault; the message names the window, never request content, so a client
     /// may be shown it.
     case promptExceedsContext(String)

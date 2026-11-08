@@ -26,7 +26,9 @@ enum EngineV2Translation {
     ///
     /// * `maxTokens` defaulting matches the legacy path
     ///   (`BatchScheduler.resolvedMaxTokens`: `request.max_tokens ??
-    ///   defaultMaxTokens`).
+    ///   defaultMaxTokens`). The bridge then asks the engine for the output
+    ///   it resolves for the prompt instead
+    ///   (`EngineV2Bridge.outputTokens(requested:promptTokens:)`).
     /// * `stopTokens` is the bridge-resolved EOS set (see
     ///   ``stopTokenIds(eosTokenIds:tokenizerEOSTokenId:extraEOSTokens:convertTokenToId:)``)
     ///   — resolved once at engine construction per the contract, so B=1
@@ -66,15 +68,13 @@ enum EngineV2Translation {
         tokenConstraint: (any CBv2TokenConstraint)? = nil,
         samplingDefaults: EngineV2SamplingDefaults = .legacy,
         prefixCheckpointTargetTokens: Int? = nil,
-        defaultMaxTokensContextLimit: Int? = nil,
         stopStringScope: CBv2StopStringScope? = nil
     ) -> CBv2Request {
         CBv2Request(
             id: id,
             promptTokens: promptTokens,
             sampling: samplingParams(from: request, defaults: samplingDefaults),
-            maxTokens: request.max_tokens ?? defaultOutputTokens(
-                defaultMaxTokens, promptTokens: promptTokens.count, contextLimit: defaultMaxTokensContextLimit),
+            maxTokens: request.max_tokens ?? defaultMaxTokens,
             stopTokens: stopTokenIds,
             stopStrings: request.stop?.asArray ?? [],
             priority: 0,
@@ -87,10 +87,10 @@ enum EngineV2Translation {
         )
     }
 
-    /// The output allowance of a request that omits `max_tokens`: the default,
-    /// or on a cluster pair (`contextLimit`) the default cut to the context
-    /// left after the prompt, at least 1. An explicit `max_tokens` is never
-    /// changed; one that does not fit is refused with the pair's reason.
+    /// The output of a request that omits `max_tokens`: `value`, cut to what
+    /// the prompt leaves of `contextLimit` when that is known (a cluster pair's
+    /// context, or a single Mac slot's window). At least 1, so a prompt that
+    /// fills the context alone is refused for the context, not for its output.
     static func defaultOutputTokens(_ value: Int, promptTokens: Int, contextLimit: Int?) -> Int {
         guard let contextLimit else { return value }
         return max(1, min(value, contextLimit - promptTokens))
@@ -393,26 +393,29 @@ enum EngineV2Translation {
 }
 
 extension EngineV2Bridge {
-    /// The context a request that names no `max_tokens` fits its default output
-    /// into: the smaller of the cluster profile's or the slot's own window
-    /// (`defaultMaxTokensContextLimit`) and the advertised context; nil when
-    /// neither is known.
-    nonisolated var defaultOutputContextLimit: Int? {
-        [defaultMaxTokensContextLimit, advertisedContextTokens].compactMap { $0 }.min()
-    }
-
-    /// The output a request may write after a prompt of `promptTokens`, which
-    /// every budget of the request (its reservation, its token constraint) is
-    /// sized for: `requested` as asked, cut to what the prompt leaves of the
-    /// model window on a slot that holds requests to it (`outputWindowTokens`);
-    /// without `requested`, the default cut to the window
-    /// (`EngineV2Translation.defaultOutputTokens`).
+    /// The output a request may write after a prompt of `promptTokens`: the one
+    /// value its service allowance, KV reservation, engine request and token
+    /// constraint are all sized for. No request reaches the engine past its
+    /// window:
+    /// - without `requested`, the default is cut to what the prompt leaves of
+    ///   `defaultOutputContextLimit` (`EngineV2Translation.defaultOutputTokens`);
+    /// - on a slot held to its model window (`modelWindowTokens`), `requested` is
+    ///   cut to what the prompt leaves. Cut, not refused: the coordinator sizes a
+    ///   request by its own estimate of the prompt and the catalog's limits, so a
+    ///   request it sends may pass the window once tokenized here, and it is then
+    ///   served within the window rather than failed (OpenRouter's included). A
+    ///   prompt that fills the window is refused (`promptExceedsContext`);
+    /// - elsewhere `requested` is kept as asked: a slot with an advertised
+    ///   context refuses a request past it (`advertisedContextExceeded`), and a
+    ///   pair refuses by its own limits.
+    /// Resolving the result again for the same prompt gives the same value, so
+    /// the text path can name it on the request before the bridge resolves it.
     nonisolated func outputTokens(requested: Int?, promptTokens: Int) -> Int {
         guard let requested else {
             return EngineV2Translation.defaultOutputTokens(defaultMaxTokens, promptTokens: promptTokens,
                 contextLimit: defaultOutputContextLimit)
         }
-        guard let window = outputWindowTokens, promptTokens < window else { return requested }
+        guard let window = modelWindowTokens, promptTokens < window else { return requested }
         return min(requested, window - promptTokens)
     }
 

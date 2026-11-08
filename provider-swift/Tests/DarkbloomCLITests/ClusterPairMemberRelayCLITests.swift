@@ -431,15 +431,16 @@ struct ClusterPairMemberRelayCLITests {
     /// either one that can't be read keeps the API closed and Darkbloom serving.
     @Test func theLeadingPartTakesItsOwnKeyAndThePairs() {
         var said: [String] = []
+        let file = URL(fileURLWithPath: "/tmp/member-relay/provider.toml")
         let leader = Start.clusterMemberLocalEndpoint(requested: true, hostsPairSlot: true, bind: "0.0.0.0", port: 8003,
-            local: nil, coordinatorURL: nil, loadToken: { "dk-local-own" }, loadPairToken: { "dk-local-pair" },
+            local: nil, settingsFile: file, coordinatorURL: nil, loadToken: { "dk-local-own" }, loadPairToken: { "dk-local-pair" },
             say: { said.append($0) })
         #expect(leader?.authToken == "dk-local-own")
         #expect(leader?.pairToken == "dk-local-pair")
         #expect(said.isEmpty)
         for (own, pair) in [(false, true), (true, false)] {
             let closed = Start.clusterMemberLocalEndpoint(requested: true, hostsPairSlot: true, bind: "0.0.0.0", port: 8003,
-                local: nil, coordinatorURL: nil,
+                local: nil, settingsFile: file, coordinatorURL: nil,
                 loadToken: { if own { return "dk-local-own" }; throw CocoaError(.fileReadNoPermission) },
                 loadPairToken: { if pair { return "dk-local-pair" }; throw CocoaError(.fileReadNoPermission) },
                 say: { said.append($0) })

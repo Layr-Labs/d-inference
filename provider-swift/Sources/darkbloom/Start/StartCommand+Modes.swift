@@ -96,9 +96,7 @@ extension Start {
                 mtpAcceptance: config.backend.mtpAcceptance,
                 mtpAcceptanceByModel: config.backend.mtpAcceptanceByModel,
                 coordinatorURL: config.coordinator.url,
-                // `--local` never registers with the coordinator, so a `self` request can't come back to it.
-                router: .host(local: config.local, coordinatorURL: coordinatorURL ?? config.coordinator.url,
-                              takesCoordinatorWork: false)
+                router: Self.onlyMeRouter(config: config, configFile: snapshot.configPath, coordinatorURL: coordinatorURL)
             ),
             models: advertised
         )
@@ -343,6 +341,7 @@ extension Start {
         }
 
         let localEndpointConfig = try Self.unifiedLocalEndpoint(serving: serving, config: config,
+                                                                 settingsFile: snapshot.configPath,
                                                                  coordinatorURL: coordinatorURL)
 
         let loopConfig = ProviderLoopConfig(
@@ -383,11 +382,19 @@ extension Start {
         await TelemetryClient.shared.shutdown()
     }
 
+    /// Only me's local router: `[local]` from `config`, read again from `configFile` (the provider.toml the start loaded)
+    /// when it changes. `--local` never registers with the coordinator, so a `self` request can't come back to it.
+    static func onlyMeRouter(config: ProviderConfig, configFile: URL, coordinatorURL: String?) -> LocalRouterConfig {
+        .host(local: config.local, settingsFile: configFile, coordinatorURL: coordinatorURL ?? config.coordinator.url,
+              takesCoordinatorWork: false)
+    }
+
     /// The unified local API of a provider that serves Darkbloom and its owner (Both); nil for the Darkbloom network
     /// only, which then binds nothing and creates no key. Reuses the same persistent bearer token and address as
-    /// `--local`; `--no-auth` opts out of the token (trusted/airgapped only).
+    /// `--local`; `--no-auth` opts out of the token (trusted/airgapped only). Its router reads `[local] route` again
+    /// from `settingsFile`, the provider.toml the start loaded, when it changes.
     static func unifiedLocalEndpoint(
-        serving: StartServing, config: ProviderConfig, coordinatorURL: String,
+        serving: StartServing, config: ProviderConfig, settingsFile: URL, coordinatorURL: String,
         loadToken: () throws -> String = { try LocalEndpoint.loadOrCreateToken() }
     ) throws -> LocalInferenceHTTPConfig? {
         guard serving.mode == .both else { return nil }
@@ -409,7 +416,8 @@ extension Start {
         print("Local endpoint: \(serving.baseURL)\(token != nil ? "  (API key from `\(BuildEnvironment.current.cliName) local`)" : "  (auth disabled: requests stay on this Mac)")")
         return LocalInferenceHTTPConfig(
             host: serving.bind, port: serving.port, authToken: token,
-            router: .host(local: config.local, coordinatorURL: coordinatorURL, takesCoordinatorWork: true))
+            router: .host(local: config.local, settingsFile: settingsFile, coordinatorURL: coordinatorURL,
+                          takesCoordinatorWork: true))
     }
 
     /// A provider that launchd runs relaunches through launchd, as the

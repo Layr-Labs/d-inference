@@ -828,9 +828,14 @@ With **Both, me first**:
 - **Requests the pair can't take** (a model it doesn't serve, a full queue) go
   on as that Mac's `[local] route` says, with that Mac's account key
   ([the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
+  `darkbloom route this-mac`, `my-macs` or `my-macs-first` on that Mac sets it,
+  and the pair's API uses it from its next request, with no restart; on the
+  other Mac it says to run it on the leading Mac.
   Requests from other machines never use the paid network; they can use the
-  pair and your other Macs. A request on another Mac's port reaches the API
-  from that Mac, so it never uses the paid network either.
+  pair and your other Macs. That includes the pair's other Mac, its own port
+  for the pair's API too: its requests reach the leading Mac from another
+  machine, so with `my-macs-first` tools there use the pair and your other
+  Macs, never the paid network.
 - **Me first:** while one of your requests runs on it, or waits for a lane, the
   pair takes no new Darkbloom request, and Darkbloom's running requests finish.
   A request on another Mac's port is yours too.

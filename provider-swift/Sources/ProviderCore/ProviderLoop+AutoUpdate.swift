@@ -98,7 +98,7 @@ extension ProviderLoop {
             resumeServing: { await me.resumeServingAfterUpdate() },
             check: {
                 guard let session = await me.activeUpdateSession() else {
-                    return .checkFailed(.init(.noAnswer, "cross-process update lease was lost"))
+                    return .checkFailed(.init(.thisMac, "cross-process update lease was lost"))
                 }
                 return await updater.checkForUpdate(session: session)
             },

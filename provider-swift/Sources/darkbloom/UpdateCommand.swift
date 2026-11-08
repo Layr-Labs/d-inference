@@ -210,13 +210,21 @@ struct Update: AsyncParsableCommand {
         }
     }
 
-    /// A failed release check in plain words: what failed, that nothing changed, and what to do.
+    /// A failed release check in plain words: what failed, that nothing changed, and what to do. Only a check that got
+    /// no answer points at this Mac's network connection.
     static func checkFailedLines(_ failure: UpdateCheckFailure, checkOnly: Bool) -> [String] {
         let command = "`\(BuildEnvironment.current.cliName) update\(checkOnly ? " --check-only" : "")`"
         let reason = failure.reason
         let failed = "Couldn't check for updates: " + (reason.hasSuffix(".") ? reason : reason + ".")
-        return [failed + (checkOnly ? "" : " Nothing was downloaded or changed."),
-                "Run \(command) again in a minute. If it keeps failing, check this Mac's network connection."]
+            + (checkOnly ? "" : " Nothing was downloaded or changed.")
+        switch failure.cause {
+        case .noAnswer:
+            return [failed, "Run \(command) again in a minute. If it keeps failing, check this Mac's network connection."]
+        case .badAnswer:
+            return [failed, "The coordinator answered, so this Mac's network connection works. Run \(command) again later."]
+        case .thisMac:
+            return [failed, "This is on this Mac, not its network connection: fix it, then run \(command) again."]
+        }
     }
 
     /// A single-Mac provider job is loaded on a Mac whose pair is started: the update restarts the pair, never that job

@@ -14,8 +14,9 @@ struct Start: AsyncParsableCommand {
 
         In a terminal, the first start asks how this Mac serves: only you (--local),
         the Darkbloom network (--network), or both with you first (--me-first). The
-        answer is saved; --choose asks again. Without a terminal and without a saved
-        answer, it serves the Darkbloom network as before.
+        answer is saved, and so is a flag; --choose asks again. Every choice serves in
+        the background; --local --here serves only you in this terminal instead. Without
+        a terminal and without a saved answer, it serves the Darkbloom network as before.
 
         On a Mac in a two-Mac cluster it starts the pair instead, also after `stop`: in a
         terminal the `darkbloom cluster` screen; without one the pair's saved model,
@@ -50,17 +51,20 @@ struct Start: AsyncParsableCommand {
     @Flag(inversion: .prefixedNo, help: .hidden)
     var foreground = false
 
-    @Flag(help: "Run a local OpenAI-compatible HTTP server only; do not connect to the coordinator.")
+    @Flag(help: "Only me: this Mac's local OpenAI-compatible API only, in the background; Darkbloom never contacts this Mac. Saved.")
     var local = false
 
-    @Flag(help: "Serve a local OpenAI endpoint ALONGSIDE the coordinator (unified mode): same loaded models serve both the public fleet and local clients. Darkbloom pauses while you use it unless --no-me-first.")
+    @Flag(help: "With --local: serve Only me in this terminal for this session (closing it, or Ctrl-C, stops it), instead of the background service.")
+    var here = false
+
+    @Flag(help: "Serve a local OpenAI endpoint ALONGSIDE the coordinator (unified mode): same loaded models serve both the public fleet and local clients. Darkbloom pauses while you use it unless --no-me-first. Saved.")
     var localEndpoint = false
 
-    @Flag(help: "Serve the Darkbloom network only, with no local API, for this start.")
+    @Flag(help: "Serve the Darkbloom network only, with no local API. Saved.")
     var network = false
 
     @Flag(inversion: .prefixedNo, exclusivity: .exclusive,
-          help: "--me-first: Darkbloom and you, you first. Darkbloom pauses while you use this Mac's local API and comes back once you're idle. --no-me-first: Darkbloom keeps serving while you use it (saved).")
+          help: "--me-first: Darkbloom and you, you first. Darkbloom pauses while you use this Mac's local API and comes back once you're idle (saved). --no-me-first: Darkbloom keeps serving while you use it (saved).")
     var meFirst: Bool?
 
     @Option(name: .customLong("me-first-idle"),
@@ -110,7 +114,7 @@ struct Start: AsyncParsableCommand {
     var localFirstOptions: LocalFirstOptions {
         LocalFirstOptions(local: local, localEndpoint: localEndpoint, network: network, meFirst: meFirst,
                           meFirstIdleMinutes: meFirstIdle, route: route, choose: choose, port: portOption,
-                          bind: bindOption, noAuth: noAuth, foreground: foreground)
+                          bind: bindOption, noAuth: noAuth, foreground: foreground, here: here)
     }
 
     /// How this start serves from its flags alone, as before `[local]`: for callers that resolved nothing (tests that
@@ -159,7 +163,7 @@ struct Start: AsyncParsableCommand {
         if let conflict = localFirstOptions.conflict { throw ValidationError(conflict) }
         if let refusal = toolFlagsRefusal { throw ValidationError(refusal) }
         let soloOverrides = !model.isEmpty || all || idleTimeout != nil || schedule || autopilot != nil
-            || network || meFirst != nil || meFirstIdle != nil || route != nil || choose
+            || network || meFirst != nil || meFirstIdle != nil || route != nil || choose || here
         if clusterMember {
             guard !distributed, !local, !soloOverrides else {
                 throw ValidationError("--cluster-member cannot be combined with solo serving or local distributed mode.")
@@ -232,7 +236,8 @@ struct Start: AsyncParsableCommand {
         /// A terminal: the screen `darkbloom cluster` shows on this Mac.
         case openScreen
         /// No terminal: the pair starts with its saved model. The desktop app's Start too (`appStartOptions`): a model it
-        /// named other than the pair's is said after the start (`ClusterPairSummary.appStartModelLine`).
+        /// named other than the pair's, or a local API the pair doesn't give this Mac, is said after the start
+        /// (`ClusterPairSummary.appStartLines`).
         case startPair
         /// Single-Mac options without `--solo`: nothing starts, and why (never ignored).
         case refuseOptions([String])
@@ -252,6 +257,7 @@ struct Start: AsyncParsableCommand {
         if idleTimeout != nil { given.append("--idle-timeout") }
         if schedule { given.append("--schedule") }
         if local { given.append("--local") }
+        if here { given.append("--here") }
         if localEndpoint { given.append("--local-endpoint") }
         if network { given.append("--network") }
         if let meFirst { given.append(meFirst ? "--me-first" : "--no-me-first") }
@@ -287,6 +293,11 @@ struct Start: AsyncParsableCommand {
     /// so an updated Mac's services keep theirs; its banner, which goes to a log, shows no key.
     static func isServiceChild(local: Bool, foreground: Bool, distributed: Bool, startedByAService: () -> Bool) -> Bool {
         foreground || (local && !distributed && startedByAService())
+    }
+
+    /// Whether a service started this process: launchd's provider job, or the cluster service's solo part.
+    static func startedByAService() -> Bool {
+        LaunchAgent.isCurrentProcessJob() || ClusterPairSummary.startedByClusterService()
     }
 
     /// Tests stand in for stopping this Mac's leftover part (`ClusterService.releaseForSingleMac`).
@@ -355,9 +366,8 @@ struct Start: AsyncParsableCommand {
         // never exits, so its banner, "Listening on" and the tool lines would wait in the buffer.
         setvbuf(stdout, nil, _IOLBF, 0)
         // From here on, a service's child is the --foreground service (`isServiceChild`).
-        foreground = Self.isServiceChild(local: local, foreground: foreground, distributed: distributed, startedByAService: {
-            LaunchAgent.isCurrentProcessJob() || ClusterPairSummary.startedByClusterService()
-        })
+        foreground = Self.isServiceChild(local: local, foreground: foreground, distributed: distributed,
+                                         startedByAService: Self.startedByAService)
         // `--opencode` / `--hermes` beside a running local API: set the tools up for it, and start nothing.
         if try await setUpToolsForRunningLocalAPI() { return }
         let look = DarkbloomCommandLook.forCommand()
@@ -372,8 +382,8 @@ struct Start: AsyncParsableCommand {
             switch choice {
             case .single, .serveAlone:
                 // Before the pair is touched (the solo choice recorded, this Mac's part stopped and its saved start
-                // cleared): the refusals of how this Mac would serve alone, such as a saved "Only me" (also the pair's,
-                // from `darkbloom cluster`) without a terminal. `resolveServing` makes the same ones again below.
+                // cleared): the refusals of how this Mac would serve alone, such as `--choose` without a terminal.
+                // `resolveServing` makes the same ones again below.
                 if pair.paired {
                     let step = try localFirstOptions.modeStep(saved: try savedLocalSettings(configPath: configOptions.config),
                                                               terminal: ClusterPairCommands.isTerminal())
@@ -411,8 +421,8 @@ struct Start: AsyncParsableCommand {
                 Self.clearSoloChoice()
                 let code = await ClusterPairCommands.start(pair, actions: ClusterPairActions.live(config: configOptions.config),
                                                            config: configOptions.config)
-                // Started (0 serving, 3 still loading) with the pair's model, which the app's Start may not have named.
-                if code == 0 || code == 3, let line = pair.appStartModelLine(named: model) { print(line) }
+                // What the app's Start asked for and the pair doesn't take: another model, a local API here.
+                for line in pair.appStartLines(named: model, localEndpoint: localEndpoint, code: code) { print(line) }
                 if code != 0 { throw ExitCode(code) }
                 try await setUpToolsBesidePair()
                 return
@@ -548,14 +558,28 @@ struct Start: AsyncParsableCommand {
             printError("warning: \(notice)")
         }
 
-        if localOnly {
+        switch Self.singleMacServing(mode: serving.mode, here: here, foreground: foreground) {
+        case .onlyMeHere:
             try await runLocalStandalone(
                 snapshot: snapshot,
                 config: effectiveConfig,
                 runtimeCapabilities: runtimeCapabilities,
                 serving: serving
             )
-        } else if foreground {
+        case .onlyMeService:
+            try await launchOnlyMeService(
+                snapshot: snapshot,
+                config: effectiveConfig,
+                coordinatorURL: effectiveCoordinator,
+                configPath: configOptions.config == nil ? nil : snapshot.configPath,
+                runtimeCapabilities: runtimeCapabilities,
+                serving: serving
+            )
+            // Only me's server listens once its models are loaded (`[backend] startup_preload`): the tools wait as long.
+            try await setUpToolsBesideDaemon(serving: serving, coordinatorURL: effectiveCoordinator,
+                                             waitSeconds: Self.toolWaitSeconds
+                                                + Int(clamping: effectiveConfig.backend.startupPreloadTimeoutSecs))
+        case .foreground:
             try await runForeground(
                 snapshot: snapshot,
                 hardware: hardware,
@@ -564,7 +588,7 @@ struct Start: AsyncParsableCommand {
                 runtimeCapabilities: runtimeCapabilities,
                 serving: serving
             )
-        } else {
+        case .service:
             try await launchDaemon(
                 snapshot: snapshot,
                 config: effectiveConfig,
@@ -581,7 +605,7 @@ struct Start: AsyncParsableCommand {
     /// How this start serves (`StartServingResolver`), with the question asked in a terminal; nil when the person
     /// cancelled at the question. Nothing is saved yet: `saveServingChoice` saves once the start goes ahead.
     func resolveServing(environment: ServingEnvironment = .live) throws -> StartServing? {
-        guard var serving = try StartServingResolver.resolve(
+        guard let serving = try StartServingResolver.resolve(
             localFirstOptions, saved: try savedLocalSettings(configPath: configOptions.config), environment: environment)
         else { return nil }
         if serving.mode == .local, !local {
@@ -592,19 +616,17 @@ struct Start: AsyncParsableCommand {
             }
             if autopilot == true { throw ValidationError("Autopilot requires a network provider. Nothing was saved.") }
         }
-        if !requestedTools.isEmpty {
-            guard serving.hasLocalAPI else {
-                throw ValidationError(ToolIntegrationStep.noLocalAPI(requestedTools) + " Nothing was started or saved.")
-            }
-            // `--local` alone never asks the Keychain. With a tool flag, its banner and the tool block both say where
-            // requests go, so the account key is read once, here, for both.
-            if serving.accountKeySaved == nil { serving.accountKeySaved = environment.accountKeySaved() }
+        // The tools need a local API. Whether an account key is saved, which the tool block says too, the resolver
+        // has read already: a tool flag goes with neither --no-auth nor --foreground (`toolFlagsRefusal`).
+        if !requestedTools.isEmpty, !serving.hasLocalAPI {
+            throw ValidationError(ToolIntegrationStep.noLocalAPI(requestedTools) + " Nothing was started or saved.")
         }
         return serving
     }
 
-    /// Saves what this start chose in `[local]` (only the question saves a mode) and says which port a new local API
-    /// got. Called once the start goes ahead: a cancelled picker or a refused start saves nothing.
+    /// Saves what this start chose in `[local]` (a mode only from the question or a mode flag,
+    /// `LocalFirstOptions.savesModeFlag`) and says which port a new local API got. Called once the start goes ahead: a
+    /// cancelled picker or a refused start saves nothing.
     func saveServingChoice(_ serving: StartServing) throws {
         guard !serving.change.isEmpty else { return }
         try setLocalSettings(configPath: configOptions.config) { serving.change.apply(to: &$0) }

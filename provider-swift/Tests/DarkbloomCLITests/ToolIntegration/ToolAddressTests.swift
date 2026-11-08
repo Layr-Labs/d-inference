@@ -171,7 +171,7 @@ struct ToolAddressTests {
         // Beside the background provider: the line, and no wait for an API it has no tool to set up for.
         sandbox.said = []
         let start = try Start.parse([])
-        try await start.setUpToolsBesideDaemon(serving: serving, coordinatorURL: coordinator, waitForAPI: { _ in
+        try await start.setUpToolsBesideDaemon(serving: serving, coordinatorURL: coordinator, waitForAPI: { _, _ in
             Issue.record("a start without a tool flag waits for no API")
             return .notUp
         }, noteTools: note(start))

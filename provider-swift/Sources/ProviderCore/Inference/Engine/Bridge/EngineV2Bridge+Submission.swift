@@ -1102,6 +1102,8 @@ extension EngineV2Bridge {
             prefillReceipt: prefillReceipt
         )
         consumePrefillReceipt(id: id, receipt: prefillReceipt)
+        // Me first: while the owner's request waits in the queue, Darkbloom work that hasn't answered gives way.
+        if let ownerWaits = MeFirstOwnerRequest.waits { watchOwnerWait(id: id, waits: ownerWaits) }
         // Wedge instrumentation: the request is now in the engine's hands.
         wedgeMonitor.recordAdmit(
             now: .now, id: id, firstTokenDeadline: distributedFirstTokenAllowance ?? firstContentDeadline?.instant)

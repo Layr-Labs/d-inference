@@ -3,6 +3,10 @@ import Foundation
 public final class InferenceCancellationToken: @unchecked Sendable {
     private let lock = NSLock()
     private var cancelled = false
+    private var output = OutputState.pending
+
+    /// Me first: whether a Darkbloom request has sent output, or gave way to the owner before it did.
+    private enum OutputState { case pending, sent, yielded }
 
     public init() {}
 
@@ -26,14 +30,29 @@ public final class InferenceCancellationToken: @unchecked Sendable {
 
     /// The request is about to send its first output (content, reasoning or a tool call). False when it gave way to
     /// the owner first: it sends nothing more and ends with the re-route refusal.
-    public func claimOutput() -> Bool { true }
+    public func claimOutput() -> Bool {
+        lock.withLock {
+            guard output != .yielded else { return false }
+            output = .sent
+            return true
+        }
+    }
 
     /// Me first: the request gives way to the owner's request unless it has sent output or was cancelled. When it
     /// gives way it is cancelled too, and true is returned.
-    public func yieldToOwner() -> Bool { false }
+    public func yieldToOwner() -> Bool {
+        lock.withLock {
+            guard output == .pending, !cancelled else { return false }
+            output = .yielded
+            cancelled = true
+            return true
+        }
+    }
 
     /// The request gave way to the owner (`yieldToOwner`) before it sent output.
-    public var yieldedToOwner: Bool { false }
+    public var yieldedToOwner: Bool {
+        lock.withLock { output == .yielded }
+    }
 }
 
 public actor InferenceCancellationRegistry {

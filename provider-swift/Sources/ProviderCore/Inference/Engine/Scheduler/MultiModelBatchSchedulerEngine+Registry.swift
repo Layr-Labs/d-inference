@@ -110,6 +110,10 @@ public extension MultiModelBatchSchedulerEngine {
         /// waited there. Its deadlines then start at this instant, as for a
         /// request that arrived at that moment.
         public let queueExitedAt: ContinuousClock.Instant?
+        /// Me first, for the owner's request on a Mac that serves both: asks
+        /// Darkbloom work on this model that hasn't answered to give way while
+        /// the request waits in the engine's queue. Nil otherwise.
+        public let ownerWaits: (@Sendable () async -> Void)?
 
         public init(
                         tokenizer: TokenizerHandle,
@@ -120,9 +124,11 @@ public extension MultiModelBatchSchedulerEngine {
             isVLM: Bool = false,
             engineV2Bridge: EngineV2Bridge? = nil,
             visionGate: VisionMemoryGate? = nil,
-            queueExitedAt: ContinuousClock.Instant? = nil
+            queueExitedAt: ContinuousClock.Instant? = nil,
+            ownerWaits: (@Sendable () async -> Void)? = nil
         ) {
             self.queueExitedAt = queueExitedAt
+            self.ownerWaits = ownerWaits
             self.tokenizer = tokenizer
             self.releaseToken = releaseToken
             self.modelType = modelType

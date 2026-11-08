@@ -58,6 +58,16 @@ extension ProviderLoop {
         return true
     }
 
+    /// Me first: the terminal of a Darkbloom request that gave way to the owner
+    /// before it sent output (`giveWayToOwner`). It is the drain refusal
+    /// above, which the coordinator re-routes before anything reaches its
+    /// client, with no retry charge or health strike.
+    static func ownerYieldFailure(modelId: String?, published: BackendCapacity?) -> InferenceFailure {
+        CapacityRejectionEnrichment.enrich(
+            InferenceFailure(code: .capacity, statusCode: 503, errorReason: .draining),
+            modelId: modelId, published: published, fallbackReason: .slotState)
+    }
+
     /// Preserve the retryable capacity/status compatibility contract while
     /// carrying the typed deadline reason to coordinators that understand it.
     private static func inferenceFailure(
@@ -550,9 +560,22 @@ extension ProviderLoop {
         powerAssertion.acquire()
         syncWarmModelState()
         let token = await cancellationRegistry.register(requestId: requestId)
+        // Me first: a request that gave way to the owner before its stream
+        // started still owes the coordinator its re-route refusal.
+        func sendOwnerYieldIfGivenWay() {
+            guard token.yieldedToOwner else { return }
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(
+                    requestId: requestId,
+                    failure: Self.ownerYieldFailure(modelId: modelId, published: state.publishedCapacity),
+                    profile: profile),
+                fallbackFailure: .capacity,
+                send: send)
+        }
         guard requestToModel[requestId] == modelId else {
             await cancellationRegistry.finish(requestId: requestId)
             logger.info("[\(requestId)] Request cancelled during admission")
+            sendOwnerYieldIfGivenWay()
             return
         }
         if await rejectAcceptedRequestIfFirstContentDeadlineExpired(
@@ -626,6 +649,7 @@ extension ProviderLoop {
         guard requestToModel[requestId] == modelId else {
             await cancellationRegistry.finish(requestId: requestId)
             logger.info("[\(requestId)] Request cancelled during model load")
+            sendOwnerYieldIfGivenWay()
             return
         }
 
@@ -726,6 +750,15 @@ extension ProviderLoop {
             return
         }
 
+        // Me first: a request that gave way to the owner during the awaits
+        // above never starts its stream.
+        if token.yieldedToOwner {
+            await cancellationRegistry.finish(requestId: requestId)
+            logger.info("[\(requestId)] Request gave way to the owner before its stream started")
+            sendOwnerYieldIfGivenWay()
+            return
+        }
+
         // 8. Spawn inference task. The streaming pipeline now flows through
         // the upstream `MLXLMServer` library:
         //   - `MultiModelBatchSchedulerEngine` adapts the selected slot's
@@ -737,6 +770,7 @@ extension ProviderLoop {
         // the assembled assistant text, extracted by parsing each emitted
         // chunk back from its JSON delta.
         let me = self
+        let terminalMemory = terminalMemoryForTesting
         receiptTransferredToTask = true
         profile.mark(.taskSpawned)
         let task = Task.detached {
@@ -767,8 +801,8 @@ extension ProviderLoop {
                 framesEmitted, bytesEmitted, usageRecovered, seSign in
                 let thermal = ProfileThermalState(ProcessInfo.processInfo.thermalState)
                 let lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
-                let mlxActive = Int64(max(0, MLX.Memory.activeMemory))
-                let mlxPeak = Int64(max(0, MLX.Memory.peakMemory))
+                let (mlxActive, mlxPeak) = terminalMemory?()
+                    ?? (Int64(max(0, MLX.Memory.activeMemory)), Int64(max(0, MLX.Memory.peakMemory)))
                 profile.update { f, now in
                     f.set(.framesEmitted, Int64(framesEmitted))
                     f.set(.bytesEmitted, Int64(bytesEmitted))
@@ -806,6 +840,20 @@ extension ProviderLoop {
                 } catch {
                     return false
                 }
+            }
+
+            /// Me first: this request gave way to the owner before it sent
+            /// output (`giveWayToOwner`), so it ends with the re-route refusal.
+            let sendOwnerYield: @Sendable (Int, Int) -> Void = { framesEmitted, bytesEmitted in
+                log.info("[\(requestId)] Gave way to the owner before any output; the coordinator re-routes it")
+                finalizeProfile(framesEmitted, bytesEmitted, false, nil)
+                lookupReceiptFinalizer.sendTerminal(
+                    .inferenceError(
+                        requestId: requestId,
+                        failure: Self.ownerYieldFailure(modelId: modelId, published: me.state.publishedCapacity),
+                        profile: profile),
+                    fallbackFailure: .capacity,
+                    send: send)
             }
 
             if rejectExpiredDeadline() { return }
@@ -1000,6 +1048,10 @@ extension ProviderLoop {
                 // (provider, model) 5xx routing cooldown for a client's own
                 // cancel.
                 if error is CancellationError || token.isCancelled {
+                    if token.yieldedToOwner {
+                        sendOwnerYield(0, 0)
+                        return
+                    }
                     log.info("[\(requestId)] Request cancelled while starting the stream")
                     providerStats.incrementCancellationsBeforeOutput()
                     profile.mark(.cancelAborted)
@@ -1235,6 +1287,12 @@ extension ProviderLoop {
                             frameHadContent = true
                         }
                         if frameHadContent {
+                            // Me first: the first output is claimed before it
+                            // is sent, so one that gave way to the owner sends none.
+                            if contentFrameCount == 0, !token.claimOutput() {
+                                sendOwnerYield(framesEmitted, bytesEmitted)
+                                return
+                            }
                             // First content frame (both counters flip here,
                             // so one check suffices).
                             if contentFrameCount == 0 {
@@ -1386,6 +1444,11 @@ extension ProviderLoop {
                 )
             }
 
+            if cancelledMidStream, token.yieldedToOwner {
+                // It gave way before its first output, so it sent none.
+                sendOwnerYield(framesEmitted, bytesEmitted)
+                return
+            }
             if cancelledMidStream {
                 let generatedReasoning = generatedReasoningText()
                 if reasoningTokens == 0 && !generatedReasoning.isEmpty {

@@ -73,6 +73,7 @@ struct MeFirstGiveWayTests {
                 backend: .init(), coordinator: .init(heartbeatIntervalSecs: 60))),
             attestationSigner: nil, kvBudgetForTesting: budget)
         await loop.skipCapacityRebuildForTesting()
+        await loop.skipTerminalMemoryReadForTesting()
         if meFirst { await loop.enableMeFirst(idle: .seconds(60)) }
         let engine = GiveWayEngine(slots: 2)
         let tokenizer = CancelledPrefixTokenizer(prompt: [1, 2, 3])
@@ -176,6 +177,11 @@ struct MeFirstGiveWayTests {
         cancelled.cancel()
         #expect(!cancelled.yieldToOwner(), "a request the coordinator cancelled ends as a cancel")
     }
+}
+
+extension ProviderLoop {
+    /// A coordinator request's terminal reads MLX's allocator: these CPU-only tests skip it.
+    func skipTerminalMemoryReadForTesting() { terminalMemoryForTesting = { (0, 0) } }
 }
 
 /// Polls `condition` for up to 5 s of real time.

@@ -11,6 +11,8 @@ struct NemotronSuperLocalEndpointEngine: MLXServerEngine {
     struct Lease: Sendable {
         let owner: NemotronSuperSlotOwner
         let release: @Sendable () async -> Void
+        /// Me first (`AcquiredModel.ownerWaits`).
+        var ownerWaits: (@Sendable () async -> Void)? = nil
     }
 
     let body: Data
@@ -35,9 +37,11 @@ struct NemotronSuperLocalEndpointEngine: MLXServerEngine {
         let inner: AsyncThrowingStream<MLXServerGenerationEvent, Error>
         do {
             // A local body has no authenticated boundary for schema metadata.
-            inner = try await lease.owner.chatEngine(body: body, hasMedia: hasMedia, cacheScope: cacheScope,
-                                                     trustsSchemaMetadata: false, logprobs: logprobs)
-                .streamChatCompletion(request: request)
+            inner = try await MeFirstOwnerRequest.$waits.withValue(lease.ownerWaits) {
+                try await lease.owner.chatEngine(body: body, hasMedia: hasMedia, cacheScope: cacheScope,
+                                                 trustsSchemaMetadata: false, logprobs: logprobs)
+                    .streamChatCompletion(request: request)
+            }
         } catch {
             await lease.release()
             throw error

@@ -13,8 +13,11 @@ import Foundation
 /// - Local requests are admitted as usual.
 ///
 /// Invariants:
-/// - The pause cancels nothing: Darkbloom work accepted before it finishes,
-///   with no drain bound (unlike an add-on hold).
+/// - The pause itself cancels nothing: Darkbloom work accepted before it
+///   finishes, with no drain bound (unlike an add-on hold). Only while one of
+///   the owner's requests waits in an engine's queue does Darkbloom work on
+///   that model that has sent no output give way, to be served elsewhere
+///   (`giveWayToOwner`); work that has sent output still finishes.
 /// - An add-on hold outranks the pause. While both apply, the busy fields
 ///   describe the hold (`publishBusy`), and the pause goes on under it.
 /// - `desired_models` waits. Whichever of a drain, a hold and the pause ends
@@ -53,6 +56,22 @@ extension ProviderLoop {
         case .end:
             meFirst?.localEnded(atMs: now)
             if meFirst?.resumesAtMs != nil { armMeFirstResumeTimer() }
+        }
+    }
+
+    /// The owner's request on `modelId` is waiting in its engine's queue
+    /// (`EngineV2Bridge+OwnerWait.swift`). Each Darkbloom request on that
+    /// model that has sent no output gives way: it is cancelled and ends with
+    /// the typed drain refusal, which the coordinator re-routes to another
+    /// provider before anything reaches its client, with no retry charge or
+    /// health strike. A Darkbloom request that has sent output finishes.
+    /// Nothing happens while me first is off.
+    func giveWayToOwner(modelId: String) async {
+        guard meFirst != nil else { return }
+        for (requestId, model) in requestToModel where model == modelId {
+            guard let token = await cancellationRegistry.token(for: requestId), token.yieldToOwner() else { continue }
+            logger.info("Me first: Darkbloom request \(requestId) had sent nothing; it goes back to the network so your request can start")
+            await handleCancellation(requestId: requestId, receivedFromCoordinator: false)
         }
     }
 

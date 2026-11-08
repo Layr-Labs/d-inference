@@ -545,6 +545,10 @@ public actor ProviderLoop {
     /// reads MLX's Metal allocator, so loop tests on a serving Mac never open
     /// the GPU.
     internal var capacityRebuildForTesting: (@Sendable () async -> Void)?
+    /// Test seam, nil in production: replaces a coordinator request's
+    /// terminal read of MLX's allocator (active and peak bytes), for the same
+    /// reason.
+    internal var terminalMemoryForTesting: (@Sendable () -> (active: Int64, peak: Int64))?
     internal var lifecycleStatus = ProviderDrainStatus()
     internal var lastLifecycleTelemetry: ProviderDrainStatus?
     internal var lifecycleDrainTask: Task<ProviderDrainStatus, Never>?

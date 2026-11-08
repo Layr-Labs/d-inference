@@ -133,7 +133,14 @@ See [inference and logprob admission](../architecture/inference.md).
    provider stops taking Darkbloom requests from the moment one of your
    requests holds a model, and takes them again once none of your requests
    has run for `[local] me_first_idle_minutes` (2 minutes by default).
-   Darkbloom requests already running finish. Model lists, health checks,
+   Darkbloom requests already running finish once they have sent output. While
+   one of your requests waits for the engine's memory or room, each Darkbloom
+   request on that model that has sent nothing yet ends with the typed
+   `capacity / 503 / draining` refusal, which the coordinator re-routes to
+   another Mac before anything reaches its client, with no health strike
+   against this one (`ProviderLoop.giveWayToOwner`). Your request then waits
+   only for requests already answering, at most the engine's 120 s admission
+   lease. Model lists, health checks,
    `/metrics`, the tokenizer utilities and requests refused before they hold
    a model do not count. This is on for every Mac that serves Both, me first,
    including the desktop app's "Alongside the network". To share the Mac

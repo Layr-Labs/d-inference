@@ -210,6 +210,10 @@ gets `my-macs-first` as `my-macs` (`self` only, never `prefer`), and its
 saved. A connection's peer is read once, when it opens, and nothing is added to
 this Mac's own path.
 
+`darkbloom route this-mac`, `darkbloom route my-macs` and
+`darkbloom route my-macs-first` save the route; the last two need a saved
+account key and refuse without one
+([CLI reference](./cli-reference.md#darkbloom-route-this-mac-my-macs-my-macs-first)).
 The route is read when the local API starts (a change needs a restart). The
 key is read once, by the first request that needs it, and kept in memory:
 `darkbloom route key` tells a running local API when it saves or removes the

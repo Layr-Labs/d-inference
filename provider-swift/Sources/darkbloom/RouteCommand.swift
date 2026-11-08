@@ -12,11 +12,13 @@ struct Route: AsyncParsableCommand {
         commandName: "route",
         abstract: "Where your requests go when this Mac can't take them.",
         discussion: """
-        This Mac's local API answers your requests first. With an account API key saved, a request this Mac can't \
-        take goes on to your other Macs (free), and with `[local] route = "my-macs-first"` then to the Darkbloom \
-        network (billed). Without a key, requests stay on this Mac.
+        This Mac's local API answers your requests first. A request it can't take stays on this Mac (`this-mac`), \
+        goes on to your other Macs, free (`my-macs`), or to your other Macs and then the Darkbloom network, billed \
+        (`my-macs-first`). Requests from other machines never use the paid network. `my-macs` and `my-macs-first` \
+        need your account API key, saved with `route key`. The choice is saved in [local] route; a running local API \
+        takes it when it starts again.
         """,
-        subcommands: [RouteKey.self]
+        subcommands: [RouteThisMac.self, RouteMyMacs.self, RouteMyMacsFirst.self, RouteKey.self]
     )
 }
 
@@ -140,7 +142,8 @@ struct RouteKeyFlow {
         let route = LocalSettings(route: savedRoute).resolvedRoute(accountKeySaved: keySaved)
         switch (route, keySaved) {
         case (.thisMac, true):
-            return ["Your requests: this Mac only ([local] route = \"this-mac\"). The key is used once you choose your Macs."]
+            return ["Your requests: this Mac only ([local] route = \"this-mac\"). The key is used once you choose your "
+                        + "Macs: `\(BuildEnvironment.current.cliName) route my-macs`."]
         case (_, false):
             return ["Your requests: this Mac only, until an account key is saved again."]
         case (.myMacs, true):

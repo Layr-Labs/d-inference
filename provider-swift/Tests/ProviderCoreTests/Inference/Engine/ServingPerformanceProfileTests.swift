@@ -215,9 +215,13 @@ private extension EngineV2Bridge {
     }
 }
 
-@Test func servingPerformanceContextRejectsActualPromptAndReservedOutputBeforeAdmission() async throws {
+/// The profile's context bounds the actual prompt and its reserved output: an
+/// output that would pass it is cut to what the prompt leaves, and a prompt
+/// that fills it is refused, in words that name it, before admission.
+@Test func servingPerformanceContextCutsReservedOutputAndRefusesAFullPromptBeforeAdmission() async throws {
     let profile = measuredProfileFixture()
-    for (prompt, output) in [(32768, 1), (32767, 2), (1, Int.max)] {
+    // (prompt, max_tokens asked, the output the engine is asked for; nil: refused)
+    for (prompt, output, served) in [(32768, 1, nil), (32767, 2, 1), (1, Int.max, 32767)] as [(Int, Int, Int?)] {
         let engine = ProfileContextSentinelEngine()
         let budget = GlobalKVCacheBudget(memorySnapshot: {
             .init(total: 64 << 30, active: 0, cache: 0, systemAvailable: 64 << 30)
@@ -226,26 +230,28 @@ private extension EngineV2Bridge {
             tokenizer: TokenizerHandle(ProfileContextTokenizer()), eosTokenIds: [],
             maxConcurrentRequests: 16, performanceProfile: profile, kvBudget: budget)
         do {
-            _ = try await bridge.submitTokenized(promptTokens: Array(repeating: 1, count: prompt),
+            let stream = try await bridge.submitTokenized(promptTokens: Array(repeating: 1, count: prompt),
                 request: .init(model: "generic-model", messages: [], max_tokens: output),
-                requestId: "outside-profile-context", firstContentDeadline: nil)
-            Issue.record("out-of-profile context reached engine admission")
+                requestId: "profile-context", firstContentDeadline: nil)
+            for await _ in stream {}
+            #expect(served != nil, "a prompt that fills the profile's context reached engine admission")
         } catch let error as MultiModelBatchSchedulerEngineError {
-            #expect(error == .advertisedContextExceeded)
+            #expect(served == nil && error == windowRefusal(32768))
         }
-        #expect(engine.submissions == 0)
-        #expect(budget.serviceBudget.count == 0)
+        #expect(engine.submittedOutputs == (served.map { [$0] } ?? []))
         #expect(await bridge._testPendingSubmissionCount() == 0)
         await bridge.shutdown()
+        #expect(budget.serviceBudget.count == 0)
     }
 }
 
 private final class ProfileContextSentinelEngine: CBv2Engine, @unchecked Sendable {
     private let lock = NSLock()
-    private var submitted = 0
-    var submissions: Int { lock.withLock { submitted } }
+    private var outputs: [Int] = []
+    /// The output each admitted request asks for.
+    var submittedOutputs: [Int] { lock.withLock { outputs } }
     func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
-        lock.withLock { submitted += 1 }
+        lock.withLock { outputs.append(request.maxTokens) }
         return AsyncStream { $0.finish() }
     }
     func cancel(_ id: CBv2RequestID) {}

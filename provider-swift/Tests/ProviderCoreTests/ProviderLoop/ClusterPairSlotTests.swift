@@ -116,9 +116,10 @@ final class ScriptedPairOwner: DistributedResidentExecutionOwner, @unchecked Sen
 }
 
 func clusterPairSpecification(_ owner: ScriptedPairOwner, model: String = clusterPairFixtureModel,
-                              modelType: String = "qwen3_5") throws -> ClusterPairSlotSpecification {
+                              modelType: String = "qwen3_5",
+                              profile: DistributedResidentExecutionProfile? = nil) throws -> ClusterPairSlotSpecification {
     .init(publicModelID: model, modelType: modelType, tokenizer: TokenizerHandle(DistributedTestTokenizer()),
-          eosTokenIDs: [99], expectedIdentity: owner.identity, profile: try distributedTestProfile(),
+          eosTokenIDs: [99], expectedIdentity: owner.identity, profile: try profile ?? distributedTestProfile(),
           artifactBytes: 1 << 30)
 }
 
@@ -183,6 +184,45 @@ struct ClusterPairSlotTests {
         #expect(capacity.freeForLoadGb == 0)
         #expect(await loop.clusterPairSlotServes(clusterPairFixtureModel))
         #expect(!(await loop.clusterPairSlotServes("other/model")))
+        #expect(await loop.retireClusterPairSlot(reason: "test"))
+    }
+
+    /// The leader's local `/v1/models` lists the pair's own limits: the context and the output its mode serves, as
+    /// its slot reports them to the coordinator. The pair refuses a `max_tokens` past its output (`output_too_long`),
+    /// so a client that sizes `max_tokens` from the list (Hermes) must be given that output, never the pair's whole
+    /// context: a pair that serves 128 output tokens in 8,320 listed 8,320.
+    @Test(arguments: [false, true])
+    func theLeaderListsThePairsOwnLimits(memoryPlan: Bool) async throws {
+        let loop = try await clusterPairMemberLoop()
+        let owner = ScriptedPairOwner()
+        // A pipeline serves its memory plan's request within the profile (`served`).
+        let profile = try memoryPlan
+            ? DistributedResidentExecutionProfile(id: "fabricated-greedy", vocabularySize: 100, maxPromptTokens: 8192,
+                maxOutputTokens: 128, maxContextTokens: 8192 + 128, requestTimeout: .seconds(315),
+                served: (promptTokens: 4096, outputTokens: 64, contextTokens: 4160))
+            : distributedTestProfile()
+        _ = try await loop.publishClusterPairSlot(clusterPairSpecification(owner, profile: profile), owner: owner)
+        let limits = try #require(await loop.localModelLimits(clusterPairFixtureModel))
+        // With the input its slot takes: text, as this pair serves no media contract (`LocalInputModalities.of(pair:)`).
+        #expect(limits == LocalModelLimits(contextLength: profile.served.contextTokens,
+                                           maxOutputLength: profile.served.outputTokens, inputModalities: ["text"]))
+        // A request sized to the listed output is one the pair serves.
+        let listed = try #require(limits.maxOutputLength)
+        #expect(profile.refusal(for: distributedTestRequest(maxTokens: listed)) == nil)
+        #expect(await loop.retireClusterPairSlot(reason: "test"))
+    }
+
+    /// The leader lists what its pair takes, not what the model takes on one Mac: a model whose files declare vision
+    /// (Gemma 4, Qwen 3.5) served by a pair without a media contract lists text alone, and before the slot is up, it
+    /// lists nothing (no word yet).
+    @Test func theLeaderListsThePairsInputNotTheModelsOnOneMac() async throws {
+        let loop = try await clusterPairMemberLoop()
+        await loop.advertiseBypassingSupportedSetForTesting(ModelInfo(id: clusterPairFixtureModel, modelType: "qwen3_5",
+            sizeBytes: 1, estimatedMemoryGb: 1, isVision: true))
+        #expect(await loop.localModelLimits(clusterPairFixtureModel) == nil)
+        let owner = ScriptedPairOwner()
+        _ = try await loop.publishClusterPairSlot(clusterPairSpecification(owner), owner: owner)
+        #expect(await loop.localModelLimits(clusterPairFixtureModel)?.inputModalities == ["text"])
         #expect(await loop.retireClusterPairSlot(reason: "test"))
     }
 

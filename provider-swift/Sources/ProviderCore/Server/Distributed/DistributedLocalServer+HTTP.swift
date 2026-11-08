@@ -12,11 +12,15 @@ extension DistributedLocalServer {
             modelTypeProvider: { [binding] in $0 == binding.publicModelID ? binding.modelType : nil },
             clusterStatus: { try await self.clusterStatus(nonce: $0) },
             distributedResponses: responseRouter,
-            modelLimits: { [binding] in
-                $0 == binding.publicModelID
-                    ? LocalModelLimits(contextLength: binding.maxContextTokens, maxOutputLength: binding.maxOutputTokens)
-                    : nil
-            })
+            modelLimits: { await self.localModelLimits($0) })
+    }
+
+    /// The pair's model as the router's `/v1/models` lists it: its profile's limits, and the input its slot takes
+    /// (`LocalInputModalities`) once the slot is ready.
+    func localModelLimits(_ modelID: String) -> LocalModelLimits? {
+        guard modelID == binding.publicModelID else { return nil }
+        return LocalModelLimits(contextLength: binding.maxContextTokens, maxOutputLength: binding.maxOutputTokens,
+                                inputModalities: entry?.engineV2Bridge.map { LocalInputModalities.of(pair: $0) })
     }
 
     func clusterStatus(nonce: String) throws -> ClusterLiveStatus {

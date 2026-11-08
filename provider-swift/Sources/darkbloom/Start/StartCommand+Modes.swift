@@ -209,9 +209,9 @@ extension Start {
     /// `start --port` would take instead, with `--solo` on a Mac in a two-Mac cluster (`paired`), which refuses it
     /// without.
     static func localServerBindFailure(bind: String, port: UInt16, nextFree: UInt16?, paired: Bool = false) -> String {
-        let cli = BuildEnvironment.current.cliName
+        let start = "\(BuildEnvironment.current.cliName) start\(paired ? " --solo" : "") --port"
         return "This Mac's local API couldn't listen on \(bind):\(port): another program may use port \(port). Free it, or "
-            + (nextFree.map { "run `\(cli) start --port \($0)`." } ?? "name another with `\(cli) start --port <n>`.")
+            + (nextFree.map { "run `\(start) \($0)`." } ?? "name another with `\(start) <n>`.")
     }
 
     // MARK: - Foreground (invoked by launchd)

@@ -151,7 +151,11 @@ public enum LaunchAgent: Sendable {
     /// serves no local API (neither `--local-endpoint` nor `--local`), and for a cluster's (`--cluster-member`,
     /// `--distributed`).
     static func localAPIPort(ofJob arguments: [String]) -> UInt16? {
-        nil
+        guard arguments.count >= 2, arguments[1] == "start", !isClusterMemberJob(arguments),
+              !arguments.contains("--distributed"),
+              arguments.contains("--local-endpoint") || arguments.contains("--local") else { return nil }
+        guard let flag = arguments.lastIndex(of: "--port") else { return BuildEnvironment.current.defaultLocalPort }
+        return flag + 1 < arguments.count ? UInt16(arguments[flag + 1]) : nil
     }
 
     /// Desktop local mode uses the same canonical launchd owner as network serving, on this Mac's local API port

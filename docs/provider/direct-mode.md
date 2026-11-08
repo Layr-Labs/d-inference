@@ -1,6 +1,6 @@
 # The local API: an OpenAI-compatible server on your Mac
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 Your Mac's models as an OpenAI-compatible HTTP server for your own tools,
 served two ways: **Only me** (`darkbloom start --local`: no coordinator, no
@@ -31,8 +31,10 @@ See [inference and logprob admission](../architecture/inference.md).
   families); `darkbloom models list`. **Only me** serves the models already
   here; for **Both, me first**, `darkbloom start`'s model list also downloads.
 - A free port: this Mac's one local API port, `[local] port`. The first start
-  that serves a local API, whichever way it starts, chooses the first free port
-  from 8001 and saves it; every later start uses it. `--port` picks another and
+  that serves a local API, whichever way it starts, keeps the port this Mac's
+  local API already uses (`8000` on a Mac updated from 0.10.10), or on a Mac
+  with none chooses the first free port from 8001, and saves it; every later
+  start uses it. `--port` picks another and
   saves it.
 
 <!-- pending LS-1: Only me also gets the model list with downloads. -->
@@ -62,10 +64,12 @@ See [inference and logprob admission](../architecture/inference.md).
 
    The port is this Mac's one local API port (`LocalAPIPort`,
    `provider-swift/Sources/ProviderCore/Config/LocalAPIPort.swift`):
-   `[local] port`, else the first free port from 8001 (from the build's
-   `defaultLocalPort`, never `8000`; a dev build starts from its own, see
+   `[local] port`, else the port this Mac's local API already uses (its running
+   API's, else its installed service's: `8000` on a Mac updated from 0.10.10),
+   else the first free port from 8001 (from the build's `defaultLocalPort`,
+   never `8000`; a dev build starts from its own, see
    [Dev build identity](../operations/provider-release.md#dev-build-identity)),
-   chosen once and saved; a `--port` you name is saved too. `--bind` defaults to
+   saved the first time; a `--port` you name is saved too. `--bind` defaults to
    `127.0.0.1`. Before serving,
    `Start.runLocalStandalone` (`provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift`)
    loads or creates the API token, filters the chosen models to those with an

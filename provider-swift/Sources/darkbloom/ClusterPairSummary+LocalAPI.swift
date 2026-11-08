@@ -22,12 +22,13 @@ extension ClusterPairSummary {
     /// `status` and `cluster status` on a pair that serves Both, me first: whether Darkbloom is paused for you, where the
     /// pair's local API listens, and what the other Macs do. The Mac whose part runs rank 0 says it from its own part,
     /// and that the other Macs pass requests to it only while its API listens on every address. With the API on every
-    /// address, every other Mac names its own relay's address, which passes your requests to it, or why it has none:
-    /// rank 0 answers on its own Mac only while Darkbloom doesn't have the pair, or another program holds this Mac's
-    /// port. Otherwise it says where to look. Nothing while the pair is stopped, and nothing for the other two ways to
-    /// serve. No key and no speed.
+    /// address, every other Mac names its own relay's address, which passes your requests to it, or why it can't answer
+    /// now (`memberAPIDown`). Otherwise it says where to look. Nothing while the pair is stopped, or for the Darkbloom
+    /// network alone. With Only me it names no address (`darkbloom local` does), only why this Mac's own port for the
+    /// pair can't answer now. No key and no speed.
     func localAPILines(now: Date = Date(), timeZone: TimeZone = .current) -> [String] {
-        guard let localAPI, started, paired, !pairingUnreadable else { return [] }
+        guard let localAPI else { return memberAPIDown.map { ["Local API: " + $0] } ?? [] }
+        guard started, paired, !pairingUnreadable else { return [] }
         guard localAPI.runsRankZero else {
             guard answersOnEveryMac else {
                 return ["Local API: on \(otherMac), which runs the pair's API; `\(Self.cli) local` there shows its address and key, "
@@ -51,12 +52,16 @@ extension ClusterPairSummary {
         return Self.pauseLines(localAPI.meFirst, now: now, timeZone: timeZone) + [Self.addressLine(address), members]
     }
 
-    /// Why this Mac, which relays the pair's API on every address, has no working address for it now, after "Local API: ",
-    /// as `status`, `darkbloom local` and `--opencode` all say it: rank 0 answers on its own Mac only while Darkbloom
-    /// doesn't have the pair, another program holds this Mac's port, or rank 0's Mac can't be reached (the relay answers
-    /// 503, in these words). Nil while it has one, while it starts, and on any other Mac or pair.
+    /// Why this Mac, which relays the pair's API on every address (Both, me first or Only me), has no working address for
+    /// it now, after "Local API: ", as `status`, `darkbloom local`, `--opencode` and the app's Start all say it: rank 0
+    /// answers on its own Mac only while Darkbloom doesn't have the pair, another program holds this Mac's port, or rank
+    /// 0's Mac can't be reached (the relay answers 503, in these words). Nil while it has one, while it starts, and on any
+    /// other Mac or pair. With Only me, `localAPI` (Both's) doesn't say whether this Mac's part runs rank 0, but only a Mac
+    /// that relays has these from its cluster service (`ClusterService.relayStatus`).
     var memberAPIDown: String? {
-        guard let localAPI, !localAPI.runsRankZero, answersOnEveryMac, started, paired, !pairingUnreadable else { return nil }
+        guard localAPI.map({ !$0.runsRankZero }) ?? localOnly, answersOnEveryMac, started, paired, !pairingUnreadable else {
+            return nil
+        }
         if let relaying {
             guard relayRankZeroAway else { return nil }
             return "http://127.0.0.1:\(relaying.port)/v1 on this Mac answers 503 for now. "

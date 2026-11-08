@@ -65,13 +65,20 @@ extension Start {
             print(ToolIntegrationStep.keyless(port: live.port))
             throw ExitCode.failure
         }
+        // On a Mac of a pair, the live API may be this Mac's relay to the pair's API on another Mac. While it answers 503
+        // (`memberAPIDown`: the other Mac away), that is said at once, in `status`'s words, and nothing is set up.
+        let pair = ClusterPairSummary.local()
+        let relayed = pair.relaying?.port == live.port
+        if relayed, let down = pair.memberAPIDown {
+            print(ToolIntegrationStep.noMemberAddress(requestedTools, localAPI: down))
+            print(ToolIntegrationStep.keepsServing)
+            throw ExitCode.failure
+        }
         guard let endpoint = runningLocalAPI(live, keyFile: { LocalEndpoint.keyFile(forPort: Int($0)) }) else {
             return false
         }
         print("Darkbloom already serves on \(live.host):\(live.port); setting up "
             + "\(ToolIntegrationStep.names(requestedTools)) for it.")
-        // On a Mac of a pair, the live API may be this Mac's relay to the pair's API on another Mac.
-        let relayed = ClusterPairSummary.local().relaying?.port == live.port
         try await setUpToolsWithSavedSettings(endpoint, step: step, relayed: relayed)
         return true
     }

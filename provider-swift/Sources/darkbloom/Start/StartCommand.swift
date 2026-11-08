@@ -412,8 +412,11 @@ struct Start: AsyncParsableCommand {
                 Self.clearSoloChoice()
                 let code = await ClusterPairCommands.start(pair, actions: ClusterPairActions.live(config: configOptions.config),
                                                            config: configOptions.config)
-                // What the app's Start asked for and the pair doesn't take: another model, a local API here.
-                for line in pair.appStartLines(named: model, localEndpoint: localEndpoint, code: code) { print(line) }
+                // What the app's Start asked for and the pair doesn't take: another model, a local API here. Read again now
+                // the start is over, so this Mac's relay is as its cluster service says after it.
+                for line in ClusterPairSummary.local().appStartLines(named: model, localEndpoint: localEndpoint, code: code) {
+                    print(line)
+                }
                 if code != 0 { throw ExitCode(code) }
                 try await setUpToolsBesidePair()
                 return

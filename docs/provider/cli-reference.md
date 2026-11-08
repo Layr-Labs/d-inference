@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -99,7 +99,12 @@ cluster its Stop and Restart run `darkbloom stop` and `darkbloom restart`, which
 act on both Macs; its local mode serves this Mac alone, so `desktop start-local`
 refuses there and says why instead of reporting a start (`Desktop.StartLocal.pairRefusal`). Internal
 `desktop start-local --model <id>`, `stop-local`, and `restart-local` commands
-(each accepting `--config`) retain the native provider owner and termination handler. Cooling uses
+(each accepting `--config`) retain the native provider owner and termination handler. `start-local` serves on
+this Mac's one local API port (`Desktop.StartLocal.localAPI`, `LocalAPIPort.choose`): `[local] port`, else the one
+its local API already uses, else one chosen, all before anything stops (no free port starts nothing). A port not
+saved yet is saved only once the service started (`Desktop.StartLocal.serve`): a refused drain or a failed install
+saves nothing. Its LaunchAgent runs `start --foreground --local --port <n> --bind
+<address>` (`LaunchAgent.localProgramArguments`), which never asks or saves and prints no key. Cooling uses
 `desktop configure-cooling --enabled <bool> --speed <percent> --temperature <celsius>`
 to request macOS administrator authorization for the existing signed helper.
 `darkbloom desktop login [--config <path>]` signs into the account
@@ -226,7 +231,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `--route <route>` | `this-mac`, `my-macs`, `my-macs-first` | `[local] route` | Where your requests go when this Mac can't take them ([the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)); saved; needs an account key (`darkbloom route key`) |
 | `--choose` | flag | `false` | In a terminal: ask how this Mac serves again, although a choice is saved |
 | `--opencode`, `--hermes` | flag | `false` | Set OpenCode 2 or Hermes Agent up to use this Mac's local API ([below](#set-up-opencode-or-hermes)); not with `--network`, `--no-auth`, `--cluster-member`, `--distributed` or `--foreground` |
-| `--port <n>` | `UInt16?` | `[local] port`, else `8000` | Local server port. A new local API from the start question, a saved choice or `--me-first` takes the first free port from there instead, never `8000` or `47420`–`47423` |
+| `--port <n>` | `UInt16?` | `[local] port`, else the port this Mac's local API already uses, else the first free port from `8001`; saved the first time | This Mac's local API port, for every local API it serves; a port named here is used and saved ([below](#how-this-mac-serves-one-question)) |
 | `--bind <addr>` | `String?` | `[local] bind`, else `127.0.0.1` | Local server bind address |
 | `--no-auth` | flag | `false` | Disable the local bearer-token check |
 | `--cluster-member` | flag | `false` | Register a control-only cluster member from the saved setup, in the foreground ([coordinator-paired member](../reference/configuration.md#coordinator-paired-member)). With `--local-endpoint --port <p> --bind <address>`, which the cluster service passes for Both, me first, the member that hosts the pair's slot also serves the pair's local API with the pair's key; any other member runs none. Refused with `--no-auth`, `--always-on` or `--supervise` |
@@ -286,15 +291,44 @@ drains it); **Darkbloom network** and **Both, me first** install the
 LaunchAgent with the arguments `--local-endpoint` has always used
 ([configuration](../reference/configuration.md#local-first-use-local)).
 
-- **The port of a new local API** (the question's, a saved choice without a
-  saved port, `--me-first`): the first free port from `[local] port` or the
-  build's default, up to 20 ports on, never `8000` (where other local AI apps
-  listen) or `47420`–`47423` (pairs), which are never even probed. This
-  install's own running local API keeps its port. It is saved and said once:
-  `Local API port: 8001 (saved; 8000 is left for other apps).` With none free,
-  the start stops and says so. `--port` is used as given; `--local` and
-  `--local-endpoint` without it keep `[local] port` or `8000`, as before
-  (`LocalAPIPort`).
+- **One port per Mac** (`LocalAPIPort.choose`,
+  `provider-swift/Sources/ProviderCore/Config/LocalAPIPort.swift`): every local
+  API this Mac serves (the question's, a saved choice, `--me-first`, `--local`,
+  `--local-endpoint`, the desktop app's starts) takes the same port, so the
+  address the tools were given never moves:
+  1. `--port <n>`: used as given, and saved when it isn't the saved port:
+     ``Local API port: 8007 (saved, instead of 8005: tools set up for 8005 need
+     `darkbloom start --opencode` or `--hermes` again).``
+  2. `[local] port`: used as it is, never probed or moved, even `8000` or a
+     port another program holds (the local API then says why it isn't up).
+  3. Otherwise the port this Mac's local API already uses: its running API's
+     (`local.json`), else the one its installed LaunchAgent's job serves on (the
+     job's `--port`, or the build's default for an app job without one,
+     `LaunchAgent.installedLocalAPIPort`). It is kept as it is, even `8000`, and
+     saved: a Mac updated from 0.10.10, whose local API serves on `8000`, keeps
+     it, so the tools pointed there keep working. Said once:
+     `Local API port: 8000 (saved; this Mac's local API already uses it).`
+  4. Otherwise, on a Mac with no local API at all, one chosen now and saved: the
+     first free port from the build's default (production's `8000`, so `8001`),
+     up to 20 ports on, never `8000` (where other local AI apps listen) or
+     `47420`–`47423` (pairs), which are never even probed. Said once:
+     `Local API port: 8001 (saved; 8000 is left for other apps).` With none
+     free, the start stops and says so.
+
+  The `--foreground` service (launchd's child) never chooses or saves: its
+  arguments carry the port. So does `start --local` that a service runs (an
+  app job an older version wrote, or the cluster service's solo part,
+  `Start.isServiceChild`). A saved port is kept whatever the mode; a mode flag
+  still saves no mode.
+- **A local API that can't listen:** Only me stops (exit 1):
+  ``This Mac's local API couldn't listen on 127.0.0.1:8001: another program
+  may use port 8001. Free it, or run `darkbloom start --port 8002`.`` Both, me
+  first keeps serving Darkbloom, and `status` and `local` say why its local API
+  isn't up ([`darkbloom status`](#darkbloom-status)). On a Mac in a two-Mac
+  cluster, where `start` takes `--port` only with `--solo`, these lines name
+  `darkbloom start --solo --port <n>` for single-Mac serving, and
+  `darkbloom restart` for the pair's own API, whose port the pair picks
+  (`LocalFirstWords.LocalAPIServer`).
 - **Refused at parse (exit 64), before anything runs:** two different modes
   (`--local`, `--network`, `--me-first`/`--local-endpoint`), for example ``
   `--local` and `--me-first` choose different ways to serve. Use one: --local
@@ -334,7 +368,7 @@ They run once, at `start`:
    `--route`): nothing starts. `Darkbloom already serves on <host>:<port>;
    setting up OpenCode for it.`, then the tools (`Start.runningLocalAPI`). One
    without a key (`--no-auth`) is named instead, and nothing starts (exit 1):
-   ``✗ Darkbloom's local API on :8000 has no key (--no-auth); tools need one:
+   ``✗ Darkbloom's local API on :8001 has no key (--no-auth); tools need one:
    start it without --no-auth.``
 2. **Otherwise `start` runs as above**, then: `--local` and Only me set the tools
    up beside the server once it is bound; a background start waits up to 30 s
@@ -749,6 +783,7 @@ this Mac serves, read from its state and `local.json` (`Status.servingLines`,
 | State | Line |
 |---|---|
 | Darkbloom network | `Serving: Darkbloom network only — this Mac has no local API` |
+| Both, its local API couldn't listen (`DaemonState.localAPIFailure`) | ``Serving: Darkbloom and you, me first — the local API isn't up: port 8001 is in use (`darkbloom start --port 8002`)``; with no port free, ``(free it, or name another with `darkbloom start --port <n>`)``; for another failure, ``it couldn't listen on 100.64.0.9:8001 (Can't assign requested address); `darkbloom restart` tries again``. On a Mac in a two-Mac cluster: ``(`darkbloom start --solo --port 8002`)`` and `` `darkbloom restart --solo` tries again`` for single-Mac serving; for the pair's API, written by the cluster's part, ``(`darkbloom restart` starts the pair's API on a free port)``, or ``(free it, then `darkbloom restart`)`` with no port free (`LocalFirstWords.whyNotUp`) |
 | Both, me first, open | `Serving: Darkbloom and you, me first — open to Darkbloom (none of your requests in the last 2 minutes)` |
 | Both, me first, paused | `Serving: you first — Darkbloom paused since 14:02 (your last request 1 minute ago; back at about 14:13 if you stay idle)`; while your requests run, `(your request is running; back 2 minutes after it ends)`; then, only while some finish, `         2 Darkbloom requests are finishing` |
 | Both, me first off | `Serving: Darkbloom and you, shared — Darkbloom keeps serving while you use this Mac (me first is off)` |
@@ -829,7 +864,11 @@ cache precedence is specified in [model cache configuration](../reference/config
 Exit 1 (and `{}` in JSON mode) when no live local server is recorded
 (`LocalEndpoint.readLiveInfo`, `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift`);
 it then names both ways to start one, `start --me-first` (Darkbloom and you,
-you first) and `start --local` (only you, on this Mac).
+you first) and `start --local` (only you, on this Mac). When the running
+provider's local API couldn't listen (`DaemonState.localAPIFailure`), it says
+why instead: ``The local API isn't up: port 8001 is in use (`darkbloom start
+--port 8002`).`` (`Local.notUpLine`), with the commands `status` names on a Mac
+in a two-Mac cluster.
 A server bound to `0.0.0.0` or `::` also prints a `network:` line with this
 Mac's Bonjour (`.local`) URL (`Local.networkURL`). When the running provider
 serves that endpoint, two lines follow `pid:`: `serving:` (how it serves, in
@@ -1326,7 +1365,7 @@ Where `logs` and [`report`](#darkbloom-report) wait for a `log` child to finish,
 | `--foreground` | Run in the foreground (used by launchd; normally implicit) |
 | `--local` | Only me: serve the local API only; do not connect to the coordinator |
 | `--local-endpoint` | Both, me first (older flag): serve the local API beside the coordinator; Darkbloom requests pause while you use it and for `[local] me_first_idle_minutes` after (`[local] me_first`) |
-| `--port <port>` | Port for `--local` / `--local-endpoint` (default 8000) |
+| `--port <port>` | This Mac's local API port, used and saved (default `[local] port`, else the one this Mac's local API already uses, else the first free from 8001; saved the first time) |
 | `--bind <addr>` | Bind address for local modes (default 127.0.0.1) |
 | `--no-auth` | Disable local API-key auth (trusted/airgapped only) |
 

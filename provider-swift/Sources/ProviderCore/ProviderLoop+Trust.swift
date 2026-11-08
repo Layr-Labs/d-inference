@@ -109,7 +109,8 @@ extension ProviderLoop {
             autopilotPhase: autopilotPhase,
             autopilotOperation: autopilotOperationView,
             addonHold: addonHoldSnapshot,
-            meFirst: meFirstSnapshot
+            meFirst: meFirstSnapshot,
+            localAPIFailure: localEndpointFailure
         )
     }
 

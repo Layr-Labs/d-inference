@@ -1,6 +1,6 @@
 # Desktop control API
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 The Electron app controls the Swift CLI/backend through its authenticated local
 API. The backend owns provider operations, configuration, model state, credentials,
@@ -199,7 +199,7 @@ that cleanup completes, then the operation becomes `cancelled`.
 
 | Action | Additional fields | Behavior |
 |---|---|---|
-| `start` | `models`; optional `local`, `endpoint` | Existing start path; `local` (Only me, the app's "Local only") uses the same canonical provider LaunchAgent, and `endpoint` (Both, me first, the app's "Alongside the network") passes `--local-endpoint` |
+| `start` | `models`; optional `local`, `endpoint` | Existing start path; `local` (Only me, the app's "Local only") uses the same canonical provider LaunchAgent, on this Mac's one local API port (`[local] port`, else the one its local API already uses, else one chosen; saved once the service started; `desktop start-local`), and `endpoint` (Both, me first, the app's "Alongside the network") passes `--local-endpoint` |
 | `autopilot` | `models`, `pinned`; optional `downloads`, `endpoint` | Complete selected native downloads, then verified `start --autopilot --model …`; pin only after successful start. Fail before enrollment when a download fails. Every startup model must be a network model (`models[].network`) |
 | `autopilot_pin`, `autopilot_unpin` | `models` | Existing CLI pin/unpin; pin budget is rechecked against downloaded estimates and configured slots |
 | `autopilot_pause`, `autopilot_resume`, `autopilot_disable` | — | Existing CLI policy commands |

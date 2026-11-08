@@ -90,7 +90,7 @@ struct Start: AsyncParsableCommand {
         }
     }
 
-    @Option(name: .customLong("port"), help: ArgumentHelp("Local server port (default: [local] port, else \(BuildEnvironment.current.defaultLocalPort); a new local API from the start question or --me-first gets the first free port from there, never 8000).", valueName: "port"))
+    @Option(name: .customLong("port"), help: ArgumentHelp("This Mac's local API port, used and saved. Default: [local] port, else the port this Mac's local API already uses, else the first free port from \(LocalAPIPort.firstCandidate) (never 8000 or \(ClusterLocalServing.pairPortsWords)); saved the first time.", valueName: "port"))
     var portOption: UInt16?
 
     @Option(name: .customLong("bind"), help: ArgumentHelp("Bind address for the local API (default [local] bind, else 127.0.0.1; a tailnet IP exposes it to same-account devices, still API-key gated).", valueName: "bind"))
@@ -99,7 +99,8 @@ struct Start: AsyncParsableCommand {
     @Flag(help: "Disable local API-key auth for --local / --local-endpoint (NOT recommended; trusted/airgapped use only).")
     var noAuth = false
 
-    /// `--port`, else the build's default: what `--local` and `--local-endpoint` take without `[local] port`.
+    /// `--port`, else the build's default: for callers that resolved nothing (`servingFromFlags`). A start resolves
+    /// this Mac's one port instead (`StartServingResolver`).
     var port: UInt16 { portOption ?? BuildEnvironment.current.defaultLocalPort }
 
     /// `--bind`, else loopback.
@@ -284,6 +285,14 @@ struct Start: AsyncParsableCommand {
 
     var startsSingleMacServing: Bool { !foreground && !clusterMember && !distributed }
 
+    /// Whether this start is a service's child, which serves exactly as its arguments say: launchd's `--foreground`
+    /// child, or `start --local` that a service runs (the app's local-mode job an older version wrote without
+    /// `--foreground`, or the cluster service's solo part). It never asks, and never chooses, probes or saves a port,
+    /// so an updated Mac's services keep theirs; its banner, which goes to a log, shows no key.
+    static func isServiceChild(local: Bool, foreground: Bool, distributed: Bool, startedByAService: () -> Bool) -> Bool {
+        foreground || (local && !distributed && startedByAService())
+    }
+
     /// Tests stand in for stopping this Mac's leftover part (`ClusterService.releaseForSingleMac`).
     @TaskLocal static var releaseForTesting: (@Sendable () -> Bool)?
     /// As `releaseForTesting`, with how it ended, given what it calls before it waits for a running cluster command.
@@ -370,6 +379,10 @@ struct Start: AsyncParsableCommand {
         // Line-buffer stdout: in a log or a pipe (`start … > log`, nohup) it is block-buffered, and a start that serves
         // never exits, so its banner, "Listening on" and the tool lines would wait in the buffer.
         setvbuf(stdout, nil, _IOLBF, 0)
+        // From here on, a service's child is the --foreground service (`isServiceChild`).
+        foreground = Self.isServiceChild(local: local, foreground: foreground, distributed: distributed, startedByAService: {
+            LaunchAgent.isCurrentProcessJob() || ClusterPairSummary.startedByClusterService()
+        })
         // `--opencode` / `--hermes` beside a running local API: set the tools up for it, and start nothing.
         if try await setUpToolsForRunningLocalAPI() { return }
         let look = DarkbloomCommandLook.forCommand()

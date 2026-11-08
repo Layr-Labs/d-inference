@@ -60,7 +60,7 @@ actor DesktopBackend {
   }
 
   func submit(_ request: DesktopAction) throws -> DesktopOperation {
-    try request.validate()
+    try request.validate(startsThePair: { try Self.startsThePair(ClusterPairSummary.local()) })
     if let original = requests[request.id] {
       guard original == request, let operation = operations.first(where: { $0.id == request.id })
       else { throw ValidationError("Request ID was already used") }
@@ -92,6 +92,17 @@ actor DesktopBackend {
     persist()
     tasks[request.id] = Task { await self.execute(request) }
     return operation
+  }
+
+  /// Whether a `start` that names no models starts this Mac's pair: the app's Start on a Mac in a two-Mac pair
+  /// (`startPlan.startAction`), where `start` starts the pair with its own model (`Start.pairStart`). `paired` is `start`'s
+  /// own test, so a pairing record that can't be read counts too, and `start` then refuses in its own words. Elsewhere
+  /// such a start is refused as before ("Choose at least one model"). A pair with no model yet is refused at once with
+  /// the CLI's one line for it, before anything runs, never "starting the pair".
+  static func startsThePair(_ pair: ClusterPairSummary) throws -> Bool {
+    guard pair.paired else { return false }
+    if !pair.pairingUnreadable, pair.model == nil { throw ValidationError(ClusterPairSummary.noModelLine) }
+    return true
   }
 
   private func execute(_ request: DesktopAction) async {

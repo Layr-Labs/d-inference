@@ -2603,6 +2603,7 @@ struct ClusterStatusModeTests {
 @Suite("the desktop app on a paired Mac")
 struct DesktopAppOnAPairedMacTests {
     private static let autopilotRefusal = "This Mac serves in a pair; Autopilot isn't available for pairs yet. Use Start serving."
+    private static let starting = "This Mac is in a two-Mac cluster with \(otherMac): starting the pair."
 
     @Test("the app's Autopilot enroll and its model refresh on a paired Mac are refused in its words, before any download; its Start is not")
     func autopilotIsRefusedFirst() async {
@@ -2643,6 +2644,58 @@ struct DesktopAppOnAPairedMacTests {
             try await exitWithPair(.notPaired, actions: nil) { sandbox in try await printSnapshotAutopilotAndPair(sandbox) }
         }
         #expect(lines(single?.standardOutputContent) == ["autopilot: true", "pair: null", ""])
+    }
+
+    /// The app's Start on a paired Mac names no model (`startPlan.startAction`). As its main process posts it, through the
+    /// desktop API's own decode and `submit`: taken only on a paired Mac, where `start` starts the pair.
+    @Test("the app's Start as the app posts it: on a paired Mac `start` runs and starts the pair; elsewhere it is refused, and a pair with no model says so in one line")
+    func appStartAsPosted() async {
+        // A paired Mac: `start` runs with the pair's arguments, no model and no local API of its own, and starts the pair.
+        let paired = await #expect(processExitsWith: .success, observing: [\.standardOutputContent, \.standardErrorContent]) {
+            try await exitWithPair(stoppedPair(), actions: pairActions(serving: false)) { sandbox in
+                let posted = try await postAppStart(sandbox)
+                print("posted: \(posted)")
+                guard posted == "succeeded: start --config <config>" else { return }
+                try await ClusterPairSummary.$readerForTesting.withValue({ live in live ? servingPair() : stoppedPair() }) {
+                    try await runAppStart(sandbox, [])
+                }
+            }
+        }
+        #expect(lines(paired?.standardOutputContent) == ["posted: succeeded: start --config <config>", Self.starting]
+            + servingBlock + [""])
+        let pairedStderr = text(paired?.standardErrorContent)
+        #expect(pairActionCalls(pairedStderr) == ["ensureService", "serve"], "\(pairActionCalls(pairedStderr))")
+        #expect(changingLaunchctlCalls(pairedStderr).isEmpty, "\(changingLaunchctlCalls(pairedStderr))")
+        // A Mac that isn't paired: refused at once, as before.
+        let single = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await exitWithPair(.notPaired, actions: nil) { sandbox in print("posted: \(try await postAppStart(sandbox))") }
+        }
+        #expect(lines(single?.standardOutputContent)
+            == ["posted: refused (400 Bad Request), nothing ran: Choose at least one model", ""])
+        // A pair with no model yet: refused at once with the CLI's line for it, never "starting the pair".
+        let noModel = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await exitWithPair(pair(started: false, model: false), actions: nil) { sandbox in
+                print("posted: \(try await postAppStart(sandbox))")
+            }
+        }
+        #expect(lines(noModel?.standardOutputContent) == ["posted: refused (400 Bad Request), nothing ran: "
+            + "No model was chosen for the pair yet: run `darkbloom start` in a terminal to choose one.", ""])
+    }
+
+    @Test("only a plain start may name no models, and only where it starts the pair: `start`'s own test of a paired Mac")
+    func startWithoutModelsOnlyStartsAPair() throws {
+        #expect(try !DesktopBackend.startsThePair(.notPaired))
+        #expect(try DesktopBackend.startsThePair(stoppedPair()))
+        // An unreadable pairing record counts as paired, as in `start`, which then refuses without --solo.
+        #expect(try DesktopBackend.startsThePair(unreadable()))
+        let noModel = #expect(throws: ValidationError.self) { try DesktopBackend.startsThePair(pair(started: false, model: false)) }
+        #expect(noModel?.message == ClusterPairSummary.noModelLine)
+        // Local mode and a switch still name their models, paired or not.
+        for request in [DesktopAction(id: UUID().uuidString, action: "start", models: [], local: true),
+                        DesktopAction(id: UUID().uuidString, action: "switch", models: [])] {
+            let refused = #expect(throws: ValidationError.self) { try request.validate(startsThePair: { true }) }
+            #expect(refused?.message == "Choose at least one model", "\(request.action)")
+        }
     }
 
     @Test("the app's Start says what happened: the pair serves its model, or was asked to start and isn't serving, and no local API was added")
@@ -2716,6 +2769,33 @@ private func printSnapshotAutopilotAndPair(_ sandbox: CLICommandSandbox) async t
     guard case .array(let capabilities) = state.field("capabilities") else { throw ExitCode(97) }
     print("autopilot: \(capabilities.contains(.string("autopilot")))")
     print("pair: \(String(decoding: try JSONEncoder().encode(state.field("pair")), as: UTF8.self))")
+}
+
+/// The app's Start as its main process posts it on a paired Mac: `startPlan.startAction`'s action with an id
+/// (`backend.ts`'s `act`; the app's backend test pins this JSON), through the desktop API's own decode and `submit`, with
+/// `echo` in place of the CLI. What came of it: the finished operation's state and the arguments it ran, or the API's
+/// refusal and whether anything ran.
+private func postAppStart(_ sandbox: CLICommandSandbox) async throws -> String {
+    setenv("DARKBLOOM_DESKTOP_DIR", sandbox.root.appendingPathComponent("desktop", isDirectory: true).path, 1)
+    setenv("DARKBLOOM_LOCAL_DIR", sandbox.root.appendingPathComponent("local", isDirectory: true).path, 1)
+    let body = #"{"action":"start","models":[],"local":false,"id":"\#(UUID().uuidString)"}"#
+    let backend = DesktopBackend(configPath: sandbox.config.path, executable: URL(fileURLWithPath: "/bin/echo"))
+    let operation: DesktopOperation
+    do {
+        operation = try await backend.submit(DesktopHTTP.decodeAction(Data(body.utf8)))
+    } catch {
+        let refusal = DesktopHTTP.errorResponse(for: error)
+        let ran = await backend.operations.isEmpty ? "nothing ran" : "an operation was recorded"
+        return "refused (\(refusal.status)), \(ran): \(refusal.message)"
+    }
+    for _ in 0..<500 {
+        if let done = await backend.operations.first(where: { $0.id == operation.id }), done.state != "running" {
+            let ran = done.message.trimmingCharacters(in: .whitespacesAndNewlines)
+            return "\(done.state): " + ran.replacingOccurrences(of: sandbox.config.path, with: "<config>")
+        }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    return "still running after 5 s"
 }
 
 /// The app's Start as its worker runs it on a paired Mac: `start` with `options` and the sandbox's config, no terminal,

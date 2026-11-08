@@ -448,6 +448,15 @@ from a first install, and cancels a link in progress.
   of its own, since the pair serves its own (`startPlan.ts`), and hides the
   advanced model choice. An app from before this reads the missing capability as
   a runtime without Autopilot, and offers the plain start too.
+- **A start with no models.** The runtime takes it only on a paired Mac
+  (`DesktopBackend.startsThePair`, the same test `start` makes), where its
+  `start` starts the pair with the pair's own model. On a Mac that isn't paired
+  it is refused at once, as before: "Choose at least one model". A pair with no
+  model yet is refused at once with the CLI's one line for that, which the app
+  shows: ``No model was chosen for the pair yet: run `darkbloom start` in a terminal to choose one.``
+  `DesktopAppOnAPairedMacTests` posts the app's exact JSON through
+  `DesktopHTTP.decodeAction` and `submit`, and `backend.test.ts` pins that JSON
+  as the main process posts it.
 - **Updates.** Onboarding never writes settings, so an automatic-update opt-out
   is preserved.
 

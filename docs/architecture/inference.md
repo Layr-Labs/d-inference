@@ -2981,13 +2981,22 @@ as it is, or passes the request's body on unchanged.
 | GPT-OSS | Harmony's `low`, `medium` and `high` | The effort as sent, except `high`, which renders `medium` | `GPTOSSHarmonyTemplateFix.effectiveReasoningEffort` |
 | Flint | none: Flint decides whether to reason | Every effort is taken, with no effect | `FlintRequestPolicy` |
 
-An effort that is none of the names is refused before anything renders or is
-reserved, on any model that reasons, with
-`MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(field)` (HTTP
-400): the local API answers `invalid_reasoning_effort` naming the field and
-the names ([direct mode](../provider/direct-mode.md#reasoning-effort)); the
-coordinator receives the closed `invalid_request` failure, which it shows as
-"invalid inference request". A model of no family above ignores any effort
+An effort that is none of the names is refused on any model that reasons,
+with `MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(field)`
+(HTTP 400), before the prompt renders or any KV is reserved. The engine
+checks the effort once the request holds its model
+(`MultiModelBatchSchedulerEngine.prepareCompletion`, after
+`acquireForCompletion`; Super's owner in `NemotronSuperRequestPlan`), so a
+cold model may load first, and on one Mac's unified endpoint the request
+counts as the owner's use for "me first". The refusal releases the model.
+MiMo's and Flint's efforts are checked before that when the model is
+resident, and through the coordinator MiMo's, Flint's and GLM-5.3-Flash's are
+refused before the request is accepted
+(`ProviderPromptContractPipeline.nativeControlsRefusal`). The local API
+answers `invalid_reasoning_effort` naming the field and the names ([direct
+mode](../provider/direct-mode.md#reasoning-effort)); the coordinator receives
+the closed `invalid_request` failure, which it shows as "invalid inference
+request". A model of no family above ignores any effort
 (`ReasoningEffortPolicy.validate`).
 
 Nemotron 3.5 Super reads both fields rather than letting `reasoning.effort`

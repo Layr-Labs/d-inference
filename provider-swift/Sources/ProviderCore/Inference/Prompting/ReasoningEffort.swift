@@ -10,12 +10,13 @@ import MLXLMServer
 /// - A model that reasons takes each of the seven, as `reasoning_effort` or
 ///   `reasoning.effort`, and never answers one with a 400: its family's table
 ///   (below) gives the level its template renders.
-/// - A value that is none of the seven is refused before anything renders or
-///   is reserved, with `MultiModelBatchSchedulerEngineError
-///   .unsupportedReasoningEffort(field)`. The local API answers it with the
-///   field and the seven names, never the value sent
-///   (`ReasoningEffortField.refusalMessage`); the coordinator shows its own
-///   closed text.
+/// - A value that is none of the seven is refused before the prompt renders or
+///   any KV is reserved, with `MultiModelBatchSchedulerEngineError
+///   .unsupportedReasoningEffort(field)`. The engine checks it once the
+///   request holds its model, so a cold model may load first; the refusal
+///   releases the model. The local API answers it with the field and the
+///   seven names, never the value sent (`ReasoningEffortField.refusalMessage`);
+///   the coordinator shows its own closed text.
 /// - Nemotron 3.5 Super reads both fields and refuses two that differ, even
 ///   two names, with `.conflictingReasoningEfforts`, which the local API
 ///   answers in the same shape, naming both fields

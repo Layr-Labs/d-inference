@@ -110,9 +110,9 @@ struct ReasoningEffortLocalAPITests {
         await servers.stop()
     }
 
-    /// An effort that is none of the names is answered before anything is
-    /// rendered or reserved: 400, `invalid_reasoning_effort`, the field it
-    /// came in, and the names this API takes.
+    /// An effort that is none of the names is answered before the prompt
+    /// renders or the pair reserves any KV: 400, `invalid_reasoning_effort`,
+    /// the field it came in, and the names this API takes.
     @Test func anUnknownEffortIsRefusedInWordsOnOneMacAndOnAPair() async throws {
         let directory = try Self.qwen38.makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

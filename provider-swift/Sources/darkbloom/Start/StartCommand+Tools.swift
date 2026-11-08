@@ -75,7 +75,7 @@ extension Start {
     }
 
     /// Beside a pair that just started: for its local API on this Mac, when there is one. A pair starts only without
-    /// single-Mac options, so no option here changes what serves.
+    /// single-Mac options, or with the app's Start's (`Start.appStartOptions`), which don't change what the pair serves.
     func setUpToolsBesidePair() async throws {
         guard !requestedTools.isEmpty else { return }
         guard let endpoint = IntegrationEndpoint.live() else {

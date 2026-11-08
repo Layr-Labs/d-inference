@@ -215,7 +215,7 @@ struct Update: AsyncParsableCommand {
         /// The pair, which runs here; a single-Mac job beside it is left as it is (`soloJobLeftLines`).
         case pair
         /// Single-Mac serving, which this Mac has; `releaseLeftover`: a pair that doesn't run here first gives back the
-        /// serving lock its leftover part holds (`Start.releaseLeftoverPart`).
+        /// serving lock its leftover part holds (`Start.releaseLeftoverPartToServeAlone`).
         case singleMac(releaseLeftover: Bool)
         case clusterService
         case nothing
@@ -226,21 +226,16 @@ struct Update: AsyncParsableCommand {
     static func restartChoice(soloJobLoaded: Bool = LaunchAgent.isLoaded(),
                               soloJobIsMember: Bool = LaunchAgent.installedJobIsClusterMember(),
                               pairServes: Bool = ClusterService.pairServesHere(),
-                              leftoverPart: Bool = leftoverPartHere(ClusterPairSummary.local()),
+                              leftoverPart: Bool = ClusterPairSummary.local().leftoverPartHere,
                               clusterServiceRunning: Bool = ClusterService.running()) -> RestartChoice {
         if soloJobBesidePair(soloJobLoaded: soloJobLoaded && !soloJobIsMember, pairServes: pairServes) { return .pair }
         if soloJobLoaded { return .singleMac(releaseLeftover: leftoverPart && !soloJobIsMember) }
         return clusterServiceRunning ? .clusterService : .nothing
     }
 
-    /// A pair that doesn't run here while its saved start and cluster service are left on this Mac.
-    static func leftoverPartHere(_ pair: ClusterPairSummary) -> Bool { pair.pairIdle && pair.started && pair.serviceRunning }
-
     private func releaseLeftoverPart(_ release: Bool) async throws {
         guard release else { return }
-        let pair = ClusterPairSummary.local()
-        print(pair.servingAloneLine)
-        try await Start.releaseLeftoverPart(pair)
+        try await Start.releaseLeftoverPartToServeAlone(ClusterPairSummary.local())
     }
 
     static var soloJobLeftLines: [String] {

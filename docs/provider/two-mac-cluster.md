@@ -1112,6 +1112,12 @@ only requests within them; it sends any other request to a single Mac. From the
 first request it serves, the pair's slot also reports its measured prefill and
 decode speeds, as a single Mac's slot does. The warmup canary is not counted.
 
+A long prompt on the pair's own API shows its progress as on one Mac: a
+streamed request gets `: prefill in progress, <total> prompt tokens` every 5
+seconds until its first token ([a long prompt's progress](./direct-mode.md#a-long-prompts-progress)).
+With `darkbloom cluster local`, it takes the place of the leader's 500 ms
+keep-alive probe every 5 seconds.
+
 After updating, let the normal cluster setup refresh both worker capabilities
 and the derived request deadline before serving. For adapters such as GLM that
 reserve their whole request scope at load time, automatic placement prices that
@@ -1124,7 +1130,13 @@ A pair takes image and video input only where its placed mode serves it:
 GLM-5.3-Flash and Qwen3.8 27B in tensor parallel. In every other mode (any
 pipeline, other models) it registers with the coordinator as text only, so no
 media request is routed to it, and a pair registered for media serves only
-while both Macs' parts report media. GLM-5.3-Flash answers its output
+while both Macs' parts report media. The pair's own API says the same in its
+`/v1/models`: `input_modalities` is `["text", "image", "video"]` where the
+pair's mode serves media (`["text", "image"]` on the GLM and MiMo image
+candidates' profiles) and `["text"]` otherwise (`LocalInputModalities`).
+`darkbloom start --opencode` and `--hermes` follow it for the pair's model,
+whatever the catalog says, so a Gemma 4 pair gets no image input in the tools.
+GLM-5.3-Flash answers its output
 controls as one Mac does: hidden reasoning is withheld, with or without media,
 and with images or video a `response_format` JSON answer or a required or
 named tool call is refused. Content parts of an unknown type are refused,
@@ -1384,7 +1396,12 @@ cluster service asks the coordinator for its latest release:
 
 A pair still running a request after 120 seconds takes requests again and tries
 at the next slot. A release that one Mac cannot download or verify is installed
-on neither Mac; both try again at the next slot. Until a new
+on neither Mac; both try again at the next slot. A Mac whose check gets no
+answer from the coordinator (3 tries of 15 seconds) asks once more 1 to 2
+minutes later, within the same slot, while the other Mac waits; only when that
+fails too do both Macs wait for the next slot. So a new release reaches the pair
+at its next slot, up to 30 minutes after it is published, and each failed try
+waits 30 minutes more; `darkbloom update` on both Macs updates at once. Until a new
 release's cluster service has stayed healthy for 10 minutes, three of its starts
 that end by themselves bring back the previous release and quarantine the new
 one, as the watchdog does for a single Mac. A Mac never restarts into a new

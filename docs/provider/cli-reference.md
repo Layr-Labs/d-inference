@@ -399,12 +399,18 @@ They run once, at `start`:
    The endpoint's `GET /v1/models` (15 s, `ToolIntegrationStep.modelListTimeout`:
    well over the router's own wait for the coordinator's lists, which an
    unreachable coordinator runs out) and the catalog (5 s) give the models;
-   `ToolIntegration.configure` writes the block with a backup. Without the
-   catalog (offline, or a model it doesn't list), a model the tool's file
-   already lists keeps that entry's name, image input, reasoning and limits
-   (`IntegrationModel.keeping`), so a re-run changes nothing and says the catalog
-   wasn't reachable; a model new to the file gets its ID and text input only, and
-   one line says to run the start again online for names and image support.
+   `ToolIntegration.configure` writes the block with a backup. A model served
+   here (this Mac, or the pair it leads or relays to) gets image input exactly
+   when its `this-mac` entry lists `image` among its `input_modalities`,
+   catalog or not; a model served elsewhere, or one whose pair slot isn't up
+   yet, gets the catalog's, or the list's `image`. Reasoning comes from the
+   catalog only. Without the catalog (offline, or a model it doesn't list), a
+   model the tool's file already lists keeps that entry's name, image input
+   (unless this Mac lists what the model takes, or the list gives it images),
+   reasoning and limits (`IntegrationModel.keeping`), so a re-run changes
+   nothing and says the catalog wasn't reachable; a model new to the file gets
+   its ID, and text input unless the endpoint lists images, and one line says
+   to run the start again online for names and image support.
    The result block names the file changed, the backup and a one-line undo,
    then `Requests:` (where your requests go) and
    `Other tools:` (`OPENAI_BASE_URL` and `OPENAI_API_KEY="$(cat <key file>)"`).
@@ -1344,8 +1350,46 @@ and mixed prompt arrivals, see [the profiling workflow](https://github.com/Layr-
 | `--timeout <seconds>` | integer, 0–3600 | `600` | Drain the running service before activating the installed update or the rollback |
 | `--force` | flag | `false` | Explicitly permit interruption during update or rollback activation |
 
-Exit 1 on `quarantined`, `busy`, `cancelled`, `downloadFailed`, `hashMismatch`,
-`replaceFailed`, or a failed check (`UpdateResult`, `provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift`).
+Exit 1 on `quarantined`, `busy`, `cancelled`, `checkFailed`, `downloadFailed`, `hashMismatch` or
+`replaceFailed` (`UpdateResult`, `provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift`), and with
+`--check-only` on `checkFailed` (`UpdateCheckResult`).
+
+The release check, with or without `--check-only`, waits at most 15 s for each
+answer and makes up to 3 tries while a try fails on the way: no answer in time,
+a connection lost or refused, a name that didn't resolve, no network, a TLS
+handshake that broke off. It pauses 0.5 to 1 s, then 1 to 2 s between tries. An
+answer is final, a refusal (an HTTP error, a release for another platform)
+included (`ReleaseCheck`). A check that still fails prints, on standard error,
+what failed and what to do, and nothing is downloaded. Only a check that got no
+answer points at the network (`UpdateCheckFailure`, `Update.checkFailedLines`):
+
+```text
+Couldn't check for updates: api.darkbloom.dev didn't answer within 15 s (3 tries). Nothing was downloaded or changed.
+Run `darkbloom update` again in a minute. If it keeps failing, check this Mac's network connection.
+```
+
+| The check failed because | Its second line |
+|---|---|
+| No answer reached this Mac: none in time, a connection lost or refused, a name that didn't resolve, no network, a TLS handshake that broke off | ``Run `darkbloom update` again in a minute. If it keeps failing, check this Mac's network connection.`` |
+| The coordinator answered, but not with a release this Mac can use: an HTTP error, an answer that isn't a release, a release for another platform or with a version it can't read | ``The coordinator answered, so this Mac's network connection works. Run `darkbloom update` again later.`` |
+| This Mac didn't get as far as asking: its update record (`recovery/state.json`) can't be read, or the coordinator URL isn't one | ``This is on this Mac, not its network connection: fix it, then run `darkbloom update` again.`` |
+
+With `--check-only` the first line ends after the reason and the second names
+`darkbloom update --check-only`. The same check runs for the automatic updates
+(single Mac and pair), the watchdog, the startup check and `darkbloom doctor`.
+A pair's automatic cycle (at its update slot, or catching up with the other
+Mac) makes one more round of 3 tries, 60 to 120 s after a first round without an
+answer, within the same cycle (`ReleaseCheck.pairCycle`): a failed check there
+costs both Macs the slot. Each failed try is logged at info level, in the
+process's log (the provider's, the cluster service's, the watchdog's) or on
+standard error for this command: which try, how long it took, the error's domain
+and code, how it connected (HTTP version, a new or reused connection, direct or
+through a proxy, the address reached; `URLSessionTaskMetrics`) and what follows.
+It names the coordinator's host, never a URL:
+
+```text
+release check: try 1 of 3 to api.darkbloom.dev failed after 15.0 s: NSURLErrorDomain -1001 (h2, new connection, direct, 203.0.113.7:443); asking again in 0.8 s
+```
 
 `--rollback` cannot be combined with `--check-only`, `--override-quarantine` or
 `--coordinator`, and `--yes` applies only to it. It prints the plan (installed
@@ -3173,7 +3217,7 @@ reason, keep the bare category, such as `Inference failure: invalid request`
 | `Inference failure: invalid request (native delimiter in history)` | A history argument name or string value contains GLM tool-call delimiter text | `GLM5NextPromptPolicy.normalizedTextInput` |
 | `Inference failure: invalid request (non-text content)` | Image, video or other non-text content on GLM-5.3-Flash's text path | same |
 | `Inference failure: invalid request (unsupported forced tool choice)` | A required or named `tool_choice` the model cannot enforce: a schema outside the enforceable subset, or GLM-5.3-Flash image or video input | `ToolChoicePromptPolicy`; `MultiModelBatchSchedulerEngine` |
-| `Inference failure: invalid request (request exceeds context)` | The prompt plus `max_tokens` exceeds the model's context window | `EngineV2Bridge` (`advertisedContextExceeded`) |
+| `Inference failure: invalid request (request exceeds context)` | The prompt alone fills the model's context window on one Mac (a larger `max_tokens` is cut to fit, not refused), or an output reservation is invalid | `EngineV2Bridge` (`promptExceedsContext`, `advertisedContextExceeded`) |
 | `Inference failure: invalid request (unsupported output control)` | An output control the model's engine cannot honor, such as logprobs on an engine without them | `EngineV2Bridge.nativeOutputControlRefusal` |
 
 Prompt-time refusals also use the earlier reasons: a GLM-5.3-Flash history call
@@ -3511,6 +3555,8 @@ automatic updates with `darkbloom autoupdate disable`.
 | Auto-update first check / interval / drain | `300` s / `1800` s / `120` s | `provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift` (`autoUpdateInitialDelay`, `autoUpdateInterval`, `updateDrainTimeout`) |
 | Update quarantine | `rollbackThreshold = 3`; `defaultStabilizationSeconds = 600` | `provider-swift/Sources/ProviderCore/Update/UpdateRecoveryState.swift` |
 | Release endpoint | `GET /v1/releases/latest?platform=macos-arm64` | `provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift` |
+| Release check: bound per try / tries / pauses | `15` s / `3`, after a failure on the way only / `0.5`–`1` s, then `1`–`2` s | `provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift` (`ReleaseCheck`: `requestTimeout`, `attempts`, `backoff`) |
+| Release check of a pair's automatic cycle: rounds / pause between them | `2` / `60`–`120` s (at most 6 tries, about 3.6 min) | `provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift` (`ReleaseCheck.pairCycle`: `rounds`, `roundPause`) |
 | Update banner timeout | 2 s | `provider-swift/Sources/ProviderCore/Update/UpdateBanner.swift` |
 | Local chat body cap | `localInferenceMaxUploadBytes = 32 * 1024 * 1024` | `provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift` |
 | Local bind wait | 5 s | `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`waitUntilBound`) |

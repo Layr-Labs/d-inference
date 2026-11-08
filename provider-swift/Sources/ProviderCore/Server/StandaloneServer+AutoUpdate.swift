@@ -69,12 +69,15 @@ extension StandaloneServer {
         }
     }
 
-    /// Back to serving after a cycle that didn't restart: admission open again, nothing staged, the lease released.
+    /// Back to serving after a cycle that didn't restart: admission open again, nothing staged, the lease released. A
+    /// stop's or restart's drain that arrived meanwhile (`drainForLifecycle`) keeps admission closed: it never reopens.
     func resumeAfterUpdate() {
         if updateDraining {
             updateDraining = false
-            lifecycleDraining = false
-            responseTracker.setAccepting(lifecycleState == .running)
+            if lifecycleCommandID == updateDrainLifecycleCommand, lifecycleState != .stopping {
+                lifecycleDraining = false
+                responseTracker.setAccepting(true)
+            }
         }
         stagedUpdateBundle?.discard()
         stagedUpdateBundle = nil
@@ -102,6 +105,7 @@ extension StandaloneServer {
     /// Admission closes; requests already accepted finish.
     func beginUpdateDrain() {
         updateDraining = true
+        updateDrainLifecycleCommand = lifecycleCommandID
         lifecycleDraining = true
         responseTracker.setAccepting(false)
     }

@@ -113,7 +113,8 @@ and `provider-swift/Sources/darkbloom/Diagnostics/DoctorRunner.swift`, using
 | `No models selected.` | Picker cancelled or `--model` ids not local | `darkbloom models list`; `darkbloom models download <id>` |
 | ``Without a terminal, `darkbloom start` can't ask which models to serve: …`` (exit 64) | A script, an agent or a start with its input redirected named no models; no start asks a question without a terminal | Add `--model <id>` (`darkbloom models list`) or `--all`, or run `darkbloom start` in a terminal to pick |
 | `No engine-v2-capable models available to serve.` (`--local`) | Every local model's family lacks a CBv2 adapter | Download a supported family (gpt-oss, gemma-4) |
-| `Local server failed to bind <addr>:<port> within 5s` | Port in use | `--port <other>`, or stop the other process |
+| ``This Mac's local API couldn't listen on <addr>:<port>: another program may use port <port>. …`` (Only me) | Another program holds this Mac's local API port | Stop the other program, or run the `darkbloom start --port <n>` it names: the new port is saved, and tools set up for the old one need `darkbloom start --opencode` or `--hermes` again |
+| ``Serving: Darkbloom and you, me first — the local API isn't up: port <port> is in use (…)`` (`status`; `local` says `The local API isn't up: …`) | Both, me first serves Darkbloom, but another program holds the local API's port (`DaemonState.localAPIFailure`) | As above; after freeing the port, `darkbloom restart` |
 | `Cannot start --local-endpoint: failed to create the local API token …` | `~/.darkbloom` not writable | Fix permissions, or `--no-auth` on a trusted network |
 | `warning: … RETIRED knob and is IGNORED` | A retired `[backend]` key or env var is set | Remove it; see [beta features](./beta-features.md#retired) |
 

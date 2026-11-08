@@ -184,7 +184,7 @@ page with these names ([dev build identity](../operations/provider-release.md#de
   both, never 8000. The card says which. The ports the two Macs of a pair use
   on the cable are the DevNet app's own, so the two apps' pairs never answer
   each other. `8001` is only the DevNet app's default for single-Mac local
-  serving. <!-- pending LS-1: one port per Mac, from 8001, for both pair choices. -->
+  serving. <!-- pending LS-3: one port per Mac, from 8001, for both pair choices (LocalAPIPort.thisMac). -->
 - **The DevNet app names `darkbloom-dev`** in its screens, commands and hints,
   and the Local Network lines name “Darkbloom Dev”, but tell the human to turn
   on the row macOS lists, “Darkbloom”: both apps share one bundle ID. Type

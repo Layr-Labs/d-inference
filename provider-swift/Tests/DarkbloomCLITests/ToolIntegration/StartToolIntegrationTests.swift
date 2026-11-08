@@ -120,7 +120,8 @@ struct StartToolIntegrationTests {
             do {
                 _ = try start.resolveServing(environment: ServingEnvironment(
                     terminal: terminal, readInput: { remaining.isEmpty ? nil : remaining.removeFirst() },
-                    emit: { _ in }, accountKeySaved: { false }, ownLivePort: { nil }, isFree: { _ in true }))
+                    emit: { _ in }, accountKeySaved: { false }, ownLivePort: { nil }, installedPort: { nil },
+                    isFree: { _ in true }))
                 Issue.record("no local API must refuse the tools")
             } catch let error as ValidationError {
                 #expect(error.message == refusal)
@@ -243,7 +244,7 @@ struct StartToolIntegrationTests {
         var lookups = 0
         let environment = ServingEnvironment(terminal: false, readInput: { nil }, emit: { _ in },
                                              accountKeySaved: { lookups += 1; return true }, ownLivePort: { nil },
-                                             isFree: { _ in true })
+                                             installedPort: { nil }, isFree: { _ in true })
         let start = try Start.parse(["--local", "--opencode", "--config", config.path])
         let serving = try #require(try start.resolveServing(environment: environment))
         #expect(serving.mode == .local && serving.accountKeySaved == true && lookups == 1)

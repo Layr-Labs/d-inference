@@ -1,6 +1,6 @@
 # Use your Mac yourself, first
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 How your Mac serves is one choice: **Only me**, **Darkbloom network** or
 **Both, me first**. This page says what each one runs, costs and earns, how to
@@ -146,13 +146,25 @@ are in [the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the
 With **Only me** or **Both, me first**, your tools use an address and a key on
 this Mac, for example `http://127.0.0.1:8001/v1`:
 
-- **The port:** a local API that the question, a saved choice or `--me-first`
-  starts takes the first free port from 8001 (8000 is left for other local AI
-  apps), saves it in `[local] port` and says which:
-  `Local API port: 8001 (saved; 8000 is left for other apps).` Later starts
-  keep it, so your tools keep finding it. `--local`, `--local-endpoint` and the
-  app's buttons use `[local] port` too, or 8000 when none is saved, and a pair's
-  API picks its own ([Two Macs](#two-macs)). `--port <n>` picks one yourself.
+- **The port:** one per Mac, saved in `[local] port` the first time. That
+  first start, however it starts (the question, a saved choice, a flag or the
+  app's buttons), keeps the port this Mac's local API already uses: the running
+  API's, else the one its installed background service serves on. A Mac updated
+  from 0.10.10, whose local API serves on 8000, keeps 8000, so your tools keep
+  working: `Local API port: 8000 (saved; this Mac's local API already uses it).`
+  Only a Mac with no local API at all takes the first free port from 8001 (8000
+  is left for other local AI apps):
+  `Local API port: 8001 (saved; 8000 is left for other apps).` Every later
+  start uses the saved port, so your tools keep finding it. `--port <n>` picks
+  another and saves it too; the start then says to set your tools up again. A
+  pair's API picks its own ([Two Macs](#two-macs)).
+- **If another program holds the port,** the local API can't listen. **Both, me
+  first** keeps serving Darkbloom, and `darkbloom status` and `darkbloom local`
+  say why and name a free port, for example ``Serving: Darkbloom and you, me
+  first — the local API isn't up: port 8001 is in use (`darkbloom start --port
+  8002`)``. **Only me** stops with the same advice. On a Mac in a pair they
+  name `darkbloom start --solo --port <n>` instead, or `darkbloom restart` for
+  the pair's own API.
 - **The key:** `darkbloom local` shows the address and the key. Of the start
   screens, only `darkbloom start --local`'s prints the key. A pair's API has a
   key of its own, the same on both Macs.
@@ -162,7 +174,7 @@ this Mac, for example `http://127.0.0.1:8001/v1`:
   nothing is passed on to your other Macs or the network, and `start` and
   `status` say so.
 
-<!-- pending LS-1: one port, chosen once from 8001, and one key per Mac, for every way of starting, the app's and a pair's included. -->
+<!-- pending LS-3: a pair's API takes this Mac's one port (LocalAPIPort.thisMac) and key too. -->
 
 ## Use it from OpenCode or Hermes
 
@@ -246,6 +258,7 @@ Other lines you may see:
 - `Serving: Darkbloom and you, me first — open to Darkbloom (none of your requests in the last 2 minutes)`
 - `Serving: only you, on this Mac — Darkbloom never contacts this Mac`
 - `Serving: Darkbloom network only — this Mac has no local API`
+- ``Serving: Darkbloom and you, me first — the local API isn't up: port 8001 is in use (`darkbloom start --port 8002`)``
 
 `darkbloom local` adds the same choice under the address.
 

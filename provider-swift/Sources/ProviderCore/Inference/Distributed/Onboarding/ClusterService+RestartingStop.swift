@@ -7,12 +7,18 @@ import Foundation
 ///   starts a pair again, so every failure from the stop on, including the stop's own, puts it back (`restoreStart`).
 /// - A stop the owner made is never undone. Every stop of the pair holds the control command lock (a person's, typed
 ///   here or forwarded by the other Mac, and `releaseForSingleMac`'s), and once a step holds it, it stops and starts the
-///   pair only while the start is still saved: the re-plan reads it again, and the approval change decides again.
+///   pair only while the start is still saved: the re-plan reads it again (`commandLockIfStillStarted`), and the
+///   approval change decides again.
 /// - Neither acts on an unconfirmed claim: each checks `leadershipConfirmed` before it begins and again once it holds
 ///   the control command lock. The Macs restart into an update seconds apart, and the one back first may take control
 ///   meanwhile: the other Mac then refuses the stop of a leader whose saved claim it superseded.
 ///
-/// The steps take the command lock beside this service's own files: on a Mac, the one every cluster command takes.
+/// The memory re-plan (`replanForMemory`) starts the pair too, and takes the command lock as the re-plan does: it never
+/// starts a pair its owner stopped while it waited, nor acts on a claim that moved meanwhile. Its adoption stops a
+/// serving pair first (`localAdopt`), and as with the steps, every failure from there puts the start back.
+///
+/// The steps, and the memory re-plan, take the command lock beside this service's own files: on a Mac, the one every
+/// cluster command takes.
 ///
 /// DevNet pair-2, 2026-11-07 (`0.10.10-dev.branch.135` → `.137`): such a stop failed right after both Macs restarted
 /// into the update, and the pair stayed stopped on both Macs until `darkbloom cluster` was run.
@@ -94,5 +100,19 @@ extension ClusterService {
     /// which every stop of the pair holds, so no person's stop is under way.
     func restoreStart() {
         try? store.updateRecord { $0.leadership?.serving = true; $0.stopDrain = nil }
+    }
+
+    /// The control command lock for a re-plan of the pair (`checkForUpdate`, `replanForMemory`), taken within 5 s; nil
+    /// when it stays busy, or when, once it is held, the pair's start is no longer saved or this Mac no longer leads
+    /// on a confirmed claim. Every stop of the pair holds this lock, so a start cleared while the re-plan waited for it
+    /// is a stop the owner made, which the re-plan's start would undo.
+    func commandLockIfStillStarted() -> ClusterControlCommandLock? {
+        guard let held = ClusterControlCommandLock.acquire(seconds: 5,
+            file: store.paths.directory.appendingPathComponent("control.lock")) else { return nil }
+        guard leadershipConfirmed(), (try? store.readRecord())?.leadership?.serving == true else {
+            held.release()
+            return nil
+        }
+        return held
     }
 }

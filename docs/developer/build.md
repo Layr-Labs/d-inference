@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-05
+> Last updated: 2026-11-08
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -337,6 +337,23 @@ Integrity, so these run there too.
 |---|---|---|
 | `ci-dev.yml` (CI (dev)) | pull requests into any branch but `master` (`dev` and stacked branches), pushes to `dev` | the tests only |
 | `ci-master.yml` (CI (master)) | pull requests into `master`, pushes to `master` | the tests, `Release Integrity` and `Docs Lint` |
+| `ci-dev-hourly.yml` (CI (dev) hourly) | the schedule `7 * * * *` (minute 7 of every hour, UTC) on `master`, dispatches | dispatches CI (dev) on `dev` |
+
+### Hourly full run of `dev`
+
+A pull request or a push into `dev` runs only the components its diff
+touches. To test all of `dev` every hour, `.github/workflows/ci-dev-hourly.yml`
+runs at minute 7 of every hour. GitHub runs schedules only from the default
+branch, `master`, so the copy of the file on `dev` does nothing. Its one
+GitHub-hosted job runs `gh workflow run ci-dev.yml --ref dev`. When a
+dispatched run of CI (dev) is still queued or in progress, the job dispatches
+nothing that hour, so two full runs never overlap.
+
+The dispatched run is CI (dev) as `dev` defines it: `dev`'s `ci-dev.yml`
+accepts `workflow_dispatch`, selects every component for a dispatch and
+reports a failed dispatched run on the issue `Hourly full dev CI failures`
+(this file on `dev` describes it). A dispatch needs that trigger in `dev`'s
+copy of `ci-dev.yml`; without it the hourly job fails with HTTP 422.
 
 ### Build Once
 

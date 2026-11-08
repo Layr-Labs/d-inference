@@ -131,6 +131,9 @@ CI_ROUTED = {
 # darkbloom-sandbox's GitHub-side watchdog (public/darkbloom-actions
 # .github/workflows/watchdog.yml at 31236c54), copied unchanged.
 WATCHDOG = "darkbloom-watchdog.yml"
+# The hourly full run of dev: a schedule on master that dispatches CI (dev) on
+# dev. One GitHub-hosted job that routes nothing and tests nothing.
+HOURLY = "ci-dev-hourly.yml"
 # Credentialed, release, review or publication workflows keep literal runners.
 UNROUTED = ("release-swift.yml", "release-provider.yml", "release-dev-branch.yml",
             "release-desktop.yml", "provider-signing-validation.yml", "register-model.yml",
@@ -703,7 +706,8 @@ class RouteWorkflowTests(unittest.TestCase):
 
     def test_every_workflow_is_classified(self):
         self.assertEqual(set(self.texts), set(ROUTED) | set(UNROUTED) | set(CALLERS) |
-                         {"darkbloom-route.yml", "component-changes.yml", PLAN, "provider-tests.yml", WATCHDOG})
+                         {"darkbloom-route.yml", "component-changes.yml", PLAN, "provider-tests.yml", WATCHDOG,
+                          HOURLY})
 
     def test_router_is_isolated_and_defaults_to_the_sandbox_plane(self):
         text = self.texts["darkbloom-route.yml"]
@@ -946,6 +950,25 @@ class RouteWorkflowTests(unittest.TestCase):
         self.assertIn('route_job=${ROUTE_JOB:-Select Runners}', body)
         self.assertIn('(.name | endswith(" / " + $name))', body)
         self.assertIn("    name: Select Runners\n", jobs(self.texts["darkbloom-route.yml"])["select"])
+
+    def test_hourly_full_run_only_dispatches_ci_dev_on_dev(self):
+        text = self.texts[HOURLY]
+        header, body = text.split("\njobs:\n", 1)
+        # Hourly at minute 7 and on demand; no token permission at the top.
+        self.assertEqual(re.findall(r"(?m)^  ([a-z_]+):$", header.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]),
+                         ["schedule", "workflow_dispatch"])
+        self.assertIn("    - cron: '7 * * * *'\n", header)
+        self.assertIn("\npermissions: {}\n", header)
+        dispatch, = jobs(text).values()
+        self.assertEqual(job_field(dispatch, "runs-on"), "ubuntu-24.04")
+        self.assertEqual(permissions(dispatch, 4), {"actions": "write", "contents": "read"})
+        # It runs no action and no checkout, and dispatches only CI (dev) on
+        # dev, unless a dispatched run of it is unfinished.
+        for forbidden in ("uses:", "secrets.", "checkout", "id-token", "self-hosted", "darkbloom-"):
+            self.assertNotIn(forbidden, body)
+        self.assertEqual(re.findall(r"gh workflow run .+", body), ['gh workflow run ci-dev.yml --repo "$REPOSITORY" --ref dev'])
+        self.assertIn("actions/workflows/ci-dev.yml/runs?event=workflow_dispatch&branch=dev", body)
+        self.assertIn('select(.status != "completed")', body)
 
     def test_classifier_gate_and_route_need_no_routed_runner(self):
         ci = jobs(self.texts["provider-tests.yml"])

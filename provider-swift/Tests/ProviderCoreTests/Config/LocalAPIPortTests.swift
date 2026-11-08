@@ -63,7 +63,7 @@ struct LocalAPIPortTests {
         #expect(try LocalAPIPort.choose(named: 8007, saved: 8005, ownLivePort: { nil }, installedPort: { nil },
                                         isFree: noProbe)
             == LocalAPIPort.Choice(port: 8007, saves: true, note: "Local API port: 8007 (saved, instead of 8005: tools "
-                + "set up for 8005 need `darkbloom start --opencode` or `--hermes` again)."))
+                + "set up for 8005 need `darkbloom --opencode` or `--hermes` again)."))
         #expect(try LocalAPIPort.choose(named: 8005, saved: 8005, ownLivePort: { nil }, installedPort: { nil },
                                         isFree: noProbe)
             == LocalAPIPort.Choice(port: 8005, saves: false, note: nil))

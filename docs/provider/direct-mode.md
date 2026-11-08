@@ -551,11 +551,14 @@ copy of the stream (`provider-swift/Sources/ProviderCore/ProviderLoop+ClusterPai
 ([Both, me first](./two-mac-cluster.md#both-me-first-the-pairs-own-api-beside-darkbloom)):
 the cluster service adds `--local-endpoint --port <port> --bind <address>` to
 that part's `darkbloom start --foreground --cluster-member`, which takes that
-Mac's own key and the pair's. Every other member's part runs none. With the API
-on every address, each other Mac's cluster service passes that Mac's own port
-to it (`ClusterLocalRelay`, as for **Only me**), swapping that Mac's own key for
-the pair's, so tools on each Mac of the pair use their own Mac's address and
-key.
+Mac's own key and the pair's. The port is that Mac's own saved `[local] port`,
+as for every local API on it (`LocalAPIPort`, [above](#steps)). Every
+other member's part runs none. With the API on every address, each other Mac's
+cluster service passes that Mac's own port, its own `[local] port`, to it
+(`ClusterLocalRelay`, as for **Only me**), swapping that Mac's own key for the
+pair's, so tools on each Mac of the pair use their own Mac's address and key.
+While Darkbloom doesn't have the pair, the API answers on its Mac only, and the
+other Macs pass nothing on.
 
 | Case | Answer | Source |
 |---|---|---|

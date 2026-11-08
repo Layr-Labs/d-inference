@@ -150,25 +150,26 @@ this Mac, for example `http://127.0.0.1:8001/v1`:
   is left for other local AI apps):
   `Local API port: 8001 (saved; 8000 is left for other apps).` Every later
   start uses the saved port, so your tools keep finding it. `--port <n>` picks
-  another and saves it too; the start then says to set your tools up again. A
-  pair's API picks its own ([Two Macs](#two-macs)).
+  another and saves it too; the start then says to set your tools up again. On
+  a Mac in a pair, the pair's API or this Mac's port for it takes the same saved
+  port ([Two Macs](#two-macs)).
 - **If another program holds the port,** the local API can't listen. **Both, me
   first** keeps serving Darkbloom, and `darkbloom status` and `darkbloom local`
   say why and name a free port, for example ``Serving: Darkbloom and you, me
   first — the local API isn't up: port 8001 is in use (`darkbloom start --port
   8002`)``. **Only me** stops with the same advice. On a Mac in a pair they
-  name `darkbloom start --solo --port <n>` instead, or `darkbloom restart` for
-  the pair's own API.
+  name `darkbloom start --solo --port <n>` instead. For the pair's API, which
+  keeps the saved port too, free the port or set another `[local] port` in
+  `provider.toml`, then run `darkbloom restart`.
 - **The key:** `darkbloom local` shows the address and the key. Of the start
-  screens, only `darkbloom start --local`'s prints the key. A pair's API has a
-  key of its own, the same on both Macs.
+  screens, only `darkbloom start --local`'s prints the key. On a Mac in a
+  pair, the pair's API, or this Mac's port for it, takes this Mac's own key
+  too.
 - **On your local network (LAN or tailnet):** the local API listens on this Mac
   only, unless you start with `--bind <address>`; it always needs the key
   unless you add `--no-auth`. Without a key your requests stay on this Mac:
   nothing is passed on to your other Macs or the network, and `start` and
   `status` say so.
-
-<!-- pending LS-3: a pair's API takes this Mac's one port (LocalAPIPort.thisMac) and key too. -->
 
 ## Use it from OpenCode or Hermes
 
@@ -270,7 +271,8 @@ pairs them, then the leading Mac asks how the pair serves (**Only me**,
 **Darkbloom network** or **Both, me first**, preselected) and which model; its
 list's **Change how the pair serves** asks again. Then run
 `darkbloom start --opencode` on either Mac: with **Only me** or **Both, me
-first**, each Mac answers at its own address, with its own key.
+first**, each Mac answers at its own address, on its own saved port, with its
+own key.
 
 - **Only me:** no Mac of the pair contacts Darkbloom. `darkbloom cluster local`
   serves the pair this way too. The other Mac passes its own port on to the
@@ -284,6 +286,7 @@ first**, each Mac answers at its own address, with its own key.
   a key. Unless it is kept on the leading Mac with `--bind`, the other Mac
   passes its own port on to it too, as with **Only me**: `darkbloom local` and
   `--opencode` work there as well, and your requests there pause the pair too.
+  While Darkbloom doesn't have the pair, it answers on the leading Mac only.
 - Your answer is saved in `[local] mode` too. Without a terminal nothing is
   asked, and a pair keeps serving as it did
   ([Both, me first](./two-mac-cluster.md#both-me-first-the-pairs-own-api-beside-darkbloom)).

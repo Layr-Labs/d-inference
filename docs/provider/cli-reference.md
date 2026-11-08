@@ -326,9 +326,10 @@ LaunchAgent with the arguments `--local-endpoint` has always used
   first keeps serving Darkbloom, and `status` and `local` say why its local API
   isn't up ([`darkbloom status`](#darkbloom-status)). On a Mac in a two-Mac
   cluster, where `start` takes `--port` only with `--solo`, these lines name
-  `darkbloom start --solo --port <n>` for single-Mac serving, and
-  `darkbloom restart` for the pair's own API, whose port the pair picks
-  (`LocalFirstWords.LocalAPIServer`).
+  `darkbloom start --solo --port <n>` for single-Mac serving. The pair's own
+  API takes this Mac's saved port too, never moved, so its lines say to free
+  it or set another `[local] port` in `provider.toml`, then run
+  `darkbloom restart` (`LocalFirstWords.LocalAPIServer`).
 - **Refused at parse (exit 64), before anything runs:** two different modes
   (`--local`, `--network`, `--me-first`/`--local-endpoint`), for example ``
   `--local` and `--me-first` choose different ways to serve. Use one: --local
@@ -789,7 +790,7 @@ this Mac serves, read from its state and `local.json` (`Status.servingLines`,
 | State | Line |
 |---|---|
 | Darkbloom network | `Serving: Darkbloom network only — this Mac has no local API` |
-| Both, its local API couldn't listen (`DaemonState.localAPIFailure`) | ``Serving: Darkbloom and you, me first — the local API isn't up: port 8001 is in use (`darkbloom start --port 8002`)``; with no port free, ``(free it, or name another with `darkbloom start --port <n>`)``; for another failure, ``it couldn't listen on 100.64.0.9:8001 (Can't assign requested address); `darkbloom restart` tries again``. On a Mac in a two-Mac cluster: ``(`darkbloom start --solo --port 8002`)`` and `` `darkbloom restart --solo` tries again`` for single-Mac serving; for the pair's API, written by the cluster's part, ``(`darkbloom restart` starts the pair's API on a free port)``, or ``(free it, then `darkbloom restart`)`` with no port free (`LocalFirstWords.whyNotUp`) |
+| Both, its local API couldn't listen (`DaemonState.localAPIFailure`) | ``Serving: Darkbloom and you, me first — the local API isn't up: port 8001 is in use (`darkbloom start --port 8002`)``; with no port free, ``(free it, or name another with `darkbloom start --port <n>`)``; for another failure, ``it couldn't listen on 100.64.0.9:8001 (Can't assign requested address); `darkbloom restart` tries again``. On a Mac in a two-Mac cluster: ``(`darkbloom start --solo --port 8002`)`` and `` `darkbloom restart --solo` tries again`` for single-Mac serving; for the pair's API, written by the cluster's part, ``(free it, or set `[local] port = 8002` in provider.toml, then `darkbloom restart`)``, or ``(free it, or set another `[local] port` in provider.toml, then `darkbloom restart`)`` with no port free (`LocalFirstWords.whyNotUp`) |
 | Both, me first, open | `Serving: Darkbloom and you, me first — open to Darkbloom (none of your requests in the last 2 minutes)` |
 | Both, me first, paused | `Serving: you first — Darkbloom paused since 14:02 (your last request 1 minute ago; back at about 14:13 if you stay idle)`; while your requests run, `(your request is running; back 2 minutes after it ends)`; then, only while some finish, `         2 Darkbloom requests are finishing` |
 | Both, me first off | `Serving: Darkbloom and you, shared — Darkbloom keeps serving while you use this Mac (me first is off)` |
@@ -1055,14 +1056,22 @@ A pair that serves Both, me first says `Serves: through Darkbloom, and on its lo
 - `Local API: http://127.0.0.1:<port>/v1 on this Mac` (with `, and port <port> of its LAN or tailnet address` on
   every interface), never the key (`darkbloom local` shows it), or `Local API: not listening yet` while the part
   starts;
-- `Members: the other Mac (…) is part of the pair; its own port passes your requests to this API` (on every
-  interface; otherwise `…; it runs no local API`).
+- `Members: the other Mac (…) is part of the pair; its own port passes your requests to this API` while this Mac's
+  API listens on every interface (before it listens, the scope decides); otherwise `…; it runs no local API`, as
+  while Darkbloom doesn't have the pair, when that API answers on this Mac only.
 On the other Mac, with the pair's API on every interface, its own relay (`ClusterPairSummary.relaying`, the
-discovery record its cluster service wrote): `Local API: http://127.0.0.1:<port>/v1 on this Mac, and port <port> of
-its LAN or tailnet address`, or `Local API: not listening on this Mac yet; …` until it runs, and `Members: the other
-Mac (…) runs the pair's API; this Mac passes your requests to it, and Darkbloom pauses for them too`. With the API on
-loopback or one address: `Local API: on the other Mac (…), which runs the pair's API; …` and `Members: this Mac is
-part of the pair; it runs no local API`. `--json` is unchanged (`serves` stays `darkbloom`).
+discovery record its cluster service wrote) on that Mac's own saved port: `Local API: http://127.0.0.1:<port>/v1 on
+this Mac, and port <port> of its LAN or tailnet address`, and `Members: the other Mac (…) runs the pair's API; this
+Mac passes your requests to it, and Darkbloom pauses for them too`. Until it runs, from its cluster service's status:
+- ``Local API: none on this Mac while Darkbloom doesn't have the pair; meanwhile the pair answers only on the other
+  Mac (…) (`darkbloom local` there shows its address and key)`` (`ClusterServiceStatus.relayWaitsForOffer`);
+- ``Local API: port 8001 on this Mac is held by another program, so this Mac doesn't answer for the pair; free it, or
+  set another `[local] port` in provider.toml, then `darkbloom restart` `` (`relayPortHeld`);
+
+  each with `Members: the other Mac (…) runs the pair's API; this Mac is part of the pair`; otherwise
+  `Local API: not listening on this Mac yet; …` with the `Members:` line above.
+With the API on loopback or one address: `Local API: on the other Mac (…), which runs the pair's API; …` and
+`Members: this Mac is part of the pair; it runs no local API`. `--json` is unchanged (`serves` stays `darkbloom`).
 
 While single-Mac serving runs on either Mac of a started pair, the pair can't start there and it doesn't stop by
 itself. Both Macs read `not_serving` (exit 3), never "keep trying by themselves":

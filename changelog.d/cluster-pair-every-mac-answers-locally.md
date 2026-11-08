@@ -3,13 +3,24 @@
 - With **Both, me first**, every Mac of the pair now has its own local API address, as with **Only me**
   (`darkbloom cluster local`), not only the Mac that runs the pair's API: each other Mac passes its own port to it over
   the cable. `darkbloom local` there prints `http://127.0.0.1:<port>/v1` and the key to use, `darkbloom status` names
-  that address instead of pointing at the leading Mac, the setup's ✓ block says the local API is on that Mac, and
-  `darkbloom start --opencode` or `--hermes` there sets the tools up for it.
+  that address instead of pointing at the leading Mac, the setup's ✓ block prints this Mac's own address once its port
+  is up, and `darkbloom start --opencode` or `--hermes` there sets the tools up for it.
 - Each Mac's tools use that Mac's own key (`local_token`), with **Only me** and with **Both, me first**. The pair's API
   takes its own Mac's key and the pair's key (`cluster_local_token`), which tools set up before keep working with; the
   other Mac's port passes requests on with the pair's key.
-- The port is the pair API's own when it is free on that Mac, else the first free one from 8001, never 8000 or the pair
-  ports 47420–47423. With the pair's API kept on its own Mac (`--bind` loopback or one address), nothing changes.
+- A pair's local API now takes each Mac's own saved `[local] port`, as every other local API on that Mac does, with
+  **Only me** and with **Both, me first**: the Mac that runs the pair's API listens on its port, and each other Mac's
+  port passes requests to it, so the ports can differ, and each Mac keeps its own whichever Mac runs the pair's API.
+  Before, the pair's API took a port free on both Macs (Only me 8000 when free) and the other Mac took the same one. A
+  Mac with no saved port keeps the one its local API already uses, else takes the first free one from 8001, never 8000
+  or the pair ports 47420–47423, and saves it; a Mac updated from 0.10.10 keeps 8000. With the pair's API kept on its
+  own Mac (`--bind` loopback or one address), the other Mac passes nothing on, as before.
+- A saved port is never moved, a pair's included: when another program holds it, `darkbloom status` on that Mac names
+  the port and says to free it, or set another `[local] port` in `provider.toml`, then run `darkbloom restart`. For the
+  pair's API this replaces "`darkbloom restart` starts the pair's API on a free port".
+- While Darkbloom doesn't have a **Both, me first** pair (no approval yet), the pair answers on the leading Mac only,
+  and the other Mac passes nothing on: its `darkbloom status` says so, and never shows an address that resets every
+  connection.
 - A request on the other Mac's port pauses Darkbloom for the pair, as one on the leading Mac does, and never uses the
   paid network: the pair's API sees it come from that Mac.
 - `darkbloom start --opencode` on a paired Mac waits up to 30 seconds for that Mac's local API after the pair starts,

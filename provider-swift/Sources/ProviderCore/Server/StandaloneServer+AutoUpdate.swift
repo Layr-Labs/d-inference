@@ -35,7 +35,7 @@ extension StandaloneServer {
             resumeServing: { await self.resumeAfterUpdate() },
             check: {
                 guard let session = await self.updateSession else {
-                    return .checkFailed(reason: "cross-process update lease was lost")
+                    return .checkFailed(.init(.thisMac, "cross-process update lease was lost"))
                 }
                 return await updater.checkForUpdate(session: session)
             },

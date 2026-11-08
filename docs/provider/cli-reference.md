@@ -17,9 +17,11 @@ adds it to the set before control can resume. Waiting and shadow Autopilot prese
 
 ## Local GLM qualification
 
-`darkbloom start --local --model EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`
+`darkbloom start --local --here --model EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`
 can include the experimental GLM root only when
 `DARKBLOOM_EXPERIMENTAL_GLM5_NEXT` names an absolute qualification JSON file.
+Use `--here`: the variable isn't passed to Only me's background service, which
+then serves no GLM.
 Unset, empty, `1`, malformed selections and mismatched identities refuse GLM.
 The file pins the exact catalog record, manifest and expected aggregate; see
 [configuration](../reference/configuration.md#local-glm-qualification) for its schema.
@@ -101,9 +103,10 @@ refuses there and says why instead of reporting a start (`Desktop.StartLocal.pai
 `desktop start-local --model <id>`, `stop-local`, and `restart-local` commands
 (each accepting `--config`) retain the native provider owner and termination handler. `start-local` serves on
 this Mac's one local API port (`Desktop.StartLocal.localAPI`, `LocalAPIPort.choose`): `[local] port`, else the one
-its local API already uses, else one chosen, all before anything stops (no free port starts nothing). A port not
-saved yet is saved only once the service started (`Desktop.StartLocal.serve`): a refused drain or a failed install
-saves nothing. Its LaunchAgent runs `start --foreground --local --port <n> --bind
+its local API already uses, else one chosen, all before anything stops (no free port starts nothing). Only once the
+service started does it save the app's choice, Only me (`[local] mode = "local"`), as `start --local` does, and a
+port not saved yet (`Desktop.StartLocal.serve`): a refused drain or a failed install saves nothing. The app's Start,
+Restart and Update then serve Only me, as login and the watchdog do. Its LaunchAgent runs `start --foreground --local --port <n> --bind
 <address>` (`LaunchAgent.localProgramArguments`), which never asks or saves and prints no key. Cooling uses
 `desktop configure-cooling --enabled <bool> --speed <percent> --temperature <celsius>`
 to request macOS administrator authorization for the existing signed helper.
@@ -796,7 +799,7 @@ Use the [stop flags](#darkbloom-stop) and [restart flags](#darkbloom-restart) be
 for deadline recovery. Commands do not initiate graceful shutdown by killing the
 serve task. `SIGTERM`, `SIGINT` and AppKit termination enter the same drain;
 Only me (`--local`) also waits for active HTTP response bodies. `SIGHUP`
-enters it too for a provider started by hand (`start --local`, or
+enters it too for a provider started by hand (`start --local --here`, or
 `start --foreground` typed into a terminal), so closing its terminal window
 drains it instead of ending the process at once. `SIGHUP` is not a stop signal
 in two cases: the provider's launchd job does not take it, so it has whatever
@@ -854,6 +857,7 @@ this Mac serves, read from its state and `local.json` (`Status.servingLines`,
 | Both, me first, paused | `Serving: you first — Darkbloom paused since 14:02 (your last request 1 minute ago; back at about 14:13 if you stay idle)`; while your requests run, `(your request is running; back 2 minutes after it ends)`; then, only while some finish, `         2 Darkbloom requests are finishing` |
 | Both, me first off | `Serving: Darkbloom and you, shared — Darkbloom keeps serving while you use this Mac (me first is off)` |
 | Only me (`--local`) | `Serving: only you, on this Mac — Darkbloom never contacts this Mac` |
+| Only me while it loads its models, before its local API listens | `Serving: only you, on this Mac — starting: its local API opens once its models are loaded` |
 
 With a local API it adds where your requests go and whether an account key is
 saved, never the key: `Your requests: this Mac first, then your other Macs
@@ -1340,8 +1344,46 @@ and mixed prompt arrivals, see [the profiling workflow](https://github.com/Layr-
 | `--timeout <seconds>` | integer, 0–3600 | `600` | Drain the running service before activating the installed update or the rollback |
 | `--force` | flag | `false` | Explicitly permit interruption during update or rollback activation |
 
-Exit 1 on `quarantined`, `busy`, `cancelled`, `downloadFailed`, `hashMismatch`,
-`replaceFailed`, or a failed check (`UpdateResult`, `provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift`).
+Exit 1 on `quarantined`, `busy`, `cancelled`, `checkFailed`, `downloadFailed`, `hashMismatch` or
+`replaceFailed` (`UpdateResult`, `provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift`), and with
+`--check-only` on `checkFailed` (`UpdateCheckResult`).
+
+The release check, with or without `--check-only`, waits at most 15 s for each
+answer and makes up to 3 tries while a try fails on the way: no answer in time,
+a connection lost or refused, a name that didn't resolve, no network, a TLS
+handshake that broke off. It pauses 0.5 to 1 s, then 1 to 2 s between tries. An
+answer is final, a refusal (an HTTP error, a release for another platform)
+included (`ReleaseCheck`). A check that still fails prints, on standard error,
+what failed and what to do, and nothing is downloaded. Only a check that got no
+answer points at the network (`UpdateCheckFailure`, `Update.checkFailedLines`):
+
+```text
+Couldn't check for updates: api.darkbloom.dev didn't answer within 15 s (3 tries). Nothing was downloaded or changed.
+Run `darkbloom update` again in a minute. If it keeps failing, check this Mac's network connection.
+```
+
+| The check failed because | Its second line |
+|---|---|
+| No answer reached this Mac: none in time, a connection lost or refused, a name that didn't resolve, no network, a TLS handshake that broke off | ``Run `darkbloom update` again in a minute. If it keeps failing, check this Mac's network connection.`` |
+| The coordinator answered, but not with a release this Mac can use: an HTTP error, an answer that isn't a release, a release for another platform or with a version it can't read | ``The coordinator answered, so this Mac's network connection works. Run `darkbloom update` again later.`` |
+| This Mac didn't get as far as asking: its update record (`recovery/state.json`) can't be read, or the coordinator URL isn't one | ``This is on this Mac, not its network connection: fix it, then run `darkbloom update` again.`` |
+
+With `--check-only` the first line ends after the reason and the second names
+`darkbloom update --check-only`. The same check runs for the automatic updates
+(single Mac and pair), the watchdog, the startup check and `darkbloom doctor`.
+A pair's automatic cycle (at its update slot, or catching up with the other
+Mac) makes one more round of 3 tries, 60 to 120 s after a first round without an
+answer, within the same cycle (`ReleaseCheck.pairCycle`): a failed check there
+costs both Macs the slot. Each failed try is logged at info level, in the
+process's log (the provider's, the cluster service's, the watchdog's) or on
+standard error for this command: which try, how long it took, the error's domain
+and code, how it connected (HTTP version, a new or reused connection, direct or
+through a proxy, the address reached; `URLSessionTaskMetrics`) and what follows.
+It names the coordinator's host, never a URL:
+
+```text
+release check: try 1 of 3 to api.darkbloom.dev failed after 15.0 s: NSURLErrorDomain -1001 (h2, new connection, direct, 203.0.113.7:443); asking again in 0.8 s
+```
 
 After an install it restarts what serves in the background, as `restart` does:
 the saved choice, Only me included (waiting for its local API, not for
@@ -2341,7 +2383,7 @@ darkbloom restart [--timeout <seconds>] [--force] [--startup-timeout <seconds>] 
 |---|---|---|---|
 | `--timeout <seconds>` | integer, 0–3600 | `600` | Wait for accepted work and the coordinator acknowledgement before restarting |
 | `--force` | flag | `false` | Explicitly permit interruption of unfinished work before restarting |
-| `--startup-timeout <seconds>` | integer, 1–3600 | `180` | Wait for a new process identity and fresh App Attest, legacy, or owner self-route authorization |
+| `--startup-timeout <seconds>` | integer, 1–3600 | `180` | Wait for a new process identity and fresh App Attest, legacy, or owner self-route authorization; for Only me, for its local API to answer, once its models are loaded |
 | `--config <path>` | path | unset | Override the config used to re-arm the watchdog; the provider keeps its recorded config arguments |
 | `--solo` | flag | `false` | On a Mac in a two-Mac cluster: restart single-Mac serving on this Mac only |
 
@@ -3534,6 +3576,8 @@ automatic updates with `darkbloom autoupdate disable`.
 | Auto-update first check / interval / drain | `300` s / `1800` s / `120` s | `provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift` (`autoUpdateInitialDelay`, `autoUpdateInterval`, `updateDrainTimeout`) |
 | Update quarantine | `rollbackThreshold = 3`; `defaultStabilizationSeconds = 600` | `provider-swift/Sources/ProviderCore/Update/UpdateRecoveryState.swift` |
 | Release endpoint | `GET /v1/releases/latest?platform=macos-arm64` | `provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift` |
+| Release check: bound per try / tries / pauses | `15` s / `3`, after a failure on the way only / `0.5`–`1` s, then `1`–`2` s | `provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift` (`ReleaseCheck`: `requestTimeout`, `attempts`, `backoff`) |
+| Release check of a pair's automatic cycle: rounds / pause between them | `2` / `60`–`120` s (at most 6 tries, about 3.6 min) | `provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift` (`ReleaseCheck.pairCycle`: `rounds`, `roundPause`) |
 | Update banner timeout | 2 s | `provider-swift/Sources/ProviderCore/Update/UpdateBanner.swift` |
 | Local chat body cap | `localInferenceMaxUploadBytes = 32 * 1024 * 1024` | `provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift` |
 | Local bind wait | 5 s | `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`waitUntilBound`) |

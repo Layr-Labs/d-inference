@@ -14,8 +14,11 @@ use your Mac's models.
 | **Both, me first** | Darkbloom's requests, and a local API for you on `http://127.0.0.1:<port>/v1`, in the background | To this Mac first: Darkbloom pauses while you use it and comes back after 2 idle minutes | Yours are free; Darkbloom's earn while you aren't using the Mac | `darkbloom stop` |
 
 In the background means it starts at login, starts again after a crash and
-updates itself; closing the Terminal window changes nothing. Every choice keeps
-the Mac awake while it serves (the display can still sleep). Starting **Only
+updates itself; closing the Terminal window changes nothing. Like the others,
+**Only me** reports itself alive from the start, while it loads its models, so
+a long first load (after an update, say) is never taken for a failed start, and
+`darkbloom status` says it is starting. Every choice keeps the Mac awake while
+it serves (the display can still sleep). Starting **Only
 me** where Darkbloom served says so: ``Darkbloom network serving stops: this Mac
 serves only you from now on (`darkbloom start --me-first` serves Darkbloom and
 you).`` With an account key saved, a request this Mac can't take can go on to
@@ -68,7 +71,8 @@ Starts without a terminal never ask:
   your saved choice. So do `darkbloom restart` and `darkbloom update`: a
   service an earlier start left serving another way restarts as saved, and
   says so: `Restarting as saved: Darkbloom network (the service was set up for
-  Both, me first).`
+  Both, me first).` None of them changes your saved choice: only a choice
+  does (the question, `--choose`, a mode flag, or one of the app's below).
 - **Scripts, and the Darkbloom app's Start buttons,** serve your saved choice,
   **Only me** included, which asks nothing, not even the models: the ones you
   last chose that are still on this Mac, else every one it can serve. With none
@@ -82,12 +86,13 @@ Starts without a terminal never ask:
   serves its own model, and a line says so when the app named another
   ([Two Macs](#two-macs)). Your saved choice is for this Mac alone: it applies
   with `--solo`.
-- **Some app buttons choose for you:** the app's onboarding, its Autopilot and
+- **The app's choices are saved too:** its onboarding, its Autopilot and
   Studio's "Alongside the network" start **Both, me first** (`--local-endpoint`)
   and save it, whatever you saved before; Studio's "Local only" starts **Only
-  me** in the background without saving it.
+  me** in the background and saves it. The app's Start, Restart and Update then
+  serve that choice, as login and the watchdog do.
 
-<!-- pending LS-2: the app passes no mode flag, so its buttons keep your saved choice. -->
+<!-- pending LS-7: a Darkbloom network choice in the app, saved as its other two are. -->
 
 You can also name the choice in the command, in a terminal or not:
 
@@ -279,6 +284,7 @@ Other lines you may see:
 
 - `Serving: Darkbloom and you, me first — open to Darkbloom (none of your requests in the last 2 minutes)`
 - `Serving: only you, on this Mac — Darkbloom never contacts this Mac`
+- `Serving: only you, on this Mac — starting: its local API opens once its models are loaded`
 - `Serving: Darkbloom network only — this Mac has no local API`
 - ``Serving: Darkbloom and you, me first — the local API isn't up: port 8001 is in use (`darkbloom start --port 8002`)``
 

@@ -5,8 +5,11 @@ import Foundation
 /// eviction a load that needs memory runs, under the same load gate, so a model with a request in flight, a
 /// reservation or a load never goes; the next request loads it again.
 extension StandaloneServer {
+    /// How often the idle unload checks.
+    public static let idleUnloadCheckInterval: Duration = .seconds(60)
+
     /// Checks once a minute; does nothing for 0 minutes, or once started.
-    public func startIdleUnload(minutes: UInt64, every interval: Duration = .seconds(60)) {
+    public func startIdleUnload(minutes: UInt64, every interval: Duration = StandaloneServer.idleUnloadCheckInterval) {
         guard minutes > 0, idleUnloadTask == nil else { return }
         let idleFor = Duration.seconds(Int64(clamping: minutes) * 60)
         idleUnloadTask = Task { [weak self] in

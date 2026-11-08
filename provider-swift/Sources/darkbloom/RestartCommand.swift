@@ -7,8 +7,9 @@ struct Restart: AsyncParsableCommand {
         abstract: "Restart the provider with its current model selection.",
         discussion: """
         Drains accepted requests, then restarts the launchd service, re-using the existing
-        coordinator URL and model selection — it does NOT show the model
-        picker or change what you serve. Use this to pick up a new binary or
+        coordinator URL and model selection, serving your saved choice ([local] mode): a
+        service an earlier start left serving another way restarts as saved. It does NOT
+        show the model picker or change your choice. Use this to pick up a new binary or
         recover a wedged provider.
 
         If the service is installed but not running, it is started (on a Mac in a two-Mac
@@ -22,7 +23,7 @@ struct Restart: AsyncParsableCommand {
     )
 
     @OptionGroup var drain: DrainOptions
-    @Option(help: "Seconds to confirm a new, freshly authorized connection after restart.")
+    @Option(help: "Seconds to wait for the restarted service: fresh authorization, or Only me's local API.")
     var startupTimeout: Int = 180
 
     @Flag(help: "On a Mac in a two-Mac cluster: restart single-Mac serving on this Mac only; the pair keeps running.")

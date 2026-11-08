@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -767,10 +767,10 @@ leads.").
   goes ahead; q at the question or at the list saves nothing. `darkbloom start
   --solo` on this Mac then serves the same way
   ([no terminal, no question](./local-first.md#no-terminal-no-question)). A
-  saved **Only me** serves this Mac alone only in a terminal: while the pair
-  doesn't run here, `darkbloom start` without one (the app's Start, a script)
-  is refused in one line before this Mac's part is stopped or its saved start
-  cleared.
+  saved **Only me** serves this Mac alone in the background, as the other
+  choices do: while the pair doesn't run here, `darkbloom start` without a
+  terminal (the app's Start, a script) serves this Mac alone, as a network
+  start does.
 - **Only me** is `darkbloom cluster local`'s way of serving
   ([below](#serving-locally-only)). **Darkbloom network** is the pair as
   before, with no local API.

@@ -284,6 +284,7 @@ extension Start {
         coordinatorURL: String,
         runtimeCapabilities: Set<ProviderRuntimeCapability>,
         reserveMode: PickerReserveMode = .selectedModels,
+        whenCatalogUnreachable: (() -> [String])? = nil,
         urlSession: URLSession = .shared,
         isInteractive: Bool? = nil,
         readInput: () -> String? = { readLine() }
@@ -294,6 +295,10 @@ extension Start {
         do {
             catalogSnapshot = try await client.fetchCatalogSnapshot(typeFilter: "text", includeAliases: true)
         } catch {
+            if let offline = whenCatalogUnreachable?(), !offline.isEmpty {
+                print(Self.catalogUnreachableOnlyMe(offline))
+                return offline
+            }
             printError("Could not fetch model catalog from coordinator: \(error)")
             printError("hint: check your coordinator URL or use --model to specify models directly")
             throw ExitCode.failure
@@ -385,6 +390,12 @@ extension Start {
         }
 
         return selectedIndices.map { entries[$0].id }
+    }
+
+    /// Only me without Darkbloom's catalog: it serves the models already on this Mac.
+    static func catalogUnreachableOnlyMe(_ models: [String]) -> String {
+        "Darkbloom's catalog can't be reached, so Only me serves the models already on this Mac: "
+            + models.joined(separator: ", ") + "."
     }
 
     /// Simple numbered fallback picker for non-TTY environments.

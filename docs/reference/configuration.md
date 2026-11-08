@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -307,7 +307,7 @@ sets the existing `startup_preload` key, not a separate scheduling preload key.
 | `[backend] startup_preload_timeout_secs` | `120` | Maximum delay before coordinator registration; remaining loads continue in the background. Only me (`--local`) finishes its preload before opening the listener (`ProviderLoop.runStartupPreloadGate`, `Start.runLocalStandalone`). |
 | `[backend] startup_selftest` | `true` | Coordinator-connected startup runs a one-token serving-path decode after each load; Only me (`--local`) loads weights and the engine but does not run this decode (`ProviderLoop.runStartupPreloadGate`, `StandaloneServer.preloadSelectedModels`). |
 | `[backend] startup_selftest_fail_closed` | `false` | Coordinator-connected self-test failures can retire the model when enabled; there is no synthetic self-test or fail-closed retirement in Only me (`--local`) (`ProviderLoop.runStartupPreloadGate`, `StandaloneServer.preloadSelectedModels`). |
-| `[backend] idle_timeout_mins` | `60` | Controls later idle unloading for coordinator serving, not whether models load at startup (`provider-swift/Sources/ProviderCore/ProviderLoop+IdleTimeout.swift`, `ProviderLoop.startupPreloadPlan`). |
+| `[backend] idle_timeout_mins` | `60` | Controls later idle unloading for coordinator serving and for Only me, not whether models load at startup (`provider-swift/Sources/ProviderCore/ProviderLoop+IdleTimeout.swift`, `StandaloneServer+IdleUnload.swift`, `ProviderLoop.startupPreloadPlan`). |
 
 ### Provider availability
 
@@ -360,7 +360,7 @@ Every key is optional, and an absent key keeps today's behaviour
 
 | `provider.toml` key | Accepted values | When absent (`LocalSettings` resolver) |
 |---|---|---|
-| `[local] mode` | `"local"` (**Only me**), `"network"` (**Darkbloom network**), `"both"` (**Both, me first**) | The launch flags decide, as today: plain `start` = `network`, `--local` = `local`, `--local-endpoint` = `both` (`launchMode`, `resolvedMode`). In a terminal, `darkbloom start` asks once and saves the answer |
+| `[local] mode` | `"local"` (**Only me**), `"network"` (**Darkbloom network**), `"both"` (**Both, me first**) | The launch flags decide, as today: plain `start` = `network`, `--local` = `local`, `--local-endpoint` = `both` (`launchMode`, `resolvedMode`). In a terminal, `darkbloom start` asks once and saves the answer; a mode flag saves it too. The background service always serves it: `restart` and `update` rewrite a job serving another way to it first (`SavedChoiceService.align`) |
 | `[local] me_first` | `true` or `false` | On with `mode = "both"`, off otherwise; `false` keeps today's shared serving (`meFirstEnabled`). It applies only to Both, me first, never to Only me (`--local`, `meFirstIdle`) |
 | `[local] me_first_idle_minutes` | Whole minutes, `1`–`120` | `2` (`defaultMeFirstIdleMinutes`, `resolvedMeFirstIdleMinutes`): Darkbloom requests return this long after the owner's last local request ends |
 | `[local] route` | `"this-mac"` (only this Mac), `"my-macs"` (only your Macs), `"my-macs-first"` (your Macs first, then the Darkbloom network) | `this-mac`; `my-macs` once an account key is saved with `darkbloom route key` (`resolvedRoute`). Without a saved key, or without a local key (`--no-auth`), nothing leaves this Mac, whatever the route (`LocalRouterConfig.effectiveRoute`). `my-macs` sends `X-Darkbloom-Route: self`; `my-macs-first` sends `prefer`, then `self` once on a `402`, and only `self` for a client on another machine (a TCP peer that isn't loopback, `LocalRouterPolicy.route`). Read when the local API starts |
@@ -373,16 +373,17 @@ cancelled picker or a refused start writes nothing):
 | Writer | Keys |
 |---|---|
 | The start question, in a terminal (no saved `mode`, or `--choose`) | `mode`; `route` from its follow-up, asked only with an account key saved |
+| A mode flag: `--local`, `--network`, `--me-first`, `--local-endpoint` (`LocalFirstOptions.savesModeFlag`) | `mode`, so the background service, `restart` and `update` serve it from now on; never with `--local --here` (one terminal session) or for a service's child |
 | `--no-me-first`, `--me-first` (only to undo a saved `me_first = false`), `--me-first-idle <min>`, `--route <route>` | `me_first`, `me_first_idle_minutes`, `route`, as `--idle-timeout` writes `idle_timeout_mins` |
 | Any start that serves a local API (the question's Only me or Both, a saved `mode`, `--me-first`, `--local`, `--local-endpoint`, the desktop app's starts), except a service's child (`--foreground`, or `start --local` a service runs) | `port`, when none is saved (the first free one, as above) or `--port <n>` names another |
-| `--network`, `--bind`, `--no-auth`, a mode flag's mode, and every other start | Nothing: a flag's mode isn't saved here (the LaunchAgent's arguments keep it until the next start, below), and a start with no saved `mode` and no terminal keeps today's behaviour exactly (no local API, so no port) |
+| `--bind`, `--no-auth`, and every other start; the mode of `--local --here` and of the desktop app's local mode | Nothing: a start with no saved `mode`, no mode flag and no terminal keeps today's behaviour exactly (no local API, so no port) |
 
 The LaunchAgent keeps the arguments `--local-endpoint` has always baked
 (`--local-endpoint --port <n> --bind <address>`, plus `--no-auth`), built from
 the resolved mode, port and address (`StartServing.launchAgentEndpoint`), so a
-rolled-back older provider reads the same plist. The desktop app's local mode
-bakes `--foreground --local --port <n> --bind <address>` the same way
-(`LaunchAgent.localProgramArguments`). The `--foreground` child serves as those
+rolled-back older provider reads the same plist. **Only me** and the desktop
+app's local mode bake `--foreground --local --port <n> --bind <address>` the
+same way (`LaunchAgent.localProgramArguments`). The `--foreground` child serves as those
 arguments say, reads `me_first`, `me_first_idle_minutes` and `route`, and never
 asks or writes.
 

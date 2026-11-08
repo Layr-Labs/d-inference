@@ -9,11 +9,18 @@ import ProviderCore
 /// code-identity challenges (v0.6.0). Proven pattern: apns-r2-probe/coexist.swift.
 enum ProviderAppKitHost {
     /// The serve modes that run long and need APNs: `start --foreground` (the
-    /// launchd-spawned daemon) and `start --local` (standalone). A bare `start`
-    /// installs the launchd agent and exits — it must NOT host AppKit.
-    static func shouldHost(_ args: [String], startedByAService: () -> Bool = { false }) -> Bool {
+    /// launchd-spawned daemon) and `start --local` that serves in this process:
+    /// in a terminal (`--here`), as a cluster session (`--distributed`), or as a
+    /// service's child (`Start.isServiceChild`). A bare `start`, or `start --local`
+    /// setting Only me's background service up, installs the launchd agent and
+    /// exits — it must NOT host AppKit, which would also hold Ctrl-C for a drain.
+    static func shouldHost(_ args: [String], startedByAService: () -> Bool = {
+        LaunchAgent.isCurrentProcessJob() || ClusterPairSummary.startedByClusterService()
+    }) -> Bool {
         guard args.first == "start" else { return false }
-        return args.contains("--foreground") || args.contains("--local")
+        if args.contains("--foreground") { return true }
+        guard args.contains("--local") else { return false }
+        return args.contains("--here") || args.contains("--distributed") || startedByAService()
     }
 
     /// Strong reference that keeps the app delegate alive for the lifetime of the

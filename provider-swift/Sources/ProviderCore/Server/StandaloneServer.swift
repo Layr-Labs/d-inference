@@ -153,8 +153,12 @@ public actor StandaloneServer {
     var lifecycleDrainTask: Task<ProviderDrainStatus, Never>?
     var lifecycleCommandID: String?
     var lifecycleStatus = ProviderDrainStatus()
-    /// Only me's background service: its update cycle and idle unload.
+    /// Only me's background service: its update cycle (`StandaloneServer+AutoUpdate`) and idle unload
+    /// (`StandaloneServer+IdleUnload`).
     var autoUpdateTask: Task<Void, Never>?
+    var updateSession: SelfUpdater.UpdateSession?
+    var stagedUpdateBundle: SelfUpdater.StagedBundle?
+    var updateDraining = false
     var idleUnloadTask: Task<Void, Never>?
 
     /// One resident model: its v2 bridge, loaded container (the VLM owns both
@@ -635,6 +639,10 @@ public actor StandaloneServer {
     public func stop() async {
         lifecycleControlTask?.cancel()
         lifecycleControlTask = nil
+        autoUpdateTask?.cancel()
+        autoUpdateTask = nil
+        idleUnloadTask?.cancel()
+        idleUnloadTask = nil
         responseTracker.setAccepting(false)
         do { try closeNativeMiMoLifecycle() }
         catch {
@@ -1420,7 +1428,9 @@ public actor StandaloneServer {
         bridge.isGLM5NextManaged && GLM5NextLoadFaultState.isRetained
     }
 
-    private func evictLRUIdleSlot() async -> Bool {
+    /// Evicts the least recently used slot with no request, reservation or load on it; with `usedBefore`, only one
+    /// last used before then (the idle unload, `StandaloneServer+IdleUnload`).
+    func evictLRUIdleSlot(usedBefore cutoff: ContinuousClock.Instant? = nil) async -> Bool {
         guard nativeMiMoReclaimAllowed else { return false }
         // The base implementation retained complete CachedSlot copies in
         // both this snapshot and the selected local. Those copies could keep
@@ -1436,6 +1446,7 @@ public actor StandaloneServer {
             // A retained GLM slot can never release its memory, so selecting it
             // would block every eviction another load needs.
             guard !Self.isRetainedGLM5Next(entry.bridge),
+                  cutoff.map({ entry.lastUsedAt < $0 }) ?? true,
                   slots[entry.key]?.bridge === entry.bridge,
                   !evictingModels.contains(entry.key),
                   !isMTPUpgradeTargetRetained(entry.key),
@@ -1477,6 +1488,7 @@ public actor StandaloneServer {
               !evictingModels.contains(evictKey),
               !isMTPUpgradeTargetRetained(evictKey),
               (slotReservations[evictKey] ?? 0) == 0,
+              cutoff.map({ (slots[evictKey]?.lastUsedAt ?? .now) < $0 }) ?? true,
               active == 0 else {
             return false
         }
@@ -1609,6 +1621,8 @@ public actor StandaloneServer {
 
     func releaseSlot(_ modelId: String) {
         guard let count = slotReservations[modelId] else { return }
+        // A request's end is its last use: idle time counts from there (`StandaloneServer+IdleUnload`).
+        touchSlot(modelId)
         if count <= 1 {
             slotReservations.removeValue(forKey: modelId)
         } else {

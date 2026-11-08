@@ -82,28 +82,8 @@ extension Start {
             }
         }
 
-        // Arm the crash-recovery watchdog (relaunches ~5 min after a crash;
-        // `stop` disarms, `auto_restart = false` opts out — including
-        // disarming a watchdog left loaded by a previous opted-in config).
-        // Best-effort.
         let autoRestartOn = config.provider.autoRestart
-        switch WatchdogAgent.rearmAction(
-            autoRestartEnabled: autoRestartOn,
-            isLoaded: WatchdogAgent.isLoaded()
-        ) {
-        case .arm:
-            do {
-                try WatchdogAgent.installAndStart(
-                    configPath: snapshot.configPath
-                )
-            } catch {
-                printError("note: could not install crash-recovery watchdog: \(error)")
-            }
-        case .disarm:
-            try? WatchdogAgent.stop()
-        case nil:
-            break
-        }
+        Self.armRecoveryWatchdog(autoRestart: autoRestartOn, configPath: snapshot.configPath)
 
         let logPath = LaunchAgent.logPath().path
         print("Provider started as background service.")
@@ -128,6 +108,23 @@ extension Start {
         print("  \(BuildEnvironment.current.cliName) stop     Stop the provider")
         print("  \(BuildEnvironment.current.cliName) restart  Restart with the current selection")
         print("  \(BuildEnvironment.current.cliName) status   Check status")
+    }
+
+    /// Arms the crash-recovery watchdog (relaunches ~5 min after a crash; `stop` disarms, `auto_restart = false` opts
+    /// out, including disarming a watchdog left loaded by a previous opted-in config). Best-effort.
+    static func armRecoveryWatchdog(autoRestart: Bool, configPath: URL) {
+        switch WatchdogAgent.rearmAction(autoRestartEnabled: autoRestart, isLoaded: WatchdogAgent.isLoaded()) {
+        case .arm:
+            do {
+                try WatchdogAgent.installAndStart(configPath: configPath)
+            } catch {
+                printError("note: could not install crash-recovery watchdog: \(error)")
+            }
+        case .disarm:
+            try? WatchdogAgent.stop()
+        case nil:
+            break
+        }
     }
 
     // MARK: - Idle-memory policy prompt

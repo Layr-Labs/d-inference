@@ -900,8 +900,8 @@ struct ClusterPairControlTests {
             #expect(!stderr.contains("serves in a terminal"), "\(name): \(stderr)")
             #expect(out.contains("serving this Mac alone"), "\(name): \(out)")
             #expect(stderr.contains("released"), "\(name): this Mac's part is released first")
-            // The single-Mac start went ahead: it ends at this sandbox's missing model, with the commands that get one.
-            #expect(stderr.contains("No model to serve yet. See them: `darkbloom models catalog`."), "\(name): \(stderr)")
+            // The single-Mac start went ahead (on a Mac with a GPU it ends at this sandbox's missing model).
+            #expect(out.contains("By starting the provider, you agree to the Darkbloom Terms of Service:"), "\(name): \(out)")
             #expect(pairActionCalls(stderr).isEmpty, "\(name)")
         }
     }

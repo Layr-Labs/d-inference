@@ -31,10 +31,13 @@ extension Start {
         return StartModelSelection(hostedModels: hosted, autopilotModels: cached)
     }
 
+    /// `--model` or `--all` as given, else the picker with downloads. `whenCatalogUnreachable`, for Only me: the
+    /// models it serves when Darkbloom's catalog can't be read, instead of stopping.
     func selectStartupModels(snapshot: RuntimeSnapshot, config: ProviderConfig,
                              coordinatorURL: String,
                              runtimeCapabilities: Set<ProviderRuntimeCapability>,
-                             autopilot: Bool) async throws -> [String] {
+                             autopilot: Bool,
+                             whenCatalogUnreachable: (() -> [String])? = nil) async throws -> [String] {
         if !model.isEmpty {
             let known = Set(snapshot.models.map(\.id))
             return model.filter {
@@ -48,6 +51,7 @@ extension Start {
         }
         return try await interactiveCatalogPicker(snapshot: snapshot, config: config,
             coordinatorURL: coordinatorURL, runtimeCapabilities: runtimeCapabilities,
-            reserveMode: autopilot ? .autopilotInventory : .selectedModels)
+            reserveMode: autopilot ? .autopilotInventory : .selectedModels,
+            whenCatalogUnreachable: whenCatalogUnreachable)
     }
 }

@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -221,10 +221,11 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `--autopilot` | flag | `false` | Keep the normal startup selector, verify cached network inventory and save experimental enrollment; verification adds no downloads and the default rollout is shadow |
 | `--no-autopilot` | flag | `false` | Save opt-out and retain ordinary idle-policy mode |
 | `--foreground` / `--no-foreground` | flag, **hidden** | `false` | Serve in this process instead of installing the LaunchAgent; launchd passes it |
-| `--local` | flag | `false` | Only me: [the local API](./direct-mode.md) with no coordinator, in this terminal; not saved in `[local] mode` |
-| `--network` | flag | `false` | Darkbloom network: no local API (today's plain `start`); not saved in `[local] mode`, but the LaunchAgent keeps it until the next `start` |
-| `--me-first` / `--no-me-first` | flag | unset | `--me-first`: Both, me first: a local API beside Darkbloom, and Darkbloom pauses while you use it; not saved in `[local] mode`, but the LaunchAgent keeps it until the next `start`. `--no-me-first`: Darkbloom keeps serving while you use the local API (saved as `[local] me_first = false`); `--me-first` undoes it |
-| `--local-endpoint` | flag | `false` | Both, me first, the older flag: the local API beside Darkbloom, with me first on (Darkbloom requests pause while your local requests run and for `[local] me_first_idle_minutes` after) unless `--no-me-first` (`[local] me_first = false`); mutually exclusive with `--local` |
+| `--local` | flag | `false` | Only me: [the local API](./direct-mode.md) with no coordinator, in the background (the provider LaunchAgent: at login, with the watchdog and updates); saved in `[local] mode` |
+| `--here` | flag | `false` | With `--local`: serve Only me in this terminal for this session (Ctrl-C, or closing it, stops it) instead of the background service; saves no mode |
+| `--network` | flag | `false` | Darkbloom network: no local API (today's plain `start`); saved in `[local] mode` |
+| `--me-first` / `--no-me-first` | flag | unset | `--me-first`: Both, me first: a local API beside Darkbloom, and Darkbloom pauses while you use it; saved in `[local] mode`. `--no-me-first`: Darkbloom keeps serving while you use the local API (saved as `[local] me_first = false`); `--me-first` undoes it |
+| `--local-endpoint` | flag | `false` | Both, me first, the older flag: the local API beside Darkbloom, with me first on (Darkbloom requests pause while your local requests run and for `[local] me_first_idle_minutes` after) unless `--no-me-first` (`[local] me_first = false`); saved in `[local] mode`; mutually exclusive with `--local` |
 | `--me-first-idle <min>` | `UInt64?`, 1–120 | `[local] me_first_idle_minutes` (`2`) | Minutes with none of your requests before Darkbloom comes back; saved. Not `--idle-timeout` (model memory) |
 | `--route <route>` | `this-mac`, `my-macs`, `my-macs-first` | `[local] route` | Where your requests go when this Mac can't take them ([the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)); saved; needs an account key (`darkbloom route key`) |
 | `--choose` | flag | `false` | In a terminal: ask how this Mac serves again, although a choice is saved |
@@ -248,15 +249,13 @@ A single-Mac `start` decides how this Mac serves (`StartServingResolver`,
 [Use your Mac yourself, first](./local-first.md)):
 
 1. A mode flag: `--local`, `--network`, `--me-first` or `--local-endpoint`.
-   It isn't saved in `[local] mode`, but the LaunchAgent this start installs
-   keeps its arguments, so login, `restart`, updates and the watchdog serve
-   that way until the next `start`.
+   It is saved in `[local] mode`, as the question's answer is
+   (`LocalFirstOptions.savesModeFlag`), so the background service, `restart`
+   and `update` serve it from now on; `--local --here` (one terminal session)
+   and the `--foreground` service save no mode.
 2. `--choose` (a terminal only): the question again.
-3. The saved choice, `[local] mode`, with or without a terminal. A saved
-   `local` (Only me) serves in a terminal, so without one the start is refused
-   before anything stops or starts (exit 64): ``This Mac is set to Only me,
-   which serves in a terminal. Run `darkbloom start` in one, or name how to
-   serve: --local, --network or --me-first.``
+3. The saved choice, `[local] mode`, with or without a terminal, Only me
+   included: every choice serves in the background.
 4. In a terminal (stdin and stdout), the question, after the terms notice and
    before the model picker:
 
@@ -280,14 +279,42 @@ A single-Mac `start` decides how this Mac serves (`StartServingResolver`,
    scripts): today's behaviour, exactly. The Darkbloom network, no local port,
    no Keychain look-up, nothing written, and the same LaunchAgent arguments.
 
-Only the question saves a mode. The answer, its follow-up and the local API's
-port are written to `[local]` once the start goes ahead (after the model
-picker; for "Only me", once its server listens), so a cancelled or refused
-start saves nothing; "Only me" with `--schedule` or `--autopilot` is refused before
-saving. **Only me** then serves in this terminal as `--local` does (Ctrl-C
-drains it); **Darkbloom network** and **Both, me first** install the
-LaunchAgent with the arguments `--local-endpoint` has always used
-([configuration](../reference/configuration.md#local-first-use-local)).
+**The rule: the background service, `restart` and `update` always serve the
+saved choice.** The answer (or the mode flag), its follow-up and the local
+API's port are written to `[local]` once the start goes ahead (after the model
+picker; for `--here`, once its server listens), so a cancelled or refused start
+saves nothing; "Only me" with `--schedule` or `--autopilot` is refused before
+saving. Every choice then serves in the background, with the same model picker
+(downloads included) and memory question:
+
+- **Darkbloom network** and **Both, me first** install the LaunchAgent with the
+  arguments `--local-endpoint` has always used
+  ([configuration](../reference/configuration.md#local-first-use-local)).
+- **Only me** installs the same LaunchAgent the app's local mode uses, `start
+  --foreground --local --port <n> --bind <address> --model <id>…`
+  (`Start.launchOnlyMeService`, `StartCommand+OnlyMe.swift`): at login, with
+  the watchdog and the update loop (`StandaloneServer+AutoUpdate`: a check 5
+  minutes after it starts, then every 30 minutes), and models idle past the
+  memory setting are unloaded (`StandaloneServer+IdleUnload`). Where a provider
+  served Darkbloom, it says ``Darkbloom network serving stops: this Mac serves
+  only you from now on (`darkbloom start --me-first` serves Darkbloom and
+  you).`` When Darkbloom's catalog can't be read, it serves the models already
+  on this Mac; without a terminal it asks nothing, not even the models (the
+  last selection still on this Mac, else every one it serves,
+  `Start.onlyMeModelsWithoutAsking`). With no model it can serve, it stops
+  (exit 1) with ``No model to serve yet. See them: `darkbloom models catalog`.
+  Get one: `darkbloom models download <id>`, then `darkbloom start`.``
+- **`--local --here`** serves Only me in this terminal (`runLocalStandalone`;
+  Ctrl-C drains it) and saves no mode. When a background service runs, it says
+  ``Darkbloom network serving stops while this runs; it starts again with
+  `darkbloom start`.`` (or ``Only me's background service stops …``) before it
+  takes the serving lock, and on the way out ``Only me in this terminal
+  stopped; nothing serves on this Mac now. `darkbloom start` serves it again as
+  saved: <choice>.``
+- **AppKit** hosts only a start that serves in its own process (`--foreground`,
+  `--local --here`, `--local --distributed`, or a service's `start --local`;
+  `ProviderAppKitHost.shouldHost`), so Ctrl-C still ends Only me's background
+  setup at the picker or a download.
 
 - **One port per Mac** (`LocalAPIPort.choose`,
   `provider-swift/Sources/ProviderCore/Config/LocalAPIPort.swift`): every local
@@ -309,9 +336,9 @@ LaunchAgent with the arguments `--local-endpoint` has always used
   The `--foreground` service (launchd's child) never chooses or saves: its
   arguments carry the port. So does `start --local` that a service runs (an
   app job an older version wrote, or the cluster service's solo part,
-  `Start.isServiceChild`). A saved port is kept whatever the mode; a mode flag
-  still saves no mode.
-- **A local API that can't listen:** Only me stops (exit 1):
+  `Start.isServiceChild`). A saved port is kept whatever the mode.
+- **A local API that can't listen:** Only me stops (exit 1; for the background
+  service, in its log):
   ``This Mac's local API couldn't listen on 127.0.0.1:8001: another program
   may use port 8001. Free it, or run `darkbloom start --port 8002`.`` Both, me
   first keeps serving Darkbloom, and `status` and `local` say why its local API
@@ -338,7 +365,7 @@ LaunchAgent with the arguments `--local-endpoint` has always used
   With `--no-auth` the local router passes nothing on, so the summary says
   `your requests: this Mac only` and `(no API key: --no-auth, so requests stay
   on this Mac)`, whatever the route, and the start doesn't ask the Keychain.
-  No start screen prints the key, except `--local`'s own banner, as before. A
+  No start screen prints the key, except the banner of `--local --here`, as before. A
   start that nothing chose (step 5) prints today's summary.
 
 #### Set up OpenCode or Hermes
@@ -1263,6 +1290,18 @@ and mixed prompt arrivals, see [the profiling workflow](https://github.com/Layr-
 Exit 1 on `quarantined`, `busy`, `cancelled`, `downloadFailed`, `hashMismatch`,
 `replaceFailed`, or a failed check (`UpdateResult`, `provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift`).
 
+After an install it restarts what serves in the background, as `restart` does:
+the saved choice, Only me included (waiting for its local API, not for
+authorization). With nothing in the background it says
+``Nothing serves in the background now; your next `darkbloom start` serves
+v<version>.``, or, beside Only me in a terminal, ``Only me serves in a terminal
+now (`darkbloom start --local --here`): press Ctrl-C there, then `darkbloom
+start` serves v<version> in the background.`` (`Update.nothingRestartedLine`).
+Only me's background service also updates itself, as the network provider
+does: a check 5 minutes after it starts, then every 30 minutes; it downloads
+while serving, lets your requests finish, then restarts into the release
+(`StandaloneServer+AutoUpdate`).
+
 `--rollback` cannot be combined with `--check-only`, `--override-quarantine` or
 `--coordinator`, and `--yes` applies only to it. It prints the plan (installed
 version, restored version, the install generation it records) and asks
@@ -1349,7 +1388,7 @@ Where `logs` and [`report`](#darkbloom-report) wait for a `log` child to finish,
 | `--all` | Serve all downloaded models |
 | `--idle-timeout <mins>` | Idle-memory policy, saved to `[backend] idle_timeout_mins` (0 = always ready); skips the memory prompt |
 | `--foreground` | Run in the foreground (used by launchd; normally implicit) |
-| `--local` | Only me: serve the local API only; do not connect to the coordinator |
+| `--local` | Only me: serve the local API only, in the background; do not connect to the coordinator. With `--here`, in this terminal |
 | `--local-endpoint` | Both, me first (older flag): serve the local API beside the coordinator; Darkbloom requests pause while you use it and for `[local] me_first_idle_minutes` after (`[local] me_first`) |
 | `--port <port>` | This Mac's local API port, used and saved (default `[local] port`, else the first free from 8001, chosen once and saved) |
 | `--bind <addr>` | Bind address for local modes (default 127.0.0.1) |
@@ -1375,7 +1414,7 @@ Memory when idle
 
 Enter keeps the policy already in force (`Free when idle` on a fresh install).
 The answer is written to `[backend] idle_timeout_mins` for ordinary coordinator-connected
-idle unloading; `--model`/`--all`, `--idle-timeout`, non-interactive runs and the
+idle unloading, and Only me's (`StandaloneServer.startIdleUnload`); `--model`/`--all`, `--idle-timeout`, non-interactive runs and the
 launchd relaunch never prompt. Autopilot enrollment also skips this prompt and
 preserves the saved policy. See [`darkbloom idle`](#darkbloom-idle).
 Every `darkbloom start` mode preloads selected models with the default
@@ -2219,8 +2258,22 @@ Code: `provider-swift/Sources/darkbloom/UninstallCommand.swift` (`Uninstall`) an
 ## `darkbloom restart`
 
 Drain accepted work, reload the recorded launchd configuration, and confirm a
-new provider process with fresh serving authorization. The coordinator URL,
-model selection and provider config arguments are preserved.
+new provider process with fresh serving authorization (Only me: its local API
+answering, `ServiceDrain.waitForLocalRestart`). The coordinator URL, model
+selection and provider config arguments are preserved.
+
+**It serves the saved choice** (`SavedChoiceService.align`,
+`provider-swift/Sources/darkbloom/SavedChoiceService.swift`): with `[local]
+mode` saved, a job an earlier build or start left serving another way is
+rewritten to it first, with the same models, on this Mac's one port
+(`LaunchAgent.rewriteInstalledJob`), and the restart says so: ``Restarting as
+saved: Darkbloom network (the service was set up for Both, me first).``
+Without a saved mode, the job restarts as installed. Only me in a terminal
+(`start --local --here`) is never stopped: restart changes nothing, exits 1
+and says ``Only me serves in a terminal now (`darkbloom start --local --here`),
+and restart never stops it.`` / ``Press Ctrl-C there, then `darkbloom restart`
+starts the background service again.`` (`Restart.terminalOnlyMe`). `update`
+restarts the same way.
 
 ```bash
 darkbloom restart [--timeout <seconds>] [--force] [--startup-timeout <seconds>] [--config <path>]

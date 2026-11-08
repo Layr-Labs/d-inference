@@ -186,9 +186,28 @@ enum ServiceDrain {
         }
         throw ValidationError("Restart launched, but fresh authorization was not confirmed within \(timeout)s. The new service is still starting; inspect \(BuildEnvironment.current.cliName) status. No second restart was issued.")
     }
+    /// Only me's service after a restart: ready once a new process serves its local API (`local.json`, written once
+    /// it listens). Only me never contacts Darkbloom, so there is no authorization to wait for.
+    static func waitForLocalRestart(previous: ProcessIdentity?, timeout: Int) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(timeout))
+        while ContinuousClock.now < deadline {
+            try Task.checkCancellation()
+            if let state = DaemonStateFile.read(), let info = LocalEndpoint.readLiveInfo(),
+               localRestartReady(state: state, info: info, previous: previous, now: Date().timeIntervalSince1970) {
+                sayLine("Only me restarted: \(info.baseURL)")
+                return
+            }
+            try await Task.sleep(nanoseconds: 500_000_000)
+        }
+        throw ValidationError("Restart launched, but this Mac's local API didn't answer within \(timeout)s. The service is "
+            + "still starting; `\(BuildEnvironment.current.cliName) status` shows it. No second restart was issued.")
+    }
+
     static func localRestartReady(state: DaemonState, info: LocalEndpoint.Info, previous: ProcessIdentity?, now: Double,
                                   isCurrent: (ProcessIdentity) -> Bool = { $0.isCurrent() }) -> Bool {
-        false
+        guard !state.isStale(now: now), state.servesOnlyItsOwner, let identity = state.processIdentity,
+              identity != previous, isCurrent(identity) else { return false }
+        return info.pid == identity.pid
     }
 
     static func restartReady(state: DaemonState, previous: ProcessIdentity?, now: Double,

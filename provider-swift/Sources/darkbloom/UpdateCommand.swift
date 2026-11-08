@@ -154,7 +154,7 @@ struct Update: AsyncParsableCommand {
             case .clusterService:
                 try await restartClusterService(into: to, look: look)
             case .nothing:
-                print("Restart the provider for the new version to take effect.")
+                print(Self.nothingRestartedLine(version: to))
             }
 
         case .restartRequired(let from, let to):
@@ -169,7 +169,7 @@ struct Update: AsyncParsableCommand {
             case .clusterService:
                 try await restartClusterService(into: to, look: look)
             case .nothing:
-                print("Restart the provider for v\(to) to take effect.")
+                print(Self.nothingRestartedLine(version: to))
             }
 
         case .quarantined(let version, let reason):
@@ -250,11 +250,6 @@ struct Update: AsyncParsableCommand {
                 "It can't run beside the pair (both need this Mac's one serving lock). Run `\(cli) stop --solo` to remove it."]
     }
 
-    /// Nothing serves in the background to restart into `version`.
-    static func nothingRestartedLine(version: String, terminalOnlyMe: Bool = false) -> String {
-        "Restart the provider for v\(version) to take effect."
-    }
-
     private func restartInstalledProvider(_ updater: SelfUpdater, operation: String, look: DarkbloomCommandLook) async throws {
         let previous = LaunchAgent.launchSnapshot()?.process
         let session = try await look.working("Draining accepted requests") { try await ServiceDrain.prepare(options: drain) }
@@ -266,11 +261,15 @@ struct Update: AsyncParsableCommand {
             return
         }
         print("Accepted requests drained. Restarting the installed provider...")
+        // The background service always serves the saved choice: a job left serving another way restarts as saved.
+        let aligned: SavedChoiceService.Alignment
         do {
-            try await look.working("Restarting the provider") {
+            aligned = try await look.working("Restarting the provider") {
                 try updater.prepareCandidateLaunch(session: session, baseline: LaunchAgent.launchSnapshot())
                 try await ServiceDrain.stopDrainedProvider(unloadService: false)
+                let alignment = try SavedChoiceService.align(configPath: configOptions.config)
                 try LaunchAgent.restartAfterDrain()
+                return alignment
             }
             ServiceDrain.rearmWatchdog(explicitConfig: configOptions.config)
         } catch {
@@ -278,10 +277,28 @@ struct Update: AsyncParsableCommand {
             try? updater.cancelPendingCandidateAttempt(operation: operation + "-failure")
             throw error
         }
+        if let line = aligned.line { print(line) }
         session.release()
-        try await look.working("Waiting for the restarted provider's fresh authorization") {
-            try await ServiceDrain.waitForRestart(previous: previous, timeout: 180)
+        if aligned.mode == .local {
+            try await look.working("Waiting for Only me's local API") {
+                try await ServiceDrain.waitForLocalRestart(previous: previous, timeout: 180)
+            }
+        } else {
+            try await look.working("Waiting for the restarted provider's fresh authorization") {
+                try await ServiceDrain.waitForRestart(previous: previous, timeout: 180)
+            }
         }
+    }
+
+    /// Nothing serves in the background to restart into `version`: Only me in a terminal, or nothing at all.
+    static func nothingRestartedLine(version: String, terminalOnlyMe: Bool = Restart.terminalOnlyMe(
+        ServiceDrain.soloProviderState())) -> String {
+        let cli = BuildEnvironment.current.cliName
+        guard terminalOnlyMe else {
+            return "Nothing serves in the background now; your next `\(cli) start` serves v\(version)."
+        }
+        return "Only me serves in a terminal now (`\(cli) start --local --here`): press Ctrl-C there, then "
+            + "`\(cli) start` serves v\(version) in the background."
     }
 
     /// A `darkbloom cluster` Mac: its cluster service supervisor restarts into the installed release together with

@@ -14,8 +14,9 @@ struct Start: AsyncParsableCommand {
 
         In a terminal, the first start asks how this Mac serves: only you (--local),
         the Darkbloom network (--network), or both with you first (--me-first). The
-        answer is saved; --choose asks again. Without a terminal and without a saved
-        answer, it serves the Darkbloom network as before.
+        answer is saved, and so is a flag; --choose asks again. Every choice serves in
+        the background; --local --here serves only you in this terminal instead. Without
+        a terminal and without a saved answer, it serves the Darkbloom network as before.
 
         On a Mac in a two-Mac cluster whose pair runs, it starts the pair instead: in a
         terminal the `darkbloom cluster` screen; without one the pair's saved model,
@@ -50,20 +51,20 @@ struct Start: AsyncParsableCommand {
     @Flag(inversion: .prefixedNo, help: .hidden)
     var foreground = false
 
-    @Flag(help: "Run a local OpenAI-compatible HTTP server only; do not connect to the coordinator.")
+    @Flag(help: "Only me: this Mac's local OpenAI-compatible API only, in the background; Darkbloom never contacts this Mac. Saved.")
     var local = false
 
-    @Flag(help: "With --local: serve Only me in this terminal for this session.")
+    @Flag(help: "With --local: serve Only me in this terminal for this session (closing it, or Ctrl-C, stops it), instead of the background service.")
     var here = false
 
-    @Flag(help: "Serve a local OpenAI endpoint ALONGSIDE the coordinator (unified mode): same loaded models serve both the public fleet and local clients. Darkbloom pauses while you use it unless --no-me-first.")
+    @Flag(help: "Serve a local OpenAI endpoint ALONGSIDE the coordinator (unified mode): same loaded models serve both the public fleet and local clients. Darkbloom pauses while you use it unless --no-me-first. Saved.")
     var localEndpoint = false
 
-    @Flag(help: "Serve the Darkbloom network only, with no local API, for this start.")
+    @Flag(help: "Serve the Darkbloom network only, with no local API. Saved.")
     var network = false
 
     @Flag(inversion: .prefixedNo, exclusivity: .exclusive,
-          help: "--me-first: Darkbloom and you, you first. Darkbloom pauses while you use this Mac's local API and comes back once you're idle. --no-me-first: Darkbloom keeps serving while you use it (saved).")
+          help: "--me-first: Darkbloom and you, you first. Darkbloom pauses while you use this Mac's local API and comes back once you're idle (saved). --no-me-first: Darkbloom keeps serving while you use it (saved).")
     var meFirst: Bool?
 
     @Option(name: .customLong("me-first-idle"),
@@ -162,7 +163,7 @@ struct Start: AsyncParsableCommand {
         if let conflict = localFirstOptions.conflict { throw ValidationError(conflict) }
         if let refusal = toolFlagsRefusal { throw ValidationError(refusal) }
         let soloOverrides = !model.isEmpty || all || idleTimeout != nil || schedule || autopilot != nil
-            || network || meFirst != nil || meFirstIdle != nil || route != nil || choose
+            || network || meFirst != nil || meFirstIdle != nil || route != nil || choose || here
         if clusterMember {
             guard !distributed, !local, !soloOverrides else {
                 throw ValidationError("--cluster-member cannot be combined with solo serving or local distributed mode.")
@@ -252,6 +253,7 @@ struct Start: AsyncParsableCommand {
         if idleTimeout != nil { given.append("--idle-timeout") }
         if schedule { given.append("--schedule") }
         if local { given.append("--local") }
+        if here { given.append("--here") }
         if localEndpoint { given.append("--local-endpoint") }
         if network { given.append("--network") }
         if let meFirst { given.append(meFirst ? "--me-first" : "--no-me-first") }
@@ -404,8 +406,8 @@ struct Start: AsyncParsableCommand {
             switch choice {
             case .single, .serveAlone:
                 // Before the pair is touched (the solo choice recorded, this Mac's part stopped and its saved start
-                // cleared): the refusals of how this Mac would serve alone, such as a saved "Only me" (also the pair's,
-                // from `darkbloom cluster`) without a terminal. `resolveServing` makes the same ones again below.
+                // cleared): the refusals of how this Mac would serve alone, such as `--choose` without a terminal.
+                // `resolveServing` makes the same ones again below.
                 if pair.paired {
                     _ = try localFirstOptions.modeStep(saved: try savedLocalSettings(configPath: configOptions.config),
                                                        terminal: ClusterPairCommands.isTerminal())
@@ -572,13 +574,26 @@ struct Start: AsyncParsableCommand {
             printError("warning: \(notice)")
         }
 
-        if localOnly {
+        if localOnly, Self.servesOnlyMeHere(here: here, foreground: foreground) {
             try await runLocalStandalone(
                 snapshot: snapshot,
                 config: effectiveConfig,
                 runtimeCapabilities: runtimeCapabilities,
                 serving: serving
             )
+        } else if localOnly {
+            try await launchOnlyMeService(
+                snapshot: snapshot,
+                config: effectiveConfig,
+                coordinatorURL: effectiveCoordinator,
+                configPath: configOptions.config == nil ? nil : snapshot.configPath,
+                runtimeCapabilities: runtimeCapabilities,
+                serving: serving
+            )
+            // Only me's server listens once its models are loaded (`[backend] startup_preload`): the tools wait as long.
+            try await setUpToolsBesideDaemon(serving: serving, coordinatorURL: effectiveCoordinator,
+                                             waitSeconds: Self.toolWaitSeconds
+                                                + Int(clamping: effectiveConfig.backend.startupPreloadTimeoutSecs))
         } else if foreground {
             try await runForeground(
                 snapshot: snapshot,

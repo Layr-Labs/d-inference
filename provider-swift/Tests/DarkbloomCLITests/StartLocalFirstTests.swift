@@ -281,7 +281,8 @@ struct StartLocalFirstTests {
         let serving = try #require(try script.resolve(start, terminal: false))
         #expect(serving.mode == .local && serving.source == .saved && serving.port == 8001 && serving.change.isEmpty)
         #expect(!Start.servesOnlyMeHere(here: start.here, foreground: start.foreground), "the background service")
-        #expect(script.reads == 0 && script.keyLookups == 0 && script.livePortLookups == 0 && script.probed.isEmpty)
+        #expect(script.reads == 0 && script.livePortLookups == 0 && script.probed.isEmpty)
+        #expect(script.keyLookups == 1, "whether an account key is saved, for the requests line; never the key")
         #expect(config.bytes == before)
         // In a terminal the saved choice serves Only me too, and a mode flag decides, with or without one.
         #expect(try script.resolve(try config.start([]), terminal: true)?.mode == .local)

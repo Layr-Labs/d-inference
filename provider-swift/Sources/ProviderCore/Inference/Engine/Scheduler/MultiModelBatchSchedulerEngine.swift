@@ -320,6 +320,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // The fallback usage channel belongs to this request, never to the engine.
         let requestUsage = engineV2Usage ?? EngineV2RequestUsageSignal()
         try checkFirstContentDeadline()
+        // Exact-id LFM2.5 refusals need no model lookup or acquisition.
+        try LFM2RequestPolicy.validate(request: request, controls: templateControls)
         if MediaIngest.hasAudio(request) {
             let knownType: String?
             if let modelTypeProvider {

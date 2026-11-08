@@ -69,8 +69,9 @@ extension ProviderLoop {
         case .modelNotLoaded, .noModelLoadedForTokenization:
             return .modelLoad
         case .invalidRole, .invalidToolPayload, .missingUserQuery, .unsupportedReasoningEffort,
-            .unsupportedNativeReasoningEffort, .mediaUnsupportedByModel, .multimodalRejected,
-            .advertisedContextExceeded, .promptExceedsContext, .unsupportedOutputControl:
+            .unsupportedNativeReasoningEffort, .reasoningCannotBeDisabled, .responseFormatNotEnforced,
+            .mediaUnsupportedByModel, .multimodalRejected, .advertisedContextExceeded, .promptExceedsContext,
+            .unsupportedOutputControl:
             return .clientError
         case .toolChoiceViolation:
             return .toolNoncompliance
@@ -168,8 +169,8 @@ extension ProviderLoop {
             case .modelNotLoaded, .noModelLoadedForTokenization:
                 return .modelUnavailable
             case .invalidRole, .invalidToolPayload, .missingUserQuery, .unsupportedReasoningEffort,
-                .unsupportedNativeReasoningEffort, .advertisedContextExceeded, .promptExceedsContext,
-                .unsupportedOutputControl:
+                .unsupportedNativeReasoningEffort, .reasoningCannotBeDisabled, .responseFormatNotEnforced,
+                .advertisedContextExceeded, .promptExceedsContext, .unsupportedOutputControl:
                 return .invalidRequest
             case .toolChoiceViolation, .generationFailed:
                 return .generationFailure
@@ -274,7 +275,8 @@ extension ProviderLoop {
                 return 400
             case .invalidToolPayload, .missingUserQuery:
                 return 400
-            case .unsupportedReasoningEffort, .unsupportedNativeReasoningEffort:
+            case .unsupportedReasoningEffort, .unsupportedNativeReasoningEffort, .reasoningCannotBeDisabled,
+                .responseFormatNotEnforced:
                 return 400
             case .advertisedContextExceeded, .promptExceedsContext, .unsupportedOutputControl:
                 return 400

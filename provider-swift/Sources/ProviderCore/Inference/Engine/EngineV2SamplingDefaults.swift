@@ -19,9 +19,9 @@
 //   untouched; only a model-card default sets the presence penalty.
 // * Gated per model family with explicit admission, like
 //   `ToolChoiceEnforcementPolicy.nativeStructuredTarget`: the admitted Nemotron
-//   and owned Bonsai 9B listings, native Flint and the exact GLM-5.3-Flash
-//   identities (catalog `glm-5.3-flash` and the local qualification download)
-//   honor their artifact defaults.
+//   and owned Bonsai 9B listings, native Flint, the exact LFM2.5-24B-A2B ids and
+//   the exact GLM-5.3-Flash identities (catalog `glm-5.3-flash` and the local
+//   qualification download) honor their artifact defaults.
 //   The catalog Qwen 3.5/3.6 builds ship no `generation_config.json`; they
 //   take their model cards' thinking-mode values (`qwen35CardDefaults`),
 //   whose presence penalty stops greedy decoding looping to `max_tokens`.
@@ -82,6 +82,8 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
 
     /// Family gate. Explicit admission per model onboarding; sharing the
     /// `model_type` is not enough (Nano and Lightning share `nemotron_h`).
+    /// LFM2.5-24B-A2B declares the vendor-recommended low-temperature
+    /// sampler (`temperature 0.1, top_k 50, repetition_penalty 1.05`).
     static func honorsArtifactDefaults(modelId: String, modelType: String?) -> Bool {
         if Bonsai9BModelPolicy.matches(modelId: modelId, modelType: modelType) || modelType == "flint" {
             return true
@@ -89,6 +91,7 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
         switch modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "nemotron_h": return EngineV2SupportedModels.isNemotron35ListingModelID(modelId)
         case "glm5_next": return GLM5NextCoordinatorServing.isManagedModelID(modelId)
+        case "lfm2_moe": return EngineV2SupportedModels.isLFM25ListingModelID(modelId)
         default: return false
         }
     }

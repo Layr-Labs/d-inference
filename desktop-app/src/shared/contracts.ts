@@ -89,6 +89,8 @@ export interface Snapshot {
   account_revision?: string;
   resource_revision?: string;
   capabilities?: string[];
+  /** The two-Mac pair this Mac serves in; absent or null when it serves alone. Start serving starts the pair. */
+  pair?: { model: string | null } | null;
   account?: {
     signed_in: boolean;
     email?: string | null;

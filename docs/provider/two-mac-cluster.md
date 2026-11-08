@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -1673,8 +1673,13 @@ on its own), `darkbloom start --solo` serves this Mac alone:
   terminal and `darkbloom autopilot enable` are refused by name (exit 64). The
   app's **Start serving** has no `--solo`, so it starts the pair, as a plain
   `darkbloom start` does, never this Mac alone. When it named another model
-  than the pair's, it ends with ``This Mac serves in a pair: started the pair
-  with <the pair's model>; `darkbloom cluster` changes its model.``
+  than the pair's, it ends with ``This Mac serves in a pair: the pair serves
+  <the pair's model>; `darkbloom cluster` changes its model.`` (``… the pair
+  was asked to start with …, and isn't serving (above); …`` when it doesn't
+  serve yet), and when it asked for a local API this Mac doesn't get from the
+  pair, ``No local API was added on this Mac: …``. The app's onboarding offers
+  **Start serving** there, never Autopilot, which serves one Mac and is refused
+  on a paired Mac before it downloads anything.
 - A pair that is merely stopped gives one line: ``This Mac is in a two-Mac
   cluster with the other Mac (…), which is stopped: serving this Mac alone
   (`darkbloom start` starts the pair again).``

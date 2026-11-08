@@ -17,6 +17,8 @@ function machineLine({ machine, eligibility }: Snapshot) {
 }
 
 function startingLine(snapshot: Snapshot, method: StartMethod, pinned: string[]) {
+  if (snapshot.pair)
+    return `Starts the pair with ${snapshot.pair.model ?? 'its model'}, on both Macs.`;
   const ids = startModels(snapshot, method, pinned);
   const chosen = snapshot.models.filter((model) => ids.includes(model.id));
   if (!chosen.length) return 'Choose a model in Advanced to start.';
@@ -49,7 +51,12 @@ export function ServingSummary({
             ? 'Keeps the models you choose in memory and manages the rest as demand changes.'
             : 'Chooses which downloaded models stay in memory as demand changes.',
         }
-      : { icon: <Layers size={15} />, text: 'Keeps these models loaded until you change them.' },
+      : {
+          icon: <Layers size={15} />,
+          text: snapshot.pair
+            ? 'The pair keeps its model loaded until you change it.'
+            : 'Keeps these models loaded until you change them.',
+        },
     {
       icon: <RefreshCw size={15} />,
       text: snapshot.settings.auto_update

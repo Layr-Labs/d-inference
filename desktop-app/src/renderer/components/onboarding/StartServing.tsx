@@ -25,6 +25,15 @@ const copy: Record<StartMethod, { lead: string; start: string; empty: string }> 
   },
 };
 
+// A paired Mac starts its pair, with the pair's model: never Autopilot, which serves one Mac.
+function pairCopy(model: string | null) {
+  return {
+    lead: `This Mac serves in a pair. Start serving starts the pair with ${model ?? 'its model'}.`,
+    start: 'Start serving',
+    empty: '',
+  };
+}
+
 function accountLine(snapshot: Snapshot) {
   return snapshot.linked
     ? 'Your Darkbloom account is linked.'
@@ -53,14 +62,15 @@ export function StartServing({
     setPinned((current) => (current.length || !starting ? current : [starting.id])),
   );
   const manualOnly = !!snapshot.capabilities && !snapshot.capabilities.includes('autopilot');
-  const method = methodFor(serving.rejected || manualOnly);
-  const text = copy[method];
+  const pair = snapshot.pair;
+  const method = methodFor(serving.rejected || manualOnly || !!pair);
+  const text = pair ? pairCopy(pair.model) : copy[method];
   const pins = usablePins(snapshot, pinned);
   const network = networkEarnings(backend.network);
   const recommended =
     method === 'autopilot' && !pins.length ? recommendedModels(snapshot.models, network) : [];
   const showRecommendations = recommended.length > 0;
-  const empty = !startModels(snapshot, method, pinned).length;
+  const empty = !pair && !startModels(snapshot, method, pinned).length;
   const tooLarge = pinnedMemory(snapshot, pins).exceeds;
   const running = snapshot.operations.find((operation) => operation.state === 'running');
   // Serving needs a linked account: an unlinked Mac goes back to link it first.
@@ -123,7 +133,7 @@ export function StartServing({
       <p className="terms-note">
         By turning on, you agree to our <External target="terms">Terms of Service</External>
       </p>
-      <div className={styles.more}>
+      <div className={styles.more} hidden={!!pair}>
         <AdvancedOptions
           snapshot={snapshot}
           open={open}

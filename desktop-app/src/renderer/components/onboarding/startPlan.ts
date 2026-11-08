@@ -24,7 +24,9 @@ export function startModels(snapshot: Snapshot, method: StartMethod, pinned: str
   return model ? [model.id] : [];
 }
 
+// On a paired Mac a start starts the pair, which serves its own model and its own local API, so it names neither.
 export function startAction(snapshot: Snapshot, method: StartMethod, pinned: string[]): Action {
+  if (snapshot.pair) return { action: 'start', models: [], local: false };
   const models = startModels(snapshot, method, pinned);
   if (method === 'autopilot') {
     const downloads = snapshot.models

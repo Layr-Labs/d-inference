@@ -232,7 +232,8 @@ struct Start: AsyncParsableCommand {
         /// A terminal: the screen `darkbloom cluster` shows on this Mac.
         case openScreen
         /// No terminal: the pair starts with its saved model. The desktop app's Start too (`appStartOptions`): a model it
-        /// named other than the pair's is said after the start (`ClusterPairSummary.appStartModelLine`).
+        /// named other than the pair's, or a local API the pair doesn't give this Mac, is said after the start
+        /// (`ClusterPairSummary.appStartLines`).
         case startPair
         /// Single-Mac options without `--solo`: nothing starts, and why (never ignored).
         case refuseOptions([String])
@@ -411,8 +412,8 @@ struct Start: AsyncParsableCommand {
                 Self.clearSoloChoice()
                 let code = await ClusterPairCommands.start(pair, actions: ClusterPairActions.live(config: configOptions.config),
                                                            config: configOptions.config)
-                // Started (0 serving, 3 still loading) with the pair's model, which the app's Start may not have named.
-                if code == 0 || code == 3, let line = pair.appStartModelLine(named: model) { print(line) }
+                // What the app's Start asked for and the pair doesn't take: another model, a local API here.
+                for line in pair.appStartLines(named: model, localEndpoint: localEndpoint, code: code) { print(line) }
                 if code != 0 { throw ExitCode(code) }
                 try await setUpToolsBesidePair()
                 return

@@ -1,6 +1,6 @@
 # Build and validate the macOS desktop app
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 Build the Electron frontend and its Swift CLI/backend API in this repository.
 This guide covers development and review artifacts; production distribution also
@@ -441,6 +441,13 @@ from a first install, and cancels a link in progress.
 - **Fallback.** A runtime that rejects `autopilot` by name keeps the starting
   model selected and offers "Choose models manually". That path uses the
   existing `start` action with the chosen models.
+- **A paired Mac.** The snapshot names the pair (`Snapshot.pair`) and reports no
+  `autopilot` capability, so the page offers **Start serving** for the pair: "This
+  Mac serves in a pair. Start serving starts the pair with <model>." It sends
+  `{ action: 'start', models: [], local: false }`, with no model and no local API
+  of its own, since the pair serves its own (`startPlan.ts`), and hides the
+  advanced model choice. An app from before this reads the missing capability as
+  a runtime without Autopilot, and offers the plain start too.
 - **Updates.** Onboarding never writes settings, so an automatic-update opt-out
   is preserved.
 

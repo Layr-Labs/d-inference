@@ -27,6 +27,9 @@ actor DesktopBackend {
   var resourceTasks: [String: Task<JSONValue, Error>] = [:]
   var localAt = Date.distantPast
   var localModels: [ModelInfo] = []
+  /// This Mac's pair, as the snapshot reports it (`pairSnapshot`); read again after 30 s.
+  var pairAt = Date.distantPast
+  var pair = ClusterPairSummary.notPaired
   var link: JSONValue = .null
   var samples: [JSONValue] = []
   var sampleSession: Double?
@@ -174,6 +177,10 @@ actor DesktopBackend {
   }
 
   func arguments(for request: DesktopAction) throws -> [String] {
+    // Before anything runs, `runAutopilot`'s downloads included.
+    if Self.pairRefusedActions.contains(request.action), ClusterPairSummary.local().paired {
+      throw ValidationError(Self.pairAutopilotRefusal)
+    }
     if request.action == "autopilot_pin" { try validateAutopilotPins(request.models ?? []) }
     if request.action == "autopilot_models" {
       let config = try configuration().config

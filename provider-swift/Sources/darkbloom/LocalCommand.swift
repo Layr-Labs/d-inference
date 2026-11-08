@@ -30,8 +30,9 @@ struct Local: AsyncParsableCommand {
         guard let info = LocalEndpoint.readLiveInfo() else {
             if json {
                 print("{}")
-            } else if let failure = Self.runningProviderLocalAPIFailure() {
-                printError(Self.notUpLine(failure, nextFree: LocalAPIPort.nextFree(besides: failure.port)))
+            } else if let notUp = Self.runningProviderLocalAPIFailure() {
+                printError(Self.notUpLine(notUp.failure, nextFree: LocalAPIPort.nextFree(besides: notUp.failure.port),
+                                          server: notUp.server))
             } else {
                 printError("No local server running.")
                 if let key = LocalEndpoint.existingClusterToken() {
@@ -113,14 +114,17 @@ struct Local: AsyncParsableCommand {
     }
 
     /// What `local` says when the running provider's local API couldn't listen (`DaemonState.localAPIFailure`).
-    static func notUpLine(_ failure: DaemonState.LocalAPIFailure, nextFree: UInt16?) -> String {
-        "The local API isn't up: " + LocalFirstWords.whyNotUp(failure, nextFree: nextFree) + "."
+    static func notUpLine(_ failure: DaemonState.LocalAPIFailure, nextFree: UInt16?,
+                          server: LocalFirstWords.LocalAPIServer = .singleMac(paired: false)) -> String {
+        "The local API isn't up: " + LocalFirstWords.whyNotUp(failure, nextFree: nextFree, server: server) + "."
     }
 
-    /// The running provider's local API that couldn't listen; nil when none runs or nothing failed.
-    static func runningProviderLocalAPIFailure() -> DaemonState.LocalAPIFailure? {
-        guard let state = DaemonStateFile.read(), daemonProcessAlive(pid: state.pid) else { return nil }
-        return state.localAPIFailure
+    /// The running provider's local API that couldn't listen, and whose it is; nil when none runs or nothing failed.
+    static func runningProviderLocalAPIFailure()
+        -> (failure: DaemonState.LocalAPIFailure, server: LocalFirstWords.LocalAPIServer)? {
+        guard let state = DaemonStateFile.read(), daemonProcessAlive(pid: state.pid),
+              let failure = state.localAPIFailure else { return nil }
+        return (failure, .of(state, paired: ClusterPairSummary.local().paired))
     }
 
     /// What `local` says to start a local API when none runs.

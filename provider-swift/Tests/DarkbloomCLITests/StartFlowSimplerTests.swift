@@ -59,7 +59,7 @@ struct StartFlowSimplerTests {
         var lookups = 0
         let environment = ServingEnvironment(terminal: true, readInput: { nil }, emit: { _ in },
                                              accountKeySaved: { lookups += 1; return true }, ownLivePort: { nil },
-                                             isFree: { _ in true })
+                                             installedPort: { nil }, isFree: { _ in true })
         let start = try config.start(["--local", "--here"])
         let serving = try #require(try start.resolveServing(environment: environment))
         #expect(serving.accountKeySaved == true && lookups == 1, "whether a key is saved, read once; never the key")

@@ -5,9 +5,11 @@ import Testing
 @testable import ProviderCore
 @testable import darkbloom
 
-/// One port and one key per Mac: every single-Mac way to start a local API takes `[local] port`, chosen once (the
-/// first free from 8001, never 8000 or 47420–47423) and saved, so the address the tools were given never moves. A saved
-/// port, or a named `--port`, wins. Nothing here binds a port: the scripted terminal's `isFree` stands in for the probe.
+/// One port and one key per Mac: every single-Mac way to start a local API takes `[local] port`, saved the first time,
+/// so the address the tools were given never moves. A saved port, or a named `--port`, wins; with none saved, the port
+/// this Mac's local API already uses is kept (8000 on a Mac updated from 0.10.10), and only a Mac with no local API at
+/// all chooses one (the first free from 8001, never 8000 or 47420–47423). Nothing here binds a port or reads this
+/// Mac's LaunchAgent: the scripted terminal stands in for them.
 @Suite("One port and one key per Mac", .serialized)
 struct LocalAPIOnePortTests {
     static let plain = "[provider]\nname = \"one-port\"\n"
@@ -111,15 +113,17 @@ struct LocalAPIOnePortTests {
         #expect(child.port == 8009 && child.change.isEmpty && child.portNote == nil && saved.bytes == before)
     }
 
-    @Test("the app's local mode serves on this Mac's port, chosen and saved before it starts; its child saves nothing")
-    func appLocalModeTakesThisMacsPort() throws {
+    @Test("the app's local mode serves on this Mac's port, chosen before it starts, saved once started; its child saves nothing")
+    func appLocalModeTakesThisMacsPort() async throws {
         let config = try TempConfig(Self.plain)
         defer { config.remove() }
         var probed: [UInt16] = []
         let api = try Desktop.StartLocal.localAPI(configPath: config.path.path, ownLivePort: { nil },
-                                                   isFree: { probed.append($0); return true })
-        #expect(api.choice.port == Self.first && config.local?.port == Self.first && !probed.contains(8000))
-        #expect(api.choice.note == LocalAPIPort.note(chosen: Self.first, start: Self.defaultPort))
+                                                   installedPort: { nil }, isFree: { probed.append($0); return true })
+        #expect(api.choice.port == Self.first && config.local == nil && !probed.contains(8000))
+        let note = try await Desktop.StartLocal.serve(api) {}
+        #expect(config.local?.port == Self.first)
+        #expect(note == LocalAPIPort.note(chosen: Self.first, start: Self.defaultPort))
 
         let binary = "/Applications/Darkbloom.app/Contents/MacOS/darkbloom"
         let argv = LaunchAgent.localProgramArguments(binaryPath: binary, models: ["fixture/model"],
@@ -141,8 +145,11 @@ struct LocalAPIOnePortTests {
 
         // Saved: the same port again, nothing probed or written.
         let again = try Desktop.StartLocal.localAPI(configPath: config.path.path, ownLivePort: { nil },
+                                                     installedPort: { nil },
                                                      isFree: { _ in Issue.record("probed"); return true })
         #expect(again.choice.port == Self.first && again.choice.note == nil && config.bytes == before)
+        let unchanged = try await Desktop.StartLocal.serve(again) {}
+        #expect(unchanged == nil && config.bytes == before)
     }
 
     /// The app's local mode on 0.10.10 and earlier wrote a job that runs `start --local --model <id>` without
@@ -173,7 +180,8 @@ struct LocalAPIOnePortTests {
             let child = try #require(try script.resolve(start, terminal: false))
             #expect(child.mode == .local && child.change.isEmpty, "\(arguments)")
             #expect(child.port == (arguments.contains("--port") ? 8000 : Self.defaultPort), "\(arguments)")
-            #expect(script.probed.isEmpty && script.livePortLookups == 0 && config.bytes == before, "\(arguments)")
+            #expect(script.probed.isEmpty && script.livePortLookups == 0 && script.installedPortLookups == 0
+                && config.bytes == before, "\(arguments)")
         }
     }
 
@@ -185,6 +193,76 @@ struct LocalAPIOnePortTests {
         #expect(Start.localServerBindFailure(bind: "127.0.0.1", port: 8001, nextFree: nil)
             == "This Mac's local API couldn't listen on 127.0.0.1:8001: another program may use port 8001. Free it, or "
                 + "name another with `darkbloom start --port <n>`.")
+        // A Mac in a two-Mac cluster serves alone only with --solo, and refuses `start --port` without it.
+        #expect(Start.localServerBindFailure(bind: "127.0.0.1", port: 8001, nextFree: 8002, paired: true)
+            == "This Mac's local API couldn't listen on 127.0.0.1:8001: another program may use port 8001. Free it, or "
+                + "run `darkbloom start --solo --port 8002`.")
+        #expect(Start.localServerBindFailure(bind: "127.0.0.1", port: 8001, nextFree: nil, paired: true)
+            == "This Mac's local API couldn't listen on 127.0.0.1:8001: another program may use port 8001. Free it, or "
+                + "name another with `darkbloom start --solo --port <n>`.")
+    }
+
+    /// The production upgrade: a Mac updated from 0.10.10 has no `[local]`, and its local API (the app's onboarding,
+    /// "Alongside the network", `--local-endpoint`, "Local only", `--local`) serves on 8000, 0.10.10's default. Tools
+    /// point there, so its next start, whatever starts it, keeps 8000 and saves it: from its running API, else from
+    /// its installed LaunchAgent's `--port` while the Mac is stopped. Only a Mac with no local API chooses from 8001.
+    @Test("a Mac updated from 0.10.10 keeps its local API's port on every path, and saves it", arguments: paths)
+    func updatedMacKeepsItsPort(_ path: Path) throws {
+        let macs: [(name: String, running: UInt16?, installed: UInt16?, port: UInt16)] = [
+            ("running on 8000", 8000, 8000, 8000), ("running on 8000, no job", 8000, nil, 8000),
+            ("stopped, its job installed with --port 8000", nil, 8000, 8000), ("no local API at all", nil, nil, Self.first),
+        ]
+        for mac in macs {
+            let config = try makeConfig(path)
+            defer { config.remove() }
+            let script = ScriptedTerminal(path.answers ?? [])
+            let serving = try #require(try script.resolve(try config.start(path.arguments), terminal: path.terminal,
+                                                          ownLivePort: mac.running, installedPort: mac.installed),
+                                       "\(mac.name)")
+            #expect(serving.port == mac.port && config.local?.port == mac.port, "\(mac.name)")
+            #expect(serving.baseURL == "http://127.0.0.1:\(mac.port)/v1", "\(mac.name)")
+            guard mac.running != nil || mac.installed != nil else { continue }
+            #expect(serving.portNote == LocalAPIPort.note(kept: mac.port), "\(mac.name)")
+            #expect(script.probed.isEmpty, "\(mac.name): the port in use isn't a new choice")
+        }
+    }
+
+    @Test("the app's local mode on a Mac updated from 0.10.10 keeps its API's port")
+    func appLocalModeOnAnUpdatedMac() async throws {
+        for (running, installed) in [(UInt16?(8000), UInt16?(nil)), (nil, 8000)] {
+            let config = try TempConfig(Self.plain)
+            defer { config.remove() }
+            let api = try Desktop.StartLocal.localAPI(configPath: config.path.path, ownLivePort: { running },
+                                                       installedPort: { installed },
+                                                       isFree: { _ in Issue.record("probed"); return true })
+            #expect(api.choice.port == 8000)
+            let note = try await Desktop.StartLocal.serve(api) {}
+            #expect(config.local?.port == 8000 && note == LocalAPIPort.note(kept: 8000))
+        }
+    }
+
+    @Test("the app's local mode saves its port only once its service started: a refused drain or install saves nothing")
+    func appLocalModeSavesOnlyOnceStarted() async throws {
+        struct Refused: Error {}
+        let config = try TempConfig(Self.plain)
+        defer { config.remove() }
+        let api = try Desktop.StartLocal.localAPI(configPath: config.path.path, ownLivePort: { nil },
+                                                   installedPort: { nil }, isFree: { _ in true })
+        #expect(config.local == nil, "nothing is saved before anything stops")
+        await #expect(throws: Refused.self) { _ = try await Desktop.StartLocal.serve(api) { throw Refused() } }
+        #expect(config.local == nil, "a refused start saves nothing")
+        let note = try await Desktop.StartLocal.serve(api) {}
+        #expect(config.local?.port == Self.first && note == api.choice.note)
+
+        // Another start saved a port while this one stopped and drained: that one stands.
+        let raced = try TempConfig(Self.plain)
+        defer { raced.remove() }
+        let late = try Desktop.StartLocal.localAPI(configPath: raced.path.path, ownLivePort: { nil },
+                                                    installedPort: { nil }, isFree: { _ in true })
+        let lateNote = try await Desktop.StartLocal.serve(late) {
+            _ = try setLocalSettings(configPath: raced.path.path) { $0.port = 8009 }
+        }
+        #expect(raced.local?.port == 8009 && lateNote == nil)
     }
 
     // `darkbloom local` reads the process-wide DARKBLOOM_LOCAL_DIR and DARKBLOOM_STATE_FILE, so it runs in a child

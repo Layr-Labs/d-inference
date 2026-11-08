@@ -82,15 +82,33 @@ struct Desktop: AsyncParsableCommand {
     /// The drain's options, as `darkbloom stop` would take them with none given.
     static func drainOptions() throws -> DrainOptions { try DrainOptions.parse([]) }
 
-    /// The local API the app's local mode serves: this Mac's one port (`LocalAPIPort.thisMac`: the saved one, else one
-    /// chosen and saved now), and `[local] bind`.
+    /// The local API the app's local mode serves: this Mac's port (`choice`), `[local] bind`, and the config `choice` is
+    /// saved in.
+    struct LocalAPI {
+      let choice: LocalAPIPort.Choice
+      let bind: String
+      let configPath: URL
+      let fallbackConfig: ProviderConfig
+    }
+
+    /// The local API the app's local mode serves: this Mac's one port (`LocalAPIPort.choose`: the saved one, else the
+    /// one its local API already uses, else one chosen now), and `[local] bind`. Nothing is saved yet (`serve`).
     static func localAPI(configPath: String?, ownLivePort: () -> UInt16? = LocalAPIPort.ownLivePort,
-                         isFree: (UInt16) -> Bool = LocalAPIPort.isFreeOnThisMac)
-      throws -> (choice: LocalAPIPort.Choice, bind: String) {
+                         installedPort: () -> UInt16? = LocalAPIPort.installedJobPort,
+                         isFree: (UInt16) -> Bool = LocalAPIPort.isFreeOnThisMac) throws -> LocalAPI {
       let loaded = try loadRuntimeConfiguration(configPath: configPath)
-      let choice = try LocalAPIPort.thisMac(configPath: loaded.configPath, fallbackConfig: loaded.config,
-                                            ownLivePort: ownLivePort, isFree: isFree)
-      return (choice, loaded.config.local?.resolvedBind ?? LocalSettings.defaultBind)
+      let choice = try LocalAPIPort.choose(named: nil, saved: loaded.config.local?.port, ownLivePort: ownLivePort,
+                                           installedPort: installedPort, isFree: isFree)
+      return LocalAPI(choice: choice, bind: loaded.config.local?.resolvedBind ?? LocalSettings.defaultBind,
+                      configPath: loaded.configPath, fallbackConfig: loaded.config)
+    }
+
+    /// Starts the app's local mode on `api`'s port with `start` (the stop, the drain and the job's install), and only
+    /// then saves a new port: a refused drain or a failed install saves nothing. A port another start saved meanwhile
+    /// stands. Returns the line that says which port was saved, if one was.
+    static func serve(_ api: LocalAPI, starting start: () async throws -> Void) async throws -> String? {
+      try await start()
+      return try LocalAPIPort.save(api.choice, configPath: api.configPath, fallbackConfig: api.fallbackConfig).note
     }
 
     /// On a Mac in a two-Mac cluster: why local mode starts nothing; nil elsewhere.
@@ -109,23 +127,25 @@ struct Desktop: AsyncParsableCommand {
         for line in refusal { printError(line) }
         throw ExitCode.failure
       }
-      // Before anything stops: no free port starts nothing.
-      let api: (choice: LocalAPIPort.Choice, bind: String)
+      // This Mac's port, before anything stops (no free port starts nothing); saved once the service started.
+      let api: LocalAPI
       do {
         api = try Self.localAPI(configPath: configOptions.config)
       } catch let none as LocalAPIPortError {
         throw ValidationError(none.description)
       }
-      if DesktopLocalLifecycle.isActive {
-        try await DesktopLocalLifecycle.stop(configPath: configOptions.config)
+      let (configPath, models) = (configOptions.config, model)
+      let note = try await Self.serve(api) {
+        if DesktopLocalLifecycle.isActive {
+          try await DesktopLocalLifecycle.stop(configPath: configPath)
+        }
+        let session = try await ServiceDrain.prepare(options: try Self.drainOptions())
+        defer { session.release() }
+        try await ServiceDrain.stopDrainedProvider()
+        try LaunchAgent.installLocalAndStart(models: models, configPath: configPath.map { URL(fileURLWithPath: $0) },
+                                             port: api.choice.port, bind: api.bind, noAuth: false)
       }
-      let session = try await ServiceDrain.prepare(options: try Self.drainOptions())
-      defer { session.release() }
-      try await ServiceDrain.stopDrainedProvider()
-      try LaunchAgent.installLocalAndStart(
-        models: model, configPath: configOptions.config.map { URL(fileURLWithPath: $0) }, port: api.choice.port,
-        bind: api.bind, noAuth: false)
-      if let note = api.choice.note { print(note) }
+      if let note { print(note) }
       print("Local inference service started")
     }
   }

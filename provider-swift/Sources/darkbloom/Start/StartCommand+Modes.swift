@@ -52,8 +52,8 @@ extension Start {
 
         for line in localServerBanner(serving: serving, models: advertised, token: token) { print(line) }
 
-        // `start --local` runs under the AppKit host, which turns Ctrl-C into a drain; "Only me" from the question
-        // or the saved choice runs here, so it takes the same signals itself.
+        // A start that serves here runs under the AppKit host, which turns Ctrl-C into a drain
+        // (`ProviderAppKitHost.shouldHost`); any other caller takes the same signals itself.
         #if os(macOS)
         let signals = ProviderAppKitHost.shouldHost(Array(CommandLine.arguments.dropFirst())) ? nil
             : ProviderSignalHandler { _ = await ProviderTermination.shared.request() }
@@ -120,7 +120,8 @@ extension Start {
         // already holding the port could answer.
         guard await server.waitUntilBound(timeoutSeconds: 5.0) else {
             await server.stop()
-            printError(Self.localServerBindFailure(bind: bind, port: port, nextFree: LocalAPIPort.nextFree(besides: port)))
+            printError(Self.localServerBindFailure(bind: bind, port: port, nextFree: LocalAPIPort.nextFree(besides: port),
+                                                   paired: ClusterPairSummary.local().paired))
             throw ExitCode.failure
         }
         print("Listening on \(bind):\(port)")
@@ -230,11 +231,12 @@ extension Start {
     }
 
     /// The coordinator-less server couldn't listen on its port within 5 seconds; `nextFree` is the port
-    /// `start --port` would take instead.
-    static func localServerBindFailure(bind: String, port: UInt16, nextFree: UInt16?) -> String {
-        let cli = BuildEnvironment.current.cliName
+    /// `start --port` would take instead, with `--solo` on a Mac in a two-Mac cluster (`paired`), which refuses it
+    /// without.
+    static func localServerBindFailure(bind: String, port: UInt16, nextFree: UInt16?, paired: Bool = false) -> String {
+        let start = "\(BuildEnvironment.current.cliName) start\(paired ? " --solo" : "") --port"
         return "This Mac's local API couldn't listen on \(bind):\(port): another program may use port \(port). Free it, or "
-            + (nextFree.map { "run `\(cli) start --port \($0)`." } ?? "name another with `\(cli) start --port <n>`.")
+            + (nextFree.map { "run `\(start) \($0)`." } ?? "name another with `\(start) <n>`.")
     }
 
     // MARK: - Foreground (invoked by launchd)

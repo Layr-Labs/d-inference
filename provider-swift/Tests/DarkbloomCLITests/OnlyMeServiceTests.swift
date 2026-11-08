@@ -194,6 +194,30 @@ struct OnlyMeServiceTests {
         }
     }
 
+    /// #1896's review: an updated Mac's local API on 8000 keeps 8000. Only me's job takes this Mac's one port as every
+    /// start resolves it: the saved one, else the one its local API already uses (here a Both job on 8000), saved.
+    @Test("Only me's job serves on this Mac's port: an existing 8000 stays 8000, saved, and restart keeps it")
+    func onlyMeKeepsThisMacsPort() throws {
+        let config = try TempConfig(Self.plain)
+        defer { config.remove() }
+        let serving = try #require(try ScriptedTerminal().resolve(try config.start(["--local"]), terminal: false,
+                                                                  installedPort: 8000))
+        #expect(serving.port == 8000 && config.local?.port == 8000 && config.local?.mode == .local)
+        #expect(serving.portNote == LocalAPIPort.note(kept: 8000))
+        let argv = LaunchAgent.localProgramArguments(binaryPath: "/Applications/Darkbloom.app/Contents/MacOS/darkbloom",
+                                                     models: ["fixture/model"], configPath: nil, port: serving.port,
+                                                     bind: serving.bind, noAuth: false)
+        #expect(argv.firstIndex(of: "--port").map { argv[$0 + 1] } == "8000")
+
+        // `restart` with that job still serving Both, me first on 8000: it becomes Only me, on 8000.
+        let both = try #require(LaunchAgent.ServingJob(arguments: Self.job(.network)
+            + ["--local-endpoint", "--port", "8000", "--bind", "127.0.0.1"]))
+        var asked: (mode: LocalSettings.Mode, port: UInt16)?
+        let aligned = try SavedChoiceService.align(configPath: config.path.path, job: both,
+                                                   rewrite: { mode, port, _, _ in asked = (mode, port); return true })
+        #expect(asked?.mode == .local && asked?.port == 8000 && aligned.mode == .local)
+    }
+
     // MARK: - Restart and update
 
     @Test("restart never stops Only me in a terminal, and says how to get the background service back")

@@ -137,6 +137,27 @@ public enum LaunchAgent: Sendable {
         }
     }
 
+    /// The port the installed single-Mac job serves its local API on (`localAPIPort(ofJob:)`); nil without a job, or
+    /// for one that serves none.
+    public static func installedLocalAPIPort(at path: URL = plistPath()) -> UInt16? {
+        guard let data = try? Data(contentsOf: path),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              let arguments = plist["ProgramArguments"] as? [String] else { return nil }
+        return localAPIPort(ofJob: arguments)
+    }
+
+    /// The port a single-Mac job's arguments serve the local API on: its `--port`, else, for the `start --local` an
+    /// older app wrote without one, the build's default (where it served with no `[local] port`). Nil for a job that
+    /// serves no local API (neither `--local-endpoint` nor `--local`), and for a cluster's (`--cluster-member`,
+    /// `--distributed`).
+    static func localAPIPort(ofJob arguments: [String]) -> UInt16? {
+        guard arguments.count >= 2, arguments[1] == "start", !isClusterMemberJob(arguments),
+              !arguments.contains("--distributed"),
+              arguments.contains("--local-endpoint") || arguments.contains("--local") else { return nil }
+        guard let flag = arguments.lastIndex(of: "--port") else { return BuildEnvironment.current.defaultLocalPort }
+        return flag + 1 < arguments.count ? UInt16(arguments[flag + 1]) : nil
+    }
+
     /// Desktop local mode uses the same canonical launchd owner as network serving, on this Mac's local API port
     /// (`LocalAPIPort`), which the caller resolved. The caller must complete the normal drain and hold the lifecycle
     /// lock.

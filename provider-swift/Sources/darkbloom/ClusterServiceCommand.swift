@@ -256,7 +256,7 @@ extension Cluster {
             do {
                 let off = try await turnOff(false)
                 for line in off.lines { say(line) }
-                return .stopped(.stopped)
+                return .stopped(off.otherMac)
             } catch {
                 for line in try await turnOff(true).lines { say(line) }
                 return .stoppedAlone("\(error)")
@@ -272,17 +272,19 @@ extension Cluster {
             /// The pair couldn't stop together (why), so only this Mac's part stopped: the other Mac wasn't asked to stop.
             case stoppedAlone(String)
 
-            /// As `darkbloom uninstall` reports its step, as before the step was shared.
+            /// As `darkbloom uninstall` reports its step: the other Mac's silence said, the rest as before the step was
+            /// shared.
             var outcome: ProviderUninstall.Outcome {
                 switch self {
                 case .noService: return .skipped("no cluster service on this Mac")
+                case .stopped(.unanswered): return .done("the other Mac did not answer, so it was not asked to stop")
                 case .stopped: return .done()
                 case .stoppedAlone(let why): return .done("the other Mac was not asked to stop (\(why))")
                 }
             }
         }
 
-        /// What turning this Mac's cluster service off asked of the other Mac (seam: `finishStop` doesn't tell yet).
+        /// What turning this Mac's cluster service off asked of the other Mac.
         enum OtherMac: Equatable, Sendable {
             /// The pair's stop reached it: it stopped serving the pair with this Mac.
             case stopped
@@ -353,24 +355,26 @@ extension Cluster {
         /// Keep the supervisor and its custody intact when the pair could not
         /// drain or the member did not acknowledge the saved stop request.
         /// `leaving`: this Mac is leaving its pair, so the command that leaves says what to do next on each Mac; the
-        /// lines here only say what stopped (no "start it again", no "stop the other Mac's service too"). What the other
-        /// Mac was asked isn't told apart yet (seam: always `.stopped`).
+        /// lines here only say what stopped (no "serve again" from the pair's stop, no "start it again", no "stop the
+        /// other Mac's service too"). `stopped` nil: the other Mac wasn't asked (`localOnly`, or a pair not serving).
         static func finishStop(_ stopped: Result<[String], ClusterOnboardingFailure>?, localOnly: Bool = false,
                                forwarded: Bool = false, leaving: Bool = false,
                                removeFromLogin: () throws -> [String]) throws -> ServiceOff {
             var lines: [String] = []
-            let otherMac = OtherMac.stopped
-            var otherMacNotAsked = false
+            var otherMac = OtherMac.notAsked
             if let stopped {
                 switch stopped {
                 case .success(let said):
-                    lines = said
+                    // The pair's stop ends "Run `darkbloom cluster` to serve again.": not for a Mac leaving the pair.
+                    if !leaving { lines = said }
+                    otherMac = .stopped
                 case .failure(let failure) where !forwarded && failure.otherMacUnanswered != nil:
                     // R5-1: this Mac stopped serving and the other Mac did not answer (its service already off, or
                     // out of reach): this Mac's service still stops, and each Mac's state is said.
+                    let unanswered = failure.otherMacUnanswered!
                     lines = ["This Mac stopped serving.",
-                             failure.otherMacUnanswered! + ", so it was not asked to stop (its cluster service may already be off)."]
-                    otherMacNotAsked = true
+                             unanswered + ", so it was not asked to stop (its cluster service may already be off)."]
+                    otherMac = .unanswered(unanswered)
                 case .failure(let failure):
                     throw Failure(lines: failure.lines + (forwarded ? ClusterPairSummary.memberStopFailureLines(failure.lines) : []))
                 }
@@ -380,7 +384,7 @@ extension Cluster {
                 ? "This Mac's cluster service is stopped (it was not set to start at login)."
                 : "This Mac's cluster service is stopped and will not start at login."
                     + (leaving ? "" : " Run `\(ClusterPairSummary.cli) cluster` to start it again."))
-            if otherMacNotAsked, !leaving {
+            if case .unanswered = otherMac, !leaving {
                 lines.append("If the other Mac's cluster service is still on, run `\(ClusterPairSummary.cli) cluster stop --service` there too.")
             }
             if localOnly {

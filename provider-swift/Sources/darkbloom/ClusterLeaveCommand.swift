@@ -136,10 +136,12 @@ struct ClusterLeaveFlow {
             }
         }
 
-        say("✓ This Mac left the pair. " + (soloServing() ? "Single-Mac serving keeps running on this Mac."
-            : "Nothing serves on this Mac now: `\(cli) start` serves it alone."))
+        say("✓ This Mac left the pair. " + (soloServing()
+            ? "Single-Mac serving keeps running on this Mac; `\(cli) cluster` pairs it again."
+            : "Nothing serves on this Mac now: `\(cli) start` serves it alone, or `\(cli) cluster` pairs it again."))
         say(otherMacLine(stopped))
-        say("To pair the two Macs again, run `\(cli) cluster` on each Mac.")
+        say("To pair these two Macs again instead, run `\(cli) cluster` on each Mac; if the other Mac offers Start over, "
+            + "choose it.")
         return 0
     }
 
@@ -148,18 +150,24 @@ struct ClusterLeaveFlow {
         (error as? ClusterOnboardingFailure)?.lines.joined(separator: " ") ?? "\(error)"
     }
 
-    /// What happens to the other Mac: it keeps its pairing until it leaves too.
+    /// What the stop did to the other Mac, only what this Mac knows, and how it leaves too.
     func otherMacLine(_ stopped: Cluster.Stop.BeforeUnpairing) -> String {
-        let cli = Self.cli
         let other = ClusterOnboardingMacName.sentence(
             ClusterOnboardingMacName.other(named: pairing?.otherMacName ?? pair.otherMacName))
-        let what: String
+        let keepsItsPairing = " It keeps its pairing until you run `\(Self.cli) cluster leave` there."
         switch stopped {
-        case .stopped: what = "\(other) stopped serving the pair too."
-        case .stoppedAlone: what = "\(other) wasn't reached, so it wasn't asked to stop."
-        case .noService: what = "\(other) wasn't asked anything."
+        case .stopped(.stopped): return "\(other) stopped serving the pair too." + keepsItsPairing
+        case .stopped(.unanswered): return Self.unansweredLine(other)
+        // The Mac that follows forwards the stop; the leading Mac's silence comes back as its failure.
+        case .stoppedAlone(let why) where ClusterPairSummary.saysOtherMacSilent(why): return Self.unansweredLine(other)
+        case .stopped(.notAsked), .stoppedAlone: return "\(other) wasn't asked to stop." + keepsItsPairing
+        case .noService: return "\(other) wasn't asked anything." + keepsItsPairing
         }
-        return what + " It keeps its pairing until you run `\(cli) cluster leave` on it; then `\(cli) start` there serves "
-            + "it alone."
+    }
+
+    /// The other Mac didn't answer: this Mac can't tell it being away from it having left the pair already.
+    static func unansweredLine(_ other: String) -> String {
+        "\(other) didn't answer, so it wasn't asked to stop; it may have left the pair already. If it hasn't, "
+            + "`\(cli) cluster leave` there unpairs it too."
     }
 }

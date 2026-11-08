@@ -1772,21 +1772,36 @@ then asks `Leave the pair? [y/N]` (No by default; without a terminal it needs
 1. **This Mac's part stops:** the pair stops on both Macs and this Mac's
    cluster service leaves login, as `darkbloom cluster stop --service`. When the
    other Mac doesn't answer, only this Mac's part stops
-   (`cluster stop --local-only`). A part that doesn't stop leaves the Mac
-   paired, and the command says to try again.
+   (`cluster stop --local-only`), and the lines say so. They say only what
+   stopped, never how to serve the pair again. A part that doesn't stop leaves
+   the Mac paired, and the command says to try again.
 2. **This Mac forgets its pairing,** as `darkbloom cluster pair --forget` and
    **Start over** do ([undo](#undo)). Run on the Mac that leads, it first
    tells the other Mac over the cable, which reclaims its pair cache and stops
    its part.
 3. **It says what's next:** ``✓ This Mac left the pair. Nothing serves on this
-   Mac now: `darkbloom start` serves it alone.``, then that the other Mac
-   stopped serving the pair too (or wasn't reached) and keeps its pairing until
-   you run `darkbloom cluster leave` on it, and that `darkbloom cluster` on each
-   Mac pairs them again.
+   Mac now: `darkbloom start` serves it alone, or `darkbloom cluster` pairs it
+   again.``, then what the stop did to the other Mac and that it keeps its
+   pairing until you run `darkbloom cluster leave` there, then that to pair
+   these two Macs again you run `darkbloom cluster` on each Mac, choosing
+   **Start over** where it's offered.
+   - "Stopped serving the pair too" is said only when the other Mac stopped.
+     One that wasn't asked (the Mac that follows a pair that isn't serving, or
+     a pair that couldn't stop together) "wasn't asked to stop".
+   - One that didn't answer may have left the pair already, so the line says
+     that, and that `darkbloom cluster leave` there unpairs it if it hasn't.
 
-Until it leaves too, the other Mac still holds its pairing: its
-`darkbloom cluster` no longer reaches this Mac and offers **Start over**. The
-models, single-Mac serving and the cable port setup stay on both Macs
+Until it leaves too, the other Mac still holds its pairing, and it can't tell
+this Mac having left from this Mac being off:
+- its `status`, `cluster status` and a `start`'s result say ``If the other Mac
+  left the pair, `darkbloom cluster leave` here unpairs this Mac too.``, and no
+  longer that `start` on either Mac starts the pair;
+- its `darkbloom cluster`, which a `start` in a terminal opens, no longer
+  reaches this Mac. It says ``If it left the pair, choose Start over to pair
+  again, or Quit and run `darkbloom cluster leave` here.`` and offers
+  **Start over**.
+
+The models, single-Mac serving and the cable port setup stay on both Macs
 (`darkbloom cluster link --remove` undoes the cable setup). Every line:
 [CLI reference](./cli-reference.md#darkbloom-cluster-leave).
 
@@ -1808,8 +1823,9 @@ with "This Mac's Secure Enclave key is not the one it paired with; pair again."
    - When the other Mac does not answer, it says "The other Mac (…) isn't
      answering over the cable. Its cluster service is off, or that Mac is asleep,
      off, or waiting for someone to log in. On that Mac, run `darkbloom start` or
-     `darkbloom cluster`." Do that first: a Mac that was only asleep, logged out
-     or stopped needs no new pairing. If it was reinstalled, unpaired or replaced, use **Start over** here; the Mac that follows lists it after **Try again**. A
+     `darkbloom cluster`. If it left the pair, choose Start over to pair again, or
+     Quit and run `darkbloom cluster leave` here." Do that first: a Mac that was
+     only asleep, logged out or stopped needs no new pairing. If it was reinstalled, unpaired, replaced or left the pair, use **Start over** here; the Mac that follows lists it after **Try again**. A
      model choice whose other Mac stops answering ends with **Try again**,
      **Start over** and **Quit**; while it waits, the screen says
      why ("Waiting for the other Mac's cluster service: …").

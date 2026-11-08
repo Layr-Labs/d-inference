@@ -1043,8 +1043,8 @@ Next: Leave both Macs running: Darkbloom retries by itself. Or serve locally onl
 |---|---|---|
 | `0` | `serving` | The pair serves: through Darkbloom once the coordinator has it, or on the leading Mac's local API when it serves Only me |
 | `3` | `loading`, `not_serving`, `unknown` | Not serving yet: loading, or a reason in `reason` (such as macOS keeping a Mac off the local network, or a pair not offered to Darkbloom, below). A load whose part keeps ending gives that end as its reason, as the start's screen says it: "this Mac's part ended (exit 1: deadline) and starts again by itself" |
-| `4` | `stopped` | Stopped (Stop in `darkbloom cluster`, or `darkbloom cluster stop`), also while the other Mac isn't answering |
-| `5` | `other_mac_away` | The pair is started and the other Mac isn't answering over the cable (its cluster service is off, it sleeps, or waits for a login). Once this Mac's part was given up (15 minutes), `next` also says ``Or serve this Mac alone: `darkbloom start --solo`.`` |
+| `4` | `stopped` | Stopped (Stop in `darkbloom cluster`, or `darkbloom cluster stop`), also while the other Mac isn't answering. `next` says that `darkbloom start` starts the pair again, and ends ``If the other Mac left the pair, `darkbloom cluster leave` here unpairs this Mac too.`` ([leaving](#darkbloom-cluster-leave)) |
+| `5` | `other_mac_away` | The pair is started and the other Mac isn't answering over the cable (its cluster service is off, it sleeps, or waits for a login). Once this Mac's part was given up (15 minutes), `next` also says ``Or serve this Mac alone: `darkbloom start --solo`.``, and it ends with the line about the other Mac leaving, as for `4` |
 | `6` | `not_paired` | This Mac isn't in a cluster |
 | `7` | `pairing_unreadable` | This Mac's pairing record couldn't be read, so it may be in a cluster; `reason` says why when known |
 
@@ -1181,9 +1181,19 @@ darkbloom cluster leave --yes   # scripts: no question
 | Step | What it does |
 |---|---|
 | 1. Ask | Says the pair in one sentence (`ClusterPairSummary.pairSentence`) and what leaving does, then asks `Leave the pair? [y/N]`. Enter, `n`, anything but `y`/`yes`, or the input's end: `Nothing changed.`, exit 0. Without a terminal it needs `--yes` (`-y`): ``… there's no terminal to ask in: run it in Terminal, or add --yes.``, exit 1, nothing changed |
-| 2. Stop this Mac's part | As `darkbloom uninstall` stops it (`Cluster.Stop.beforeUnpairing`): the pair stops on both Macs and this Mac's cluster service stops and leaves login, as `cluster stop --service`; when the pair can't stop together (the other Mac doesn't answer), only this Mac's part stops, as `cluster stop --local-only`. Its lines say what stopped, with no "start it again" (`Cluster.Stop.finishStop`, `leaving`). A part that doesn't stop ends the command, exit 1: ``This Mac is still paired. Try `darkbloom cluster leave` again; …`` |
+| 2. Stop this Mac's part | As `darkbloom uninstall` stops it (`Cluster.Stop.beforeUnpairing`): the pair stops on both Macs and this Mac's cluster service stops and leaves login, as `cluster stop --service`; when the pair can't stop together (the other Mac doesn't answer), only this Mac's part stops, as `cluster stop --local-only`. Its lines say only what stopped (`Cluster.Stop.finishStop`, `leaving`): not the pair stop's own ``Run `darkbloom cluster` to serve again.``, nor "start it again". On the leading Mac whose other Mac doesn't answer: `This Mac stopped serving.` and ``The other Mac (…) did not answer (…), so it was not asked to stop (…).`` A part that doesn't stop ends the command, exit 1: ``This Mac is still paired. Try `darkbloom cluster leave` again; …`` |
 | 3. Forget the pairing | Each pairing of this install, as `cluster pair --forget <pin>` and **Start over** do (`ClusterUnpairing`): the leading Mac first tells the other Mac over the cable, which reclaims its pair cache and stops its part |
-| 4. Say what's next | ``✓ This Mac left the pair. Nothing serves on this Mac now: `darkbloom start` serves it alone.`` (or `Single-Mac serving keeps running on this Mac.`), then the other Mac: ``The other Mac (…) stopped serving the pair too. It keeps its pairing until you run `darkbloom cluster leave` on it; then `darkbloom start` there serves it alone.`` (or `… wasn't reached, so it wasn't asked to stop. …`), then ``To pair the two Macs again, run `darkbloom cluster` on each Mac.`` |
+| 4. Say what's next | ``✓ This Mac left the pair. Nothing serves on this Mac now: `darkbloom start` serves it alone, or `darkbloom cluster` pairs it again.`` (or ``Single-Mac serving keeps running on this Mac; `darkbloom cluster` pairs it again.``), then the other Mac's line (below), then ``To pair these two Macs again instead, run `darkbloom cluster` on each Mac; if the other Mac offers Start over, choose it.`` |
+
+What the other Mac's line says follows what the stop did
+(`ClusterLeaveFlow.otherMacLine`, `Cluster.Stop.BeforeUnpairing`):
+
+| The stop | The line |
+|---|---|
+| The pair stopped on both Macs | ``The other Mac (…) stopped serving the pair too. It keeps its pairing until you run `darkbloom cluster leave` there.`` |
+| The other Mac didn't answer (on the leading Mac, or forwarded to the Mac that follows) | ``The other Mac (…) didn't answer, so it wasn't asked to stop; it may have left the pair already. If it hasn't, `darkbloom cluster leave` there unpairs it too.`` |
+| It wasn't asked: the Mac that follows a pair that isn't serving, or a pair that couldn't stop together | ``The other Mac (…) wasn't asked to stop. It keeps its pairing until …`` |
+| No cluster service on this Mac | ``The other Mac (…) wasn't asked anything. It keeps its pairing until …`` |
 
 On a Mac in no pair it says `This Mac isn't in a two-Mac cluster: nothing to
 leave.` (exit 0), and names `darkbloom cluster stop --service` when a cluster
@@ -1191,7 +1201,16 @@ service from an earlier pairing is still there. When the pairing record can't
 be read, nothing changes (exit 1). Single-Mac serving, the models and the
 cable port setup stay (`darkbloom cluster link --remove` undoes the cable
 setup). `darkbloom uninstall` takes steps 2 and 3 the same way, and its lines
-no longer say to start the cluster service again either.
+no longer say to serve the pair or start the cluster service again either.
+
+The other Mac stays paired until it leaves too, and can't tell this Mac having
+left from this Mac being off. So where its `status`, `cluster status` and a
+`start`'s result say how to start the pair (stopped, the other Mac not
+answering, the pair not running there), they end ``If the other Mac left the
+pair, `darkbloom cluster leave` here unpairs this Mac too.``
+(`ClusterPairSummary.leftBehindLine`). Its `darkbloom cluster` adds ``If it left
+the pair, choose Start over to pair again, or Quit and run `darkbloom cluster
+leave` here.`` (`ClusterOnboardingDriver.otherMacSilentLine`).
 
 Provider-local Chat Completions, Completions and Responses reject negative output
 token limits with HTTP 400 before model invocation or streaming headers. Explicit
@@ -2246,7 +2265,7 @@ A failed step does not stop the safe steps after it.
 | # | Step | Through | Skipped when |
 |---|---|---|---|
 | 1 | Stop serving on this Mac | the [stop](#darkbloom-stop) drain (`ServiceDrain`) | the provider service was not running. When a cluster service serves here instead, the step says whose (step 2 handles it) |
-| 2 | Stop this Mac's cluster part and remove its service | `darkbloom cluster stop --service`; when the other Mac does not answer, `cluster stop --local-only` (`Cluster.Stop.beforeUnpairing`, as [`darkbloom cluster leave`](#darkbloom-cluster-leave) takes it: its lines say what stopped, and the summary says what to do on the other Mac). It stops a running cluster service whose command is `darkbloom cluster service`, launchd's or one a session started, wherever it runs from, even outside this install's app (`ClusterService.stopDetached`), and removes this install's own login agents only (`ClusterServiceAgent.installedLabels`, `ClusterServiceAgentPlan.isOwnAgent`). Each install has its own pair, service lock and agent, so another install's pair and agent are never touched. A service under another command name is not stopped: this step fails with that stop's own message, and nothing is deleted. Anything else holding the lock is refused, and nothing is deleted: a service from neither app, a pid that is no cluster service, or a lock or pid file that can't be read. Whose a service is follows its executable with links resolved (`ProviderUninstall.owner`) | no cluster service on this Mac. The dry run says what this step does to a cluster service running here (`ClusterService.running`) |
+| 2 | Stop this Mac's cluster part and remove its service | `darkbloom cluster stop --service`; when the other Mac does not answer, `cluster stop --local-only` (`Cluster.Stop.beforeUnpairing`, as [`darkbloom cluster leave`](#darkbloom-cluster-leave) takes it: its lines say only what stopped, not the pair stop's ``Run `darkbloom cluster` to serve again.``, and the summary says what to do on the other Mac). When the leading Mac's other Mac doesn't answer, the summary's step line ends `: the other Mac did not answer, so it was not asked to stop`; when the pair can't stop together, `: the other Mac was not asked to stop (…)`, as before (`BeforeUnpairing.outcome`). It stops a running cluster service whose command is `darkbloom cluster service`, launchd's or one a session started, wherever it runs from, even outside this install's app (`ClusterService.stopDetached`), and removes this install's own login agents only (`ClusterServiceAgent.installedLabels`, `ClusterServiceAgentPlan.isOwnAgent`). Each install has its own pair, service lock and agent, so another install's pair and agent are never touched. A service under another command name is not stopped: this step fails with that stop's own message, and nothing is deleted. Anything else holding the lock is refused, and nothing is deleted: a service from neither app, a pid that is no cluster service, or a lock or pid file that can't be read. Whose a service is follows its executable with links resolved (`ProviderUninstall.owner`) | no cluster service on this Mac. The dry run says what this step does to a cluster service running here (`ClusterService.running`) |
 | 3–5 | Remove the provider, watchdog and desktop API launch agents | what `stop --uninstall` runs (`LaunchAgent.uninstall`, `WatchdogAgent.uninstall`, `DesktopService.uninstall`) | not installed, or serving did not stop in step 1 |
 | 6 | Revoke this Mac's account token, best effort | what `darkbloom logout` does (`Logout.revokeSavedToken`) | no saved token, the coordinator did not confirm it, or serving did not stop. It never fails the uninstall; the token file goes with `~/.darkbloom` |
 | 7 | Forget the pairing with the other Mac | `darkbloom cluster pair --forget <pin>`, once per pairing of this install | this Mac is not paired |

@@ -605,8 +605,10 @@ its advertised context, else its model's): a prompt that fills it is refused as
 cut to it before the reservation
 (`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Translation.swift`).
 A request the grant can't hold now is refused for capacity before any stream
-exists; this Mac's API answers it with 503, before any SSE header, and words that
-name this Mac's memory and what to change
+exists: on a contiguous slot by the shared reservation, on a paged slot by the
+engine's own admission (one that can never fit; the rest queue). This Mac's API
+answers it with 503, before any SSE header, streamed or not, and words that name
+this Mac's memory and what to change
 (`provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift`).
 
 Loads and serving-set reserve raises must preserve each resident bridge's total

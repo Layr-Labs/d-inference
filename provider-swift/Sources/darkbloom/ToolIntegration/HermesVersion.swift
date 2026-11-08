@@ -19,7 +19,7 @@ enum HermesVersion {
         return nil
     }
 
-    /// The one line `start --hermes` prints when the installed Hermes predates `key_cmd`; nil when it doesn't, or
+    /// The one line `darkbloom --hermes` prints when the installed Hermes predates `key_cmd`; nil when it doesn't, or
     /// when its version can't be read. A release date (a first number of 2000 or more) compares with v0.20.2's.
     static func keyCommandWarning(versionOutput: String) -> String? {
         guard let version = parse(versionOutput) else { return nil }

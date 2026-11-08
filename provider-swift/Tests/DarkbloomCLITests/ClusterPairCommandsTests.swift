@@ -886,15 +886,13 @@ struct ClusterPairControlTests {
     }
 
     /// A terminal `darkbloom cluster` saves the pair's "Only me" (`cluster local`) as `[local] mode = "local"`, which a
-    /// single-Mac start on this Mac reads too. A script's `start --solo` runs without a terminal: on a Mac whose pair
-    /// doesn't run here (the other Mac asleep or gone, this Mac's part serving alone or waiting), it is refused in
-    /// `start`'s one line before this Mac's part is stopped or its saved start cleared, as for one Mac. Before, the part
-    /// was stopped and the start cleared first. The desktop app's Start (`start --model <id> --config <path>`) starts the
-    /// pair instead, which reads no single-Mac mode.
-    @Test("without a terminal, the pair's saved Only me is refused before this Mac's part is stopped")
-    func nonTerminalStartWithThePairsOnlyMeLeavesThePart() async {
-        let refusal = "error: This Mac is set to Only me, which serves in a terminal. Run `darkbloom start` in one, or name "
-            + "how to serve: --local, --network or --me-first."
+    /// single-Mac start on this Mac reads too. Pair membership wins: the desktop app's Start (`start --model <id>
+    /// --config <path>`, no terminal) starts the pair, which reads no single-Mac mode. `[local] mode` is single-Mac
+    /// serving's: a script's `start --solo` without a terminal serves this Mac alone, Only me in the background, after
+    /// this Mac's part is released, as a network `start --solo` does. Only me needs no terminal, so nothing is refused.
+    @Test("the pair's saved Only me, without a terminal: the app's Start starts the pair; start --solo serves this Mac alone")
+    func nonTerminalStartWithThePairsOnlyMe() async {
+        let refusal = "This Mac is set to Only me, which serves in a terminal."
         let app = await #expect(processExitsWith: .success, observing: [\.standardOutputContent, \.standardErrorContent]) {
             var stale = stalePair()
             stale.localOnly = true
@@ -923,18 +921,19 @@ struct ClusterPairControlTests {
                 }
             }
         }
-        // The app's Start starts the pair (`appStartStartsThePair`): the saved Only me is single-Mac serving's, never read.
+        // The app's Start starts the pair (`appStartStartsThePair`): the saved Only me is single-Mac serving's, never read,
+        // and the pair's part keeps running.
         let appStderr = text(app?.standardErrorContent)
         #expect(!appStderr.contains(refusal), "the app's Start: \(appStderr)")
         #expect(pairActionCalls(appStderr) == ["ensureService", "serve"], "the app's Start: \(pairActionCalls(appStderr))")
-        let soloStderr = text(solo?.standardErrorContent)
-        #expect(soloStderr.components(separatedBy: "\n").filter { $0 == refusal }.count == 1, "--solo: \(soloStderr)")
+        #expect(!appStderr.contains("released"), "the app's Start: the pair's part keeps running")
+        // --solo: single-Mac serving as saved, Only me in the background, never refused. This Mac's part is released
+        // first, and the start goes ahead (on a Mac with a GPU it ends at this sandbox's missing model).
+        let soloStderr = text(solo?.standardErrorContent), soloOut = text(solo?.standardOutputContent)
+        #expect(!soloStderr.contains(refusal), "--solo: \(soloStderr)")
+        #expect(soloStderr.contains("released"), "--solo: this Mac's part is released first")
+        #expect(soloOut.contains("By starting the provider, you agree to the Darkbloom Terms of Service:"), "--solo: \(soloOut)")
         #expect(pairActionCalls(soloStderr).isEmpty, "--solo")
-        for (name, result) in [("the app's Start", app), ("--solo", solo)] {
-            let stderr = text(result?.standardErrorContent), out = text(result?.standardOutputContent)
-            #expect(!stderr.contains("released"), "\(name): this Mac's part keeps running")
-            #expect(!out.contains("its saved start is cleared"), "\(name): \(out)")
-        }
     }
 
     @Test("a leftover part that doesn't stop: nothing starts beside it, and the one step that always works is named")

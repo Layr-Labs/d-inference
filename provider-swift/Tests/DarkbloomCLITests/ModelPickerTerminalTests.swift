@@ -48,10 +48,11 @@ struct ModelPickerTerminalTests {
         )
     }
 
-    /// The tests use a 32 GB Mac. `Start.pickerLoadBudgetGiB` gives about
-    /// 22.3 GiB for it (a 28.8 GiB cap less 6.5 GiB load headroom). The
-    /// `budgetSitsBetweenTheFixtureSizes` test checks that every fixture size
-    /// below is on the side of the budget that the tests expect.
+    /// The tests use a 32 GB Mac (`pickerOpensOnTheDefault` a 256 GB one).
+    /// `Start.pickerLoadBudgetGiB` gives about 22.3 GiB for it (a 28.8 GiB cap
+    /// less 6.5 GiB load headroom). The `budgetSitsBetweenTheFixtureSizes` test
+    /// checks that every fixture size below is on the side of the budget that
+    /// the tests expect.
     private static let memoryGb = 32.0
 
     /// Six rows: two downloaded, four to download.
@@ -78,7 +79,9 @@ struct ModelPickerTerminalTests {
 
     private func runPicker(
         entries: [Start.PickerEntry],
+        memoryGb: Double = Self.memoryGb,
         preselectDownloaded: Bool = true,
+        lastUsed: [String] = [],
         keys: [[UInt8]]
     ) throws -> PickerRun {
         var sockets: [Int32] = [-1, -1]
@@ -111,8 +114,9 @@ struct ModelPickerTerminalTests {
         let start = try Start.parse([])
         let selection = try start.runModelPicker(
             entries: entries,
-            memoryGb: Self.memoryGb,
+            memoryGb: memoryGb,
             preselectDownloaded: preselectDownloaded,
+            lastUsed: lastUsed,
             inputFD: sockets[0],
             outputFD: outputFD
         )
@@ -130,7 +134,7 @@ struct ModelPickerTerminalTests {
         try #require(budget >= 12 && budget < 24, "budget \(budget) GiB")
     }
 
-    @Test("Enter confirms the largest downloaded model that fits, which is preselected")
+    @Test("Enter confirms the downloaded model the picker opens with, here the only one that fits")
     func enterConfirmsPreselection() throws {
         let run = try runPicker(entries: mixedEntries, keys: [Self.enter])
 
@@ -138,6 +142,29 @@ struct ModelPickerTerminalTests {
         #expect(run.frameCount == 1)
         #expect(run.output.hasPrefix("\u{1B}[?25l\r\u{1B}[J"))
         #expect(run.output.hasSuffix("\u{1B}[?25h"))
+    }
+
+    /// The picker opens on `Start.pickerPreselection`, so Enter alone confirms
+    /// it. A 256 GB Mac's rows, as `StartFlowSimplerTests.pickerDefault` has
+    /// them: three downloaded, at 90%, 30% and 10% of each model's load budget,
+    /// and one to download.
+    @Test("Enter confirms what the picker opens with: the last selection, else room to spare, never a row to download")
+    func pickerOpensOnTheDefault() throws {
+        let memoryGb = 256.0
+        func row(_ name: String, budget fraction: Double, downloaded: Bool = true) -> Start.PickerEntry {
+            let budget = Start.pickerLoadBudgetGiB(memoryGb: memoryGb, modelIDs: ["fixture/\(name)"])
+            return entry(name, sizeGb: fraction * budget, downloaded: downloaded)
+        }
+        let rows = [row("mimo", budget: 0.9), row("qwen", budget: 0.3), row("gemma", budget: 0.1),
+                    row("catalog-only", budget: 0.01, downloaded: false)]
+        func enter(_ entries: [Start.PickerEntry], lastUsed: [String] = []) throws -> [String] {
+            try runPicker(entries: entries, memoryGb: memoryGb, lastUsed: lastUsed, keys: [Self.enter])
+                .selection.map { entries[$0].id }
+        }
+
+        #expect(try enter(rows) == ["fixture/qwen"], "the largest with room to spare, not mimo at 90% of its budget")
+        #expect(try enter(rows, lastUsed: ["fixture/gemma"]) == ["fixture/gemma"], "the last selection")
+        #expect(try enter(rows.filter { !$0.downloaded }).isEmpty, "nothing downloaded: nothing to confirm")
     }
 
     @Test("the first frame shows both sections and marks rows that do not fit")

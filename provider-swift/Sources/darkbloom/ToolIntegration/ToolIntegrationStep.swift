@@ -18,7 +18,7 @@ extension IntegrationTool {
     var flag: String { "--\(rawValue)" }
 }
 
-/// Whether a tool is on this Mac, as `start --opencode` / `--hermes` looks for it.
+/// Whether a tool is on this Mac, as `darkbloom --opencode` / `--hermes` looks for it.
 enum ToolInstall: Equatable, Sendable {
     case installed(URL)
     case missing
@@ -73,7 +73,7 @@ enum ToolLocator {
     }
 }
 
-/// `darkbloom start --opencode` / `--hermes`: once, at start, points each tool at this Mac's live local API, with a
+/// `darkbloom --opencode` / `--hermes`: once, at start, points each tool at this Mac's live local API, with a
 /// backup and a one-line undo. It never prints or writes a key, and a tool it can't set up never stops Darkbloom
 /// serving.
 struct ToolIntegrationStep {

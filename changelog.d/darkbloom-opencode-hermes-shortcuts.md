@@ -6,7 +6,6 @@
   working; `--help`, `--version`, plain `darkbloom` and every subcommand are unchanged, and a mistyped flag
   (`darkbloom --opencod`) gets the usual unknown-option error.
 - `darkbloom --help` shows the two shortcuts, one line each.
-- The lines that name the command say the short form: `darkbloom local`'s `tools:` line, the refusals, the tool
-  step's lines, and the comment above the `darkbloom` block in OpenCode's and Hermes' configs (a config set up
-  before keeps its line). The installer's last line is now `Next: ~/.darkbloom/bin/darkbloom --opencode`;
-  `curl … | bash` prints it once the platform's copy of the installer is updated.
+- The lines that name the command say the short form: `darkbloom local`'s `tools:` line, the line `--port` prints
+  when it replaces a saved port, the refusals, the tool step's lines, the installer's closing lines, and the comment
+  above the `darkbloom` block in OpenCode's and Hermes' configs (a config set up before keeps its line).

@@ -299,7 +299,7 @@ LaunchAgent with the arguments `--local-endpoint` has always used
   address the tools were given never moves:
   1. `--port <n>`: used as given, and saved when it isn't the saved port:
      ``Local API port: 8007 (saved, instead of 8005: tools set up for 8005 need
-     `darkbloom start --opencode` or `--hermes` again).``
+     `darkbloom --opencode` or `--hermes` again).``
   2. `[local] port`: used as it is, never probed or moved, even `8000` or a
      port another program holds (the local API then says why it isn't up).
   3. Otherwise the port this Mac's local API already uses: its running API's

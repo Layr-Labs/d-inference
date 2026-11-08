@@ -18,7 +18,7 @@ extension IntegrationTool {
     var flag: String { "--\(rawValue)" }
 }
 
-/// Whether a tool is on this Mac, as `start --opencode` / `--hermes` looks for it.
+/// Whether a tool is on this Mac, as `darkbloom --opencode` / `--hermes` looks for it.
 enum ToolInstall: Equatable, Sendable {
     case installed(URL)
     case missing
@@ -73,7 +73,7 @@ enum ToolLocator {
     }
 }
 
-/// `darkbloom start --opencode` / `--hermes`: once, at start, points each tool at this Mac's live local API, with a
+/// `darkbloom --opencode` / `--hermes`: once, at start, points each tool at this Mac's live local API, with a
 /// backup and a one-line undo. It first waits while the API's process still loads this Mac's models (`ModelLoadWait`),
 /// so the tools get each model's own limits. It never prints or writes a key, and a tool it can't set up never stops
 /// Darkbloom serving.
@@ -128,11 +128,11 @@ struct ToolIntegrationStep {
                 ready.append((tool, executable))
             case .missing:
                 say("✗ \(tool.displayName) isn't installed on this Mac. Install it, then run "
-                    + "`\(Self.cli) start \(tool.flag)` again.")
+                    + "`\(Self.command([tool]))` again.")
                 failed = true
             case .tooOld:
                 say("✗ OpenCode 1 is installed; Darkbloom sets up OpenCode 2. Run `opencode upgrade`, then "
-                    + "`\(Self.cli) start --opencode` again.")
+                    + "`\(Self.command([.opencode]))` again.")
                 failed = true
             }
         }
@@ -268,8 +268,8 @@ struct ToolIntegrationStep {
     /// The line when this start has no local API for the tools.
     static func noLocalAPI(_ tools: [IntegrationTool]) -> String {
         "This Mac serves only the Darkbloom network, so \(names(tools)) \(tools.count == 1 ? "has" : "have") no local "
-            + "address to use. Choose \"Both, me first\" (`\(cli) start --me-first \(flags(tools))`) or \"Only me\" "
-            + "(`\(cli) start --local \(flags(tools))`)."
+            + "address to use. Choose \"Both, me first\" (`\(command(tools)) --me-first`) or \"Only me\" "
+            + "(`\(command(tools)) --local`)."
     }
 
     /// The line for this Mac's models that were neither loaded nor loading as the tools were set up (unloaded when
@@ -282,7 +282,7 @@ struct ToolIntegrationStep {
     /// The line when the local API didn't come up in time after a background start.
     static func notUp(_ tools: [IntegrationTool], seconds: Int) -> String {
         "✗ This Mac's local API didn't answer within \(seconds) seconds, so \(notSetUp(tools)). Run "
-            + "`\(cli) start \(flags(tools))` again once `\(cli) local` shows it."
+            + "`\(command(tools))` again once `\(cli) local` shows it."
     }
 
     /// The line on a paired Mac whose pair has no local API on this Mac.
@@ -307,7 +307,7 @@ struct ToolIntegrationStep {
 
     /// The line when the catalog can't be read and a tool now lists a model without its name and image support.
     static func catalogUnreachable(_ tools: [IntegrationTool]) -> String {
-        "  Darkbloom's catalog wasn't reachable: run `\(cli) start \(flags(tools))` again online for the models' "
+        "  Darkbloom's catalog wasn't reachable: run `\(command(tools))` again online for the models' "
             + "names and image support."
     }
 
@@ -317,8 +317,6 @@ struct ToolIntegrationStep {
     static var cli: String { BuildEnvironment.current.cliName }
 
     static func names(_ tools: [IntegrationTool]) -> String { tools.map(\.displayName).joined(separator: " and ") }
-
-    static func flags(_ tools: [IntegrationTool]) -> String { tools.map(\.flag).joined(separator: " ") }
 
     /// The command that sets `tools` up: `darkbloom --opencode --hermes`, short for `darkbloom start --opencode
     /// --hermes` (`Darkbloom.expandingToolShortcuts`).

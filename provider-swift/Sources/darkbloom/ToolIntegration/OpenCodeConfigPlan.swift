@@ -271,7 +271,7 @@ private struct Block {
 
     /// The whole member, the comment line first in a `.jsonc` file, as lines relative to the member's indent.
     var member: [String] {
-        let comment = "// Added by `\(provider.id) start --opencode`. Run it again to refresh \(provider.name)'s models."
+        let comment = "// Added by `\(provider.id) --opencode`. Run it again to refresh \(provider.name)'s models."
         let lines = valueLines.enumerated().map { index, line in
             index == 0 ? "\(OpenCodeConfigPlan.jsonString(provider.id)): {"
                 : String(repeating: unit, count: line.level) + line.text

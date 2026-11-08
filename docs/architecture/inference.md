@@ -380,10 +380,27 @@ without a login is named before the Start step
 setup ends with the outcome block (`ClusterOnboardingConsole.result`,
 `ClusterOnboardingReady.outcome`). The other Mac's `darkbloom cluster` shows the
 same block from the status line (`ClusterOnboardingNotServing.statusLine`,
-`ClusterOnboardingDriver.showOutcome`). A member's missing App Attest names its
-local key-generation safeguard's end
+`ClusterOnboardingDriver.showOutcome`). A member without App Attest is what the
+pair waits for while its part is new: the coordinator's first trust status for
+a part carries none, and the authorization lands about a minute after the part
+registers. Until a Mac's part has run `ClusterOnboardingAppleCheck.slowSeconds`
+(2 minutes) without one, the status line's reason is the wait's own words,
+"checking both Macs with Apple" or the one Mac
+(`ClusterOnboardingAppleCheck.look`, `ClusterOnboardingPairWait.words`), which
+every reader takes as progress (`ClusterOnboardingPairWait.isProgress`): loading
+in `cluster status` on both Macs, and "Checking …" on the Mac that joined
+(`ClusterOnboardingDriver.offeredWaitingWords`). Only the leading Mac's look
+decides it. The warning `ClusterOnboardingNotServing.notVerified` names a Mac
+once that wait is over, at once when its local key-generation safeguard holds
+it back, with that safeguard's end
 (`ClusterServiceStatus.Child.appAttestRetryAt`, read from the daemon state's
-`AppAttestKeyState.generationBlockedUntil`).
+`AppAttestKeyState.generationBlockedUntil`), and for a part whose age isn't
+known (`ClusterOnboardingAppleCheck.Mac.warns`). While the pair serves Both, me
+first, the leading Mac's status adds the owner's pause under its serving line,
+read once per status from the state file of its part when that part runs rank 0
+(`OnboardingLive.pauseLines`, words from `MeFirstWords.pairLines`, said from now
+in that Mac's clock): the Mac that follows shows it from that status, with
+nothing more on the link or the heartbeat, and nothing per request.
 How the approval is fetched, matched,
 checked on each Mac and saved:
 [coordinator-paired member](../reference/configuration.md#coordinator-paired-member).

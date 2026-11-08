@@ -2665,6 +2665,22 @@ struct DesktopAppOnAPairedMacTests {
             + "No model was chosen for the pair yet: run `darkbloom start` in a terminal to choose one.", ""])
     }
 
+    @Test("only a plain start may name no models, and only where it starts the pair: `start`'s own test of a paired Mac")
+    func startWithoutModelsOnlyStartsAPair() throws {
+        #expect(try !DesktopBackend.startsThePair(.notPaired))
+        #expect(try DesktopBackend.startsThePair(stoppedPair()))
+        // An unreadable pairing record counts as paired, as in `start`, which then refuses without --solo.
+        #expect(try DesktopBackend.startsThePair(unreadable()))
+        let noModel = #expect(throws: ValidationError.self) { try DesktopBackend.startsThePair(pair(started: false, model: false)) }
+        #expect(noModel?.message == ClusterPairSummary.noModelLine)
+        // Local mode and a switch still name their models, paired or not.
+        for request in [DesktopAction(id: UUID().uuidString, action: "start", models: [], local: true),
+                        DesktopAction(id: UUID().uuidString, action: "switch", models: [])] {
+            let refused = #expect(throws: ValidationError.self) { try request.validate(startsThePair: { true }) }
+            #expect(refused?.message == "Choose at least one model", "\(request.action)")
+        }
+    }
+
     @Test("the app's Start says what happened: the pair serves its model, or was asked to start and isn't serving, and no local API was added")
     func appStartLinesAreTrue() async {
         // A pair that already serves: it "serves" its model; nothing was "started", and this Mac doesn't serve alone.

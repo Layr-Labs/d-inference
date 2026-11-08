@@ -482,8 +482,9 @@ here (its other Mac gone). It first says so in one line, in words for what it do
   (up to 10 min).`), and a status that stays the same is said again once a
   minute (`Still waiting (up to 10 min in all): …`). The exit status is `darkbloom cluster status`'s (`0`
   serving, `3` not serving yet, `4` stopped, `5` the other Mac isn't
-  answering); `1` when no model was chosen yet (`run darkbloom start in a
-  terminal to choose one`) or the cluster can't be reached. A pair that runs
+  answering); `1` when no model was chosen yet (``No model was chosen for the pair yet: choose one with `darkbloom cluster` in a terminal on <the leading Mac>.``:
+  only the leading Mac's screen has the model list) or the cluster can't be
+  reached. A pair that runs
   here and already serves, by one look at the status `darkbloom cluster status`
   reads, is kept as it is: `…: the pair already serves.` and the result block,
   exit `0`, with nothing asked of either Mac (`ClusterPairCommands.servingLook`).
@@ -525,9 +526,16 @@ take (`ClusterPairSummary.appStartLines`):
 
 The app's Autopilot enroll and its model refresh (`autopilot`,
 `autopilot_models`) are refused on a paired Mac before any download, in one
-line the app shows: ``This Mac serves in a pair; Autopilot isn't available for pairs yet. Use Start serving.`` (`DesktopBackend.pairAutopilotRefusal`).
-Its snapshot then reports no `autopilot` capability and the pair's model
-(`pair`), so the app offers **Start serving** instead ([desktop control](../reference/desktop-control.md)).
+line the app shows (`DesktopBackend.pairAutopilotRefusal`): the pair as this
+Mac's own files tell it, then what works there, for example ``This Mac is in a pair, which is stopped; Autopilot isn't available for pairs yet. Use Start serving.``
+It says "This Mac serves in a pair" only when this Mac's view says the pair
+serves (`ClusterPairSummary.appPairSentence`). With no model yet, the no-model
+line takes the place of "Use Start serving."; with an unreadable pairing
+record, ``Run `darkbloom cluster` on this Mac to check it.``
+Its snapshot then reports no `autopilot` capability, and the pair's model, state
+and whether this Mac leads it (`pair`), so the app offers **Start serving**
+instead, or the Terminal step first where Start serving can't start the pair
+([desktop control](../reference/desktop-control.md)).
 
 While the pair doesn't run here (`ClusterPairWatch`: stopped, or its other Mac
 hasn't answered for 15 minutes, or it never served in its first 15 minutes),

@@ -17,7 +17,10 @@ function machineLine({ machine, eligibility }: Snapshot) {
 }
 
 function startingLine(snapshot: Snapshot, method: StartMethod, pinned: string[]) {
-  if (snapshot.pair) return `Starts the pair with ${pairModel(snapshot.pair)}, on both Macs.`;
+  if (snapshot.pair)
+    return snapshot.pair.state === 'serving'
+      ? `Keeps the pair serving ${pairModel(snapshot.pair)}, on both Macs.`
+      : `Starts the pair with ${pairModel(snapshot.pair)}, on both Macs.`;
   const ids = startModels(snapshot, method, pinned);
   const chosen = snapshot.models.filter((model) => ids.includes(model.id));
   if (!chosen.length) return 'Choose a model in Advanced to start.';

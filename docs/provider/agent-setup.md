@@ -692,8 +692,9 @@ otherwise ([stopping and starting again](two-mac-cluster.md#stopping-and-startin
 | List the cluster commands | Any Mac | `darkbloom cluster --help` |
 
 `darkbloom start` without a terminal needs a model chosen earlier. Otherwise
-it says ``No model was chosen for the pair yet: run `darkbloom start` in a
-terminal to choose one.`` and exits with status 1. Other single-Mac options
+it says ``No model was chosen for the pair yet: choose one with `darkbloom
+cluster` in a terminal on this Mac.`` (on the Mac that follows: ``… on the
+other Mac (…).``, which leads) and exits with status 1. Other single-Mac options
 are refused there by name, without `--solo` (exit status 64); `--model <id>`
 (and `--local-endpoint`), the desktop app's Start, start the pair with its own
 model and end with ``This Mac serves in a pair: the pair serves <model>;

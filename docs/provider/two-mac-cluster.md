@@ -1722,7 +1722,12 @@ on its own), `darkbloom start --solo` serves this Mac alone:
   serve yet), and when it asked for a local API this Mac doesn't get from the
   pair, ``No local API was added on this Mac: …``. The app's onboarding offers
   **Start serving** there, never Autopilot, which serves one Mac and is refused
-  on a paired Mac before it downloads anything.
+  on a paired Mac before it downloads anything. It says the pair as this Mac's
+  own files tell it ("This Mac serves in a pair with …" only when it serves;
+  "… which is stopped", "… that isn't running here", or, on the Mac that
+  follows, "started with …"). A pair with no model yet gets no **Start
+  serving**: the page says to choose its model with `darkbloom cluster` in
+  Terminal on the leading Mac first, and so does the CLI (``No model was chosen for the pair yet: choose one with `darkbloom cluster` in a terminal on <the leading Mac>.``).
 - A pair that is merely stopped gives one line: ``This Mac is in a two-Mac
   cluster with the other Mac (…), which is stopped: serving this Mac alone
   (`darkbloom start` starts the pair again).``

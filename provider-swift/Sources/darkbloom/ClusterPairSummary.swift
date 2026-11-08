@@ -212,7 +212,42 @@ struct ClusterPairSummary: Sendable, Equatable {
         "Memory: not checked (" + (failure.first ?? "no answer") + ")"
     }
     static let unreachableLine = "This Mac's cluster can't be reached from this command; run `\(Self.cli) cluster` on this Mac to see it."
-    static let noModelLine = "No model was chosen for the pair yet: run `\(Self.cli) start` in a terminal to choose one."
+
+    /// A pair with no model yet: where its model is chosen. Only the leading Mac's screen has the model list (the Mac
+    /// that follows shows the pair and starts nothing, `darkbloom start` in a terminal there included), so the line names
+    /// the leading Mac, from this Mac's point of view (#1905's review: it said `darkbloom start` in a terminal on either
+    /// Mac).
+    var noModelLine: String {
+        "No model was chosen for the pair yet: choose one with `\(Self.cli) cluster` in a terminal on \(leadingMac)."
+    }
+
+    /// The pair's state as the desktop app is told it (`Snapshot.pair.state`), from this Mac's own view: no other Mac is
+    /// asked, as the snapshot reads `local()`. `serving` only where that view knows it (the part that runs rank 0 says
+    /// so); `started` where the pair runs here and this Mac can't tell (the Mac that follows reads no pair line of its
+    /// own); `notRunning` for a started pair that doesn't run here (its other Mac stopped taking part, or this Mac's
+    /// cluster service is off); `stopped`; `unreadable` when the pairing record can't be read.
+    enum AppState: String, Sendable {
+        case serving, started, notRunning = "not_running", stopped, unreadable
+    }
+
+    var appState: AppState {
+        if pairingUnreadable { return .unreadable }
+        if !started { return .stopped }
+        if pairIdle { return .notRunning }
+        return state == .serving ? .serving : .started
+    }
+
+    /// The pair as the desktop app's words say it, without a final period: "serves" only where this Mac's own view says
+    /// the pair serves (#1905's review: "This Mac serves in a pair" was said in every state).
+    var appPairSentence: String {
+        switch appState {
+        case .serving: return "This Mac serves in a pair"
+        case .stopped: return "This Mac is in a pair, which is stopped"
+        case .notRunning: return "This Mac is in a pair that isn't running here"
+        case .started: return "This Mac is in a pair"
+        case .unreadable: return "This Mac's pairing record couldn't be read, so it may be in a pair"
+        }
+    }
 
     /// After a stop, what each Mac has left running (`cluster verify-teardown`'s lines): one line when nothing is.
     static func memoryLines(_ lines: [String]) -> [String] {

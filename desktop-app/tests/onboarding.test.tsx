@@ -279,7 +279,9 @@ it('offers Start serving for the pair on a paired Mac, never Autopilot', async (
 it('says a serving pair serves, and that Start serving keeps it', () => {
   toStartPage(pairedMac({ state: 'serving' }));
   expect(
-    screen.getByText('This Mac serves in a pair with Qwen 3.8 27B. Start serving keeps it serving.'),
+    screen.getByText(
+      'This Mac serves in a pair with Qwen 3.8 27B. Start serving keeps it serving.',
+    ),
   ).toBeVisible();
   expect(screen.getByText('Keeps the pair serving Qwen 3.8 27B, on both Macs.')).toBeVisible();
   expect(screen.getByRole('button', { name: /^Start serving/ })).toBeEnabled();

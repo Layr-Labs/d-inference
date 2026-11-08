@@ -215,7 +215,7 @@ enum ClusterPairCommands {
     /// was ever chosen.
     private static func startable(_ pair: ClusterPairSummary, actions: ClusterPairActions?, say: Say) -> ClusterPairActions? {
         guard let actions else { say(ClusterPairSummary.unreachableLine); return nil }
-        guard pair.model != nil else { say(ClusterPairSummary.noModelLine); return nil }
+        guard pair.model != nil else { say(pair.noModelLine); return nil }
         return actions
     }
 

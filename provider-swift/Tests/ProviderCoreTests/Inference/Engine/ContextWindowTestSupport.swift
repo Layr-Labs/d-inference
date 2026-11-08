@@ -2,7 +2,26 @@ import Foundation
 import MLXLMCommon
 @testable import ProviderCore
 
-// Shared by `LocalDefaultOutputTests` and `LocalContextWindowTests`.
+// Shared by `LocalDefaultOutputTests`, `LocalContextWindowTests` and the tests that pin a
+// slot's context (`Qwen4SupportPolicyTests`, `Bonsai9BContextTests`, `FlintContextAdmissionTests`,
+// `ServingPerformanceProfileTests`, `GLM5NextManagedLoadTests`).
+
+/// The words a client is refused with when a prompt alone fills a single Mac
+/// slot's window of `contextTokens` (its advertised context, else its model's).
+func windowRefusalWords(_ contextTokens: Int) -> String {
+    "The prompt fills this model's context window of \(contextTokens) tokens, leaving no room for an answer. "
+        + "Shorten the prompt or start a new conversation."
+}
+
+/// That refusal as the bridge throws it.
+func windowRefusal(_ contextTokens: Int) -> MultiModelBatchSchedulerEngineError {
+    .promptExceedsContext(windowRefusalWords(contextTokens))
+}
+
+/// That refusal in-band, as a nonthrowing submission yields it.
+func windowRefusalMarker(_ contextTokens: Int) -> String {
+    "prompt_exceeds_context: " + windowRefusalWords(contextTokens)
+}
 
 /// A 256 GiB Mac with nothing else resident: its memory holds every request.
 func roomyKVBudget() -> GlobalKVCacheBudget {

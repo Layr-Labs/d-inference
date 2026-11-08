@@ -27,34 +27,40 @@ struct FlintContextAdmissionTests {
         let engine = scheduler(bridge)
         #expect(try await engine.availableModels().first?.contextLength == limit)
 
-        for (output, accepted) in [(limit - 1, true), (limit, false),
-            (limit + 1, false), (Int.max, false)] {
-            let before = native.submittedOutputs.count
-            let probesBefore = native.prefixProbes
-            do {
-                let stream = try await bridge.submitTokenized(promptTokens: [1],
-                    request: .init(model: modelID, messages: [], max_tokens: output),
-                    requestId: "context-\(output)", firstContentDeadline: nil)
-                for await _ in stream {}
-                #expect(accepted, "over-context request returned a stream")
-            } catch let error as MultiModelBatchSchedulerEngineError {
-                #expect(!accepted && error == .advertisedContextExceeded)
-            }
-            #expect(native.submittedOutputs.count == before + (accepted ? 1 : 0))
-            if accepted {
-                #expect(native.submittedOutputs.last == output, "output must not be clamped")
-            } else {
-                #expect(native.prefixProbes == probesBefore)
-            }
+        // After a 1-token prompt, an output that fits is kept, and one that would
+        // pass the artifact context is cut to what the prompt leaves of it.
+        for output in [limit - 1, limit, limit + 1, Int.max] {
+            let stream = try await bridge.submitTokenized(promptTokens: [1],
+                request: .init(model: modelID, messages: [], max_tokens: output),
+                requestId: "context-\(output)", firstContentDeadline: nil)
+            for await _ in stream {}
+            #expect(native.submittedOutputs.last == limit - 1, "output \(output) after a 1-token prompt")
             #expect(await bridge._testPendingSubmissionCount() == 0)
             #expect(await bridge._testPendingProfileCount() == 0)
         }
+        // A prompt that fills the artifact context is refused, naming it.
+        let submitted = native.submittedOutputs.count, probesBefore = native.prefixProbes
+        do {
+            let stream = try await bridge.submitTokenized(promptTokens: Array(repeating: 1, count: limit),
+                request: .init(model: modelID, messages: [], max_tokens: 1),
+                requestId: "context-full", firstContentDeadline: nil)
+            for await _ in stream {}
+            Issue.record("a prompt that fills the context returned a stream")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            #expect(error == windowRefusal(limit))
+        }
+        #expect(native.submittedOutputs.count == submitted)
+        #expect(native.prefixProbes == probesBefore)
+        #expect(await bridge._testPendingSubmissionCount() == 0)
+        #expect(await bridge._testPendingProfileCount() == 0)
         await bridge.shutdown()
     }
 
+    /// The test template renders every chat to one token, so a context of 1
+    /// is one that chat's prompt fills.
     @Test func oversizedRequestThrowsBeforeSSEFramesOrEngineAdmission() async throws {
         let native = FlintContextSentinelEngine()
-        let bridge = try await makeBridge(model: model(limit: 262_144), native: native,
+        let bridge = try await makeBridge(model: model(limit: 1), native: native,
             sizingContext: 0)
         let service = MLXOpenAIService(engine: scheduler(bridge))
         let request = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: Data("""
@@ -65,7 +71,7 @@ struct FlintContextAdmissionTests {
             _ = try await service.streamChatCompletionFrames(request: request)
             Issue.record("context rejection must throw before the SSE stream is returned")
         } catch let error as MultiModelBatchSchedulerEngineError {
-            #expect(error == .advertisedContextExceeded)
+            #expect(error == windowRefusal(1))
             let failure = ProviderLoop.sanitizedInferenceFailure(from: error, phase: .generation)
             #expect(failure.statusCode == 400)
             #expect(failure.code == .invalidRequest)
@@ -81,7 +87,7 @@ struct FlintContextAdmissionTests {
         let bridge = try await makeBridge(model: model(limit: 8), native: native,
             sizingContext: 0, defaultOutput: 2)
         // The default output is cut to the window the prompt leaves (7 + 1); a
-        // prompt that fills the window alone is still refused.
+        // prompt that fills the window alone is still refused, naming it.
         for (prompt, accepted) in [(6, true), (7, true), (8, false), (9, false)] {
             let before = native.submittedOutputs.count
             do {
@@ -92,7 +98,7 @@ struct FlintContextAdmissionTests {
                 for await _ in stream {}
                 #expect(accepted)
             } catch let error as MultiModelBatchSchedulerEngineError {
-                #expect(!accepted && error == .advertisedContextExceeded)
+                #expect(!accepted && error == windowRefusal(8))
             }
             #expect(native.submittedOutputs.count == before + (accepted ? 1 : 0))
         }
@@ -101,10 +107,12 @@ struct FlintContextAdmissionTests {
         await bridge.shutdown()
     }
 
+    /// A prompt that fills the context (1, as above) gets a JSON 400 that names
+    /// it before any success header, streamed or not.
     @Test(arguments: [true, false])
     func localHTTPRejectsBeforeSuccessHeaders(streaming: Bool) async throws {
         let native = FlintContextSentinelEngine()
-        let bridge = try await makeBridge(model: model(limit: 262_144), native: native,
+        let bridge = try await makeBridge(model: model(limit: 1), native: native,
             sizingContext: 0)
         let router = Router<BasicRequestContext>()
         let upload = LocalChatUploadResponder(inner: router.buildResponder(),
@@ -126,8 +134,7 @@ struct FlintContextAdmissionTests {
                 let error = try #require(json["error"] as? [String: Any])
                 #expect(error["type"] as? String == "invalid_request_error")
                 #expect(error["code"] as? String == "context_length_exceeded")
-                #expect(error["message"] as? String == "The prompt and max_tokens together don't fit in this "
-                    + "model's context window (its context_length in /v1/models). Shorten the prompt or lower max_tokens.")
+                #expect(error["message"] as? String == windowRefusalWords(1))
             }
         }
         #expect(native.submittedOutputs.isEmpty)

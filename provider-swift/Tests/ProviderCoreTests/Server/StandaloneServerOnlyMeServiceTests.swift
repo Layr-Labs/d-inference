@@ -89,6 +89,17 @@ struct StandaloneServerOnlyMeServiceTests {
         #expect(await !server.lifecycleDraining)
     }
 
+    @Test("a stop's drain that arrives during an update's drain keeps admission closed after it")
+    func updateDrainKeepsAStopsDrain() async throws {
+        let server = StandaloneServer(config: .init(port: 0))
+        await server.beginUpdateDrain()
+        let identity = try #require(ProcessIdentity.current())
+        _ = await server.drainForLifecycle(ProviderDrainRequest(target: identity, timeoutSeconds: 0, force: false))
+        await server.resumeAfterUpdate()
+        #expect(throws: HTTPError.self) { try server.responseTracker.admit().release() }
+        #expect(await server.lifecycleDraining)
+    }
+
     @Test("the update cycle is off with auto_update = false or DARKBLOOM_NO_UPDATE_CHECK, and starts once")
     func updateMonitorSwitches() async {
         let server = StandaloneServer(config: .init(port: 0))

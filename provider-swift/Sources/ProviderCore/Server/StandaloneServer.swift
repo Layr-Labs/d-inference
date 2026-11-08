@@ -159,6 +159,8 @@ public actor StandaloneServer {
     var updateSession: SelfUpdater.UpdateSession?
     var stagedUpdateBundle: SelfUpdater.StagedBundle?
     var updateDraining = false
+    /// The lifecycle drain request in force when the update's drain began (`lifecycleCommandID`).
+    var updateDrainLifecycleCommand: String?
     var idleUnloadTask: Task<Void, Never>?
 
     /// One resident model: its v2 bridge, loaded container (the VLM owns both

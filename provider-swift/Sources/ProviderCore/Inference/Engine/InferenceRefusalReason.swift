@@ -49,7 +49,7 @@ public enum InferenceRefusalReason: String, CaseIterable, Sendable, Equatable {
         case .invalidToolPayload(_, let refusal?): self = refusal
         case .invalidRole: self = .unsupportedMessageRole
         case .unsupportedReasoningEffort, .unsupportedNativeReasoningEffort: self = .unsupportedReasoningControl
-        case .advertisedContextExceeded: self = .requestExceedsContext
+        case .advertisedContextExceeded, .promptExceedsContext: self = .requestExceedsContext
         case .unsupportedOutputControl: self = .unsupportedOutputControl
         default: return nil
         }

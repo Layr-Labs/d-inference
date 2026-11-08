@@ -435,10 +435,18 @@ They run once, at `start`:
    loaded.``), when it didn't load (``… didn't load, so OpenCode wasn't set up:
    `darkbloom status` says why.``), or on Ctrl-C, which the wait alone takes
    (``Stopped waiting for Gemma 4 26B to load, so OpenCode wasn't set up;
-   nothing was written. …``). A model that isn't loading (unloaded when idle,
-   or one that loads on a request) isn't waited for: it gets the catalog's
-   limits, and one line says to run `darkbloom --opencode` again once
-   `darkbloom status` shows it loaded.
+   nothing was written. …``). It asks for Ctrl-C at every look before anything
+   else, and once more as it ends, so one pressed as the model finishes loading
+   writes nothing either (``Stopped before setting up OpenCode; nothing was
+   written. Run `darkbloom --opencode` again.``). A model that isn't loading
+   (unloaded when idle, or one that loads on a request) isn't waited for: it
+   gets the catalog's limits, and one line says to run `darkbloom --opencode`
+   again once `darkbloom status` shows it loaded. Which models those are, the
+   process says (its `warmModels`), also when a route that dials out lists the
+   catalog's limits for them; without its word, `/v1/models` does (a model it
+   lists without a context). Single-Mac only for now: a pair's local API (its
+   leader's part, a relay or `cluster local`) can't tell, so it isn't waited
+   for.
 
 A tool it can't set up prints `✗` and why, writes nothing and ends with
 `Darkbloom keeps serving.`; the start then exits 1 (a background start keeps
@@ -452,7 +460,13 @@ start's local API, or reads another key file than `local_token` (one that
 doesn't hold the same key), one line says so and names the command
 (`ToolAddress`, `provider-swift/Sources/darkbloom/ToolIntegration/ToolAddress.swift`):
 ``OpenCode points at http://127.0.0.1:8001/v1, not this Mac's local API
-(http://127.0.0.1:8002/v1): `darkbloom --opencode` points it there.``
+(http://127.0.0.1:8002/v1): `darkbloom --opencode` points it there.`` Two
+addresses are the same with the same scheme, host and port in any case (the
+scheme's own port when none is given) and path (one `/` at its end aside);
+`localhost`, `127.0.0.1` and `::1` are one host, and so is this Mac's `.local`
+name for an API on every address (`ToolAddress.sameAddress`). Single-Mac only
+for now: a paired Mac's `start` starts the pair and says nothing about the
+tools.
 
 On a Mac in a two-Mac cluster (one that holds a pairing; a cluster service left
 without one is a leftover, which `darkbloom cluster status` names), `start` starts the pair, as `darkbloom cluster` does

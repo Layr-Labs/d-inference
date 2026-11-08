@@ -74,6 +74,13 @@ flowchart LR
    before it said what it loads. Then the list is read again. The wait draws one `LiveLine` on a terminal (else a
    start and an end line), takes SIGINT only while it runs (`InterruptWatch`) and ends after `defaultTimeout`
    (600 s); a timeout, a model that didn't load, or Ctrl-C writes nothing (`ToolIntegrationStep.waitForModels`).
+   Ctrl-C is asked for right after each look, before "nothing loading" can end the wait, and once more as the wait
+   returns, before the list is read again. The wait's `.ready` carries what the process has loaded by its own word
+   (`warmModels`; none from Only me's server or without a state of its own), and the "run again" line names this
+   Mac's models it hasn't (`ToolIntegrationStep.notLoaded`); without that word, those `/v1/models` lists without a
+   context. The word counts because a route that dials out lists the catalog's limits for a model that isn't loaded.
+   The wait is single-Mac for now: a pair's API can't tell (above), and a pair start without a terminal waits for the
+   pair to serve instead (`ClusterPairCommands`).
 3. **OpenCode.** `OpenCodeConfigPlan.plan` reads the file into byte ranges with `JSONCDocument` and replaces only the
    `providers.<id>` value, or appends it in the file's indentation and trailing-comma style. The block has the base
    URL, `apiKey: "{file:<key file>}"` (under `~` in the home directory), `compatibility.maxTokensField: "max_tokens"`
@@ -95,7 +102,11 @@ flowchart LR
    (`OpenCodeConfigPlan.pointer`, `HermesConfigPlan.pointer`: the base URL, and the file `{file:}` or
    `key_cmd: /bin/cat <file>` reads) and compares it with that API: its base URL and `LocalEndpoint.tokenPath()`, or
    another file holding the same key. `ToolAddress.notice` says in one line which tools miss it and names
-   `darkbloom --opencode` / `--hermes`; it never writes (`Start.noteToolsPointingElsewhere`).
+   `darkbloom --opencode` / `--hermes`; it never writes (`Start.noteToolsPointingElsewhere`). Addresses compare by
+   `ToolAddress.sameAddress`: scheme, host and port in any case (the scheme's own port when none is given) and the
+   path without one `/` at its end; `localhost`, `127.0.0.1` and `::1` are one host, and so is this Mac's Bonjour name
+   (`Local.localHostName()`, with `.local`) for an API on every address (`ToolAddress.thisMacsNames`). Single-Mac
+   only: a paired Mac's start starts the pair and doesn't compare.
 
 ## Invariants
 

@@ -223,7 +223,10 @@ model.
   Mac gives each model, not the catalog's. It waits at most 10 minutes: a model
   still loading then, or one that doesn't load, sets nothing up, and the line
   names the next step. Ctrl-C stops the wait; nothing is written, and the start
-  says so. Darkbloom keeps serving either way.
+  says so, also when the model finishes loading just then. Darkbloom keeps
+  serving either way. On one Mac only for now: a pair's local API isn't waited
+  for (a pair started without a terminal already waits up to 10 minutes for the
+  pair to serve).
 - **What the tools get:** once a model is loaded, its whole context window from
   this Mac, and a quarter of it as their output limit (65,536 tokens for a
   262,144-token window), not the catalog's smaller one. On a pair, they get
@@ -244,6 +247,9 @@ model.
   ``OpenCode points at http://127.0.0.1:8001/v1, not this Mac's local API
   (http://127.0.0.1:8002/v1): `darkbloom --opencode` points it there.`` A
   start without `--opencode` or `--hermes` never changes a tool's file.
+  `localhost`, `127.0.0.1` and `::1` are all this Mac, and so is its `.local`
+  name when the API listens on every address. On one Mac only for now: a
+  paired Mac's start doesn't say it.
 - **Offline** (Darkbloom's catalog unreachable), a run again keeps the names,
   image support and limits already set up, but image input for a model served
   here follows this Mac. A model set up for the first time then gets its ID,

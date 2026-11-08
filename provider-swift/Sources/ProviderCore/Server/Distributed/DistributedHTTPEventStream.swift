@@ -98,12 +98,13 @@ enum DistributedHTTPEventStream {
     }
 
     /// `prefillProgress`: the request's prompt progress, said in place of a probe every `ticker.interval` until the
-    /// first token, on the probes' own timer (`LocalPrefillProgress.startComments` is not used here). `clock` times the
-    /// probes and those comments: the continuous clock, unless a test drives its own.
+    /// first token, on the probes' own timer (`LocalPrefillProgress.startComments` is not used here).
+    /// `clockForTesting` exists for tests: it times the probes and those comments, so a test can step through them
+    /// without waiting. Production passes none and gets the continuous clock.
     static func response<C: Clock<Duration>>(_ frames: AsyncThrowingStream<String, Error>,
                                              control: DistributedHTTPResponse,
                                              prefillProgress: LocalPrefillProgress? = nil,
-                                             clock: C = ContinuousClock()) -> Response {
+                                             clockForTesting clock: C = ContinuousClock()) -> Response {
         let lifetime = DistributedHTTPBodyLifetime(control)
         // The product's event-stream headers (`LocalChatUploadResponder.sseResponse`).
         return Response(status: .ok, headers: [.contentType: "text/event-stream; charset=utf-8", .cacheControl: "no-cache"],

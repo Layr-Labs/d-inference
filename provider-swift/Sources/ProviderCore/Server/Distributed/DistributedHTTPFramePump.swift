@@ -55,16 +55,11 @@ final class DistributedHTTPFramePump: @unchecked Sendable {
         }
     }
 
-    /// The next item, or a probe at `deadline` on the continuous clock.
-    func next(until deadline: ContinuousClock.Instant) async -> Read {
-        await next(until: deadline, clock: ContinuousClock())
-    }
-
     /// The writer is the only consumer. Keeping its active bit through timer
     /// join prevents a second waiter/timer while an old timer is still exiting.
-    /// `clock` times the probe (the writer's own: the continuous clock, unless
-    /// a test drives its own).
-    func next<C: Clock<Duration>>(until deadline: C.Instant, clock: C) async -> Read {
+    /// `clock` times the probe at `deadline`: the writer's, which is the
+    /// continuous clock outside tests (`DistributedHTTPEventStream.response`).
+    func next<C: Clock<Duration>>(until deadline: C.Instant, clock: C = ContinuousClock()) async -> Read {
         let accepted = lock.withLock { () -> Bool in
             guard !consumerActive else { return false }; consumerActive = true; return true
         }

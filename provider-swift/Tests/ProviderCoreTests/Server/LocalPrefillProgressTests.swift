@@ -302,7 +302,8 @@ struct LocalPrefillProgressTests {
 
     /// A pair's API says the prompt every 5 s, on its probes' clock: a probe goes 500 ms after the last line, so the
     /// comment takes the place of the 10th probe, then of every 10th after it, and the 9 between stay keep-alives. The
-    /// clock is the test's (`ProbeTestClock`): it moves only to the probe the writer waits for, so no real time passes.
+    /// clock is the test's (`ProbeTestClock`): the test checks when each probe is due and moves the clock there, so no
+    /// real time passes.
     @Test func aPairsAPISaysThePromptEveryFiveSecondsOnItsProbesClock() async throws {
         let control = DistributedHTTPResponse(), capture = HTTPDeliveryCapture(), clock = ProbeTestClock()
         try control.bind(deadline: nil, cancel: capture.cancel)
@@ -310,7 +311,7 @@ struct LocalPrefillProgressTests {
         prefill.accept(promptTokens: Self.promptTokens)
         let (frames, source) = AsyncThrowingStream<String, Error>.makeStream()
         let response = DistributedHTTPEventStream.response(frames, control: control, prefillProgress: prefill,
-                                                           clock: clock)
+                                                           clockForTesting: clock)
         let roleWritten = LocalHostLatch()
         let writer = HTTPDeliveryWriter(capture: capture, beforeWrite: { text in
             if text.contains(#""role":"assistant""#) { roleWritten.complete() }
@@ -320,12 +321,12 @@ struct LocalPrefillProgressTests {
         await roleWritten.wait()
         // Each probe: the writer sleeps until 500 ms after the last line, and the clock moves there.
         for probe in 1...20 {
-            let due = ProbeTestClock.Instant(offset: .milliseconds(500 * probe))
-            await clock.sleeper(until: due)
+            let due = await clock.nextSleep()
+            #expect(due == .init(offset: .milliseconds(500 * probe)), "probe \(probe)")
             clock.advance(to: due)
         }
         // The 21st sleep begins once the 20th probe's line is written.
-        await clock.sleeper(until: .init(offset: .milliseconds(500 * 21)))
+        #expect(await clock.nextSleep() == .init(offset: .milliseconds(500 * 21)))
         let keepAlive = ": keep-alive\n\n", comment = ": prefill in progress, 8 prompt tokens\n\n"
         let fiveSeconds = Array(repeating: keepAlive, count: 9) + [comment]
         #expect(Array(capture.values.dropFirst()) == fiveSeconds + fiveSeconds, "\(capture.values)")
@@ -434,7 +435,8 @@ final class PrefillTestClock: @unchecked Sendable {
 }
 
 /// A `Clock` the test moves: `now` changes only in `advance(to:)`, which wakes every sleep it reaches. No real time
-/// passes and nothing polls: the test waits for a sleep to begin (`sleeper(until:)`), then moves the clock to it.
+/// passes and nothing polls: the test waits for a sleep to begin (`nextSleep()`), checks when it is due, then moves
+/// the clock there. A sleep due at another time fails that check rather than leaving the test waiting.
 final class ProbeTestClock: Clock, @unchecked Sendable {
     typealias Duration = Swift.Duration
 
@@ -446,10 +448,13 @@ final class ProbeTestClock: Clock, @unchecked Sendable {
         static func < (lhs: Instant, rhs: Instant) -> Bool { lhs.offset < rhs.offset }
     }
 
+    private typealias Watcher = CheckedContinuation<Instant, Never>
+
     private let lock = NSLock()
     private var current = Instant(offset: .zero)
     private var sleepers: [UUID: (deadline: Instant, wake: CheckedContinuation<Void, Error>)] = [:]
-    private var watchers: [(deadline: Instant, resume: CheckedContinuation<Void, Never>)] = []
+    /// The test, waiting in `nextSleep()` for a sleep to begin.
+    private var watcher: Watcher?
 
     var now: Instant { lock.withLock { current } }
     var minimumResolution: Swift.Duration { .zero }
@@ -458,31 +463,30 @@ final class ProbeTestClock: Clock, @unchecked Sendable {
         let id = UUID()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (wake: CheckedContinuation<Void, Error>) in
-                let (settled, begun) = lock.withLock { () -> (Result<Void, Error>?, [CheckedContinuation<Void, Never>]) in
-                    if Task.isCancelled { return (.failure(CancellationError()), []) }
-                    if deadline <= current { return (.success(()), []) }
+                let (settled, watcher) = lock.withLock { () -> (Result<Void, Error>?, Watcher?) in
+                    if Task.isCancelled { return (.failure(CancellationError()), nil) }
+                    if deadline <= current { return (.success(()), nil) }
                     sleepers[id] = (deadline, wake)
-                    let begun = watchers.filter { $0.deadline == deadline }.map { $0.resume }
-                    watchers.removeAll { $0.deadline == deadline }
-                    return (nil, begun)
+                    defer { self.watcher = nil }
+                    return (nil, self.watcher)
                 }
                 if let settled { wake.resume(with: settled) }
-                for watcher in begun { watcher.resume() }
+                watcher?.resume(returning: deadline)
             }
         } onCancel: {
             lock.withLock { sleepers.removeValue(forKey: id) }?.wake.resume(throwing: CancellationError())
         }
     }
 
-    /// Returns once something sleeps until `deadline`.
-    func sleeper(until deadline: Instant) async {
-        await withCheckedContinuation { (resume: CheckedContinuation<Void, Never>) in
-            let begun = lock.withLock { () -> Bool in
-                if sleepers.values.contains(where: { $0.deadline == deadline }) { return true }
-                watchers.append((deadline, resume))
-                return false
+    /// When the sleep under way is due; without one, when the next sleep to begin is.
+    func nextSleep() async -> Instant {
+        await withCheckedContinuation { (watcher: Watcher) in
+            let due = lock.withLock { () -> Instant? in
+                if let due = sleepers.values.map({ $0.deadline }).min() { return due }
+                self.watcher = watcher
+                return nil
             }
-            if begun { resume.resume() }
+            if let due { watcher.resume(returning: due) }
         }
     }
 

@@ -60,10 +60,13 @@ extension Start {
     /// Only me's models, picked as the other two choices pick theirs: `--model` or `--all` as given; in a terminal, the
     /// picker with downloads (the models already on this Mac when Darkbloom's catalog can't be read); without one,
     /// nothing is asked, so a script or the app's Start never waits (`onlyMeModelsWithoutAsking`). Only the ones this
-    /// Mac's own server serves are kept; with none, the start ends with the commands that get one.
+    /// Mac's own server serves are kept; with none, the start ends with the commands that get one. `select` stands in
+    /// for `selectStartupModels`, and `scan` for a scan of this Mac's models after the picker.
     func onlyMeModels(snapshot: RuntimeSnapshot, config: ProviderConfig, coordinatorURL: String,
                       runtimeCapabilities: Set<ProviderRuntimeCapability>,
-                      terminal: Bool = ClusterPairCommands.isTerminal()) async throws -> [String] {
+                      terminal: Bool = ClusterPairCommands.isTerminal(),
+                      select: (() async throws -> [String])? = nil,
+                      scan: () -> [ModelInfo] = { [] }) async throws -> [String] {
         let onThisMac = Self.locallyServable(
             advertisedModels(from: snapshot.models, config: config, includeDisabled: true,
                              runtimeCapabilities: runtimeCapabilities),
@@ -73,9 +76,13 @@ extension Start {
         if asks, !terminal {
             picked = Self.onlyMeModelsWithoutAsking(lastSelection: config.backend.enabledModels, onThisMac: onThisMac)
         } else {
-            picked = try await selectStartupModels(snapshot: snapshot, config: config, coordinatorURL: coordinatorURL,
-                                                   runtimeCapabilities: runtimeCapabilities, autopilot: false,
-                                                   whenCatalogUnreachable: { onThisMac })
+            if let select {
+                picked = try await select()
+            } else {
+                picked = try await selectStartupModels(
+                    snapshot: snapshot, config: config, coordinatorURL: coordinatorURL,
+                    runtimeCapabilities: runtimeCapabilities, autopilot: false, whenCatalogUnreachable: { onThisMac })
+            }
             if asks, picked.isEmpty { throw ValidationError("No models selected.") }
         }
         let byID = Dictionary(snapshot.models.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })

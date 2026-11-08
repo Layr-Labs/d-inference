@@ -57,6 +57,31 @@ struct OnlyMeServiceTests {
         }
     }
 
+    /// The picker downloads the models picked that aren't on this Mac yet; `start` scanned the Mac before it ran.
+    @Test("a model the picker just downloaded is the one Only me serves")
+    func pickedDownloadIsServed() async throws {
+        let start = try Start.parse(["--local"])
+        let config = ProviderConfig(provider: ProviderSettings(name: "only-me"))
+        let fresh = ModelInfo(id: "fresh/gemma", modelType: "gemma4", sizeBytes: 1, estimatedMemoryGb: 1)
+        func snapshot(_ models: [ModelInfo]) -> RuntimeSnapshot {
+            RuntimeSnapshot(configPath: URL(fileURLWithPath: "/nonexistent/provider.toml"), configFileExists: false,
+                            config: config, hardware: nil, hardwareError: nil, models: models)
+        }
+        var scans = 0
+        let served = try await start.onlyMeModels(
+            snapshot: snapshot([]), config: config, coordinatorURL: "wss://coordinator.invalid/ws/provider",
+            runtimeCapabilities: [], terminal: true, select: { ["fresh/gemma"] },
+            scan: { scans += 1; return [fresh] })
+        #expect(served == ["fresh/gemma"] && scans == 1, "scanned once more, after the download")
+        // Every model picked was on this Mac already: no second scan.
+        scans = 0
+        let already = try await start.onlyMeModels(
+            snapshot: snapshot([fresh]), config: config, coordinatorURL: "wss://coordinator.invalid/ws/provider",
+            runtimeCapabilities: [], terminal: true, select: { ["fresh/gemma"] },
+            scan: { scans += 1; return [fresh] })
+        #expect(already == ["fresh/gemma"] && scans == 0)
+    }
+
     /// A script or the app's Start waits for `start` to end: without a terminal nothing is asked, not even the model.
     @Test("without a terminal, Only me takes the last selection still on this Mac, else every model it serves")
     func modelsWithoutATerminal() {

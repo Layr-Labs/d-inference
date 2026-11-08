@@ -74,6 +74,15 @@ struct Darkbloom: AsyncParsableCommand {
     }
 }
 
+// MARK: - Tool shortcuts
+
+extension Darkbloom {
+    /// The arguments to parse for `arguments`, as typed after `darkbloom`.
+    static func expandingToolShortcuts(_ arguments: [String]) -> [String] {
+        arguments
+    }
+}
+
 // MARK: - Update banner (best-effort, non-blocking)
 
 /// Run the update banner before any subcommand executes. Uses a hard

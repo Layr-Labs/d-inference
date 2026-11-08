@@ -582,7 +582,12 @@ public final class ClusterService: @unchecked Sendable {
     func replanForMemory(model: String, say: @escaping @Sendable (String) -> Void) {
         // It comes due when a part ends, so also right after the owner's `darkbloom stop`, which holds the command
         // lock: its `localServe` would start that pair again. A hand-over may have finished meanwhile too.
-        guard let held = commandLockIfStillStarted() else { return }
+        guard let held = commandLockIfStillStarted() else {
+            // The owner stopped the pair: this re-plan did nothing, so its slot is given back, and a start of theirs
+            // within the 10 minutes is re-planned at its next refusals instead of being refused until the slot passes.
+            if (try? store.readRecord())?.leadership?.serving != true { lock.withLock { nextMemoryReplan = .distantPast } }
+            return
+        }
         defer { held.release() }
         say("a Mac's memory no longer holds its share of \(model) (refused at load twice): planning again on the memory now")
         let before = try? context.savedConfiguration().reference.get()?.sha256
@@ -601,8 +606,9 @@ public final class ClusterService: @unchecked Sendable {
             return failed(["\(model) does not fit these Macs' memory now: \(choices.first { ($0.modelID ?? $0.title) == model }?.blocker ?? "not offered")"])
         }
         // On a serving pair `localAdopt` stops both parts first, and that stop clears the saved start. From there every
-        // failure, the stop's own included, puts it back (`restoreStart`, under the command lock every stop of the pair
-        // holds), so the pair serves as before and the next refusals bring the next re-plan.
+        // failure, the stop's own included, puts it back (`restoreStart`), so the pair serves as before and the next
+        // refusals bring the next re-plan. Always before `held` is let go: every stop of the pair takes this lock, so an
+        // owner's stop can't land just before the restore and be undone.
         func restored(_ lines: [String]) {
             steps.restoreStart()
             failed(lines + ["The pair stays started."])

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -3482,7 +3482,9 @@ automatic re-plan after repeated memory refusals at load adopts through the
 same path (`ClusterService.noteMemoryRefusal`, `replanForMemory`). It comes due
 when a part ends, so also right after an owner's stop: once it holds the
 command lock it acts only while the pair's start is still saved and this Mac's
-claim is confirmed, so it never starts a pair its owner stopped. Its adoption
+claim is confirmed, so it never starts a pair its owner stopped. Finding the
+pair stopped, it gives its 10-minute slot back, so the owner's next start is
+re-planned at its next refusals. Its adoption
 stops a serving pair first; from there every failure, of that stop too, puts
 the saved start back (`ClusterService.restoreStart`), as the re-plan after an
 update does, so a failed automatic stop never leaves the pair stopped. The stage memory

@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -137,6 +137,7 @@ upgrade warning. It is independent of `DARKBLOOM_NO_UPDATE_CHECK`.
 | Option | Type | Default | Effect | Source |
 |---|---|---|---|---|
 | `-c`, `--config <path>` | `String?` | `~/.config/darkbloom/provider.toml` | Provider TOML path. Accepted by the commands marked ✓ below | `provider-swift/Sources/darkbloom/Darkbloom.swift` (`ConfigOptions`); `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`defaultConfigPath`) |
+| `--opencode`, `--hermes` | flag | — | With no subcommand, `darkbloom --opencode` is `darkbloom start --opencode` (likewise `--hermes`, or both): every other `start` option goes with it, in any order (`darkbloom --opencode --me-first`), and `start`'s errors and refusals apply. `start --opencode` keeps working; a subcommand keeps its own options (`darkbloom status --opencode` is refused). `darkbloom --help` shows both in one line each ([Set up OpenCode or Hermes](#set-up-opencode-or-hermes)) | `provider-swift/Sources/darkbloom/Darkbloom.swift` (`Darkbloom.expandingToolShortcuts`), applied by `main.swift` before it parses or hosts |
 | `--version` | flag | — | Prints `ProviderCore.version` | `Darkbloom.configuration` |
 | `-h`, `--help` | flag | — | Help; `darkbloom` with no subcommand prints help | `Darkbloom.run` |
 
@@ -322,8 +323,10 @@ LaunchAgent with the arguments `--local-endpoint` has always used
 
 #### Set up OpenCode or Hermes
 
-`--opencode` and `--hermes` point the tools at this Mac's local API with the
-config writers ([OpenCode and Hermes config writers](../architecture/tool-integrations.md);
+`--opencode` and `--hermes`, usually run as `darkbloom --opencode` /
+`darkbloom --hermes` ([global options](#global-options)), point the tools at
+this Mac's local API with the config writers
+([OpenCode and Hermes config writers](../architecture/tool-integrations.md);
 `ToolIntegrationStep`, `provider-swift/Sources/darkbloom/ToolIntegration/ToolIntegrationStep.swift`).
 They run once, at `start`:
 
@@ -836,7 +839,7 @@ serves that endpoint, two lines follow `pid:`: `serving:` (how it serves, in
 the start summary's words) and `requests:` (where your requests go)
 (`Local.servingLines`). A server without a key says `requests: this Mac only
 (…)` under its API key line instead, and only `serving:` follows `pid:`. A
-keyed server adds `tools:    darkbloom start --opencode · --hermes`. `--json`
+keyed server adds `tools:    darkbloom --opencode · --hermes` (`Local.toolsLine`). `--json`
 is unchanged.
 
 ### `darkbloom route key`

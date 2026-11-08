@@ -1,6 +1,6 @@
 # The local API: an OpenAI-compatible server on your Mac
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 Your Mac's models as an OpenAI-compatible HTTP server for your own tools,
 served two ways: **Only me** (`darkbloom start --local`: no coordinator, no
@@ -12,7 +12,7 @@ account key saved, one it can't take can go on to your other Macs, free, and
 with `my-macs-first` to the Darkbloom network, billed
 ([the local router](#when-this-mac-cant-take-a-request-the-local-router)). In a terminal,
 `darkbloom start` asks once which you want ([Use your Mac yourself,
-first](./local-first.md)); `darkbloom start --opencode` also sets OpenCode up
+first](./local-first.md)); `darkbloom --opencode` also sets OpenCode up
 ([Use it from OpenCode or Hermes](./local-first.md#use-it-from-opencode-or-hermes)).
 
 Chat completions accept `stop` as a string or string array and pass explicit

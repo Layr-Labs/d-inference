@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Offline regression tests; no model, runtime, or remote asset downloads."""
 
+import contextlib
 import copy
 import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import ssl
 import tempfile
@@ -20,6 +22,8 @@ SPEC = importlib.util.spec_from_file_location("prompt_fixtures", SCRIPT)
 fixtures = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(fixtures)
 ROOT = SCRIPT.parent.parent
+# The script imports its cache from scripts/, which is sys.path[0] here too.
+import verified_download_cache  # noqa: E402
 
 
 class Response(io.BytesIO):
@@ -73,6 +77,29 @@ class Opener:
         return Response(self.body, url, len(self.body))
 
 
+class FailingReader(io.BytesIO):
+    """A cache entry whose first read returns bytes and whose next read fails, as a bad disk does."""
+
+    def read(self, size=-1):
+        if self.tell():
+            raise OSError(5, "Input/output error")
+        return super().read(1)
+
+
+class FailingReadsOS:
+    """The os module as the cache sees it, with every opened entry failing on its second read."""
+
+    def __init__(self, body):
+        self.body = body
+
+    def __getattr__(self, name):
+        return getattr(os, name)
+
+    def fdopen(self, fd, mode):
+        os.close(fd)
+        return FailingReader(self.body)
+
+
 class PromptFixturesTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -108,9 +135,19 @@ class PromptFixturesTests(unittest.TestCase):
         (self.source / "test.json").write_bytes(raw)
         return raw
 
-    def provision(self, output="output"):
-        return fixtures.provision(self.source, self.root / "artifacts", self.root / output,
-                                  "https://models.example.test")
+    def provision(self, output="output", artifacts="artifacts", download_cache=None):
+        return fixtures.provision(self.source, self.root / artifacts, self.root / output,
+                                  "https://models.example.test", download_cache)
+
+    def provision_cached(self, opener, run):
+        """One CI run: a fresh artifact root and output, the shared download cache."""
+        with patch.object(fixtures.urllib.request, "build_opener", return_value=opener), \
+                contextlib.redirect_stdout(io.StringIO()) as report:
+            self.assertEqual(self.provision(f"output-{run}", f"artifacts-{run}", self.root / "cache"), 1)
+        contract = self.root / f"artifacts-{run}" / fixtures.contract_id([self.artifact])
+        self.assertEqual((contract / "config.json").read_bytes(), self.body)
+        self.assertEqual((contract / "config.json").stat().st_mode & 0o777, 0o400)
+        return report.getvalue()
 
     def test_real_pinned_manifests_match_committed_contract_ids(self):
         vectors = json.loads((ROOT / "fixtures/prompt-contract/v1/production_vectors.json").read_bytes())
@@ -143,6 +180,120 @@ class PromptFixturesTests(unittest.TestCase):
         (contract / "config.json").write_bytes(b"corrupt")
         with self.assertRaisesRegex(ValueError, "cached artifact"):
             self.provision("third")
+
+    def test_download_cache_supplies_verified_artifacts_without_the_network(self):
+        self.write_manifest()
+        opener = Opener(self.body)
+        first = self.provision_cached(opener, 1)
+        entry = self.root / "cache" / self.artifact["sha256"]
+        self.assertEqual(entry.read_bytes(), self.body)
+        self.assertIn("public/test: 0 of 1 artifacts from the download cache, 1 downloaded "
+                      f"({len(self.body)} bytes)", first)
+        second = self.provision_cached(opener, 2)
+        self.assertEqual(len(opener.urls), 1)
+        self.assertIn("public/test: 1 of 1 artifacts from the download cache, 0 downloaded (0 bytes)", second)
+
+    def test_invalid_download_cache_entries_are_downloaded_and_replaced(self):
+        self.write_manifest()
+        cache = self.root / "cache"
+        entry = cache / self.artifact["sha256"]
+        valid = self.root / "valid"
+        valid.write_bytes(self.body)
+
+        def tampered():
+            entry.write_bytes(b"x" * len(self.body))
+
+        def short():
+            entry.write_bytes(self.body[:-1])
+
+        def long():
+            entry.write_bytes(self.body + b"x")
+
+        def linked():
+            entry.symlink_to(valid)
+
+        def directory():
+            entry.mkdir()
+
+        def fifo():
+            os.mkfifo(entry)
+
+        for run, damage in enumerate((tampered, short, long, linked, directory, fifo)):
+            with self.subTest(entry=damage.__name__):
+                cache.mkdir(exist_ok=True)
+                damage()
+                opener = Opener(self.body)
+                with patch.object(verified_download_cache, "print", create=True) as warning:
+                    report = self.provision_cached(opener, run)
+                self.assertEqual(len(opener.urls), 1)
+                self.assertIn("0 of 1 artifacts from the download cache, 1 downloaded", report)
+                if damage is directory:
+                    # A directory cannot be replaced by a file: the run still passes.
+                    self.assertIn("not stored", warning.call_args.args[0])
+                    entry.rmdir()
+                else:
+                    warning.assert_not_called()
+                    self.assertFalse(entry.is_symlink())
+                    self.assertEqual(entry.read_bytes(), self.body)
+                    entry.unlink()
+        self.assertEqual(valid.read_bytes(), self.body)
+        self.assertEqual([path.name for path in cache.iterdir()], [])
+
+    def test_a_cache_read_error_downloads_instead(self):
+        self.write_manifest()
+        (self.root / "cache").mkdir()
+        (self.root / "cache" / self.artifact["sha256"]).write_bytes(self.body)
+        opener = Opener(self.body)
+        with patch.object(verified_download_cache, "os", FailingReadsOS(self.body)):
+            report = self.provision_cached(opener, 1)
+        self.assertEqual(len(opener.urls), 1)
+        self.assertIn("0 of 1 artifacts from the download cache, 1 downloaded", report)
+        # The download then replaced the entry it could not read.
+        self.assertEqual((self.root / "cache" / self.artifact["sha256"]).read_bytes(), self.body)
+
+    def test_a_cache_that_cannot_store_never_fails_provisioning(self):
+        self.write_manifest()
+        (self.root / "cache").write_bytes(b"not a directory")
+        opener = Opener(self.body)
+        with patch.object(verified_download_cache, "print", create=True) as warning:
+            self.provision_cached(opener, 1)
+        self.assertIn(f"download cache: entry {self.artifact['sha256']} not stored", warning.call_args.args[0])
+        self.assertEqual((self.root / "cache").read_bytes(), b"not a directory")
+
+    def test_cache_restore_never_replaces_an_existing_output(self):
+        cache = self.root / "cache"
+        cache.mkdir()
+        (cache / self.artifact["sha256"]).write_bytes(self.body)
+        output = self.root / "existing"
+        output.write_bytes(b"other")
+        with self.assertRaises(FileExistsError):
+            verified_download_cache.restore_file(cache, self.artifact["sha256"], len(self.body), output)
+        self.assertEqual(output.read_bytes(), b"other")
+
+    def test_download_deadline_scales_with_the_missing_bytes_and_stays_bounded(self):
+        self.assertEqual(fixtures.download_seconds(0), 120)
+        self.assertEqual(fixtures.download_seconds(17 << 20), 120 + 17 * 8)
+        self.assertEqual(fixtures.download_seconds(fixtures.MAX_CONTRACT_BYTES), 900)
+        # Only the bytes the cache did not supply count toward the deadline.
+        large = {"path": "tokenizer.json", "role": "tokenizer", "size_bytes": 32 << 20, "sha256": "b" * 64}
+        self.manifest["files"].append(large)
+        self.aggregate(self.manifest)
+        self.write_manifest()
+        cache = self.root / "cache"
+        cache.mkdir()
+        (cache / self.artifact["sha256"]).write_bytes(self.body)
+        deadlines = []
+
+        def download(opener, url, output, artifact, deadline):
+            deadlines.append((artifact["path"], deadline - fixtures.time.monotonic()))
+            raise ValueError("stop after the deadline is set")
+
+        with patch.object(fixtures, "download", download), self.assertRaisesRegex(ValueError, "stop"):
+            self.provision(download_cache=cache)
+        [(path, seconds)] = deadlines
+        self.assertEqual(path, "tokenizer.json")
+        self.assertAlmostEqual(seconds, 120 + 32 * 8, delta=5)
+        self.assertEqual(list((self.root / "artifacts").iterdir()), [])
 
     def test_identifies_public_fixture_client_to_cdn(self):
         self.write_manifest()

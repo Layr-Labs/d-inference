@@ -32,6 +32,14 @@ struct ClusterPairMemberRelayCLITests {
         return pair
     }
 
+    /// The same Mac with the pair serving Only me (`darkbloom cluster local`), whose API every other Mac relays the same way.
+    static func onlyMe(_ pair: ClusterPairSummary) -> ClusterPairSummary {
+        var pair = pair
+        pair.localAPI = nil
+        pair.localOnly = true
+        return pair
+    }
+
     /// The relay's words while the other Mac is away, as the 503 says them.
     static let awayWords = ClusterLocalRelay.Refusals.pair(otherMac: "Apple M5 Ultra, 256 GB", cli: ClusterPairSummary.cli).unreachable
 
@@ -119,14 +127,29 @@ struct ClusterPairMemberRelayCLITests {
         }
         #expect(away.appStartLines(named: [], localEndpoint: false, code: 0).isEmpty, "no local API asked for")
         // Only me: a local API on every Mac only with the pair's API on every address (#1905's review, nit 2).
-        func onlyMe(_ pair: ClusterPairSummary) -> ClusterPairSummary {
-            var pair = pair
-            pair.localAPI = nil
-            pair.localOnly = true
-            return pair
+        #expect(Self.onlyMe(member()).appStartLines(named: [], localEndpoint: true, code: 0).isEmpty)
+        #expect(Self.onlyMe(member(relaying: nil, bind: "127.0.0.1")).appStartLines(named: [], localEndpoint: true, code: 0)
+            == [none])
+    }
+
+    /// With Only me on every address the other Mac relays the pair's API too, and says the same when its port can't answer
+    /// now (the other Mac away, its port held): in `status`, which otherwise names no address for it (`darkbloom local`
+    /// does), and in the app's Start. Relaying, or with nothing published (its relay starting, or the Mac that runs the
+    /// pair's API, which publishes no relay), no line.
+    @Test func anOnlyMeMemberSaysWhyItsPortCantAnswerToo() {
+        var away = Self.onlyMe(member()), held = Self.onlyMe(member(relaying: nil))
+        away.relayRankZeroAway = true
+        held.relayPortHeld = 8001
+        let awayLine = "Local API: http://127.0.0.1:8003/v1 on this Mac answers 503 for now. \(Self.awayWords)"
+        let heldLine = "Local API: port 8001 on this Mac is held by another program, so this Mac doesn't answer for the pair; "
+            + "free it, or set another `[local] port` in provider.toml, then `\(ClusterPairSummary.cli) restart`"
+        #expect(away.localAPILines(now: F.now, timeZone: F.utc) == [awayLine])
+        #expect(held.localAPILines(now: F.now, timeZone: F.utc) == [heldLine])
+        #expect(away.appStartLines(named: [], localEndpoint: true, code: 0) == [awayLine])
+        #expect(held.appStartLines(named: [], localEndpoint: true, code: 3) == [heldLine])
+        for quiet in [Self.onlyMe(member()), Self.onlyMe(member(relaying: nil))] {
+            #expect(quiet.memberAPIDown == nil && quiet.localAPILines(now: F.now, timeZone: F.utc).isEmpty, "\(quiet.relaying as Any)")
         }
-        #expect(onlyMe(member()).appStartLines(named: [], localEndpoint: true, code: 0).isEmpty)
-        #expect(onlyMe(member(relaying: nil, bind: "127.0.0.1")).appStartLines(named: [], localEndpoint: true, code: 0) == [none])
     }
 
     /// The Mac that runs the pair's API says the other Mac answers on its own port too, once the API is on every address:
@@ -224,27 +247,32 @@ struct ClusterPairMemberRelayCLITests {
     }
 
     /// `darkbloom local` on a member whose pair's other Mac can't be reached shows its address, and says it answers 503
-    /// for now, in the 503's words.
+    /// for now, in the 503's words: with Both, me first and with Only me.
     @Test func localOnAMemberWhosePairsOtherMacIsAwaySaysSo() async throws {
-        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
-            let directory = FileManager.default.temporaryDirectory
-                .appendingPathComponent("member-relay-local-\(UUID().uuidString)", isDirectory: true)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            setenv("DARKBLOOM_LOCAL_DIR", directory.path, 1)
-            let own = "dk-local-MemberOwnKeyAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-            try own.write(to: directory.appendingPathComponent("local_token"), atomically: true, encoding: .utf8)
-            try LocalEndpoint.writeInfo(ClusterService.relayDiscovery(port: 8003, keys: .init(own: own, pair: own)))
-            var pair = ClusterPairMemberRelayCLITests.memberSummary()
-            pair.relayRankZeroAway = true
-            let summary = pair
-            ClusterPairSummary.processReaderForTesting = { _ in summary }
-            var command = try Local.parse([])
-            try await command.run()
-            exit(0)
+        for onlyMe in [false, true] {
+            let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+                [onlyMe = onlyMe as Bool] in
+                let directory = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("member-relay-local-\(UUID().uuidString)", isDirectory: true)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                setenv("DARKBLOOM_LOCAL_DIR", directory.path, 1)
+                let own = "dk-local-MemberOwnKeyAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                try own.write(to: directory.appendingPathComponent("local_token"), atomically: true, encoding: .utf8)
+                try LocalEndpoint.writeInfo(ClusterService.relayDiscovery(port: 8003, keys: .init(own: own, pair: own)))
+                var pair = ClusterPairMemberRelayCLITests.memberSummary()
+                if onlyMe { pair = ClusterPairMemberRelayCLITests.onlyMe(pair) }
+                pair.relayRankZeroAway = true
+                let summary = pair
+                ClusterPairSummary.processReaderForTesting = { _ in summary }
+                var command = try Local.parse([])
+                try await command.run()
+                exit(0)
+            }
+            let stdout = String(decoding: result?.standardOutputContent ?? [], as: UTF8.self)
+            #expect(stdout.contains("  base URL: http://127.0.0.1:8003/v1\n"), "Only me \(onlyMe): \(stdout)")
+            #expect(stdout.contains("Local API: http://127.0.0.1:8003/v1 on this Mac answers 503 for now. \(Self.awayWords)"),
+                    "Only me \(onlyMe): \(stdout)")
         }
-        let stdout = String(decoding: result?.standardOutputContent ?? [], as: UTF8.self)
-        #expect(stdout.contains("  base URL: http://127.0.0.1:8003/v1\n"), "\(stdout)")
-        #expect(stdout.contains("Local API: http://127.0.0.1:8003/v1 on this Mac answers 503 for now. \(Self.awayWords)"), "\(stdout)")
     }
 
     // MARK: - start --opencode on a member
@@ -288,13 +316,15 @@ struct ClusterPairMemberRelayCLITests {
     }
 
     /// `--opencode` on a member that has no working address for the pair says why at once, as `status` does, instead of
-    /// waiting for an answer that can't come: while Darkbloom doesn't have the pair, its port held, or the other Mac away.
+    /// waiting for an answer that can't come: while Darkbloom doesn't have the pair, its port held, or the other Mac away
+    /// (Only me too).
     @Test func openCodeOnAMemberSaysAtOnceWhyItHasNoAddress() async throws {
-        var waiting = member(relaying: nil), held = member(relaying: nil), away = member()
+        var waiting = member(relaying: nil), held = member(relaying: nil), away = member(), onlyMeAway = Self.onlyMe(member())
         waiting.relayWaitsForOffer = true
         held.relayPortHeld = 8001
         away.relayRankZeroAway = true
-        for pair in [waiting, held, away] {
+        onlyMeAway.relayRankZeroAway = true
+        for pair in [waiting, held, away, onlyMeAway] {
             let sandbox = try ToolSandbox()
             await #expect(throws: ExitCode.failure) {
                 try await Start.parse(["--opencode", "--config", sandbox.config.path])
@@ -306,6 +336,30 @@ struct ClusterPairMemberRelayCLITests {
         #expect(ToolIntegrationStep.noMemberAddress([.opencode], localAPI: "none on this Mac while Darkbloom doesn't have the pair")
             == "✗ OpenCode wasn't set up on this Mac. Local API: none on this Mac while Darkbloom doesn't have the pair. Run "
                 + "`darkbloom --opencode` again once this Mac answers.")
+    }
+
+    /// `--opencode` beside this Mac's running relay while the pair's other Mac can't be reached says so at once, in
+    /// `status`'s words, and sets nothing up: the relay answers 503 for now (the tool step said only "HTTP 503").
+    @Test func openCodeBesideARelayWhosePairsOtherMacIsAwaySaysSoAtOnce() async throws {
+        let result = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            let sandbox = try ToolSandbox()
+            setenv("DARKBLOOM_LOCAL_DIR", sandbox.keyFile.deletingLastPathComponent().path, 1)
+            try LocalEndpoint.writeInfo(ClusterService.relayDiscovery(port: 8003, keys: .init(own: sandbox.token, pair: sandbox.token)))
+            var pair = ClusterPairMemberRelayCLITests.memberSummary()
+            pair.relayRankZeroAway = true
+            let summary = pair
+            ClusterPairSummary.processReaderForTesting = { _ in summary }
+            let start = try Start.parse(["--opencode", "--config", sandbox.config.path])
+            let ran = try? await start.setUpToolsForRunningLocalAPI(live: LocalEndpoint.readLiveInfo(), step: sandbox.step())
+            let untouched = sandbox.said.isEmpty && !FileManager.default.fileExists(atPath: sandbox.openCodeFile.path)
+            try? FileManager.default.removeItem(at: sandbox.directory.url)
+            exit(ran == nil && untouched ? 1 : 0)
+        }
+        let stdout = String(decoding: result?.standardOutputContent ?? [], as: UTF8.self)
+        let line = ToolIntegrationStep.noMemberAddress([.opencode],
+                                                       localAPI: "http://127.0.0.1:8003/v1 on this Mac answers 503 for now. \(Self.awayWords)")
+        #expect(stdout.contains(line + "\n"), "\(stdout)")
+        #expect(!stdout.contains("already serves"), "\(stdout)")
     }
 
     /// A member whose API doesn't answer within the wait says why: with the pair's API on every address its relay isn't

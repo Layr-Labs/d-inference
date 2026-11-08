@@ -700,6 +700,14 @@ private let stillRunning = ["This Mac: nothing left running",
                             "The other Mac (Apple M5 Max, 128 GB): still running: this Mac's part of the model is still running"]
 
 /// Values handed out in turn; the last one repeats.
+/// Set once, read from any thread.
+private final class Latch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    func set() { lock.withLock { value = true } }
+    var isSet: Bool { lock.withLock { value } }
+}
+
 private final class Looks<Value>: @unchecked Sendable {
     private let lock = NSLock()
     private var values: [Value]
@@ -2739,6 +2747,27 @@ struct DesktopAppOnAPairedMacTests {
         }
     }
 
+    @Test("the app's Start says this Mac's local API as the pair is once the start is over, not as it was before")
+    func appStartLinesReadThePairAfterTheStart() async {
+        // A member of a pair on every address, stopped before the start: its relay says nothing yet. Once the pair runs,
+        // Darkbloom doesn't have it yet and the relay waits for it, which the line says (`Start.run` reads the pair again).
+        let result = await #expect(processExitsWith: .exitCode(3), observing: [\.standardOutputContent]) {
+            try await exitWithPair(memberOnEveryAddress(started: false), actions: pairActions(role: .member, serving: false)) { sandbox in
+                let looked = Latch()
+                try await ClusterPairSummary.$readerForTesting.withValue({ live in
+                    if live { looked.set() }
+                    return looked.isSet ? notOfferedMember() : memberOnEveryAddress(started: false)
+                }) {
+                    try await runAppStart(sandbox, ["--local-endpoint"])
+                }
+            }
+        }
+        let out = lines(result?.standardOutputContent)
+        #expect(Array(out.suffix(2)) == ["Local API: none on this Mac while Darkbloom doesn't have the pair; meanwhile the pair "
+            + "answers only on \(otherMac) (`darkbloom local` there shows its address and key)", ""], "\(out)")
+        #expect(!out.contains(appStartNoLocalAPILine), "\(out)")
+    }
+
     @Test("a pair whose other Mac is away and whose part was given up here also names `start --solo`")
     func otherMacAwayNamesSolo() {
         var givenUp = pair()
@@ -2794,6 +2823,31 @@ private func runAppStart(_ sandbox: CLICommandSandbox, _ options: [String]) asyn
     try await ClusterPairCommands.$waitForTesting.withValue(.init(seconds: 0, interval: 0)) {
         try await runCLICommand(Start.self, ["start"] + options + ["--config", sandbox.config.path])
     }
+}
+
+/// The Mac that follows in a pair serving Both, me first with its API on every address, so its relay gives it a local
+/// API: stopped, or started.
+private func memberOnEveryAddress(started: Bool) -> ClusterPairSummary {
+    var summary = pair(role: .member, started: started)
+    summary.localAPI = ClusterPairLocalAPI(runsRankZero: false, listening: nil, meFirst: nil)
+    summary.localAPIBind = "0.0.0.0"
+    if !started {
+        summary.state = .stopped
+        summary.pairRunning = false
+    }
+    return summary
+}
+
+/// That Mac once the pair runs and Darkbloom doesn't have it yet: rank 0 answers on its own Mac only, so this Mac's relay
+/// waits for it (`relayWaitsForOffer`), and the pair isn't serving (`cluster status` exit 3).
+private func notOfferedMember() -> ClusterPairSummary {
+    var summary = memberOnEveryAddress(started: true)
+    let reason = ClusterOnboardingReady.notOfferedReason(nil)
+    summary.state = .notServing
+    summary.reason = reason
+    summary.lines = [ClusterOnboardingNotServing.title(reason: reason)]
+    summary.relayWaitsForOffer = true
+    return summary
 }
 
 /// A pair still loading its model when a start's wait ends (`cluster status` exit 3).

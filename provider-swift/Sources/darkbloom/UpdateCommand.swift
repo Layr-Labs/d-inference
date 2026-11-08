@@ -124,8 +124,8 @@ struct Update: AsyncParsableCommand {
                 print("A strictly newer release remains eligible automatically.")
                 print("Use --override-quarantine only for an explicit operator retry.")
 
-            case .checkFailed(let reason):
-                for line in Self.checkFailedLines(reason, checkOnly: true) { printError(line) }
+            case .checkFailed(let failure):
+                for line in Self.checkFailedLines(failure, checkOnly: true) { printError(line) }
                 throw ExitCode.failure
             }
             return
@@ -189,8 +189,8 @@ struct Update: AsyncParsableCommand {
             printError("update cancelled: \(reason)")
             throw ExitCode.failure
 
-        case .checkFailed(let reason):
-            for line in Self.checkFailedLines(reason, checkOnly: false) { printError(line) }
+        case .checkFailed(let failure):
+            for line in Self.checkFailedLines(failure, checkOnly: false) { printError(line) }
             throw ExitCode.failure
 
         case .downloadFailed(let reason):
@@ -211,8 +211,9 @@ struct Update: AsyncParsableCommand {
     }
 
     /// A failed release check in plain words: what failed, that nothing changed, and what to do.
-    static func checkFailedLines(_ reason: String, checkOnly: Bool) -> [String] {
+    static func checkFailedLines(_ failure: UpdateCheckFailure, checkOnly: Bool) -> [String] {
         let command = "`\(BuildEnvironment.current.cliName) update\(checkOnly ? " --check-only" : "")`"
+        let reason = failure.reason
         let failed = "Couldn't check for updates: " + (reason.hasSuffix(".") ? reason : reason + ".")
         return [failed + (checkOnly ? "" : " Nothing was downloaded or changed."),
                 "Run \(command) again in a minute. If it keeps failing, check this Mac's network connection."]

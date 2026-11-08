@@ -27,13 +27,38 @@ public struct ReleaseInfo: Sendable {
     }
 }
 
+/// Why a release check failed: what the person who asked can do about it depends on it.
+public struct UpdateCheckFailure: Sendable, Equatable, CustomStringConvertible {
+    public enum Cause: Sendable, Equatable {
+        /// No answer reached this Mac: none in time, a connection lost or refused, a name that didn't resolve, no
+        /// network, a TLS handshake that broke off. Only this one is about this Mac's network connection.
+        case noAnswer
+        /// The coordinator answered, but not with a release this Mac can use: an HTTP error, an answer that isn't a
+        /// release, a release for another platform or with a version that can't be read.
+        case badAnswer
+        /// This Mac didn't get as far as asking: its update record can't be read, its coordinator URL isn't one.
+        case thisMac
+    }
+
+    public let cause: Cause
+    /// What failed, in plain words.
+    public let reason: String
+
+    public init(_ cause: Cause, _ reason: String) {
+        self.cause = cause
+        self.reason = reason
+    }
+
+    public var description: String { reason }
+}
+
 /// Result of an update check.
 public enum UpdateCheckResult: Sendable {
     case upToDate(currentVersion: String)
     case updateAvailable(current: String, latest: ReleaseInfo)
     case restartRequired(current: String, installed: String)
     case quarantined(version: String, reason: String)
-    case checkFailed(reason: String)
+    case checkFailed(UpdateCheckFailure)
 }
 
 /// Result of an update attempt.
@@ -45,7 +70,7 @@ public enum UpdateResult: Sendable {
     case busy(reason: String)
     case cancelled(reason: String)
     /// The check for the latest release failed (`UpdateCheckResult.checkFailed`); nothing was downloaded.
-    case checkFailed(reason: String)
+    case checkFailed(UpdateCheckFailure)
     case downloadFailed(reason: String)
     case hashMismatch(expected: String, got: String)
     case replaceFailed(reason: String)
@@ -64,7 +89,7 @@ public struct SelfUpdater: Sendable {
     /// `checkForUpdate` uses, from the same injected seam.
     internal let currentVersion: String
     private let urlSession: URLSession
-    private let releaseCheck: ReleaseCheck
+    let releaseCheck: ReleaseCheck
     let now: @Sendable () -> Double
     /// Test seam threaded into every `UpdateRecoveryStore` this updater
     /// constructs; production always uses the no-op default.
@@ -93,6 +118,19 @@ public struct SelfUpdater: Sendable {
             currentVersion: ProviderCore.version,
             urlSession: urlSession,
             now: { Date().timeIntervalSince1970 }
+        )
+    }
+
+    /// A production updater, as the public initializer makes it, whose release check is `releaseCheck` (a pair's
+    /// automatic cycle asks one more round, `ReleaseCheck.pairCycle`).
+    init(coordinatorBaseURL: String, urlSession: URLSession, releaseCheck: ReleaseCheck) {
+        self.init(
+            coordinatorBaseURL: coordinatorBaseURL,
+            installRoot: nil,
+            verifyCodeSignatures: true,
+            currentVersion: ProviderCore.version,
+            urlSession: urlSession,
+            releaseCheck: releaseCheck
         )
     }
 
@@ -169,7 +207,7 @@ public struct SelfUpdater: Sendable {
                 recoveryState = UpdateRecoveryState()
             }
         } catch {
-            return .checkFailed(reason: "could not read update recovery state: \(error)")
+            return .checkFailed(.init(.noAnswer, "could not read update recovery state: \(error)"))
         }
 
         // Compare against the version installed ON DISK, not this process's
@@ -204,14 +242,14 @@ public struct SelfUpdater: Sendable {
         switch await fetchLatestRelease() {
         case .release(let fetched):
             release = fetched
-        case .failed(let reason):
+        case .failed(let failure):
             // A pending candidate must still restart when the coordinator is
             // unreachable — only DISCOVERY of a superseding release needs the
             // network, never the restart/rollback path itself.
             if let pendingCandidate {
                 return restartPendingCandidate(pendingCandidate)
             }
-            return .checkFailed(reason: reason)
+            return .checkFailed(failure)
         }
 
         guard SemanticVersion(release.version) != nil,
@@ -220,8 +258,7 @@ public struct SelfUpdater: Sendable {
             if let pendingCandidate {
                 return restartPendingCandidate(pendingCandidate)
             }
-            return .checkFailed(
-                reason: "release or current version is not valid SemVer")
+            return .checkFailed(.init(.noAnswer, "release or current version is not valid SemVer"))
         }
 
         if let pendingCandidate {
@@ -281,7 +318,7 @@ public struct SelfUpdater: Sendable {
 
     private enum LatestReleaseFetch {
         case release(ReleaseInfo)
-        case failed(String)
+        case failed(UpdateCheckFailure)
     }
 
     /// How the release check asks the coordinator for its latest release, and how long it can take:
@@ -300,11 +337,33 @@ public struct SelfUpdater: Sendable {
         var attempts = 3
         var requestTimeout: TimeInterval = 15
         var backoff = ExponentialBackoff(base: 1, max: 4)
+        /// Rounds of `attempts` tries: a round that ends without an answer is followed by one more, after a pause from
+        /// `roundPause`, `rounds` in all.
+        var rounds = 1
+        var roundPause: ClosedRange<TimeInterval> = 60...120
         var pause: @Sendable (TimeInterval) async -> Void = { seconds in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
         }
+        /// Where a failed try is said.
+        var log: @Sendable (String) -> Void = { _ in }
 
         static let standard = ReleaseCheck()
+        static let pairCycle = ReleaseCheck(rounds: 2)
+
+        /// What follows a failed try.
+        enum Next: Equatable, Sendable {
+            case askAgain
+            case nextRound
+            case stop
+        }
+
+        /// After the `tries`-th failed try of round `round`: another try in this round, the next round, or none. Only a
+        /// failure on the way is asked again, and nothing once the check was cancelled.
+        func next(after error: Error, tries: Int, round: Int, cancelled: Bool) -> Next {
+            guard !cancelled, Self.retries(after: error) else { return .stop }
+            if tries < attempts { return .askAgain }
+            return round < rounds ? .nextRound : .stop
+        }
 
         /// A failure on the way, before any answer, that may not happen again: no answer in time, a connection lost or
         /// refused, a name that didn't resolve, no network, a TLS handshake that broke off. Never a cancellation.
@@ -315,12 +374,12 @@ public struct SelfUpdater: Sendable {
         }
 
         /// Why the check failed after `tries`, in the words `darkbloom update` prints.
-        func failure(_ error: Error, tries: Int, coordinator: String) -> String {
+        func failure(_ error: Error, tries: Int, coordinator: String) -> UpdateCheckFailure {
             let count = tries > 1 ? " (\(tries) tries)" : ""
             guard (error as? URLError)?.code != .timedOut else {
-                return "\(coordinator) didn't answer within \(Int(requestTimeout.rounded(.up))) s\(count)"
+                return .init(.noAnswer, "\(coordinator) didn't answer within \(Int(requestTimeout.rounded(.up))) s\(count)")
             }
-            return "couldn't reach \(coordinator)\(count): \(error.localizedDescription)"
+            return .init(.noAnswer, "couldn't reach \(coordinator)\(count): \(error.localizedDescription)")
         }
     }
 
@@ -328,7 +387,7 @@ public struct SelfUpdater: Sendable {
         let endpoint = "\(coordinatorBaseURL)/v1/releases/latest?platform=macos-arm64"
 
         guard let url = URL(string: endpoint) else {
-            return .failed("invalid coordinator URL: \(endpoint)")
+            return .failed(.init(.noAnswer, "invalid coordinator URL: \(endpoint)"))
         }
         // The request's own timeout bounds each try, whatever the session's is.
         var request = URLRequest(url: url)
@@ -352,34 +411,34 @@ public struct SelfUpdater: Sendable {
 
     private static func latestRelease(data: Data, response: URLResponse) -> LatestReleaseFetch {
         guard let httpResponse = response as? HTTPURLResponse else {
-            return .failed("unexpected response type")
+            return .failed(.init(.noAnswer, "unexpected response type"))
         }
 
         guard httpResponse.statusCode == 200 else {
-            return .failed("coordinator returned HTTP \(httpResponse.statusCode)")
+            return .failed(.init(.noAnswer, "coordinator returned HTTP \(httpResponse.statusCode)"))
         }
 
         let object: Any
         do {
             object = try JSONSerialization.jsonObject(with: data)
         } catch {
-            return .failed(error.localizedDescription)
+            return .failed(.init(.noAnswer, error.localizedDescription))
         }
         guard let json = object as? [String: Any] else {
-            return .failed("invalid JSON response")
+            return .failed(.init(.noAnswer, "invalid JSON response"))
         }
 
         guard let version = json["version"] as? String,
               let platform = json["platform"] as? String,
               let downloadURL = json["url"] as? String
         else {
-            return .failed("missing required fields in release response")
+            return .failed(.init(.noAnswer, "missing required fields in release response"))
         }
         guard platform == "macos-arm64" else {
-            return .failed("coordinator returned unsupported release platform \(platform)")
+            return .failed(.init(.noAnswer, "coordinator returned unsupported release platform \(platform)"))
         }
         guard let bundleHash = json["bundle_hash"] as? String else {
-            return .failed("missing release hash field")
+            return .failed(.init(.noAnswer, "missing release hash field"))
         }
 
         return .release(ReleaseInfo(
@@ -1049,8 +1108,8 @@ public struct SelfUpdater: Sendable {
         case .quarantined(let version, let reason):
             return .quarantined(version: version, reason: reason)
 
-        case .checkFailed(let reason):
-            return .checkFailed(reason: reason)
+        case .checkFailed(let failure):
+            return .checkFailed(failure)
 
         case .updateAvailable(let current, let release):
             let downloadResult = await downloadAndVerify(release: release)

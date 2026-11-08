@@ -478,8 +478,8 @@ public struct WatchdogRecoveryService: Sendable {
             case .cancelled(let reason):
                 deps.log("watchdog update cancelled: \(reason)")
                 return .noLongerLoaded
-            case .checkFailed(let reason):
-                deps.log("update check failed; restarting current install: \(reason)")
+            case .checkFailed(let failure):
+                deps.log("update check failed; restarting current install: \(failure.reason)")
             case .downloadFailed(let reason):
                 deps.log("update download failed; restarting current install: \(reason)")
             case .hashMismatch(let expected, let got):

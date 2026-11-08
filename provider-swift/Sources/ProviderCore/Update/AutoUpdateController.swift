@@ -181,10 +181,10 @@ public struct AutoUpdateController: Sendable {
             }
             return await restartInstalled(from: current, to: installed, drained: drained)
 
-        case .checkFailed(let reason):
-            deps.log("auto-update: check failed: \(reason)")
+        case .checkFailed(let failure):
+            deps.log("auto-update: check failed: \(failure.reason)")
             await deps.resumeServing()
-            return .checkFailed(reason)
+            return .checkFailed(failure.reason)
 
         case .updateAvailable(let current, let release):
             return await installUpdate(from: current, release: release)

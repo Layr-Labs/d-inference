@@ -565,7 +565,7 @@ struct WatchdogLaunchAdapterTests {
             coordinatorBaseURL: "http://127.0.0.1:1",
             installRoot: fixture.installRoot,
             verifyCodeSignatures: false,
-            currentVersion: fixture.oldVersion)
+            currentVersion: fixture.oldVersion, releaseCheck: .withoutPauses)
         let service = WatchdogRecoveryService(
             updater: updater,
             dependencies: .init(

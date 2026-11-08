@@ -106,7 +106,7 @@ struct AutoUpdateControllerTests {
     func checkFailureResumesServing() async {
         let recorder = Recorder()
         let controller = makeController(
-            Fakes(checkResult: .checkFailed(reason: "network down")),
+            Fakes(checkResult: .checkFailed(.init(.noAnswer, "network down"))),
             recorder: recorder
         )
 

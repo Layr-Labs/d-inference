@@ -107,7 +107,7 @@ extension Cluster {
                     clusterID: clusterID,
                     run: { request, log, restart in
                         let environment = ClusterPairUpdateCycle.Environment.live(
-                            serviceDirectory: serviceDirectory, coordinatorURL: coordinatorURL, log: log)
+                            serviceDirectory: serviceDirectory, coordinatorURL: coordinatorURL, automatic: request == nil, log: log)
                         return await ClusterPairUpdateCycle(environment: environment).run(request: request, restart: restart)
                     },
                     requestPath: ClusterServiceAgent.updateRequestPath(serviceDirectory: serviceDirectory),

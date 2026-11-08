@@ -154,6 +154,14 @@ struct StartServingGuardTests {
         try start.runPreflightChecks(snapshot: fixtureSnapshot(models: [], hardware: fixtureHardware(memoryGb: 8)))
         try start.runPreflightChecks(snapshot: fixtureSnapshot(models: []))
     }
+
+    /// The preflight and Only me's background start make the same check.
+    @Test("a Mac with less than 8 GB is refused; 8 GB, or hardware not detected, passes")
+    func lessThanEightGigabytesIsRefused() throws {
+        #expect(throws: ExitCode.failure) { try Start.requireMemoryForAnyModel(fixtureHardware(memoryGb: 4)) }
+        try Start.requireMemoryForAnyModel(fixtureHardware(memoryGb: 8))
+        try Start.requireMemoryForAnyModel(nil)
+    }
 }
 
 @Suite("Local startup preload")

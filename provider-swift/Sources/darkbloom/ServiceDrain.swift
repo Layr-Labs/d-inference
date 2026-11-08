@@ -186,6 +186,23 @@ enum ServiceDrain {
         }
         throw ValidationError("Restart launched, but fresh authorization was not confirmed within \(timeout)s. The new service is still starting; inspect \(BuildEnvironment.current.cliName) status. No second restart was issued.")
     }
+
+    /// Waits for the service `restart` or `update` relaunched, as it serves (`SavedChoiceService.Alignment.mode`): Only
+    /// me until its local API answers (`waitForLocalRestart`), any other until it is freshly authorized
+    /// (`waitForRestart`).
+    static func waitForRestartedService(serving mode: LocalSettings.Mode?, previous: ProcessIdentity?, timeout: Int,
+                                        look: DarkbloomCommandLook) async throws {
+        if mode == .local {
+            try await look.working("Waiting for Only me's local API") {
+                try await waitForLocalRestart(previous: previous, timeout: timeout)
+            }
+        } else {
+            try await look.working("Waiting for the restarted provider's fresh authorization") {
+                try await waitForRestart(previous: previous, timeout: timeout)
+            }
+        }
+    }
+
     /// Only me's service after a restart: ready once a new process serves its local API (`local.json`, written once
     /// it listens). Only me never contacts Darkbloom, so there is no authorization to wait for.
     static func waitForLocalRestart(previous: ProcessIdentity?, timeout: Int) async throws {

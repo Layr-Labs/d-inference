@@ -19,15 +19,16 @@ extension ProviderLoop {
 
     /// Initial delay before the first background update check (5 minutes).
     /// Avoids slowing down startup; lets the provider stabilize first.
-    private static let autoUpdateInitialDelay: Duration = .seconds(300)
+    /// Only me's background service keeps the same cadence (`StandaloneServer+AutoUpdate`).
+    static let autoUpdateInitialDelay: Duration = .seconds(300)
 
     /// Interval between subsequent update checks (30 minutes).
-    private static let autoUpdateInterval: Duration = .seconds(1800)
+    static let autoUpdateInterval: Duration = .seconds(1800)
 
     /// How long to wait for in-flight requests to drain after installing a new
     /// binary before deferring the update. Accepted requests are never
     /// force-cancelled by the background updater.
-    private static let updateDrainTimeout: Duration = .seconds(120)
+    static let updateDrainTimeout: Duration = .seconds(120)
 
     /// Start the background auto-update monitor. Checks the coordinator for a
     /// newer release every 30 minutes (after an initial 5-minute delay). On a

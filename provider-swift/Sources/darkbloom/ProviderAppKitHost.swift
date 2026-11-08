@@ -14,9 +14,7 @@ enum ProviderAppKitHost {
     /// service's child (`Start.isServiceChild`). A bare `start`, or `start --local`
     /// setting Only me's background service up, installs the launchd agent and
     /// exits — it must NOT host AppKit, which would also hold Ctrl-C for a drain.
-    static func shouldHost(_ args: [String], startedByAService: () -> Bool = {
-        LaunchAgent.isCurrentProcessJob() || ClusterPairSummary.startedByClusterService()
-    }) -> Bool {
+    static func shouldHost(_ args: [String], startedByAService: () -> Bool = Start.startedByAService) -> Bool {
         guard args.first == "start" else { return false }
         if args.contains("--foreground") { return true }
         guard args.contains("--local") else { return false }

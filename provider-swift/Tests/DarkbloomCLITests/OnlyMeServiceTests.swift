@@ -5,8 +5,9 @@ import Testing
 @testable import ProviderCore
 @testable import darkbloom
 
-/// Only me as a background service (R1, R3, R15), the picker for Only me (R2), and the saved choice as the one thing the
-/// background service serves (G2). Nothing here runs launchctl, binds a port or opens the Keychain.
+/// Only me as a background service (at login, with the watchdog and updates; `restart` and `update` restart it), its
+/// model picker, and the saved choice as the one thing the background service serves. Nothing here runs launchctl,
+/// binds a port or opens the Keychain.
 @Suite("Only me in the background, and the saved choice", .serialized)
 struct OnlyMeServiceTests {
     static let plain = "[provider]\nname = \"only-me\"\n"
@@ -17,9 +18,9 @@ struct OnlyMeServiceTests {
 
     @Test("Only me serves in the background unless --here asks for this terminal; launchd's child serves itself")
     func whereOnlyMeServes() throws {
-        #expect(!Start.servesOnlyMeHere(here: false, foreground: false), "the question, a saved Only me, --local")
-        #expect(Start.servesOnlyMeHere(here: true, foreground: false), "--local --here")
-        #expect(Start.servesOnlyMeHere(here: false, foreground: true), "launchd's --foreground child")
+        #expect(!Start.servesOnlyMeInThisProcess(here: false, foreground: false), "the question, a saved Only me, --local")
+        #expect(Start.servesOnlyMeInThisProcess(here: true, foreground: false), "--local --here")
+        #expect(Start.servesOnlyMeInThisProcess(here: false, foreground: true), "launchd's --foreground child")
         #expect(try Start.parse(["--local", "--here"]).here)
         #expect(try Start.parse(["--local", "--here"]).singleMacOptions == ["--local", "--here"])
     }
@@ -68,7 +69,7 @@ struct OnlyMeServiceTests {
                 "a Mac without a model: the start then names the commands that get one")
     }
 
-    /// J-12 of the journey test: `start --local` stopped Darkbloom serving without a word.
+    /// Before, `start --local` stopped Darkbloom serving without a word.
     @Test("Only me says that Darkbloom network serving stops; nothing to say when it didn't serve the network")
     func onlyMeSaysWhatStops() {
         let network = DaemonState(pid: 77, version: "t", writtenAt: 0, startedAt: 0, runtimeCapabilities: [])
@@ -80,7 +81,7 @@ struct OnlyMeServiceTests {
         #expect(Start.onlyMeReplacesLine(nil) == nil)
     }
 
-    // MARK: - The saved choice (G2)
+    // MARK: - The saved choice
 
     @Test("a mode flag is saved, so the service, restart and update serve it; --local --here and launchd's child save no mode")
     func modeFlagsAreSaved() throws {
@@ -97,8 +98,8 @@ struct OnlyMeServiceTests {
         }
     }
 
-    /// J-11 of the journey test: with `[local] mode = "network"`, `start --me-first` served Both, and after `restart`
-    /// the Mac still served Both while the config said network.
+    /// Before, with `[local] mode = "network"`, `start --me-first` served Both, and after `restart` the Mac still served
+    /// Both while the config said network.
     @Test("start --me-first, then restart: the config and the service both say Both; an older job is brought back to the saved choice")
     func meFirstThenRestart() throws {
         let config = try TempConfig(Self.plain + "\n[local]\nmode = \"network\"\nport = 8003\n")
@@ -106,77 +107,71 @@ struct OnlyMeServiceTests {
         _ = try #require(try ScriptedTerminal().resolve(try config.start(["--me-first"]), terminal: false))
         #expect(config.local?.mode == .both)
 
-        let both = try #require(LaunchAgent.ServingJob(arguments: Self.job(.both)))
-        var asked: [(LocalSettings.Mode, UInt16, String)] = []
-        let kept = try SavedChoiceService.align(configPath: config.path.path, job: both, thisMacPort: { 8003 },
-                                                rewrite: { mode, port, bind, _ in
-                                                    asked.append((mode, port, bind)); return false
-                                                })
+        // The job serves Both on 8003, at 127.0.0.1, as saved: it restarts as it is.
+        let job = try JobPlist(Self.job(.both))
+        defer { job.remove() }
+        let installed = job.bytes
+        let kept = try SavedChoiceService.align(configPath: config.path.path, plist: job.path, thisMacPort: { _ in 8003 })
         #expect(kept == SavedChoiceService.Alignment(mode: .both, line: nil))
-        #expect(asked.count == 1 && asked[0].0 == .both && asked[0].1 == 8003 && asked[0].2 == "127.0.0.1")
+        #expect(job.bytes == installed, "nothing rewritten")
 
-        // The journey's state, from an older build: saved network, the job serves Both. Restart serves network.
+        // An older build's state: saved network, the job serves Both. Restart serves network, and asks for no port.
         let older = try TempConfig(Self.plain + "\n[local]\nmode = \"network\"\nport = 8003\n")
         defer { older.remove() }
-        let rewritten = try SavedChoiceService.align(configPath: older.path.path, job: both, thisMacPort: { 8003 },
-                                                     rewrite: { _, _, _, _ in true })
+        let rewritten = try SavedChoiceService.align(configPath: older.path.path, plist: job.path, thisMacPort: { _ in
+            Issue.record("chose a port for the Darkbloom network"); return 8003
+        })
         #expect(rewritten == SavedChoiceService.Alignment(
             mode: .network, line: "Restarting as saved: Darkbloom network (the service was set up for Both, me first)."))
+        #expect(job.arguments == Self.job(.network))
 
-        // No saved choice (an upgraded Mac): restarted as installed, nothing rewritten.
+        // No saved choice (an updated Mac): its job restarts byte for byte as installed, even an argument a rewrite
+        // would drop (the `--idle-timeout` plists before v0.8.14 carried), and no port is chosen.
+        try job.write(Self.job(.both) + ["--idle-timeout", "60"])
+        let updatedMac = job.bytes
         let upgraded = try TempConfig(Self.plain)
         defer { upgraded.remove() }
-        let asInstalled = try SavedChoiceService.align(configPath: upgraded.path.path, job: both, rewrite: { _, _, _, _ in
-            Issue.record("rewrote a job with no saved choice"); return true
+        let asInstalled = try SavedChoiceService.align(configPath: upgraded.path.path, plist: job.path, thisMacPort: { _ in
+            Issue.record("chose a port with no saved choice"); return 8003
         })
         #expect(asInstalled == SavedChoiceService.Alignment(mode: .both, line: nil))
+        #expect(job.bytes == updatedMac, "nothing rewritten")
     }
 
     @Test("the installed job is rewritten to the saved choice, with the same models, keeping its other keys")
     func installedJobRewrite() throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("only-me-job-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let plist = directory.appendingPathComponent("io.darkbloom.provider.plist")
-        func write(_ arguments: [String]) throws {
-            let contents: [String: Any] = ["Label": "io.darkbloom.provider", "ProgramArguments": arguments,
-                                           "RunAtLoad": true, "EnvironmentVariables": ["DARKBLOOM_PREFIX_CACHE": "0"]]
-            try PropertyListSerialization.data(fromPropertyList: contents, format: .xml, options: 0).write(to: plist)
-        }
-        func read() throws -> [String: Any] {
-            try #require(try PropertyListSerialization.propertyList(from: Data(contentsOf: plist), format: nil)
-                as? [String: Any])
-        }
+        let plist = try JobPlist(Self.job(.both))
+        defer { plist.remove() }
         let coordinator = "wss://coordinator.invalid/ws/provider"
 
-        try write(Self.job(.both))
         #expect(try LaunchAgent.rewriteInstalledJob(serving: .network, port: 8003, bind: "127.0.0.1",
-                                                    coordinatorURL: coordinator, at: plist))
-        #expect(try read()["ProgramArguments"] as? [String] == Self.job(.network))
-        #expect((try read()["EnvironmentVariables"] as? [String: String]) == ["DARKBLOOM_PREFIX_CACHE": "0"])
+                                                    coordinatorURL: coordinator, at: plist.path))
+        #expect(plist.arguments == Self.job(.network))
+        #expect((plist.contents?["EnvironmentVariables"] as? [String: String]) == ["DARKBLOOM_PREFIX_CACHE": "0"])
         #expect(try !LaunchAgent.rewriteInstalledJob(serving: .network, port: 8003, bind: "127.0.0.1",
-                                                     coordinatorURL: coordinator, at: plist), "already so")
+                                                     coordinatorURL: coordinator, at: plist.path), "already so")
 
         #expect(try LaunchAgent.rewriteInstalledJob(serving: .local, port: 8003, bind: "127.0.0.1",
-                                                    coordinatorURL: coordinator, at: plist))
-        #expect(try read()["ProgramArguments"] as? [String] == Self.job(.local))
+                                                    coordinatorURL: coordinator, at: plist.path))
+        #expect(plist.arguments == Self.job(.local))
         #expect(try LaunchAgent.rewriteInstalledJob(serving: .both, port: 8003, bind: "127.0.0.1",
-                                                    coordinatorURL: coordinator, at: plist))
-        #expect(try read()["ProgramArguments"] as? [String] == Self.job(.both))
+                                                    coordinatorURL: coordinator, at: plist.path))
+        #expect(plist.arguments == Self.job(.both))
 
         // An older app's local job (`start --local` without --foreground) becomes launchd's --foreground Only me.
-        try write(["/Applications/Darkbloom.app/Contents/MacOS/darkbloom", "start", "--local", "--model", "fixture/model"])
+        try plist.write(["/Applications/Darkbloom.app/Contents/MacOS/darkbloom", "start", "--local", "--model",
+                         "fixture/model"])
         #expect(try LaunchAgent.rewriteInstalledJob(serving: .local, port: 8003, bind: "127.0.0.1",
-                                                    coordinatorURL: coordinator, at: plist))
-        #expect(try read()["ProgramArguments"] as? [String] == Self.job(.local))
+                                                    coordinatorURL: coordinator, at: plist.path))
+        #expect(plist.arguments == Self.job(.local))
 
         // A cluster member's job is the pair's: never rewritten.
         let member = ["/Applications/Darkbloom.app/Contents/MacOS/darkbloom", "start", "--foreground", "--cluster-member",
                       "--supervise", "--coordinator-url", coordinator]
-        try write(member)
+        try plist.write(member)
         #expect(try !LaunchAgent.rewriteInstalledJob(serving: .local, port: 8003, bind: "127.0.0.1",
-                                                     coordinatorURL: coordinator, at: plist))
-        #expect(try read()["ProgramArguments"] as? [String] == member)
+                                                     coordinatorURL: coordinator, at: plist.path))
+        #expect(plist.arguments == member)
     }
 
     /// A job's argv as `start` writes it, for each way of serving.
@@ -194,8 +189,8 @@ struct OnlyMeServiceTests {
         }
     }
 
-    /// #1896's review: an updated Mac's local API on 8000 keeps 8000. Only me's job takes this Mac's one port as every
-    /// start resolves it: the saved one, else the one its local API already uses (here a Both job on 8000), saved.
+    /// An updated Mac's local API on 8000 keeps 8000. Only me's job takes this Mac's one port as every start resolves
+    /// it: the saved one, else the one its local API already uses (here a Both job on 8000), saved.
     @Test("Only me's job serves on this Mac's port: an existing 8000 stays 8000, saved, and restart keeps it")
     func onlyMeKeepsThisMacsPort() throws {
         let config = try TempConfig(Self.plain)
@@ -210,12 +205,24 @@ struct OnlyMeServiceTests {
         #expect(argv.firstIndex(of: "--port").map { argv[$0 + 1] } == "8000")
 
         // `restart` with that job still serving Both, me first on 8000: it becomes Only me, on 8000.
-        let both = try #require(LaunchAgent.ServingJob(arguments: Self.job(.network)
-            + ["--local-endpoint", "--port", "8000", "--bind", "127.0.0.1"]))
-        var asked: (mode: LocalSettings.Mode, port: UInt16)?
-        let aligned = try SavedChoiceService.align(configPath: config.path.path, job: both,
-                                                   rewrite: { mode, port, _, _ in asked = (mode, port); return true })
-        #expect(asked?.mode == .local && asked?.port == 8000 && aligned.mode == .local)
+        let job = try JobPlist(Self.job(.network) + ["--local-endpoint", "--port", "8000", "--bind", "127.0.0.1"])
+        defer { job.remove() }
+        let aligned = try SavedChoiceService.align(configPath: config.path.path, plist: job.path)
+        #expect(aligned == SavedChoiceService.Alignment(
+            mode: .local, line: "Restarting as saved: Only me (the service was set up for Both, me first)."))
+        #expect(job.arguments == argv, "Only me's job, on 8000")
+    }
+
+    /// The port tools point at is this Mac's saved one: a job an earlier start left on another port comes back on it.
+    @Test("restart brings a job left on another port back on this Mac's saved port")
+    func restartTakesThisMacsPort() throws {
+        let config = try TempConfig(Self.plain + "\n[local]\nmode = \"both\"\nport = 8005\n")
+        defer { config.remove() }
+        let job = try JobPlist(Self.job(.both))
+        defer { job.remove() }
+        let aligned = try SavedChoiceService.align(configPath: config.path.path, plist: job.path)
+        #expect(aligned == SavedChoiceService.Alignment(mode: .both, line: nil))
+        #expect(job.arguments == Self.job(.network) + ["--local-endpoint", "--port", "8005", "--bind", "127.0.0.1"])
     }
 
     // MARK: - Restart and update
@@ -242,6 +249,29 @@ struct OnlyMeServiceTests {
                 + "`darkbloom start` serves v0.10.12 in the background.")
         #expect(Update.nothingRestartedLine(version: "0.10.12", terminalOnlyMe: false)
             == "Nothing serves in the background now; your next `darkbloom start` serves v0.10.12.")
+    }
+
+    /// Only me never contacts Darkbloom: waiting for its authorization would time out on every restart and update.
+    @Test("restart and update wait for Only me's local API, and for fresh authorization otherwise")
+    func restartWaitsAsTheServiceServes() async {
+        let look = DarkbloomCommandLook(mode: .plain, output: { _ in }, pause: { _ in })
+        let modes: [(LocalSettings.Mode?, String)] = [
+            (.local, "this Mac's local API didn't answer within 0s"),
+            (.both, "fresh authorization was not confirmed within 0s"),
+            (.network, "fresh authorization was not confirmed within 0s"),
+            (nil, "fresh authorization was not confirmed within 0s"),
+        ]
+        for (mode, words) in modes {
+            // Nothing restarted here, so each wait ends at once, with its own words.
+            do {
+                try await ServiceDrain.waitForRestartedService(serving: mode, previous: nil, timeout: 0, look: look)
+                Issue.record("\(String(describing: mode)): the wait must time out")
+            } catch let error as ValidationError {
+                #expect(error.message.contains(words), "\(String(describing: mode)): \(error.message)")
+            } catch {
+                Issue.record("\(String(describing: mode)): \(error)")
+            }
+        }
     }
 
     @Test("a restarted Only me is ready once a new process serves its local API, never on authorization")
@@ -307,4 +337,56 @@ struct OnlyMeServiceTests {
         #expect(Start.hereEndedLine(saved: nil) == "Only me in this terminal stopped; nothing serves on this Mac now. "
             + "`darkbloom start` serves it again.")
     }
+
+    @Test("no line of Only me's background start, restart or update names a speed or holds a key")
+    func noSpeedAndNoKey() {
+        let network = DaemonState(pid: 77, version: "t", writtenAt: 0, startedAt: 0, runtimeCapabilities: [])
+        let onlyMe = DaemonState(pid: 77, version: "t", writtenAt: 0, startedAt: 0)
+        var lines = Restart.terminalOnlyMeLines + [
+            Start.noModelToServe, Start.catalogUnreachableOnlyMe(["gemma-4-26b-qat-4bit"]),
+            Start.hereEndedLine(saved: .both), Update.nothingRestartedLine(version: "0.10.12", terminalOnlyMe: true),
+            Update.nothingRestartedLine(version: "0.10.12", terminalOnlyMe: false),
+        ]
+        lines += [Start.onlyMeReplacesLine(network, alive: { _ in true }), Start.hereStopsLine(network, alive: { _ in true }),
+                  Start.hereStopsLine(onlyMe, alive: { _ in true })].compactMap { $0 }
+        for key in [true, false] {
+            let serving = StartServing(mode: .local, source: .question, meFirst: false, meFirstIdleMinutes: 2,
+                                       route: .myMacsFirst, accountKeySaved: key, port: 8001, bind: "127.0.0.1",
+                                       noAuth: false)
+            // The log's path is the one line that isn't words.
+            lines += Start.onlyMeServiceSummary(models: ["gemma-4-26b-qat-4bit"], idleMinutes: 60, serving: serving,
+                                                autoRestart: true, autoUpdate: true).filter { !$0.hasPrefix("  Logs:") }
+        }
+        let text = lines.joined(separator: "\n")
+        #expect(!text.contains("tok/s") && !text.lowercased().contains("tokens per second"))
+        #expect(text.range(of: #"[0-9][0-9.,]*\s*[A-Za-z]*/s\b"#, options: .regularExpression) == nil,
+                "a number per second: \(text)")
+        #expect(!text.contains("dk-") && !text.contains("OPENAI_API_KEY") && !text.contains("API key:"), "\(text)")
+    }
+}
+
+/// A provider job's plist in its own temp folder, as `start` writes one, with a key a rewrite keeps.
+private struct JobPlist {
+    let directory: URL
+    let path: URL
+
+    init(_ arguments: [String]) throws {
+        directory = FileManager.default.temporaryDirectory.appendingPathComponent("only-me-job-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        path = directory.appendingPathComponent("io.darkbloom.provider.plist")
+        try write(arguments)
+    }
+
+    func write(_ arguments: [String]) throws {
+        let contents: [String: Any] = ["Label": "io.darkbloom.provider", "ProgramArguments": arguments,
+                                       "RunAtLoad": true, "EnvironmentVariables": ["DARKBLOOM_PREFIX_CACHE": "0"]]
+        try PropertyListSerialization.data(fromPropertyList: contents, format: .xml, options: 0).write(to: path)
+    }
+
+    var bytes: Data? { try? Data(contentsOf: path) }
+    var contents: [String: Any]? {
+        bytes.flatMap { try? PropertyListSerialization.propertyList(from: $0, format: nil) as? [String: Any] }
+    }
+    var arguments: [String]? { contents?["ProgramArguments"] as? [String] }
+    func remove() { try? FileManager.default.removeItem(at: directory) }
 }

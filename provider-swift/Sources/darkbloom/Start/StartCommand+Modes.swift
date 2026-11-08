@@ -1,5 +1,6 @@
-// Start serving modes: --local standalone, launchd-foreground (coordinator +
-// optional unified local endpoint), startup auto-update, and scheduled windows.
+// Start serving modes: Only me's standalone server (--local --here, or Only me's
+// launchd child), launchd-foreground (coordinator + optional unified local
+// endpoint), startup auto-update, and scheduled windows.
 import Foundation
 import ArgumentParser
 import ProviderAppAttest
@@ -154,9 +155,9 @@ extension Start {
             throw ExitCode.failure
         }
         print("Listening on \(bind):\(port)")
-        // Only now that the start went ahead does "Only me" (or the port it chose) become the saved choice: a start
-        // refused above (no model it can serve, the running provider's drain, a port another program holds) saves
-        // nothing.
+        // Only now that the start went ahead is a new port (or a settings flag) saved: a start refused above (no model
+        // it can serve, the running provider's drain, a port another program holds) saves nothing. This server runs
+        // for `--here`, which saves no mode, and for a service's child, which saves nothing.
         try saveServingChoice(serving)
 
         await server.startLifecycleControl()

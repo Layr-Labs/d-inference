@@ -868,7 +868,7 @@ struct ClusterPairControlTests {
     /// single-Mac start on this Mac reads too. The desktop app's Start (`start --model <id> --config <path>`) and scripts
     /// run without a terminal: on a Mac whose pair doesn't run here (the other Mac asleep or gone, this Mac's part
     /// serving alone or waiting), Only me now serves this Mac alone in the background, as a network start does. It was
-    /// refused (L4's C1) while Only me needed a terminal.
+    /// refused while Only me needed a terminal.
     @Test("without a terminal, the pair's saved Only me serves this Mac alone, as a network start does")
     func nonTerminalStartWithThePairsOnlyMeServesAlone() async {
         let app = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent, \.standardErrorContent]) {

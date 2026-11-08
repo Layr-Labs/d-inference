@@ -7,10 +7,12 @@ import Foundation
 import ProviderCore
 
 extension Start {
-    /// Where Only me serves: in this process for `--here` (this terminal, this session) and for a service's child
-    /// (`--foreground`, launchd's); otherwise every start installs or restarts the background service.
-    static func servesOnlyMeHere(here: Bool, foreground: Bool) -> Bool { here || foreground }
+    /// Whether Only me serves in this process: for `--here` (this terminal, this session) and for a service's child
+    /// (`--foreground`, launchd's); every other Only me start installs or restarts the background service.
+    static func servesOnlyMeInThisProcess(here: Bool, foreground: Bool) -> Bool { here || foreground }
 
+    /// Sets Only me up in the background and returns. Its job serves on `serving.port`, this Mac's one port as every
+    /// start resolves it, so a local API already on 8000 stays on 8000.
     internal func launchOnlyMeService(
         snapshot: RuntimeSnapshot,
         config: ProviderConfig,
@@ -19,10 +21,7 @@ extension Start {
         runtimeCapabilities: Set<ProviderRuntimeCapability>,
         serving: StartServing
     ) async throws {
-        if let hardware = snapshot.hardware, hardware.memoryGb < 8 {
-            printError("This Mac has \(hardware.memoryGb) GB RAM. At least 8 GB is needed to serve any model.")
-            throw ExitCode.failure
-        }
+        try Self.requireMemoryForAnyModel(snapshot.hardware)
         let selected = try await onlyMeModels(snapshot: snapshot, config: config, coordinatorURL: coordinatorURL,
                                               runtimeCapabilities: runtimeCapabilities)
         // Saved only once the models are chosen, as for the other two choices.
@@ -35,11 +34,11 @@ extension Start {
 
         // A cancelled picker never disturbs the running provider; the drain comes after it.
         try Task.checkCancellation()
-        if let line = Self.onlyMeReplacesLine(ServiceDrain.soloProviderState()) { print(line) }
+        let running = ServiceDrain.soloProviderState()
+        if let line = Self.onlyMeReplacesLine(running) { print(line) }
         let look = DarkbloomCommandLook.forCommand()
         let replacement = try await look.working("Draining accepted requests") {
-            try await ServiceDrain.prepare(options: drain, state: ServiceDrain.soloProviderState(),
-                                           withConfigurationChange: { setup in
+            try await ServiceDrain.prepare(options: drain, state: running, withConfigurationChange: { setup in
                 try ProviderModelSelection.withReplacement(selected, configPath: snapshot.configPath,
                                                            fallbackConfig: config, body: setup)
             })

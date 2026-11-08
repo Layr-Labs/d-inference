@@ -298,6 +298,11 @@ struct Start: AsyncParsableCommand {
         foreground || (local && !distributed && startedByAService())
     }
 
+    /// Whether a service started this process: launchd's provider job, or the cluster service's solo part.
+    static func startedByAService() -> Bool {
+        LaunchAgent.isCurrentProcessJob() || ClusterPairSummary.startedByClusterService()
+    }
+
     /// Tests stand in for stopping this Mac's leftover part (`ClusterService.releaseForSingleMac`).
     @TaskLocal static var releaseForTesting: (@Sendable () -> Bool)?
     /// As `releaseForTesting`, with how it ended, given what it calls before it waits for a running cluster command.
@@ -385,9 +390,8 @@ struct Start: AsyncParsableCommand {
         // never exits, so its banner, "Listening on" and the tool lines would wait in the buffer.
         setvbuf(stdout, nil, _IOLBF, 0)
         // From here on, a service's child is the --foreground service (`isServiceChild`).
-        foreground = Self.isServiceChild(local: local, foreground: foreground, distributed: distributed, startedByAService: {
-            LaunchAgent.isCurrentProcessJob() || ClusterPairSummary.startedByClusterService()
-        })
+        foreground = Self.isServiceChild(local: local, foreground: foreground, distributed: distributed,
+                                         startedByAService: Self.startedByAService)
         // `--opencode` / `--hermes` beside a running local API: set the tools up for it, and start nothing.
         if try await setUpToolsForRunningLocalAPI() { return }
         let look = DarkbloomCommandLook.forCommand()
@@ -574,7 +578,7 @@ struct Start: AsyncParsableCommand {
             printError("warning: \(notice)")
         }
 
-        if localOnly, Self.servesOnlyMeHere(here: here, foreground: foreground) {
+        if localOnly, Self.servesOnlyMeInThisProcess(here: here, foreground: foreground) {
             try await runLocalStandalone(
                 snapshot: snapshot,
                 config: effectiveConfig,
@@ -642,8 +646,9 @@ struct Start: AsyncParsableCommand {
         return serving
     }
 
-    /// Saves what this start chose in `[local]` (only the question saves a mode) and says which port a new local API
-    /// got. Called once the start goes ahead: a cancelled picker or a refused start saves nothing.
+    /// Saves what this start chose in `[local]` (a mode only from the question or a mode flag,
+    /// `LocalFirstOptions.savesModeFlag`) and says which port a new local API got. Called once the start goes ahead: a
+    /// cancelled picker or a refused start saves nothing.
     func saveServingChoice(_ serving: StartServing) throws {
         guard !serving.change.isEmpty else { return }
         try setLocalSettings(configPath: configOptions.config) { serving.change.apply(to: &$0) }

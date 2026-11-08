@@ -673,7 +673,7 @@ public final class ClusterService: @unchecked Sendable {
         else { lock.withLock { relayHeld = nil }; return }
         let due = lock.withLock { () -> Bool in
             guard let held = relayHeld, held.target == wanted else { return true }
-            return Date() >= held.retryAt
+            return Date().timeIntervalSince(held.retryAt) >= 0
         }
         guard due else { return }
         let port = ClusterLocalRelay.port(own: thisMacPort(say: say), for: wanted, scope: scope)

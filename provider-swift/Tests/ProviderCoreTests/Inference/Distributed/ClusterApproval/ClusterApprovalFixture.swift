@@ -85,8 +85,10 @@ final class ClusterApprovalMacs: @unchecked Sendable {
             try file(helpers.appendingPathComponent(ClusterRuntimeApprovalFacts.Installation.placementToolName), "plan", executable: true)
             try file(helpers.appendingPathComponent(ClusterRuntimeApprovalFacts.Installation.metallibName), "metallib", executable: false)
             try file(helpers.appendingPathComponent(ClusterRuntimeApprovalFacts.Installation.resourceLibraryName), "resource", executable: false)
+            // This Mac's saved local API port, as every Mac that has served locally since one port per Mac keeps it: the
+            // service's parts take it as it is and never write this file (`ClusterService.ownAPIPort`).
             let provider = home.appendingPathComponent("provider.toml")
-            try file(provider, "[coordinator]\nurl = \"\(coordinatorURL)\"\n", executable: false)
+            try file(provider, "[coordinator]\nurl = \"\(coordinatorURL)\"\n\n[local]\nport = 8001\n", executable: false)
             built.append(Mac(rank: rank, home: home, paths: try ClusterUserPaths(homeDirectory: home), pairing: stores[rank],
                 provider: provider, scratch: home.appendingPathComponent("scratch", isDirectory: true),
                 memberID: ClusterSetupMemberFacts.memberID(pin: pins[rank]), pin: pins[rank], owner: owner, worker: worker,

@@ -17,12 +17,19 @@ field of an effort refused as none of the names (the local API's
 invalid_reasoning_effort `param`); `error` marks a request refused otherwise
 (contradictory spellings).
 
+The file also lists each set the table keeps: the model types that reason, the
+Qwen 3.5 template family's types, the types whose effort sets a thinking
+switch, and the concrete Qwen 3.8 builds. Every copy that keeps a set checks it
+for equality, and every type that reasons has cases, so a type or a build added
+or dropped on one side only fails a test on the other.
+
 Usage: scripts/generate-reasoning-effort-vectors.py [OUTPUT]
 (default: the fixture above, in this repository).
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import sys
 from pathlib import Path
@@ -36,6 +43,18 @@ REASONING_MODEL_TYPES = [
     "gemma4", "gemma4_text", "gemma4_vision", "diffusion_gemma", "gpt_oss",
     "nemotron_h", "nemotron_h_omni", "mimo_v2", "glm5_next", "glm5_next_text", "glm5_next_mtp", "flint",
 ]
+
+# ReasoningEffortPolicy.qwen35TemplateTypes: the Qwen 3.5 template family,
+# which takes Qwen 3.8's levels while thinking.
+QWEN35_TEMPLATE_MODEL_TYPES = ["qwen3_5", "qwen3_5_moe", "prism_hadamard_qwen35"]
+
+# ReasoningEffortPolicy.effortSwitchTypes: Gemma 4 and DiffusionGemma, whose
+# effort sets their thinking switch (ReasoningEffort.oneDepthThinking).
+THINKING_SWITCH_MODEL_TYPES = ["gemma4", "gemma4_text", "gemma4_vision", "diffusion_gemma"]
+
+# ModelRuntimeRequirements.qwen38ConcreteModelIDs: Qwen 3.8 builds, which take
+# Qwen 3.8's levels and reason whatever their type.
+QWEN38_MODEL_IDS = ["EigenLabs/Qwen3.8-27B-4bit", "EigenLabs/Qwen3.8-27B-4bit-mtp"]
 
 QWEN38_LEVELS = ["low", "medium", "xhigh"]
 HARMONY_LEVELS = ["low", "medium", "high"]
@@ -252,16 +271,39 @@ FAMILIES: list[Family] = [
 
 # The spellings each family is asked: every name in both fields, other
 # spellings of a name, an effort that is none of the names, and both fields.
-SINGLE_VALUES = NAMES + [" High ", "OFF", "0", "off", "turbo"]
+# "HİGH" (U+0130) is no name: full Unicode lower-casing gives "hi̇gh".
+SINGLE_VALUES = NAMES + [" High ", "OFF", "0", "off", "HİGH", "turbo"]
 PAIRS = [("turbo", "low"), ("low", "turbo"), ("high", "HIGH")]
+
+# Each other type that reasons is asked fewer spellings, enough to tell its
+# family's reading from another's: none, a name, a padded and a capitalised
+# spelling, a non-ASCII one and one that is none of the names.
+VARIANT_VALUES = ["none", "max", " High ", "OFF", "HİGH", "turbo"]
+
+
+def variant(of: str, model: str, model_type: str) -> Family:
+    """The reading of the family of type `of`, under another type it serves."""
+    other = copy.copy(next(family for family in FAMILIES if family.model_type == of))
+    other.name, other.model, other.model_type = model_type, model, model_type
+    other.values, other.pairs = VARIANT_VALUES, []
+    return other
+
+
+VARIANTS: list[Family] = [
+    variant("qwen4_exp", "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp", "qwen4_exp_text"),
+    variant("gemma4", "gemma-4-26b-text", "gemma4_text"),
+    variant("gemma4", "gemma-4-vision", "gemma4_vision"),
+    variant("glm5_next", "glm-5.3-flash", "glm5_next_text"),
+    variant("glm5_next", "glm-5.3-flash", "glm5_next_mtp"),
+]
 
 
 def cases_for(family: Family) -> list[dict]:
     asked: list[dict[str, str]] = []
-    for value in SINGLE_VALUES:
+    for value in getattr(family, "values", SINGLE_VALUES):
         asked.append({"reasoning_effort": value})
         asked.append({"reasoning.effort": value})
-    for top, nested in PAIRS:
+    for top, nested in getattr(family, "pairs", PAIRS):
         asked.append({"reasoning_effort": top, "reasoning.effort": nested})
     if isinstance(family, GLM):
         asked += [{"chat_template_kwargs.reasoning_effort": value} for value in ["xhigh", "Low", "turbo"]]
@@ -278,9 +320,11 @@ def cases_for(family: Family) -> list[dict]:
 
 
 def document() -> dict:
-    cases = [case for family in FAMILIES for case in cases_for(family)]
+    cases = [case for family in FAMILIES + VARIANTS for case in cases_for(family)]
     names = {case["name"] for case in cases}
     assert len(names) == len(cases), "case names are unique"
+    asked = {case["model_type"] for case in cases}
+    assert set(REASONING_MODEL_TYPES) <= asked, f"every type that reasons has cases: {set(REASONING_MODEL_TYPES) - asked}"
     return {
         "schema": "darkbloom-reasoning-effort-vectors-v1",
         "efforts": NAMES,
@@ -290,6 +334,9 @@ def document() -> dict:
             "message": "{param} must be one of: " + ", ".join(NAMES) + ".",
         },
         "reasoning_model_types": REASONING_MODEL_TYPES,
+        "qwen35_template_model_types": QWEN35_TEMPLATE_MODEL_TYPES,
+        "thinking_switch_model_types": THINKING_SWITCH_MODEL_TYPES,
+        "qwen38_model_ids": QWEN38_MODEL_IDS,
         "cases": cases,
     }
 

@@ -2992,12 +2992,16 @@ coordinator receives the closed `invalid_request` failure, which it shows as
 The coordinator maps every effort from a copy of these tables: darkbloom-platform's
 ingress refusal, first-party pool and prompt sidecar, which plans these prompts
 for cache-aware routing. `fixtures/prompt-contract/v1/reasoning_effort_vectors.json`
-is the agreement test, the provider's reading of 354 requests: every family,
-every effort in both fields, other spellings, an effort that is none of the
-names, and both fields together. `scripts/generate-reasoning-effort-vectors.py`
-writes it, `CachePromptParityTests.reasoningEffortVectors` runs every case
-through the production prompt pipeline, and the platform checks its readers
-against the same bytes. Gemma 4's thinking switch and GPT-OSS's Harmony levels
+is the agreement test, the provider's reading of 446 requests: every family and
+every type that reasons, every effort in both fields, other spellings, an effort
+that is none of the names, and both fields together. It also lists the sets
+these tables keep (the types that reason, the Qwen 3.5 template family's, the
+types whose effort sets a thinking switch, the concrete Qwen 3.8 builds), which
+each copy checks for equality, so a type added on one side only fails a test.
+`scripts/generate-reasoning-effort-vectors.py` writes it,
+`CachePromptParityTests.reasoningEffortVectors` runs every case through the
+production prompt pipeline, and the platform checks its readers against the
+same bytes. Gemma 4's thinking switch and GPT-OSS's Harmony levels
 change the prompt of the requests that name such an effort, which the platform's
 production prompt vectors carry (`ProductionPromptParityTests`). The platform
 keeps its normalization version, so while a provider and the sidecar render

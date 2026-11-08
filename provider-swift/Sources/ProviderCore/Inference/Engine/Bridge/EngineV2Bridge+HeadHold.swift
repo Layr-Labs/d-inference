@@ -12,22 +12,31 @@ enum LocalHeadHold {
 }
 
 extension EngineV2Bridge {
+    /// A held head (`heldHeads`): the request still waits for the engine to admit it, or the engine ended it before
+    /// admitting it for this Mac's memory.
+    enum HeldHead {
+        case waiting
+        case refused(String)
+    }
+
     /// Holds a streamed local request (`submitTokenized`) until the engine admits it: until it no longer waits in the
-    /// engine's queue (`queueState(of:)`, the same inference me first uses), or its first token, or its end. Its response
-    /// head goes out only after this returns. If the engine ended it before admitting it for this Mac's memory, its
-    /// 120 s admission lease or a full paged pool's requeues (`recordHeadHoldRefusal`), this throws
-    /// `tokenBudgetExhausted`, which the local API answers with the memory 503 before any SSE header. Any other end
-    /// returns, and the stream carries it as before. The admission lease bounds the wait; nothing runs per token.
+    /// engine's queue (`queueState(of:)`, the same inference me first uses), its first token, or its end. Its response
+    /// head goes out only after this returns.
+    /// - If the engine ended it before admitting it for this Mac's memory, at its 120 s admission lease or after a full
+    ///   paged pool's requeues (`recordHeadHoldRefusal`), this throws `tokenBudgetExhausted`, which the local API
+    ///   answers with the memory 503 before any SSE header. Any other end returns, and the stream carries it as before.
+    /// - The held head never outlives the admission lease: a request the engine never admits ends when its lease runs
+    ///   out, and the hold with it. One that reads as waiting after its admission (an older request preempted to the
+    ///   front of the queue) is held until its first token.
+    /// - A client that leaves during the hold cancels the request.
+    /// - The first look is at once, then one every `queuePollInterval`; nothing runs per token.
     func holdHeadUntilAdmitted(id: String) async throws {
-        defer {
-            headHeldIDs.remove(id)
-            headHoldRefusals.removeValue(forKey: id)
-        }
+        defer { heldHeads.removeValue(forKey: id) }
         while true {
-            if let refusal = headHoldRefusals.removeValue(forKey: id) {
-                throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(refusal)
+            if case .refused(let message)? = heldHeads[id] {
+                throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(message)
             }
-            guard let view = queueState(of: id), view.waiting else { return }
+            guard let queue = queueState(of: id), queue.waiting else { return }
             do {
                 try await Task.sleep(for: queuePollInterval)
             } catch {
@@ -38,15 +47,16 @@ extension EngineV2Bridge {
     }
 
     /// The pump's terminal for a request whose head is held: an end before admission for this Mac's memory becomes
-    /// the hold's refusal. Called before the terminal is recorded, in the same actor turn.
+    /// the hold's refusal. Called in the actor turn that records the terminal, so the hold finds the refusal no later
+    /// than it finds the request gone. Once per request, at its terminal.
     func recordHeadHoldRefusal(id: String, reason: CBv2FinishReason) {
-        guard headHeldIDs.contains(id) else { return }
+        guard heldHeads[id] != nil else { return }
         switch reason {
         case .terminal(cause: .admissionTimeout, _):
-            headHoldRefusals[id] =
-                "token_budget_exhausted: the engine couldn't admit the request within its admission lease"
+            heldHeads[id] = .refused(
+                "token_budget_exhausted: the engine couldn't admit the request within its admission lease")
         case .error(let message) where message.hasPrefix(CBv2KVError.capacityExhaustedFinishPrefix):
-            headHoldRefusals[id] = "token_budget_exhausted: KV capacity exhausted after requeues"
+            heldHeads[id] = .refused("token_budget_exhausted: KV capacity exhausted after requeues")
         default:
             return
         }

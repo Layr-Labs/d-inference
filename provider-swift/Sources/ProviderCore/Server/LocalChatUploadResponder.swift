@@ -149,7 +149,8 @@ where Inner.Context == BasicRequestContext {
             }
             let responseService = serviceForTemplateControls(item.templateControls)
             if item.request.stream == true {
-                // The engine reports the prompt into this from acceptance to the first token.
+                // The engine reports the prompt into this from admission (on a pair's API, acceptance) to the first
+                // token.
                 let prefillProgress = prefillTicker.map(LocalPrefillProgress.init)
                 let frames = try await LocalPrefillProgress.$current.withValue(prefillProgress) {
                     try await responseService.streamResponseFrames(request: item.request)
@@ -228,7 +229,7 @@ where Inner.Context == BasicRequestContext {
         // throws (unknown model, admission refusal) travel to
         // `CORSResponder`'s status mapping unchanged.
         if item.request.stream == true {
-            // The engine reports the prompt into this from acceptance to the first token.
+            // The engine reports the prompt into this from admission (on a pair's API, acceptance) to the first token.
             let prefillProgress = prefillTicker.map(LocalPrefillProgress.init)
             if let distributedResponses {
                 let response = try distributedResponses.begin()

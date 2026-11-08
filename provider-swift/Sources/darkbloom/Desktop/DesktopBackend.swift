@@ -27,6 +27,10 @@ actor DesktopBackend {
   var resourceTasks: [String: Task<JSONValue, Error>] = [:]
   var localAt = Date.distantPast
   var localModels: [ModelInfo] = []
+  /// This Mac's pair for the snapshot (`snapshotCapabilities`, `pairSnapshot`), read again after 30 s, since
+  /// `ClusterPairSummary.local()` asks launchctl. An action reads it afresh (`arguments(for:)`).
+  var pairAt = Date.distantPast
+  var pair = ClusterPairSummary.notPaired
   var link: JSONValue = .null
   var samples: [JSONValue] = []
   var sampleSession: Double?
@@ -56,7 +60,7 @@ actor DesktopBackend {
   }
 
   func submit(_ request: DesktopAction) throws -> DesktopOperation {
-    try request.validate()
+    try request.validate(startsThePair: { try Self.startsThePair(ClusterPairSummary.local()) })
     if let original = requests[request.id] {
       guard original == request, let operation = operations.first(where: { $0.id == request.id })
       else { throw ValidationError("Request ID was already used") }
@@ -88,6 +92,17 @@ actor DesktopBackend {
     persist()
     tasks[request.id] = Task { await self.execute(request) }
     return operation
+  }
+
+  /// Whether a `start` that names no models starts this Mac's pair: the app's Start on a Mac in a two-Mac pair
+  /// (`startPlan.startAction`), where `start` starts the pair with its own model (`Start.pairStart`). `paired` is `start`'s
+  /// own test, so a pairing record that can't be read counts too, and `start` then refuses in its own words. Elsewhere
+  /// such a start is refused as before ("Choose at least one model"). A pair with no model yet is refused at once with
+  /// the CLI's one line for it, before anything runs, never "starting the pair".
+  static func startsThePair(_ pair: ClusterPairSummary) throws -> Bool {
+    guard pair.paired else { return false }
+    if !pair.pairingUnreadable, pair.model == nil { throw ValidationError(ClusterPairSummary.noModelLine) }
+    return true
   }
 
   private func execute(_ request: DesktopAction) async {
@@ -174,6 +189,11 @@ actor DesktopBackend {
   }
 
   func arguments(for request: DesktopAction) throws -> [String] {
+    // First, so a refused Autopilot downloads nothing: `runAutopilot` downloads only after this. `paired` is the test
+    // `start` makes (`Start.pairStart`), so a pairing record that can't be read counts too.
+    if Self.pairRefusedActions.contains(request.action), ClusterPairSummary.local().paired {
+      throw ValidationError(Self.pairAutopilotRefusal)
+    }
     if request.action == "autopilot_pin" { try validateAutopilotPins(request.models ?? []) }
     if request.action == "autopilot_models" {
       let config = try configuration().config
@@ -201,6 +221,8 @@ actor DesktopBackend {
     if let arguments = autopilotArguments(for: request, config: config) { return arguments }
     switch request.action {
     case "start":
+      // Never `--solo`: on a paired Mac this `start` starts the pair (`Start.appStartOptions`) and local mode refuses
+      // (`Desktop.StartLocal.pairRefusal`), so the app never serves a paired Mac alone.
       guard request.local != true else { return ["desktop", "start-local"] + models + config }
       return ["start"] + models + (request.endpoint == true ? ["--local-endpoint"] : []) + config
     case "switch":

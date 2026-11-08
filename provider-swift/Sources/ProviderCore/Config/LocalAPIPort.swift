@@ -126,7 +126,7 @@ public enum LocalAPIPort {
         guard let saved else { return "Local API port: \(named) (saved)." }
         let cli = BuildEnvironment.current.cliName
         return "Local API port: \(named) (saved, instead of \(saved): tools set up for \(saved) need "
-            + "`\(cli) start --opencode` or `--hermes` again)."
+            + "`\(cli) --opencode` or `--hermes` again)."
     }
 
     /// Says that no port from `start` is free for a new choice, and what to do.

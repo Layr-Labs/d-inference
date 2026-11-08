@@ -179,13 +179,14 @@ this Mac, for example `http://127.0.0.1:8001/v1`:
 
 ## Use it from OpenCode or Hermes
 
-Add `--opencode` or `--hermes` (or both) to `darkbloom start`, as you would run
-`ollama launch` or `omlx launch`:
+Run `darkbloom --opencode` or `darkbloom --hermes` (or both), as you would run
+`ollama launch` or `omlx launch`. Each runs `darkbloom start` with the flag, so
+any `start` option goes with it, in any order:
 
 ```bash
-darkbloom start --opencode          # set OpenCode up
-darkbloom start --hermes            # set Hermes Agent up
-darkbloom start --me-first --opencode --hermes
+darkbloom --opencode                # set OpenCode up
+darkbloom --hermes                  # set Hermes Agent up
+darkbloom --opencode --hermes --me-first
 ```
 
 Then, in OpenCode, `/models` → Darkbloom. Hermes uses Darkbloom as its main
@@ -200,7 +201,7 @@ model.
   in Hermes' `~/.hermes/config.yaml`, where it also becomes the main model, as
   Ollama and oMLX do. Everything else in those files stays as it was.
 - **Your key stays out of them.** The tools read it from Darkbloom's own key
-  file, and `start --opencode` never prints it.
+  file, and `darkbloom --opencode` never prints it.
 - **Undo in one line:** every change is backed up first, and the start prints
   the file it changed, the backup and the command that puts it back:
 
@@ -241,7 +242,7 @@ model.
   which Darkbloom changes: unset it, or copy the `darkbloom` provider there. A
   Hermes profile chosen with `hermes profile use <name>` reads
   `~/.hermes/profiles/<name>/config.yaml`: set that profile up with
-  `HERMES_HOME=~/.hermes/profiles/<name> darkbloom start --hermes`. The start
+  `HERMES_HOME=~/.hermes/profiles/<name> darkbloom --hermes`. The start
   always names the file it changed.
 
 ## Check how this Mac serves
@@ -293,7 +294,7 @@ A pair gets the same three choices. Run `darkbloom cluster` on each Mac: it
 pairs them, then the leading Mac asks how the pair serves (**Only me**,
 **Darkbloom network** or **Both, me first**, preselected) and which model; its
 list's **Change how the pair serves** asks again. Then run
-`darkbloom start --opencode` on the leading Mac, which runs the pair's API.
+`darkbloom --opencode` on the leading Mac, which runs the pair's API.
 
 - **Only me:** no Mac of the pair contacts Darkbloom. `darkbloom cluster local`
   serves the pair this way too. The other Mac passes its own port on to the

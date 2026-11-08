@@ -153,7 +153,7 @@ private struct HermesEdit {
         // A new block comes with a line saying where it came from. A replaced block keeps the lines above it, that one
         // included, so a re-run never adds a second.
         func newBlock(_ indent: String) -> [String] {
-            [indent + "# Added by `\(provider.id) start --hermes`. Run it again to refresh \(provider.name)'s models."]
+            [indent + "# Added by `\(provider.id) --hermes`. Run it again to refresh \(provider.name)'s models."]
                 + block(indent)
         }
         guard let section = providers else {

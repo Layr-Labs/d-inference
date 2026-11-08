@@ -34,7 +34,8 @@ if rawArgs.first == AppAttestQualificationCommand.argument {
 // (`ClusterCandidateRecovery.startCheckFailure`).
 MacOSUpgradeNotice.emit()
 
-// `darkbloom --opencode` / `--hermes` are `start`'s, hosted and parsed as `start --opencode` would be.
+// `darkbloom --opencode` / `--hermes` are short for `start --opencode` / `--hermes`. Expanded before the host check
+// and the parse, they are hosted and parsed exactly as `start` is (`Darkbloom.expandingToolShortcuts`).
 let commandArgs = Darkbloom.commandLineArguments
 
 #if os(macOS)

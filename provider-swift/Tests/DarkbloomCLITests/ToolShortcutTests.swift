@@ -4,9 +4,9 @@ import Testing
 @testable import ProviderCore
 @testable import darkbloom
 
-/// `darkbloom --opencode` and `darkbloom --hermes`: with no subcommand, a tool flag makes the arguments `start`'s
-/// (`Darkbloom.expandingToolShortcuts`, which `main` applies before it hosts or parses anything). Parsing only: no
-/// command runs.
+/// `darkbloom --opencode` and `darkbloom --hermes`: with no subcommand named, a tool flag forwards the arguments to
+/// `start` (`Darkbloom.expandingToolShortcuts`, which `main` applies before it hosts or parses anything). Parsing only:
+/// no command runs.
 @Suite("darkbloom --opencode and --hermes")
 struct ToolShortcutTests {
     static let cli = BuildEnvironment.current.cliName
@@ -73,6 +73,11 @@ struct ToolShortcutTests {
         let typo = try #require(Self.failure(["--opencode", "--me-firs"]))
         #expect(Darkbloom.message(for: typo) == "Unknown option '--me-firs'. Did you mean '--me-first'?")
         #expect(Darkbloom.fullMessage(for: typo, columns: 80).contains("Usage: \(Self.cli) start "))
+        // A subcommand after a tool flag is an argument `start` doesn't take: `darkbloom --opencode start`.
+        let extra = try #require(Self.failure(["--opencode", "start"]))
+        #expect(Darkbloom.message(for: extra) == "Unexpected argument 'start'")
+        #expect(Darkbloom.exitCode(for: extra) == .validationFailure)
+        #expect(Darkbloom.fullMessage(for: extra, columns: 80).contains("Usage: \(Self.cli) start "))
     }
 
     @Test("`start --opencode` keeps working", arguments: [["start", "--opencode"], ["start", "--hermes", "--me-first"]])
@@ -84,7 +89,8 @@ struct ToolShortcutTests {
 
     @Test("help, the version, plain darkbloom, subcommands and other arguments are parsed as typed",
           arguments: [[], ["--help"], ["-h"], ["--version"], ["help"], ["help", "start"], ["status"], ["local"],
-                      ["status", "--opencode"], ["cluster", "local"], ["--opencod"], ["--", "--opencode"]])
+                      ["status", "--opencode"], ["models", "--opencode"], ["cluster", "local"], ["--opencod"],
+                      ["--", "--opencode"]])
     func otherArgumentsAreUnchanged(arguments: [String]) {
         #expect(Darkbloom.expandingToolShortcuts(arguments) == arguments)
     }
@@ -95,15 +101,23 @@ struct ToolShortcutTests {
         for flag in ["--help", "-h"] {
             #expect(try Self.help([flag]) == Darkbloom.helpMessage(includeHidden: false, columns: 80))
         }
-        let version = try #require(Self.failure(["--version"]))
-        #expect(Darkbloom.exitCode(for: version) == .success)
-        #expect(Darkbloom.fullMessage(for: version, columns: 80) == Darkbloom.configuration.version)
-        let status = try #require(Self.failure(["status", "--opencode"]))
-        #expect(Darkbloom.message(for: status) == "Unknown option '--opencode'")
-        #expect(Darkbloom.fullMessage(for: status, columns: 80).contains("Usage: \(Self.cli) status "))
-        // `--help` with a shortcut is the help of what it runs: start's.
-        #expect(try Self.help(["--opencode", "--help"])
-            == Darkbloom.helpMessage(for: Start.self, includeHidden: false, columns: 80))
+        // `--version` prints the version, beside a tool flag too, and nothing starts.
+        for arguments in [["--version"], ["--version", "--opencode"], ["--hermes", "--version"]] {
+            let version = try #require(Self.failure(arguments), "\(arguments)")
+            #expect(Darkbloom.exitCode(for: version) == .success, "\(arguments)")
+            #expect(Darkbloom.fullMessage(for: version, columns: 80) == Darkbloom.configuration.version, "\(arguments)")
+        }
+        // A subcommand refuses a tool flag itself. `models` runs its default subcommand, `models catalog`.
+        for (arguments, usage) in [(["status", "--opencode"], "status"), (["models", "--opencode"], "models catalog")] {
+            let refused = try #require(Self.failure(arguments), "\(arguments)")
+            #expect(Darkbloom.message(for: refused) == "Unknown option '--opencode'")
+            #expect(Darkbloom.fullMessage(for: refused, columns: 80).contains("Usage: \(Self.cli) \(usage) "))
+        }
+        // `--help` with a shortcut, before or after it, is the help of what it runs: start's.
+        let startHelp = Darkbloom.helpMessage(for: Start.self, includeHidden: false, columns: 80)
+        for arguments in [["--opencode", "--help"], ["--help", "--opencode"]] {
+            #expect(try Self.help(arguments) == startHelp, "\(arguments)")
+        }
     }
 
     @Test("a mistyped tool flag gets the usual unknown-option error, from the root command",

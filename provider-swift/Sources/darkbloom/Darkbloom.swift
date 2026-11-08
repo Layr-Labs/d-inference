@@ -80,13 +80,18 @@ struct Darkbloom: AsyncParsableCommand {
     }
 }
 
-// MARK: - Tool shortcuts
+// MARK: - `darkbloom --opencode` and `darkbloom --hermes`
 
 extension Darkbloom {
-    /// The arguments to parse for `arguments`, as typed after `darkbloom`: `darkbloom --opencode` and
-    /// `darkbloom --hermes`, alone, together or with other `start` options in any order, are `start`'s. With no
-    /// subcommand named (the first argument is an option) and a tool flag before any `--`, `start` goes first.
-    /// Anything else (no arguments, `--help` or `--version` without a tool flag, a subcommand) is parsed as typed.
+    /// `arguments`, as typed after `darkbloom`, with `start` put first when they are a tool shortcut:
+    /// `darkbloom --opencode --me-first` runs `darkbloom start --opencode --me-first`.
+    ///
+    /// The root forwards to `start` when no subcommand is named (the first argument is an option) and `--opencode` or
+    /// `--hermes` comes before any `--`. Every other argument then goes to `start` too, in any order, so `start`'s
+    /// errors and help apply. Anything else is parsed as typed: plain `darkbloom`, `--help` or `--version` without a
+    /// tool flag, a subcommand and its options (`darkbloom models --opencode` is refused), and a mistyped flag
+    /// (`darkbloom --opencod` gets the root's unknown-option error). ArgumentParser's default subcommand isn't used:
+    /// it would also run `start` for plain `darkbloom` and for `darkbloom --me-first`.
     static func expandingToolShortcuts(_ arguments: [String]) -> [String] {
         let toolFlags = Set(IntegrationTool.allCases.map(\.flag))
         guard arguments.first?.hasPrefix("-") == true,
@@ -94,7 +99,8 @@ extension Darkbloom {
         return ["start"] + arguments
     }
 
-    /// This process's arguments as `main` parses them (`expandingToolShortcuts`).
+    /// This process's arguments as `main` hosts and parses them (`expandingToolShortcuts`), for a later check that
+    /// must agree with `main`, such as whether the AppKit host runs.
     static var commandLineArguments: [String] { expandingToolShortcuts(Array(CommandLine.arguments.dropFirst())) }
 }
 

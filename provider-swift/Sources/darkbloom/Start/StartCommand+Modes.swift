@@ -166,7 +166,8 @@ extension Start {
         // already holding the port could answer.
         guard await server.waitUntilBound(timeoutSeconds: 5.0) else {
             await server.stop()
-            printError("Local server failed to bind \(bind):\(port) within 5s — is the port already in use?")
+            printError(Self.localServerBindFailure(bind: bind, port: port, nextFree: LocalAPIPort.nextFree(besides: port),
+                                                   paired: ClusterPairSummary.local().paired))
             throw ExitCode.failure
         }
         print("Listening on \(bind):\(port)")
@@ -203,6 +204,15 @@ extension Start {
         }
     }
 
+
+    /// The coordinator-less server couldn't listen on its port within 5 seconds; `nextFree` is the port
+    /// `start --port` would take instead, with `--solo` on a Mac in a two-Mac cluster (`paired`), which refuses it
+    /// without.
+    static func localServerBindFailure(bind: String, port: UInt16, nextFree: UInt16?, paired: Bool = false) -> String {
+        let start = "\(BuildEnvironment.current.cliName) start\(paired ? " --solo" : "") --port"
+        return "This Mac's local API couldn't listen on \(bind):\(port): another program may use port \(port). Free it, or "
+            + (nextFree.map { "run `\(start) \($0)`." } ?? "name another with `\(start) <n>`.")
+    }
 
     // MARK: - Foreground (invoked by launchd)
 

@@ -99,7 +99,12 @@ cluster its Stop and Restart run `darkbloom stop` and `darkbloom restart`, which
 act on both Macs; its local mode serves this Mac alone, so `desktop start-local`
 refuses there and says why instead of reporting a start (`Desktop.StartLocal.pairRefusal`). Internal
 `desktop start-local --model <id>`, `stop-local`, and `restart-local` commands
-(each accepting `--config`) retain the native provider owner and termination handler. Cooling uses
+(each accepting `--config`) retain the native provider owner and termination handler. `start-local` serves on
+this Mac's one local API port (`Desktop.StartLocal.localAPI`, `LocalAPIPort.choose`): `[local] port`, else the one
+its local API already uses, else one chosen, all before anything stops (no free port starts nothing). A port not
+saved yet is saved only once the service started (`Desktop.StartLocal.serve`): a refused drain or a failed install
+saves nothing. Its LaunchAgent runs `start --foreground --local --port <n> --bind
+<address>` (`LaunchAgent.localProgramArguments`), which never asks or saves and prints no key. Cooling uses
 `desktop configure-cooling --enabled <bool> --speed <percent> --temperature <celsius>`
 to request macOS administrator authorization for the existing signed helper.
 `darkbloom desktop login [--config <path>]` signs into the account
@@ -227,7 +232,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `--route <route>` | `this-mac`, `my-macs`, `my-macs-first` | `[local] route` | Where your requests go when this Mac can't take them ([the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)); saved; needs an account key (`darkbloom route key`) |
 | `--choose` | flag | `false` | In a terminal: ask how this Mac serves again, although a choice is saved |
 | `--opencode`, `--hermes` | flag | `false` | Set OpenCode 2 or Hermes Agent up to use this Mac's local API ([below](#set-up-opencode-or-hermes)); not with `--network`, `--no-auth`, `--cluster-member`, `--distributed` or `--foreground` |
-| `--port <n>` | `UInt16?` | `[local] port`, else `8000` | Local server port. A new local API from the start question, a saved choice or `--me-first` takes the first free port from there instead, never `8000` or `47420`–`47423` |
+| `--port <n>` | `UInt16?` | `[local] port`, else the port this Mac's local API already uses, else the first free port from `8001`; saved the first time | This Mac's local API port, for every local API it serves; a port named here is used and saved ([below](#how-this-mac-serves-one-question)) |
 | `--bind <addr>` | `String?` | `[local] bind`, else `127.0.0.1` | Local server bind address |
 | `--no-auth` | flag | `false` | Disable the local bearer-token check |
 | `--cluster-member` | flag | `false` | Register a control-only cluster member from the saved setup, in the foreground ([coordinator-paired member](../reference/configuration.md#coordinator-paired-member)). With `--local-endpoint --port <p> --bind <address>`, which the cluster service passes for Both, me first, the member that hosts the pair's slot also serves the pair's local API with the pair's key; any other member runs none. Refused with `--no-auth`, `--always-on` or `--supervise` |
@@ -287,15 +292,44 @@ drains it); **Darkbloom network** and **Both, me first** install the
 LaunchAgent with the arguments `--local-endpoint` has always used
 ([configuration](../reference/configuration.md#local-first-use-local)).
 
-- **The port of a new local API** (the question's, a saved choice without a
-  saved port, `--me-first`): the first free port from `[local] port` or the
-  build's default, up to 20 ports on, never `8000` (where other local AI apps
-  listen) or `47420`–`47423` (pairs), which are never even probed. This
-  install's own running local API keeps its port. It is saved and said once:
-  `Local API port: 8001 (saved; 8000 is left for other apps).` With none free,
-  the start stops and says so. `--port` is used as given; `--local` and
-  `--local-endpoint` without it keep `[local] port` or `8000`, as before
-  (`LocalAPIPort`).
+- **One port per Mac** (`LocalAPIPort.choose`,
+  `provider-swift/Sources/ProviderCore/Config/LocalAPIPort.swift`): every local
+  API this Mac serves (the question's, a saved choice, `--me-first`, `--local`,
+  `--local-endpoint`, the desktop app's starts) takes the same port, so the
+  address the tools were given never moves:
+  1. `--port <n>`: used as given, and saved when it isn't the saved port:
+     ``Local API port: 8007 (saved, instead of 8005: tools set up for 8005 need
+     `darkbloom start --opencode` or `--hermes` again).``
+  2. `[local] port`: used as it is, never probed or moved, even `8000` or a
+     port another program holds (the local API then says why it isn't up).
+  3. Otherwise the port this Mac's local API already uses: its running API's
+     (`local.json`), else the one its installed LaunchAgent's job serves on (the
+     job's `--port`, or the build's default for an app job without one,
+     `LaunchAgent.installedLocalAPIPort`). It is kept as it is, even `8000`, and
+     saved: a Mac updated from 0.10.10, whose local API serves on `8000`, keeps
+     it, so the tools pointed there keep working. Said once:
+     `Local API port: 8000 (saved; this Mac's local API already uses it).`
+  4. Otherwise, on a Mac with no local API at all, one chosen now and saved: the
+     first free port from the build's default (production's `8000`, so `8001`),
+     up to 20 ports on, never `8000` (where other local AI apps listen) or
+     `47420`–`47423` (pairs), which are never even probed. Said once:
+     `Local API port: 8001 (saved; 8000 is left for other apps).` With none
+     free, the start stops and says so.
+
+  The `--foreground` service (launchd's child) never chooses or saves: its
+  arguments carry the port. So does `start --local` that a service runs (an
+  app job an older version wrote, or the cluster service's solo part,
+  `Start.isServiceChild`). A saved port is kept whatever the mode; a mode flag
+  still saves no mode.
+- **A local API that can't listen:** Only me stops (exit 1):
+  ``This Mac's local API couldn't listen on 127.0.0.1:8001: another program
+  may use port 8001. Free it, or run `darkbloom start --port 8002`.`` Both, me
+  first keeps serving Darkbloom, and `status` and `local` say why its local API
+  isn't up ([`darkbloom status`](#darkbloom-status)). On a Mac in a two-Mac
+  cluster, where `start` takes `--port` only with `--solo`, these lines name
+  `darkbloom start --solo --port <n>` for single-Mac serving, and
+  `darkbloom restart` for the pair's own API, whose port the pair picks
+  (`LocalFirstWords.LocalAPIServer`).
 - **Refused at parse (exit 64), before anything runs:** two different modes
   (`--local`, `--network`, `--me-first`/`--local-endpoint`), for example ``
   `--local` and `--me-first` choose different ways to serve. Use one: --local
@@ -307,6 +341,15 @@ LaunchAgent with the arguments `--local-endpoint` has always used
   `--no-me-first` or `--me-first-idle` with `--foreground`. `--local` with
   `--local-endpoint` is still refused after the terms notice (exit 1).
   `--choose` without a terminal exits 64 and names the three flags.
+- **No terminal, no model list:** no start asks a question without a terminal
+  (stdin). One that names no models (`--model`, `--all`) for **Darkbloom
+  network** or **Both, me first** would ask in the model picker, so it stops
+  before anything is stopped or started, in one line on standard error (exit
+  64): ``Without a terminal, `darkbloom start` can't ask which models to serve:
+  add --model <id> (`darkbloom models list` shows this Mac's models) or
+  --all.`` **Only me** serves the models already on this Mac and needs none.
+  On a paired Mac, `start --solo` says it before this Mac's part of the pair
+  is touched (`Start.requireModelsNamedWithoutTerminal`).
 - **The summary** gains, with a local API:
 
   ```text
@@ -337,7 +380,7 @@ They run once, at `start`:
    `--route`): nothing starts. `Darkbloom already serves on <host>:<port>;
    setting up OpenCode for it.`, then the tools (`Start.runningLocalAPI`). One
    without a key (`--no-auth`) is named instead, and nothing starts (exit 1):
-   ``✗ Darkbloom's local API on :8000 has no key (--no-auth); tools need one:
+   ``✗ Darkbloom's local API on :8001 has no key (--no-auth); tools need one:
    start it without --no-auth.``
 2. **Otherwise `start` runs as above**, then: `--local` and Only me set the tools
    up beside the server once it is bound; a background start waits up to 30 s
@@ -377,7 +420,8 @@ options: on a paired Mac they apply to the pair's local API.
 
 On a Mac in a two-Mac cluster (one that holds a pairing; a cluster service left
 without one is a leftover, which `darkbloom cluster status` names), `start` starts the pair, as `darkbloom cluster` does
-(`Start.pairStart`, `ClusterPairCommands`). It first says so in one line
+(`Start.pairStart`, `ClusterPairCommands`), whatever its state: running, stopped with `darkbloom stop`, or not running
+here (its other Mac gone). It first says so in one line
 (`This Mac is in a two-Mac cluster with the other Mac (…): starting the pair.`):
 
 - In a terminal it opens exactly the screen `darkbloom cluster` shows on this
@@ -408,39 +452,50 @@ This Mac is in a two-Mac cluster with the other Mac (Apple M5 Max, 128 GB): star
   darkbloom status   Check status
 ```
 
-`--solo` starts single-Mac serving on this Mac instead, after one line, while
-the pair doesn't run here: single-Mac serving and this Mac's part of the pair take
-the same serving lock, so `start --solo` while the pair runs here is refused
-(stop the pair first).
+`--solo` starts single-Mac serving on this Mac instead: it is the one way to
+serve this Mac alone on a paired Mac. Single-Mac serving and this Mac's part of
+the pair take the same serving lock, so `start --solo` while the pair runs here
+is refused (stop the pair first). Single-Mac options such as `--model` and
+`autopilot enable`'s need `--solo` too: without it nothing starts, and they are
+named (exit 64, below). The desktop app's **Start serving** is the exception
+(`Start.appStartOptions`): it runs `start --model <id> [--local-endpoint]
+--config <path>` with no terminal, and has no `--solo`, so on a paired Mac it
+starts the pair as a plain `start` does, never this Mac alone. The pair serves
+its own model and its own way. When the app named another model, the start ends
+with one line the app shows: ``This Mac serves in a pair: started the pair with <the pair's model>; `darkbloom cluster` changes its model.``
+(`ClusterPairSummary.appStartModelLine`, after a start that serves or is
+loading).
 
 While the pair doesn't run here (`ClusterPairWatch`: stopped, or its other Mac
 hasn't answered for 15 minutes, or it never served in its first 15 minutes),
-`darkbloom start` serves this Mac alone (`Start.PairStart.serveAlone`): with
-`--solo`, with single-Mac options such as `--model` (the app's Go Online,
-`autopilot enable`), and from a script. In a terminal it asks **Serve on this
-Mac alone** (the default when the other Mac isn't answering) or **Start the pair
-(`darkbloom cluster`)**. How this Mac would serve alone is checked first: with
-**Only me** saved (by `darkbloom start`, or by `darkbloom cluster` for the pair)
-and no mode flag, a start without a terminal is refused in one line, as on one
-Mac (exit 64), before anything here is stopped or cleared. Otherwise it first
-stops a part of the pair still running here and
-clears the pair's saved start on this Mac (`ClusterService.releaseForSingleMac`,
-up to 5 minutes, after up to 10 for a cluster command that is running), then
-says one line: ``This Mac is in a two-Mac cluster with the
-other Mac (…), which isn't running here: serving this Mac alone, and its saved
-start is cleared (`darkbloom cluster` starts the pair again).`` A part that
-doesn't stop in time starts nothing (exit 1) and names `darkbloom cluster pair
---status`, then `darkbloom cluster pair --forget <pin>`, then `darkbloom start`.
-While a cluster command is running it first says ``Waiting for the pair's
-running command to finish (up to 10 minutes; ^C stops waiting and leaves the
-pair as it is).``; one still running after 10 minutes starts nothing (exit 1)
-and says ``The pair's command was still running after 10 minutes, so nothing
-was stopped or started. Try again, or run `darkbloom cluster` to see what's
-running.`` `stop`, `restart` and `update` say the same when they stop a
-leftover part.
-While the other Mac answers but the pair hasn't served yet (it may still be
-loading), only `--solo` and the terminal's choice serve this Mac alone; the
-other forms act on the pair as while it runs.
+`start --solo` serves this Mac alone (`Start.PairStart.serveAlone`). How this Mac
+would serve alone is checked first: with **Only me** saved (by `darkbloom
+start`, or by `darkbloom cluster` for the pair) and no mode flag, a start
+without a terminal is refused in one line, as on one Mac (exit 64), before
+anything here is stopped or cleared. A pair that is merely stopped gives one
+line: ``This Mac is in a two-Mac cluster with the other Mac (…), which is
+stopped: serving this Mac alone (`darkbloom start` starts the pair again).``
+So does a started pair while this Mac's cluster service is down, as ``… which
+isn't running here: serving this Mac alone (…)``: nothing asked the other Mac,
+so it never says the other Mac isn't answering.
+A started pair's part still running here is stopped first, and the pair's saved
+start on this Mac is cleared (`ClusterService.releaseForSingleMac`, up to 5
+minutes, after up to 10 for a cluster command that is running). It says
+``This Mac is in a two-Mac cluster with the other Mac (…), which isn't running
+here: stopping this Mac's leftover part and clearing its saved start
+(`darkbloom start` starts the pair again).`` before, and ``This Mac's leftover
+part of the pair stopped, and its saved start is cleared: serving this Mac
+alone.`` only once that is done (`Start.releaseLeftoverPartToServeAlone`). A
+part that doesn't stop in time starts nothing (exit 1) and names `darkbloom
+cluster pair --status`, then `darkbloom cluster pair --forget <pin>`, then
+`darkbloom start` (no longer paired). While a cluster command is running it
+first says ``Waiting for the pair's running command to finish (up to 10
+minutes; ^C stops waiting and leaves the pair as it is).``; one still running
+after 10 minutes starts nothing (exit 1) and says ``The pair's command was
+still running after 10 minutes, so nothing was stopped or started. Try again,
+or run `darkbloom cluster` to see what's running.`` `stop`, `restart` and
+`update` say the same when they stop a leftover part; `restart` and `update`,
+which then serve this Mac alone, say the cleared line only once it is true too.
 See [going back to serving on one Mac](two-mac-cluster.md#going-back-to-serving-on-one-mac). The
 cluster's own starts (`--cluster-member`, `--distributed`, the cluster
 service's solo part) and launchd's `--foreground` child are never redirected,
@@ -460,7 +515,7 @@ Options on a paired Mac (`Start.singleMacOptions`, `ClusterPairSummary.singleMac
 | Options | Without `--solo` on a paired Mac |
 |---|---|
 | `--config` | Applies to the pair (its cluster service settings) |
-| `--model`, `--all`, `--idle-timeout`, `--schedule`, `--autopilot`/`--no-autopilot`, `--coordinator-url`, `--timeout`, `--force`, `--local-endpoint`, `--network`, `--me-first`/`--no-me-first`, `--me-first-idle`, `--route`, `--choose`, `--port`, `--bind`, `--no-auth` | While the pair doesn't run here: single-Mac serving with them, as above. While it runs here: refused by name, nothing starts, exit 64: ``This Mac is in a two-Mac cluster with the other Mac (…): `--model` is for single-Mac serving, so nothing was started.`` then ``To choose the pair's model, run `darkbloom start` in a terminal; to serve this Mac alone with it, add --solo.`` |
+| `--model`, `--all`, `--idle-timeout`, `--schedule`, `--autopilot`/`--no-autopilot`, `--coordinator-url`, `--timeout`, `--force`, `--local-endpoint`, `--network`, `--me-first`/`--no-me-first`, `--me-first-idle`, `--route`, `--choose`, `--port`, `--bind`, `--no-auth` | Refused by name in every state of the pair, nothing starts, exit 64: ``This Mac is in a two-Mac cluster with the other Mac (…): `--model` is for single-Mac serving, so nothing was started.`` then ``To choose the pair's model, run `darkbloom start` in a terminal; to serve this Mac alone with it, add --solo.`` Without a terminal, `--model` and `--local-endpoint` alone (the app's Start) start the pair instead, as above. With `--solo` they serve this Mac alone while the pair doesn't run here, as above |
 | `--local` | Refused the same way, plus ``To serve the pair on the leading Mac's own API only: `darkbloom cluster local`.`` (also said for `--local-endpoint`) |
 | `--cluster-member`, `--distributed`, `--foreground` | The cluster's own starts and launchd's child: never redirected to the pair |
 | `--always-on`, `--supervise`, `--no-coordinator` | Valid only with `--cluster-member` or `--distributed` (refused at parse otherwise) |
@@ -752,6 +807,7 @@ this Mac serves, read from its state and `local.json` (`Status.servingLines`,
 | State | Line |
 |---|---|
 | Darkbloom network | `Serving: Darkbloom network only — this Mac has no local API` |
+| Both, its local API couldn't listen (`DaemonState.localAPIFailure`) | ``Serving: Darkbloom and you, me first — the local API isn't up: port 8001 is in use (`darkbloom start --port 8002`)``; with no port free, ``(free it, or name another with `darkbloom start --port <n>`)``; for another failure, ``it couldn't listen on 100.64.0.9:8001 (Can't assign requested address); `darkbloom restart` tries again``. On a Mac in a two-Mac cluster: ``(`darkbloom start --solo --port 8002`)`` and `` `darkbloom restart --solo` tries again`` for single-Mac serving; for the pair's API, written by the cluster's part, ``(`darkbloom restart` starts the pair's API on a free port)``, or ``(free it, then `darkbloom restart`)`` with no port free (`LocalFirstWords.whyNotUp`) |
 | Both, me first, open | `Serving: Darkbloom and you, me first — open to Darkbloom (none of your requests in the last 2 minutes)` |
 | Both, me first, paused | `Serving: you first — Darkbloom paused since 14:02 (your last request 1 minute ago; back at about 14:13 if you stay idle)`; while your requests run, `(your request is running; back 2 minutes after it ends)`; then, only while some finish, `         2 Darkbloom requests are finishing` |
 | Both, me first off | `Serving: Darkbloom and you, shared — Darkbloom keeps serving while you use this Mac (me first is off)` |
@@ -832,7 +888,11 @@ cache precedence is specified in [model cache configuration](../reference/config
 Exit 1 (and `{}` in JSON mode) when no live local server is recorded
 (`LocalEndpoint.readLiveInfo`, `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift`);
 it then names both ways to start one, `start --me-first` (Darkbloom and you,
-you first) and `start --local` (only you, on this Mac).
+you first) and `start --local` (only you, on this Mac). When the running
+provider's local API couldn't listen (`DaemonState.localAPIFailure`), it says
+why instead: ``The local API isn't up: port 8001 is in use (`darkbloom start
+--port 8002`).`` (`Local.notUpLine`), with the commands `status` names on a Mac
+in a two-Mac cluster.
 A server bound to `0.0.0.0` or `::` also prints a `network:` line with this
 Mac's Bonjour (`.local`) URL (`Local.networkURL`). When the running provider
 serves that endpoint, two lines follow `pid:`: `serving:` (how it serves, in
@@ -1329,7 +1389,7 @@ Where `logs` and [`report`](#darkbloom-report) wait for a `log` child to finish,
 | `--foreground` | Run in the foreground (used by launchd; normally implicit) |
 | `--local` | Only me: serve the local API only; do not connect to the coordinator |
 | `--local-endpoint` | Both, me first (older flag): serve the local API beside the coordinator; Darkbloom requests pause while you use it and for `[local] me_first_idle_minutes` after (`[local] me_first`) |
-| `--port <port>` | Port for `--local` / `--local-endpoint` (default 8000) |
+| `--port <port>` | This Mac's local API port, used and saved (default `[local] port`, else the one this Mac's local API already uses, else the first free from 8001; saved the first time) |
 | `--bind <addr>` | Bind address for local modes (default 127.0.0.1) |
 | `--no-auth` | Disable local API-key auth (trusted/airgapped only) |
 
@@ -2221,11 +2281,13 @@ or the other Mac isn't answering), plain `restart` never starts the
 pair: it restarts single-Mac serving that runs here, its launchd job loaded
 (after stopping a leftover part of the pair). Single-Mac serving that `stop`
 stopped keeps its plist on disk, but plain `restart` doesn't start it. With none
-running, it restarts nothing, exit 1, and says `darkbloom start` serves this Mac
-alone and `darkbloom cluster` starts the pair (`ClusterPairSummary.idleRestartRefusal`).
-After it restarts single-Mac serving there, or after `--solo` there, it says
-``The pair was not started; `darkbloom cluster` starts it.``
-(`ClusterPairSummary.restartRestartsPair`). A started pair there is named as
+running, it restarts nothing, exit 1, and says `darkbloom start` starts the pair
+again and `darkbloom start --solo` serves this Mac alone
+(`ClusterPairSummary.idleRestartRefusal`). Before it restarts single-Mac serving
+there it stops a started pair's leftover part, saying so before and after, as
+`start --solo` does (`Start.releaseLeftoverPartToServeAlone`). After it restarts
+single-Mac serving there, or after `--solo` there, it says ``The pair was not
+started; `darkbloom start` starts it.`` (`ClusterPairSummary.restartRestartsPair`). A started pair there is named as
 not running: ``This Mac is in a two-Mac cluster with the other Mac (…), which
 isn't running here (the other Mac (…) isn't answering).``, without the
 parenthesis while this Mac's cluster service is down, never "This Mac serves".
@@ -2258,11 +2320,15 @@ darkbloom status [--solo]
 On a Mac in a two-Mac cluster, `status` starts with the pair in the words of
 `darkbloom cluster status` (who leads, the model, whether it serves now and what
 to do; on the Mac that follows, the leading Mac is asked over the cable), then
-this Mac's configuration and hardware. The single-Mac `Daemon:` and `Traffic:`
-lines, which there would be the cluster's own part's, are left out; single-Mac
-serving that runs beside the pair is one line. `status --solo` shows single-Mac
-serving instead, with the pair in one `Cluster:` line
-(`ClusterPairSummary.statusLine`). `darkbloom status` exits 0;
+this Mac's configuration and hardware. The pair and single-Mac serving share
+the Mac's one serving lock, so a paired Mac serves one or the other. When it
+serves alone (`start --solo`), a line under the pair block says so plainly
+(``This Mac serves alone (single-Mac serving, process <N>), not the pair; its
+status is below.``, `Status.servingAloneLine`), and single-Mac serving's own
+`Daemon:`, `Serving:`, `Trust:` and traffic lines follow, as `status --solo`
+shows them. Otherwise those lines, which would be the cluster's own part's, are
+left out. `status --solo` shows single-Mac serving instead of the pair, with the
+pair in one `Cluster:` line (`ClusterPairSummary.statusLine`). `darkbloom status` exits 0;
 `darkbloom cluster status` gives the same pair block with `--json` and exit
 statuses for scripts. `darkbloom doctor` prints the same `Cluster:` line under
 its `Daemon:` line, which reads `Daemon: single-Mac serving off (this Mac serves in its two-Mac cluster)`

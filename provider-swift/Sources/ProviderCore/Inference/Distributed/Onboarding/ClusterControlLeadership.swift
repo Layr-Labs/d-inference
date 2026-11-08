@@ -663,7 +663,7 @@ public struct ClusterPairWatch: Sendable, Equatable {
     }
 
     /// One supervision tick. `otherAnsweredAt`: `ClusterControlNode.otherAnsweredAt` (nil: not in this process's
-    /// lifetime). `serving`: this Mac's part runs and its pair serves now.
+    /// lifetime). `serving`: this Mac's part serves now, as far as this Mac can tell (`ClusterService.partServesNow`).
     public mutating func tick(now: Double, intent: Bool, otherAnsweredAt: Double?, serving: Bool) -> Verdict {
         guard intent else { startedAt = nil; servedAt = nil; return .stopped }
         let start = startedAt ?? now
@@ -682,7 +682,7 @@ public struct ClusterPairWatch: Sendable, Equatable {
     /// stopped. `otherMac`: the other Mac's name, when known.
     public static func line(_ verdict: Verdict, otherMac: String?, cli: String) -> String? {
         let other = otherMac.map { "The other Mac (\($0))" } ?? "The other Mac"
-        let next = "Run `\(cli) start` to serve this Mac alone, or `\(cli) cluster` to start the pair again."
+        let next = "Run `\(cli) start --solo` to serve this Mac alone, or `\(cli) start` to start the pair again."
         switch verdict {
         case .stopped, .running: return nil
         case .otherMacSilent(let seconds):

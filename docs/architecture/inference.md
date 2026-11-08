@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -3479,7 +3479,15 @@ chosen model's new plan, found by its id (`OnboardingLive.localAdopt`,
 plan stands (it was priced with less memory than the Macs then have); a model
 the new plan does not offer is not started, and the screen says why. The
 automatic re-plan after repeated memory refusals at load adopts through the
-same path (`ClusterService.noteMemoryRefusal`). The stage memory
+same path (`ClusterService.noteMemoryRefusal`, `replanForMemory`). It comes due
+when a part ends, so also right after an owner's stop: once it holds the
+command lock it acts only while the pair's start is still saved and this Mac's
+claim is confirmed, so it never starts a pair its owner stopped. Finding the
+pair stopped, it gives its 10-minute slot back, so the owner's next start is
+re-planned at its next refusals. Its adoption
+stops a serving pair first; from there every failure, of that stop too, puts
+the saved start back (`ClusterService.restoreStart`), as the re-plan after an
+update does, so a failed automatic stop never leaves the pair stopped. The stage memory
 gate's two fixed margins (the admissible floor, 6 GiB, and the loading
 headroom, 4 GiB, measured on 256 GiB Macs) apply on Macs with 96 GiB or more;
 below that they are the same share of the observed Mac's memory, never under
@@ -4093,9 +4101,13 @@ other Mac stops taking part (unplugged, off, or serving on its own). Each tick,
 the cluster service asks `ClusterPairWatch` whether the pair actually runs here,
 from the intent, the other Mac's last real answer over the link
 (`ClusterControlNode.otherAnsweredAt`, set only by a lease or an answer, never at
-start) and whether this Mac's part serves (a coordinator-paired part's pair line
-says serving, or a part runs while the other Mac answers within the lease's
-time-to-live). Every start gets 15 minutes (`ClusterPairWatch.giveUpSeconds`).
+start) and whether this Mac's part serves (`ClusterService.partServesNow`: it
+runs while the other Mac answers within the lease's time-to-live, and on rank 0
+of a coordinator-paired pair its pair line says serving too). Only rank 0, which
+hosts the pair's slot, writes pair lines; the other rank's link follower reports
+to it over the cable, so on the Mac that follows the verdict never waits for a
+line it can't write. Every start gets 15 minutes
+(`ClusterPairWatch.giveUpSeconds`).
 
 | Verdict | When | The service |
 |---|---|---|
@@ -4109,16 +4121,18 @@ reason with the command to serve this Mac alone. `ClusterService.pairServesHere`
 status) read the verdict. Nothing automatic stops a `notServing` part, whose pair
 may still be loading: `ClusterService.pairKeepsLock` keeps update and the watchdog
 off the serving lock while the other Mac answers, and `Start.pairStart` and
-`Restart.pairRestart` act on the pair then, except for `start --solo` and the
-terminal's choice. A 0.10.8 service publishes none; its control mode then
+`Restart.pairRestart` act on the pair then, except for `start --solo`. A plain
+`start` starts the pair in every state; only `--solo` serves this Mac alone. A
+0.10.8 service publishes none; its control mode then
 decides (`waiting`, `alone`, `cannotServe` and `idle` mean the other Mac isn't
 taking part). A reboot of a few minutes stays `running`. The windows run on
 `ClusterControlClock.awakeSeconds` (`CLOCK_UPTIME_RAW`, paused in system sleep):
 `ClusterPairWatch.tick(raw:awake:...)` places each new answer from the lease clock
 on the awake clock no earlier than the previous tick, so waking from a long sleep
-never gives up a part by itself. `darkbloom start` on a
-Mac whose pair doesn't run clears the intent and waits for the part to end
-(`ClusterService.releaseForSingleMac`) before single-Mac serving starts
+never gives up a part by itself. `darkbloom start --solo` (and `restart` or
+`update` when they serve this Mac alone) on a Mac whose pair doesn't run clears
+the intent and waits for the part to end (`ClusterService.releaseForSingleMac`,
+`Start.releaseLeftoverPartToServeAlone`) before single-Mac serving starts
 ([going back to serving on one Mac](../provider/two-mac-cluster.md#going-back-to-serving-on-one-mac)).
 
 Single-Mac serving holds a Mac's one serving lock and never ends by itself, so

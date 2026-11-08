@@ -32,10 +32,10 @@ extension Start {
         return nil
     }
 
-    /// Whether `--local`'s banner prints its key: only for `--local` itself, as it always has, and never with a tool
-    /// flag, whose start prints no key anywhere.
+    /// Whether `--local`'s banner prints its key: only for `--local` itself, as it always has, never with a tool flag,
+    /// whose start prints no key anywhere, and never in launchd's child, whose banner goes to the log.
     func bannerShowsKey(_ serving: StartServing) -> Bool {
-        serving.source == .flag(.local) && requestedTools.isEmpty
+        serving.source == .flag(.local) && requestedTools.isEmpty && !foreground
     }
 
     /// Options that change what serves: with any of them, a running local API isn't enough, and the start runs.
@@ -75,7 +75,7 @@ extension Start {
     }
 
     /// Beside a pair that just started: for its local API on this Mac, when there is one. A pair starts only without
-    /// single-Mac options, so no option here changes what serves.
+    /// single-Mac options, or with the app's Start's (`Start.appStartOptions`), which don't change what the pair serves.
     func setUpToolsBesidePair() async throws {
         guard !requestedTools.isEmpty else { return }
         guard let endpoint = IntegrationEndpoint.live() else {

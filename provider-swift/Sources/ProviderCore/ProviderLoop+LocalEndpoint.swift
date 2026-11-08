@@ -44,7 +44,7 @@ extension ProviderLoop {
             await self?.onLocalEndpointBound(cfg, port: bound ?? cfg.port)
         })
         let log = logger
-        localServerTask = Task {
+        localServerTask = Task { [weak self] in
             do {
                 try await app.runService(gracefulShutdownSignals: [])
             } catch is CancellationError {
@@ -52,10 +52,31 @@ extension ProviderLoop {
             } catch {
                 // A bind failure (e.g. port already in use) lands here. We do NOT
                 // kill the provider — coordinator serving must stay up — but make
-                // the local-endpoint failure loud and operator-actionable.
+                // the local-endpoint failure loud and operator-actionable, and
+                // keep it for `status` and `local`, which would otherwise read
+                // the missing API as "Darkbloom network only".
                 log.error("Local OpenAI endpoint did NOT bind on \(cfg.host):\(cfg.port) (port already in use?): \(error.localizedDescription). Coordinator serving is unaffected; restart with a free --port to enable the local endpoint.")
+                guard !Task.isCancelled else { return }
+                await self?.noteLocalEndpointFailure(Self.localAPIFailure(cfg, error: error))
             }
         }
+    }
+
+    /// The local API that couldn't listen on `cfg`'s address: another program holds the port (`EADDRINUSE`, or an
+    /// error that says so), or what the system answered otherwise, at most 200 characters for `status`'s line.
+    static func localAPIFailure(_ cfg: LocalInferenceHTTPConfig, error: Error) -> DaemonState.LocalAPIFailure {
+        let code = (error as? IOError)?.errnoCode
+        if code == EADDRINUSE || String(describing: error).contains(String(cString: strerror(EADDRINUSE))) {
+            return .init(host: cfg.host, port: cfg.port, portInUse: true)
+        }
+        let reason = code.map { String(cString: strerror($0)) } ?? String(describing: error)
+        return .init(host: cfg.host, port: cfg.port, portInUse: false, reason: String(reason.prefix(200)))
+    }
+
+    /// Records why the local endpoint isn't up, and publishes it at once.
+    private func noteLocalEndpointFailure(_ failure: DaemonState.LocalAPIFailure) {
+        localEndpointFailure = failure
+        writeDaemonState()
     }
 
     /// Turns me first on where the owner's settings want it
@@ -132,6 +153,7 @@ extension ProviderLoop {
     private func onLocalEndpointBound(_ cfg: LocalInferenceHTTPConfig, port: UInt16) {
         let mode = isClusterMember ? "the pair's leader, beside Darkbloom" : "unified mode"
         logger.info("Local OpenAI endpoint listening on \(cfg.host):\(port) (\(mode))")
+        localEndpointFailure = nil
         try? LocalEndpoint.writeInfo(LocalEndpoint.Info(
             host: cfg.host,
             port: port,
@@ -147,7 +169,9 @@ extension ProviderLoop {
         guard localServerTask != nil else { return }
         localServerTask?.cancel()
         localServerTask = nil
-        LocalEndpoint.removeInfo()
+        localEndpointFailure = nil
+        // Only this process's record: an endpoint that never listened wrote none, and another server's stays.
+        LocalEndpoint.removeInfo(ifPID: ProcessInfo.processInfo.processIdentifier)
     }
 
     /// Acquire a resident model for a LOCAL request: ensure it's loaded, then

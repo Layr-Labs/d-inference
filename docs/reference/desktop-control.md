@@ -200,7 +200,7 @@ that cleanup completes, then the operation becomes `cancelled`.
 | Action | Additional fields | Behavior |
 |---|---|---|
 | `start` | `models`; optional `local`, `endpoint` | Existing start path; `local` (Only me, the app's "Local only") uses the same canonical provider LaunchAgent, on this Mac's one local API port (`[local] port`, else the one its local API already uses, else one chosen; `desktop start-local`), and saves Only me (`[local] mode = "local"`) and that port once the service started, and `endpoint` (Both, me first, the app's "Alongside the network") passes `--local-endpoint`. `models` may be empty only for a `start` without `local` on a paired Mac, which starts the pair with its own model; a pair with no model yet refuses it with the CLI's line (`DesktopBackend.startsThePair`) |
-| `autopilot` | `models`, `pinned`; optional `downloads`, `endpoint` | Complete selected native downloads, then verified `start --autopilot --model …`; pin only after successful start. Fail before enrollment when a download fails. Every startup model must be a network model (`models[].network`). On a paired Mac, failed before any download: ``This Mac serves in a pair; Autopilot isn't available for pairs yet. Use Start serving.`` (`DesktopBackend.pairRefusedActions`) |
+| `autopilot` | `models`, `pinned`; optional `downloads`, `endpoint` | Complete selected native downloads, then verified `start --autopilot --model …`; pin only after successful start. Fail before enrollment when a download fails. Every startup model must be a network model (`models[].network`). On a paired Mac, failed before any download, with the pair's state and what works there: ``This Mac is in a pair, which is stopped; Autopilot isn't available for pairs yet. Use Start serving.`` ("serves in a pair" only while it serves; the no-model line, or the check of an unreadable pairing record, instead of "Use Start serving.") (`DesktopBackend.pairRefusedActions`, `pairAutopilotRefusal`) |
 | `autopilot_pin`, `autopilot_unpin` | `models` | Existing CLI pin/unpin; pin budget is rechecked against downloaded estimates and configured slots |
 | `autopilot_pause`, `autopilot_resume`, `autopilot_disable` | — | Existing CLI policy commands |
 | `autopilot_models` | — | Explicit saved startup selection through `start --autopilot`; same inventory verification and drain/restart as the CLI wizard, preserving live endpoint options. Failed on a paired Mac, as `autopilot` |
@@ -248,11 +248,23 @@ replaced by an accepted `models_replace` (`ProviderState.registeredModels`).
 or pool model is `none` (`ModelRegistration`).
 
 On a Mac in a two-Mac pair, `capabilities` leaves out `autopilot`, which serves one
-Mac, and `Snapshot.pair` is `{ model }`: the pair's model name, or null before one
-was chosen (`DesktopBackend.snapshotCapabilities`, `pairSnapshot`, read again after
-30 seconds). It is null on a Mac that isn't paired. The app then offers its plain
+Mac, and `Snapshot.pair` is `{ model, state, leads }` (`DesktopBackend.snapshotCapabilities`,
+`pairSnapshot`, read again after 30 seconds):
+
+- `model`: the pair's model name, or null before one was chosen;
+- `state`, from this Mac's own files, with nothing asked over the cable
+  (`ClusterPairSummary.appState`): `serving` only where they say the pair serves
+  (the part that runs rank 0 says so), `started` where the pair runs here and
+  this Mac can't tell (the Mac that follows), `not_running` for a started pair
+  that doesn't run here, `stopped`, or `unreadable` when the pairing record can't
+  be read;
+- `leads`: whether this Mac leads the pair, and so chooses its model; null when
+  not known.
+
+It is null on a Mac that isn't paired. The app then offers its plain
 **Start serving**, whose `start` starts the pair with its own model
-([`darkbloom start` on a paired Mac](../provider/cli-reference.md#darkbloom-start)).
+([`darkbloom start` on a paired Mac](../provider/cli-reference.md#darkbloom-start)),
+or, with no model yet or an unreadable record, the Terminal step instead.
 
 `Snapshot.autopilot` contains `configured` (consent recorded), `enabled`, `paused`,
 `selected` and `pinned`. Its `phase` is populated only by a fresh live daemon;

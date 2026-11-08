@@ -101,7 +101,7 @@ actor DesktopBackend {
   /// the CLI's one line for it, before anything runs, never "starting the pair".
   static func startsThePair(_ pair: ClusterPairSummary) throws -> Bool {
     guard pair.paired else { return false }
-    if !pair.pairingUnreadable, pair.model == nil { throw ValidationError(ClusterPairSummary.noModelLine) }
+    if !pair.pairingUnreadable, pair.model == nil { throw ValidationError(pair.noModelLine) }
     return true
   }
 
@@ -191,8 +191,9 @@ actor DesktopBackend {
   func arguments(for request: DesktopAction) throws -> [String] {
     // First, so a refused Autopilot downloads nothing: `runAutopilot` downloads only after this. `paired` is the test
     // `start` makes (`Start.pairStart`), so a pairing record that can't be read counts too.
-    if Self.pairRefusedActions.contains(request.action), ClusterPairSummary.local().paired {
-      throw ValidationError(Self.pairAutopilotRefusal)
+    if Self.pairRefusedActions.contains(request.action) {
+      let pair = ClusterPairSummary.local()
+      if pair.paired { throw ValidationError(Self.pairAutopilotRefusal(pair)) }
     }
     if request.action == "autopilot_pin" { try validateAutopilotPins(request.models ?? []) }
     if request.action == "autopilot_models" {

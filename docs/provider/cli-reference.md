@@ -460,27 +460,43 @@ options: on a paired Mac they apply to the pair's local API.
 On a Mac in a two-Mac cluster (one that holds a pairing; a cluster service left
 without one is a leftover, which `darkbloom cluster status` names), `start` starts the pair, as `darkbloom cluster` does
 (`Start.pairStart`, `ClusterPairCommands`), whatever its state: running, stopped with `darkbloom stop`, or not running
-here (its other Mac gone). It first says so in one line
-(`This Mac is in a two-Mac cluster with the other Mac (…): starting the pair.`):
+here (its other Mac gone). It first says so in one line, in words for what it does:
 
 - In a terminal it opens exactly the screen `darkbloom cluster` shows on this
   Mac (`ClusterPairCommands.openScreen`), whose title names this Mac's part:
   "Darkbloom cluster · Leading Mac" or "Darkbloom cluster · Joining Mac".
+  Nothing starts there before a choice, so its line says what the screen does
+  (`ClusterPairSummary.screenLine`): on the leading Mac of a stopped pair,
+  `This Mac is in a two-Mac cluster with the other Mac (…), which is stopped.
+  Press Enter to start it with Qwen 3.8 27B (last used), or choose another
+  model.` (`Choose its model to start it.` before a model was chosen);
+  otherwise `…: opening the pair's screen.`
   In a color terminal each finished step folds to one line, and the run's whole
   flow goes to `~/.darkbloom/cluster-setup/screens/` ("Full log: …" at the end);
   see [Two Macs as one provider](two-mac-cluster.md).
-- Without a terminal (scripts) it starts the pair's saved model on both Macs
+- Without a terminal (scripts) it says `…: starting the pair.` and starts the
+  pair's saved model on both Macs
   (on the Mac that follows, through the leading Mac), waits up to 10 minutes
   until it serves or says why not, and ends with a result block shaped like
   single-Mac start's. While it waits it says so (`Waiting until the pair serves
   (up to 10 min).`), and a status that stays the same is said again once a
   minute (`Still waiting (up to 10 min in all): …`). The exit status is `darkbloom cluster status`'s (`0`
   serving, `3` not serving yet, `4` stopped, `5` the other Mac isn't
-  answering); `1` when no model was chosen yet (`run darkbloom start in a
-  terminal to choose one`) or the cluster can't be reached.
+  answering); `1` when no model was chosen yet (``No model was chosen for the pair yet: choose one with `darkbloom cluster` in a terminal on <the leading Mac>.``:
+  only the leading Mac's screen has the model list) or the cluster can't be
+  reached. A pair that runs
+  here and already serves, by one look at the status `darkbloom cluster status`
+  reads, is kept as it is: `…: the pair already serves.` and the result block,
+  exit `0`, with nothing asked of either Mac (`ClusterPairCommands.servingLook`).
+
+A stopped pair started from a script, as on pair-2 (45 s):
 
 ```text
 This Mac is in a two-Mac cluster with the other Mac (Apple M5 Max, 128 GB): starting the pair.
+  Qwen 3.8 27B: registering both Macs with the coordinator for pairing.
+  Waiting until the pair serves (up to 10 min).
+  Qwen 3.8 27B is not serving yet: checking both Macs with Apple.
+  Qwen 3.8 27B is not serving yet: the coordinator paired both Macs.
 ✓ Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel).
   Model:   Qwen 3.8 27B · tensor parallel · M3 Ultra 50% / M5 Max 50%
   Macs:    this Mac (Mac Studio) leads · the other Mac (Apple M5 Max, 128 GB) follows
@@ -510,9 +526,16 @@ take (`ClusterPairSummary.appStartLines`):
 
 The app's Autopilot enroll and its model refresh (`autopilot`,
 `autopilot_models`) are refused on a paired Mac before any download, in one
-line the app shows: ``This Mac serves in a pair; Autopilot isn't available for pairs yet. Use Start serving.`` (`DesktopBackend.pairAutopilotRefusal`).
-Its snapshot then reports no `autopilot` capability and the pair's model
-(`pair`), so the app offers **Start serving** instead ([desktop control](../reference/desktop-control.md)).
+line the app shows (`DesktopBackend.pairAutopilotRefusal`): the pair as this
+Mac's own files tell it, then what works there, for example ``This Mac is in a pair, which is stopped; Autopilot isn't available for pairs yet. Use Start serving.``
+It says "This Mac serves in a pair" only when this Mac's view says the pair
+serves (`ClusterPairSummary.appPairSentence`). With no model yet, the no-model
+line takes the place of "Use Start serving."; with an unreadable pairing
+record, ``Run `darkbloom cluster` on this Mac to check it.``
+Its snapshot then reports no `autopilot` capability, and the pair's model, state
+and whether this Mac leads it (`pair`), so the app offers **Start serving**
+instead, or the Terminal step first where Start serving can't start the pair
+([desktop control](../reference/desktop-control.md)).
 
 While the pair doesn't run here (`ClusterPairWatch`: stopped, or its other Mac
 hasn't answered for 15 minutes, or it never served in its first 15 minutes),
@@ -863,7 +886,7 @@ this Mac serves, read from its state and `local.json` (`Status.servingLines`,
 | Darkbloom network | `Serving: Darkbloom network only — this Mac has no local API` |
 | Both, its local API couldn't listen (`DaemonState.localAPIFailure`) | ``Serving: Darkbloom and you, me first — the local API isn't up: port 8001 is in use (`darkbloom start --port 8002`)``; with no port free, ``(free it, or name another with `darkbloom start --port <n>`)``; for another failure, ``it couldn't listen on 100.64.0.9:8001 (Can't assign requested address); `darkbloom restart` tries again``. On a Mac in a two-Mac cluster: ``(`darkbloom start --solo --port 8002`)`` and `` `darkbloom restart --solo` tries again`` for single-Mac serving; for the pair's API, written by the cluster's part, ``(`darkbloom restart` starts the pair's API on a free port)``, or ``(free it, then `darkbloom restart`)`` with no port free (`LocalFirstWords.whyNotUp`) |
 | Both, me first, open | `Serving: Darkbloom and you, me first — open to Darkbloom (none of your requests in the last 2 minutes)` |
-| Both, me first, paused | `Serving: you first — Darkbloom paused since 14:02 (your last request 1 minute ago; back at about 14:13 if you stay idle)`; while your requests run, `(your request is running; back 2 minutes after it ends)`; then, only while some finish, `         2 Darkbloom requests are finishing` |
+| Both, me first, paused | `Serving: you first — Darkbloom paused for 10 minutes (your last request 1 minute ago; back in about 1 minute if you stay idle)`; while your requests run, `(your request is running; back 2 minutes after it ends)`; then, only while some finish, `         2 Darkbloom requests are finishing`. Times are said from now (`MeFirstWords`): `under a minute`, `1 hour 5 minutes`, `back in under a minute`, `back any moment now`; never a clock time, which another Mac or an SSH session would read in a zone it doesn't see |
 | Both, me first off | `Serving: Darkbloom and you, shared — Darkbloom keeps serving while you use this Mac (me first is off)` |
 | Only me (`--local`) | `Serving: only you, on this Mac — Darkbloom never contacts this Mac` |
 | Only me while it loads its models, before its local API listens | `Serving: only you, on this Mac — starting: its local API opens once its models are loaded` |
@@ -1079,6 +1102,12 @@ Serves: through Darkbloom
 Next: Leave both Macs running: Darkbloom retries by itself. Or serve locally only: `darkbloom cluster local` on this Mac.
 ```
 
+That ✗ is for a check that is slow or held back (`ClusterOnboardingAppleCheck`). A part that just started has no
+App Attest authorization from the coordinator yet; it lands about a minute after the part registers. Until a Mac's
+part has run 2 minutes without one, or its key-generation safeguard holds it back (the time in the line), the status
+says `… is not serving yet: checking both Macs with Apple.` (or names the one Mac), which reads `loading` (exit 3)
+on both Macs, and a scripted `darkbloom start` waits through it.
+
 | Exit status | `state` | Meaning |
 |---|---|---|
 | `0` | `serving` | The pair serves: through Darkbloom once the coordinator has it, or on the leading Mac's local API when it serves Only me |
@@ -1120,18 +1149,22 @@ through Darkbloom" (`OnboardingLive.notOfferedLines`):
   planned for Darkbloom). Or serve locally only: `darkbloom cluster local` on <the leading Mac>."
 - `darkbloom start` without a terminal stops waiting at once on this reason (exit 3).
 
-A pair that serves Both, me first says `Serves: through Darkbloom, and on its local API with you first`, and, before
-`Next:`, on the Mac whose part runs rank 0 (`ClusterPairSummary.localAPILines`):
-- whether Darkbloom is paused for you, in `status`'s words for one Mac with `Pair:` (`Pair: you first — Darkbloom
-  paused since 14:02 (…)`, `Pair: Darkbloom and you, me first — open to Darkbloom (…)`, or `Pair: Darkbloom and you,
-  shared — …` with `[local] me_first = false`), and `N Darkbloom requests are finishing` under it;
-- `Local API: http://127.0.0.1:<port>/v1 on this Mac` (with `, and port <port> of its LAN or tailnet address` on
-  every interface), never the key (`darkbloom local` shows it), or `Local API: not listening yet` while the part
-  starts;
-- `Members: the other Mac (…) is part of the pair; it runs no local API`.
-On the other Mac: `Local API: on the other Mac (…), which runs the pair's API; `darkbloom status` there says whether
-Darkbloom is paused for you` and `Members: this Mac is part of the pair; it runs no local API`. `--json` is unchanged
-(`serves` stays `darkbloom`).
+A pair that serves Both, me first says `Serves: through Darkbloom, and on its local API with you first`, and:
+- whether Darkbloom is paused for you, under the pair's `✓ Serving …` line on both Macs, in `status`'s words for one
+  Mac with `Pair:` (`Pair: you first — Darkbloom paused for 10 minutes (…; back in about 1 minute if you stay idle)`,
+  `Pair: Darkbloom and you, me first — open to Darkbloom (…)`, or `Pair: Darkbloom and you, shared — …` with
+  `[local] me_first = false`), and `N Darkbloom requests are finishing` under it. The leading Mac's status carries
+  it, read from its part when that part runs rank 0 (`OnboardingLive.pauseLines`), so the Mac that follows says it
+  too; nothing more crosses the cable, and nothing per request. Where the status doesn't carry it, the Mac whose
+  part runs rank 0 says it from its own part (`ClusterPairSummary.localAPILines`);
+- before `Next:`, on the Mac whose part runs rank 0, `Local API: http://127.0.0.1:<port>/v1 on this Mac` (with `, and
+  port <port> of its LAN or tailnet address` on every interface), never the key (`darkbloom local` shows it), or
+  `Local API: not listening yet` while the part starts, then `Members: the other Mac (…) is part of the pair; it runs
+  no local API`.
+On the other Mac: ``Local API: on the other Mac (…), which runs the pair's API; `darkbloom local` there shows its
+address and key`` (with ``, and `darkbloom status` there whether Darkbloom is paused for you`` when the status didn't
+say it) and `Members: this Mac is part of the pair; it runs no local API`. `--json` is unchanged (`serves` stays
+`darkbloom`; the `Pair:` lines are in `lines`).
 
 While single-Mac serving runs on either Mac of a started pair, the pair can't start there and it doesn't stop by
 itself. Both Macs read `not_serving` (exit 3), never "keep trying by themselves":

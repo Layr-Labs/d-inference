@@ -13,26 +13,31 @@ final class ScriptedTerminal: @unchecked Sendable {
     var output = ""
     var keyLookups = 0
     var livePortLookups = 0
+    var installedPortLookups = 0
     var probed: [UInt16] = []
 
     init(_ answers: [String] = []) { self.answers = answers }
 
+    /// `ownLivePort` is this install's running local API's port, `installedPort` the one its installed LaunchAgent's
+    /// job serves on.
     func environment(terminal: Bool, keySaved: Bool = false, busy: Set<UInt16> = [],
-                     ownLivePort: UInt16? = nil) -> ServingEnvironment {
+                     ownLivePort: UInt16? = nil, installedPort: UInt16? = nil) -> ServingEnvironment {
         ServingEnvironment(
             terminal: terminal,
             readInput: { self.reads += 1; return self.answers.isEmpty ? nil : self.answers.removeFirst() },
             emit: { self.output += $0 },
             accountKeySaved: { self.keyLookups += 1; return keySaved },
             ownLivePort: { self.livePortLookups += 1; return ownLivePort },
+            installedPort: { self.installedPortLookups += 1; return installedPort },
             isFree: { self.probed.append($0); return !busy.contains($0) })
     }
 
     /// `Start.resolveServing` with this terminal, then `saveServingChoice`, as a start that goes ahead does.
     func resolve(_ start: Start, terminal: Bool, keySaved: Bool = false, busy: Set<UInt16> = [],
-                 ownLivePort: UInt16? = nil) throws -> StartServing? {
+                 ownLivePort: UInt16? = nil, installedPort: UInt16? = nil) throws -> StartServing? {
         let serving = try start.resolveServing(environment: environment(terminal: terminal, keySaved: keySaved,
-                                                                        busy: busy, ownLivePort: ownLivePort))
+                                                                        busy: busy, ownLivePort: ownLivePort,
+                                                                        installedPort: installedPort))
         if let serving { try start.saveServingChoice(serving) }
         return serving
     }
@@ -231,6 +236,7 @@ struct StartLocalFirstTests {
             #expect(serving.change.isEmpty && serving.portNote == nil && serving.accountKeySaved == nil)
             #expect(terminal.reads == 0 && terminal.output.isEmpty)
             #expect(terminal.keyLookups == 0 && terminal.livePortLookups == 0 && terminal.probed.isEmpty)
+            #expect(terminal.installedPortLookups == 0, "nor its LaunchAgent's port")
             #expect(config.bytes == before, "the config is left as it was (absent stays absent)")
             // The LaunchAgent's argv is today's, byte for byte, and the summary adds nothing.
             #expect(launchAgentArguments(serving.launchAgentEndpoint)
@@ -683,9 +689,11 @@ struct StartLocalFirstTests {
             + [ServingQuestion.prompt(preselected: 3), ServingQuestion.retry, ServingQuestion.cancelled,
                LocalAPIPort.note(chosen: 8001, start: 8000), LocalAPIPort.note(chosen: 8003, start: 8001),
                LocalAPIPort.note(named: 8007, saved: nil), LocalAPIPort.note(named: 8007, saved: 8005),
-               LocalAPIPort.noneFree(from: 8001),
+               LocalAPIPort.note(kept: 8000), LocalAPIPort.noneFree(from: 8001),
                Start.localServerBindFailure(bind: "127.0.0.1", port: 8001, nextFree: 8002),
-               Start.localServerBindFailure(bind: "127.0.0.1", port: 8001, nextFree: nil)]
+               Start.localServerBindFailure(bind: "127.0.0.1", port: 8001, nextFree: nil),
+               Start.localServerBindFailure(bind: "127.0.0.1", port: 8001, nextFree: 8002, paired: true),
+               Start.localServerBindFailure(bind: "127.0.0.1", port: 8001, nextFree: nil, paired: true)]
         for mode in LocalSettings.Mode.allCases {
             for meFirst in [true, false] {
                 for key in [true, false] {

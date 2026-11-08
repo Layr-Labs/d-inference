@@ -94,7 +94,7 @@ struct Start: AsyncParsableCommand {
         }
     }
 
-    @Option(name: .customLong("port"), help: ArgumentHelp("This Mac's local API port, used and saved. Default: [local] port, else the first free port from \(LocalAPIPort.firstCandidate), chosen once and saved (never 8000 or \(ClusterLocalServing.pairPortsWords)).", valueName: "port"))
+    @Option(name: .customLong("port"), help: ArgumentHelp("This Mac's local API port, used and saved. Default: [local] port, else the port this Mac's local API already uses, else the first free port from \(LocalAPIPort.firstCandidate) (never 8000 or \(ClusterLocalServing.pairPortsWords)); saved the first time.", valueName: "port"))
     var portOption: UInt16?
 
     @Option(name: .customLong("bind"), help: ArgumentHelp("Bind address for the local API (default [local] bind, else 127.0.0.1; a tailnet IP exposes it to same-account devices, still API-key gated).", valueName: "bind"))

@@ -244,18 +244,21 @@ struct ServingEnvironment {
     var emit: (String) -> Void
     /// Whether the local router's account key is saved; asked only when this start has a local API.
     var accountKeySaved: () -> Bool
-    /// The port of this install's running local API, which the new start takes over; asked only when this Mac's port
-    /// is chosen (none saved, none named).
+    /// The port of this install's running local API, which a start keeps; asked only when no port is saved or named.
     var ownLivePort: () -> UInt16?
+    /// The port the installed LaunchAgent's job serves its local API on, which a start on a stopped Mac keeps; asked
+    /// only when no port is saved or named and no local API runs.
+    var installedPort: () -> UInt16?
     /// No other program listens on the port; asked only about the ports a choice may take.
     var isFree: (UInt16) -> Bool
 
-    /// This Mac's terminal, Keychain, `local.json` and ports.
+    /// This Mac's terminal, Keychain, `local.json`, LaunchAgent and ports.
     static var live: ServingEnvironment {
         ServingEnvironment(terminal: ClusterPairCommands.isTerminal(), readInput: { readLine() },
                            emit: { print($0, terminator: ""); fflush(stdout) },
                            accountKeySaved: { Start.accountKeySaved() },
-                           ownLivePort: LocalAPIPort.ownLivePort, isFree: LocalAPIPort.isFreeOnThisMac)
+                           ownLivePort: LocalAPIPort.ownLivePort, installedPort: LocalAPIPort.installedJobPort,
+                           isFree: LocalAPIPort.isFreeOnThisMac)
     }
 }
 
@@ -313,7 +316,7 @@ enum StartServingResolver {
             let choice: LocalAPIPort.Choice
             do {
                 choice = try LocalAPIPort.choose(named: options.port, saved: saved.port, ownLivePort: env.ownLivePort,
-                                                 isFree: env.isFree)
+                                                 installedPort: env.installedPort, isFree: env.isFree)
             } catch let none as LocalAPIPortError {
                 throw ValidationError(none.description)
             }
@@ -438,16 +441,30 @@ enum LocalFirstWords {
     }
 
     /// Why the local API a provider was asked to open beside Darkbloom isn't up, and what to do, after "the local API
-    /// isn't up: ". `nextFree` is the port `start --port` would take instead.
-    static func whyNotUp(_ failure: DaemonState.LocalAPIFailure, nextFree: UInt16?) -> String {
+    /// isn't up: ". `nextFree` is the port `start --port` would take instead; `server` says whose API it is, so the
+    /// command named works on this Mac.
+    static func whyNotUp(_ failure: DaemonState.LocalAPIFailure, nextFree: UInt16?, server: LocalAPIServer) -> String {
         let cli = BuildEnvironment.current.cliName
+        let solo = server == .singleMac(paired: true) ? " --solo" : ""
         guard failure.portInUse else {
             return "it couldn't listen on \(failure.host):\(failure.port)" + (failure.reason.map { " (\($0))" } ?? "")
-                + "; `\(cli) restart` tries again"
+                + "; `\(cli) restart\(solo)` tries again"
         }
-        return "port \(failure.port) is in use ("
-            + (nextFree.map { "`\(cli) start --port \($0)`" } ?? "free it, or name another with `\(cli) start --port <n>`")
-            + ")"
+        guard server != .pair else {
+            return "port \(failure.port) is in use ("
+                + (nextFree == nil ? "free it, then `\(cli) restart`" : "`\(cli) restart` starts the pair's API on a free port")
+                + ")"
+        }
+        return "port \(failure.port) is in use (" + (nextFree.map { "`\(cli) start\(solo) --port \($0)`" }
+            ?? "free it, or name another with `\(cli) start\(solo) --port <n>`") + ")"
+    }
+
+    /// Whose local API isn't up, for the command its line names: single-Mac serving's (`start --port`, which a Mac in
+    /// a two-Mac cluster takes only with `--solo`), or the pair's (its port isn't `[local] port`: the pair picks a free
+    /// one when it starts again).
+    enum LocalAPIServer: Equatable, Sendable {
+        case singleMac(paired: Bool)
+        case pair
     }
 
     /// How a start serves, after `Serving: `.

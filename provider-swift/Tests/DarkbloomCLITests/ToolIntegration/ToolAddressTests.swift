@@ -37,15 +37,29 @@ private final class AddressSandbox: @unchecked Sendable {
         #expect(await step.run(endpoint: endpoint, requests: "this Mac only"))
     }
 
-    /// What a start with `arguments` says after serving `mode` on `port`.
-    func notice(_ arguments: [String] = [], mode: LocalSettings.Mode = .both, port: UInt16,
-                noAuth: Bool = false) throws -> [String] {
+    /// A start serving `mode` on `port`, at `bind`.
+    func serving(mode: LocalSettings.Mode = .both, port: UInt16, bind: String = "127.0.0.1",
+                 noAuth: Bool = false) -> StartServing {
+        StartServing(mode: mode, source: .saved, meFirst: mode == .both, meFirstIdleMinutes: 2, route: nil,
+                     accountKeySaved: false, port: port, bind: bind, noAuth: noAuth)
+    }
+
+    /// What a start with `arguments` says after serving `mode` on `port`, on a Mac whose Bonjour name is
+    /// `localHostName`.
+    func notice(_ arguments: [String] = [], mode: LocalSettings.Mode = .both, port: UInt16, bind: String = "127.0.0.1",
+                noAuth: Bool = false, localHostName: String? = "tester-mac") throws -> [String] {
         said = []
-        let serving = StartServing(mode: mode, source: .saved, meFirst: mode == .both, meFirstIdleMinutes: 2,
-                                   route: nil, accountKeySaved: false, port: port, bind: "127.0.0.1", noAuth: noAuth)
-        try Start.parse(arguments).noteToolsPointingElsewhere(serving, environment: environment, provider: F.provider,
-                                                              keyFile: keyFile, say: { self.said.append($0) })
+        try Start.parse(arguments).noteToolsPointingElsewhere(
+            serving(mode: mode, port: port, bind: bind, noAuth: noAuth), environment: environment, provider: F.provider,
+            keyFile: keyFile, localHostName: { localHostName }, say: { self.said.append($0) })
         return said
+    }
+
+    /// Points OpenCode's Darkbloom block at `url`, with this Mac's key file.
+    func pointOpenCode(at url: String) throws {
+        let settings = #"{ "baseURL": "\#(url)", "apiKey": "{file:~/.darkbloom/local_token}" }"#
+        try directory.write(#"{ "providers": { "darkbloom": { "settings": \#(settings) } } }"#,
+                            to: "home/.config/opencode/opencode.jsonc")
     }
 
     /// The tools' configs, byte for byte, and every backup.
@@ -55,7 +69,7 @@ private final class AddressSandbox: @unchecked Sendable {
     }
 }
 
-@Suite("Start: the tools follow this Mac's local API", .serialized)
+@Suite("Start: the tools follow this Mac's local API", .serialized, .timeLimit(.minutes(1)))
 struct ToolAddressTests {
     @Test("a later start on another port says so in one line, names the command, and changes no file")
     func aChangedPortIsSaidInOneLine() async throws {
@@ -114,6 +128,63 @@ struct ToolAddressTests {
         #expect(try sandbox.notice(port: 8123).isEmpty)
         #expect(try sandbox.notice(port: 8124).last?.hasPrefix("OpenCode and Hermes point at "
             + "http://127.0.0.1:8123/v1/, not this Mac's local API") == true, "another port still is another address")
+    }
+
+    @Test("localhost, 127.0.0.1 and ::1 are this Mac, in any case; so is its .local name for an API on every address")
+    func thisMacsNamesAreThisMac() throws {
+        let sandbox = try AddressSandbox()
+        for url in ["http://localhost:8123/v1", "http://[::1]:8123/v1", "HTTP://LocalHost:8123/v1/",
+                    "http://127.0.0.1:8123/v1"] {
+            try sandbox.pointOpenCode(at: url)
+            #expect(try sandbox.notice(port: 8123).isEmpty, "\(url)")
+            #expect(try sandbox.notice(port: 8124).last == "OpenCode points at \(url), not this Mac's local API "
+                + "(http://127.0.0.1:8124/v1): `darkbloom --opencode` points it there.", "another port: \(url)")
+        }
+        // This Mac's Bonjour name, which `darkbloom local` prints for an API on every address.
+        try sandbox.pointOpenCode(at: "http://Tester-Mac.local:8123/v1")
+        #expect(try sandbox.notice(port: 8123, bind: "0.0.0.0").isEmpty)
+        #expect(try sandbox.notice(port: 8123, bind: "127.0.0.1").count == 2, "an API on loopback alone isn't there")
+        #expect(try sandbox.notice(port: 8123, bind: "0.0.0.0", localHostName: "other-mac").count == 2, "another Mac")
+        #expect(try sandbox.notice(port: 8123, bind: "0.0.0.0", localHostName: nil).count == 2, "no name to know")
+        // Another path, scheme or port is another address; the scheme's own port is its port.
+        for url in ["http://localhost:8123/v2", "https://localhost:8123/v1", "http://localhost/v1"] {
+            try sandbox.pointOpenCode(at: url)
+            #expect(try sandbox.notice(port: 8123).count == 2, "\(url)")
+        }
+        #expect(ToolAddress.sameAddress("http://localhost/v1", "http://127.0.0.1:80/v1"))
+        #expect(!ToolAddress.sameAddress("http://192.168.1.5:8123/v1", "http://127.0.0.1:8123/v1"))
+    }
+
+    @Test("a plain start says it beside its background provider and its Only me server; a service's child never does")
+    func theStartsHooksSayIt() async throws {
+        let sandbox = try AddressSandbox()
+        await sandbox.setUp([.opencode], port: 8123)
+        let serving = sandbox.serving(port: 8124)
+        let line = ["", "OpenCode points at http://127.0.0.1:8123/v1, not this Mac's local API (http://127.0.0.1:8124/v1): "
+            + "`darkbloom --opencode` points it there."]
+        func note(_ start: Start) -> (StartServing) -> Void {
+            { start.noteToolsPointingElsewhere($0, environment: sandbox.environment, provider: F.provider,
+                                               keyFile: sandbox.keyFile, localHostName: { nil },
+                                               say: { sandbox.said.append($0) }) }
+        }
+        let coordinator = "wss://coordinator.invalid/ws/provider"
+        // Beside the background provider: the line, and no wait for an API it has no tool to set up for.
+        sandbox.said = []
+        let start = try Start.parse([])
+        try await start.setUpToolsBesideDaemon(serving: serving, coordinatorURL: coordinator, waitForAPI: { _ in
+            Issue.record("a start without a tool flag waits for no API")
+            return .notUp
+        }, noteTools: note(start))
+        #expect(sandbox.said == line)
+        // Beside the Only me server: the line in a terminal; none in a service's child, whose lines go to a log.
+        let info = LocalEndpoint.Info(host: "127.0.0.1", port: 8124, apiKey: "dk-local-fixture", version: "test", pid: 1,
+                                      updatedAt: "")
+        for (arguments, expected) in [([String](), line), (["--foreground"], [])] {
+            sandbox.said = []
+            let start = try Start.parse(arguments)
+            start.setUpToolsBesideLocalServer(info, serving: serving, coordinatorURL: coordinator, noteTools: note(start))
+            #expect(sandbox.said == expected, "\(arguments)")
+        }
     }
 
     @Test("no line with a tool flag (the start points the tools there itself) or without a local API")

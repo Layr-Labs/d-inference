@@ -31,13 +31,27 @@ enum ToolAddress {
         }
     }
 
+    /// The names loopback answers to.
+    static let loopbackNames: Set<String> = ["localhost", "127.0.0.1", "::1"]
+
+    /// The names of this Mac's local API listening on `bind`.
+    static func thisMacsNames(listeningOn bind: String, localHostName: () -> String?) -> Set<String> {
+        loopbackNames
+    }
+
+    /// Whether two base URLs name the same local API.
+    static func sameAddress(_ one: String, _ other: String, thisMac: Set<String> = loopbackNames) -> Bool {
+        trimmed(one) == trimmed(other)
+    }
+
     /// The tools set up for Darkbloom whose provider block misses the local API at `baseURL` that takes the key in
-    /// `keyFile` (nil: the API takes no key, so any file does), and how.
+    /// `keyFile` (nil: the API takes no key, so any file does), and how. `thisMac`: the names it answers to.
     static func misses(baseURL: String, keyFile: URL?, environment: ToolIntegrationEnvironment,
-                       provider: IntegrationProvider) -> [(tool: IntegrationTool, miss: Miss)] {
+                       provider: IntegrationProvider,
+                       thisMac: Set<String> = loopbackNames) -> [(tool: IntegrationTool, miss: Miss)] {
         IntegrationTool.allCases.compactMap { tool in
             guard let pointer = pointer(of: tool, environment: environment, provider: provider) else { return nil }
-            if let url = pointer.baseURL, trimmed(url) != trimmed(baseURL) { return (tool, .address(url)) }
+            if let url = pointer.baseURL, !sameAddress(url, baseURL, thisMac: thisMac) { return (tool, .address(url)) }
             if let keyFile, let theirs = pointer.keyFile, !sameKey(theirs, keyFile) {
                 return (tool, .key(theirs.standardizedFileURL.path))
             }
@@ -70,9 +84,11 @@ enum ToolAddress {
     }
 
     /// The line for a start that serves its local API at `baseURL`, with the key in `keyFile` (nil: no key).
+    /// `thisMac`: the names the API answers to.
     static func notice(baseURL: String, keyFile: URL?, environment: ToolIntegrationEnvironment = .current,
-                       provider: IntegrationProvider = .current) -> String? {
-        notice(misses(baseURL: baseURL, keyFile: keyFile, environment: environment, provider: provider),
+                       provider: IntegrationProvider = .current, thisMac: Set<String> = loopbackNames) -> String? {
+        notice(misses(baseURL: baseURL, keyFile: keyFile, environment: environment, provider: provider,
+                      thisMac: thisMac),
                baseURL: baseURL, keyFile: keyFile, home: environment.home)
     }
 

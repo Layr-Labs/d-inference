@@ -7,6 +7,10 @@ import Testing
 
 private typealias F = ToolIntegrationFixtures
 
+/// A wait that never ends is a failure, not a hang: a fake local API process answers at most this many looks (2,500 s
+/// on the fake clock, past any deadline), then records an issue and presses Ctrl-C.
+private let maximumLooks = 10_000
+
 /// A temp home with Darkbloom's key file, a clock that moves only between looks, a local API process that answers as
 /// scripted, and recorders for what the step says and what its live line draws. No tool runs, no port is bound, no
 /// state file is read and no signal is taken.
@@ -25,6 +29,8 @@ private final class WaitSandbox: @unchecked Sendable {
     var looks = 0
     /// Reads of this Mac's `/v1/models`.
     var reads = 0
+    /// Ctrl-C as the step says a line this returns true for.
+    var pressWhenSaid: (String) -> Bool = { _ in false }
 
     init() throws {
         directory = try TemporaryDirectory("tools-wait")
@@ -48,6 +54,10 @@ private final class WaitSandbox: @unchecked Sendable {
             loads: { [self] in
                 defer { looks += 1 }
                 if looks == pressAt { interrupt.press() }
+                if looks == maximumLooks {
+                    Issue.record("the wait never ended")
+                    interrupt.press()
+                }
                 return answers[min(looks, answers.count - 1)]
             },
             timeout: timeout, clock: { [self] in now }, pause: { [self] in now += 0.25 }, interrupt: interrupt,
@@ -55,17 +65,24 @@ private final class WaitSandbox: @unchecked Sendable {
     }
 
     /// The step, with OpenCode and Hermes installed; this Mac lists Gemma with its window once the process says it is
-    /// loaded (`loadedFromRead`: the read of `/v1/models` from which it does).
-    func step(_ tools: [IntegrationTool], wait: ModelLoadWait?, loadedFromRead: Int = 2) -> ToolIntegrationStep {
+    /// loaded (`loadedFromRead`: the read of `/v1/models` from which it does). `routerFills`: before that, the router
+    /// fills the catalog's limits in, as it does with an account key and a route that dials out.
+    func step(_ tools: [IntegrationTool], wait: ModelLoadWait?, loadedFromRead: Int = 2,
+              routerFills: Bool = false) -> ToolIntegrationStep {
         ToolIntegrationStep(
             tools: tools, environment: ToolIntegrationEnvironment(home: home, variables: [:]), provider: F.provider,
             findTool: { .installed(URL(fileURLWithPath: "/fake/\($0.rawValue)")) },
             fetchModels: { [self] _ in
                 reads += 1
                 return [EndpointModel(id: Self.gemma, ownedBy: "this-mac",
-                                      contextLength: reads >= loadedFromRead ? 262_144 : nil)]
+                                      contextLength: reads >= loadedFromRead ? 262_144 : routerFills ? 131_072 : nil)]
             },
-            fetchCatalog: { Self.catalog }, say: { [self] in said.append($0) }, modelLoadWait: wait)
+            fetchCatalog: { Self.catalog },
+            say: { [self] line in
+                said.append(line)
+                if pressWhenSaid(line) { interrupt.press() }
+            },
+            modelLoadWait: wait)
     }
 
     /// Every file but the key file.
@@ -74,7 +91,7 @@ private final class WaitSandbox: @unchecked Sendable {
     }
 }
 
-@Suite("Start: --opencode and --hermes wait for this Mac's models to load", .serialized)
+@Suite("Start: --opencode and --hermes wait for this Mac's models to load", .serialized, .timeLimit(.minutes(1)))
 struct ModelLoadWaitTests {
     // MARK: - Wait, then write
 
@@ -163,6 +180,34 @@ struct ModelLoadWaitTests {
         #expect(sandbox.filesOtherThanTheKey().isEmpty)
     }
 
+    @Test("Ctrl-C as the model finishes loading, or as the wait ends: nothing is written all the same")
+    func ctrlCAsTheModelLoadsWritesNothing() async throws {
+        // Pressed in the pause before the look that sees the model loaded.
+        let sandbox = try WaitSandbox()
+        let wait = sandbox.wait([WaitSandbox.loading, WaitSandbox.loading, WaitSandbox.loaded], pressAt: 2)
+        #expect(await !sandbox.step([.opencode], wait: wait).run(endpoint: sandbox.endpoint, requests: "x"))
+        #expect(sandbox.said == [
+            "Waiting up to 10m for Gemma 4 26B to load before setting up OpenCode.",
+            "Stopped waiting for Gemma 4 26B to load, so OpenCode wasn't set up; nothing was written. Run "
+                + "`darkbloom --opencode` again once `darkbloom status` shows it loaded.",
+            "Darkbloom keeps serving.",
+        ])
+        #expect(sandbox.filesOtherThanTheKey().isEmpty)
+
+        // Pressed after the wait's last look, as it ends: checked again before anything is written.
+        let late = try WaitSandbox()
+        late.pressWhenSaid = { $0 == "Gemma 4 26B loaded after 0s." }
+        #expect(await !late.step([.opencode], wait: late.wait([WaitSandbox.loading, WaitSandbox.loaded]))
+            .run(endpoint: late.endpoint, requests: "x"))
+        #expect(late.said == [
+            "Waiting up to 10m for Gemma 4 26B to load before setting up OpenCode.",
+            "Gemma 4 26B loaded after 0s.",
+            "Stopped before setting up OpenCode; nothing was written. Run `darkbloom --opencode` again.",
+            "Darkbloom keeps serving.",
+        ])
+        #expect(late.filesOtherThanTheKey().isEmpty)
+    }
+
     @Test("a model it waited for that didn't load: nothing is written, and `status` says why")
     func notLoadedWritesNothing() async throws {
         let sandbox = try WaitSandbox()
@@ -174,6 +219,36 @@ struct ModelLoadWaitTests {
             "Darkbloom keeps serving.",
         ])
         #expect(sandbox.filesOtherThanTheKey().isEmpty)
+    }
+
+    // MARK: - Run it again
+
+    @Test("a model its process hasn't loaded gets the run-again line, also when the router lists the catalog's limits")
+    func notLoadedByItsProcessSaysRunAgain() async throws {
+        let line = "  Run `darkbloom --opencode` again once `darkbloom status` shows Gemma 4 26B loaded, to pick up its "
+            + "limits."
+        // An account key and a route that dials out: the router lists the catalog's 131,072 for a model not loaded.
+        let dialsOut = try WaitSandbox()
+        #expect(await dialsOut.step([.opencode], wait: dialsOut.wait([ModelLoads()]), loadedFromRead: 99,
+                                    routerFills: true).run(endpoint: dialsOut.endpoint, requests: "x"))
+        #expect(F.utf8(try Data(contentsOf: dialsOut.openCodeFile)).contains("\"context\": 131072"), "the catalog's")
+        #expect(dialsOut.said.filter { $0 == line }.count == 1, "\(dialsOut.said)")
+        // Loaded, by its process's word: no line.
+        let loaded = try WaitSandbox()
+        #expect(await loaded.step([.opencode], wait: loaded.wait([WaitSandbox.loaded]), loadedFromRead: 99,
+                                  routerFills: true).run(endpoint: loaded.endpoint, requests: "x"))
+        #expect(!loaded.said.contains { $0.hasPrefix("  Run `") }, "\(loaded.said)")
+        // No word from its process (no state of its own, or Only me's server): a model listed without its context.
+        for answer in [nil, ModelLoads(loadsBeforeListening: true)] as [ModelLoads?] {
+            let silent = try WaitSandbox()
+            #expect(await silent.step([.opencode], wait: silent.wait([answer]), loadedFromRead: 99)
+                .run(endpoint: silent.endpoint, requests: "x"))
+            #expect(silent.said.filter { $0 == line }.count == 1, "\(String(describing: answer)): \(silent.said)")
+            let filled = try WaitSandbox()
+            #expect(await filled.step([.opencode], wait: filled.wait([answer]), loadedFromRead: 99, routerFills: true)
+                .run(endpoint: filled.endpoint, requests: "x"))
+            #expect(!filled.said.contains { $0.hasPrefix("  Run `") }, "\(String(describing: answer)): \(filled.said)")
+        }
     }
 
     // MARK: - The line
@@ -216,6 +291,14 @@ struct ModelLoadWaitTests {
         #expect(LiveLine.standardOutput(isTerminal: true, environment: [:]) != nil, "a terminal that names no TERM")
     }
 
+    @Test("the wait start runs draws its live line exactly where a terminal can draw one")
+    func theLiveWaitDrawsOnlyOnATerminal() {
+        #expect(ModelLoadWait.live(isTerminal: false, environment: ["TERM": "xterm-256color"]).liveLine == nil)
+        #expect(ModelLoadWait.live(isTerminal: true, environment: ["TERM": "dumb"]).liveLine == nil)
+        #expect(ModelLoadWait.live(isTerminal: true, environment: ["TERM": "xterm-256color"]).liveLine != nil)
+        #expect((ModelLoadWait.live().liveLine == nil) == (LiveLine.standardOutput() == nil), "this process's own")
+    }
+
     // MARK: - What the local API's process says
 
     @Test("only the local API's own process is believed, and Only me's server has loaded before it listens")
@@ -248,12 +331,17 @@ struct ModelLoadWaitTests {
     @Test("a model this Mac doesn't list, or one already loaded, isn't waited for")
     func onlyThisMacsLoadingModelsAreWaitedFor() async {
         var looks = 0
+        let interrupt = InterruptWatch()
         let wait = ModelLoadWait(loads: {
             looks += 1
+            if looks == maximumLooks {
+                Issue.record("the wait never ended")
+                interrupt.press()
+            }
             return ModelLoads(loaded: ["warm"], pending: ["warm", "elsewhere"])
-        }, clock: { 0 }, pause: {})
+        }, clock: { 0 }, pause: {}, interrupt: interrupt)
         let outcome = await wait.run(thisMac: ["warm", "listed"], tools: [.opencode], name: { $0 }, say: { _ in })
-        #expect(outcome == .ready(waited: false) && looks == 1)
+        #expect(outcome == .ready(waited: false, loaded: ["warm"]) && looks == 1)
         // This Mac lists none of its own (a relay): nothing to ask.
         #expect(await ModelLoadWait(loads: { Issue.record("asked"); return nil }).run(
             thisMac: [], tools: [.opencode], name: { $0 }, say: { _ in }) == .ready(waited: false))
@@ -273,5 +361,44 @@ struct ModelLoadWaitTests {
         #expect(watch.wasPressed)
         watch.end()
         #expect(!ProviderStopSignals.isIgnored(SIGUSR2), "the default action is back")
+    }
+
+    @Test("the wait itself takes the signal at every look, stops on it, and gives it back as it was")
+    func theWaitTakesTheSignalOnlyWhileItRuns() async throws {
+        // SIGUSR2 stands in for SIGINT, as above.
+        let before = signal(SIGUSR2, SIG_DFL)
+        defer { signal(SIGUSR2, before) }
+        let watch = InterruptWatch(signal: SIGUSR2)
+        var held: [Bool] = []
+        let wait = ModelLoadWait(loads: {
+            held.append(ProviderStopSignals.isIgnored(SIGUSR2))
+            if held.count == maximumLooks {
+                Issue.record("the wait never ended")
+                watch.press()
+            }
+            return held.count < 3 ? ModelLoads(pending: ["a"]) : ModelLoads(loaded: ["a"])
+        }, clock: { 0 }, pause: {}, interrupt: watch)
+        #expect(await wait.run(thisMac: ["a"], tools: [.opencode], name: { $0 }, say: { _ in })
+            == .ready(waited: true, loaded: ["a"]))
+        #expect(held == [true, true, true], "the wait has the signal at every look")
+        #expect(!ProviderStopSignals.isIgnored(SIGUSR2), "and gives it back")
+
+        // The signal stops the wait. Raised only once the wait has it: the default action would end the test process.
+        let raised = InterruptWatch(signal: SIGUSR2)
+        var looks = 0
+        let stopped = ModelLoadWait(loads: {
+            looks += 1
+            if looks == 2 {
+                if ProviderStopSignals.isIgnored(SIGUSR2) { raise(SIGUSR2) } else { Issue.record("the wait hasn't it") }
+            }
+            if looks == 2_000 {
+                Issue.record("the signal never stopped the wait")
+                raised.press()
+            }
+            return ModelLoads(pending: ["a"])
+        }, clock: { 0 }, pause: { try? await Task.sleep(for: .milliseconds(5)) }, interrupt: raised)
+        #expect(await stopped.run(thisMac: ["a"], tools: [.opencode], name: { $0 }, say: { _ in })
+            == .interrupted(model: "a"))
+        #expect(!ProviderStopSignals.isIgnored(SIGUSR2), "given back after a stop too")
     }
 }

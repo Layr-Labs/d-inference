@@ -110,8 +110,10 @@ struct LiveLine {
 struct ModelLoadWait {
     enum Outcome: Equatable, Sendable {
         /// Nothing of this Mac's is loading now: set the tools up. `waited`: it waited for models that have loaded
-        /// since this Mac's list was read, so the list is read again for their limits.
-        case ready(waited: Bool)
+        /// since this Mac's list was read, so the list is read again for their limits. `loaded`: the models the
+        /// process has loaded, by its own word; nil when it gave none (no state of its own, or Only me's server, whose
+        /// state names none).
+        case ready(waited: Bool, loaded: Set<String>? = nil)
         /// The model it waited for didn't load.
         case notLoaded(model: String)
         /// The model is still loading at the deadline.
@@ -138,9 +140,12 @@ struct ModelLoadWait {
     static let settleSeconds: TimeInterval = 1
     static let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
-    /// As `start` waits: the local API's own process, the terminal's live line, and Ctrl-C.
-    static func live() -> ModelLoadWait {
-        ModelLoadWait(loads: { ModelLoads.live() }, interrupt: .ctrlC(), liveLine: .standardOutput())
+    /// As `start` waits: the local API's own process, the terminal's live line (`LiveLine.standardOutput`'s rule for
+    /// `isTerminal` and `environment`), and Ctrl-C.
+    static func live(isTerminal: Bool = isatty(STDOUT_FILENO) != 0,
+                     environment: [String: String] = ProcessInfo.processInfo.environment) -> ModelLoadWait {
+        ModelLoadWait(loads: { ModelLoads.live() }, interrupt: .ctrlC(),
+                      liveLine: .standardOutput(isTerminal: isTerminal, environment: environment))
     }
 
     /// Waits while the local API's process loads any of `thisMac` (this Mac's models as its `/v1/models` lists them)

@@ -151,9 +151,10 @@ struct ToolIntegrationStep {
         // No tool's config is written while the local API's process still loads a model this Mac lists for its start:
         // a wait that ends before it is loaded (the deadline, a model that didn't load, Ctrl-C) returns here, before
         // any file is touched.
-        guard let listed = await waitForModels(read, endpoint: endpoint, tools: tools, catalog: catalog) else {
+        guard let afterWait = await waitForModels(read, endpoint: endpoint, tools: tools, catalog: catalog) else {
             return false
         }
+        let listed = afterWait.listed
         let models = IntegrationModels.resolve(listed, catalog: catalog)
         var ok = true
         var summaries: [ToolConfigSummary] = []
@@ -182,10 +183,7 @@ struct ToolIntegrationStep {
             say(summaries.allSatisfy(\.undescribed.isEmpty) ? Self.catalogUnreachableKept
                 : Self.catalogUnreachable(tools))
         }
-        // This Mac lists a model's context only while it is loaded, so the tools got the catalog's limits for the rest.
-        let unloaded = listed.filter {
-            $0.contextLength == nil && IntegrationModels.location(ownedBy: $0.ownedBy) == .thisMac
-        }
+        let unloaded = Self.notLoaded(listed, loaded: afterWait.loaded)
         if !unloaded.isEmpty {
             say(Self.runAgainOnceLoaded(unloaded.map { IntegrationModels.displayName(of: $0.id, in: catalog) },
                                         tools: tools))
@@ -207,17 +205,25 @@ struct ToolIntegrationStep {
         }
     }
 
+    /// This Mac's models the tools got no limits of this Mac's for, as the endpoint lists them: this Mac lists a model's
+    /// context only while it is loaded.
+    static func notLoaded(_ listed: [EndpointModel], loaded: Set<String>?) -> [EndpointModel] {
+        listed.filter { $0.contextLength == nil && IntegrationModels.location(ownedBy: $0.ownedBy) == .thisMac }
+    }
+
     /// Waits (`modelLoadWait`; none without it) while the local API's process still loads this Mac's models in
-    /// `listed`, then gives what the endpoint lists now, their own limits included; nil, said in one line, when nothing
-    /// may be written: the model didn't load, is still loading at the deadline, or Ctrl-C stopped the wait.
+    /// `listed`, then gives what the endpoint lists now, their own limits included, and what the process has loaded
+    /// by its own word (nil without it); nil, said in one line, when nothing may be written: the model didn't load,
+    /// is still loading at the deadline, or Ctrl-C stopped the wait.
     private func waitForModels(_ listed: [EndpointModel], endpoint: IntegrationEndpoint, tools: [IntegrationTool],
-                               catalog: CatalogSnapshot?) async -> [EndpointModel]? {
-        guard let wait = modelLoadWait else { return listed }
+                               catalog: CatalogSnapshot?) async -> (listed: [EndpointModel], loaded: Set<String>?)? {
+        guard let wait = modelLoadWait else { return (listed, nil) }
         let thisMac = listed.filter { IntegrationModels.location(ownedBy: $0.ownedBy) == .thisMac }.map(\.id)
         let name = { (id: String) in IntegrationModels.displayName(of: id, in: catalog) }
         switch await wait.run(thisMac: thisMac, tools: tools, name: name, say: say) {
-        case .ready(let waited):
-            return waited ? await readModels(endpoint, tools: tools) : listed
+        case .ready(let waited, let loaded):
+            guard waited else { return (listed, loaded) }
+            return await readModels(endpoint, tools: tools).map { ($0, loaded) }
         case .notLoaded(let model):
             say(ModelLoadWait.didNotLoad(name(model), tools: tools))
         case .timedOut(let model):

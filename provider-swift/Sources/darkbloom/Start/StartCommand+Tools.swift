@@ -88,11 +88,12 @@ extension Start {
     }
 
     /// Beside the coordinator-less server, once it is bound, on a task of its own: the server keeps serving whatever
-    /// happens there. Without a tool flag, it says when a tool points elsewhere, except in a service's child
-    /// (`foreground`), whose lines go to a log.
-    func setUpToolsBesideLocalServer(_ info: LocalEndpoint.Info, serving: StartServing, coordinatorURL: String) {
+    /// happens there. Without a tool flag, it says when a tool points elsewhere (`noteTools`, by default
+    /// `noteToolsPointingElsewhere`), except in a service's child (`foreground`), whose lines go to a log.
+    func setUpToolsBesideLocalServer(_ info: LocalEndpoint.Info, serving: StartServing, coordinatorURL: String,
+                                     noteTools: ((StartServing) -> Void)? = nil) {
         guard !requestedTools.isEmpty else {
-            if !foreground { noteToolsPointingElsewhere(serving) }
+            if !foreground { (noteTools ?? { noteToolsPointingElsewhere($0) })(serving) }
             return
         }
         guard let endpoint = IntegrationEndpoint.live(info) else {
@@ -106,14 +107,15 @@ extension Start {
 
     /// After the background provider started: once its local API is bound, which `local.json` says, waiting at most
     /// `toolWaitSeconds`. A step that fails ends the start with exit 1; the provider keeps serving. Without a tool flag,
-    /// it says when a tool points elsewhere.
+    /// it says when a tool points elsewhere (`noteTools`, by default `noteToolsPointingElsewhere`).
     func setUpToolsBesideDaemon(serving: StartServing, coordinatorURL: String,
                                 waitForAPI: (UInt16) async -> LocalAPIWait = {
                                     await Start.waitForLocalAPI(port: $0, seconds: Start.toolWaitSeconds)
                                 },
-                                step: ToolIntegrationStep? = nil) async throws {
+                                step: ToolIntegrationStep? = nil,
+                                noteTools: ((StartServing) -> Void)? = nil) async throws {
         guard !requestedTools.isEmpty else {
-            noteToolsPointingElsewhere(serving)
+            (noteTools ?? { noteToolsPointingElsewhere($0) })(serving)
             return
         }
         let endpoint: IntegrationEndpoint
@@ -137,10 +139,11 @@ extension Start {
     /// A start without `--opencode` / `--hermes` that serves a local API never changes a tool's config: when a tool set
     /// up for Darkbloom points elsewhere (another port or address, or another key file), one line says so and names
     /// the command that points it here (`ToolAddress`). With a tool flag, nothing: that start points the tools here
-    /// itself. `keyFile`: the one this Mac's local API takes.
+    /// itself. `keyFile`: the one this Mac's local API takes; `localHostName`: this Mac's Bonjour name.
     func noteToolsPointingElsewhere(_ serving: StartServing, environment: ToolIntegrationEnvironment = .current,
-                                    provider: IntegrationProvider = .current,
-                                    keyFile: URL = LocalEndpoint.tokenPath(), say: (String) -> Void = { print($0) }) {
+                                    provider: IntegrationProvider = .current, keyFile: URL = LocalEndpoint.tokenPath(),
+                                    localHostName: () -> String? = { Local.localHostName() },
+                                    say: (String) -> Void = { print($0) }) {
         guard requestedTools.isEmpty, serving.hasLocalAPI,
               let line = ToolAddress.notice(baseURL: serving.baseURL, keyFile: serving.noAuth ? nil : keyFile,
                                             environment: environment, provider: provider) else { return }

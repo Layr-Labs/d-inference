@@ -110,3 +110,20 @@ describe('pinned memory', () => {
     ).toBeUndefined();
   });
 });
+
+describe('a paired Mac', () => {
+  // The runtime names the pair and reports no Autopilot: Autopilot serves one Mac.
+  const paired = () =>
+    snapshot({
+      capabilities: ['account-signin', 'account-signout', 'request-history'],
+      pair: { model: 'Qwen 3.8 27B' },
+    });
+
+  it('starts the pair with its own model: no model and no local API of its own', () => {
+    expect(startAction(paired(), 'manual', ['gpt-oss-20b'])).toEqual({
+      action: 'start',
+      models: [],
+      local: false,
+    });
+  });
+});

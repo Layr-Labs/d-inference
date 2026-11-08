@@ -88,9 +88,10 @@ Mac and goes on
    catalog, and downloads the ones you pick from `https://models.darkbloom.ai`
    (`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`,
    `defaultR2CDNURL`). It opens with your last selection still on this Mac
-   selected, else one downloaded model that fits with room to spare, never one
-   it would download (`Start.pickerPreselection`). Check which ones are
-   selected before you press Enter.
+   selected, else the largest downloaded model that fits with room to spare,
+   else the smallest downloaded one that fits; never one it would download
+   (`Start.pickerPreselection`). Check which ones are selected before you
+   press Enter.
    `--model <id>` skips the picker. A Mac with no model it can serve ends with
    ``No model to serve yet. See them: `darkbloom models catalog`. Get one:
    `darkbloom models download <id>`, then `darkbloom start`.``
@@ -181,9 +182,13 @@ contacts Darkbloom, so skip to [Verify](#verify).
    profiles should remain installed until `darkbloom unenroll` approves App Attest
    migration; choosing full exit instead stops the provider.
 
-3. **Autopilot (experimental, optional).** For **Darkbloom network**, `start`
-   also asks whether to join Autopilot; the answer defaults to No. **Both, me
-   first** and **Only me** never ask: `darkbloom autopilot enable` enrolls them. Yes records consent for the default shadow rollout, **not active
+3. **Autopilot (experimental, optional).** Autopilot is for the Darkbloom
+   network, so `start` asks whether to join it only with **Darkbloom network**;
+   the answer defaults to No. **Both, me first** never asks and keeps your
+   saved answer: `darkbloom autopilot enable` enrolls it. **Only me** has no
+   Autopilot: there, `darkbloom autopilot enable` says
+   `Autopilot requires a network provider. Nothing was saved.`
+   Yes records consent for the default shadow rollout, **not active
    residency control**. It skips the picker and discovers/verifies all eligible
    already-downloaded active network models, excluding arbitrary
    local/off-catalog, retired, ineligible or unverified builds. Enrollment

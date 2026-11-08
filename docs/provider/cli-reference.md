@@ -442,11 +442,12 @@ They run once, at `start`:
    The result block names the file changed, the backup and a one-line undo,
    then `Requests:` (where your requests go) and
    `Other tools:` (`OPENAI_BASE_URL` and `OPENAI_API_KEY="$(cat <key file>)"`).
-   No line or file holds the key, and the `--local` banner shows no key when a
-   tool flag is given (`Start.bannerShowsKey`); its `Your requests:` line and the
-   tool block come from one Keychain read. A model of this Mac's that isn't loaded
-   yet has no context in `/v1/models`, so one line says to run the start again
-   once it is loaded, to pick up its limits.
+   No line or file holds the key, and no start screen shows it
+   (`Start.localServerBanner`). The `--local` banner's `Your requests:` line
+   and the tool block come from one Keychain read, of whether an account key
+   is saved. A model of this Mac's that isn't loaded yet has no context in
+   `/v1/models`, so one line says to run the start again once it is loaded, to
+   pick up its limits.
 
 A tool it can't set up prints `✗` and why, writes nothing and ends with
 `Darkbloom keeps serving.`; the start then exits 1 (a background start keeps
@@ -1523,8 +1524,11 @@ Every subcommand accepts `--config`.
 
 Every normal interactive `start` that serves the Darkbloom network asks about
 experimental Autopilot again, explicitly naming shadow mode as not activated and
-a later live rollout; Both, me first and Only me never ask (`resolveAutopilotChoice`),
-and `autopilot enable` enrolls them. The
+a later live rollout. Autopilot is for the Darkbloom network: Both, me first
+never asks and keeps the saved answer (`resolveAutopilotChoice`), and
+`autopilot enable` enrolls it; Only me has no Autopilot, and there
+`autopilot enable` (`start --autopilot`) is refused with
+`Autopilot requires a network provider. Nothing was saved.` The question's
 first default is No (`[y/N]`); later prompts use the saved choice (`[Y/n]` when
 enrolled). Enter keeps that default. Explicit enrollment flags and automatic
 restarts do not prompt. Both answers follow the ordinary model picker and

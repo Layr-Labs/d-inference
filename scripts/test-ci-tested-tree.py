@@ -109,6 +109,13 @@ class LookupTests(unittest.TestCase):
         self.assertTrue(self.pull(Api([record(7)], {7: run(7)}))[0])
         self.assertFalse(self.pull(Api([record(7)], {7: run(7)}), base=ELSE)[0])
 
+    def test_a_dispatched_run_never_skips_and_reads_no_record(self):
+        api = Api([record(7, base="push", head=MERGE)], {7: run(7, event="push", head_sha=MERGE)})
+        skip, url, note = lookup.decide(REPO, REF, "workflow_dispatch", MERGE, TREE, "", "", ALL, 99, get=api)
+        self.assertEqual((skip, url), (False, ""))
+        self.assertIn("never skips", note)
+        self.assertEqual(api.paths, [])
+
     def test_unproven_runs_never_skip(self):
         cases = {
             "failed": run(7, conclusion="failure"),

@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-08
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -339,8 +339,44 @@ so these run there too.
 
 | Workflow | Runs for | Jobs |
 |---|---|---|
-| `ci-dev.yml` (CI (dev)) | pull requests into any branch but `master` (`dev` and stacked branches), pushes to `dev` | the tests only |
+| `ci-dev.yml` (CI (dev)) | pull requests into any branch but `master` (`dev` and stacked branches), pushes to `dev`, dispatches (the hourly full run of `dev`) | the tests only; a dispatch also has `Report hourly failures` |
 | `ci-master.yml` (CI (master)) | pull requests into `master`, pushes to `master` | the tests, `Release Integrity` and `Docs Lint` |
+| `ci-dev-hourly.yml` (CI (dev) hourly) | the schedule `7 * * * *` (minute 7 of every hour, UTC) on `master`, dispatches | dispatches CI (dev) on `dev` |
+
+### Hourly full run of `dev`
+
+A pull request or a push into `dev` runs only the components its diff
+touches. To test all of `dev` every hour, `.github/workflows/ci-dev-hourly.yml`
+runs at minute 7 of every hour. GitHub runs schedules only from the default
+branch, `master`, so the copy of the file on `dev` does nothing. Its one
+GitHub-hosted job runs `gh workflow run ci-dev.yml --ref dev`. When a
+dispatched run of CI (dev) is still queued or in progress, the job dispatches
+nothing that hour, so two full runs never overlap.
+
+A dispatch of CI (dev) selects every component (`scripts/ci-component-paths.py`
+returns no diff for `workflow_dispatch`, as for a push to `master`), and the
+tree lookup never skips it. It runs every job of a full run: both build jobs,
+Provider Unit Tests shards 1 and 2 (with the MiMo audio gate), Cluster Runtime
+Tests shards 1 to 5, Cluster Focused Checks shards 1 and 2, Cluster Release
+Build Checks, Cluster GPU Tests (non-blocking) shards 1 to 3, Check the CI plans
+and the `Provider Tests` gate. It uses the lanes and sizes of a push to `dev`
+and restores `dev`'s caches; like a pull request, it saves none. Dispatched
+runs share the concurrency group `ci-dev-hourly`. A new dispatch never cancels
+a running one; it waits. GitHub keeps one waiting run per group, so a newer
+dispatch replaces one that already waits.
+
+A dispatched run's actor is the GitHub Actions bot, so a failure sends no
+email. When a job of a dispatched run fails, the job `Report hourly failures`
+comments on the open issue titled `Hourly full dev CI failures` with the run,
+the tested commit and the failed jobs. When no such issue is open, it opens
+one. It is the only CI job with `issues: write`. Cluster GPU Tests never fail
+their jobs, so they never report there. Close the issue when `dev` passes
+again; the next failure opens a new one.
+
+A full run takes about 13 minutes and 110 macOS job-minutes: about 31 on
+Blacksmith (the build jobs, Cluster Release Build Checks and Cluster GPU Tests)
+and about 79 on routed Macs (the 9 blocking test shards, which fall back to
+Blacksmith when the plane grants no Mac).
 
 ### Build Once
 

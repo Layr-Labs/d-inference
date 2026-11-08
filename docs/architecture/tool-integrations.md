@@ -46,7 +46,12 @@ flowchart LR
    (`OpenCodeConfigPlan.modelEntries`, `HermesEdit.modelEntries`): `IntegrationModel.keeping` takes the entry's name,
    capabilities and vision, its context when the endpoint gives none, and its output while the context is the one it
    was set for. A model with no entry keeps the fallbacks and is named in `ToolConfigSummary.undescribed`.
-   <!-- pending R-FULL: the writers give each model its full context window, output length and capabilities; only the Mac's memory bounds a request; OpenRouter is separate. -->
+   For a model this Mac has loaded, the endpoint lists its whole context window as both the context and the max
+   output (`LocalModelLimits(window:)`, `provider-swift/Sources/ProviderCore/Server/LocalRouterModels.swift`), so
+   the writers give it its full context window and a quarter of it as output, not the catalog's smaller output cap
+   (65,536 for a 262,144-token window whose catalog row says 32,768). A pair's leader lists the pair's own context and
+   output instead (what its mode serves; it refuses a larger `max_tokens`), so a GLM pair's output stays 65,536.
+   <!-- pending R-FULL: the writers give each model its full output length (the cap is a quarter of the context) and its capabilities from the engine as well as the catalog; only the Mac's memory bounds a request; OpenRouter is separate. -->
 3. **OpenCode.** `OpenCodeConfigPlan.plan` reads the file into byte ranges with `JSONCDocument` and replaces only the
    `providers.<id>` value, or appends it in the file's indentation and trailing-comma style. The block has the base
    URL, `apiKey: "{file:<key file>}"` (under `~` in the home directory), `compatibility.maxTokensField: "max_tokens"`

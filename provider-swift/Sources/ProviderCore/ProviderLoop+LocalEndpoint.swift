@@ -140,10 +140,16 @@ extension ProviderLoop {
         modelSlots[modelId]?.modelType ?? advertisedModels[modelId]?.modelType
     }
 
-    /// A resident model's context as its engine admits it, for the router's `/v1/models`; nil while not loaded.
+    /// A resident model's limits as its engine admits them, for the router's `/v1/models`; nil while not loaded. A
+    /// single Mac lists its window as the context and the output: a prompt and its output together may fill it. A
+    /// pair lists its own limits, the context and the output its mode serves (what its slot reports to the
+    /// coordinator): it refuses a `max_tokens` past its output (`output_too_long`).
     func localModelLimits(_ modelId: String) -> LocalModelLimits? {
         guard let slot = modelSlots[modelId] else { return nil }
-        return LocalModelLimits(contextLength: slot.engineV2.advertisedContextTokens ?? slot.sizing.maxContextLength)
+        if let pair = slot.modelContainer.clusterPair {
+            return LocalModelLimits(contextLength: pair.served.contextTokens, maxOutputLength: pair.served.outputTokens)
+        }
+        return LocalModelLimits(window: slot.engineV2.advertisedContextTokens ?? slot.sizing.maxContextLength)
     }
 
     /// Invoked by Hummingbird once the local endpoint socket is bound and

@@ -92,6 +92,14 @@ extension EngineV2Bridge {
             continuation.yield(.error(Qwen4SupportPolicy.contextRejectionMessage))
             continuation.finish()
             return stream
+        } catch MultiModelBatchSchedulerEngineError.promptExceedsContext(let message) {
+            // The model window's refusal keeps its marker and its words (the
+            // window, never request content), which callers map back.
+            let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
+            continuation.yield(.error(
+                MultiModelBatchSchedulerEngineError.promptExceedsContext(message).errorDescription ?? message))
+            continuation.finish()
+            return stream
         } catch MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(let message),
             MultiModelBatchSchedulerEngineError.unsupportedOutputControl(let message) {
             // Capacity and output-control refusals already finalized their
@@ -251,12 +259,13 @@ extension EngineV2Bridge {
         }
         try checkBeforeServiceAdmission(firstContentDeadline, profile: profile, usageSignal: usageSignal)
         let retirementTransfer = EngineV2RetirementTransfer()
+        let maxOutputTokens = outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count)
         guard acquireServiceAllowance(requestID: id, serviceReservationID: serviceReservationID,
             serviceReservation: serviceReservation, promptTokens: promptTokens.count,
-            maxOutputTokens: max(0, request.max_tokens ?? defaultMaxTokens),
+            maxOutputTokens: max(0, maxOutputTokens),
             qualifiedTextWork: multimodal == nil && mediaKind == nil,
             recoverPrefillEvidence: canRecoverPrefillEvidence(
-                promptTokens: promptTokens.count, maxOutputTokens: request.max_tokens ?? defaultMaxTokens,
+                promptTokens: promptTokens.count, maxOutputTokens: maxOutputTokens,
                 deadline: firstContentDeadline,
                 isMultimodal: multimodal != nil || mediaKind != nil)) else {
             // A full Mac refuses as capacity before any stream exists, so
@@ -322,13 +331,15 @@ extension EngineV2Bridge {
             // The same coordinator hint that gates the write also tells the
             // engine which fork boundary is worth staging.
             prefixCheckpointTargetTokens: donationDemand?.repeatedPrefixTokens,
-            defaultMaxTokensContextLimit: defaultMaxTokensContextLimit,
             // The native block engine's decoder matches stops over the whole
             // output, so its requests carry no scope and the reported stop
             // agrees with the one that matched.
             stopStringScope: ownedEngine is CBv2NativeBlockEngine
                 ? nil : stopStringScope ?? self.stopStringScope
         )
+        // The engine is asked for the output resolved above, which the service
+        // allowance was sized for, not the translation's `max_tokens ?? default`.
+        cbv2Request.maxTokens = maxOutputTokens
         cbv2Request.mimoClusterImages = mimoClusterImages
         cbv2Request.clusterStillImages = clusterStillImages
         cbv2Request.clusterGLMMedia = clusterGLMMedia
@@ -345,8 +356,19 @@ extension EngineV2Bridge {
             ssdStaged: false,
             readyReceiptRegistered: false,
             usageSignal: usageSignal)
+        // A single Mac slot refuses a prompt that fills its window, naming the
+        // window: no output fits after it. Any other prompt's output is already
+        // cut to what it leaves (`outputTokens(requested:promptTokens:)`).
+        if let window = modelWindowTokens, promptTokens.count >= window {
+            usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
+            continuation.finish()
+            throw MultiModelBatchSchedulerEngineError.promptExceedsContext(
+                Self.promptExceedsContextMessage(contextTokens: window))
+        }
         let (worstCaseTokens, tokenCountOverflow) = promptTokens.count.addingReportingOverflow(
             cbv2Request.maxTokens)
+        // The advertised context's own guard: with the output cut above, only a
+        // negative output reaches it on a single Mac.
         if let cap = advertisedContextTokens,
             cbv2Request.maxTokens < 0 || tokenCountOverflow || worstCaseTokens > cap
         {
@@ -641,11 +663,14 @@ extension EngineV2Bridge {
                 usageSignal?.finalizeLookup(
                     failure: .capacity,
                     fallbackTier: prefixCacheFallbackTier)
-                continuation.yield(.error(
-                    "token_budget_exhausted: request requires \(worstCaseTokens) tokens "
-                        + "but the shared KV budget has no headroom"))
+                // As the service allowance above: refused before any stream
+                // exists, so a streamed local request gets 503, not a 200 SSE
+                // stream that fails at once. Nonthrowing callers still get the
+                // message in-band.
                 continuation.finish()
-                return stream
+                throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(
+                    "token_budget_exhausted: request requires \(worstCaseTokens) tokens "
+                        + "but the shared KV budget has no headroom")
             }
         }
 
@@ -1047,8 +1072,18 @@ extension EngineV2Bridge {
             // `token_budget_exhausted:` prefix contract so
             // `fromSchedulerMessage` classifies it as a retryable capacity
             // error (429/503) exactly as the legacy engine's rejections.
-            continuation.yield(.error(EngineV2Translation.admissionErrorMessage(
-                for: error, distributedProfile: distributedProfile)))
+            let message = EngineV2Translation.admissionErrorMessage(for: error, distributedProfile: distributedProfile)
+            // A request this Mac's engine can't hold (a paged slot's only memory
+            // gate: one that can never fit its grant) is refused before any
+            // stream exists, as the shared KV gate's is, so a streamed local
+            // request gets 503, not a 200 stream that fails at once.
+            // Nonthrowing callers still get the message in-band.
+            if distributed == nil, !retirementTransfer.isClaimed,
+               case .tokenBudgetExhausted = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message) {
+                continuation.finish()
+                throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(message)
+            }
+            continuation.yield(.error(message))
             continuation.finish()
             return stream
         }

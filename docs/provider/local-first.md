@@ -221,7 +221,11 @@ model.
   you just started is loaded: until then this Mac doesn't know its limits, the
   tools get the catalog's, and the start says so.
   <!-- pending LS-4: the start waits for the model to load before it writes the limits, and the tools follow the address and the key by themselves. -->
-  <!-- pending R-FULL: the tools get each model's full context window, output length and capabilities. -->
+  Once a model is loaded, the tools get its whole context window from this
+  Mac, and a quarter of it as their output limit (65,536 tokens for a
+  262,144-token window), not the catalog's smaller one. On a pair, they get
+  the pair's own limits, which it serves.
+  <!-- pending R-FULL: the tools get each model's full output length and all its capabilities. -->
 - **Offline** (Darkbloom's catalog unreachable), a run again keeps the names,
   image support and limits already set up. A model set up for the first time
   then gets its ID and text input only, and the start says to run it again

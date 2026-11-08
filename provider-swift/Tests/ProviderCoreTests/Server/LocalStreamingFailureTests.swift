@@ -46,7 +46,8 @@ struct LocalStreamingFailureTests {
 
     /// A GLM slot refusal thrown before the stream exists is answered as a
     /// 503 JSON error before any SSE header, for streaming and non-streaming
-    /// requests alike, with the fixed capacity text instead of the marker.
+    /// requests alike, with fixed words that name this Mac's memory instead of
+    /// the marker.
     @Test(arguments: [true, false])
     func glmSlotRefusalIs503BeforeHeaders(stream: Bool) async throws {
         let router = Router<BasicRequestContext>()
@@ -67,7 +68,9 @@ struct LocalStreamingFailureTests {
                 let envelope = try #require(JSONSerialization.jsonObject(
                     with: Data(text.utf8)) as? [String: Any])
                 let error = try #require(envelope["error"] as? [String: Any])
-                #expect(error["message"] as? String == InferenceFailureCode.capacity.message)
+                #expect(error["message"] as? String == "This Mac's memory can't hold this request right now. "
+                    + "Lower max_tokens or shorten the prompt (or send less media), or retry when this Mac's other "
+                    + "requests finish.")
             }
         }
     }

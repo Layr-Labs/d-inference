@@ -245,6 +245,16 @@ struct ClusterLeaveCommandTests {
             == .done("the other Mac did not answer, so it was not asked to stop"))
     }
 
+    /// The leading Mac's forget step when the other Mac isn't reached (`ClusterService.tellMemberOfUnpair`, which
+    /// `cluster pair --forget` and `uninstall` print too): that Mac may have left the pair already, so the line says what
+    /// to run there only if it is still paired, and names no pin.
+    @Test func theForgetStepTellsAnUnreachedMacToLeaveOnlyIfStillPaired() {
+        let line = ClusterService.memberNotReachedLine(reason: "timed out")
+        #expect(line == "The other Mac was not reached (timed out). If that Mac is still paired, run "
+            + "`\(ClusterPairSummary.cli) cluster leave` there.")
+        #expect(!line.contains("--forget") && !line.contains("pair cache"))
+    }
+
     /// The pair's stop ends "Run `darkbloom cluster` to serve again." (the leading Mac's own line, forwarded to the Mac
     /// that follows): while leaving, neither Mac's screen says it, and the leave's last lines say what's next.
     @Test func leavingNeverSaysToServeThePairAgain() async throws {

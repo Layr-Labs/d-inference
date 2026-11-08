@@ -1041,9 +1041,14 @@ public final class ClusterService: @unchecked Sendable {
                 + (reply.keptLive > 0 ? ", \(reply.keptLive) still in use (removed when its part stops)" : "") + "."
         } catch {
             let reason = (error as? ClusterSetupFailure)?.text ?? String(describing: error)
-            return "The other Mac was not reached (\(ClusterConsoleText.bounded(reason, maximum: 160))): "
-                + "its pair cache stays until it unpairs too (`\(OnboardingLive.cli) cluster pair --forget \(pairing.localPin)` there)."
+            return memberNotReachedLine(reason: reason, localPin: pairing.localPin)
         }
+    }
+
+    /// The leader's line when the member it tells of the unpair isn't reached (seam: today's words, with this Mac's pin).
+    public static func memberNotReachedLine(reason: String, localPin: String = "") -> String {
+        "The other Mac was not reached (\(ClusterConsoleText.bounded(reason, maximum: 160))): "
+            + "its pair cache stays until it unpairs too (`\(OnboardingLive.cli) cluster pair --forget \(localPin)` there)."
     }
 
     /// Where this Mac keeps the cache settings its leader synced.

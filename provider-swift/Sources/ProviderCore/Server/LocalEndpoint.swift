@@ -142,10 +142,7 @@ public enum LocalEndpoint {
         }
 
         public init(host: String, port: UInt16, apiKey: String, version: String, pid: Int32, updatedAt: String) {
-            // For a client URL, an unspecified bind (0.0.0.0) is not dialable;
-            // present loopback so same-machine clients always have a usable URL.
-            let dialHost = (host == "0.0.0.0" || host.isEmpty) ? "127.0.0.1" : host
-            self.baseURL = "http://\(dialHost):\(port)/v1"
+            self.baseURL = LocalEndpoint.baseURL(host: host, port: port)
             self.apiKey = apiKey
             self.host = host
             self.port = port
@@ -153,6 +150,13 @@ public enum LocalEndpoint {
             self.version = version
             self.updatedAt = updatedAt
         }
+    }
+
+    /// The address a client on this Mac dials for a server bound to `host` on `port`, the one `start` prints and tools
+    /// are given. An unspecified bind (0.0.0.0) is not dialable: loopback stands for it.
+    public static func baseURL(host: String, port: UInt16) -> String {
+        let dialHost = (host == "0.0.0.0" || host.isEmpty) ? "127.0.0.1" : host
+        return "http://\(dialHost):\(port)/v1"
     }
 
     /// Write the discovery file (`0600`). Call after the server is listening.

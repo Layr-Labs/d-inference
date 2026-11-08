@@ -82,7 +82,8 @@ struct IntegrationModel: Equatable, Sendable {
     /// `Qwen 3.8 27B (this Mac)`.
     static func name(_ display: String, at location: Location) -> String { "\(display) (\(location.label))" }
 
-    /// A tool's name for a model without where it runs: `Qwen 3.8 27B (this Mac)` gives `Qwen 3.8 27B`.
+    /// A tool's name for a model without where it runs: `Qwen 3.8 27B (this Mac)` gives `Qwen 3.8 27B`. Any place's
+    /// label comes off, so a run again, offline too, gives a model the same name while it runs in the same place.
     static func displayName(in name: String) -> String {
         for location in Location.allCases where name.hasSuffix(" (\(location.label))") {
             let display = name.dropLast(location.label.count + 3)

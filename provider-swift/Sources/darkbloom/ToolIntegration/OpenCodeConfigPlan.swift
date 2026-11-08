@@ -14,15 +14,21 @@ enum OpenCodeConfigPlan {
     enum GlobalDefault: Equatable, Sendable {
         /// None of them sets one: OpenCode picks a model itself, so Darkbloom's may become the default.
         case none
-        /// The model they set, `provider/model`, the later file's when two do.
+        /// The model they set, `provider/model`.
         case model(String)
         /// One of them sets `model` to something else than a model name, or can't be read: Darkbloom leaves the
         /// default alone without naming it.
         case unnamed
+
+        /// What files read in OpenCode's load order (`globalFileNames`) set together: the default of the last one
+        /// that sets one.
+        static func merged(_ files: [GlobalDefault]) -> GlobalDefault {
+            files.last { $0 != .none } ?? .none
+        }
     }
 
-    /// `$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`: the last existing of `opencode.json` and
-    /// `opencode.jsonc` (OpenCode loads both, `.jsonc` last, and saves to the same one), else a new `opencode.jsonc`.
+    /// `$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`: the last of `globalFileNames` that exists there (the one
+    /// OpenCode saves to), else a new `opencode.jsonc`.
     static func configFile(home: URL, variables: [String: String]) -> URL {
         let base = variables["XDG_CONFIG_HOME"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0, isDirectory: true) }
             ?? home.appendingPathComponent(".config", isDirectory: true)
@@ -62,9 +68,10 @@ enum OpenCodeConfigPlan {
 
         var rootMembers: [[String]] = fresh ? [["\"$schema\": \(jsonString(schemaURL))"]] : []
         guard root.members(named: "model").count < 2 else { return .refused(.file("it has two \"model\" keys")) }
-        // The file Darkbloom edits is the last global one OpenCode loads (`configFile`), so its own model wins.
-        let own = globalDefault(in: document)
-        let effective = own == .none ? defaultElsewhere : own
+        // Darkbloom never sets a default over the owner's: OpenCode loads this file last of the global ones
+        // (`configFile`), so a `model` added here would win over the other one's. A run again finds the one it set
+        // here and leaves it.
+        let effective = GlobalDefault.merged([defaultElsewhere, globalDefault(in: document)])
         let defaultModel = effective == .none ? "\(provider.id)/\(models[0].id)" : nil
         if let defaultModel { rootMembers.append(["\"model\": \(jsonString(defaultModel))"]) }
 
@@ -175,30 +182,39 @@ enum OpenCodeConfigPlan {
                            keyFile: string("apiKey").flatMap { keyFile(inReference: $0, home: home) })
     }
 
-    /// The global config files, in the order OpenCode 2 loads and merges them, the later one winning: its
-    /// `ConfigDiscovery.names`. OpenCode 2 doesn't load OpenCode 1's `config.json` any more (its test "does not load
-    /// legacy config.json files"), so a `model` there sets no default.
+    // MARK: - OpenCode's precedence
+
+    /// OpenCode 2's global config files, in the order it loads them. All Darkbloom relies on about the order OpenCode
+    /// reads its configs in is here, from OpenCode's source (`anomalyco/opencode` at tag `v2.2.6`, `dc2ffcf8bf`):
+    ///
+    /// - It loads `opencode.json`, then `opencode.jsonc`, from its global folder
+    ///   (`packages/core/src/config/discovery.ts`, `names`; `packages/core/src/config.ts`, `loadDirectory`), and not
+    ///   OpenCode 1's `config.json` (`packages/core/test/config/config.test.ts`, "does not load legacy config.json
+    ///   files"). With `OPENCODE_CONFIG_DIR` set, that folder is its global one (`packages/util/src/global.ts`);
+    ///   `configFile` doesn't follow it.
+    /// - Its default model is the `model` of the last config it loads that sets one
+    ///   (`packages/core/src/config/plugin/provider.ts`, `Config.latest(loaded.entries, "model")`):
+    ///   `GlobalDefault.merged`.
+    /// - It saves to the last of these files that exists, else to a new `opencode.jsonc`
+    ///   (`packages/core/src/config.ts`, `update`), and so does Darkbloom (`configFile`): the file Darkbloom edits is
+    ///   the global one OpenCode loads last.
+    /// - It loads remote (`.well-known/opencode`) and integration configs before these files, and every other config
+    ///   after them, whose `model` then wins (`packages/core/src/config.ts`, `load`): `OPENCODE_CONFIG`'s file, a
+    ///   project's `opencode.json`, `opencode.jsonc` and `.opencode` folder, `OPENCODE_CONFIG_CONTENT`, and the
+    ///   managed files.
     static let globalFileNames = ["opencode.json", "opencode.jsonc"]
 
-    /// The default model the global config files beside `file` set, merged as OpenCode merges them
-    /// (`globalFileNames`). Darkbloom edits the last of them that exists, so a `model` it added would override theirs.
-    /// Project, system and managed configs load after the global ones and win over them, so a global `model` never
-    /// replaces theirs.
+    /// The default model the global config files other than `file` set together (`GlobalDefault.merged`); one that
+    /// can't be read counts as setting a default Darkbloom can't name. Only `file`'s folder is read.
     static func otherGlobalDefault(besides file: URL) -> GlobalDefault {
         let directory = file.deletingLastPathComponent()
-        var merged = GlobalDefault.none
-        for name in globalFileNames where name != file.lastPathComponent {
+        return .merged(globalFileNames.filter { $0 != file.lastPathComponent }.map { name -> GlobalDefault in
             let other = directory.appendingPathComponent(name)
-            guard FileManager.default.fileExists(atPath: other.path) else { continue }
+            guard FileManager.default.fileExists(atPath: other.path) else { return .none }
             guard let data = try? Data(contentsOf: other), let document = try? JSONCDocument([UInt8](data)),
-                  document.root.object != nil else {
-                merged = .unnamed
-                continue
-            }
-            let set = globalDefault(in: document)
-            if set != .none { merged = set }
-        }
-        return merged
+                  document.root.object != nil else { return .unnamed }
+            return globalDefault(in: document)
+        })
     }
 
     /// The default model a config document's top-level `model` sets: a model name, or anything else (`""`, `null`,

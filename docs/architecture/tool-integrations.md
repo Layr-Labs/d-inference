@@ -81,14 +81,12 @@ flowchart LR
    `providers.<id>` value, or appends it in the file's indentation and trailing-comma style. The block has the base
    URL, `apiKey: "{file:<key file>}"` (under `~` in the home directory), `compatibility.maxTokensField: "max_tokens"`
    (OpenCode otherwise sends `max_completion_tokens`, which the engine ignores) and each model's name, `limit` and
-   `capabilities`. The top-level `model` is set only when no global config file sets one: the global files are
-   merged as OpenCode 2 merges them (`OpenCodeConfigPlan.globalFileNames`, its `ConfigDiscovery.names`:
-   `opencode.json`, then `opencode.jsonc`, the later winning; OpenCode 2 doesn't load OpenCode 1's `config.json`), and
-   Darkbloom edits the last that exists, so a `model` added to `.jsonc` would override the owner's in `.json`. The
-   edited file's own `model` wins, then the others' (`OpenCodeConfigPlan.otherGlobalDefault`, a `GlobalDefault`):
-   a name is kept and named (`ToolConfigSummary.keptDefault`); `""`, `null` or a file that can't be read is kept
-   without a name. Project, system and managed configs load after the global ones and win over them, so a global
-   `model` never replaces theirs.
+   `capabilities`. The top-level `model` is set only when no global config file sets one, so Darkbloom never sets a
+   default over the owner's: Darkbloom edits the global file OpenCode loads last, where a `model` would win over the
+   other one's ([OpenCode's config order](#opencodes-config-order)). The edited file's own `model` wins over the other
+   file's (`OpenCodeConfigPlan.otherGlobalDefault`, merged by `GlobalDefault.merged`): a name stays and is named
+   (`ToolConfigSummary.keptDefault`); `""`, `null`, two `model` keys or a file that can't be read stays without a
+   name.
 4. **Hermes.** `HermesConfigPlan.plan` splices two top-level sections of `config.yaml` by lines: `providers.<id>`
    (`api`, `key_cmd: "/bin/cat <key file>"`, `transport`, `default_model`, `extra_body.max_tokens` and each model's
    `context_length` / `supports_vision`) and `model` (`provider: "custom:<id>"` and `default`; the previous endpoint's
@@ -107,6 +105,20 @@ flowchart LR
    another file holding the same key. `ToolAddress.notice` says in one line which tools miss it and names
    `darkbloom --opencode` / `--hermes`; it never writes (`Start.noteToolsPointingElsewhere`).
 
+### OpenCode's config order
+
+What Darkbloom relies on about the order OpenCode 2 reads its configs in, from its source at release `v2.2.6`
+([`dc2ffcf8bf`](https://github.com/anomalyco/opencode/tree/dc2ffcf8bf26f9e669b6aa22b95f50e12be15e06)). The code
+keeps it in one place too: `OpenCodeConfigPlan.globalFileNames`.
+
+| OpenCode 2 | Its source | Darkbloom |
+|---|---|---|
+| Loads `opencode.json`, then `opencode.jsonc`, from its global folder, and not OpenCode 1's `config.json` | [`discovery.ts`](https://github.com/anomalyco/opencode/blob/dc2ffcf8bf26f9e669b6aa22b95f50e12be15e06/packages/core/src/config/discovery.ts) (`names`), [`config.ts`](https://github.com/anomalyco/opencode/blob/dc2ffcf8bf26f9e669b6aa22b95f50e12be15e06/packages/core/src/config.ts) (`loadDirectory`); test "does not load legacy config.json files" in [`config.test.ts`](https://github.com/anomalyco/opencode/blob/dc2ffcf8bf26f9e669b6aa22b95f50e12be15e06/packages/core/test/config/config.test.ts) | `globalFileNames` |
+| The default model is the `model` of the last config loaded that sets one | [`provider.ts`](https://github.com/anomalyco/opencode/blob/dc2ffcf8bf26f9e669b6aa22b95f50e12be15e06/packages/core/src/config/plugin/provider.ts) (`Config.latest(loaded.entries, "model")`) | `GlobalDefault.merged` |
+| Saves to the last of the two files that exists, else to a new `opencode.jsonc` | [`config.ts`](https://github.com/anomalyco/opencode/blob/dc2ffcf8bf26f9e669b6aa22b95f50e12be15e06/packages/core/src/config.ts) (`update`) | `configFile` edits the same file: the global one loaded last |
+| Loads remote (`.well-known/opencode`) and integration configs before the global files, and `OPENCODE_CONFIG`'s file, a project's `opencode.json`, `opencode.jsonc` and `.opencode` folder, `OPENCODE_CONFIG_CONTENT` and the managed files after them | [`config.ts`](https://github.com/anomalyco/opencode/blob/dc2ffcf8bf26f9e669b6aa22b95f50e12be15e06/packages/core/src/config.ts) (`load`) | Reads only the global files: a `model` loaded after them wins over Darkbloom's too, and Darkbloom's wins over a remote or integration one |
+| With `OPENCODE_CONFIG_DIR` set, reads that folder as its global one | [`global.ts`](https://github.com/anomalyco/opencode/blob/dc2ffcf8bf26f9e669b6aa22b95f50e12be15e06/packages/util/src/global.ts) | Not followed: `configFile` reads `$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode` |
+
 ## Invariants
 
 1. No tool file holds the key: the planners take a key file's path, never a key; OpenCode's `{file:}` and Hermes'
@@ -114,22 +126,28 @@ flowchart LR
 2. Bytes outside the owned value or lines are unchanged: other providers, a V1 `provider` map, the owner's default
    model in OpenCode, every other Hermes section and the owner's comments. Comments inside a replaced value or on a
    replaced line are counted (`ToolConfigSummary.droppedComments`); the backup keeps them.
-3. The `darkbloom` block is Darkbloom's whole: a run that changes it rewrites all of it, so a key the owner added
+3. OpenCode's default is never set over one the owner set in a global file: `model` is written only when none sets
+   one (`OpenCodeConfigPlan.plan`, `GlobalDefault.merged`), and the start names the one that stays. Hermes is the
+   exception: its main model is always Darkbloom's, as `ollama launch` and `omlx launch` make theirs, and the start
+   names the one it replaced (`ToolConfigSummary.replacedDefault`).
+4. The `darkbloom` block is Darkbloom's whole: a run that changes it rewrites all of it, so a key the owner added
    inside it is replaced too (only comments are counted); the backup keeps it.
-4. An edit is idempotent: the planners render deterministically, and equal bytes give `.unchanged`, with no backup and
+5. An edit is idempotent: the planners render deterministically, and equal bytes give `.unchanged`, with no backup and
    no write (`ToolConfigWriter.apply`). That holds without the catalog too: the file's own entries stand in for it, so
-   a run offline never downgrades what a run online wrote.
-5. A file a splice can't edit safely is refused before anything is written: malformed or ambiguous JSONC, a root or
+   a run offline never downgrades what a run online wrote. A model's name says where it runs, and is read back
+   without it (`IntegrationModel.displayName(in:)`), so it stays the same while the model runs in the same place
+   (`(your pair)` included). A default Darkbloom set is found again and left alone.
+6. A file a splice can't edit safely is refused before anything is written: malformed or ambiguous JSONC, a root or
    `providers` that isn't an object, and in YAML several documents, tab indentation, anchors, aliases or merge keys,
    block text, inline or multi-line values in `providers` or `model` (`JSONCDocument`, `HermesEdit.checkSection`).
-6. Each identity writes its own provider (`IntegrationProvider.current`: `darkbloom`, `darkbloom-dev`), so a test
+7. Each identity writes its own provider (`IntegrationProvider.current`: `darkbloom`, `darkbloom-dev`), so a test
    build beside the production one adds a second block.
-7. Before a change the exact bytes are copied to `<install dir>/integrations/backups/<tool>/<file>.<UTC time>`
+8. Before a change the exact bytes are copied to `<install dir>/integrations/backups/<tool>/<file>.<UTC time>`
    (folder 0700, file 0600); `keptBackups = 5` of each file name stay, so two Hermes homes share the five
    `config.yaml` slots. The new bytes replace the file in one rename
    through `AtomicFile.write` (`provider-swift/Sources/ProviderCore/Service/AtomicFile.swift`) with the file's own
    mode; a symlinked config is written through and stays a link.
-8. One lock, `<install dir>/integrations/.lock`, serialises Darkbloom's own runs; the file is read again just before
+9. One lock, `<install dir>/integrations/.lock`, serialises Darkbloom's own runs; the file is read again just before
    the rename, and a change by the tool's own writer re-plans the edit once and refuses the second time.
 
 ## Failure modes
@@ -159,7 +177,7 @@ flowchart LR
 |---|---|
 | Entry point, endpoint, identity, paths | `provider-swift/Sources/darkbloom/ToolIntegration/ToolIntegration.swift` (`ToolIntegration.configure`, `IntegrationEndpoint.live`, `servesThePair`, `IntegrationProvider`) |
 | Models | `provider-swift/Sources/darkbloom/ToolIntegration/IntegrationModels.swift` (`IntegrationModels.fetch`, `resolve`, `IntegrationModel.Location`) |
-| OpenCode | `provider-swift/Sources/darkbloom/ToolIntegration/OpenCodeConfigPlan.swift` (`plan`, `otherGlobalDefault`, `globalDefault(in:)`), `provider-swift/Sources/darkbloom/ToolIntegration/JSONCDocument.swift` |
+| OpenCode | `provider-swift/Sources/darkbloom/ToolIntegration/OpenCodeConfigPlan.swift` (`plan`, `globalFileNames`: OpenCode's config order; `GlobalDefault.merged`, `otherGlobalDefault`, `globalDefault(in:)`), `provider-swift/Sources/darkbloom/ToolIntegration/JSONCDocument.swift` |
 | What a start says | `provider-swift/Sources/darkbloom/ToolIntegration/ToolIntegrationStep.swift` (`lines`, `changed`, `openCodeDefault`, `alreadyServes`) |
 | Hermes | `provider-swift/Sources/darkbloom/ToolIntegration/HermesConfigPlan.swift` (`HermesConfigPlan.plan`, `previousEndpointKeys`), `provider-swift/Sources/darkbloom/ToolIntegration/HermesVersion.swift` (`HermesVersion.keyCommandWarning`) |
 | Plans and refusals | `provider-swift/Sources/darkbloom/ToolIntegration/ToolConfigPlan.swift` |

@@ -202,16 +202,18 @@ model.
   `~/.config/opencode/opencode.jsonc` (or your existing `opencode.json`), and
   in Hermes' `~/.hermes/config.yaml`, where it also becomes the main model, as
   Ollama and oMLX do. Everything else in those files stays as it was.
-- **Your default model:** OpenCode's stays when any of its global config files
-  sets one (`opencode.json`, then `opencode.jsonc`, merged as OpenCode 2 merges
-  them; OpenCode 2 doesn't read OpenCode 1's `config.json`). Nothing is
-  written for it, and the start names it: `Your default stays
-  exo/llama-3.3-70b; pick Darkbloom with /models.` When none does, Darkbloom's
-  first model becomes the default for new sessions, on a line of its own: `New
-  OpenCode sessions now use Darkbloom's Qwen 3.8 27B. Switch back with
-  /models.` Hermes always makes Darkbloom its main model and names the one
-  before: `New Hermes chats now use Darkbloom's Qwen 3.8 27B (before:
-  gpt-6-astra via opencodex). Switch back: hermes model`.
+- **Your default model:** OpenCode's stays when its `opencode.json` or
+  `opencode.jsonc` in `~/.config/opencode` sets one (OpenCode 2 doesn't read
+  OpenCode 1's `config.json`). Nothing is written for it, and the start names
+  it: `Your default stays exo/llama-3.3-70b; pick Darkbloom with /models.` When
+  neither does, Darkbloom's first model becomes the default for new sessions,
+  on a line of its own: `New OpenCode sessions now use Darkbloom's Qwen 3.8
+  27B. Switch back with /models.` In a project whose own `opencode.json` sets a
+  model, or with `OPENCODE_CONFIG` naming a file that does, OpenCode uses that
+  one ([OpenCode's config order](../architecture/tool-integrations.md#opencodes-config-order)).
+  Hermes always makes Darkbloom its main model and names the one before: `New
+  Hermes chats now use Darkbloom's Qwen 3.8 27B (before: gpt-6-astra via
+  opencodex). Switch back: hermes model`.
 - **Where each model runs** is in its name: `Qwen 3.8 27B (this Mac)`, `(your
   pair)` on the Mac that serves a pair's API, whatever its size, `(your Macs)`,
   or `(Darkbloom network, billed)`.

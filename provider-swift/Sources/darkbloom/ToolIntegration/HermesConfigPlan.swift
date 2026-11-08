@@ -26,6 +26,10 @@ enum HermesConfigPlan {
 
     /// The file's new bytes: Darkbloom's provider with the models Hermes can use (at least 64K context) and their
     /// context and vision, and Darkbloom as the main model, as `ollama launch` and `omlx launch` make theirs.
+    ///
+    /// Unlike OpenCode's default, which Darkbloom never sets over the owner's, Hermes' main model is always
+    /// Darkbloom's; the summary names the one it replaced (`replacedDefault`), so the start can say how to switch back.
+    /// A run again keeps Darkbloom's main model while Hermes can still use it, and names none as replaced.
     static func plan(
         existing: Data?, endpoint: IntegrationEndpoint, models listed: [IntegrationModel], provider: IntegrationProvider
     ) -> ToolConfigPlan {

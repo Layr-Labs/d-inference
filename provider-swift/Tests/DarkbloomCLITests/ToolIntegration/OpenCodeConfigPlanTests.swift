@@ -222,6 +222,25 @@ struct OpenCodeConfigPlanTests {
         #expect(F.summary(own)?.keptDefault == "mine/m")
     }
 
+    @Test("this file's own default beats the other global file's, named or not; two model keys there name none")
+    func thisFilesOwnDefaultWins() throws {
+        func summary(_ text: String, elsewhere: OpenCodeConfigPlan.GlobalDefault) -> ToolConfigSummary? {
+            F.summary(OpenCodeConfigPlan.plan(
+                existing: Data(text.utf8), fileName: "opencode.jsonc", endpoint: F.endpoint, models: F.models,
+                provider: F.provider, home: F.home, defaultElsewhere: elsewhere))
+        }
+        // `""` here wins over a name there: the default stays, without a name, and none is written.
+        let unnamedHere = try #require(summary("{ \"model\": \"\" }", elsewhere: .model("omlx/q")))
+        #expect(unnamedHere.defaultModel == nil && unnamedHere.keptDefault == nil)
+        // A name here wins over a default there that has none.
+        let namedHere = try #require(summary("{ \"model\": \"mine/m\" }", elsewhere: .unnamed))
+        #expect(namedHere.defaultModel == nil && namedHere.keptDefault == "mine/m")
+        // The other file sets `model` twice: a default Darkbloom can't name.
+        let directory = try TemporaryDirectory()
+        try directory.write("{ \"model\": \"a/b\", \"model\": \"c/d\" }", to: "opencode/opencode.json")
+        #expect(OpenCodeConfigPlan.otherGlobalDefault(besides: directory.file("opencode/opencode.jsonc")) == .unnamed)
+    }
+
     @Test("the global files' default, merged as OpenCode 2 merges them: opencode.json, then opencode.jsonc")
     func otherGlobalDefault() throws {
         let directory = try TemporaryDirectory()

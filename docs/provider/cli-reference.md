@@ -418,9 +418,10 @@ They run once, at `start`:
    `IntegrationEndpoint.servesThePair`), `(your Macs)` or `(Darkbloom network,
    billed)`.
    The result block names the file changed, the backup, the default model on a
-   line of its own and a one-line undo. OpenCode's default is set only when none
-   of its global files (`opencode.json`, then `opencode.jsonc`, merged as
-   OpenCode 2 merges them) sets one: ``New OpenCode sessions now use
+   line of its own and a one-line undo. OpenCode's default is set only when
+   neither of its global files (`opencode.json`, `opencode.jsonc`;
+   [OpenCode's config order](../architecture/tool-integrations.md#opencodes-config-order))
+   sets one: ``New OpenCode sessions now use
    Darkbloom's Qwen 3.8 27B. Switch back with /models.``; else ``Your default
    stays exo/llama-3.3-70b; pick Darkbloom with /models.`` Hermes' main model
    is always Darkbloom's, and the line names the one before: ``New Hermes chats

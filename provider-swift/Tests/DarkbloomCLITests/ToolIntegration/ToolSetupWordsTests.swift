@@ -135,6 +135,23 @@ struct ToolSetupWordsTests {
         #expect(await own.run([.opencode]).contains("  Your default stays omlx/qwen; pick Darkbloom with /models."))
     }
 
+    @Test("a default the global files set without a model's name stays, and the line says so without one")
+    func aDefaultWithoutANameStays() async throws {
+        for json in ["{ \"model\": \"\" }\n", "{ \"model\": null }\n", "{ \"model\": \n"] {
+            let sandbox = try WordsSandbox()
+            try sandbox.directory.write(json, to: "home/.config/opencode/opencode.json")
+            try sandbox.directory.write("{\n  \"theme\": \"dark\"\n}\n", to: "home/.config/opencode/opencode.jsonc")
+            #expect(await sandbox.run([.opencode]) == [
+                "✓ OpenCode can use Darkbloom: 1 model.",
+                "  Changed: ~/.config/opencode/opencode.jsonc (added the \"darkbloom\" provider; nothing else changed)",
+                "  Backup:  <backup>",
+                "  Your default model stays as your config sets it; pick Darkbloom with /models.",
+                "  Undo:    cp <backup> \(ToolIntegration.shellQuoted(sandbox.openCodeJSONC.path))",
+            ], "\(json)")
+            #expect(!F.utf8(try Data(contentsOf: sandbox.openCodeJSONC)).contains("\"model\""), "\(json)")
+        }
+    }
+
     @Test("OpenCode 1's config.json is no global file of OpenCode 2's: a model there sets no default")
     func legacyConfigJSONSetsNoDefault() async throws {
         let sandbox = try WordsSandbox()
@@ -203,5 +220,48 @@ struct ToolSetupWordsTests {
                                         "✓ Hermes already uses Darkbloom's current models (nothing changed)."])
             #expect(try Data(contentsOf: sandbox.openCodeJSONC) == openCode && Data(contentsOf: sandbox.hermesFile) == hermes)
         }
+    }
+
+    // MARK: - Every line an edit can give
+
+    @Test("each way an edit can go has its own Changed: words, and OpenCode's default its own line")
+    func everyChangedAndDefaultLine() {
+        func changed(_ tool: IntegrationTool, _ change: ToolConfigSummary.ProviderChange, setsDefault: Bool,
+                     newFile: Bool = false) -> String {
+            let summary = ToolConfigSummary(provider: change, models: ["m"],
+                                            defaultModel: setsDefault ? "darkbloom/m" : nil)
+            return ToolIntegrationStep.changed(tool, summary, newFile: newFile, provider: F.provider)
+        }
+        let block = "the \"darkbloom\" provider"
+        #expect(changed(.opencode, .added, setsDefault: true, newFile: true)
+            == "a new file with \(block) and the default model")
+        #expect(changed(.opencode, .added, setsDefault: false, newFile: true) == "a new file with \(block)")
+        #expect(changed(.opencode, .added, setsDefault: true)
+            == "added \(block) and the default model; nothing else changed")
+        #expect(changed(.opencode, .added, setsDefault: false) == "added \(block); nothing else changed")
+        #expect(changed(.opencode, .updated, setsDefault: true)
+            == "updated \(block) and the default model; nothing else changed")
+        #expect(changed(.opencode, .updated, setsDefault: false) == "updated \(block); nothing else changed")
+        #expect(changed(.opencode, .unchanged, setsDefault: true) == "added the default model; nothing else changed")
+        #expect(changed(.hermes, .added, setsDefault: true, newFile: true)
+            == "a new file with \(block) as the main model")
+        #expect(changed(.hermes, .added, setsDefault: true) == "added \(block) and made it the main model")
+        #expect(changed(.hermes, .updated, setsDefault: true) == "updated \(block) and made it the main model")
+        #expect(changed(.hermes, .unchanged, setsDefault: true) == "made \(block) the main model")
+
+        let pair = [IntegrationModel(id: "m", name: "Qwen 3.8 27B (your pair)", location: .yourPair,
+                                     contextLength: 262_144, outputLimit: 65_536, tools: true, imageInput: false,
+                                     reasoning: false)]
+        func line(_ defaultModel: String?, kept: String? = nil) -> String {
+            ToolIntegrationStep.openCodeDefault(
+                ToolConfigSummary(provider: .added, models: ["m"], defaultModel: defaultModel, keptDefault: kept),
+                models: pair, provider: F.provider)
+        }
+        #expect(line("darkbloom/m")
+            == "New OpenCode sessions now use Darkbloom's Qwen 3.8 27B. Switch back with /models.")
+        #expect(line(nil, kept: "exo/llama-3.3-70b")
+            == "Your default stays exo/llama-3.3-70b; pick Darkbloom with /models.")
+        #expect(line(nil, kept: "darkbloom/m") == "Your default stays darkbloom/m; switch with /models.")
+        #expect(line(nil) == "Your default model stays as your config sets it; pick Darkbloom with /models.")
     }
 }

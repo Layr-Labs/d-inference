@@ -62,7 +62,9 @@ struct IntegrationEndpoint: Equatable, Sendable {
 
     /// The live local server `info`, by default the one in `local.json` (its own port, never an assumed one), with the
     /// key file for that port; nil when no server runs, it serves without a key, or no key file holds its key. It
-    /// serves the pair when its process is this Mac's running part of one (`pairPart`: that part's pid).
+    /// serves the pair when its process is this Mac's running part of one (`pairPart`: that part's pid). Each default
+    /// reads this Mac's own state, so a test gives its own or points them elsewhere: `DARKBLOOM_LOCAL_DIR` for
+    /// `local.json` and the key files, `ClusterPairSummary.readerForTesting` for the cluster service.
     static func live(_ info: LocalEndpoint.Info? = LocalEndpoint.readLiveInfo(),
                      keyFile: (UInt16) -> URL? = { LocalEndpoint.keyFile(forPort: Int($0)) },
                      pairPart: () -> Int32? = { ClusterPairSummary.runningPartPID() }) -> IntegrationEndpoint? {

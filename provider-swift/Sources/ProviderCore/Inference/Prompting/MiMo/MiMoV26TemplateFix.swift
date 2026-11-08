@@ -71,7 +71,7 @@ struct MiMoV26RawControlEvidence: Sendable, Equatable, Decodable {
                 guard values.contains(Key(name)) else { return nil }
                 return try values.decode(Bool.self, forKey: Key(name)) // No numeric truthiness.
             }
-            // The checkpoint has one reasoning depth: every effort but `none` thinks.
+            // The checkpoint has one reasoning depth (`ReasoningEffort.oneDepthThinking`).
             func effort(_ values: KeyedDecodingContainer<Key>, _ name: String,
                         _ field: ReasoningEffortField) throws -> Bool? {
                 guard values.contains(Key(name)) else { return nil }
@@ -81,7 +81,7 @@ struct MiMoV26RawControlEvidence: Sendable, Equatable, Decodable {
                     evidence.unknownEffort = evidence.unknownEffort ?? field
                     return nil
                 }
-                return effort != ReasoningEffort.none
+                return effort.oneDepthThinking
             }
             let top = try boolean(root, "enable_thinking")
             let topEffort = try effort(root, "reasoning_effort", .reasoningEffort)
@@ -184,10 +184,10 @@ enum MiMoV26TemplateFix {
 
     /// API controls are projected to the native Boolean; the checkpoint itself
     /// does not consume effort, and has one reasoning depth: every effort but
-    /// `none` is ON. Absence retains the native ON default. Keep the existing
-    /// nested > top-level > kwargs Boolean precedence. An effort that is none
-    /// of the names and preserve_thinking are explicit refusals, not ignored
-    /// knobs.
+    /// `none` is ON (`ReasoningEffort.oneDepthThinking`). Absence retains the
+    /// native ON default. Keep the existing nested > top-level > kwargs Boolean
+    /// precedence. An effort that is none of the names and preserve_thinking
+    /// are explicit refusals, not ignored knobs.
     static func additionalContext(
         request: OpenAIChatCompletionRequest,
         controls: ChatTemplateControls
@@ -224,7 +224,7 @@ enum MiMoV26TemplateFix {
         guard let effort = ReasoningEffort(clientValue: effort) else {
             throw MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(field)
         }
-        return effort != ReasoningEffort.none
+        return effort.oneDepthThinking
     }
 
     private static func validateValues(_ values: any Sendable) throws {

@@ -1298,8 +1298,9 @@ the platform's prompt sidecar and first-party pool read the same cases, so a
 change lands here first and the platform follows. Since the reasoning-effort
 levels ([reasoning effort](../architecture/inference.md#reasoning-effort)),
 Qwen 3.8 Flash-Next's `high`, `max`, `minimal` and ` low ` render a level and
-`turbo` is refused. `ReasoningEffortValuesTests` sends every effort to every
-family through the production prompt pipeline, and
+`turbo` is refused. `ReasoningEffortValuesTests` checks every family's table
+against the rounding rule and sends every effort to every family through the
+production prompt pipeline, and
 `ReasoningEffortLocalAPITests` sends them to one Mac's local API and a pair
 leader's over the `ClusterAPIParityTests` harness.
 

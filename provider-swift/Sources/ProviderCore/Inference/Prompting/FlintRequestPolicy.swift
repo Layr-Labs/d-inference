@@ -7,7 +7,8 @@ import MLXLMServer
 /// caller's choice not to receive reasoning is honored, by withholding the
 /// reasoning Flint still generates. Output length is not a reasoning effort.
 enum FlintRequestPolicy {
-    /// The effort names, exactly as written (`ReasoningEffort`).
+    /// Each of the seven effort names, exactly as written (`ReasoningEffort`):
+    /// taken, with no effect on the prompt.
     static func acceptsEffort(_ effort: String) -> Bool { ReasoningEffort(rawValue: effort) != nil }
 
     /// Request-local evidence from the original body, captured before the
@@ -84,10 +85,11 @@ enum FlintRequestPolicy {
         guard modelType == "flint" else { return }
         // Raw evidence is authoritative; the typed fields cover programmatic
         // controls. The media-only evidence bit is unrelated.
-        if let field = controls.rawFlintControls.unknownEffort
-            ?? (controls.reasoningEffort.map(acceptsEffort) == false ? ReasoningEffortField.reasoningEffort : nil)
-        {
+        if let field = controls.rawFlintControls.unknownEffort {
             throw MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(field)
+        }
+        if let effort = controls.reasoningEffort, !acceptsEffort(effort) {
+            throw MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(.reasoningEffort)
         }
         guard !controls.rawFlintControls.invalid, controls.preserveThinking == nil else {
             throw MultiModelBatchSchedulerEngineError.invalidToolPayload(

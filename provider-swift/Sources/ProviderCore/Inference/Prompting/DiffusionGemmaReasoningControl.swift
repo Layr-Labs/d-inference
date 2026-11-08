@@ -13,9 +13,9 @@ enum DiffusionGemmaReasoningControl {
             ?? enabled(for: request.reasoning?.effort ?? controls.reasoningEffort) ?? false
     }
 
-    /// Every effort but `none` thinks; nil names no effort
-    /// (`ReasoningEffortPolicy.validate` refuses it).
+    /// Every effort but `none` thinks (`ReasoningEffort.oneDepthThinking`); nil
+    /// names no effort (`ReasoningEffortPolicy.validate` refuses it).
     static func enabled(for effort: String?) -> Bool? {
-        effort.flatMap(ReasoningEffort.init(clientValue:)).map { $0 != ReasoningEffort.none }
+        effort.flatMap(ReasoningEffort.init(clientValue:))?.oneDepthThinking
     }
 }

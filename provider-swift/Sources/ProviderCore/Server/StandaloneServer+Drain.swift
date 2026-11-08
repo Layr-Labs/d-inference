@@ -50,8 +50,7 @@ extension StandaloneServer {
         lifecycleStatus = .init(requestID: request.id, outcome: .draining,
                                 deadline: Date().timeIntervalSince1970 + Double(request.timeoutSeconds))
         while !request.force && !Task.isCancelled {
-            lifecycleStatus.remaining = max(nativeMiMoGracefulWorkCount,
-                max(responseTracker.activeCount, slotReservations.values.reduce(0, +)))
+            lifecycleStatus.remaining = acceptedWork
             if lifecycleStatus.remaining == 0 || ContinuousClock.now >= deadline { break }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
@@ -61,5 +60,12 @@ extension StandaloneServer {
         // a stalled HTTP writer cannot block that permission indefinitely.
         lifecycleStatus.outcome = request.force ? .forced : (lifecycleStatus.remaining == 0 ? .drained : .timedOut)
         return lifecycleStatus
+    }
+
+    /// Requests accepted and not finished, as a graceful drain waits for them: native MiMo work that must finish, HTTP
+    /// responses in flight and slot reservations. Only me's update drain waits for the same
+    /// (`StandaloneServer+AutoUpdate`).
+    var acceptedWork: Int {
+        max(nativeMiMoGracefulWorkCount, max(responseTracker.activeCount, slotReservations.values.reduce(0, +)))
     }
 }

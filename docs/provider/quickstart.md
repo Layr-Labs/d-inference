@@ -19,7 +19,6 @@ opencode                             # then /models → Darkbloom
 Two Macs: run `darkbloom cluster` on each, then `darkbloom --opencode` on
 the leading Mac.
 
-<!-- pending LS-1: choice 1, Only me, also offers the model list and the memory question, and serves in the background. -->
 <!-- pending LS-4: the start waits for the model to load, on one live line, before it sets OpenCode up. -->
 <!-- pending LS-3: in a pair, start with opencode on either Mac. -->
 
@@ -66,12 +65,8 @@ how this Mac serves (`How should this Mac serve?`). Type 1, 2 or 3, or press
 Enter for 3:
 
 - **1, Only me:** your models, for your tools only. Free, no account, earns
-  nothing; Darkbloom never contacts this Mac. It serves the models already on
-  this Mac, in this Terminal window, until you close it or press Ctrl-C. On a
-  Mac with no model yet it stops with
-  `No engine-v2-capable models available to serve.`: download one first
-  (`darkbloom models catalog`, then `darkbloom models download <id>`), or
-  choose 3.
+  nothing; Darkbloom never contacts this Mac. It serves in the background, like
+  the other two, until `darkbloom stop`.
 - **2, Darkbloom network:** earns while it serves, but gives your tools no
   address on this Mac, so `--opencode` stops here and changes nothing. To
   serve only the network, run `darkbloom start` without it.
@@ -80,19 +75,26 @@ Enter for 3:
 
 The screen itself, and what each choice runs, costs and earns, are in
 [Use your Mac yourself, first](./local-first.md#choose-once). With **Both, me
-first**, `start` then checks the Mac and goes on
+first** (and **Only me**, without the first question), `start` then checks the
+Mac and goes on
 (`provider-swift/Sources/darkbloom/Start/StartCommand.swift`,
 `provider-swift/Sources/darkbloom/Start/StartCommand+Daemon.swift`):
 
-1. **Two optional questions:** when this Mac isn't linked to an account, it
-   offers to link it (`Link account? [Y/n]`), then asks whether to try the
-   experimental Autopilot (`[y/N]`). Answer `n` to both to leave them for
-   [step 4](#4-earn-on-the-darkbloom-network).
+1. **One optional question:** when this Mac isn't linked to an account, it
+   offers to link it (`Link account? [Y/n]`). Answer `n` to leave it for
+   [step 4](#4-earn-on-the-darkbloom-network). The experimental Autopilot
+   question comes only with **Darkbloom network** (step 4).
 2. **Your models:** a picker lists the models on this Mac and in Darkbloom's
    catalog, and downloads the ones you pick from `https://models.darkbloom.ai`
    (`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`,
-   `defaultR2CDNURL`). Check which ones are selected before you press Enter.
-   `--model <id>` skips the picker.
+   `defaultR2CDNURL`). It opens with your last selection still on this Mac
+   selected, else the largest downloaded model that fits with room to spare,
+   else the smallest downloaded one that fits; never one it would download
+   (`Start.pickerPreselection`). Check which ones are selected before you
+   press Enter.
+   `--model <id>` skips the picker. A Mac with no model it can serve ends with
+   ``No model to serve yet. See them: `darkbloom models catalog`. Get one:
+   `darkbloom models download <id>`, then `darkbloom start`.``
 3. **Memory when idle:** keep models loaded (`Always ready`), or unload them
    after 60 minutes without requests and load them again on demand
    (`Free when idle`, the default), or another window. `darkbloom idle`
@@ -113,7 +115,11 @@ first**, `start` then checks the Mac and goes on
    Darkbloom's key file
    ([Use it from OpenCode or Hermes](./local-first.md#use-it-from-opencode-or-hermes)).
 
-With **Only me**, OpenCode is set up the same way once its server listens.
+With **Only me**, the background service runs `darkbloom start --foreground
+--local` on this Mac's port, and OpenCode is set up the same way once it
+listens: it listens once its models are loaded, so the start waits up to
+`[backend] startup_preload_timeout_secs` (120) more. `darkbloom start --local
+--here` serves Only me in the Terminal window instead, until you close it.
 
 ### 3. Use it
 
@@ -176,9 +182,13 @@ contacts Darkbloom, so skip to [Verify](#verify).
    profiles should remain installed until `darkbloom unenroll` approves App Attest
    migration; choosing full exit instead stops the provider.
 
-3. **Autopilot (experimental, optional).** For Darkbloom network and Both, me
-   first, `start` also asks whether to join Autopilot; the answer defaults to
-   No. Yes records consent for the default shadow rollout, **not active
+3. **Autopilot (experimental, optional).** Autopilot is for the Darkbloom
+   network, so `start` asks whether to join it only with **Darkbloom network**;
+   the answer defaults to No. **Both, me first** never asks and keeps your
+   saved answer: `darkbloom autopilot enable` enrolls it. **Only me** has no
+   Autopilot: there, `darkbloom autopilot enable` says
+   `Autopilot requires a network provider. Nothing was saved.`
+   Yes records consent for the default shadow rollout, **not active
    residency control**. It skips the picker and discovers/verifies all eligible
    already-downloaded active network models, excluding arbitrary
    local/off-catalog, retired, ineligible or unverified builds. Enrollment

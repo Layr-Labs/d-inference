@@ -36,7 +36,8 @@ import Testing
 /// would fall back to the catalog.
 @Test func distributedLocalServerListsThePairsLimitsAndInput() async throws {
     let session = LocalHostTestSession()
-    let host = localHost(session, router: .host(local: nil, coordinatorURL: nil, takesCoordinatorWork: false,
+    let host = localHost(session, router: .host(local: nil, settingsFile: nil, coordinatorURL: nil,
+                                                takesCoordinatorWork: false,
                                                 accountKeys: InMemoryLocalRouterAccountKeyStore()))
     try await host.start()
     let port = try #require(await host.status.boundPort)

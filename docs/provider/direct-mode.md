@@ -27,17 +27,17 @@ See [inference and logprob admission](../architecture/inference.md).
 
 - Provider installed ([installation](./installation.md)); no account or
   `darkbloom login` is needed for **Only me**.
-- At least one model downloaded with an engine-v2 adapter (gpt-oss, gemma-4
-  families); `darkbloom models list`. **Only me** serves the models already
-  here; for **Both, me first**, `darkbloom start`'s model list also downloads.
+- A model with an engine-v2 adapter (gpt-oss, gemma-4 families);
+  `darkbloom models list`. For either choice, `darkbloom start`'s model list
+  also downloads the ones you pick; without a model it can serve, the start
+  ends with ``No model to serve yet. See them: `darkbloom models catalog`. Get
+  one: `darkbloom models download <id>`, then `darkbloom start`.``
 - A free port: this Mac's one local API port, `[local] port`. The first start
   that serves a local API, whichever way it starts, keeps the port this Mac's
   local API already uses (`8000` on a Mac updated from 0.10.10), or on a Mac
   with none chooses the first free port from 8001, and saves it; every later
   start uses it. `--port` picks another and
   saves it.
-
-<!-- pending LS-1: Only me also gets the model list with downloads. -->
 
 ## Steps
 
@@ -51,15 +51,27 @@ See [inference and logprob admission](../architecture/inference.md).
    | Only me | `darkbloom start --local` | not contacted | `StandaloneServer`'s own slot cache (`provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift`) | no |
    | Both, me first | `darkbloom start --me-first` (older flag: `--local-endpoint`) | connected as usual | the live `ProviderLoop` slots — weights load once and local + fleet requests share one continuous-batching engine and KV budget (`provider-swift/Sources/ProviderCore/ProviderLoop+LocalEndpoint.swift`) | yes, for fleet traffic while you are not using the Mac (step 3) |
 
-2. Start **Only me**. It runs in the current terminal (no LaunchAgent) and
-   installs no service; a background service that was running stops first
-   (`ServiceDrain.prepareForegroundReplacement`), so once this server ends,
-   nothing serves until the next `darkbloom start`:
+2. Start **Only me**. It asks for your models (the list downloads the ones you
+   pick) and the memory setting, as the other choices do, then serves in the
+   background: the provider LaunchAgent runs `darkbloom start --foreground
+   --local --port <n> --bind <address> --model <id>…` (`Start.launchOnlyMeService`,
+   `provider-swift/Sources/darkbloom/Start/StartCommand+OnlyMe.swift`), which
+   starts at login, has the crash-recovery watchdog, updates itself (a check 5
+   minutes after it starts, then every 30 minutes; `StandaloneServer+AutoUpdate`)
+   and unloads models idle past the memory setting
+   (`StandaloneServer+IdleUnload`). The provider that served before is drained
+   first; when it served Darkbloom, the start says
+   ``Darkbloom network serving stops: this Mac serves only you from now on
+   (`darkbloom start --me-first` serves Darkbloom and you).`` Without a
+   terminal nothing is asked: the models you last chose that are still on this
+   Mac, else every one it can serve. `--here` serves in the current terminal
+   instead (no LaunchAgent), until Ctrl-C:
 
    ```bash
-   darkbloom start --local                              # every downloaded model it can serve
+   darkbloom start --local                              # the model list, then the memory question
    darkbloom start --local --model <model-id>           # only this one (repeatable)
    darkbloom start --local --port 8080 --bind 0.0.0.0   # another port / every interface
+   darkbloom start --local --here                       # in this terminal, for this session
    ```
 
    The port is this Mac's one local API port (`LocalAPIPort`,
@@ -73,8 +85,8 @@ See [inference and logprob admission](../architecture/inference.md).
    `127.0.0.1`. Before serving,
    `Start.runLocalStandalone` (`provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift`)
    loads or creates the API token, filters the chosen models to those with an
-   engine-v2 adapter (exit 1 with `No engine-v2-capable models available to
-   serve.` if none remain), and preloads the selected models before listening
+   engine-v2 adapter (exit 1 with ``No model to serve yet. See them: `darkbloom
+   models catalog`. …`` if none remain), and preloads the selected models before listening
    when `[backend] startup_preload` is enabled (the default). When a load is
    short of headroom the server first releases retained paged KV segments and
    drops the MLX buffer cache once, then evicts the least recently used idle
@@ -100,13 +112,14 @@ See [inference and logprob admission](../architecture/inference.md).
    127.0.0.1:8001: another program may use port 8001. Free it, or run
    `darkbloom start --port 8002`.``, naming the next free port), writes the
    discovery file and holds a fan-control lease while running
-   ([fan control](./fan-control.md)). Ctrl-C stops it and removes the
-   discovery file, and so does `darkbloom stop`. Closing the terminal window
-   does the same ([stop signals](./cli-reference.md#graceful-stop-and-restart)),
+   ([fan control](./fan-control.md)). `darkbloom stop` stops it and removes
+   the discovery file. With `--here`, Ctrl-C does the same, and so does closing
+   the terminal window ([stop signals](./cli-reference.md#graceful-stop-and-restart)),
    unless the command was started with hangups ignored (for example under
-   `nohup`), in which case it keeps serving.
-
-   <!-- pending LS-1: Only me serves in the background, after the model list and the memory question; a here flag keeps this terminal server. -->
+   `nohup`), in which case it keeps serving. `--here` stops the background
+   service while it runs and says so (``Darkbloom network serving stops while
+   this runs; it starts again with `darkbloom start`.``); when it ends it says
+   that nothing serves now and how to serve again.
 
 3. Or start **Both, me first**. This goes through the normal LaunchAgent path,
    so the flags are recorded in the plist and survive reboots:
@@ -210,7 +223,26 @@ gets `my-macs-first` as `my-macs` (`self` only, never `prefer`), and its
 saved. A connection's peer is read once, when it opens, and nothing is added to
 this Mac's own path.
 
-The route is read when the local API starts (a change needs a restart). The
+`darkbloom route this-mac`, `darkbloom route my-macs` and
+`darkbloom route my-macs-first` save the route; the last two need a saved
+account key and refuse without one
+([CLI reference](./cli-reference.md#darkbloom-route-this-mac-my-macs-my-macs-first)).
+A running local API uses a saved route from its next request that needs it,
+with no restart and no model reload: its router reads `[local] route` again
+when the provider config file it started with changes (`LocalRouterRouteFile`,
+`provider-swift/Sources/ProviderCore/Server/LocalRouter.swift`). Only a
+request this Mac can't take and a model list look at the file, one `stat` each
+(its device, inode, size and modification time); a request this Mac serves
+never does. A change is logged (`local router: route is now my-macs-first
+(provider.toml changed)`). A file that doesn't read as a provider config, a
+malformed edit or a file that is gone, keeps the last good route and is said
+once in the log until it reads again (`local router: provider.toml doesn't read
+as a provider config now; requests keep the route my-macs until it does`); the
+line holds nothing from the file. Only a whole file counts: an editor that
+saves in place empties the file before it writes it, so a read that finds it
+empty, or shorter than its `stat` said, keeps the last good route the same way,
+and a saved `this-mac` never passes a request on while the file is saved. A
+pair's local API reads the leading Mac's `provider.toml`. The
 key is read once, by the first request that needs it, and kept in memory:
 `darkbloom route key` tells a running local API when it saves or removes the
 key (a Darwin notification, `<keychain prefix>.route-key-changed`), and the
@@ -237,6 +269,23 @@ next request reads it again, with no restart.
   serves this Mac only, never reads the account key and never dials the
   coordinator, whatever the route. The start banner, `darkbloom local` and
   `darkbloom route key` say so.
+- **A route that needs the key, with none saved, says why.** That is a saved
+  `my-macs` or `my-macs-first` with no account key, or no route saved after
+  `darkbloom route key --remove` removed a key this local API had used. A
+  request this Mac can't take stays on this Mac. Its answer keeps this Mac's
+  status (`404`, `429` or `503`), `Retry-After` and
+  `X-Darkbloom-Served-By: this-mac`, with code `account_key_needed`:
+  ``This Mac doesn't serve <model>, and reaching your other Macs needs an
+  account key: run `darkbloom route key`.`` A `429` or `503` starts `This Mac
+  can't take this request right now`. With `my-macs-first` it says `your other
+  Macs or the Darkbloom network`, except to a client on another machine. The
+  log says it once, until a key is read again, never with the key:
+  ``local router: a request this Mac can't take stays on this Mac: reaching
+  your other Macs needs an account key, and none is saved (`darkbloom route
+  key` saves one)``. With no route saved and no key read while the local API
+  ran, or with `this-mac`, the answer is this Mac's own, as before
+  (`LocalRouter.needsAccountKey`,
+  `provider-swift/Sources/ProviderCore/Server/LocalRouterResponder.swift`).
 - **What passes a request on:** only this Mac's own `404` (it doesn't serve
   the model), `429` (its queue is full) or `503` (draining, an add-on hold, a
   refused load, no capacity), before any byte reached the client. A client

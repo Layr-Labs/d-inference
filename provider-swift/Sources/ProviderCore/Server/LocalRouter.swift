@@ -21,8 +21,12 @@ import notify
 /// A request this Mac serves never leaves the process: the router hands it to the engine and returns the engine's
 /// response as it is, adding one header. The upstream client exists only once a request needs it.
 public struct LocalRouterConfig: Sendable {
-    /// The saved `[local]` settings; `route` decides the hops.
+    /// The saved `[local]` settings at start; `route` decides the hops until `settingsFile` says another.
     public var settings: LocalSettings
+    /// The provider config file `settings` came from. A running router reads its `[local] route` again when the file
+    /// changes (`LocalRouterRouteFile`), so `darkbloom route <choice>` or an edit counts from the next request that
+    /// needs the route, with no restart. nil: `settings.route` stays as given.
+    public var settingsFile: URL?
     /// The coordinator's HTTP base URL (`LocalRouterPolicy.upstreamBaseURL`).
     public var upstreamBaseURL: URL
     /// This Mac takes Darkbloom work from the coordinator, so a `self` request could come back to it (`--local` and
@@ -31,7 +35,8 @@ public struct LocalRouterConfig: Sendable {
     public var accountKeys: any LocalRouterAccountKeyStore
     /// Makes the upstream client; called once, by the first request that needs the coordinator.
     public var makeTransport: @Sendable () -> any LocalRouterTransport
-    /// One line per decision to pass a request on; never a key, a body or a prompt.
+    /// Where the router's lines go: its decisions to pass requests on and the saved route's changes; never a key, a
+    /// body, a prompt or text from the config file.
     public var log: @Sendable (String) -> Void
     public var timing: LocalRouter.Timing
     /// Whether the local API requires its key. Without one (`--no-auth`) anything that reaches the port is a client, so
@@ -43,13 +48,16 @@ public struct LocalRouterConfig: Sendable {
     var keyChangeNotification: String?
     /// The account key as last read, kept until it changes.
     let keyCache = LocalRouterKeyCache()
+    /// `[local] route` as `settingsFile` said it when it last changed.
+    let routeFile = LocalRouterRouteFile()
 
-    public init(settings: LocalSettings, upstreamBaseURL: URL, takesCoordinatorWork: Bool,
+    public init(settings: LocalSettings, settingsFile: URL? = nil, upstreamBaseURL: URL, takesCoordinatorWork: Bool,
                 accountKeys: any LocalRouterAccountKeyStore,
                 makeTransport: @escaping @Sendable () -> any LocalRouterTransport = { URLSessionLocalRouterTransport() },
                 log: @escaping @Sendable (String) -> Void = LocalRouter.standardErrorLog,
                 timing: LocalRouter.Timing = .init()) {
         self.settings = settings
+        self.settingsFile = settingsFile
         self.upstreamBaseURL = upstreamBaseURL
         self.takesCoordinatorWork = takesCoordinatorWork
         self.accountKeys = accountKeys
@@ -59,24 +67,44 @@ public struct LocalRouterConfig: Sendable {
         keyChangeNotification = (accountKeys as? KeychainLocalRouterAccountKeyStore)?.changeNotification
     }
 
-    /// The router of a host: `[local]` from the config (absent = today's defaults), the configured coordinator, and
-    /// the account key in the Keychain.
-    public static func host(local: LocalSettings?, coordinatorURL: String?, takesCoordinatorWork: Bool,
+    /// The router of a host: `[local]` from the config at `settingsFile` (absent = today's defaults), read again when
+    /// that file changes, the configured coordinator, and the account key in the Keychain.
+    public static func host(local: LocalSettings?, settingsFile: URL?, coordinatorURL: String?, takesCoordinatorWork: Bool,
                             accountKeys: any LocalRouterAccountKeyStore = KeychainLocalRouterAccountKeyStore())
         -> LocalRouterConfig {
-        LocalRouterConfig(settings: local ?? LocalSettings(),
+        LocalRouterConfig(settings: local ?? LocalSettings(), settingsFile: settingsFile,
                           upstreamBaseURL: LocalRouterPolicy.upstreamBaseURL(coordinatorURL: coordinatorURL),
                           takesCoordinatorWork: takesCoordinatorWork, accountKeys: accountKeys)
     }
 
-    /// The route in effect now, and the key it uses. Without a saved key, or without a local key (`--no-auth`), nothing
-    /// can go upstream, whatever the route. The key is read once, by the first call that needs it, and kept in memory
-    /// (`LocalRouterKeyCache`); `route key` announces a change, and the next call reads it again, so a change counts
-    /// from the next request without a restart. A saved `this-mac`, or no local key, never reads the Keychain. A key
-    /// that can't be read (the Keychain won't hand it over without asking) isn't kept: it is said once per run of
-    /// failures, in a line without the key, and keeps requests on this Mac. `[local] route` itself is read at start.
-    func effectiveRoute() -> (route: LocalSettings.Route, accountKey: String?) {
-        guard localKeyRequired, settings.route != .thisMac else { return (.thisMac, nil) }
+    /// `[local] route` now: as `settingsFile` says it (`LocalRouterRouteFile`), else as the router started with.
+    func savedRoute() -> LocalSettings.Route? {
+        guard let settingsFile else { return settings.route }
+        return routeFile.route(in: settingsFile, startingWith: settings.route, log: log)
+    }
+
+    /// The route in effect now, and the key it uses; `.thisMacOnly` whenever nothing may leave this Mac.
+    ///
+    /// - Only a request this Mac can't take, and a model list, call this, once each. A request this Mac serves never
+    ///   looks at the config file or the Keychain, and nothing here runs per token. A request passed on keeps, through
+    ///   every hop, the route and key this call gave it, whatever an edit says meanwhile.
+    /// - Without a local key (`--no-auth`), anything that reaches the port is a client: nothing is passed on, and
+    ///   neither the file nor the Keychain is looked at.
+    /// - The route is `[local] route` as the config file says it now (`savedRoute`); a saved `this-mac` never reads the
+    ///   Keychain.
+    /// - The key is read once, by the first call that needs it, and kept in memory (`LocalRouterKeyCache`); `route key`
+    ///   announces a change, and the next call reads it again, so a change counts from the next request without a
+    ///   restart. Without a saved key, nothing is passed on, whatever the route; `routeNeedingKey` then names the route
+    ///   that asked for one, so the answer can say why. A key that can't be read (the Keychain won't hand it over
+    ///   without asking) isn't kept: it is said once per run of failures, in a line without the key, and keeps requests
+    ///   on this Mac.
+    /// - Whatever route the file says, the caller then serves a client on another machine `my-macs-first` as `my-macs`
+    ///   (`LocalRouterPolicy.route`): a client on the LAN never uses the paid network.
+    func effectiveRoute() -> LocalRouterEffectiveRoute {
+        // First: without a local key the route doesn't matter, so the file isn't even looked at.
+        guard localKeyRequired else { return .thisMacOnly }
+        let saved = savedRoute()
+        guard saved != .thisMac else { return .thisMacOnly }
         let key: String?
         do {
             key = try keyCache.key(from: accountKeys, changes: keyChangeNotification)
@@ -87,11 +115,124 @@ public struct LocalRouterConfig: Sendable {
                 log("\(reason); requests stay on this Mac until it can be read (after a new build, save it again with "
                     + "`\(BuildEnvironment.current.cliName) route key`)")
             }
-            return (.thisMac, nil)
+            return .thisMacOnly
         }
-        let route = settings.resolvedRoute(accountKeySaved: key != nil)
-        guard let key, route != .thisMac else { return (.thisMac, nil) }
-        return (route, key)
+        let route = LocalSettings(route: saved).resolvedRoute(accountKeySaved: true)
+        guard let key else {
+            // A saved `my-macs` or `my-macs-first` asks for a key. With no route saved, only a key read while this
+            // router ran did, and `route key --remove` removed it since.
+            let asked = saved != nil || keyCache.keySeenThisRun
+            return LocalRouterEffectiveRoute(route: .thisMac, routeNeedingKey: asked ? route : nil)
+        }
+        guard route != .thisMac else { return .thisMacOnly }
+        return LocalRouterEffectiveRoute(route: route, accountKey: key)
+    }
+}
+
+/// Where a request this Mac can't take goes now (`LocalRouterConfig.effectiveRoute`).
+struct LocalRouterEffectiveRoute: Sendable {
+    /// The route in effect; `.thisMac` whenever nothing may leave this Mac.
+    var route: LocalSettings.Route
+    /// The account key `route` passes requests on with; nil with `.thisMac`.
+    var accountKey: String?
+    /// The route that would pass the request on, but no account key is saved: a saved `my-macs` or `my-macs-first`,
+    /// or, with no route saved, `my-macs` once a key read while this router ran was removed. nil otherwise.
+    var routeNeedingKey: LocalSettings.Route?
+
+    static let thisMacOnly = LocalRouterEffectiveRoute(route: .thisMac)
+}
+
+/// `[local] route` as the provider config file says it now, for a running router: the one place that decides when the
+/// file is read again.
+///
+/// - Each call compares the file with the one it last saw: one `stat`, for its device, inode, size and modification
+///   time. Only a change reads it again: `darkbloom route <choice>`'s atomic replace (a new inode each time), or an
+///   edit in place (a new size or modification time). On a file system with coarser times than APFS's nanoseconds, an
+///   edit in place that keeps the size within the same tick is seen only at the file's next change.
+/// - The `stat` comes before the read, so an edit that lands between them is read again by the next call, never
+///   missed. The lock is held across the read: one change is read once, and the calls that need the route meanwhile
+///   wait for it.
+/// - A file that doesn't read as a provider config (a malformed edit, or a file that is gone) keeps the last good
+///   route, said once in the log until it reads again. A file missing at the first call isn't read: the route stays as
+///   the router started with.
+/// - Only a whole file counts (`route(inWhole:stamped:)`). An editor that saves in place empties the file, then writes
+///   it, so a read can find it empty, or holding only its start, which can parse without `[local] route`: "no route",
+///   which with a key is `my-macs`. Either keeps the last good route like a malformed edit, so a saved `this-mac`
+///   never passes a request on while the file is saved.
+/// - A line names the file and a route (one of its fixed names) only, never text from the file: the file can hold
+///   credentials.
+final class LocalRouterRouteFile: @unchecked Sendable {
+    private let lock = NSLock()
+    /// The file as the last call found it; nil before the first call and while the file is missing.
+    private var stamp: Stamp?
+    /// The route of the last good read; nil before one (the router's own route counts), `.some(nil)` for a good file
+    /// without `[local] route`.
+    private var lastGood: LocalSettings.Route??
+    /// A bad read was said; the next good one clears it.
+    private var failing = false
+    private var checkCount = 0
+
+    /// How many times the file was compared (one `stat` each).
+    var checks: Int { lock.withLock { checkCount } }
+
+    /// The route the file says now: `initial` (the router's own) until a good read, and the last good one after a bad
+    /// read. `read` hands back the file's bytes.
+    func route(in file: URL, startingWith initial: LocalSettings.Route?, log: (String) -> Void,
+               read: (URL) throws -> Data = { try Data(contentsOf: $0) }) -> LocalSettings.Route? {
+        lock.withLock {
+            checkCount += 1
+            let now = Stamp(file)
+            let current = lastGood ?? initial
+            guard now != stamp else { return current }
+            stamp = now
+            let outcome = Result { try Self.route(inWhole: read(file), stamped: now) }
+            guard case .success(let route) = outcome else {
+                // The last good route stands. The error isn't said: it can quote the file.
+                if !failing {
+                    failing = true
+                    log("\(file.lastPathComponent) doesn't read as a provider config now; requests keep the route "
+                        + "\(Self.name(current)) until it does")
+                }
+                return current
+            }
+            failing = false
+            lastGood = .some(route)
+            if route != current { log("route is now \(Self.name(route)) (\(file.lastPathComponent) changed)") }
+            return route
+        }
+    }
+
+    static func name(_ route: LocalSettings.Route?) -> String { route?.rawValue ?? "not set" }
+
+    /// `[local] route` in `bytes`, which must be the whole file as `stamp` saw it: not empty, the size the `stat` gave,
+    /// and a provider config. Anything less is a save in place caught half done (or a file that is gone or broken),
+    /// and throws.
+    static func route(inWhole bytes: Data, stamped stamp: Stamp?) throws -> LocalSettings.Route? {
+        guard !bytes.isEmpty, Int64(bytes.count) == stamp?.size, let text = String(data: bytes, encoding: .utf8)
+        else { throw NotWhole() }
+        return try ConfigManager.parseValidating(text).local?.route
+    }
+
+    /// A read that isn't the whole file the `stat` saw.
+    struct NotWhole: Error {}
+
+    /// What tells one version of the file from another without reading it.
+    struct Stamp: Equatable {
+        let device: Int64
+        let inode: UInt64
+        let size: Int64
+        let modifiedSeconds: Int
+        let modifiedNanoseconds: Int
+
+        init?(_ file: URL) {
+            var info = stat()
+            guard stat(file.path, &info) == 0 else { return nil }
+            device = Int64(info.st_dev)
+            inode = UInt64(info.st_ino)
+            size = Int64(info.st_size)
+            modifiedSeconds = info.st_mtimespec.tv_sec
+            modifiedNanoseconds = info.st_mtimespec.tv_nsec
+        }
     }
 }
 
@@ -99,7 +240,8 @@ public struct LocalRouterConfig: Sendable {
 ///
 /// The copy is kept only while the store's changes are watched: the store posts a Darwin notification when `route key`
 /// saves or removes the key, and this drops the copy on it (`notify_register_dispatch`), so the next request reads the
-/// key again. A failed read isn't kept, so the next request tries again; a run of failures is said once.
+/// key again. A failed read isn't kept, so the next request tries again; a run of failures is said once. A request kept
+/// on this Mac because no key is saved is said once too, until a key is read again.
 final class LocalRouterKeyCache: @unchecked Sendable {
     private let lock = NSLock()
     /// nil: no copy; `.some(nil)`: read, and no key is saved.
@@ -110,11 +252,27 @@ final class LocalRouterKeyCache: @unchecked Sendable {
     private var watchTried = false
     /// The registration for the change notification; nil when there is none to watch, or it couldn't be made.
     private var watch: Int32?
+    /// Whether a read found a saved key while this router ran.
+    private var sawAKey = false
+    /// Whether a request kept on this Mac for want of a key was said since this router started or a key was last read.
+    private var missingSaid = false
 
     deinit { if let watch { notify_cancel(watch) } }
 
     /// Whether a copy is kept now.
     var keepsACopy: Bool { lock.withLock { copy != nil } }
+
+    /// Whether a read found a saved key while this router ran: with no route saved, that key passed requests on.
+    var keySeenThisRun: Bool { lock.withLock { sawAKey } }
+
+    /// Notes a request kept on this Mac for want of a key; true for the first since this router started or a key was
+    /// last read, so the log says it once for each time the key goes.
+    func missingKeyNoted() -> Bool {
+        lock.withLock {
+            defer { missingSaid = true }
+            return !missingSaid
+        }
+    }
 
     /// The saved key, nil when none is saved: the kept copy, else a read of `store`, kept while `changes` (the store's
     /// change notification) is watched.
@@ -130,6 +288,10 @@ final class LocalRouterKeyCache: @unchecked Sendable {
         let key = try store.load().flatMap { $0.isEmpty ? nil : $0 }
         lock.withLock {
             failing = false
+            if key != nil {
+                sawAKey = true
+                missingSaid = false
+            }
             if keeps, changes == seen { copy = .some(key) }
         }
         return key

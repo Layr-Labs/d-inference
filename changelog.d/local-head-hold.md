@@ -8,5 +8,6 @@
 - A request that isn't streamed and outlasts the admission lease gets the same words (they were "Provider capacity is
   temporarily unavailable.").
 - The prompt progress comments start when the engine admits the request, so a queued request says nothing until then.
-- A pair's API and Darkbloom's requests are unchanged. A request admitted and later preempted, and never admitted
-  again, still ends a streamed answer with an error event.
+- A pair's API, Darkbloom's requests and a Nemotron Super request that asks for logprobs (its entries are spliced as
+  the stream is read) are unchanged. A request admitted and later preempted, and never admitted again, still ends a
+  streamed answer with an error event.

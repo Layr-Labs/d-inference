@@ -258,8 +258,13 @@ where Inner.Context == BasicRequestContext {
                     response.disconnect(); response.finish(); throw error
                 }
             }
-            let frames = try await LocalPrefillProgress.$current.withValue(prefillProgress) {
-                try await requestService.streamChatCompletionFrames(request: item.request, frameGenerationErrors: true)
+            // A raw-body owner's side-channel logprobs are spliced as the stream is read, so its head doesn't wait
+            // for engine admission (`LocalHeadHold`).
+            let frames = try await LocalHeadHold.$enabled.withValue(logprobs == nil) {
+                try await LocalPrefillProgress.$current.withValue(prefillProgress) {
+                    try await requestService.streamChatCompletionFrames(
+                        request: item.request, frameGenerationErrors: true)
+                }
             }
             // A raw-body owner's entries are spliced as the coordinator relay
             // splices them; every other response takes the usage decoration,

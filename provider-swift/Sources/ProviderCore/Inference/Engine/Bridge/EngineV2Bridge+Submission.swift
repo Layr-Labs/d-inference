@@ -1116,7 +1116,7 @@ extension EngineV2Bridge {
         // A streamed request on this Mac's API sends its response head only once the engine admits it, so an end
         // before admission for this Mac's memory is answered with the memory 503 (`holdHeadUntilAdmitted`). Its
         // prompt progress starts there too. A pair's API, whose queue is before its engine, says its prompt now.
-        let holdsHead = prefillProgress != nil && distributed == nil
+        let holdsHead = prefillProgress != nil && distributed == nil && LocalHeadHold.enabled
         if holdsHead {
             headHeldIDs.insert(id)
         } else {

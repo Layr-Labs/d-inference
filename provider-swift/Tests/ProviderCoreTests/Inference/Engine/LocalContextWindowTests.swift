@@ -117,10 +117,11 @@ struct LocalContextWindowTests {
         await bridge.shutdown()
     }
 
-    /// A pair refuses by its own limits, so the window is never held on it: a
-    /// `max_tokens` reaches it as asked, and only an omitted one is cut, to
-    /// the pair's context.
-    @Test func aPairKeepsItsOwnLimits() async throws {
+    /// A pair cuts as one Mac does, to the output and the context its mode
+    /// serves: a `max_tokens` past either is cut, an omitted one is cut to
+    /// the context, and a prompt that fills it is left for the pair to refuse
+    /// (`PairContextWindowTests`).
+    @Test func aPairCutsToWhatItServes() async throws {
         let profile = try distributedTestProfile()
         let bridge = EngineV2Bridge(engine: try distributedTestEngine(DistributedTestOwner()), modelId: "pair/model",
             tokenizer: TokenizerHandle(FixedLengthTokenizer()), eosTokenIds: [],
@@ -128,8 +129,10 @@ struct LocalContextWindowTests {
             maxConcurrentRequests: 1)
         let prompt = profile.maxContextTokens - 20
         #expect(bridge.modelWindowTokens == nil)
-        #expect(bridge.outputTokens(requested: 300_000, promptTokens: prompt) == 300_000)
+        #expect(bridge.outputTokens(requested: 300_000, promptTokens: prompt) == 20)
+        #expect(bridge.outputTokens(requested: 300_000, promptTokens: 1) == profile.maxOutputTokens)
         #expect(bridge.outputTokens(requested: nil, promptTokens: prompt) == 20)
+        #expect(bridge.outputTokens(requested: 64, promptTokens: profile.maxContextTokens) == 64)
         await bridge.shutdown()
     }
 

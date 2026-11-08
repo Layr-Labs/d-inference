@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-11-04
+> Last updated: 2026-11-08
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -594,6 +594,25 @@ owning-full-attention marginal byte rate times context, capped by
 weights do not choose KV precision: native admission separately accounts for the
 observed per-layer dtype, window rings, recurrent state and configured MTP state
 (`provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2Reslice.swift`).
+
+A request reserves its prompt plus its `max_tokens` from that grant when it is
+submitted. A request that names no `max_tokens` reserves the 32,768-token default
+(`SlotSizingSnapshot.defaultOutputTokens`, as on a pair) cut to the window its
+prompt leaves, so the default never needs more than the model's context. Every
+single-Mac slot holds every request to its window (`EngineV2Bridge.modelWindowTokens`:
+its advertised context, else its model's): a prompt that fills it is refused as
+`context_length_exceeded`, and a `max_tokens` beyond what the prompt leaves is
+cut to it before the reservation
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Translation.swift`).
+A request the grant can't hold now is refused for capacity before any stream
+exists: on a contiguous slot by the shared reservation, on a paged slot by the
+engine's own admission (one that can never fit; the rest queue). This Mac's API
+answers it with 503, before any SSE header, streamed or not, and words that name
+this Mac's memory and what to change
+(`provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift`). A
+request that queued and then wasn't admitted (the 120 s admission lease, or a
+paged pool full through its requeues) fails after the response head instead: a
+streamed answer ends with an error event.
 
 Loads and serving-set reserve raises must preserve each resident bridge's total
 `minimumServiceableGrantBytes`

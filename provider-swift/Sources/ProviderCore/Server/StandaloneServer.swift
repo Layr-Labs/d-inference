@@ -458,7 +458,7 @@ public actor StandaloneServer {
 
     /// Internal access so the +HTTP extension can pass the same
     /// default through to ``MultiModelBatchSchedulerEngine``.
-    static let slotDefaultMaxTokens = 4096
+    static let slotDefaultMaxTokens = SlotSizingSnapshot.defaultOutputTokens
 
     /// Update the advertised model list (e.g. after a rescan). Applies the
     /// same CBv2 supported-set filter as init. The serving set is part of

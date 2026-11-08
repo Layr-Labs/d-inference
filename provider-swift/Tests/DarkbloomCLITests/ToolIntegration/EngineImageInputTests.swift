@@ -6,9 +6,10 @@ import Testing
 
 private typealias F = ToolIntegrationFixtures
 
-/// The tools take image input from this Mac's engine as well as the catalog: a model the endpoint lists with `image`
+/// The tools take a model's image input from the engine that serves it here: a model the endpoint lists with `image`
 /// among its `input_modalities` gets image input in OpenCode and Hermes, offline too, and when the catalog lists it
-/// text only (MiMo V2.6 today). Reasoning still comes from the catalog alone.
+/// text only (MiMo V2.6 today); one it lists without gets none, whatever the catalog says (a Gemma 4 pair). A model
+/// served elsewhere takes the catalog's word. Reasoning still comes from the catalog alone.
 @Suite("Image input from the engine")
 struct EngineImageInputTests {
     /// What this Mac's `/v1/models` lists for MiMo V2.6 and GPT-OSS.
@@ -68,6 +69,42 @@ struct EngineImageInputTests {
         let silent = IntegrationModels.resolve([EndpointModel(id: "mimo-v2.6-flash-mopd", ownedBy: "this-mac")],
                                                catalog: nil)[0]
         #expect(!silent.keeping(entry).imageInput)
+    }
+
+    /// A model served here (this Mac, or the pair it leads or relays to) takes what its engine lists: the catalog can't
+    /// add an input the engine doesn't take. A Gemma 4 pair serves text alone though the catalog lists vision and video
+    /// for the model, so OpenCode and Hermes offer it no images, online or offline, whatever an earlier entry says (an
+    /// image would get a 400). Its other capabilities stay the catalog's. The model served elsewhere (your other Macs)
+    /// keeps the catalog's word.
+    @Test func aModelServedHereTakesOnlyWhatItsEngineLists() throws {
+        let id = "gemma-4-26b-qat-4bit"
+        let catalog = CatalogSnapshot(models: [
+            CatalogModel(id: id, s3Name: id, displayName: "Gemma 4 26B QAT", modelType: "text", sizeGb: 1,
+                         maxContextLength: 131_072, maxOutputLength: 32_768,
+                         capabilities: ["chat", "tools", "reasoning", "vision", "video"]),
+        ], aliases: [])
+        let pair = EndpointModel(id: id, ownedBy: "this-mac", contextLength: 65_536, maxOutputLength: 32_768,
+                                 inputModalities: ["text"])
+        let here = try #require(IntegrationModels.resolve([pair], catalog: catalog).first)
+        #expect(!here.imageInput, "the pair's engine takes text alone")
+        #expect(here.tools && here.reasoning, "the catalog's other capabilities stand")
+        let entry = IntegrationModel.Entry(displayName: "Gemma 4 26B QAT", contextLength: 65_536, outputLimit: 16_384,
+                                           tools: true, imageInput: true, reasoning: true)
+        let offline = try #require(IntegrationModels.resolve([pair], catalog: nil).first)
+        #expect(!offline.keeping(entry).imageInput, "an entry an earlier run wrote from the catalog brings none back")
+
+        let opencode = try #require(F.newText(OpenCodeConfigPlan.plan(existing: nil, fileName: "opencode.jsonc",
+            endpoint: F.endpoint, models: [here], provider: F.provider, home: F.home)))
+        let gemma = try #require(Self.openCodeEntry(id, in: opencode))
+        #expect(gemma.contains(#""input": ["text"], "output": ["text"]"#), "\(gemma)")
+        let hermes = try #require(F.newText(HermesConfigPlan.plan(existing: nil, endpoint: F.endpoint, models: [here],
+                                                                   provider: F.provider)))
+        #expect(hermes.contains("      \"\(id)\":\n        context_length: 65536\n"), "\(hermes)")
+        #expect(!hermes.contains("supports_vision"), "\(hermes)")
+
+        let elsewhere = EndpointModel(id: id, ownedBy: "my-macs", contextLength: 131_072, inputModalities: ["text"])
+        #expect(IntegrationModels.resolve([elsewhere], catalog: catalog).first?.imageInput == true,
+                "served elsewhere, the catalog's word")
     }
 
     /// A model's entry in an OpenCode config as the planner writes it: its key line, name, limit and capabilities.

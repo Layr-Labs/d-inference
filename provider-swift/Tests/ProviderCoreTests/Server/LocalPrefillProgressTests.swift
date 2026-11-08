@@ -115,6 +115,104 @@ struct LocalPrefillProgressTests {
         #expect(clock.sleeps == 1)
     }
 
+    /// A request that ends without a first token (an engine teardown): the pump's end stops the timer, and no comment
+    /// follows the failure frame.
+    @Test func aPromptThatFailsBeforeItsFirstTokenStopsTheTimer() async throws {
+        let engine = PrefillGateEngine(), clock = PrefillTestClock()
+        let response = try await Self.app(engine, clock: clock).test(.router) { client in
+            async let answer = client.execute(uri: "/v1/chat/completions", method: .post, headers: Self.headers,
+                                              body: Self.chat(stream: true))
+            #expect(await clock.eventually { $0.sleeping == 1 })
+            clock.tick()
+            #expect(await clock.eventually { $0.sleeps == 2 && $0.sleeping == 1 })
+            engine.tearDown()
+            #expect(await clock.eventually { $0.sleeping == 0 && $0.cancelled == 1 }, "the pump's end stopped the timer")
+            return try await answer
+        }
+        let events = Self.events(response.body)
+        let failure = try #require(events.firstIndex { $0.contains(#""finish_reason":"error""#) }, "\(events)")
+        #expect(events.indices.filter { events[$0].hasPrefix(":") } == [failure - 1], "\(events)")
+        #expect(clock.sleeps == 2)
+    }
+
+    /// The client goes away while the prompt is processed (the body's write fails on a comment): the stream ends
+    /// with the dropped response, and that stops the timer and the frame task though the engine never answers.
+    @Test func aClientThatLeavesDuringThePromptStopsTheTimer() async throws {
+        let clock = PrefillTestClock()
+        let progress = LocalPrefillProgress(ticker: clock.ticker)
+        progress.accept(promptTokens: Self.promptTokens)
+        let (frames, source) = AsyncThrowingStream<String, Error>.makeStream()
+        let framesEnded = PrefillFlag()
+        source.onTermination = { _ in framesEnded.set() }
+        source.yield(try httpDeliveryFrame(role: "assistant"))
+        do {
+            let response = PrefillUpload.sseResponse(frames, prefillProgress: progress)
+            let capture = HTTPDeliveryCapture()
+            let writer = HTTPDeliveryWriter(capture: capture, beforeWrite: { text in
+                if text.hasPrefix(": prefill") { throw ChannelError.ioOnClosedChannel }
+            })
+            let writing = Task { try await response.body.write(writer) }
+            #expect(await clock.eventually { $0.sleeping == 1 }, "the timer started after the first frame")
+            clock.tick()
+            #expect((try? await writing.value) == nil, "the write failed on the comment")
+            #expect(capture.values.count == 1)
+        }
+        #expect(await clock.eventually { $0.sleeping == 0 && $0.cancelled == 1 }, "no timer outlives the response")
+        #expect(try await httpDeliveryEventually { framesEnded.isSet }, "the frame task was cancelled")
+        #expect(progress.comment == nil)
+    }
+
+    /// The task writing the body is cancelled while the prompt is processed (a closed connection): that stops the
+    /// timer and the frame task.
+    @Test func aCancelledBodyDuringThePromptStopsTheTimer() async throws {
+        let clock = PrefillTestClock()
+        let progress = LocalPrefillProgress(ticker: clock.ticker)
+        progress.accept(promptTokens: Self.promptTokens)
+        let (frames, source) = AsyncThrowingStream<String, Error>.makeStream()
+        let framesEnded = PrefillFlag()
+        source.onTermination = { _ in framesEnded.set() }
+        source.yield(try httpDeliveryFrame(role: "assistant"))
+        let response = PrefillUpload.sseResponse(frames, prefillProgress: progress)
+        let capture = HTTPDeliveryCapture()
+        let writing = Task { try await response.body.write(HTTPDeliveryWriter(capture: capture)) }
+        #expect(await clock.eventually { $0.sleeping == 1 })
+        writing.cancel()
+        _ = await writing.result
+        #expect(await clock.eventually { $0.sleeping == 0 && $0.cancelled == 1 }, "the cancellation stopped the timer")
+        #expect(try await httpDeliveryEventually { framesEnded.isSet })
+        #expect(!capture.values.contains { $0.hasPrefix(": prefill") })
+    }
+
+    /// A model load that a streamed request starts also starts an idle calibration inside the request's scope, and
+    /// that session inherits the request's task-locals. Its probes are no request's: they leave the request's progress
+    /// alone, and the request still says its own prompt. Before, the probe's prompt was taken into the request's
+    /// progress and its end ended it, so a long prompt after an on-demand load said nothing.
+    @Test func aCalibrationStartedDuringARequestsLoadLeavesItsProgressAlone() async throws {
+        let engine = PrefillGateEngine()
+        let bridge = EngineV2Bridge(engine: engine, modelId: Self.model, tokenizer: TokenizerHandle(PrefillTokenizer(count: 3)),
+            eosTokenIds: [], defaultMaxTokens: 32_768, defaultMaxTokensContextLimit: 262_144, maxConcurrentRequests: 4,
+            kvBudget: GlobalKVCacheBudget(memorySnapshot: {
+                .init(total: 256 << 30, active: 0, cache: 0, systemAvailable: 256 << 30)
+            }))
+        let request = LocalPrefillProgress(ticker: PrefillTestClock().ticker)
+        let calibration = IdleCalibrationCoordinator()
+        // As `finishModelLoad` starts it (`scheduleLoadedModelCalibration`) inside a local request's acquire.
+        let session = LocalPrefillProgress.$current.withValue(request) {
+            calibration.startIfIdle(isIdle: { true }) {
+                _ = await bridge.runModelCalibrationCell(.init(promptTokens: 3, outputTokens: 4, width: 1),
+                                                         tokens: [1, 2, 3], requireNominalPosture: false)
+            }
+        }
+        #expect(session != nil)
+        #expect(await PrefillTestClock().eventually { _ in engine.submitted == 1 }, "the probe reached the engine")
+        #expect(request.comment == nil, "the probe's prompt is not the request's")
+        engine.answer()
+        await session?.value
+        request.accept(promptTokens: Self.promptTokens)
+        #expect(request.comment == ": prefill in progress, 8 prompt tokens\n\n", "the request still says its own prompt")
+        await bridge.shutdown()
+    }
+
     @Test func aRequestThatIsNotStreamedHasNoTimer() async throws {
         let engine = PrefillGateEngine(), clock = PrefillTestClock()
         let response = try await Self.app(engine, clock: clock).test(.router) { client in
@@ -226,6 +324,17 @@ struct LocalPrefillProgressTests {
     }
 }
 
+/// The upload responder whose `sseResponse` writes a streamed request's body.
+private typealias PrefillUpload = LocalChatUploadResponder<RouterResponder<BasicRequestContext>>
+
+/// A flag set once, from any thread.
+private final class PrefillFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool { lock.withLock { value } }
+    func set() { lock.withLock { value = true } }
+}
+
 /// A clock the test moves: every sleep waits for the next `tick`.
 final class PrefillTestClock: @unchecked Sendable {
     private let lock = NSLock()
@@ -324,6 +433,11 @@ final class PrefillGateEngine: CBv2Engine, @unchecked Sendable {
                                    usage: CBv2Usage(promptTokens: request.promptTokens.count, completionTokens: 1)))
             events.finish()
         }
+    }
+
+    /// Each request's events end with no first token and no terminal, as an engine teardown ends them.
+    func tearDown() {
+        for (_, events) in lock.withLock({ held }) { events.finish() }
     }
 
     func cancel(_ id: CBv2RequestID) {}

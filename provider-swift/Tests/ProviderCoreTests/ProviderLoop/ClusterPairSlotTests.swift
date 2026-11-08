@@ -212,6 +212,20 @@ struct ClusterPairSlotTests {
         #expect(await loop.retireClusterPairSlot(reason: "test"))
     }
 
+    /// The leader lists what its pair takes, not what the model takes on one Mac: a model whose files declare vision
+    /// (Gemma 4, Qwen 3.5) served by a pair without a media contract lists text alone, and before the slot is up, it
+    /// lists nothing (no word yet).
+    @Test func theLeaderListsThePairsInputNotTheModelsOnOneMac() async throws {
+        let loop = try await clusterPairMemberLoop()
+        await loop.advertiseBypassingSupportedSetForTesting(ModelInfo(id: clusterPairFixtureModel, modelType: "qwen3_5",
+            sizeBytes: 1, estimatedMemoryGb: 1, isVision: true))
+        #expect(await loop.localModelLimits(clusterPairFixtureModel) == nil)
+        let owner = ScriptedPairOwner()
+        _ = try await loop.publishClusterPairSlot(clusterPairSpecification(owner), owner: owner)
+        #expect(await loop.localModelLimits(clusterPairFixtureModel)?.inputModalities == ["text"])
+        #expect(await loop.retireClusterPairSlot(reason: "test"))
+    }
+
     /// The slot's MTP posture follows the pair's readiness: ranks that loaded the resident assistant report it
     /// configured, with the pair runtime's own counts (none yet); any other pair keeps the disabled posture.
     @Test func aPairWithTheResidentAssistantReportsItsMTPPosture() async throws {

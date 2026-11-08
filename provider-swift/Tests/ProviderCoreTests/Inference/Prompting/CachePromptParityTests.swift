@@ -92,6 +92,94 @@ struct CachePromptParityTests {
         }
     }
 
+    /// The coordinator maps every reasoning effort from a copy of the tables in
+    /// `ReasoningEffort.swift`: its ingress refusal, its first-party pool and its
+    /// prompt sidecar. `reasoning_effort_vectors.json` is their agreement test.
+    /// Each case runs here through the production prompt pipeline
+    /// (`ProviderPromptContractPipeline.tokenizeProviderBody`, or Nemotron 3.5
+    /// Super's `NemotronSuperPromptContract.controls(body:)`). It must render
+    /// the template-context keys the case decides (null: absent), be refused
+    /// with the field it names, or fail for a contradiction.
+    @Test("the coordinator and the provider map every reasoning effort alike")
+    func reasoningEffortVectors() throws {
+        let url = try vectorFile("reasoning_effort_vectors.json")
+        let vectors = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        #expect(vectors["efforts"] as? [String] == ReasoningEffort.allCases.map(\.rawValue))
+        let refusal = try #require(vectors["refusal"] as? [String: Any])
+        #expect(refusal["code"] as? String == "invalid_reasoning_effort")
+        for field in [ReasoningEffortField.reasoningEffort, .reasoningObject, .templateKwargs] {
+            let message = (refusal["message"] as? String)?.replacingOccurrences(of: "{param}", with: field.rawValue)
+            #expect(message == field.refusalMessage)
+        }
+        for type in try #require(vectors["reasoning_model_types"] as? [String]) {
+            #expect(ReasoningEffortPolicy.reasons(modelID: "any/model", modelType: type), "\(type)")
+        }
+        for type in ["qwen3_vl_moe", "llama", "gemma3"] {
+            #expect(!ReasoningEffortPolicy.reasons(modelID: "any/model", modelType: type), "\(type)")
+        }
+        let cases = try #require(vectors["cases"] as? [[String: Any]])
+        #expect(cases.count == 354)
+        for fixture in cases {
+            let name = try #require(fixture["name"] as? String)
+            let type = try #require(fixture["model_type"] as? String)
+            let model = try #require(fixture["model"] as? String)
+            let controls = try #require(fixture["controls"] as? [String: Any])
+            var request: [String: Any] = ["model": model, "messages": [["role": "user", "content": "hi"]]]
+            request.merge(controls) { _, control in control }
+            let body = try JSONSerialization.data(withJSONObject: request)
+            let rendered = Result { () throws -> [String: any Sendable] in
+                if type == "nemotron_h_omni" {
+                    let depth = try NemotronSuperPromptContract.controls(body: body)
+                    return ["enable_thinking": depth.enableThinking, "medium_effort": depth.mediumEffort]
+                }
+                let tokenizer = EffortContextTokenizer()
+                _ = try ProviderPromptContractPipeline.tokenizeProviderBody(body, tokenizer: tokenizer, modelType: type)
+                return tokenizer.contexts.last ?? [:]
+            }
+            switch rendered {
+            case .success(let context):
+                #expect(fixture["refused"] == nil && fixture["error"] == nil, "\(name): rendered \(context)")
+                for (key, expected) in fixture["context"] as? [String: Any] ?? [:] {
+                    if expected is NSNull {
+                        #expect(context[key] == nil, "\(name): \(key) = \(String(describing: context[key]))")
+                    } else {
+                        #expect(Self.jsonValue(context[key])?.isEqual(expected) == true,
+                                "\(name): \(key) = \(String(describing: context[key])), want \(expected)")
+                    }
+                }
+            case .failure(let error):
+                let refused = Self.refusedField(error)
+                if let field = fixture["refused"] as? String {
+                    #expect(refused == field, "\(name): \(error)")
+                } else {
+                    #expect(fixture["error"] as? Bool == true && refused == nil, "\(name): \(error)")
+                }
+            }
+        }
+    }
+
+    /// A template-context value as JSON decodes it; nil for absent or another type.
+    private static func jsonValue(_ value: (any Sendable)?) -> NSObject? {
+        switch value {
+        case let bool as Bool: NSNumber(value: bool)
+        case let string as String: string as NSString
+        default: nil
+        }
+    }
+
+    /// The field a refusal of an effort that is none of the names names.
+    private static func refusedField(_ error: any Error) -> String? {
+        if let error = error as? MultiModelBatchSchedulerEngineError,
+           case .unsupportedReasoningEffort(let field) = error {
+            return field.rawValue
+        }
+        if let failure = error as? NemotronSuperPromptContract.Failure,
+           case .unknownReasoningEffort(let field) = failure {
+            return field.rawValue
+        }
+        return nil
+    }
+
     /// Resolve the owning repository, not a fixed number of parent folders.
     /// These tests move with their subsystem; the shared fixtures do not.
     private func vectorFile(_ name: String) throws -> URL {

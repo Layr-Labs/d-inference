@@ -857,7 +857,7 @@
     }
   },
   {
-    "name": "harmony-nested-high-remains-medium",
+    "name": "harmony-nested-high-renders-high",
     "model_type": "gpt_oss",
     "request": {
       "model": "gpt-oss-20b",
@@ -885,7 +885,7 @@
       "reasoning_effort": "low"
     },
     "additional_context": {
-      "reasoning_effort": "medium"
+      "reasoning_effort": "high"
     }
   },
   {

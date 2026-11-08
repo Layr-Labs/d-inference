@@ -1,0 +1,4482 @@
+{
+ "schema": "darkbloom-reasoning-effort-vectors-v1",
+ "efforts": [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max"
+ ],
+ "refusal": {
+  "code": "invalid_reasoning_effort",
+  "type": "invalid_request_error",
+  "message": "{param} must be one of: none, minimal, low, medium, high, xhigh, max."
+ },
+ "reasoning_model_types": [
+  "qwen3_5",
+  "qwen3_5_moe",
+  "prism_hadamard_qwen35",
+  "qwen4_exp",
+  "qwen4_exp_text",
+  "gemma4",
+  "gemma4_text",
+  "gemma4_vision",
+  "diffusion_gemma",
+  "gpt_oss",
+  "nemotron_h",
+  "nemotron_h_omni",
+  "mimo_v2",
+  "glm5_next",
+  "glm5_next_text",
+  "glm5_next_mtp",
+  "flint"
+ ],
+ "cases": [
+  {
+   "name": "qwen3_5/reasoning_effort=none",
+   "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "model_type": "qwen3_5",
+   "controls": {
+    "reasoning_effort": "none"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "none"
+   }
+  },
+  {
+   "name": "qwen3_5/reasoning.effort=none",
+   "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "model_type": "qwen3_5",
+   "controls": {
+    "reasoning": {
+     "effort": "none"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "none"
+   }
+  },
+  {
+   "name": "qwen3_5/reasoning_effort=minimal",
+   "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "model_type": "qwen3_5",
+   "controls": {
+    "reasoning_effort": "minimal"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "qwen3_5/reasoning.effort=minimal",
+   "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "model_type": "qwen3_5",
+   "controls": {
+    "reasoning": {
+     "effort": "minimal"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "qwen3_5/reasoning_effort=low",
+   "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "model_type": "qwen3_5",
+   "controls": {
+    "reasoning_effort": "low"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "qwen3_5/reasoning.effort=low",
+   "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "model_type": "qwen3_5",
+   "controls": {
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "qwen3_5/reasoning_effort=medium",
+   "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "model_type": "qwen3_5",
+   "controls": {
+    "reasoning_effort": "medium"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "medium"
+   }
+  },
+  {
+   "name": "qwen3_5/reasoning.effort=medium",
+   "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "model_type": "qwen3_5",
+   "controls": {
+    "reasoning": {
+     "effort": "medium"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "medium"
+   }
+  },
+  {
+   "name": "qwen3_5/reasoning_effort=high",
+   "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "model_type": "qwen3_5",
+   "controls": {
+    "reasoning_effort": "high"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "qwen3_5/reasoning.effort=high",
+   "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "model_type": "qwen3_5",
+   "controls": {
+    "reasoning": {
+     "effort": "high"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "qwen3_5/reasoning_effort=xhigh",
+   "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "model_type": "qwen3_5",
+   "controls": {
+    "reasoning_effort": "xhigh"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "qwen3_5/reasoning.effort=xhigh",
+   "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "model_type": "qwen3_5",
+   "controls": {
+    "reasoning": {
+     "effort": "xhigh"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "qwen3_5/reasoning_effort=max",
+   "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "model_type": "qwen3_5",
+   "controls": {
+    "reasoning_effort": "max"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "qwen3_5/reasoning.effort=max",
+   "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "model_type": "qwen3_5",
+   "controls": {
+    "reasoning": {
+     "effort": "max"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "qwen3_5/reasoning_effort=High",
+   "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "model_type": "qwen3_5",
+   "controls": {
+    "reasoning_effort": " High "
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "qwen3_5/reasoning.effort=High",
+   "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "model_type": "qwen3_5",
+   "controls": {
+    "reasoning": {
+     "effort": " High "
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "qwen3_5/reasoning_effort=OFF",
+   "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "model_type": "qwen3_5",
+   "controls": {
+    "reasoning_effort": "OFF"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "OFF"
+   }
+  },
+  {
+   "name": "qwen3_5/reasoning.effort=OFF",
+   "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "model_type": "qwen3_5",
+   "controls": {
+    "reasoning": {
+     "effort": "OFF"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "OFF"
+   }
+  },
+  {
+   "name": "qwen3_5/reasoning_effort=0",
+   "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "model_type": "qwen3_5",
+   "controls": {
+    "reasoning_effort": "0"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "0"
+   }
+  },
+  {
+   "name": "qwen3_5/reasoning.effort=0",
+   "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "model_type": "qwen3_5",
+   "controls": {
+    "reasoning": {
+     "effort": "0"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "0"
+   }
+  },
+  {
+   "name": "qwen3_5/reasoning_effort=off",
+   "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "model_type": "qwen3_5",
+   "controls": {
+    "reasoning_effort": "off"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "off"
+   }
+  },
+  {
+   "name": "qwen3_5/reasoning.effort=off",
+   "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "model_type": "qwen3_5",
+   "controls": {
+    "reasoning": {
+     "effort": "off"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "off"
+   }
+  },
+  {
+   "name": "qwen3_5/reasoning_effort=turbo",
+   "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "model_type": "qwen3_5",
+   "controls": {
+    "reasoning_effort": "turbo"
+   },
+   "refused": "reasoning_effort"
+  },
+  {
+   "name": "qwen3_5/reasoning.effort=turbo",
+   "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "model_type": "qwen3_5",
+   "controls": {
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "qwen3_5/reasoning_effort=turbo+reasoning.effort=low",
+   "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "model_type": "qwen3_5",
+   "controls": {
+    "reasoning_effort": "turbo",
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "qwen3_5/reasoning_effort=low+reasoning.effort=turbo",
+   "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "model_type": "qwen3_5",
+   "controls": {
+    "reasoning_effort": "low",
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "qwen3_5/reasoning_effort=high+reasoning.effort=HIGH",
+   "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "model_type": "qwen3_5",
+   "controls": {
+    "reasoning_effort": "high",
+    "reasoning": {
+     "effort": "HIGH"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "qwen3_5_moe/reasoning_effort=none",
+   "model": "qwen3.5-35b-a3b",
+   "model_type": "qwen3_5_moe",
+   "controls": {
+    "reasoning_effort": "none"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "none"
+   }
+  },
+  {
+   "name": "qwen3_5_moe/reasoning.effort=none",
+   "model": "qwen3.5-35b-a3b",
+   "model_type": "qwen3_5_moe",
+   "controls": {
+    "reasoning": {
+     "effort": "none"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "none"
+   }
+  },
+  {
+   "name": "qwen3_5_moe/reasoning_effort=minimal",
+   "model": "qwen3.5-35b-a3b",
+   "model_type": "qwen3_5_moe",
+   "controls": {
+    "reasoning_effort": "minimal"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "qwen3_5_moe/reasoning.effort=minimal",
+   "model": "qwen3.5-35b-a3b",
+   "model_type": "qwen3_5_moe",
+   "controls": {
+    "reasoning": {
+     "effort": "minimal"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "qwen3_5_moe/reasoning_effort=low",
+   "model": "qwen3.5-35b-a3b",
+   "model_type": "qwen3_5_moe",
+   "controls": {
+    "reasoning_effort": "low"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "qwen3_5_moe/reasoning.effort=low",
+   "model": "qwen3.5-35b-a3b",
+   "model_type": "qwen3_5_moe",
+   "controls": {
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "qwen3_5_moe/reasoning_effort=medium",
+   "model": "qwen3.5-35b-a3b",
+   "model_type": "qwen3_5_moe",
+   "controls": {
+    "reasoning_effort": "medium"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "medium"
+   }
+  },
+  {
+   "name": "qwen3_5_moe/reasoning.effort=medium",
+   "model": "qwen3.5-35b-a3b",
+   "model_type": "qwen3_5_moe",
+   "controls": {
+    "reasoning": {
+     "effort": "medium"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "medium"
+   }
+  },
+  {
+   "name": "qwen3_5_moe/reasoning_effort=high",
+   "model": "qwen3.5-35b-a3b",
+   "model_type": "qwen3_5_moe",
+   "controls": {
+    "reasoning_effort": "high"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "qwen3_5_moe/reasoning.effort=high",
+   "model": "qwen3.5-35b-a3b",
+   "model_type": "qwen3_5_moe",
+   "controls": {
+    "reasoning": {
+     "effort": "high"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "qwen3_5_moe/reasoning_effort=xhigh",
+   "model": "qwen3.5-35b-a3b",
+   "model_type": "qwen3_5_moe",
+   "controls": {
+    "reasoning_effort": "xhigh"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "qwen3_5_moe/reasoning.effort=xhigh",
+   "model": "qwen3.5-35b-a3b",
+   "model_type": "qwen3_5_moe",
+   "controls": {
+    "reasoning": {
+     "effort": "xhigh"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "qwen3_5_moe/reasoning_effort=max",
+   "model": "qwen3.5-35b-a3b",
+   "model_type": "qwen3_5_moe",
+   "controls": {
+    "reasoning_effort": "max"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "qwen3_5_moe/reasoning.effort=max",
+   "model": "qwen3.5-35b-a3b",
+   "model_type": "qwen3_5_moe",
+   "controls": {
+    "reasoning": {
+     "effort": "max"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "qwen3_5_moe/reasoning_effort=High",
+   "model": "qwen3.5-35b-a3b",
+   "model_type": "qwen3_5_moe",
+   "controls": {
+    "reasoning_effort": " High "
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "qwen3_5_moe/reasoning.effort=High",
+   "model": "qwen3.5-35b-a3b",
+   "model_type": "qwen3_5_moe",
+   "controls": {
+    "reasoning": {
+     "effort": " High "
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "qwen3_5_moe/reasoning_effort=OFF",
+   "model": "qwen3.5-35b-a3b",
+   "model_type": "qwen3_5_moe",
+   "controls": {
+    "reasoning_effort": "OFF"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "OFF"
+   }
+  },
+  {
+   "name": "qwen3_5_moe/reasoning.effort=OFF",
+   "model": "qwen3.5-35b-a3b",
+   "model_type": "qwen3_5_moe",
+   "controls": {
+    "reasoning": {
+     "effort": "OFF"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "OFF"
+   }
+  },
+  {
+   "name": "qwen3_5_moe/reasoning_effort=0",
+   "model": "qwen3.5-35b-a3b",
+   "model_type": "qwen3_5_moe",
+   "controls": {
+    "reasoning_effort": "0"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "0"
+   }
+  },
+  {
+   "name": "qwen3_5_moe/reasoning.effort=0",
+   "model": "qwen3.5-35b-a3b",
+   "model_type": "qwen3_5_moe",
+   "controls": {
+    "reasoning": {
+     "effort": "0"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "0"
+   }
+  },
+  {
+   "name": "qwen3_5_moe/reasoning_effort=off",
+   "model": "qwen3.5-35b-a3b",
+   "model_type": "qwen3_5_moe",
+   "controls": {
+    "reasoning_effort": "off"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "off"
+   }
+  },
+  {
+   "name": "qwen3_5_moe/reasoning.effort=off",
+   "model": "qwen3.5-35b-a3b",
+   "model_type": "qwen3_5_moe",
+   "controls": {
+    "reasoning": {
+     "effort": "off"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "off"
+   }
+  },
+  {
+   "name": "qwen3_5_moe/reasoning_effort=turbo",
+   "model": "qwen3.5-35b-a3b",
+   "model_type": "qwen3_5_moe",
+   "controls": {
+    "reasoning_effort": "turbo"
+   },
+   "refused": "reasoning_effort"
+  },
+  {
+   "name": "qwen3_5_moe/reasoning.effort=turbo",
+   "model": "qwen3.5-35b-a3b",
+   "model_type": "qwen3_5_moe",
+   "controls": {
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "qwen3_5_moe/reasoning_effort=turbo+reasoning.effort=low",
+   "model": "qwen3.5-35b-a3b",
+   "model_type": "qwen3_5_moe",
+   "controls": {
+    "reasoning_effort": "turbo",
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "qwen3_5_moe/reasoning_effort=low+reasoning.effort=turbo",
+   "model": "qwen3.5-35b-a3b",
+   "model_type": "qwen3_5_moe",
+   "controls": {
+    "reasoning_effort": "low",
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "qwen3_5_moe/reasoning_effort=high+reasoning.effort=HIGH",
+   "model": "qwen3.5-35b-a3b",
+   "model_type": "qwen3_5_moe",
+   "controls": {
+    "reasoning_effort": "high",
+    "reasoning": {
+     "effort": "HIGH"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "prism_hadamard_qwen35/reasoning_effort=none",
+   "model": "ternary-bonsai-2-27b",
+   "model_type": "prism_hadamard_qwen35",
+   "controls": {
+    "reasoning_effort": "none"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "none"
+   }
+  },
+  {
+   "name": "prism_hadamard_qwen35/reasoning.effort=none",
+   "model": "ternary-bonsai-2-27b",
+   "model_type": "prism_hadamard_qwen35",
+   "controls": {
+    "reasoning": {
+     "effort": "none"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "none"
+   }
+  },
+  {
+   "name": "prism_hadamard_qwen35/reasoning_effort=minimal",
+   "model": "ternary-bonsai-2-27b",
+   "model_type": "prism_hadamard_qwen35",
+   "controls": {
+    "reasoning_effort": "minimal"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "prism_hadamard_qwen35/reasoning.effort=minimal",
+   "model": "ternary-bonsai-2-27b",
+   "model_type": "prism_hadamard_qwen35",
+   "controls": {
+    "reasoning": {
+     "effort": "minimal"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "prism_hadamard_qwen35/reasoning_effort=low",
+   "model": "ternary-bonsai-2-27b",
+   "model_type": "prism_hadamard_qwen35",
+   "controls": {
+    "reasoning_effort": "low"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "prism_hadamard_qwen35/reasoning.effort=low",
+   "model": "ternary-bonsai-2-27b",
+   "model_type": "prism_hadamard_qwen35",
+   "controls": {
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "prism_hadamard_qwen35/reasoning_effort=medium",
+   "model": "ternary-bonsai-2-27b",
+   "model_type": "prism_hadamard_qwen35",
+   "controls": {
+    "reasoning_effort": "medium"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "medium"
+   }
+  },
+  {
+   "name": "prism_hadamard_qwen35/reasoning.effort=medium",
+   "model": "ternary-bonsai-2-27b",
+   "model_type": "prism_hadamard_qwen35",
+   "controls": {
+    "reasoning": {
+     "effort": "medium"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "medium"
+   }
+  },
+  {
+   "name": "prism_hadamard_qwen35/reasoning_effort=high",
+   "model": "ternary-bonsai-2-27b",
+   "model_type": "prism_hadamard_qwen35",
+   "controls": {
+    "reasoning_effort": "high"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "prism_hadamard_qwen35/reasoning.effort=high",
+   "model": "ternary-bonsai-2-27b",
+   "model_type": "prism_hadamard_qwen35",
+   "controls": {
+    "reasoning": {
+     "effort": "high"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "prism_hadamard_qwen35/reasoning_effort=xhigh",
+   "model": "ternary-bonsai-2-27b",
+   "model_type": "prism_hadamard_qwen35",
+   "controls": {
+    "reasoning_effort": "xhigh"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "prism_hadamard_qwen35/reasoning.effort=xhigh",
+   "model": "ternary-bonsai-2-27b",
+   "model_type": "prism_hadamard_qwen35",
+   "controls": {
+    "reasoning": {
+     "effort": "xhigh"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "prism_hadamard_qwen35/reasoning_effort=max",
+   "model": "ternary-bonsai-2-27b",
+   "model_type": "prism_hadamard_qwen35",
+   "controls": {
+    "reasoning_effort": "max"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "prism_hadamard_qwen35/reasoning.effort=max",
+   "model": "ternary-bonsai-2-27b",
+   "model_type": "prism_hadamard_qwen35",
+   "controls": {
+    "reasoning": {
+     "effort": "max"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "prism_hadamard_qwen35/reasoning_effort=High",
+   "model": "ternary-bonsai-2-27b",
+   "model_type": "prism_hadamard_qwen35",
+   "controls": {
+    "reasoning_effort": " High "
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "prism_hadamard_qwen35/reasoning.effort=High",
+   "model": "ternary-bonsai-2-27b",
+   "model_type": "prism_hadamard_qwen35",
+   "controls": {
+    "reasoning": {
+     "effort": " High "
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "prism_hadamard_qwen35/reasoning_effort=OFF",
+   "model": "ternary-bonsai-2-27b",
+   "model_type": "prism_hadamard_qwen35",
+   "controls": {
+    "reasoning_effort": "OFF"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "OFF"
+   }
+  },
+  {
+   "name": "prism_hadamard_qwen35/reasoning.effort=OFF",
+   "model": "ternary-bonsai-2-27b",
+   "model_type": "prism_hadamard_qwen35",
+   "controls": {
+    "reasoning": {
+     "effort": "OFF"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "OFF"
+   }
+  },
+  {
+   "name": "prism_hadamard_qwen35/reasoning_effort=0",
+   "model": "ternary-bonsai-2-27b",
+   "model_type": "prism_hadamard_qwen35",
+   "controls": {
+    "reasoning_effort": "0"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "0"
+   }
+  },
+  {
+   "name": "prism_hadamard_qwen35/reasoning.effort=0",
+   "model": "ternary-bonsai-2-27b",
+   "model_type": "prism_hadamard_qwen35",
+   "controls": {
+    "reasoning": {
+     "effort": "0"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "0"
+   }
+  },
+  {
+   "name": "prism_hadamard_qwen35/reasoning_effort=off",
+   "model": "ternary-bonsai-2-27b",
+   "model_type": "prism_hadamard_qwen35",
+   "controls": {
+    "reasoning_effort": "off"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "off"
+   }
+  },
+  {
+   "name": "prism_hadamard_qwen35/reasoning.effort=off",
+   "model": "ternary-bonsai-2-27b",
+   "model_type": "prism_hadamard_qwen35",
+   "controls": {
+    "reasoning": {
+     "effort": "off"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "off"
+   }
+  },
+  {
+   "name": "prism_hadamard_qwen35/reasoning_effort=turbo",
+   "model": "ternary-bonsai-2-27b",
+   "model_type": "prism_hadamard_qwen35",
+   "controls": {
+    "reasoning_effort": "turbo"
+   },
+   "refused": "reasoning_effort"
+  },
+  {
+   "name": "prism_hadamard_qwen35/reasoning.effort=turbo",
+   "model": "ternary-bonsai-2-27b",
+   "model_type": "prism_hadamard_qwen35",
+   "controls": {
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "prism_hadamard_qwen35/reasoning_effort=turbo+reasoning.effort=low",
+   "model": "ternary-bonsai-2-27b",
+   "model_type": "prism_hadamard_qwen35",
+   "controls": {
+    "reasoning_effort": "turbo",
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "prism_hadamard_qwen35/reasoning_effort=low+reasoning.effort=turbo",
+   "model": "ternary-bonsai-2-27b",
+   "model_type": "prism_hadamard_qwen35",
+   "controls": {
+    "reasoning_effort": "low",
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "prism_hadamard_qwen35/reasoning_effort=high+reasoning.effort=HIGH",
+   "model": "ternary-bonsai-2-27b",
+   "model_type": "prism_hadamard_qwen35",
+   "controls": {
+    "reasoning_effort": "high",
+    "reasoning": {
+     "effort": "HIGH"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "qwen4_exp/reasoning_effort=none",
+   "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+   "model_type": "qwen4_exp",
+   "controls": {
+    "reasoning_effort": "none"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "none"
+   }
+  },
+  {
+   "name": "qwen4_exp/reasoning.effort=none",
+   "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+   "model_type": "qwen4_exp",
+   "controls": {
+    "reasoning": {
+     "effort": "none"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "none"
+   }
+  },
+  {
+   "name": "qwen4_exp/reasoning_effort=minimal",
+   "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+   "model_type": "qwen4_exp",
+   "controls": {
+    "reasoning_effort": "minimal"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "qwen4_exp/reasoning.effort=minimal",
+   "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+   "model_type": "qwen4_exp",
+   "controls": {
+    "reasoning": {
+     "effort": "minimal"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "qwen4_exp/reasoning_effort=low",
+   "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+   "model_type": "qwen4_exp",
+   "controls": {
+    "reasoning_effort": "low"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "qwen4_exp/reasoning.effort=low",
+   "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+   "model_type": "qwen4_exp",
+   "controls": {
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "qwen4_exp/reasoning_effort=medium",
+   "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+   "model_type": "qwen4_exp",
+   "controls": {
+    "reasoning_effort": "medium"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "medium"
+   }
+  },
+  {
+   "name": "qwen4_exp/reasoning.effort=medium",
+   "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+   "model_type": "qwen4_exp",
+   "controls": {
+    "reasoning": {
+     "effort": "medium"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "medium"
+   }
+  },
+  {
+   "name": "qwen4_exp/reasoning_effort=high",
+   "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+   "model_type": "qwen4_exp",
+   "controls": {
+    "reasoning_effort": "high"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "qwen4_exp/reasoning.effort=high",
+   "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+   "model_type": "qwen4_exp",
+   "controls": {
+    "reasoning": {
+     "effort": "high"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "qwen4_exp/reasoning_effort=xhigh",
+   "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+   "model_type": "qwen4_exp",
+   "controls": {
+    "reasoning_effort": "xhigh"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "qwen4_exp/reasoning.effort=xhigh",
+   "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+   "model_type": "qwen4_exp",
+   "controls": {
+    "reasoning": {
+     "effort": "xhigh"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "qwen4_exp/reasoning_effort=max",
+   "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+   "model_type": "qwen4_exp",
+   "controls": {
+    "reasoning_effort": "max"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "qwen4_exp/reasoning.effort=max",
+   "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+   "model_type": "qwen4_exp",
+   "controls": {
+    "reasoning": {
+     "effort": "max"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "qwen4_exp/reasoning_effort=High",
+   "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+   "model_type": "qwen4_exp",
+   "controls": {
+    "reasoning_effort": " High "
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "qwen4_exp/reasoning.effort=High",
+   "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+   "model_type": "qwen4_exp",
+   "controls": {
+    "reasoning": {
+     "effort": " High "
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "qwen4_exp/reasoning_effort=OFF",
+   "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+   "model_type": "qwen4_exp",
+   "controls": {
+    "reasoning_effort": "OFF"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "OFF"
+   }
+  },
+  {
+   "name": "qwen4_exp/reasoning.effort=OFF",
+   "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+   "model_type": "qwen4_exp",
+   "controls": {
+    "reasoning": {
+     "effort": "OFF"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "OFF"
+   }
+  },
+  {
+   "name": "qwen4_exp/reasoning_effort=0",
+   "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+   "model_type": "qwen4_exp",
+   "controls": {
+    "reasoning_effort": "0"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "0"
+   }
+  },
+  {
+   "name": "qwen4_exp/reasoning.effort=0",
+   "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+   "model_type": "qwen4_exp",
+   "controls": {
+    "reasoning": {
+     "effort": "0"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "0"
+   }
+  },
+  {
+   "name": "qwen4_exp/reasoning_effort=off",
+   "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+   "model_type": "qwen4_exp",
+   "controls": {
+    "reasoning_effort": "off"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "off"
+   }
+  },
+  {
+   "name": "qwen4_exp/reasoning.effort=off",
+   "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+   "model_type": "qwen4_exp",
+   "controls": {
+    "reasoning": {
+     "effort": "off"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "off"
+   }
+  },
+  {
+   "name": "qwen4_exp/reasoning_effort=turbo",
+   "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+   "model_type": "qwen4_exp",
+   "controls": {
+    "reasoning_effort": "turbo"
+   },
+   "refused": "reasoning_effort"
+  },
+  {
+   "name": "qwen4_exp/reasoning.effort=turbo",
+   "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+   "model_type": "qwen4_exp",
+   "controls": {
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "qwen4_exp/reasoning_effort=turbo+reasoning.effort=low",
+   "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+   "model_type": "qwen4_exp",
+   "controls": {
+    "reasoning_effort": "turbo",
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "qwen4_exp/reasoning_effort=low+reasoning.effort=turbo",
+   "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+   "model_type": "qwen4_exp",
+   "controls": {
+    "reasoning_effort": "low",
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "qwen4_exp/reasoning_effort=high+reasoning.effort=HIGH",
+   "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+   "model_type": "qwen4_exp",
+   "controls": {
+    "reasoning_effort": "high",
+    "reasoning": {
+     "effort": "HIGH"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "gemma4/reasoning_effort=none",
+   "model": "gemma-4-26b-qat-4bit",
+   "model_type": "gemma4",
+   "controls": {
+    "reasoning_effort": "none"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "none"
+   }
+  },
+  {
+   "name": "gemma4/reasoning.effort=none",
+   "model": "gemma-4-26b-qat-4bit",
+   "model_type": "gemma4",
+   "controls": {
+    "reasoning": {
+     "effort": "none"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "none"
+   }
+  },
+  {
+   "name": "gemma4/reasoning_effort=minimal",
+   "model": "gemma-4-26b-qat-4bit",
+   "model_type": "gemma4",
+   "controls": {
+    "reasoning_effort": "minimal"
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "minimal"
+   }
+  },
+  {
+   "name": "gemma4/reasoning.effort=minimal",
+   "model": "gemma-4-26b-qat-4bit",
+   "model_type": "gemma4",
+   "controls": {
+    "reasoning": {
+     "effort": "minimal"
+    }
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "minimal"
+   }
+  },
+  {
+   "name": "gemma4/reasoning_effort=low",
+   "model": "gemma-4-26b-qat-4bit",
+   "model_type": "gemma4",
+   "controls": {
+    "reasoning_effort": "low"
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "gemma4/reasoning.effort=low",
+   "model": "gemma-4-26b-qat-4bit",
+   "model_type": "gemma4",
+   "controls": {
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "gemma4/reasoning_effort=medium",
+   "model": "gemma-4-26b-qat-4bit",
+   "model_type": "gemma4",
+   "controls": {
+    "reasoning_effort": "medium"
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "medium"
+   }
+  },
+  {
+   "name": "gemma4/reasoning.effort=medium",
+   "model": "gemma-4-26b-qat-4bit",
+   "model_type": "gemma4",
+   "controls": {
+    "reasoning": {
+     "effort": "medium"
+    }
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "medium"
+   }
+  },
+  {
+   "name": "gemma4/reasoning_effort=high",
+   "model": "gemma-4-26b-qat-4bit",
+   "model_type": "gemma4",
+   "controls": {
+    "reasoning_effort": "high"
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "gemma4/reasoning.effort=high",
+   "model": "gemma-4-26b-qat-4bit",
+   "model_type": "gemma4",
+   "controls": {
+    "reasoning": {
+     "effort": "high"
+    }
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "gemma4/reasoning_effort=xhigh",
+   "model": "gemma-4-26b-qat-4bit",
+   "model_type": "gemma4",
+   "controls": {
+    "reasoning_effort": "xhigh"
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "gemma4/reasoning.effort=xhigh",
+   "model": "gemma-4-26b-qat-4bit",
+   "model_type": "gemma4",
+   "controls": {
+    "reasoning": {
+     "effort": "xhigh"
+    }
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "gemma4/reasoning_effort=max",
+   "model": "gemma-4-26b-qat-4bit",
+   "model_type": "gemma4",
+   "controls": {
+    "reasoning_effort": "max"
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "gemma4/reasoning.effort=max",
+   "model": "gemma-4-26b-qat-4bit",
+   "model_type": "gemma4",
+   "controls": {
+    "reasoning": {
+     "effort": "max"
+    }
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "gemma4/reasoning_effort=High",
+   "model": "gemma-4-26b-qat-4bit",
+   "model_type": "gemma4",
+   "controls": {
+    "reasoning_effort": " High "
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "High"
+   }
+  },
+  {
+   "name": "gemma4/reasoning.effort=High",
+   "model": "gemma-4-26b-qat-4bit",
+   "model_type": "gemma4",
+   "controls": {
+    "reasoning": {
+     "effort": " High "
+    }
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": " High "
+   }
+  },
+  {
+   "name": "gemma4/reasoning_effort=OFF",
+   "model": "gemma-4-26b-qat-4bit",
+   "model_type": "gemma4",
+   "controls": {
+    "reasoning_effort": "OFF"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "OFF"
+   }
+  },
+  {
+   "name": "gemma4/reasoning.effort=OFF",
+   "model": "gemma-4-26b-qat-4bit",
+   "model_type": "gemma4",
+   "controls": {
+    "reasoning": {
+     "effort": "OFF"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "OFF"
+   }
+  },
+  {
+   "name": "gemma4/reasoning_effort=0",
+   "model": "gemma-4-26b-qat-4bit",
+   "model_type": "gemma4",
+   "controls": {
+    "reasoning_effort": "0"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "0"
+   }
+  },
+  {
+   "name": "gemma4/reasoning.effort=0",
+   "model": "gemma-4-26b-qat-4bit",
+   "model_type": "gemma4",
+   "controls": {
+    "reasoning": {
+     "effort": "0"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "0"
+   }
+  },
+  {
+   "name": "gemma4/reasoning_effort=off",
+   "model": "gemma-4-26b-qat-4bit",
+   "model_type": "gemma4",
+   "controls": {
+    "reasoning_effort": "off"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "off"
+   }
+  },
+  {
+   "name": "gemma4/reasoning.effort=off",
+   "model": "gemma-4-26b-qat-4bit",
+   "model_type": "gemma4",
+   "controls": {
+    "reasoning": {
+     "effort": "off"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "off"
+   }
+  },
+  {
+   "name": "gemma4/reasoning_effort=turbo",
+   "model": "gemma-4-26b-qat-4bit",
+   "model_type": "gemma4",
+   "controls": {
+    "reasoning_effort": "turbo"
+   },
+   "refused": "reasoning_effort"
+  },
+  {
+   "name": "gemma4/reasoning.effort=turbo",
+   "model": "gemma-4-26b-qat-4bit",
+   "model_type": "gemma4",
+   "controls": {
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "gemma4/reasoning_effort=turbo+reasoning.effort=low",
+   "model": "gemma-4-26b-qat-4bit",
+   "model_type": "gemma4",
+   "controls": {
+    "reasoning_effort": "turbo",
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "gemma4/reasoning_effort=low+reasoning.effort=turbo",
+   "model": "gemma-4-26b-qat-4bit",
+   "model_type": "gemma4",
+   "controls": {
+    "reasoning_effort": "low",
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "gemma4/reasoning_effort=high+reasoning.effort=HIGH",
+   "model": "gemma-4-26b-qat-4bit",
+   "model_type": "gemma4",
+   "controls": {
+    "reasoning_effort": "high",
+    "reasoning": {
+     "effort": "HIGH"
+    }
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "HIGH"
+   }
+  },
+  {
+   "name": "diffusion_gemma/reasoning_effort=none",
+   "model": "native-diffusion",
+   "model_type": "diffusion_gemma",
+   "controls": {
+    "reasoning_effort": "none"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "none"
+   }
+  },
+  {
+   "name": "diffusion_gemma/reasoning.effort=none",
+   "model": "native-diffusion",
+   "model_type": "diffusion_gemma",
+   "controls": {
+    "reasoning": {
+     "effort": "none"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "none"
+   }
+  },
+  {
+   "name": "diffusion_gemma/reasoning_effort=minimal",
+   "model": "native-diffusion",
+   "model_type": "diffusion_gemma",
+   "controls": {
+    "reasoning_effort": "minimal"
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "minimal"
+   }
+  },
+  {
+   "name": "diffusion_gemma/reasoning.effort=minimal",
+   "model": "native-diffusion",
+   "model_type": "diffusion_gemma",
+   "controls": {
+    "reasoning": {
+     "effort": "minimal"
+    }
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "minimal"
+   }
+  },
+  {
+   "name": "diffusion_gemma/reasoning_effort=low",
+   "model": "native-diffusion",
+   "model_type": "diffusion_gemma",
+   "controls": {
+    "reasoning_effort": "low"
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "diffusion_gemma/reasoning.effort=low",
+   "model": "native-diffusion",
+   "model_type": "diffusion_gemma",
+   "controls": {
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "diffusion_gemma/reasoning_effort=medium",
+   "model": "native-diffusion",
+   "model_type": "diffusion_gemma",
+   "controls": {
+    "reasoning_effort": "medium"
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "medium"
+   }
+  },
+  {
+   "name": "diffusion_gemma/reasoning.effort=medium",
+   "model": "native-diffusion",
+   "model_type": "diffusion_gemma",
+   "controls": {
+    "reasoning": {
+     "effort": "medium"
+    }
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "medium"
+   }
+  },
+  {
+   "name": "diffusion_gemma/reasoning_effort=high",
+   "model": "native-diffusion",
+   "model_type": "diffusion_gemma",
+   "controls": {
+    "reasoning_effort": "high"
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "diffusion_gemma/reasoning.effort=high",
+   "model": "native-diffusion",
+   "model_type": "diffusion_gemma",
+   "controls": {
+    "reasoning": {
+     "effort": "high"
+    }
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "diffusion_gemma/reasoning_effort=xhigh",
+   "model": "native-diffusion",
+   "model_type": "diffusion_gemma",
+   "controls": {
+    "reasoning_effort": "xhigh"
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "diffusion_gemma/reasoning.effort=xhigh",
+   "model": "native-diffusion",
+   "model_type": "diffusion_gemma",
+   "controls": {
+    "reasoning": {
+     "effort": "xhigh"
+    }
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "diffusion_gemma/reasoning_effort=max",
+   "model": "native-diffusion",
+   "model_type": "diffusion_gemma",
+   "controls": {
+    "reasoning_effort": "max"
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "diffusion_gemma/reasoning.effort=max",
+   "model": "native-diffusion",
+   "model_type": "diffusion_gemma",
+   "controls": {
+    "reasoning": {
+     "effort": "max"
+    }
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "diffusion_gemma/reasoning_effort=High",
+   "model": "native-diffusion",
+   "model_type": "diffusion_gemma",
+   "controls": {
+    "reasoning_effort": " High "
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "High"
+   }
+  },
+  {
+   "name": "diffusion_gemma/reasoning.effort=High",
+   "model": "native-diffusion",
+   "model_type": "diffusion_gemma",
+   "controls": {
+    "reasoning": {
+     "effort": " High "
+    }
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": " High "
+   }
+  },
+  {
+   "name": "diffusion_gemma/reasoning_effort=OFF",
+   "model": "native-diffusion",
+   "model_type": "diffusion_gemma",
+   "controls": {
+    "reasoning_effort": "OFF"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "OFF"
+   }
+  },
+  {
+   "name": "diffusion_gemma/reasoning.effort=OFF",
+   "model": "native-diffusion",
+   "model_type": "diffusion_gemma",
+   "controls": {
+    "reasoning": {
+     "effort": "OFF"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "OFF"
+   }
+  },
+  {
+   "name": "diffusion_gemma/reasoning_effort=0",
+   "model": "native-diffusion",
+   "model_type": "diffusion_gemma",
+   "controls": {
+    "reasoning_effort": "0"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "0"
+   }
+  },
+  {
+   "name": "diffusion_gemma/reasoning.effort=0",
+   "model": "native-diffusion",
+   "model_type": "diffusion_gemma",
+   "controls": {
+    "reasoning": {
+     "effort": "0"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "0"
+   }
+  },
+  {
+   "name": "diffusion_gemma/reasoning_effort=off",
+   "model": "native-diffusion",
+   "model_type": "diffusion_gemma",
+   "controls": {
+    "reasoning_effort": "off"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "off"
+   }
+  },
+  {
+   "name": "diffusion_gemma/reasoning.effort=off",
+   "model": "native-diffusion",
+   "model_type": "diffusion_gemma",
+   "controls": {
+    "reasoning": {
+     "effort": "off"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "off"
+   }
+  },
+  {
+   "name": "diffusion_gemma/reasoning_effort=turbo",
+   "model": "native-diffusion",
+   "model_type": "diffusion_gemma",
+   "controls": {
+    "reasoning_effort": "turbo"
+   },
+   "refused": "reasoning_effort"
+  },
+  {
+   "name": "diffusion_gemma/reasoning.effort=turbo",
+   "model": "native-diffusion",
+   "model_type": "diffusion_gemma",
+   "controls": {
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "diffusion_gemma/reasoning_effort=turbo+reasoning.effort=low",
+   "model": "native-diffusion",
+   "model_type": "diffusion_gemma",
+   "controls": {
+    "reasoning_effort": "turbo",
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "diffusion_gemma/reasoning_effort=low+reasoning.effort=turbo",
+   "model": "native-diffusion",
+   "model_type": "diffusion_gemma",
+   "controls": {
+    "reasoning_effort": "low",
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "diffusion_gemma/reasoning_effort=high+reasoning.effort=HIGH",
+   "model": "native-diffusion",
+   "model_type": "diffusion_gemma",
+   "controls": {
+    "reasoning_effort": "high",
+    "reasoning": {
+     "effort": "HIGH"
+    }
+   },
+   "context": {
+    "enable_thinking": true,
+    "reasoning_effort": "HIGH"
+   }
+  },
+  {
+   "name": "nemotron_h/reasoning_effort=none",
+   "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+   "model_type": "nemotron_h",
+   "controls": {
+    "reasoning_effort": "none"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "none"
+   }
+  },
+  {
+   "name": "nemotron_h/reasoning.effort=none",
+   "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+   "model_type": "nemotron_h",
+   "controls": {
+    "reasoning": {
+     "effort": "none"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "none"
+   }
+  },
+  {
+   "name": "nemotron_h/reasoning_effort=minimal",
+   "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+   "model_type": "nemotron_h",
+   "controls": {
+    "reasoning_effort": "minimal"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "minimal"
+   }
+  },
+  {
+   "name": "nemotron_h/reasoning.effort=minimal",
+   "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+   "model_type": "nemotron_h",
+   "controls": {
+    "reasoning": {
+     "effort": "minimal"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "minimal"
+   }
+  },
+  {
+   "name": "nemotron_h/reasoning_effort=low",
+   "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+   "model_type": "nemotron_h",
+   "controls": {
+    "reasoning_effort": "low"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "nemotron_h/reasoning.effort=low",
+   "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+   "model_type": "nemotron_h",
+   "controls": {
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "nemotron_h/reasoning_effort=medium",
+   "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+   "model_type": "nemotron_h",
+   "controls": {
+    "reasoning_effort": "medium"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "medium"
+   }
+  },
+  {
+   "name": "nemotron_h/reasoning.effort=medium",
+   "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+   "model_type": "nemotron_h",
+   "controls": {
+    "reasoning": {
+     "effort": "medium"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "medium"
+   }
+  },
+  {
+   "name": "nemotron_h/reasoning_effort=high",
+   "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+   "model_type": "nemotron_h",
+   "controls": {
+    "reasoning_effort": "high"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "nemotron_h/reasoning.effort=high",
+   "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+   "model_type": "nemotron_h",
+   "controls": {
+    "reasoning": {
+     "effort": "high"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "nemotron_h/reasoning_effort=xhigh",
+   "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+   "model_type": "nemotron_h",
+   "controls": {
+    "reasoning_effort": "xhigh"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "nemotron_h/reasoning.effort=xhigh",
+   "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+   "model_type": "nemotron_h",
+   "controls": {
+    "reasoning": {
+     "effort": "xhigh"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "nemotron_h/reasoning_effort=max",
+   "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+   "model_type": "nemotron_h",
+   "controls": {
+    "reasoning_effort": "max"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "nemotron_h/reasoning.effort=max",
+   "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+   "model_type": "nemotron_h",
+   "controls": {
+    "reasoning": {
+     "effort": "max"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "nemotron_h/reasoning_effort=High",
+   "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+   "model_type": "nemotron_h",
+   "controls": {
+    "reasoning_effort": " High "
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "High"
+   }
+  },
+  {
+   "name": "nemotron_h/reasoning.effort=High",
+   "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+   "model_type": "nemotron_h",
+   "controls": {
+    "reasoning": {
+     "effort": " High "
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": " High "
+   }
+  },
+  {
+   "name": "nemotron_h/reasoning_effort=OFF",
+   "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+   "model_type": "nemotron_h",
+   "controls": {
+    "reasoning_effort": "OFF"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "OFF"
+   }
+  },
+  {
+   "name": "nemotron_h/reasoning.effort=OFF",
+   "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+   "model_type": "nemotron_h",
+   "controls": {
+    "reasoning": {
+     "effort": "OFF"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "OFF"
+   }
+  },
+  {
+   "name": "nemotron_h/reasoning_effort=0",
+   "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+   "model_type": "nemotron_h",
+   "controls": {
+    "reasoning_effort": "0"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "0"
+   }
+  },
+  {
+   "name": "nemotron_h/reasoning.effort=0",
+   "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+   "model_type": "nemotron_h",
+   "controls": {
+    "reasoning": {
+     "effort": "0"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "0"
+   }
+  },
+  {
+   "name": "nemotron_h/reasoning_effort=off",
+   "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+   "model_type": "nemotron_h",
+   "controls": {
+    "reasoning_effort": "off"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "off"
+   }
+  },
+  {
+   "name": "nemotron_h/reasoning.effort=off",
+   "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+   "model_type": "nemotron_h",
+   "controls": {
+    "reasoning": {
+     "effort": "off"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "off"
+   }
+  },
+  {
+   "name": "nemotron_h/reasoning_effort=turbo",
+   "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+   "model_type": "nemotron_h",
+   "controls": {
+    "reasoning_effort": "turbo"
+   },
+   "refused": "reasoning_effort"
+  },
+  {
+   "name": "nemotron_h/reasoning.effort=turbo",
+   "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+   "model_type": "nemotron_h",
+   "controls": {
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "nemotron_h/reasoning_effort=turbo+reasoning.effort=low",
+   "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+   "model_type": "nemotron_h",
+   "controls": {
+    "reasoning_effort": "turbo",
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "nemotron_h/reasoning_effort=low+reasoning.effort=turbo",
+   "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+   "model_type": "nemotron_h",
+   "controls": {
+    "reasoning_effort": "low",
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "nemotron_h/reasoning_effort=high+reasoning.effort=HIGH",
+   "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+   "model_type": "nemotron_h",
+   "controls": {
+    "reasoning_effort": "high",
+    "reasoning": {
+     "effort": "HIGH"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "HIGH"
+   }
+  },
+  {
+   "name": "gpt_oss/reasoning_effort=none",
+   "model": "gpt-oss-20b",
+   "model_type": "gpt_oss",
+   "controls": {
+    "reasoning_effort": "none"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "gpt_oss/reasoning.effort=none",
+   "model": "gpt-oss-20b",
+   "model_type": "gpt_oss",
+   "controls": {
+    "reasoning": {
+     "effort": "none"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "gpt_oss/reasoning_effort=minimal",
+   "model": "gpt-oss-20b",
+   "model_type": "gpt_oss",
+   "controls": {
+    "reasoning_effort": "minimal"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "gpt_oss/reasoning.effort=minimal",
+   "model": "gpt-oss-20b",
+   "model_type": "gpt_oss",
+   "controls": {
+    "reasoning": {
+     "effort": "minimal"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "gpt_oss/reasoning_effort=low",
+   "model": "gpt-oss-20b",
+   "model_type": "gpt_oss",
+   "controls": {
+    "reasoning_effort": "low"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "gpt_oss/reasoning.effort=low",
+   "model": "gpt-oss-20b",
+   "model_type": "gpt_oss",
+   "controls": {
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "gpt_oss/reasoning_effort=medium",
+   "model": "gpt-oss-20b",
+   "model_type": "gpt_oss",
+   "controls": {
+    "reasoning_effort": "medium"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "medium"
+   }
+  },
+  {
+   "name": "gpt_oss/reasoning.effort=medium",
+   "model": "gpt-oss-20b",
+   "model_type": "gpt_oss",
+   "controls": {
+    "reasoning": {
+     "effort": "medium"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "medium"
+   }
+  },
+  {
+   "name": "gpt_oss/reasoning_effort=high",
+   "model": "gpt-oss-20b",
+   "model_type": "gpt_oss",
+   "controls": {
+    "reasoning_effort": "high"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "gpt_oss/reasoning.effort=high",
+   "model": "gpt-oss-20b",
+   "model_type": "gpt_oss",
+   "controls": {
+    "reasoning": {
+     "effort": "high"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "gpt_oss/reasoning_effort=xhigh",
+   "model": "gpt-oss-20b",
+   "model_type": "gpt_oss",
+   "controls": {
+    "reasoning_effort": "xhigh"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "gpt_oss/reasoning.effort=xhigh",
+   "model": "gpt-oss-20b",
+   "model_type": "gpt_oss",
+   "controls": {
+    "reasoning": {
+     "effort": "xhigh"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "gpt_oss/reasoning_effort=max",
+   "model": "gpt-oss-20b",
+   "model_type": "gpt_oss",
+   "controls": {
+    "reasoning_effort": "max"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "gpt_oss/reasoning.effort=max",
+   "model": "gpt-oss-20b",
+   "model_type": "gpt_oss",
+   "controls": {
+    "reasoning": {
+     "effort": "max"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "gpt_oss/reasoning_effort=High",
+   "model": "gpt-oss-20b",
+   "model_type": "gpt_oss",
+   "controls": {
+    "reasoning_effort": " High "
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "gpt_oss/reasoning.effort=High",
+   "model": "gpt-oss-20b",
+   "model_type": "gpt_oss",
+   "controls": {
+    "reasoning": {
+     "effort": " High "
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "gpt_oss/reasoning_effort=OFF",
+   "model": "gpt-oss-20b",
+   "model_type": "gpt_oss",
+   "controls": {
+    "reasoning_effort": "OFF"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "gpt_oss/reasoning.effort=OFF",
+   "model": "gpt-oss-20b",
+   "model_type": "gpt_oss",
+   "controls": {
+    "reasoning": {
+     "effort": "OFF"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "gpt_oss/reasoning_effort=0",
+   "model": "gpt-oss-20b",
+   "model_type": "gpt_oss",
+   "controls": {
+    "reasoning_effort": "0"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "gpt_oss/reasoning.effort=0",
+   "model": "gpt-oss-20b",
+   "model_type": "gpt_oss",
+   "controls": {
+    "reasoning": {
+     "effort": "0"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "gpt_oss/reasoning_effort=off",
+   "model": "gpt-oss-20b",
+   "model_type": "gpt_oss",
+   "controls": {
+    "reasoning_effort": "off"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "gpt_oss/reasoning.effort=off",
+   "model": "gpt-oss-20b",
+   "model_type": "gpt_oss",
+   "controls": {
+    "reasoning": {
+     "effort": "off"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "gpt_oss/reasoning_effort=turbo",
+   "model": "gpt-oss-20b",
+   "model_type": "gpt_oss",
+   "controls": {
+    "reasoning_effort": "turbo"
+   },
+   "refused": "reasoning_effort"
+  },
+  {
+   "name": "gpt_oss/reasoning.effort=turbo",
+   "model": "gpt-oss-20b",
+   "model_type": "gpt_oss",
+   "controls": {
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "gpt_oss/reasoning_effort=turbo+reasoning.effort=low",
+   "model": "gpt-oss-20b",
+   "model_type": "gpt_oss",
+   "controls": {
+    "reasoning_effort": "turbo",
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "gpt_oss/reasoning_effort=low+reasoning.effort=turbo",
+   "model": "gpt-oss-20b",
+   "model_type": "gpt_oss",
+   "controls": {
+    "reasoning_effort": "low",
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "gpt_oss/reasoning_effort=high+reasoning.effort=HIGH",
+   "model": "gpt-oss-20b",
+   "model_type": "gpt_oss",
+   "controls": {
+    "reasoning_effort": "high",
+    "reasoning": {
+     "effort": "HIGH"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "mimo_v2/reasoning_effort=none",
+   "model": "mimo-v2.6-flash-mopd",
+   "model_type": "mimo_v2",
+   "controls": {
+    "reasoning_effort": "none"
+   },
+   "context": {
+    "enable_thinking": false
+   }
+  },
+  {
+   "name": "mimo_v2/reasoning.effort=none",
+   "model": "mimo-v2.6-flash-mopd",
+   "model_type": "mimo_v2",
+   "controls": {
+    "reasoning": {
+     "effort": "none"
+    }
+   },
+   "context": {
+    "enable_thinking": false
+   }
+  },
+  {
+   "name": "mimo_v2/reasoning_effort=minimal",
+   "model": "mimo-v2.6-flash-mopd",
+   "model_type": "mimo_v2",
+   "controls": {
+    "reasoning_effort": "minimal"
+   },
+   "context": {
+    "enable_thinking": true
+   }
+  },
+  {
+   "name": "mimo_v2/reasoning.effort=minimal",
+   "model": "mimo-v2.6-flash-mopd",
+   "model_type": "mimo_v2",
+   "controls": {
+    "reasoning": {
+     "effort": "minimal"
+    }
+   },
+   "context": {
+    "enable_thinking": true
+   }
+  },
+  {
+   "name": "mimo_v2/reasoning_effort=low",
+   "model": "mimo-v2.6-flash-mopd",
+   "model_type": "mimo_v2",
+   "controls": {
+    "reasoning_effort": "low"
+   },
+   "context": {
+    "enable_thinking": true
+   }
+  },
+  {
+   "name": "mimo_v2/reasoning.effort=low",
+   "model": "mimo-v2.6-flash-mopd",
+   "model_type": "mimo_v2",
+   "controls": {
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "context": {
+    "enable_thinking": true
+   }
+  },
+  {
+   "name": "mimo_v2/reasoning_effort=medium",
+   "model": "mimo-v2.6-flash-mopd",
+   "model_type": "mimo_v2",
+   "controls": {
+    "reasoning_effort": "medium"
+   },
+   "context": {
+    "enable_thinking": true
+   }
+  },
+  {
+   "name": "mimo_v2/reasoning.effort=medium",
+   "model": "mimo-v2.6-flash-mopd",
+   "model_type": "mimo_v2",
+   "controls": {
+    "reasoning": {
+     "effort": "medium"
+    }
+   },
+   "context": {
+    "enable_thinking": true
+   }
+  },
+  {
+   "name": "mimo_v2/reasoning_effort=high",
+   "model": "mimo-v2.6-flash-mopd",
+   "model_type": "mimo_v2",
+   "controls": {
+    "reasoning_effort": "high"
+   },
+   "context": {
+    "enable_thinking": true
+   }
+  },
+  {
+   "name": "mimo_v2/reasoning.effort=high",
+   "model": "mimo-v2.6-flash-mopd",
+   "model_type": "mimo_v2",
+   "controls": {
+    "reasoning": {
+     "effort": "high"
+    }
+   },
+   "context": {
+    "enable_thinking": true
+   }
+  },
+  {
+   "name": "mimo_v2/reasoning_effort=xhigh",
+   "model": "mimo-v2.6-flash-mopd",
+   "model_type": "mimo_v2",
+   "controls": {
+    "reasoning_effort": "xhigh"
+   },
+   "context": {
+    "enable_thinking": true
+   }
+  },
+  {
+   "name": "mimo_v2/reasoning.effort=xhigh",
+   "model": "mimo-v2.6-flash-mopd",
+   "model_type": "mimo_v2",
+   "controls": {
+    "reasoning": {
+     "effort": "xhigh"
+    }
+   },
+   "context": {
+    "enable_thinking": true
+   }
+  },
+  {
+   "name": "mimo_v2/reasoning_effort=max",
+   "model": "mimo-v2.6-flash-mopd",
+   "model_type": "mimo_v2",
+   "controls": {
+    "reasoning_effort": "max"
+   },
+   "context": {
+    "enable_thinking": true
+   }
+  },
+  {
+   "name": "mimo_v2/reasoning.effort=max",
+   "model": "mimo-v2.6-flash-mopd",
+   "model_type": "mimo_v2",
+   "controls": {
+    "reasoning": {
+     "effort": "max"
+    }
+   },
+   "context": {
+    "enable_thinking": true
+   }
+  },
+  {
+   "name": "mimo_v2/reasoning_effort=High",
+   "model": "mimo-v2.6-flash-mopd",
+   "model_type": "mimo_v2",
+   "controls": {
+    "reasoning_effort": " High "
+   },
+   "context": {
+    "enable_thinking": true
+   }
+  },
+  {
+   "name": "mimo_v2/reasoning.effort=High",
+   "model": "mimo-v2.6-flash-mopd",
+   "model_type": "mimo_v2",
+   "controls": {
+    "reasoning": {
+     "effort": " High "
+    }
+   },
+   "context": {
+    "enable_thinking": true
+   }
+  },
+  {
+   "name": "mimo_v2/reasoning_effort=OFF",
+   "model": "mimo-v2.6-flash-mopd",
+   "model_type": "mimo_v2",
+   "controls": {
+    "reasoning_effort": "OFF"
+   },
+   "context": {
+    "enable_thinking": false
+   }
+  },
+  {
+   "name": "mimo_v2/reasoning.effort=OFF",
+   "model": "mimo-v2.6-flash-mopd",
+   "model_type": "mimo_v2",
+   "controls": {
+    "reasoning": {
+     "effort": "OFF"
+    }
+   },
+   "context": {
+    "enable_thinking": false
+   }
+  },
+  {
+   "name": "mimo_v2/reasoning_effort=0",
+   "model": "mimo-v2.6-flash-mopd",
+   "model_type": "mimo_v2",
+   "controls": {
+    "reasoning_effort": "0"
+   },
+   "context": {
+    "enable_thinking": false
+   }
+  },
+  {
+   "name": "mimo_v2/reasoning.effort=0",
+   "model": "mimo-v2.6-flash-mopd",
+   "model_type": "mimo_v2",
+   "controls": {
+    "reasoning": {
+     "effort": "0"
+    }
+   },
+   "context": {
+    "enable_thinking": false
+   }
+  },
+  {
+   "name": "mimo_v2/reasoning_effort=off",
+   "model": "mimo-v2.6-flash-mopd",
+   "model_type": "mimo_v2",
+   "controls": {
+    "reasoning_effort": "off"
+   },
+   "context": {
+    "enable_thinking": false
+   }
+  },
+  {
+   "name": "mimo_v2/reasoning.effort=off",
+   "model": "mimo-v2.6-flash-mopd",
+   "model_type": "mimo_v2",
+   "controls": {
+    "reasoning": {
+     "effort": "off"
+    }
+   },
+   "context": {
+    "enable_thinking": false
+   }
+  },
+  {
+   "name": "mimo_v2/reasoning_effort=turbo",
+   "model": "mimo-v2.6-flash-mopd",
+   "model_type": "mimo_v2",
+   "controls": {
+    "reasoning_effort": "turbo"
+   },
+   "refused": "reasoning_effort"
+  },
+  {
+   "name": "mimo_v2/reasoning.effort=turbo",
+   "model": "mimo-v2.6-flash-mopd",
+   "model_type": "mimo_v2",
+   "controls": {
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "mimo_v2/reasoning_effort=turbo+reasoning.effort=low",
+   "model": "mimo-v2.6-flash-mopd",
+   "model_type": "mimo_v2",
+   "controls": {
+    "reasoning_effort": "turbo",
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "refused": "reasoning_effort"
+  },
+  {
+   "name": "mimo_v2/reasoning_effort=low+reasoning.effort=turbo",
+   "model": "mimo-v2.6-flash-mopd",
+   "model_type": "mimo_v2",
+   "controls": {
+    "reasoning_effort": "low",
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "mimo_v2/reasoning_effort=high+reasoning.effort=HIGH",
+   "model": "mimo-v2.6-flash-mopd",
+   "model_type": "mimo_v2",
+   "controls": {
+    "reasoning_effort": "high",
+    "reasoning": {
+     "effort": "HIGH"
+    }
+   },
+   "context": {
+    "enable_thinking": true
+   }
+  },
+  {
+   "name": "nemotron_h_omni/reasoning_effort=none",
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+   "model_type": "nemotron_h_omni",
+   "controls": {
+    "reasoning_effort": "none"
+   },
+   "context": {
+    "enable_thinking": false,
+    "medium_effort": false
+   }
+  },
+  {
+   "name": "nemotron_h_omni/reasoning.effort=none",
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+   "model_type": "nemotron_h_omni",
+   "controls": {
+    "reasoning": {
+     "effort": "none"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "medium_effort": false
+   }
+  },
+  {
+   "name": "nemotron_h_omni/reasoning_effort=minimal",
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+   "model_type": "nemotron_h_omni",
+   "controls": {
+    "reasoning_effort": "minimal"
+   },
+   "context": {
+    "enable_thinking": true,
+    "medium_effort": true
+   }
+  },
+  {
+   "name": "nemotron_h_omni/reasoning.effort=minimal",
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+   "model_type": "nemotron_h_omni",
+   "controls": {
+    "reasoning": {
+     "effort": "minimal"
+    }
+   },
+   "context": {
+    "enable_thinking": true,
+    "medium_effort": true
+   }
+  },
+  {
+   "name": "nemotron_h_omni/reasoning_effort=low",
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+   "model_type": "nemotron_h_omni",
+   "controls": {
+    "reasoning_effort": "low"
+   },
+   "context": {
+    "enable_thinking": true,
+    "medium_effort": true
+   }
+  },
+  {
+   "name": "nemotron_h_omni/reasoning.effort=low",
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+   "model_type": "nemotron_h_omni",
+   "controls": {
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "context": {
+    "enable_thinking": true,
+    "medium_effort": true
+   }
+  },
+  {
+   "name": "nemotron_h_omni/reasoning_effort=medium",
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+   "model_type": "nemotron_h_omni",
+   "controls": {
+    "reasoning_effort": "medium"
+   },
+   "context": {
+    "enable_thinking": true,
+    "medium_effort": true
+   }
+  },
+  {
+   "name": "nemotron_h_omni/reasoning.effort=medium",
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+   "model_type": "nemotron_h_omni",
+   "controls": {
+    "reasoning": {
+     "effort": "medium"
+    }
+   },
+   "context": {
+    "enable_thinking": true,
+    "medium_effort": true
+   }
+  },
+  {
+   "name": "nemotron_h_omni/reasoning_effort=high",
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+   "model_type": "nemotron_h_omni",
+   "controls": {
+    "reasoning_effort": "high"
+   },
+   "context": {
+    "enable_thinking": true,
+    "medium_effort": false
+   }
+  },
+  {
+   "name": "nemotron_h_omni/reasoning.effort=high",
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+   "model_type": "nemotron_h_omni",
+   "controls": {
+    "reasoning": {
+     "effort": "high"
+    }
+   },
+   "context": {
+    "enable_thinking": true,
+    "medium_effort": false
+   }
+  },
+  {
+   "name": "nemotron_h_omni/reasoning_effort=xhigh",
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+   "model_type": "nemotron_h_omni",
+   "controls": {
+    "reasoning_effort": "xhigh"
+   },
+   "context": {
+    "enable_thinking": true,
+    "medium_effort": false
+   }
+  },
+  {
+   "name": "nemotron_h_omni/reasoning.effort=xhigh",
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+   "model_type": "nemotron_h_omni",
+   "controls": {
+    "reasoning": {
+     "effort": "xhigh"
+    }
+   },
+   "context": {
+    "enable_thinking": true,
+    "medium_effort": false
+   }
+  },
+  {
+   "name": "nemotron_h_omni/reasoning_effort=max",
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+   "model_type": "nemotron_h_omni",
+   "controls": {
+    "reasoning_effort": "max"
+   },
+   "context": {
+    "enable_thinking": true,
+    "medium_effort": false
+   }
+  },
+  {
+   "name": "nemotron_h_omni/reasoning.effort=max",
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+   "model_type": "nemotron_h_omni",
+   "controls": {
+    "reasoning": {
+     "effort": "max"
+    }
+   },
+   "context": {
+    "enable_thinking": true,
+    "medium_effort": false
+   }
+  },
+  {
+   "name": "nemotron_h_omni/reasoning_effort=High",
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+   "model_type": "nemotron_h_omni",
+   "controls": {
+    "reasoning_effort": " High "
+   },
+   "context": {
+    "enable_thinking": true,
+    "medium_effort": false
+   }
+  },
+  {
+   "name": "nemotron_h_omni/reasoning.effort=High",
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+   "model_type": "nemotron_h_omni",
+   "controls": {
+    "reasoning": {
+     "effort": " High "
+    }
+   },
+   "context": {
+    "enable_thinking": true,
+    "medium_effort": false
+   }
+  },
+  {
+   "name": "nemotron_h_omni/reasoning_effort=OFF",
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+   "model_type": "nemotron_h_omni",
+   "controls": {
+    "reasoning_effort": "OFF"
+   },
+   "context": {
+    "enable_thinking": false,
+    "medium_effort": false
+   }
+  },
+  {
+   "name": "nemotron_h_omni/reasoning.effort=OFF",
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+   "model_type": "nemotron_h_omni",
+   "controls": {
+    "reasoning": {
+     "effort": "OFF"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "medium_effort": false
+   }
+  },
+  {
+   "name": "nemotron_h_omni/reasoning_effort=0",
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+   "model_type": "nemotron_h_omni",
+   "controls": {
+    "reasoning_effort": "0"
+   },
+   "context": {
+    "enable_thinking": false,
+    "medium_effort": false
+   }
+  },
+  {
+   "name": "nemotron_h_omni/reasoning.effort=0",
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+   "model_type": "nemotron_h_omni",
+   "controls": {
+    "reasoning": {
+     "effort": "0"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "medium_effort": false
+   }
+  },
+  {
+   "name": "nemotron_h_omni/reasoning_effort=off",
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+   "model_type": "nemotron_h_omni",
+   "controls": {
+    "reasoning_effort": "off"
+   },
+   "context": {
+    "enable_thinking": false,
+    "medium_effort": false
+   }
+  },
+  {
+   "name": "nemotron_h_omni/reasoning.effort=off",
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+   "model_type": "nemotron_h_omni",
+   "controls": {
+    "reasoning": {
+     "effort": "off"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "medium_effort": false
+   }
+  },
+  {
+   "name": "nemotron_h_omni/reasoning_effort=turbo",
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+   "model_type": "nemotron_h_omni",
+   "controls": {
+    "reasoning_effort": "turbo"
+   },
+   "refused": "reasoning_effort"
+  },
+  {
+   "name": "nemotron_h_omni/reasoning.effort=turbo",
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+   "model_type": "nemotron_h_omni",
+   "controls": {
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "nemotron_h_omni/reasoning_effort=turbo+reasoning.effort=low",
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+   "model_type": "nemotron_h_omni",
+   "controls": {
+    "reasoning_effort": "turbo",
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "error": true
+  },
+  {
+   "name": "nemotron_h_omni/reasoning_effort=low+reasoning.effort=turbo",
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+   "model_type": "nemotron_h_omni",
+   "controls": {
+    "reasoning_effort": "low",
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "nemotron_h_omni/reasoning_effort=high+reasoning.effort=HIGH",
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+   "model_type": "nemotron_h_omni",
+   "controls": {
+    "reasoning_effort": "high",
+    "reasoning": {
+     "effort": "HIGH"
+    }
+   },
+   "context": {
+    "enable_thinking": true,
+    "medium_effort": false
+   }
+  },
+  {
+   "name": "glm5_next/reasoning_effort=none",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "reasoning_effort": "none"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "glm5_next/reasoning.effort=none",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "reasoning": {
+     "effort": "none"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "glm5_next/reasoning_effort=minimal",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "reasoning_effort": "minimal"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "glm5_next/reasoning.effort=minimal",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "reasoning": {
+     "effort": "minimal"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "glm5_next/reasoning_effort=low",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "reasoning_effort": "low"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "glm5_next/reasoning.effort=low",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "glm5_next/reasoning_effort=medium",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "reasoning_effort": "medium"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "glm5_next/reasoning.effort=medium",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "reasoning": {
+     "effort": "medium"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "glm5_next/reasoning_effort=high",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "reasoning_effort": "high"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "glm5_next/reasoning.effort=high",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "reasoning": {
+     "effort": "high"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "glm5_next/reasoning_effort=xhigh",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "reasoning_effort": "xhigh"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "glm5_next/reasoning.effort=xhigh",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "reasoning": {
+     "effort": "xhigh"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "glm5_next/reasoning_effort=max",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "reasoning_effort": "max"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "glm5_next/reasoning.effort=max",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "reasoning": {
+     "effort": "max"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "glm5_next/reasoning_effort=High",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "reasoning_effort": " High "
+   },
+   "refused": "reasoning_effort"
+  },
+  {
+   "name": "glm5_next/reasoning.effort=High",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "reasoning": {
+     "effort": " High "
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "glm5_next/reasoning_effort=OFF",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "reasoning_effort": "OFF"
+   },
+   "refused": "reasoning_effort"
+  },
+  {
+   "name": "glm5_next/reasoning.effort=OFF",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "reasoning": {
+     "effort": "OFF"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "glm5_next/reasoning_effort=0",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "reasoning_effort": "0"
+   },
+   "refused": "reasoning_effort"
+  },
+  {
+   "name": "glm5_next/reasoning.effort=0",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "reasoning": {
+     "effort": "0"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "glm5_next/reasoning_effort=off",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "reasoning_effort": "off"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "glm5_next/reasoning.effort=off",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "reasoning": {
+     "effort": "off"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "glm5_next/reasoning_effort=turbo",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "reasoning_effort": "turbo"
+   },
+   "refused": "reasoning_effort"
+  },
+  {
+   "name": "glm5_next/reasoning.effort=turbo",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "glm5_next/reasoning_effort=turbo+reasoning.effort=low",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "reasoning_effort": "turbo",
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "refused": "reasoning_effort"
+  },
+  {
+   "name": "glm5_next/reasoning_effort=low+reasoning.effort=turbo",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "reasoning_effort": "low",
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "glm5_next/reasoning_effort=high+reasoning.effort=HIGH",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "reasoning_effort": "high",
+    "reasoning": {
+     "effort": "HIGH"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "glm5_next/chat_template_kwargs.reasoning_effort=xhigh",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "chat_template_kwargs": {
+     "reasoning_effort": "xhigh"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "glm5_next/chat_template_kwargs.reasoning_effort=Low",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "chat_template_kwargs": {
+     "reasoning_effort": "Low"
+    }
+   },
+   "refused": "chat_template_kwargs.reasoning_effort"
+  },
+  {
+   "name": "glm5_next/chat_template_kwargs.reasoning_effort=turbo",
+   "model": "glm-5.3-flash",
+   "model_type": "glm5_next",
+   "controls": {
+    "chat_template_kwargs": {
+     "reasoning_effort": "turbo"
+    }
+   },
+   "refused": "chat_template_kwargs.reasoning_effort"
+  },
+  {
+   "name": "flint/reasoning_effort=none",
+   "model": "RecursiveSI/flint-int4",
+   "model_type": "flint",
+   "controls": {
+    "reasoning_effort": "none"
+   },
+   "context": {}
+  },
+  {
+   "name": "flint/reasoning.effort=none",
+   "model": "RecursiveSI/flint-int4",
+   "model_type": "flint",
+   "controls": {
+    "reasoning": {
+     "effort": "none"
+    }
+   },
+   "context": {}
+  },
+  {
+   "name": "flint/reasoning_effort=minimal",
+   "model": "RecursiveSI/flint-int4",
+   "model_type": "flint",
+   "controls": {
+    "reasoning_effort": "minimal"
+   },
+   "context": {}
+  },
+  {
+   "name": "flint/reasoning.effort=minimal",
+   "model": "RecursiveSI/flint-int4",
+   "model_type": "flint",
+   "controls": {
+    "reasoning": {
+     "effort": "minimal"
+    }
+   },
+   "context": {}
+  },
+  {
+   "name": "flint/reasoning_effort=low",
+   "model": "RecursiveSI/flint-int4",
+   "model_type": "flint",
+   "controls": {
+    "reasoning_effort": "low"
+   },
+   "context": {}
+  },
+  {
+   "name": "flint/reasoning.effort=low",
+   "model": "RecursiveSI/flint-int4",
+   "model_type": "flint",
+   "controls": {
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "context": {}
+  },
+  {
+   "name": "flint/reasoning_effort=medium",
+   "model": "RecursiveSI/flint-int4",
+   "model_type": "flint",
+   "controls": {
+    "reasoning_effort": "medium"
+   },
+   "context": {}
+  },
+  {
+   "name": "flint/reasoning.effort=medium",
+   "model": "RecursiveSI/flint-int4",
+   "model_type": "flint",
+   "controls": {
+    "reasoning": {
+     "effort": "medium"
+    }
+   },
+   "context": {}
+  },
+  {
+   "name": "flint/reasoning_effort=high",
+   "model": "RecursiveSI/flint-int4",
+   "model_type": "flint",
+   "controls": {
+    "reasoning_effort": "high"
+   },
+   "context": {}
+  },
+  {
+   "name": "flint/reasoning.effort=high",
+   "model": "RecursiveSI/flint-int4",
+   "model_type": "flint",
+   "controls": {
+    "reasoning": {
+     "effort": "high"
+    }
+   },
+   "context": {}
+  },
+  {
+   "name": "flint/reasoning_effort=xhigh",
+   "model": "RecursiveSI/flint-int4",
+   "model_type": "flint",
+   "controls": {
+    "reasoning_effort": "xhigh"
+   },
+   "context": {}
+  },
+  {
+   "name": "flint/reasoning.effort=xhigh",
+   "model": "RecursiveSI/flint-int4",
+   "model_type": "flint",
+   "controls": {
+    "reasoning": {
+     "effort": "xhigh"
+    }
+   },
+   "context": {}
+  },
+  {
+   "name": "flint/reasoning_effort=max",
+   "model": "RecursiveSI/flint-int4",
+   "model_type": "flint",
+   "controls": {
+    "reasoning_effort": "max"
+   },
+   "context": {}
+  },
+  {
+   "name": "flint/reasoning.effort=max",
+   "model": "RecursiveSI/flint-int4",
+   "model_type": "flint",
+   "controls": {
+    "reasoning": {
+     "effort": "max"
+    }
+   },
+   "context": {}
+  },
+  {
+   "name": "flint/reasoning_effort=High",
+   "model": "RecursiveSI/flint-int4",
+   "model_type": "flint",
+   "controls": {
+    "reasoning_effort": " High "
+   },
+   "refused": "reasoning_effort"
+  },
+  {
+   "name": "flint/reasoning.effort=High",
+   "model": "RecursiveSI/flint-int4",
+   "model_type": "flint",
+   "controls": {
+    "reasoning": {
+     "effort": " High "
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "flint/reasoning_effort=OFF",
+   "model": "RecursiveSI/flint-int4",
+   "model_type": "flint",
+   "controls": {
+    "reasoning_effort": "OFF"
+   },
+   "refused": "reasoning_effort"
+  },
+  {
+   "name": "flint/reasoning.effort=OFF",
+   "model": "RecursiveSI/flint-int4",
+   "model_type": "flint",
+   "controls": {
+    "reasoning": {
+     "effort": "OFF"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "flint/reasoning_effort=0",
+   "model": "RecursiveSI/flint-int4",
+   "model_type": "flint",
+   "controls": {
+    "reasoning_effort": "0"
+   },
+   "refused": "reasoning_effort"
+  },
+  {
+   "name": "flint/reasoning.effort=0",
+   "model": "RecursiveSI/flint-int4",
+   "model_type": "flint",
+   "controls": {
+    "reasoning": {
+     "effort": "0"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "flint/reasoning_effort=off",
+   "model": "RecursiveSI/flint-int4",
+   "model_type": "flint",
+   "controls": {
+    "reasoning_effort": "off"
+   },
+   "refused": "reasoning_effort"
+  },
+  {
+   "name": "flint/reasoning.effort=off",
+   "model": "RecursiveSI/flint-int4",
+   "model_type": "flint",
+   "controls": {
+    "reasoning": {
+     "effort": "off"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "flint/reasoning_effort=turbo",
+   "model": "RecursiveSI/flint-int4",
+   "model_type": "flint",
+   "controls": {
+    "reasoning_effort": "turbo"
+   },
+   "refused": "reasoning_effort"
+  },
+  {
+   "name": "flint/reasoning.effort=turbo",
+   "model": "RecursiveSI/flint-int4",
+   "model_type": "flint",
+   "controls": {
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "flint/reasoning_effort=turbo+reasoning.effort=low",
+   "model": "RecursiveSI/flint-int4",
+   "model_type": "flint",
+   "controls": {
+    "reasoning_effort": "turbo",
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "refused": "reasoning_effort"
+  },
+  {
+   "name": "flint/reasoning_effort=low+reasoning.effort=turbo",
+   "model": "RecursiveSI/flint-int4",
+   "model_type": "flint",
+   "controls": {
+    "reasoning_effort": "low",
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "flint/reasoning_effort=high+reasoning.effort=HIGH",
+   "model": "RecursiveSI/flint-int4",
+   "model_type": "flint",
+   "controls": {
+    "reasoning_effort": "high",
+    "reasoning": {
+     "effort": "HIGH"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "llama/reasoning_effort=none",
+   "model": "org/llama",
+   "model_type": "llama",
+   "controls": {
+    "reasoning_effort": "none"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "none"
+   }
+  },
+  {
+   "name": "llama/reasoning.effort=none",
+   "model": "org/llama",
+   "model_type": "llama",
+   "controls": {
+    "reasoning": {
+     "effort": "none"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "none"
+   }
+  },
+  {
+   "name": "llama/reasoning_effort=minimal",
+   "model": "org/llama",
+   "model_type": "llama",
+   "controls": {
+    "reasoning_effort": "minimal"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "minimal"
+   }
+  },
+  {
+   "name": "llama/reasoning.effort=minimal",
+   "model": "org/llama",
+   "model_type": "llama",
+   "controls": {
+    "reasoning": {
+     "effort": "minimal"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "minimal"
+   }
+  },
+  {
+   "name": "llama/reasoning_effort=low",
+   "model": "org/llama",
+   "model_type": "llama",
+   "controls": {
+    "reasoning_effort": "low"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "llama/reasoning.effort=low",
+   "model": "org/llama",
+   "model_type": "llama",
+   "controls": {
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "llama/reasoning_effort=medium",
+   "model": "org/llama",
+   "model_type": "llama",
+   "controls": {
+    "reasoning_effort": "medium"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "medium"
+   }
+  },
+  {
+   "name": "llama/reasoning.effort=medium",
+   "model": "org/llama",
+   "model_type": "llama",
+   "controls": {
+    "reasoning": {
+     "effort": "medium"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "medium"
+   }
+  },
+  {
+   "name": "llama/reasoning_effort=high",
+   "model": "org/llama",
+   "model_type": "llama",
+   "controls": {
+    "reasoning_effort": "high"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "llama/reasoning.effort=high",
+   "model": "org/llama",
+   "model_type": "llama",
+   "controls": {
+    "reasoning": {
+     "effort": "high"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "llama/reasoning_effort=xhigh",
+   "model": "org/llama",
+   "model_type": "llama",
+   "controls": {
+    "reasoning_effort": "xhigh"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "llama/reasoning.effort=xhigh",
+   "model": "org/llama",
+   "model_type": "llama",
+   "controls": {
+    "reasoning": {
+     "effort": "xhigh"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "llama/reasoning_effort=max",
+   "model": "org/llama",
+   "model_type": "llama",
+   "controls": {
+    "reasoning_effort": "max"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "llama/reasoning.effort=max",
+   "model": "org/llama",
+   "model_type": "llama",
+   "controls": {
+    "reasoning": {
+     "effort": "max"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "llama/reasoning_effort=High",
+   "model": "org/llama",
+   "model_type": "llama",
+   "controls": {
+    "reasoning_effort": " High "
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "High"
+   }
+  },
+  {
+   "name": "llama/reasoning.effort=High",
+   "model": "org/llama",
+   "model_type": "llama",
+   "controls": {
+    "reasoning": {
+     "effort": " High "
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": " High "
+   }
+  },
+  {
+   "name": "llama/reasoning_effort=OFF",
+   "model": "org/llama",
+   "model_type": "llama",
+   "controls": {
+    "reasoning_effort": "OFF"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "OFF"
+   }
+  },
+  {
+   "name": "llama/reasoning.effort=OFF",
+   "model": "org/llama",
+   "model_type": "llama",
+   "controls": {
+    "reasoning": {
+     "effort": "OFF"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "OFF"
+   }
+  },
+  {
+   "name": "llama/reasoning_effort=0",
+   "model": "org/llama",
+   "model_type": "llama",
+   "controls": {
+    "reasoning_effort": "0"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "0"
+   }
+  },
+  {
+   "name": "llama/reasoning.effort=0",
+   "model": "org/llama",
+   "model_type": "llama",
+   "controls": {
+    "reasoning": {
+     "effort": "0"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "0"
+   }
+  },
+  {
+   "name": "llama/reasoning_effort=off",
+   "model": "org/llama",
+   "model_type": "llama",
+   "controls": {
+    "reasoning_effort": "off"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "off"
+   }
+  },
+  {
+   "name": "llama/reasoning.effort=off",
+   "model": "org/llama",
+   "model_type": "llama",
+   "controls": {
+    "reasoning": {
+     "effort": "off"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "off"
+   }
+  },
+  {
+   "name": "llama/reasoning_effort=turbo",
+   "model": "org/llama",
+   "model_type": "llama",
+   "controls": {
+    "reasoning_effort": "turbo"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "turbo"
+   }
+  },
+  {
+   "name": "llama/reasoning.effort=turbo",
+   "model": "org/llama",
+   "model_type": "llama",
+   "controls": {
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "turbo"
+   }
+  },
+  {
+   "name": "llama/reasoning_effort=turbo+reasoning.effort=low",
+   "model": "org/llama",
+   "model_type": "llama",
+   "controls": {
+    "reasoning_effort": "turbo",
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "llama/reasoning_effort=low+reasoning.effort=turbo",
+   "model": "org/llama",
+   "model_type": "llama",
+   "controls": {
+    "reasoning_effort": "low",
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "turbo"
+   }
+  },
+  {
+   "name": "llama/reasoning_effort=high+reasoning.effort=HIGH",
+   "model": "org/llama",
+   "model_type": "llama",
+   "controls": {
+    "reasoning_effort": "high",
+    "reasoning": {
+     "effort": "HIGH"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "HIGH"
+   }
+  }
+ ]
+}

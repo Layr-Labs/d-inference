@@ -9,7 +9,10 @@ name: Darkbloom Route
 # fallback without asking. A macOS lane can name a size. Sizes are sent only
 # when the DARKBLOOM_JOB_SHAPES variable is exactly `on`; otherwise the request
 # is the one without sizes, and a `required` lane keeps its fallback without
-# asking.
+# asking. A run that targets master or main (a push to it, or a pull request
+# into it) asks the plane at DARKBLOOM_SANDBOX_URL. Every other run asks the plane at
+# DARKBLOOM_SANDBOX_DEV_URL when that variable is set, and otherwise the same
+# plane as master.
 on:
   workflow_call:
     inputs:
@@ -48,6 +51,10 @@ jobs:
           MACOS_LANES: ${{ vars.DARKBLOOM_MACOS_LANES }}
           JOB_SHAPES: ${{ vars.DARKBLOOM_JOB_SHAPES }}
           PLANE_URL: ${{ vars.DARKBLOOM_SANDBOX_URL }}
+          DEV_PLANE_URL: ${{ vars.DARKBLOOM_SANDBOX_DEV_URL }}
+          # The branch the run targets: a pull request's base, else the pushed
+          # or dispatched branch.
+          TARGET_BRANCH: ${{ github.base_ref || github.ref_name }}
           REPOSITORY: ${{ github.repository }}
           EVENT_NAME: ${{ github.event_name }}
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
@@ -136,6 +143,21 @@ jobs:
             | {lane, profile, count} + (if .shape != null then {shape} else {} end)]' <<<"$configured")
 
           plane_url=${PLANE_URL:-https://api-sandbox.darkbloom.dev}
+          plane_variable=DARKBLOOM_SANDBOX_URL
+          plane_name=$plane_url
+          # The plane comes from the branch the run targets, never from this
+          # file, so this file squashed from dev into master still asks
+          # DARKBLOOM_SANDBOX_URL there. A run with no target branch does too.
+          case ${TARGET_BRANCH:-} in
+            ''|master|main) ;;
+            *)
+              if [ -n "${DEV_PLANE_URL:-}" ]; then
+                plane_url=$DEV_PLANE_URL
+                plane_variable=DARKBLOOM_SANDBOX_DEV_URL
+                plane_name="$plane_url ($plane_variable)"
+              fi
+              ;;
+          esac
           body=$(mktemp)
           trap 'rm -f "$body"' EXIT
           reply=/dev/null
@@ -150,7 +172,7 @@ jobs:
             note="No lane has jobs to run. No request was sent."
           elif [[ $plane_url != https://* ]]; then
             fallback_reason="plane URL is not https"
-            note="DARKBLOOM_SANDBOX_URL must start with https://. No request was sent."
+            note="$plane_variable must start with https://. No request was sent."
           elif ! [[ ${RUN_ID:-} =~ ^[0-9]+$ && ${RUN_ATTEMPT:-} =~ ^[0-9]+$ ]]; then
             fallback_reason="run identity is unavailable"
             note="The run ID or attempt is not numeric. No request was sent."
@@ -184,9 +206,9 @@ jobs:
               reply=$body
             fi
             if [ -n "$fallback_reason" ]; then
-              note="Asked $plane_url: $fallback_reason. Requested lanes keep their fallback runners."
+              note="Asked $plane_name: $fallback_reason. Requested lanes keep their fallback runners."
             else
-              note=$(jq -r --arg url "$plane_url" \
+              note=$(jq -r --arg url "$plane_name" \
                 "$clean"'"Asked \($url): route \(.route_id | clean), expires \(.expires_at | clean)."' "$body")
             fi
           fi

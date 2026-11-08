@@ -8,7 +8,9 @@ by the lane's size when it sends one), and must never fail because of the
 plane. Sizes are sent only while the job-size switch is exactly `on`; otherwise
 the request is byte for byte the request without sizes. The workflow checks pin
 every routed job, its fallback, size, timeout and read-only permissions, and
-keep release paths on literal runners. Requires Bash, Python, jq, curl and
+keep release paths on literal runners. A run that targets master asks
+DARKBLOOM_SANDBOX_URL; any other run asks DARKBLOOM_SANDBOX_DEV_URL when it is
+set, and otherwise exactly as master. Requires Bash, Python, jq, curl and
 openssl.
 """
 
@@ -372,7 +374,7 @@ class RouteStepTests(unittest.TestCase):
             raise AssertionError("Tests must never fall through to the production plane")
         variables = dict(LANES=lanes, ROUTING=routing, PLANE_URL=plane_url, REPOSITORY="Layr-Labs/d-inference",
                          EVENT_NAME="push", HEAD_REPOSITORY="", RUN_ID="40408691758", RUN_ATTEMPT="2",
-                         MACOS_LANES="", JOB_SHAPES="")
+                         MACOS_LANES="", JOB_SHAPES="", TARGET_BRANCH="", DEV_PLANE_URL="")
         variables.update(context)
         if trust:
             variables["CURL_CA_BUNDLE"] = str(self.certificate)
@@ -523,6 +525,43 @@ class RouteStepTests(unittest.TestCase):
                                            HEAD_REPOSITORY="Layr-Labs/d-inference")
         self.assertRoutes(result, routes, GRANTED)
         self.assertEqual(len(plane.requests), 1)
+
+    def test_the_target_branch_picks_the_plane(self):
+        lanes = f"release-integrity linux_arm64 {LINUX_FALLBACK}\n"
+        granted = {"release-integrity": LINUX}
+        branches = ("master", "main", "dev", "feature/x", "masters", "")
+        with self.plane() as production, self.plane() as development:
+            # DARKBLOOM_SANDBOX_DEV_URL unset: every branch asks as before, with the same request and output.
+            before, _, before_summary = self.route(production.url, lanes=lanes)
+            for branch in branches:
+                with self.subTest(branch=branch, dev="unset"):
+                    result, routes, summary = self.route(production.url, lanes=lanes, TARGET_BRANCH=branch)
+                    self.assertRoutes(result, routes, granted)
+                    self.assertEqual((result.stdout, summary), (before.stdout, before_summary))
+            self.assertIn(f"Asked {production.url}: route route-1", before_summary)
+            self.assertEqual(len(production.requests), 1 + len(branches))
+            self.assertEqual(len({request["body"] for request in production.requests}), 1)
+            # Set: a run that targets master (a push to it or a pull request into it) still asks
+            # DARKBLOOM_SANDBOX_URL; any other run asks DARKBLOOM_SANDBOX_DEV_URL with the same request.
+            for branch in branches:
+                asked = production if branch in ("master", "main", "") else development
+                other = development if asked is production else production
+                counts = len(asked.requests), len(other.requests)
+                with self.subTest(branch=branch, dev="set"):
+                    result, routes, summary = self.route(production.url, lanes=lanes, TARGET_BRANCH=branch,
+                                                         DEV_PLANE_URL=development.url)
+                    self.assertRoutes(result, routes, granted)
+                    self.assertEqual((len(asked.requests), len(other.requests)), (counts[0] + 1, counts[1]))
+                    self.assertEqual(asked.requests[-1]["body"], production.requests[0]["body"])
+                    self.assertIn(f"Asked {production.url}: route route-1" if asked is production
+                                  else f"Asked {development.url} (DARKBLOOM_SANDBOX_DEV_URL): route route-1", summary)
+        # A dev plane URL that is not https is never contacted, and the note names its variable.
+        with self.plane() as production, self.plane(tls=False) as development:
+            result, routes, summary = self.route(production.url, lanes=lanes, TARGET_BRANCH="dev",
+                                                 DEV_PLANE_URL=development.url)
+        self.assertRoutes(result, routes, {"release-integrity": LINUX_FALLBACK})
+        self.assertIn("DARKBLOOM_SANDBOX_DEV_URL must start with https://", summary)
+        self.assertEqual((production.requests, development.requests), ([], []))
 
     def test_macos_lane_cap_keeps_lanes_in_order_and_asks_for_none_past_it(self):
         # LANES asks for test-provider (1 macOS job), then warm (2 macOS jobs).
@@ -735,13 +774,19 @@ class RouteWorkflowTests(unittest.TestCase):
         for name, expression in {"LANES": "inputs.lanes", "ROUTING": "vars.DARKBLOOM_ROUTING",
                                  "MACOS_LANES": "vars.DARKBLOOM_MACOS_LANES",
                                  "JOB_SHAPES": "vars.DARKBLOOM_JOB_SHAPES",
-                                 "PLANE_URL": "vars.DARKBLOOM_SANDBOX_URL", "REPOSITORY": "github.repository",
+                                 "PLANE_URL": "vars.DARKBLOOM_SANDBOX_URL",
+                                 "DEV_PLANE_URL": "vars.DARKBLOOM_SANDBOX_DEV_URL",
+                                 # The run's target branch, never a value of this file, picks the plane, so
+                                 # this file squashed from dev into master still asks DARKBLOOM_SANDBOX_URL.
+                                 "TARGET_BRANCH": "github.base_ref || github.ref_name",
+                                 "REPOSITORY": "github.repository",
                                  "EVENT_NAME": "github.event_name",
                                  "HEAD_REPOSITORY": "github.event.pull_request.head.repo.full_name",
                                  "RUN_ID": "github.run_id", "RUN_ATTEMPT": "github.run_attempt"}.items():
             self.assertIn(f"          {name}: ${{{{ {expression} }}}}\n", select)
         script = route_step()
         self.assertIn("plane_url=${PLANE_URL:-https://api-sandbox.darkbloom.dev}\n", script)
+        self.assertIn("case ${TARGET_BRANCH:-} in\n  ''|master|main) ;;\n", script)
         self.assertIn('if [ "${ROUTING:-}" != on ]; then\n', script)
         self.assertIn('if [ "${JOB_SHAPES:-}" = on ]; then\n', script)
         profiles = json.loads(re.search(r"^profiles='(.+)'$", script, re.MULTILINE).group(1))

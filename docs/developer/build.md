@@ -487,9 +487,24 @@ lists.
 
 While routing is off, and for pull requests from forks, every job keeps its
 fallback and the plane is not contacted. When it is on, the route job sends one
-`POST /v1/ci/routes` to `DARKBLOOM_SANDBOX_URL` (default
-`https://api-sandbox.darkbloom.dev`) for the jobs that will run, retrying at
-most once after a transient failure. It uses a grant only when the grant
+`POST /v1/ci/routes` to the plane for the jobs that will run, retrying at
+most once after a transient failure. The branch that the run targets chooses
+the plane: the base branch of a pull request, otherwise the pushed or
+dispatched branch (`github.base_ref || github.ref_name`).
+
+| Target branch | Plane URL |
+|---|---|
+| `master` (or `main`) | `DARKBLOOM_SANDBOX_URL` (default `https://api-sandbox.darkbloom.dev`) |
+| Any other branch, such as `dev` | `DARKBLOOM_SANDBOX_DEV_URL` when it is set; otherwise the same URL as `master` |
+
+The workflow files do not choose the plane, so a squash from `dev` into
+`master` does not change it: `master` runs still ask `DARKBLOOM_SANDBOX_URL`.
+While `DARKBLOOM_SANDBOX_DEV_URL` is not set, every run sends the same request
+to the same plane as before. The note in the route job's log and step summary
+names the plane URL that the job asked, followed by
+`(DARKBLOOM_SANDBOX_DEV_URL)` when it asked the dev plane.
+
+For either plane, the route job uses a grant only when the grant
 repeats the exact Darkbloom labels for the job's profile, qualified by the
 lane's size when it sends one ([Job sizes](#job-sizes)). Errors, timeouts and
 malformed replies keep the fallback; the plane never fails the route job.

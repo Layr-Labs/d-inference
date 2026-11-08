@@ -7,9 +7,25 @@ import Foundation
 import ProviderCore
 
 extension Start {
-    /// Whether Only me serves in this process: for `--here` (this terminal, this session) and for a service's child
-    /// (`--foreground`, launchd's); every other Only me start installs or restarts the background service.
-    static func servesOnlyMeInThisProcess(here: Bool, foreground: Bool) -> Bool { here || foreground }
+    /// Where a single-Mac start serves.
+    enum SingleMacServing: Equatable {
+        /// Only me in this process (`runLocalStandalone`).
+        case onlyMeHere
+        /// Only me's background service (`launchOnlyMeService`).
+        case onlyMeService
+        /// Darkbloom network or Both, me first in this process, as launchd's child (`runForeground`).
+        case foreground
+        /// Their background service (`launchDaemon`).
+        case service
+    }
+
+    /// Only me serves in this process for `--here` (this terminal, this session) and for a service's child
+    /// (`--foreground`, launchd's); every other Only me start installs or restarts the background service. The other
+    /// two choices serve in this process only as launchd's child.
+    static func singleMacServing(mode: LocalSettings.Mode, here: Bool, foreground: Bool) -> SingleMacServing {
+        if mode == .local { return here || foreground ? .onlyMeHere : .onlyMeService }
+        return foreground ? .foreground : .service
+    }
 
     /// Sets Only me up in the background and returns. Its job serves on `serving.port`, this Mac's one port as every
     /// start resolves it, so a local API already on 8000 stays on 8000.
@@ -46,8 +62,7 @@ extension Start {
         defer { replacement.release() }
         try await look.working("Starting Only me in the background") {
             try await ServiceDrain.stopDrainedProvider(daemonState: ServiceDrain.soloProviderState())
-            try LaunchAgent.installLocalAndStart(models: selected, configPath: configPath, port: serving.port,
-                                                 bind: serving.bind, noAuth: serving.noAuth)
+            try Self.installOnlyMeJob(models: selected, configPath: configPath, serving: serving)
         }
         Self.armRecoveryWatchdog(autoRestart: config.provider.autoRestart, configPath: snapshot.configPath)
         for line in Self.onlyMeServiceSummary(models: selected, idleMinutes: idleMinutes, serving: serving,
@@ -55,6 +70,13 @@ extension Start {
                                               autoUpdate: config.provider.autoUpdate) {
             print(line)
         }
+    }
+
+    /// Installs Only me's job and starts it, on `serving`'s port (this Mac's one port as the start resolved it, so a local
+    /// API already on 8000 stays on 8000), address and key setting.
+    static func installOnlyMeJob(models: [String], configPath: URL?, serving: StartServing) throws {
+        try LaunchAgent.installLocalAndStart(models: models, configPath: configPath, port: serving.port,
+                                             bind: serving.bind, noAuth: serving.noAuth)
     }
 
     /// Only me's models, picked as the other two choices pick theirs: `--model` or `--all` as given; in a terminal, the

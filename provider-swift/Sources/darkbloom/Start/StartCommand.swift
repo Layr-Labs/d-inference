@@ -557,14 +557,15 @@ struct Start: AsyncParsableCommand {
             printError("warning: \(notice)")
         }
 
-        if localOnly, Self.servesOnlyMeInThisProcess(here: here, foreground: foreground) {
+        switch Self.singleMacServing(mode: serving.mode, here: here, foreground: foreground) {
+        case .onlyMeHere:
             try await runLocalStandalone(
                 snapshot: snapshot,
                 config: effectiveConfig,
                 runtimeCapabilities: runtimeCapabilities,
                 serving: serving
             )
-        } else if localOnly {
+        case .onlyMeService:
             try await launchOnlyMeService(
                 snapshot: snapshot,
                 config: effectiveConfig,
@@ -577,7 +578,7 @@ struct Start: AsyncParsableCommand {
             try await setUpToolsBesideDaemon(serving: serving, coordinatorURL: effectiveCoordinator,
                                              waitSeconds: Self.toolWaitSeconds
                                                 + Int(clamping: effectiveConfig.backend.startupPreloadTimeoutSecs))
-        } else if foreground {
+        case .foreground:
             try await runForeground(
                 snapshot: snapshot,
                 hardware: hardware,
@@ -586,7 +587,7 @@ struct Start: AsyncParsableCommand {
                 runtimeCapabilities: runtimeCapabilities,
                 serving: serving
             )
-        } else {
+        case .service:
             try await launchDaemon(
                 snapshot: snapshot,
                 config: effectiveConfig,

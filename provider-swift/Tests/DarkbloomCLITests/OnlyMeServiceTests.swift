@@ -16,12 +16,21 @@ struct OnlyMeServiceTests {
 
     // MARK: - Where Only me serves
 
+    /// `start` serves by this rule (`singleMacServing`): a terminal `start --local` that served in its terminal, or
+    /// launchd's child that set a service up, would never serve in the background, or never serve at all.
     @Test("Only me serves in the background unless --here asks for this terminal; launchd's child serves itself")
     func whereOnlyMeServes() throws {
-        #expect(!Start.servesOnlyMeInThisProcess(here: false, foreground: false), "the question, a saved Only me, --local")
-        #expect(Start.servesOnlyMeInThisProcess(here: true, foreground: false), "--local --here")
-        #expect(Start.servesOnlyMeInThisProcess(here: false, foreground: true), "launchd's --foreground child")
+        #expect(Start.singleMacServing(mode: .local, here: false, foreground: false) == .onlyMeService,
+                "the question, a saved Only me, --local")
+        #expect(Start.singleMacServing(mode: .local, here: true, foreground: false) == .onlyMeHere, "--local --here")
+        #expect(Start.singleMacServing(mode: .local, here: false, foreground: true) == .onlyMeHere,
+                "launchd's --foreground child")
+        for mode in [LocalSettings.Mode.network, .both] {
+            #expect(Start.singleMacServing(mode: mode, here: false, foreground: false) == .service, "\(mode)")
+            #expect(Start.singleMacServing(mode: mode, here: false, foreground: true) == .foreground, "\(mode)'s child")
+        }
         #expect(try Start.parse(["--local", "--here"]).here)
+        #expect(try Start.parse(["--foreground", "--local"]).foreground)
         #expect(try Start.parse(["--local", "--here"]).singleMacOptions == ["--local", "--here"])
     }
 
@@ -248,6 +257,62 @@ struct OnlyMeServiceTests {
         let aligned = try SavedChoiceService.align(configPath: config.path.path, plist: job.path)
         #expect(aligned == SavedChoiceService.Alignment(mode: .both, line: nil))
         #expect(job.arguments == Self.job(.network) + ["--local-endpoint", "--port", "8005", "--bind", "127.0.0.1"])
+    }
+
+    /// The job `launchOnlyMeService` installs (`installOnlyMeJob`, through `LaunchAgent.installLocalAndStart` into a
+    /// temporary home, launchctl answered here): this Mac's one port as the start resolved it, its address, its key
+    /// setting and the models.
+    @Test("Only me's job as installed: a fresh Mac's first port, an updated Mac's 8000, its address, --no-auth, the models")
+    func onlyMeJobAsInstalled() throws {
+        for (installed, port) in [(UInt16?.none, Self.first), (UInt16?(8000), UInt16(8000))] {
+            let config = try TempConfig(Self.plain)
+            defer { config.remove() }
+            let serving = try #require(try ScriptedTerminal().resolve(
+                try config.start(["--local", "--bind", "100.64.0.5", "--no-auth"]), terminal: false,
+                installedPort: installed))
+            let home = FileManager.default.temporaryDirectory.appendingPathComponent("only-me-home-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: home) }
+            let job = try LaunchctlControl.$homeDirectoryForTesting.withValue(home) {
+                try LaunchctlControl.$runnerForTesting.withValue({ arguments in
+                    // Not loaded yet; enable, bootstrap and kickstart succeed.
+                    LaunchctlControl.Output(status: arguments.first == "print" ? 1 : 0, stdout: "", stderr: "")
+                }) {
+                    try Start.installOnlyMeJob(models: ["fixture/a", "fixture/b"], configPath: config.path,
+                                               serving: serving)
+                    return LaunchAgent.installedServingJob()
+                }
+            }
+            let which = installed == nil ? "a fresh Mac" : "an updated Mac"
+            #expect(job?.mode == .local && job?.port == port, "\(which): \(String(describing: job))")
+            #expect(job?.bind == "100.64.0.5" && job?.noAuth == true, "\(which)")
+            #expect(job?.models == ["fixture/a", "fixture/b"], "\(which)")
+            #expect(job?.configPath == config.path.standardizedFileURL.path, "\(which)")
+        }
+    }
+
+    /// A rewrite keeps how the job serves its local API: its own address (a tailnet or LAN `--bind`, with none in
+    /// `[local]`) and `--no-auth`, from Only me to Both, me first and back.
+    @Test("restart's rewrite keeps the job's own address and --no-auth, to Both, me first and to Only me")
+    func rewriteKeepsAddressAndNoAuth() throws {
+        let binary = "/Applications/Darkbloom.app/Contents/MacOS/darkbloom"
+        let onlyMe = [binary, "start", "--foreground", "--local", "--port", "8003", "--bind", "100.64.0.5", "--no-auth",
+                      "--model", "fixture/model"]
+        let both = Self.job(.network) + ["--local-endpoint", "--port", "8003", "--bind", "100.64.0.5", "--no-auth"]
+        for (saved, installed, rewritten) in [(LocalSettings.Mode.both, onlyMe, both), (.local, both, onlyMe)] {
+            // Only me's job names no coordinator: a rewrite to Both, me first takes the config's.
+            let config = try TempConfig(Self.plain + "\n[coordinator]\nurl = \"wss://coordinator.invalid/ws/provider\"\n"
+                + "\n[local]\nmode = \"\(saved.rawValue)\"\nport = 8003\n")
+            defer { config.remove() }
+            let job = try JobPlist(installed)
+            defer { job.remove() }
+            let aligned = try SavedChoiceService.align(configPath: config.path.path, plist: job.path,
+                                                       thisMacPort: { _ in 8003 })
+            #expect(aligned.mode == saved && aligned.line != nil, "\(saved)")
+            let served = LaunchAgent.installedServingJob(at: job.path)
+            #expect(served?.bind == "100.64.0.5", "\(saved): the job's own address")
+            #expect(served?.noAuth == true, "\(saved): --no-auth")
+            #expect(job.arguments == rewritten, "\(saved)")
+        }
     }
 
     // MARK: - Restart and update

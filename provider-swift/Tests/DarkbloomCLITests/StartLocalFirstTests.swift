@@ -286,7 +286,8 @@ struct StartLocalFirstTests {
         let start = try Start.parse(Array(argv.dropFirst()))
         let serving = try #require(try script.resolve(start, terminal: false))
         #expect(serving.mode == .local && serving.source == .saved && serving.port == 8001 && serving.change.isEmpty)
-        #expect(!Start.servesOnlyMeInThisProcess(here: start.here, foreground: start.foreground), "the background service")
+        #expect(Start.singleMacServing(mode: serving.mode, here: start.here, foreground: start.foreground) == .onlyMeService,
+                "the background service")
         #expect(script.reads == 0 && script.livePortLookups == 0 && script.probed.isEmpty)
         #expect(script.keyLookups == 1, "whether an account key is saved, for the requests line; never the key")
         #expect(config.bytes == before)

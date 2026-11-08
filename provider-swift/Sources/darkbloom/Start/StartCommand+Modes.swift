@@ -131,48 +131,7 @@ extension Start {
             ),
             models: advertised
         )
-        guard await runLocalStartupPreload(server: server, config: config) else { return }
-        try await server.start()
-        await ProviderTermination.shared.install {
-            await server.drainAndStop(timeoutSeconds: ProviderTermination.timeoutSeconds)
-        }
-        if await ProviderTermination.shared.terminationRequested {
-            await server.stop()
-            return
-        }
-
-        // Wait until the server CONFIRMS it bound the port before advertising it.
-        // start() launches Hummingbird in a child task and returns before the
-        // bind completes; we must not write a discovery record pointing at a dead
-        // (or, worse, a foreign) endpoint that `darkbloom local` / local-first
-        // clients would then trust. waitUntilBound reads the actor's own bind
-        // signal (Hummingbird onServerRunning), not an HTTP probe a process
-        // already holding the port could answer.
-        guard await server.waitUntilBound(timeoutSeconds: 5.0) else {
-            await server.stop()
-            printError(Self.localServerBindFailure(bind: bind, port: port, nextFree: LocalAPIPort.nextFree(besides: port),
-                                                   paired: ClusterPairSummary.local().paired))
-            throw ExitCode.failure
-        }
-        print("Listening on \(bind):\(port)")
-        // Only now that the start went ahead is a new port (or a settings flag) saved: a start refused above (no model
-        // it can serve, the running provider's drain, a port another program holds) saves nothing. This server runs
-        // for `--here`, which saves no mode, and for a service's child, which saves nothing.
-        try saveServingChoice(serving)
-
-        await server.startLifecycleControl()
-        // Models idle past the saved memory setting are unloaded, as the other two choices do.
-        await server.startIdleUnload(minutes: config.backend.idleTimeoutMins)
-        // Only me's background service confirms a new release once it listens, and updates itself as the network
-        // provider does; `--here` and a cluster's solo part don't.
-        if foreground, LaunchAgent.isCurrentProcessJob() {
-            let coordinator = coordinatorURL ?? config.coordinator.url
-            if let identity = ProcessIdentity.current() {
-                try? SelfUpdater(coordinatorBaseURL: coordinator).confirmRunningCandidateLaunch(
-                    processStartedAt: Double(identity.startTimeMicros) / 1_000_000)
-            }
-            await server.startAutoUpdateMonitor(coordinatorURL: coordinator, enabled: config.provider.autoUpdate)
-        }
+        guard try await startOnlyMeServer(server, config: config, serving: serving) else { return }
 
         // Publish discovery metadata so a same-machine client (and
         // `darkbloom local`) can find + authenticate to this server. Removed on
@@ -320,13 +279,7 @@ extension Start {
         }
         let runtimeHashes = (try? RuntimeHashReporter().report().coordinatorRuntimeHashes)
         let authToken = AuthTokenStore.load()
-        if let identity = ProcessIdentity.current() {
-            try? SelfUpdater(
-                coordinatorBaseURL: coordinatorURL
-            ).confirmRunningCandidateLaunch(
-                processStartedAt: Double(identity.startTimeMicros) / 1_000_000
-            )
-        }
+        Self.confirmRunningRelease(coordinatorURL: coordinatorURL)
 
         if config.provider.autoUpdate {
             try await runStartupAutoUpdate(coordinatorURL: coordinatorURL)

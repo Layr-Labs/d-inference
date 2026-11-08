@@ -35,7 +35,7 @@ struct LocalDefaultOutputTests {
             for await _ in stream {}
             #expect(output != nil, "a prompt that fills the window reached the engine")
         } catch let error as MultiModelBatchSchedulerEngineError {
-            #expect(output == nil && error == .advertisedContextExceeded)
+            #expect(output == nil && error == windowRefusal(262_144))
         }
         #expect(engine.submittedOutputs == (output.map { [$0] } ?? []))
         #expect(await bridge._testPendingSubmissionCount() == 0)

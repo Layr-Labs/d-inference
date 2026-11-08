@@ -122,12 +122,14 @@ struct Qwen4SupportPolicyTests {
 
     @Test func requestEnvelopeIncludesReservedAndDefaultOutput() async throws {
         // An engine-admission sentinel stops accepted cases before any model work.
-        // A request without max_tokens gets the default output cut to the window
-        // its prompt leaves; only a prompt that fills the window alone is refused.
-        let cases: [(prompt: Int, output: Int?, accepted: Bool)] = [
-            (8, 0, true), (7, 1, true), (6, nil, true), (7, nil, true),
-            (8, 1, false), (9, 0, false), (8, nil, false),
-            (1, Int.max, false), (1, -1, false),
+        // Every output is cut to what the prompt leaves of the window of 8 (the
+        // default of 2 too); only a prompt that fills the window is refused, in
+        // its words, and a negative output is refused as outside the context.
+        let full = windowRefusal(8)
+        let cases: [(prompt: Int, output: Int?, served: Int?, refusal: MultiModelBatchSchedulerEngineError?)] = [
+            (7, 1, 1, nil), (6, nil, 2, nil), (7, nil, 1, nil), (1, Int.max, 7, nil), (2, 7, 6, nil),
+            (8, 0, nil, full), (8, 1, nil, full), (9, 0, nil, full), (8, nil, nil, full),
+            (1, -1, nil, .advertisedContextExceeded),
         ]
         for testCase in cases {
             let native = Qwen4PolicyEngine()
@@ -139,13 +141,12 @@ struct Qwen4SupportPolicyTests {
                     request: policyRequest(output: testCase.output), requestId: "context-test",
                     usageSignal: usage, firstContentDeadline: nil)
                 for await _ in events {}
-                #expect(testCase.accepted)
+                #expect(testCase.served != nil)
             } catch let error as MultiModelBatchSchedulerEngineError {
-                #expect(!testCase.accepted)
-                #expect(error == .advertisedContextExceeded)
+                #expect(error == testCase.refusal)
             }
-            #expect(native.submittedOutputs == (testCase.accepted ? [testCase.output ?? min(2, 8 - testCase.prompt)] : []))
-            if !testCase.accepted {
+            #expect(native.submittedOutputs == (testCase.served.map { [$0] } ?? []))
+            if testCase.served == nil {
                 #expect(native.prefixProbes == 0)
                 #expect(usage.lookupResult?.outcome == .skippedPolicy)
             }
@@ -156,12 +157,13 @@ struct Qwen4SupportPolicyTests {
     }
 
     @Test(arguments: [Qwen4SupportPolicy.ownedModelID, Qwen4SupportPolicy.registryModelID])
-    func nativeWindowIncludesReservedOutputAndRejectsOverflow(modelID: String) async throws {
-        let cases: [(Int, Int, Bool)] = [
-            (82_001, 1, true), (229_376, 32_768, true), (229_377, 32_768, false),
-            (262_143, 1, true), (262_144, 1, false), (1, Int.max, false),
+    func nativeWindowCutsTheReservedOutputAndRefusesAFullPrompt(modelID: String) async throws {
+        // (prompt, max_tokens asked, the output the engine is asked for; nil: refused)
+        let cases: [(Int, Int, Int?)] = [
+            (82_001, 1, 1), (229_376, 32_768, 32_768), (229_377, 32_768, 32_767),
+            (262_143, 1, 1), (262_144, 1, nil), (1, Int.max, 262_143),
         ]
-        for (prompt, output, accepted) in cases {
+        for (prompt, output, served) in cases {
             let native = Qwen4PolicyEngine()
             let bridge = makePolicyBridge(native, cap: 262_144, modelID: modelID)
             do {
@@ -170,13 +172,12 @@ struct Qwen4SupportPolicyTests {
                     request: policyRequest(output: output, modelID: modelID),
                     requestId: "native-context-boundary", firstContentDeadline: nil)
                 for await _ in stream {}
-                #expect(accepted)
+                #expect(served != nil)
             } catch let error as MultiModelBatchSchedulerEngineError {
-                #expect(!accepted)
-                #expect(error == .advertisedContextExceeded)
+                #expect(served == nil && error == windowRefusal(262_144))
             }
-            #expect(native.submittedOutputs == (accepted ? [output] : []))
-            if !accepted { #expect(native.prefixProbes == 0) }
+            #expect(native.submittedOutputs == (served.map { [$0] } ?? []))
+            if served == nil { #expect(native.prefixProbes == 0) }
             #expect(await bridge._testPendingSubmissionCount() == 0)
             await bridge.shutdown()
         }
@@ -193,16 +194,15 @@ struct Qwen4SupportPolicyTests {
         let native = Qwen4PolicyEngine()
         let bridge = makePolicyBridge(native, cap: 8)
         let stream = await bridge.submitTokenized(
-            promptTokens: [1], request: policyRequest(output: Int.max))
+            promptTokens: Array(repeating: 1, count: 8), request: policyRequest(output: Int.max))
         var errors: [String] = []
         for await event in stream {
             if case .error(let message) = event { errors.append(message) }
         }
-        #expect(errors == [Qwen4SupportPolicy.contextRejectionMessage])
+        #expect(errors == [windowRefusalMarker(8)])
         #expect(native.submittedOutputs.isEmpty)
         #expect(native.prefixProbes == 0)
-        #expect(MultiModelBatchSchedulerEngineError.fromSchedulerMessage(errors.first ?? "")
-            == .advertisedContextExceeded)
+        #expect(MultiModelBatchSchedulerEngineError.fromSchedulerMessage(errors.first ?? "") == windowRefusal(8))
         await bridge.shutdown()
     }
 

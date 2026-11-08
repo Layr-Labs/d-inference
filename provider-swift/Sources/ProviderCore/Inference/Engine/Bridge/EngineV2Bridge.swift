@@ -138,12 +138,12 @@ public actor EngineV2Bridge {
     /// (`defaultMaxTokensContextLimit`: a cluster pair's context, or a single
     /// Mac slot's model window); nil when neither is known.
     nonisolated let defaultOutputContextLimit: Int?
-    /// The model window (from its config) that a single Mac slot without an
-    /// advertised context holds every request to: a prompt that fills it is
-    /// refused, naming it, and a `max_tokens` past what the prompt leaves is cut
-    /// to fit (`outputTokens(requested:promptTokens:)`). Nil on a pair, whose
-    /// engine refuses by its own limits, and on a slot with an advertised
-    /// context, which refuses a request past that context.
+    /// The window a single Mac slot holds every request to: its advertised
+    /// context, else its model's own (from its config), the smaller when it has
+    /// both. A `max_tokens` past what the prompt leaves is cut to fit
+    /// (`outputTokens(requested:promptTokens:)`), and only a prompt that leaves
+    /// no room is refused, naming the window. Nil on a pair, whose engine
+    /// refuses by its own limits, and on a slot that knows no window.
     nonisolated let modelWindowTokens: Int?
     let maxConcurrentRequests: Int
     nonisolated let performanceProfile: ServingPerformanceProfile?
@@ -476,8 +476,8 @@ public actor EngineV2Bridge {
         self.advertisedContextTokens = advertised
         self.defaultOutputContextLimit = advertised.map { min($0, defaultMaxTokensContextLimit ?? $0) }
             ?? defaultMaxTokensContextLimit
-        self.modelWindowTokens = advertised == nil && !(engine is DistributedCBv2Engine)
-            ? defaultMaxTokensContextLimit.flatMap { $0 > 0 ? $0 : nil } : nil
+        self.modelWindowTokens = engine is DistributedCBv2Engine
+            ? nil : defaultOutputContextLimit.flatMap { $0 > 0 ? $0 : nil }
         self.clampedKVBackendFallbackReason =
             Self.heartbeatFallbackReason(kvBackendFallbackReason)
         self.stopTokenIds = EngineV2Translation.stopTokenIds(

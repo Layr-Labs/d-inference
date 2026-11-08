@@ -196,9 +196,11 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
                 FileHandle.standardError.write(Data("local API: error text (debug): \(String(describing: error).prefix(400))\n".utf8))
             }
             let status = HTTPResponse.Status(code: Int(failure.statusCode))
-            // A request past an advertised context or beyond what this Mac's
-            // memory holds now is answered in words that name the bound and
-            // what to change (fixed text, never request content).
+            // A request beyond what this Mac's memory holds now, or one an
+            // advertised context's own guard refuses (with the output cut to
+            // the window, only an invalid output reaches it), is answered in
+            // words that name the bound and what to change (fixed text, never
+            // request content).
             switch error as? MultiModelBatchSchedulerEngineError {
             case .advertisedContextExceeded?:
                 return Self.openAIErrorResponse(status: status, message: Self.advertisedContextExceededMessage,

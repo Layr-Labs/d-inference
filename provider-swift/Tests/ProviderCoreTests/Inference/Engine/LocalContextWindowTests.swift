@@ -7,12 +7,14 @@ import NIOCore
 import Testing
 @testable import ProviderCore
 
-/// A single Mac slot without an advertised context (Gemma 4, Qwen 3.5/3.6/3.8,
-/// GPT-OSS, Nemotron Lightning) holds every request to its model's own window:
-/// a prompt that fills it is refused in words that name the window, and an
-/// output that would pass it is cut to what the prompt leaves. Before, such a
-/// slot enforced nothing: a 263,643-token prompt to Gemma 4 26B (window
-/// 262,144) and `max_tokens` 300,000 both ran.
+/// A single Mac slot holds every request to its window: its advertised context
+/// (GLM, MiMo, Super, Qwen4, Flint, Bonsai 9B), else its model's own (Gemma 4,
+/// Qwen 3.5/3.6/3.8, GPT-OSS, Nemotron Lightning). An output that would pass
+/// the window is cut to what the prompt leaves; only a prompt that leaves no
+/// room is refused, in words that name the window. Before, a slot without an
+/// advertised context enforced nothing (a 263,643-token prompt to Gemma 4 26B,
+/// window 262,144, and `max_tokens` 300,000 both ran), and a slot with one
+/// refused any `max_tokens` that would pass it.
 @Suite("A single Mac holds every request to its model window")
 struct LocalContextWindowTests {
     private static let window = 262_144
@@ -46,6 +48,32 @@ struct LocalContextWindowTests {
         await bridge.shutdown()
     }
 
+    /// A slot with an advertised context cuts the same way, to what the prompt
+    /// leaves of that context: OpenCode and Hermes send `max_tokens` = window/4,
+    /// which a long conversation on GLM, MiMo or Super would otherwise be
+    /// refused for long before the window is full.
+    @Test(arguments: [
+        // (prompt, max_tokens asked, max_tokens the engine is asked for)
+        (100, Optional(300_000), 262_044),
+        (100, Optional(200_000), 200_000),
+        (196_609, Optional(65_536), 65_535),
+        (262_143, Optional(300_000), 1),
+        (100, nil, 32_768),
+        (250_000, nil, 12_144),
+    ])
+    func anAdvertisedContextCutsAnOutputThatWouldPassIt(prompt: Int, requested: Int?, output: Int) async throws {
+        let engine = OutputRecordingEngine()
+        let bridge = EngineV2Bridge(engine: engine, modelId: "advertised/model",
+            tokenizer: TokenizerHandle(FixedLengthTokenizer()), eosTokenIds: [], defaultMaxTokens: 32_768,
+            maxConcurrentRequests: 1, kvBudget: roomyKVBudget(), advertisedContextTokens: Self.window)
+        let stream = try await bridge.submitTokenized(promptTokens: Array(repeating: 1, count: prompt),
+            request: .init(model: "advertised/model", messages: [], max_tokens: requested), requestId: "advertised",
+            firstContentDeadline: nil)
+        for await _ in stream {}
+        #expect(engine.submittedOutputs == [output])
+        await bridge.shutdown()
+    }
+
     @Test(arguments: [262_144, 263_643])
     func aPromptThatFillsTheWindowIsRefusedInWordsThatNameIt(prompt: Int) async throws {
         let engine = OutputRecordingEngine()
@@ -57,7 +85,7 @@ struct LocalContextWindowTests {
             for await _ in stream {}
             Issue.record("a \(prompt)-token prompt ran in a \(Self.window)-token window")
         } catch let error as MultiModelBatchSchedulerEngineError {
-            #expect(error.errorDescription?.contains("context window of \(Self.window) tokens") == true)
+            #expect(error == windowRefusal(Self.window))
             #expect(ProviderLoop.sanitizedInferenceFailure(from: error, phase: .generation).statusCode == 400)
             #expect(InferenceRefusalReason(promptRefusal: error) == .requestExceedsContext)
             #expect(MultiModelBatchSchedulerEngineError.fromSchedulerMessage(error.errorDescription ?? "") == error)
@@ -114,39 +142,28 @@ struct LocalContextWindowTests {
         for await event in stream {
             if case .error(let message) = event { errors.append(message) }
         }
-        #expect(errors.count == 1)
-        #expect(MultiModelBatchSchedulerEngineError.fromSchedulerMessage(errors.first ?? "")
-            == .promptExceedsContext(EngineV2Bridge.promptExceedsContextMessage(contextTokens: Self.window)))
+        #expect(errors == [windowRefusalMarker(Self.window)])
+        #expect(MultiModelBatchSchedulerEngineError.fromSchedulerMessage(errors.first ?? "") == windowRefusal(Self.window))
         #expect(engine.submittedOutputs.isEmpty)
         await bridge.shutdown()
     }
 
-    @Test func thisMacsAPIAnswersAnOverWindowPromptWithA400NamingTheWindow() async throws {
+    /// This Mac's API answers a prompt that fills the window with a JSON 400
+    /// before any SSE header, streamed or not, on either kind of window.
+    @Test(arguments: [(false, false), (false, true), (true, false), (true, true)])
+    func thisMacsAPIAnswersAFullPromptWithA400NamingTheWindow(advertised: Bool, stream: Bool) async throws {
         let engine = OutputRecordingEngine()
         let tokenizer = FixedLengthTokenizer(count: 8)
-        let bridge = Self.bridge(engine, window: 8, tokenizer: tokenizer)
-        let (status, error) = try await Self.answer(bridge, tokenizer: tokenizer)
-        #expect(status == 400)
-        #expect(error["code"] as? String == "context_length_exceeded")
-        #expect((error["message"] as? String)?.contains("context window of 8 tokens") == true, "\(error)")
-        #expect(engine.submittedOutputs.isEmpty)
-        await bridge.shutdown()
-    }
-
-    /// A model with an advertised context (GLM, MiMo, Super, Qwen4, Flint,
-    /// Bonsai 9B) refuses a prompt and `max_tokens` that together pass it; this
-    /// Mac's API says so in words, as it does for the model window.
-    @Test func thisMacsAPIAnswersARequestPastAnAdvertisedContextInWords() async throws {
-        let engine = OutputRecordingEngine()
-        let tokenizer = FixedLengthTokenizer(count: 8)
-        let bridge = EngineV2Bridge(engine: engine, modelId: "window/model", tokenizer: TokenizerHandle(tokenizer),
-            eosTokenIds: [], defaultMaxTokens: 32_768, maxConcurrentRequests: 1, kvBudget: roomyKVBudget(),
-            advertisedContextTokens: 8)
-        let (status, error) = try await Self.answer(bridge, tokenizer: tokenizer)
-        #expect(status == 400)
-        #expect(error["code"] as? String == "context_length_exceeded")
-        #expect(error["message"] as? String == "The prompt and max_tokens together don't fit in this model's "
-            + "context window (its context_length in /v1/models). Shorten the prompt or lower max_tokens.")
+        let bridge = advertised
+            ? EngineV2Bridge(engine: engine, modelId: "window/model", tokenizer: TokenizerHandle(tokenizer),
+                eosTokenIds: [], defaultMaxTokens: 32_768, maxConcurrentRequests: 1, kvBudget: roomyKVBudget(),
+                advertisedContextTokens: 8)
+            : Self.bridge(engine, window: 8, tokenizer: tokenizer)
+        let answer = try await Self.answer(bridge, tokenizer: tokenizer, stream: stream)
+        #expect(answer.status == 400)
+        #expect(answer.contentType == "application/json")
+        #expect(answer.error["code"] as? String == "context_length_exceeded")
+        #expect(answer.error["message"] as? String == windowRefusalWords(8), "\(answer.error)")
         #expect(engine.submittedOutputs.isEmpty)
         await bridge.shutdown()
     }
@@ -154,8 +171,10 @@ struct LocalContextWindowTests {
     /// Within the window, this Mac's memory decides: a request reserves its
     /// prompt and output when it starts, and one the memory can't hold is
     /// refused as busy (503, which the local router may pass on) in words that
-    /// name the memory and what to change.
-    @Test func thisMacsAPISaysWhenItsMemoryCantHoldARequest() async throws {
+    /// name the memory and what to change, before any SSE header: OpenCode and
+    /// Hermes stream.
+    @Test(arguments: [false, true])
+    func thisMacsAPISaysWhenItsMemoryCantHoldARequest(stream: Bool) async throws {
         let engine = OutputRecordingEngine()
         let tokenizer = FixedLengthTokenizer(count: 8)
         let exhausted = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0, memorySnapshot: {
@@ -164,18 +183,20 @@ struct LocalContextWindowTests {
         let bridge = EngineV2Bridge(engine: engine, modelId: "window/model", tokenizer: TokenizerHandle(tokenizer),
             eosTokenIds: [], defaultMaxTokens: 32_768, defaultMaxTokensContextLimit: Self.window,
             maxConcurrentRequests: 1, kvBytesPerToken: 4_000, kvBudget: exhausted)
-        let (status, error) = try await Self.answer(bridge, tokenizer: tokenizer)
-        #expect(status == 503)
-        #expect(error["message"] as? String == "This Mac's memory can't hold this request right now. Lower "
+        let answer = try await Self.answer(bridge, tokenizer: tokenizer, stream: stream)
+        #expect(answer.status == 503)
+        #expect(answer.contentType == "application/json")
+        #expect(answer.error["message"] as? String == "This Mac's memory can't hold this request right now. Lower "
             + "max_tokens or shorten the prompt (or send less media), or retry when this Mac's other requests finish.")
         #expect(engine.submittedOutputs.isEmpty)
         await bridge.shutdown()
     }
 
-    /// This Mac's API over one bridge: the status and the error object of a chat
-    /// request, without `max_tokens`, whose prompt renders to the tokenizer's count.
-    private static func answer(_ bridge: EngineV2Bridge, tokenizer: FixedLengthTokenizer) async throws
-        -> (status: Int, error: [String: Any]) {
+    /// This Mac's API over one bridge: the status, the content type and the
+    /// error object of a chat request, without `max_tokens`, whose prompt
+    /// renders to the tokenizer's count (an SSE body has no error object).
+    private static func answer(_ bridge: EngineV2Bridge, tokenizer: FixedLengthTokenizer, stream: Bool = false)
+        async throws -> (status: Int, contentType: String?, error: [String: Any]) {
         let handle = TokenizerHandle(tokenizer)
         let app = makeLocalInferenceApplication(
             config: .init(host: "127.0.0.1", port: 0, authToken: "synthetic-fixture-token"),
@@ -187,14 +208,15 @@ struct LocalContextWindowTests {
             },
             tokenizerProvider: { _ in .init(tokenizer: handle, modelType: nil) },
             availableModels: { ["window/model"] }, mtpSlots: { [] })
-        let (status, body) = try await app.test(.router) { client in
+        let body = #"{"model":"window/model","stream":\#(stream),"messages":[{"role":"user","content":"hi"}]}"#
+        let (status, contentType, text) = try await app.test(.router) { client in
             let response = try await client.execute(uri: "/v1/chat/completions", method: .post,
                 headers: [.contentType: "application/json", .authorization: "Bearer synthetic-fixture-token"],
-                body: ByteBuffer(string: #"{"model":"window/model","messages":[{"role":"user","content":"hi"}]}"#))
-            return (response.status.code, String(buffer: response.body))
+                body: ByteBuffer(string: body))
+            return (response.status.code, response.headers[.contentType], String(buffer: response.body))
         }
-        let json = try JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any]
-        return (status, json?["error"] as? [String: Any] ?? [:])
+        let json = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any]
+        return (status, contentType, json?["error"] as? [String: Any] ?? [:])
     }
 
     @Test func thisMacListsItsWindowAsTheContextAndTheOutput() {

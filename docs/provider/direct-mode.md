@@ -30,11 +30,14 @@ See [inference and logprob admission](../architecture/inference.md).
 - At least one model downloaded with an engine-v2 adapter (gpt-oss, gemma-4
   families); `darkbloom models list`. **Only me** serves the models already
   here; for **Both, me first**, `darkbloom start`'s model list also downloads.
-- A free port. `--local` and `--local-endpoint` use `[local] port`, else `8000`;
-  the start question, a saved choice and `--me-first` take the first free port
-  from 8001 and save it. `--port` picks one yourself.
+- A free port: this Mac's one local API port, `[local] port`. The first start
+  that serves a local API, whichever way it starts, keeps the port this Mac's
+  local API already uses (`8000` on a Mac updated from 0.10.10), or on a Mac
+  with none chooses the first free port from 8001, and saves it; every later
+  start uses it. `--port` picks another and
+  saves it.
 
-<!-- pending LS-1: one port per Mac, chosen once from 8001 and used by every start; Only me also gets the model list with downloads. -->
+<!-- pending LS-1: Only me also gets the model list with downloads. -->
 
 ## Steps
 
@@ -59,10 +62,15 @@ See [inference and logprob admission](../architecture/inference.md).
    darkbloom start --local --port 8080 --bind 0.0.0.0   # another port / every interface
    ```
 
-   `--port` defaults to `[local] port`, else `8000` (`defaultLocalPort`; a dev
-   build uses its own port, see
+   The port is this Mac's one local API port (`LocalAPIPort`,
+   `provider-swift/Sources/ProviderCore/Config/LocalAPIPort.swift`):
+   `[local] port`, else the port this Mac's local API already uses (its running
+   API's, else its installed service's: `8000` on a Mac updated from 0.10.10),
+   else the first free port from 8001 (from the build's `defaultLocalPort`,
+   never `8000`; a dev build starts from its own, see
    [Dev build identity](../operations/provider-release.md#dev-build-identity)),
-   `--bind` to `127.0.0.1`. Before serving,
+   saved the first time; a `--port` you name is saved too. `--bind` defaults to
+   `127.0.0.1`. Before serving,
    `Start.runLocalStandalone` (`provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift`)
    loads or creates the API token, filters the chosen models to those with an
    engine-v2 adapter (exit 1 with `No engine-v2-capable models available to
@@ -88,7 +96,9 @@ See [inference and logprob admission](../architecture/inference.md).
    kernels. `DARKBLOOM_TTFT_SHAPE_WARMUP=0` disables the warmup. Ctrl-C during preload cancels startup
    without opening the listener. It then waits for the socket to bind (`waitUntilBound`,
    bounded by the local bind wait in [runtime constants](./cli-reference.md#runtime-constants);
-   `Local server failed to bind <addr>:<port> within 5s` otherwise), writes the
+   otherwise it stops with ``This Mac's local API couldn't listen on
+   127.0.0.1:8001: another program may use port 8001. Free it, or run
+   `darkbloom start --port 8002`.``, naming the next free port), writes the
    discovery file and holds a fan-control lease while running
    ([fan control](./fan-control.md)). Ctrl-C stops it and removes the
    discovery file, and so does `darkbloom stop`. Closing the terminal window
@@ -106,9 +116,13 @@ See [inference and logprob admission](../architecture/inference.md).
    ```
 
    The provider daemon starts the local server in a child task once it is
-   running. If the port is busy the daemon logs `Local OpenAI endpoint did NOT
-   bind on <host>:<port> (port already in use?)` and keeps serving the fleet;
-   restart with a free `--port`. The discovery file is written only after the
+   running, on the same port as Only me. If the port is busy the daemon logs
+   `Local OpenAI endpoint did NOT bind on <host>:<port> (port already in use?)`
+   and keeps serving the fleet, and its state records why
+   (`DaemonState.localAPIFailure`, cleared once the API listens or stops), so
+   `darkbloom status` and `darkbloom local` say ``the local API isn't up: port
+   8001 is in use (`darkbloom start --port 8002`)`` instead of "network only".
+   The discovery file is written only after the
    provider's own socket is bound, never on a probe another process could
    answer (`ProviderLoop.onLocalEndpointBound`). With Both, me first a local
    request first loads the model if needed and then holds a reservation until
@@ -321,12 +335,17 @@ A model this Mac has loaded takes a prompt and its answer within its context
 window, the `context_length` above: the model's own, from its config, except
 GLM-5.3-Flash and Nemotron Super, which are held to 262,144 tokens on one Mac.
 It writes up to what the prompt leaves of the window: up to 32,768 tokens when
-the request names no `max_tokens`, and up to the rest of the window when
-`max_tokens` asks for it. Within the window, this Mac's memory decides: each
-request reserves room for its prompt and its output when it starts. The answer
-says which bound a request met ([refused request shapes](#refused-request-shapes)):
-the window (400 `context_length_exceeded`, in words that name it) or this Mac's
-memory (503, which the router passes on when a route dials out).
+the request names no `max_tokens` (Diffusion Gemma keeps its generation
+config's `max_new_tokens`, 256 when it names none), and up to the rest of the
+window when `max_tokens` asks for it. A larger `max_tokens` is cut to fit, on
+every model, and the answer ends with `finish_reason: length` if it gets there;
+only a prompt that leaves no room is refused. Within the window, this Mac's
+memory decides: each request reserves room for its prompt and its output when
+it starts. The answer says which bound a request met
+([refused request shapes](#refused-request-shapes)): the window (400
+`context_length_exceeded`, in words that name it) or this Mac's memory (503),
+both before any SSE header, streamed or not; the router passes a 503 on when a
+route dials out.
 
 Each model's input is in the list too (`input_modalities`, above), and for a
 model served here (this Mac, or the pair it leads or relays to) the engine's
@@ -424,9 +443,8 @@ envelope, the same on one Mac and on a [two-Mac cluster](./two-mac-cluster.md):
 
 | Request | Answer | Source |
 |---|---|---|
-| On one Mac, a prompt that fills the context window of a model that advertises none of its own (Gemma 4, Qwen 3.5, 3.6 and 3.8, GPT-OSS, Nemotron Lightning) | HTTP `400`, code `context_length_exceeded`, before the engine: `The prompt fills this model's context window of <N> tokens, leaving no room for an answer. Shorten the prompt or start a new conversation.` A `max_tokens` beyond what the prompt leaves is cut to it instead, and the answer ends with `finish_reason: length` if it gets there | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Translation.swift` (`outputTokens(requested:promptTokens:)`, `promptExceedsContextMessage`) |
-| On one Mac, a prompt and `max_tokens` that together pass an advertised context (GLM-5.3-Flash and Nemotron Super: 262,144; MiMo V2.6, Qwen4, Flint and Bonsai 9B: their configs') | HTTP `400`, code `context_length_exceeded`: `The prompt and max_tokens together don't fit in this model's context window (its context_length in /v1/models). Shorten the prompt or lower max_tokens.` Without `max_tokens`, only a prompt that fills the window | `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
-| On one Mac, a request its memory can't hold now | HTTP `503`: `This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt (or send less media), or retry when this Mac's other requests finish.` The local router passes it on when a route dials out | `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
+| On one Mac, a prompt that fills the model's context window: the context it advertises (GLM-5.3-Flash and Nemotron Super: 262,144; MiMo V2.6, Qwen4, Flint, Bonsai 9B and Diffusion Gemma: their configs'), else its model's own (Gemma 4, Qwen 3.5, 3.6 and 3.8, GPT-OSS, Nemotron Lightning) | HTTP `400`, code `context_length_exceeded`, before the engine and before any SSE header: `The prompt fills this model's context window of <N> tokens, leaving no room for an answer. Shorten the prompt or start a new conversation.` A `max_tokens` beyond what a shorter prompt leaves is cut to it instead, on every model, and the answer ends with `finish_reason: length` if it gets there | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Translation.swift` (`outputTokens(requested:promptTokens:)`, `promptExceedsContextMessage`) |
+| On one Mac, a request its memory can't hold now (the shared KV reservation, or the whole Mac's request limit) | HTTP `503` before any SSE header, streamed or not: `This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt (or send less media), or retry when this Mac's other requests finish.` The local router passes it on when a route dials out. A refusal by the engine's own admission, after the reservation, still ends a streamed answer with an error event | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
 | A content part whose `type` is none of `text`, `input_text`, `output_text`, `image_url`, `input_image`, `video_url`, `input_audio` (for example `input_file`, `input_video`, `refusal`) | HTTP `400` before model acquisition or SSE headers: `Content part type "<type>" is not supported. Send text, image_url, video_url or input_audio parts.` The type is shown with at most 64 of its letters, digits and `_.-:/`. Models without native audio still refuse `input_audio` | `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/OpenAIRequestValidation.swift` (`OpenAIRequestValidationError.unsupportedContentPart`) |
 | `response_format` `json_object`/`json_schema` whose answer stopped at `max_tokens` before it was complete (a reasoning model can spend the whole budget thinking) | HTTP `422`: `The output was cut off by max_tokens before the structured (response_format) answer was complete. Raise max_tokens or lower the reasoning effort, and retry.` Invalid JSON at a natural stop keeps its `422` with the closed internal-failure message. GLM-5.3-Flash validates its withheld JSON answer itself (`GLM5NextResponseFormat`) and answers a truncated one with that closed `422` | `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXOpenAIService.swift` (`MLXOpenAIServiceError.responseFormatCutOffByMaxTokens`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`); `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`validatedContent`) |
 | GLM-5.3-Flash with images or video and `response_format` `json_object`/`json_schema` or a required or named `tool_choice` | HTTP `400` `Invalid inference request.` (failure code `invalid_request`) before any media decode: only the text path withholds and validates such an answer or call. Hidden reasoning (`reasoning.exclude: true`, `include_reasoning: false`, `thinking.display: "omitted"`) is served with media too, its reasoning withheld | `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` (`prepareCompletion`); `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextPromptPolicy.swift` (`withholdsOutput`, `withholdsReasoning`) |
@@ -489,6 +507,7 @@ writes too (`StandaloneServer.startLifecycleControl`).
 | `401 Unauthorized` | Send `Authorization: Bearer $(cat ~/.darkbloom/local_token)`; the token in `local.json` is authoritative |
 | `413` on a chat request with images | Body above `localInferenceMaxUploadBytes`; downscale or send fewer images |
 | `darkbloom local` says no server is running but a process is listening | The listener is not a Darkbloom server (foreign process on the port) or a stale `local.json` was cleaned; restart with a free port |
+| ``the local API isn't up: port 8001 is in use (`darkbloom start --port 8002`)`` (`status`, `local`) | Another program listens on this Mac's local API port. Free it and run `darkbloom restart`, or run the command it names: the new port is saved, and tools set up for the old one need `darkbloom start --opencode` or `--hermes` again |
 | Model not in `/v1/models` | Only models with an engine-v2 adapter are advertised; `darkbloom models list` |
 | Endpoint unreachable from another machine | Default bind is loopback; `--bind 0.0.0.0` and open the port, then set a reverse proxy with TLS |
 | A DevNet build (`darkbloom-dev`) fails a request for a model it hasn't loaded with ``The production Darkbloom on this Mac holds this Mac's GPU: … no model of this build loads here until production stops serving`` | The production app serves on this Mac, and two models don't fit one Mac's memory: a DevNet build refuses each cold load at its start, before any eviction, weight hash or reservation (`StandaloneServer.ensureModelLoaded`, `ClusterGPUHold.productionServesHere`). A model it loaded before production started keeps serving. Retry once production stops serving here; production's own build never refuses this way |

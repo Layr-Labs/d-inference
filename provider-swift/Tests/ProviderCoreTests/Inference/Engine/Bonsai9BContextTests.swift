@@ -26,11 +26,17 @@ struct Bonsai9BContextTests {
         }
     }
 
+    /// The artifact's context bounds every request: an output that would pass
+    /// it is cut to what the prompt leaves, and only a prompt that fills it is
+    /// refused, in words that name it, before the engine.
     @Test(arguments: [Bonsai9BModelPolicy.modelID, Bonsai9BModelPolicy.eigenModelID])
-    func actualEnvelopeRejectsBeforeEngineWithNoPerformanceProfile(id: String) async throws {
-        for (limit, output, admitted) in [(262144, 262143, true),
-            (262144, 262144, false), (262144, 262145, false),
-            (262144, Int.max, false), (2, 2, false)] {
+    func actualEnvelopeCutsTheOutputAndRefusesAFullPromptWithNoPerformanceProfile(id: String) async throws {
+        // (context, prompt, max_tokens asked, the output the engine is asked for; nil: refused)
+        let cases: [(Int, Int, Int, Int?)] = [
+            (262144, 1, 262143, 262143), (262144, 1, 262144, 262143), (262144, 1, 262145, 262143),
+            (262144, 1, Int.max, 262143), (2, 1, 2, 1), (2, 2, 1, nil), (262144, 262144, 1, nil),
+        ]
+        for (limit, prompt, output, served) in cases {
             let engine = BonsaiContextSentinelEngine()
             let budget = GlobalKVCacheBudget(memorySnapshot: {
                 .init(total: 256 << 30, active: 0, cache: 0, systemAvailable: 256 << 30)
@@ -39,15 +45,15 @@ struct Bonsai9BContextTests {
                 tokenizer: TokenizerHandle(BonsaiContextTokenizer()), eosTokenIds: [],
                 maxConcurrentRequests: 1, kvBudget: budget, advertisedContextTokens: cap(limit, modelID: id))
             do {
-                let stream = try await bridge.submitTokenized(promptTokens: [1],
+                let stream = try await bridge.submitTokenized(promptTokens: Array(repeating: 1, count: prompt),
                     request: .init(model: id, messages: [], max_tokens: output),
                     requestId: "context-envelope", firstContentDeadline: nil)
                 for await _ in stream {}
-                #expect(admitted, "out-of-context request reached engine")
+                #expect(served != nil, "a prompt that fills the context reached the engine")
             } catch let error as MultiModelBatchSchedulerEngineError {
-                #expect(!admitted && error == .advertisedContextExceeded)
+                #expect(served == nil && error == windowRefusal(limit))
             }
-            #expect(engine.submissions == (admitted ? 1 : 0))
+            #expect(engine.submittedOutputs == (served.map { [$0] } ?? []))
             #expect(await bridge._testPendingSubmissionCount() == 0)
             await bridge.shutdown()
             #expect(budget.serviceBudget.count == 0)
@@ -66,8 +72,8 @@ struct Bonsai9BContextTests {
             request: .init(model: id, messages: []), requestId: "default-output")
         var errors: [String] = []
         for await event in stream { if case .error(let message) = event { errors.append(message) } }
-        #expect(errors == [Qwen4SupportPolicy.contextRejectionMessage])
-        #expect(engine.submissions == 0)
+        #expect(errors == [windowRefusalMarker(8)])
+        #expect(engine.submittedOutputs.isEmpty)
         #expect(await bridge._testPendingSubmissionCount() == 0)
         await bridge.shutdown()
     }
@@ -76,10 +82,11 @@ struct Bonsai9BContextTests {
 /// No tensors or token generation: observe the real bridge admission boundary.
 private final class BonsaiContextSentinelEngine: CBv2Engine, @unchecked Sendable {
     private let lock = NSLock()
-    private var submitted = 0
-    var submissions: Int { lock.withLock { submitted } }
+    private var outputs: [Int] = []
+    /// The output each admitted request asks for.
+    var submittedOutputs: [Int] { lock.withLock { outputs } }
     func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
-        lock.withLock { submitted += 1 }
+        lock.withLock { outputs.append(request.maxTokens) }
         return AsyncStream { $0.finish() }
     }
     func cancel(_ id: CBv2RequestID) {}

@@ -361,9 +361,9 @@ extension EngineV2Bridge {
             ssdStaged: false,
             readyReceiptRegistered: false,
             usageSignal: usageSignal)
-        // A slot held to its model window refuses a prompt that fills it, naming
-        // the window: no output fits after it. Any other prompt's output is
-        // already cut to what it leaves (`outputTokens(requested:promptTokens:)`).
+        // A single Mac slot refuses a prompt that fills its window, naming the
+        // window: no output fits after it. Any other prompt's output is already
+        // cut to what it leaves (`outputTokens(requested:promptTokens:)`).
         if let window = modelWindowTokens, promptTokens.count >= window {
             usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
             continuation.finish()
@@ -372,6 +372,8 @@ extension EngineV2Bridge {
         }
         let (worstCaseTokens, tokenCountOverflow) = promptTokens.count.addingReportingOverflow(
             cbv2Request.maxTokens)
+        // The advertised context's own guard: with the output cut above, only a
+        // negative output reaches it on a single Mac.
         if let cap = advertisedContextTokens,
             cbv2Request.maxTokens < 0 || tokenCountOverflow || worstCaseTokens > cap
         {
@@ -666,11 +668,14 @@ extension EngineV2Bridge {
                 usageSignal?.finalizeLookup(
                     failure: .capacity,
                     fallbackTier: prefixCacheFallbackTier)
-                continuation.yield(.error(
-                    "token_budget_exhausted: request requires \(worstCaseTokens) tokens "
-                        + "but the shared KV budget has no headroom"))
+                // As the service allowance above: refused before any stream
+                // exists, so a streamed local request gets 503, not a 200 SSE
+                // stream that fails at once. Nonthrowing callers still get the
+                // message in-band.
                 continuation.finish()
-                return stream
+                throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(
+                    "token_budget_exhausted: request requires \(worstCaseTokens) tokens "
+                        + "but the shared KV budget has no headroom")
             }
         }
 

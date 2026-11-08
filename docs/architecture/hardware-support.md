@@ -598,14 +598,15 @@ observed per-layer dtype, window rings, recurrent state and configured MTP state
 A request reserves its prompt plus its `max_tokens` from that grant when it is
 submitted. A request that names no `max_tokens` reserves the 32,768-token default
 (`SlotSizingSnapshot.defaultOutputTokens`, as on a pair) cut to the window its
-prompt leaves, so the default never needs more than the model's context. A slot
-without an advertised context holds every request to its model's window
-(`EngineV2Bridge.modelWindowTokens`): a prompt that fills it is refused as
+prompt leaves, so the default never needs more than the model's context. Every
+single-Mac slot holds every request to its window (`EngineV2Bridge.modelWindowTokens`:
+its advertised context, else its model's): a prompt that fills it is refused as
 `context_length_exceeded`, and a `max_tokens` beyond what the prompt leaves is
 cut to it before the reservation
 (`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Translation.swift`).
-A request the grant can't hold now is refused for capacity; this Mac's API
-answers it with 503 and words that name this Mac's memory and what to change
+A request the grant can't hold now is refused for capacity before any stream
+exists; this Mac's API answers it with 503, before any SSE header, and words that
+name this Mac's memory and what to change
 (`provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift`).
 
 Loads and serving-set reserve raises must preserve each resident bridge's total

@@ -7,6 +7,7 @@ import ProviderCore
 // whose answer is saved. Without a terminal and without a saved choice (the LaunchAgent after an upgrade, the desktop
 // app, scripts), a start keeps today's behaviour exactly: the Darkbloom network, with no local API, no Keychain
 // look-up, no port probe and nothing written, so an upgraded Mac never opens a local port by itself.
+// Every local API this Mac serves takes its one port (`LocalAPIPort`), so the address tools were given never moves.
 // No line here names a speed (`StartLocalFirstTests.noSpeedAnywhere` reads them all) or prints a key.
 
 /// A flag that names how this Mac serves, for one start. `--me-first` and `--local-endpoint` both name Both.
@@ -183,13 +184,13 @@ struct StartServing: Equatable, Sendable {
     var noAuth: Bool
     /// What this start saves in `[local]`.
     var change = LocalSettingsChange()
-    /// Says which port this start chose for a new local API.
+    /// Says which port this start gave this Mac's local API, when it chose one or a named one replaced the saved one.
     var portNote: String?
 
     var hasLocalAPI: Bool { mode != .network }
 
-    /// The address a client on this Mac dials.
-    var baseURL: String { "http://\(bind == "0.0.0.0" ? "127.0.0.1" : bind):\(port)/v1" }
+    /// The address a client on this Mac dials, as `local.json` names it once the API listens.
+    var baseURL: String { LocalEndpoint.baseURL(host: bind, port: port) }
 
     /// The LaunchAgent's local API arguments: the ones `--local-endpoint` has always baked, so an older provider
     /// rolled back to reads the same plist.
@@ -237,27 +238,30 @@ struct ServingEnvironment {
     var emit: (String) -> Void
     /// Whether the local router's account key is saved; asked only when this start has a local API.
     var accountKeySaved: () -> Bool
-    /// The port of this install's running local API, which the new start takes over; asked only when a new local
-    /// API needs a port.
+    /// The port of this install's running local API, which a start keeps; asked only when no port is saved or named.
     var ownLivePort: () -> UInt16?
-    /// No other program listens on the port; asked only about ports a new local API may take.
+    /// The port the installed LaunchAgent's job serves its local API on, which a start on a stopped Mac keeps; asked
+    /// only when no port is saved or named and no local API runs.
+    var installedPort: () -> UInt16?
+    /// No other program listens on the port; asked only about the ports a choice may take.
     var isFree: (UInt16) -> Bool
 
-    /// This Mac's terminal, Keychain, `local.json` and ports.
+    /// This Mac's terminal, Keychain, `local.json`, LaunchAgent and ports.
     static var live: ServingEnvironment {
         ServingEnvironment(terminal: ClusterPairCommands.isTerminal(), readInput: { readLine() },
                            emit: { print($0, terminator: ""); fflush(stdout) },
                            accountKeySaved: { Start.accountKeySaved() },
-                           ownLivePort: { LocalEndpoint.readLiveInfo()?.port },
-                           isFree: { ClusterLocalServing.portIsFree(Int($0)) })
+                           ownLivePort: LocalAPIPort.ownLivePort, installedPort: LocalAPIPort.installedJobPort,
+                           isFree: LocalAPIPort.isFreeOnThisMac)
     }
 }
 
 enum StartServingResolver {
     /// How this start serves, and what it saves; nil when the person cancelled at the question. Only the question
     /// saves a mode. The settings flags (`--no-me-first`, `--me-first-idle`, `--route`) are saved as `--idle-timeout`
-    /// is; a port this start chose for a new local API is saved so that tools keep finding it. The --foreground
-    /// service saves nothing, probes no port and never asks the Keychain: launchd's arguments say how it serves.
+    /// is. Every local API takes this Mac's one port (`LocalAPIPort.choose`): a named `--port`, else `[local] port`,
+    /// else one chosen now; a new or named port is saved so that tools keep finding it. The --foreground service saves
+    /// nothing, probes no port and never asks the Keychain: launchd's arguments say how it serves.
     static func resolve(_ options: LocalFirstOptions, saved section: LocalSettings?,
                         environment env: ServingEnvironment) throws -> StartServing? {
         let saved = section ?? LocalSettings()
@@ -294,22 +298,23 @@ enum StartServingResolver {
             if let minutes = options.meFirstIdleMinutes { change.meFirstIdleMinutes = minutes }
         }
 
+        // This Mac's one port, for a local API only. Darkbloom network chooses, probes and saves none, so a start
+        // without a terminal and without `[local]` (today's Darkbloom network) stays today's, byte for byte. A
+        // service's child (`--foreground`) serves on the port its arguments name, else `[local] port`, else the
+        // build's default.
         var port = options.port ?? saved.resolvedPort
         var portNote: String?
         if mode != .network, !options.foreground {
-            if options.port == nil, picksPort(source: source, savedPort: saved.port) {
-                let start = saved.resolvedPort
-                guard let chosen = LocalAPIPort.pick(from: start, ownLivePort: env.ownLivePort(), isFree: env.isFree) else {
-                    throw ValidationError(LocalAPIPort.noneFree(from: start))
-                }
-                port = chosen
-                if chosen != saved.port {
-                    change.port = chosen
-                    portNote = LocalAPIPort.note(chosen: chosen, start: start)
-                }
-            } else if source == .question, port != saved.port {
-                change.port = port
+            let choice: LocalAPIPort.Choice
+            do {
+                choice = try LocalAPIPort.choose(named: options.port, saved: saved.port, ownLivePort: env.ownLivePort,
+                                                 installedPort: env.installedPort, isFree: env.isFree)
+            } catch let none as LocalAPIPortError {
+                throw ValidationError(none.description)
             }
+            port = choice.port
+            if choice.saves { change.port = choice.port }
+            portNote = choice.note
             // `--local` keeps its banner, which shows the key and no route, and a local API without a key
             // (`--no-auth`) passes nothing on, so neither asks the Keychain.
             if accountKeySaved == nil, source != .flag(.local), !options.noAuth { accountKeySaved = env.accountKeySaved() }
@@ -322,46 +327,6 @@ enum StartServingResolver {
             meFirstIdleMinutes: settings.resolvedMeFirstIdleMinutes, route: settings.route,
             accountKeySaved: accountKeySaved, port: port, bind: options.bind ?? saved.resolvedBind,
             noAuth: options.noAuth, change: change, portNote: portNote)
-    }
-
-    /// A new local API gets a free port, never 8000 or 47420–47423: the question's, a saved choice without a saved
-    /// port, and `--me-first`. `--local` and `--local-endpoint` keep the saved or the build's default port, as before.
-    static func picksPort(source: ServingModeSource, savedPort: UInt16?) -> Bool {
-        switch source {
-        case .question: return true
-        case .saved, .flag(.meFirst): return savedPort == nil
-        default: return false
-        }
-    }
-}
-
-/// The port of a local API a start creates.
-enum LocalAPIPort {
-    /// Never chosen for a new local API: 8000, where other local AI apps listen (oMLX on the owner's Mac), and
-    /// 47420–47423, which two-Mac pairs use. A pair's local API keeps to the same (`ClusterLocalServing.localAPIPort`).
-    static let neverChosen = LocalSettings.neverChosenPorts
-    /// How far past the first port the search goes.
-    static let span: UInt16 = 20
-
-    /// The first of `start`…`start + span` that isn't one of `neverChosen` and that no other program listens on, or
-    /// that this install's own running local API holds (the new start replaces it). `isFree` is never asked about
-    /// `neverChosen`, so a start never even test-binds them.
-    static func pick(from start: UInt16, ownLivePort: UInt16?, isFree: (UInt16) -> Bool) -> UInt16? {
-        (start...last(from: start)).first { !neverChosen.contains($0) && ($0 == ownLivePort || isFree($0)) }
-    }
-
-    static func last(from start: UInt16) -> UInt16 { start > UInt16.max - span ? UInt16.max : start + span }
-
-    /// Says which port was chosen, and why not the first one.
-    static func note(chosen: UInt16, start: UInt16) -> String {
-        guard chosen != start else { return "Local API port: \(chosen) (saved)." }
-        let why = neverChosen.contains(start) ? "is left for other apps" : "is in use"
-        return "Local API port: \(chosen) (saved; \(start) \(why))."
-    }
-
-    static func noneFree(from start: UInt16) -> String {
-        "No free port for this Mac's API from \(start) to \(last(from: start)) (8000 and \(ClusterLocalServing.pairPortsWords) are never chosen). "
-            + "Free one, or name one with --port <n>."
     }
 }
 
@@ -456,6 +421,33 @@ enum LocalFirstWords {
         case .myMacs: return "this Mac first, then your other Macs (free)"
         case .myMacsFirst: return "this Mac first, then your other Macs (free), then the Darkbloom network (billed)"
         }
+    }
+
+    /// Why the local API a provider was asked to open beside Darkbloom isn't up, and what to do, after "the local API
+    /// isn't up: ". `nextFree` is the port `start --port` would take instead; `server` says whose API it is, so the
+    /// command named works on this Mac.
+    static func whyNotUp(_ failure: DaemonState.LocalAPIFailure, nextFree: UInt16?, server: LocalAPIServer) -> String {
+        let cli = BuildEnvironment.current.cliName
+        let solo = server == .singleMac(paired: true) ? " --solo" : ""
+        guard failure.portInUse else {
+            return "it couldn't listen on \(failure.host):\(failure.port)" + (failure.reason.map { " (\($0))" } ?? "")
+                + "; `\(cli) restart\(solo)` tries again"
+        }
+        guard server != .pair else {
+            return "port \(failure.port) is in use ("
+                + (nextFree == nil ? "free it, then `\(cli) restart`" : "`\(cli) restart` starts the pair's API on a free port")
+                + ")"
+        }
+        return "port \(failure.port) is in use (" + (nextFree.map { "`\(cli) start\(solo) --port \($0)`" }
+            ?? "free it, or name another with `\(cli) start\(solo) --port <n>`") + ")"
+    }
+
+    /// Whose local API isn't up, for the command its line names: single-Mac serving's (`start --port`, which a Mac in
+    /// a two-Mac cluster takes only with `--solo`), or the pair's (its port isn't `[local] port`: the pair picks a free
+    /// one when it starts again).
+    enum LocalAPIServer: Equatable, Sendable {
+        case singleMac(paired: Bool)
+        case pair
     }
 
     /// How a start serves, after `Serving: `.

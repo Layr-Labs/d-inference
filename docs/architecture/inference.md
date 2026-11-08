@@ -2009,9 +2009,9 @@ an explicit Boolean. Input IDs, sampling and cache keys do not depend on it.
 Bridge-side order (`EngineV2Bridge.submitTokenized`): request-id
 normalisation (`maxRequestIdLength = 256`; duplicates rejected) → first
 deadline check → translation (`maxTokens = outputTokens(requested:promptTokens:)`: an omitted `max_tokens` is the
-slot's 32,768-token default cut to the window the prompt leaves; a slot without an advertised context refuses a
-prompt that fills its model window, `promptExceedsContext`, and cuts a larger `max_tokens` to what the prompt
-leaves) → resident probe / useful SSD stage → shared-KV reservation (contiguous slots
+slot's 32,768-token default cut to the window the prompt leaves; every single-Mac slot refuses a prompt that fills
+its window, its advertised context else its model's, `promptExceedsContext`, and cuts a larger `max_tokens` to what
+the prompt leaves; a pair keeps its own limits) → resident probe / useful SSD stage → shared-KV reservation (contiguous slots
 only; segmented paged admission and backing use the shared native process owner) → final deadline
 check → engine request-id mint → `engine.submit`. The terminal `CBv2Usage`
 carries `CBv2RequestTiming`, copied verbatim onto the wire and folded into
@@ -3338,10 +3338,12 @@ The slot factory passes native context (or an explicitly lower operator limit)
 into the bridge; the generic bridge does not impose a second Qwen-sized cap
 on this or other model families. Coordinator admission owns SLA policy, while
 provider context and physical-memory checks remain mandatory.
-`EngineV2Bridge.submitTokenized` checks prompt plus the translated output
-reservation with overflow-safe arithmetic before cache probes or tickets.
-`advertisedContextExceeded` stays a content-free client error through both
-submission overloads and the shared HTTP mapper; cache hits cannot bypass it.
+`EngineV2Bridge.submitTokenized` cuts the output reservation to what the prompt
+leaves of the context and refuses a prompt that fills it
+(`promptExceedsContext`), with overflow-safe arithmetic, before cache probes or
+tickets. Both refusals (`promptExceedsContext`, and `advertisedContextExceeded`
+for an invalid reservation) stay client errors through both submission
+overloads and the shared HTTP mapper; cache hits cannot bypass them.
 The [candidate reference](../reference/qwen4-next-support.md) owns the
 identity, configuration and qualification boundary.
 
@@ -3497,7 +3499,15 @@ chosen model's new plan, found by its id (`OnboardingLive.localAdopt`,
 plan stands (it was priced with less memory than the Macs then have); a model
 the new plan does not offer is not started, and the screen says why. The
 automatic re-plan after repeated memory refusals at load adopts through the
-same path (`ClusterService.noteMemoryRefusal`). The stage memory
+same path (`ClusterService.noteMemoryRefusal`, `replanForMemory`). It comes due
+when a part ends, so also right after an owner's stop: once it holds the
+command lock it acts only while the pair's start is still saved and this Mac's
+claim is confirmed, so it never starts a pair its owner stopped. Finding the
+pair stopped, it gives its 10-minute slot back, so the owner's next start is
+re-planned at its next refusals. Its adoption
+stops a serving pair first; from there every failure, of that stop too, puts
+the saved start back (`ClusterService.restoreStart`), as the re-plan after an
+update does, so a failed automatic stop never leaves the pair stopped. The stage memory
 gate's two fixed margins (the admissible floor, 6 GiB, and the loading
 headroom, 4 GiB, measured on 256 GiB Macs) apply on Macs with 96 GiB or more;
 below that they are the same share of the observed Mac's memory, never under
@@ -3718,7 +3728,8 @@ evidence, not a change to the normal final-row contract or the near-tie rule
    guard (404) — `EngineV2SupportedModels.swift`.
 2. A request is admitted to a contiguous slot only after
    `prompt + maxTokens` bytes are reserved in `GlobalKVCacheBudget`; a second
-   reservation failure rejects with `token_budget_exhausted` —
+   reservation failure throws `token_budget_exhausted` before any stream exists
+   (a nonthrowing caller gets it in-band) —
    `EngineV2Bridge+Submission.swift` (`submitTokenized`).
 3. Every request carries a first-content deadline anchored at frame receipt and
    checked before submit; the budget value is the coordinator's, not a provider
@@ -3775,7 +3786,8 @@ evidence, not a change to the normal final-row contract or the near-tie rule
 | `token_budget_exhausted: … shared KV budget has no headroom` | Two failed `GlobalKVCacheBudget` reservations | `EngineV2Bridge+Submission.swift` |
 | `PreContentDeadlineFailure.deadlineUnreachable` | First-content budget spent before submit or during prefill projection | `CoordinatorClientTypes.swift`, `EngineV2Bridge+Submission.swift`, `EngineV2Bridge+Admission.swift` |
 | Request cancelled by lease | No admission/prefill/decode progress within 120 s, or a step over 30 s | `EngineLoopV2.swift` |
-| `advertisedContextExceeded` (400) | Candidate prompt plus resolved output reservation is invalid, overflowing or above its context limit | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`); `provider-swift/Sources/ProviderCore/ProviderLoop+ErrorMapping.swift` (`sanitizedInferenceFailure`) |
+| `promptExceedsContext` (400) | The prompt alone fills the slot's window (its advertised context, else its model's); a larger output is cut, never refused | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`) |
+| `advertisedContextExceeded` (400) | Candidate output reservation is negative or overflows; with the output cut to the window, nothing larger reaches it on one Mac | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`); `provider-swift/Sources/ProviderCore/ProviderLoop+ErrorMapping.swift` (`sanitizedInferenceFailure`) |
 | `unsupportedReasoningEffort` (400) | Active effort outside `low`/`medium`/`xhigh` on a restricted-effort template (Flash-Next, Qwen3.8-27B) | `provider-swift/Sources/ProviderCore/Inference/Qwen4SupportPolicy.swift` (`validateReasoningContext`) |
 | Model dropped from advertised set | Unsupported `model_type` | `EngineV2SupportedModels.swift` |
 | Model advertised, capacity quotes rejected with reason `template` | Scan-time render check failed (`template_render_ok = false`) | `TemplateRenderCheck.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift` (`reject(.template)`) |
@@ -4111,9 +4123,13 @@ other Mac stops taking part (unplugged, off, or serving on its own). Each tick,
 the cluster service asks `ClusterPairWatch` whether the pair actually runs here,
 from the intent, the other Mac's last real answer over the link
 (`ClusterControlNode.otherAnsweredAt`, set only by a lease or an answer, never at
-start) and whether this Mac's part serves (a coordinator-paired part's pair line
-says serving, or a part runs while the other Mac answers within the lease's
-time-to-live). Every start gets 15 minutes (`ClusterPairWatch.giveUpSeconds`).
+start) and whether this Mac's part serves (`ClusterService.partServesNow`: it
+runs while the other Mac answers within the lease's time-to-live, and on rank 0
+of a coordinator-paired pair its pair line says serving too). Only rank 0, which
+hosts the pair's slot, writes pair lines; the other rank's link follower reports
+to it over the cable, so on the Mac that follows the verdict never waits for a
+line it can't write. Every start gets 15 minutes
+(`ClusterPairWatch.giveUpSeconds`).
 
 | Verdict | When | The service |
 |---|---|---|

@@ -247,13 +247,11 @@ extension ProviderLoop {
             await self?.releaseLocalReservation(mid)
         }
         // Me first: while this request waits in the engine's queue, Darkbloom
-        // work on the model that hasn't answered gives way.
-        var ownerWaits: (@Sendable () async -> Void)?
+        // work on the model that hasn't answered gives way. In shared mode
+        // there is no closure, so the request isn't watched at all.
+        var makeRoomForOwner: (@Sendable () async -> Void)?
         if meFirst != nil {
-            ownerWaits = { [weak self] in
-                guard let self else { return }
-                await self.giveWayToOwner(modelId: modelId)
-            }
+            makeRoomForOwner = { [weak self] in await self?.giveWayToOwner(modelId: modelId) }
         }
         return MultiModelBatchSchedulerEngine.AcquiredModel(
             tokenizer: slot.tokenizer,
@@ -269,7 +267,7 @@ extension ProviderLoop {
             // legacy VLM media path's memory reservations.
             engineV2Bridge: slot.engineV2,
             visionGate: slot.visionGate(kvBudget: kvBudget),
-            ownerWaits: ownerWaits
+            makeRoomForOwner: makeRoomForOwner
         )
     }
 
@@ -283,7 +281,7 @@ extension ProviderLoop {
             throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
         }
         let release = acquired.releaseToken
-        return .init(owner: owner, release: { await release.fire() }, ownerWaits: acquired.ownerWaits)
+        return .init(owner: owner, release: { await release.fire() }, makeRoomForOwner: acquired.makeRoomForOwner)
     }
 
     /// Drop one local in-flight reservation for a model, which ends that

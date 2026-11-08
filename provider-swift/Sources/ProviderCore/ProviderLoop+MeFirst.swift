@@ -60,16 +60,21 @@ extension ProviderLoop {
     }
 
     /// The owner's request on `modelId` is waiting in its engine's queue
-    /// (`EngineV2Bridge+OwnerWait.swift`). Each Darkbloom request on that
+    /// (`EngineV2Bridge.watchOwnerWait`). Each Darkbloom request on that
     /// model that has sent no output gives way: it is cancelled and ends with
-    /// the typed drain refusal, which the coordinator re-routes to another
-    /// provider before anything reaches its client, with no retry charge or
-    /// health strike. A Darkbloom request that has sent output finishes.
-    /// Nothing happens while me first is off.
+    /// the typed drain refusal (`drainRefusal`), which the coordinator
+    /// re-routes to another provider before anything reaches its client, with
+    /// no retry charge or health strike.
+    /// - Only before its first output: `InferenceCancellationToken.giveWay()`
+    ///   fails once the request has claimed it, so a Darkbloom request that is
+    ///   streaming is never touched and finishes.
+    /// - Only the owner's requests on a Mac with me first on call it: the
+    ///   closure that does exists only then (`acquireModelForLocal`).
+    /// - A request still being admitted has no token yet and is skipped; the
+    ///   owner's request asks again at its next look while it still waits.
     func giveWayToOwner(modelId: String) async {
-        guard meFirst != nil else { return }
         for (requestId, model) in requestToModel where model == modelId {
-            guard let token = await cancellationRegistry.token(for: requestId), token.yieldToOwner() else { continue }
+            guard let token = await cancellationRegistry.token(for: requestId), token.giveWay() else { continue }
             logger.info("Me first: Darkbloom request \(requestId) had sent nothing; it goes back to the network so your request can start")
             await handleCancellation(requestId: requestId, receivedFromCoordinator: false)
         }

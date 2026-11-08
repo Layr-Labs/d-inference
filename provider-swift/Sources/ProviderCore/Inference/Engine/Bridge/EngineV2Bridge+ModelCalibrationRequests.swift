@@ -52,9 +52,10 @@ extension EngineV2Bridge {
         let request = ChatCompletionRequest(model: modelId, messages: [],
             temperature: cell.sampled ? nil : 0, max_tokens: cell.outputTokens, seed: 42)
         // A session that a streamed local request's model load starts inherits that request's task-locals. This probe
-        // is no request's: it must not say, or end, the request's prompt progress, nor wait as the owner's request.
+        // is no request's: it must not say, or end, the request's prompt progress, nor make room as the owner's
+        // request.
         let stream = await LocalPrefillProgress.$current.withValue(nil) {
-            await MeFirstOwnerRequest.$waits.withValue(nil) {
+            await MeFirstOwnerRequest.$makeRoom.withValue(nil) {
                 await submitTokenized(promptTokens: tokens, request: request, requestId: id, cacheEnabled: false)
             }
         }

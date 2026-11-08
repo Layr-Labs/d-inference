@@ -557,6 +557,7 @@ extension ProviderLoop {
         powerAssertion.acquire()
         syncWarmModelState()
         let token = await cancellationRegistry.register(requestId: requestId)
+        if let afterTokenRegistered = afterTokenRegisteredForTesting { await afterTokenRegistered(requestId) }
         // Me first: a request that gave way to the owner (`giveWayToOwner`)
         // ends with this one terminal, before or after its stream started.
         let sendGaveWayRefusal: @Sendable () -> Void = { [state] in

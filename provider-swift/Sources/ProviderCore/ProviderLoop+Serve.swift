@@ -461,7 +461,7 @@ extension ProviderLoop {
                     noteCoordinatorConnection(connected: event.isConnected)
                     clearConnectionAuthorization()
                     cancelAppAttestShadow()
-                case .inferenceRequest(let requestId, _, _, _, _, _, _, _, _, _, _, _, _, _):
+                case .inferenceRequest(let requestId, _, _, _, _, _, _, _, _, _, _, _, _, _, _):
                     // Here, not in the work reader: on arrival, in order with
                     // the trust statuses `ServingReadiness` compares it to.
                     noteCoordinatorRequest()

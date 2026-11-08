@@ -11,16 +11,15 @@ Put OpenCode (or Hermes) on this Mac's own models:
 ```bash
 curl -fsSL https://api.darkbloom.dev/install.sh | bash
 exec $SHELL -l                    # or open a new Terminal window, so your shell finds darkbloom
-darkbloom start --opencode        # or --hermes
+darkbloom --opencode              # or --hermes
 ```
 
-`start` asks how this Mac serves: **Only me**, **Darkbloom network** or
+It asks how this Mac serves: **Only me**, **Darkbloom network** or
 **Both, me first**. Press Enter for Both, me first. Every choice asks which
 models to serve and serves them in the background; with Only me or Both, me
 first, `--opencode` sets OpenCode up. Darkbloom network gives OpenCode no
 address on this Mac. Then, in OpenCode, `/models` → Darkbloom. Two Macs: run
-`darkbloom cluster` on each, then `darkbloom start --opencode` on the leading
-Mac.
+`darkbloom cluster` on each, then `darkbloom --opencode` on the leading Mac.
 
 <!-- pending LS-3: in a pair, start with opencode on either Mac. -->
 

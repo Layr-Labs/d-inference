@@ -1,11 +1,11 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
 is updated afterwards, and how to remove everything. For anyone installing
-Darkbloom; after it, `darkbloom start --opencode` sets up OpenCode on this
+Darkbloom; after it, `darkbloom --opencode` sets up OpenCode on this
 Mac's models ([quickstart](./quickstart.md)).
 
 ## Prerequisites
@@ -150,7 +150,7 @@ The `PATH` line the installer added is read only by a new shell. Until then,
 ### 3. Start Darkbloom
 
 ```bash
-darkbloom start --opencode      # or --hermes, or plain darkbloom start for neither
+darkbloom --opencode            # or --hermes, or plain darkbloom start for neither
 ```
 
 It asks how this Mac serves (**Only me**, **Darkbloom network** or **Both, me
@@ -378,7 +378,7 @@ Neither `darkbloom uninstall` nor `darkbloom stop --uninstall` removes that job.
 
 ## Related
 
-- [Quickstart](./quickstart.md) — `darkbloom start --opencode`, the three choices, then earning.
+- [Quickstart](./quickstart.md) — `darkbloom --opencode`, the three choices, then earning.
 - [CLI reference](./cli-reference.md) — every flag, path and runtime constant.
 - [Troubleshooting](./troubleshooting.md) — installer exit messages and fixes.
 - [Attestation](./attestation.md) — what the Secure Enclave key and MDM profile buy you.

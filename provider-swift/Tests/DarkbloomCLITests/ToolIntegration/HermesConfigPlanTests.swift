@@ -29,7 +29,7 @@ private let block = """
 
 """
 
-private let added = "  # Added by `darkbloom start --hermes`. Run it again to refresh Darkbloom's models.\n"
+private let added = "  # Added by `darkbloom --hermes`. Run it again to refresh Darkbloom's models.\n"
 
 private let mainModel = """
 model:
@@ -210,7 +210,9 @@ struct HermesConfigPlanTests {
 
         """
         let result = plan(owner)
-        #expect(F.newText(result) == "providers:\n" + added + block + """
+        // The line an earlier version wrote above the block stays as it is: a re-run never adds a second.
+        let earlierLine = "  # Added by `darkbloom start --hermes`. Run it again to refresh Darkbloom's models.\n"
+        #expect(F.newText(result) == "providers:\n" + earlierLine + block + """
 
           ollama-launch:
             api: http://127.0.0.1:11434/v1

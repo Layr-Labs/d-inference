@@ -9,14 +9,14 @@ Mac.
 ```text
 curl -fsSL https://api.darkbloom.dev/install.sh | bash
 exec $SHELL -l                       # or open a new Terminal window
-darkbloom start --opencode           # or --hermes
+darkbloom --opencode                 # or --hermes
   How should this Mac serve?  1 Only me · 2 Darkbloom network · 3 Both, me first  [3]
   Enter → your models (downloads offered) → memory when idle → serves in the background
   ✓ OpenCode can use Darkbloom
 opencode                             # then /models → Darkbloom
 ```
 
-Two Macs: run `darkbloom cluster` on each, then `darkbloom start --opencode` on
+Two Macs: run `darkbloom cluster` on each, then `darkbloom --opencode` on
 the leading Mac.
 
 <!-- pending LS-4: the start waits for the model to load, on one live line, before it sets OpenCode up. -->
@@ -56,10 +56,11 @@ shell reads. What the script verifies and writes is in
 ### 2. Start, and set up OpenCode
 
 ```bash
-darkbloom start --opencode      # --hermes for Hermes; both flags for both
+darkbloom --opencode            # --hermes for Hermes; both flags for both
 ```
 
-`start` prints the Terms-of-Service notice (starting is acceptance) and asks
+It runs `darkbloom start`, then sets OpenCode up. `start` prints the
+Terms-of-Service notice (starting is acceptance) and asks
 how this Mac serves (`How should this Mac serve?`). Type 1, 2 or 3, or press
 Enter for 3:
 
@@ -132,7 +133,7 @@ client: `darkbloom local` prints the address, the key and a `curl` to try
 - **Switch later:** `darkbloom start --choose` asks how this Mac serves again,
   then goes on as above.
 - **Two Macs:** run `darkbloom cluster` on each Mac to pair them and choose
-  how the pair serves, then `darkbloom start --opencode` on the leading Mac
+  how the pair serves, then `darkbloom --opencode` on the leading Mac
   ([Two Macs as one provider](./two-mac-cluster.md)).
 
 <!-- pending LS-2: a one-step switch that keeps the models, the address and the key. -->

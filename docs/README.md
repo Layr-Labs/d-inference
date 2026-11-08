@@ -1,6 +1,6 @@
 # Darkbloom Provider Documentation
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 This repository documents the Swift provider, local native inference and
 landing. Backend, console and admin source, development and operating guides
@@ -9,7 +9,7 @@ belong to
 
 ## Operate A Provider
 
-- [Quickstart](provider/quickstart.md): install, then `darkbloom start --opencode` for OpenCode or Hermes on this Mac's own models
+- [Quickstart](provider/quickstart.md): install, then `darkbloom --opencode` for OpenCode or Hermes on this Mac's own models
 - [Use your Mac yourself, first](provider/local-first.md): Only me, Darkbloom network, or Both, me first; what each runs, costs and earns, and switching
 - [The local API](provider/direct-mode.md) for any OpenAI client, and [network self-route](provider/self-route.md)
 - [Installation](provider/installation.md): what the installer checks, updates, uninstall

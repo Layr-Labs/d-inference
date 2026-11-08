@@ -105,7 +105,7 @@ struct LocalAPIOnePortTests {
                                                                 terminal: false))
         #expect(moved.port == 8007 && saved.local == LocalSettings(mode: .both, port: 8007))
         #expect(moved.portNote == "Local API port: 8007 (saved, instead of 8005: tools set up for 8005 need "
-            + "`darkbloom start --opencode` or `--hermes` again).")
+            + "`darkbloom --opencode` or `--hermes` again).")
 
         let before = saved.bytes
         let child = try #require(try ScriptedTerminal().resolve(

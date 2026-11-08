@@ -91,7 +91,7 @@ struct StartToolIntegrationTests {
         (["--opencode", "--foreground"],
          "`--opencode` runs once, at `darkbloom start`; the --foreground service never sets tools up."),
         (["--opencode", "--local", "--distributed"],
-         "`--opencode` doesn't start a cluster. Start it first, then run `darkbloom start --opencode` on its own: it "
+         "`--opencode` doesn't start a cluster. Start it first, then run `darkbloom --opencode` on its own: it "
             + "sets OpenCode up for the cluster's local API."),
     ]
 
@@ -112,8 +112,8 @@ struct StartToolIntegrationTests {
         let config = try directory.write("[provider]\nname = \"d2b\"\n", to: "provider.toml")
         let before = try Data(contentsOf: config)
         let refusal = "This Mac serves only the Darkbloom network, so OpenCode and Hermes have no local address to "
-            + "use. Choose \"Both, me first\" (`darkbloom start --me-first --opencode --hermes`) or \"Only me\" "
-            + "(`darkbloom start --local --opencode --hermes`). Nothing was started or saved."
+            + "use. Choose \"Both, me first\" (`darkbloom --opencode --hermes --me-first`) or \"Only me\" "
+            + "(`darkbloom --opencode --hermes --local`). Nothing was started or saved."
         for (terminal, answers) in [(false, [String]()), (true, ["2"])] {
             var remaining = answers
             let start = try Start.parse(["--opencode", "--hermes", "--config", config.path])
@@ -128,7 +128,7 @@ struct StartToolIntegrationTests {
             }
         }
         #expect(try Data(contentsOf: config) == before)
-        #expect(ToolIntegrationStep.noLocalAPI([.opencode]).hasSuffix("(`darkbloom start --local --opencode`)."))
+        #expect(ToolIntegrationStep.noLocalAPI([.opencode]).hasSuffix("(`darkbloom --opencode --local`)."))
     }
 
     // MARK: - Already serving: set the tools up, start nothing
@@ -183,7 +183,7 @@ struct StartToolIntegrationTests {
                                                   keyFile: { _ in nil }, pause: { pauses += 1 })
         #expect(keyless == .noKeyFile && pauses == 0)
         #expect(ToolIntegrationStep.notUp([.opencode], seconds: 30) == "✗ This Mac's local API didn't answer within 30 "
-            + "seconds, so OpenCode wasn't set up. Run `darkbloom start --opencode` again once `darkbloom local` shows it.")
+            + "seconds, so OpenCode wasn't set up. Run `darkbloom --opencode` again once `darkbloom local` shows it.")
     }
 
     @Test("beside a running local API without a key (--no-auth), the start names it and starts nothing")
@@ -293,7 +293,7 @@ struct StartToolIntegrationTests {
 
     @Test("a model this Mac hasn't loaded yet gets one line: run the start again once it is loaded")
     func unloadedModelsSayRunAgain() async throws {
-        let line = "  Run `darkbloom start --opencode` again once the model is loaded, to pick up its limits."
+        let line = "  Run `darkbloom --opencode` again once the model is loaded, to pick up its limits."
         let sandbox = try StepSandbox()
         let unloaded = StepSandbox.listed + [EndpointModel(id: "gpt-oss-120b", ownedBy: "this-mac")]
         #expect(await sandbox.step([.opencode], listed: unloaded).run(endpoint: sandbox.endpoint, requests: "x"))
@@ -352,7 +352,7 @@ struct StartToolIntegrationTests {
             "  Switch back: hermes model   ·   Undo: rm \(ToolIntegration.shellQuoted(sandbox.hermesFile.path))   ·   "
                 + "Chats already open keep their model.",
             "  Left out: gemma-4-26b-qat-4bit (Hermes needs 64K context)",
-            "  Darkbloom's catalog wasn't reachable: run `darkbloom start --opencode --hermes` again online for the "
+            "  Darkbloom's catalog wasn't reachable: run `darkbloom --opencode --hermes` again online for the "
                 + "models' names and image support.",
             "  Requests: this Mac only",
             "  Other tools: OPENAI_BASE_URL=http://127.0.0.1:8123/v1 OPENAI_API_KEY=\"$(cat ~/.darkbloom/local_token)\"",
@@ -422,8 +422,8 @@ struct StartToolIntegrationTests {
         let more = StepSandbox.listed + [EndpointModel(id: "new-model", ownedBy: "this-mac", contextLength: 65_536)]
         #expect(await sandbox.step([.opencode, .hermes], listed: more)
             .run(endpoint: sandbox.endpoint, requests: "this Mac only"))
-        #expect(sandbox.said.contains("  Darkbloom's catalog wasn't reachable: run `darkbloom start --opencode "
-            + "--hermes` again online for the models' names and image support."))
+        #expect(sandbox.said.contains("  Darkbloom's catalog wasn't reachable: run `darkbloom --opencode --hermes` "
+            + "again online for the models' names and image support."))
         let rewritten = F.utf8(try Data(contentsOf: sandbox.openCodeFile))
         #expect(rewritten.contains("\"name\": \"Qwen 3.8 27B (this Mac)\"")
             && rewritten.contains("\"name\": \"Gemma 4 26B (this Mac)\"")
@@ -437,7 +437,7 @@ struct StartToolIntegrationTests {
         #expect(await !missing.step([.opencode, .hermes], installed: [.opencode])
             .run(endpoint: missing.endpoint, requests: "this Mac only"))
         #expect(missing.said.first == "✗ Hermes isn't installed on this Mac. Install it, then run "
-            + "`darkbloom start --hermes` again.")
+            + "`darkbloom --hermes` again.")
         #expect(missing.said.last == "Darkbloom keeps serving.")
         #expect(!FileManager.default.fileExists(atPath: missing.hermesFile.path))
         #expect(FileManager.default.fileExists(atPath: missing.openCodeFile.path))
@@ -465,7 +465,7 @@ struct StartToolIntegrationTests {
             fetchModels: { _ in StepSandbox.listed }, fetchCatalog: { nil }, say: { old.said.append($0) })
         #expect(await !step.run(endpoint: old.endpoint, requests: "this Mac only"))
         #expect(old.said == ["✗ OpenCode 1 is installed; Darkbloom sets up OpenCode 2. Run `opencode upgrade`, then "
-            + "`darkbloom start --opencode` again.", "Darkbloom keeps serving."])
+            + "`darkbloom --opencode` again.", "Darkbloom keeps serving."])
         #expect(old.filesOtherThanTheKey().isEmpty)
     }
 

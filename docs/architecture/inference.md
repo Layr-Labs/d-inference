@@ -2017,6 +2017,21 @@ check → engine request-id mint → `engine.submit`. The terminal `CBv2Usage`
 carries `CBv2RequestTiming`, copied verbatim onto the wire and folded into
 `EngineProfile` (`EngineV2Bridge+Profile.swift`).
 
+A streamed request on the local API carries a `LocalPrefillProgress`
+(`provider-swift/Sources/ProviderCore/Server/LocalPrefillProgress.swift`, the task-local
+`LocalPrefillProgress.current` that `LocalChatUploadResponder` binds around the frames call). The
+bridge reports into it what the engine reports of the prompt: its tokens once the request is active
+(`accept(promptTokens:)`), all of them from `CBv2Request.onPrefillCompleted`, and the end at the
+first committed token (the pump's first-token branch) or when the pump ends without one. The engine
+publishes no count in between (`EngineLoopV2` keeps each row's `numComputedTokens` for its prefill
+lease only), so until the prompt is done the API's comments give only its size
+(`: prefill in progress, <total> prompt tokens`), never a count the engine didn't report. Coordinator
+requests have none, and neither do calibration probes: a calibration session that a streamed request's
+model load starts (`scheduleLoadedModelCalibration`) inherits the request's task-locals, so
+`runModelCalibrationRequest` unbinds `current` around its submit, and the probe neither says nor ends
+the request's progress. Nothing runs per token
+([prefill progress](../provider/direct-mode.md#a-long-prompts-progress)).
+
 The SSD stage runs before `engine.submit`, off the engine queue, while the
 engine may be evaluating another request's prefill chunk under MLX-Swift's
 process-wide `evalLock`. A provider-staged complete-checkpoint import therefore

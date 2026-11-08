@@ -224,12 +224,18 @@ model.
   Once a model is loaded, the tools get its whole context window from this
   Mac, and a quarter of it as their output limit (65,536 tokens for a
   262,144-token window), not the catalog's smaller one. On a pair, they get
-  the pair's own limits, which it serves.
-  <!-- pending R-FULL: the tools get each model's full output length and all its capabilities. -->
+  the pair's own limits, which it serves. For a model this Mac or its pair
+  serves, they get image input exactly when it serves images, whatever
+  Darkbloom's catalog says: MiMo V2.6 gets it on one Mac, loaded or not, though
+  the catalog lists it as text only, and a Gemma 4 pair, which serves text
+  alone, gets none. Your other Macs' models get the catalog's. Which models
+  reason still comes from the catalog.
+  <!-- pending R-FULL: the tools get each model's full output length. -->
 - **Offline** (Darkbloom's catalog unreachable), a run again keeps the names,
-  image support and limits already set up. A model set up for the first time
-  then gets its ID and text input only, and the start says to run it again
-  online.
+  image support and limits already set up, but image input for a model served
+  here follows this Mac. A model set up for the first time then gets its ID,
+  and text input unless this Mac serves it with images, and the start says to
+  run it again online.
 - **Hermes v0.20.2 or later** reads Darkbloom's key from its file; with an older
   Hermes the start still sets it up and says, in one line, to run
   `hermes update`.

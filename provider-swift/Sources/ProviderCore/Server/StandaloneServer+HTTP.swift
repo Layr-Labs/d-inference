@@ -95,11 +95,13 @@ extension StandaloneServer {
         slots[modelId]?.modelType ?? models.first(where: { $0.id == modelId })?.modelType
     }
 
-    /// A resident model's window as its engine admits it, for the router's `/v1/models`: the most a prompt or its
-    /// output may be; nil while not loaded.
+    /// What the router's `/v1/models` says of a model this Mac serves: the input it takes (`LocalInputModalities`), and
+    /// once it is loaded its window as its engine admits it, the most a prompt or its output may be.
     func localModelLimits(_ modelId: String) -> LocalModelLimits? {
-        guard let slot = slots[modelId] else { return nil }
-        return LocalModelLimits(window: slot.bridge.advertisedContextTokens ?? slot.sizing.maxContextLength)
+        let input = models.first(where: { $0.id == modelId }).map { LocalInputModalities.of($0) }
+        guard let slot = slots[modelId] else { return input.map { LocalModelLimits(inputModalities: $0) } }
+        return LocalModelLimits(window: slot.bridge.advertisedContextTokens ?? slot.sizing.maxContextLength,
+                                inputModalities: input)
     }
 }
 

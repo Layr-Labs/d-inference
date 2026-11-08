@@ -321,6 +321,7 @@ coordinator's `self` list names this Mac's own builds by their aliases.
 | `owned_by` | `this-mac`, `my-macs` (your other Macs, free) or `darkbloom` (the network, billed). Before the router, this Mac's entries said `local` |
 | `context_length`, `max_model_len` | This Mac's engine for its resident models (a pair's leader: the context the pair's mode serves); else the Darkbloom catalog (`/v1/models/catalog`), by model or by the alias's build; omitted when unknown |
 | `max_output_length` | This Mac's loaded models: their context window too, as a request's prompt and output together may fill it ([each model's whole window](#each-models-whole-window-on-this-mac)). A pair's leader lists the output the pair's mode serves, which the pair holds every `max_tokens` to (it refuses a larger one, `output_too_long`), as its slot reports to the coordinator (`ProviderLoop.localModelLimits`). Else the catalog's; omitted when unknown |
+| `input_modalities` | What a request may carry, as this Mac's engine serves the model, loaded or not: `["text", "image"]` for a model it serves with vision (`is_vision`, which the coordinator routes images on), else `["text"]`. On a pair's leader, the media the pair takes in its mode: `["text", "image", "video"]` for GLM-5.3-Flash and Qwen 3.8 27B in tensor parallel, `["text", "image"]` on the GLM and MiMo image candidate profiles, `["text"]` for every other pair, and nothing until its slot is up. Your Macs' and the network's models keep the coordinator's, when its list has one. Reasoning isn't listed: the catalog says which models reason (`provider-swift/Sources/ProviderCore/Server/LocalInputModalities.swift`, `LocalInputModalities`) |
 | `name` | The coordinator's or the catalog's display name for your Macs' and the network's models |
 
 The coordinator's lists are cached for 30 s and the catalog for 5 minutes; a
@@ -348,7 +349,15 @@ for memory and then waited out the 120 s admission lease or a full paged pool's
 requeues, which still ends a streamed answer with an error event; the router
 passes a 503 on when a route dials out.
 
-<!-- pending R-FULL: GLM-5.3-Flash and Nemotron Super at their 1,048,576-token configs on one Mac; each model's capabilities (image, video and audio input, reasoning) in this list; a memory refusal that names how many tokens this Mac holds; the same for direct use through the network; OpenRouter is separate. -->
+Each model's input is in the list too (`input_modalities`, above), and for a
+model served here (this Mac, or the pair it leads or relays to) the engine's
+word is the one the tools follow: `start --opencode` and `--hermes` offer images
+for it exactly when its engine takes them, whatever the catalog says. A Gemma 4
+pair, which serves text alone, gets none (an image would be refused with 400);
+MiMo V2.6 on one Mac gets them, though its catalog row lists text only. For your
+other Macs' and the network's models, the catalog decides.
+
+<!-- pending R-FULL: GLM-5.3-Flash and Nemotron Super at their 1,048,576-token configs on one Mac; video and audio input for the models this Mac serves them for, in this list; a memory refusal that names how many tokens this Mac holds; the same for direct use through the network; OpenRouter is separate. -->
 
 ## Routes
 
@@ -395,6 +404,39 @@ with text, a streamed tool call that fails validation) while the pair is still
 finishing the cancelled request
 (`provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPEventStream.swift`,
 `DistributedHTTPEventStream`).
+
+### A long prompt's progress
+
+A long prompt takes minutes before its first token: a 255K-token prompt took 9
+minutes on an M3 Ultra. While it is processed, a streamed request (chat
+completions or Responses) gets an SSE comment every 5 seconds, from the moment
+the engine accepts the request until its first token:
+
+```text
+: prefill in progress, 254953 prompt tokens
+```
+
+OpenAI clients ignore comments; to curl and to a client that reads the stream
+they say the request is still working through its prompt, and connections that
+end after a silence stay open. The number is the prompt's tokens as the engine
+counts them, after the chat template and with any media. Once the engine
+reports how much of the prompt it has computed, the comment gives that count
+instead, `: prefill <done>/<total> tokens`. Today's engines report it only when
+the prompt is done, so a long prompt reads "in progress" until its first token,
+which ends the comments. A prompt done within 5 seconds gets none. The local
+router and a pair member's relay pass them on unchanged. On a pair's own API
+(`darkbloom cluster local`) the comment takes the place of the leader's 500 ms
+keep-alive probe every 5 seconds (`LocalPrefillProgress`,
+`provider-swift/Sources/ProviderCore/Server/LocalPrefillProgress.swift`).
+
+Each streamed request has one timer, from its first frame to its first token,
+and nothing runs per token. A request that isn't streamed gets nothing until its
+answer, as HTTP has no interim bytes: give such a client a timeout of minutes
+for a long prompt (the OpenAI SDKs wait 10 minutes by default), or stream.
+Before the engine accepts a request, nothing is sent either, not even the
+headers: while the model loads for it, while it waits for a pair's lane, and
+while its prompt is tokenized. A client that limits how long it waits for
+headers must allow a cold model load.
 
 ### Refused request shapes
 

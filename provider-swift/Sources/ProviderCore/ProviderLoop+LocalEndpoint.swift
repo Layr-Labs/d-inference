@@ -140,16 +140,26 @@ extension ProviderLoop {
         modelSlots[modelId]?.modelType ?? advertisedModels[modelId]?.modelType
     }
 
-    /// A resident model's limits as its engine admits them, for the router's `/v1/models`; nil while not loaded. A
-    /// single Mac lists its window as the context and the output: a prompt and its output together may fill it. A
-    /// pair lists its own limits, the context and the output its mode serves (what its slot reports to the
-    /// coordinator): it refuses a `max_tokens` past its output (`output_too_long`).
+    /// What the router's `/v1/models` says of a model this Mac serves: the input it takes, and once it is loaded its
+    /// limits as its engine admits them. A single Mac lists its window as the context and the output: a prompt and
+    /// its output together may fill it. A pair lists its own limits, the context and the output its mode serves (what
+    /// its slot reports to the coordinator): it refuses a `max_tokens` past its output (`output_too_long`).
     func localModelLimits(_ modelId: String) -> LocalModelLimits? {
-        guard let slot = modelSlots[modelId] else { return nil }
+        let input = localInputModalities(modelId)
+        guard let slot = modelSlots[modelId] else { return input.map { LocalModelLimits(inputModalities: $0) } }
         if let pair = slot.modelContainer.clusterPair {
-            return LocalModelLimits(contextLength: pair.served.contextTokens, maxOutputLength: pair.served.outputTokens)
+            return LocalModelLimits(contextLength: pair.served.contextTokens, maxOutputLength: pair.served.outputTokens,
+                                    inputModalities: input)
         }
-        return LocalModelLimits(window: slot.engineV2.advertisedContextTokens ?? slot.sizing.maxContextLength)
+        return LocalModelLimits(window: slot.engineV2.advertisedContextTokens ?? slot.sizing.maxContextLength,
+                                inputModalities: input)
+    }
+
+    /// The input a local request for a model may carry (`LocalInputModalities`): on a pair's leader, what its slot
+    /// takes, unknown until the slot is published; on one Mac, what the model it advertises takes.
+    func localInputModalities(_ modelId: String) -> [String]? {
+        if isClusterMember { return modelSlots[modelId].map { LocalInputModalities.of(pair: $0.engineV2) } }
+        return advertisedModels[modelId].map { LocalInputModalities.of($0) }
     }
 
     /// Invoked by Hummingbird once the local endpoint socket is bound and

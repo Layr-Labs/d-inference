@@ -207,6 +207,11 @@ extension EngineV2Bridge {
         // This is our frame-receipt clock when available, never an upstream wall
         // timestamp. Local engines are unaffected by the distributed-only context.
         let httpResponse = DistributedHTTPResponseScope.current
+        // A streamed local request's prompt progress: what the engine reports of
+        // its prompt, from acceptance to the first token. Only the local API's
+        // streamed requests bind it; nil on every other request, the coordinator's
+        // included.
+        let prefillProgress = LocalPrefillProgress.current
         let distributedOrigin = DistributedRequestOrigin.earliest(
             handler: distributedRequestOrigin, profile: profile?.continuousAnchor,
             now: ContinuousClock.now)
@@ -718,6 +723,7 @@ extension EngineV2Bridge {
             nativeRateEvidence: nativeMediaEvidence)
         cbv2Request.onPrefillCompleted = { [weak self, prefillReceipt] usage in
             prefillReceipt.complete(usage)
+            prefillProgress?.advance(to: usage.promptTokens)
             Task { await self?.consumePrefillReceipt(id: id, receipt: prefillReceipt) }
         }
         // Accepted requests transfer interval ownership to active state or its
@@ -1105,6 +1111,9 @@ extension EngineV2Bridge {
             emitVisionSubmitTelemetry(requestId: id, mediaKind: mediaKind)
         }
 
+        // The engine has the prompt: a streamed local request says so until its first token.
+        prefillProgress?.accept(promptTokens: promptTokens.count)
+
         // The pump owns these resources through engine terminal; each cache
         // manages pending durable publication and receipt retention.
         // Returning from submit is not retirement.
@@ -1119,7 +1128,8 @@ extension EngineV2Bridge {
             readyReceiptRegistered: readyReceiptRegistered,
             profile: profile,
             nativeRetirement: nativeRetirement,
-            httpResponse: distributed == nil ? nil : httpResponse
+            httpResponse: distributed == nil ? nil : httpResponse,
+            prefillProgress: prefillProgress
         )
 
         let bridge = self

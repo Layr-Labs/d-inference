@@ -203,11 +203,26 @@ struct ClusterPairSlotTests {
             : distributedTestProfile()
         _ = try await loop.publishClusterPairSlot(clusterPairSpecification(owner, profile: profile), owner: owner)
         let limits = try #require(await loop.localModelLimits(clusterPairFixtureModel))
+        // With the input its slot takes: text, as this pair serves no media contract (`LocalInputModalities.of(pair:)`).
         #expect(limits == LocalModelLimits(contextLength: profile.served.contextTokens,
-                                           maxOutputLength: profile.served.outputTokens))
+                                           maxOutputLength: profile.served.outputTokens, inputModalities: ["text"]))
         // A request sized to the listed output is one the pair serves.
         let listed = try #require(limits.maxOutputLength)
         #expect(profile.refusal(for: distributedTestRequest(maxTokens: listed)) == nil)
+        #expect(await loop.retireClusterPairSlot(reason: "test"))
+    }
+
+    /// The leader lists what its pair takes, not what the model takes on one Mac: a model whose files declare vision
+    /// (Gemma 4, Qwen 3.5) served by a pair without a media contract lists text alone, and before the slot is up, it
+    /// lists nothing (no word yet).
+    @Test func theLeaderListsThePairsInputNotTheModelsOnOneMac() async throws {
+        let loop = try await clusterPairMemberLoop()
+        await loop.advertiseBypassingSupportedSetForTesting(ModelInfo(id: clusterPairFixtureModel, modelType: "qwen3_5",
+            sizeBytes: 1, estimatedMemoryGb: 1, isVision: true))
+        #expect(await loop.localModelLimits(clusterPairFixtureModel) == nil)
+        let owner = ScriptedPairOwner()
+        _ = try await loop.publishClusterPairSlot(clusterPairSpecification(owner), owner: owner)
+        #expect(await loop.localModelLimits(clusterPairFixtureModel)?.inputModalities == ["text"])
         #expect(await loop.retireClusterPairSlot(reason: "test"))
     }
 

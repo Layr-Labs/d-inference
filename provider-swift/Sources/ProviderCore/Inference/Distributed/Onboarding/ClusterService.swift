@@ -175,10 +175,10 @@ public final class ClusterService: @unchecked Sendable {
     /// The memory re-plan's steps (`replanForMemory`); tests stand in. Nil: the control leader's onboarding operations.
     var memoryReplan: MemoryReplan?
     /// Starts of this setup that ended on a memory-gate refusal (a Mac's memory moved after the plan was made), and
-    /// when the plan may next be made again (`noteMemoryRefusal`).
+    /// when the plan may next be made again (`noteMemoryRefusal`); tests read whether one is under way.
     private var memoryRefusals: (key: String, count: Int)?
     private var nextMemoryReplan = Date.distantPast
-    private var memoryReplanInFlight = false
+    var memoryReplanInFlight = false
     /// Re-plans in a row that came back with the same split: after `memoryReplansWithSameSplit` the service stops
     /// re-planning (the memory is short for every split) until a re-plan finds another one or the service restarts.
     private var sameSplitReplans = 0
@@ -552,10 +552,12 @@ public final class ClusterService: @unchecked Sendable {
         var planModels: () -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure>
         var adopt: (Int) -> Result<[String], ClusterOnboardingFailure>
         var serve: () -> Result<[String], ClusterOnboardingFailure>
+        /// Puts the pair's saved start back (`ClusterService.restoreStart`).
+        var restoreStart: () -> Void
     }
 
-    private func noteMemoryRefusal(key: String, since: Date, model: String, say: @escaping @Sendable (String) -> Void) {
-        let log = ClusterIncidentLog.forThisInstall()
+    func noteMemoryRefusal(key: String, since: Date, model: String, say: @escaping @Sendable (String) -> Void) {
+        let log = ClusterIncidentLog.forThisInstall(homeDirectory: context.paths.homeDirectory)
         let refused = log.feed().incidents.contains { $0.ts >= since.timeIntervalSince1970 && $0.guidanceCode == "memory_gate_refused" }
         let due = lock.withLock { () -> Bool in
             guard refused else { memoryRefusals = nil; return false }
@@ -586,7 +588,8 @@ public final class ClusterService: @unchecked Sendable {
         let before = try? context.savedConfiguration().reference.get()?.sha256
         let live = controlLive
         let steps = memoryReplan ?? .init(reachMembers: { live.localReachMembers({ _ in }) }, planModels: { live.localPlanModels() },
-                                          adopt: { live.localAdopt($0) }, serve: { live.localServe() })
+                                          adopt: { live.localAdopt($0) }, serve: { live.localServe() },
+                                          restoreStart: { self.restoreStart() })
         func failed(_ lines: [String]) { say("could not plan \(model) again: " + lines.joined(separator: " ")) }
         if case .failure(let failure) = steps.reachMembers() { return failed(failure.lines) }
         let choices: [ClusterOnboardingModelChoice]
@@ -601,7 +604,7 @@ public final class ClusterService: @unchecked Sendable {
         // failure, the stop's own included, puts it back (`restoreStart`, under the command lock every stop of the pair
         // holds), so the pair serves as before and the next refusals bring the next re-plan.
         func restored(_ lines: [String]) {
-            restoreStart()
+            steps.restoreStart()
             failed(lines + ["The pair stays started."])
         }
         if case .failure(let failure) = steps.adopt(index) { return restored(failure.lines) }

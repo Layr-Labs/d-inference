@@ -200,10 +200,11 @@ struct RouterFixture {
 
     /// - Parameters:
     ///   - route: `[local] route`; nil = absent.
+    ///   - settingsFile: the provider.toml the router reads `[local] route` from again when it changes; nil = none.
     ///   - key: the saved account key; nil = none.
     ///   - router: false builds the endpoint without a router (today's endpoint).
-    init(route: LocalSettings.Route? = .myMacs, key: String? = RouterFixture.accountKey, router: Bool = true,
-         takesCoordinatorWork: Bool = false, localModels: [String] = RouterStubEngine.servedModels,
+    init(route: LocalSettings.Route? = .myMacs, settingsFile: URL? = nil, key: String? = RouterFixture.accountKey,
+         router: Bool = true, takesCoordinatorWork: Bool = false, localModels: [String] = RouterStubEngine.servedModels,
          localLimits: [String: LocalModelLimits] = [:], modelTypes: [String: String] = [:],
          timing: LocalRouter.Timing = .init(),
          engineServes: Set<String> = [], engineBusy: Set<String> = [], localKey: String? = RouterFixture.localKey,
@@ -220,7 +221,7 @@ struct RouterFixture {
         self.modelTypes = modelTypes
         let factory = factory, log = log
         var config = LocalRouterConfig(
-            settings: LocalSettings(route: route), upstreamBaseURL: Self.upstreamBase,
+            settings: LocalSettings(route: route), settingsFile: settingsFile, upstreamBaseURL: Self.upstreamBase,
             takesCoordinatorWork: takesCoordinatorWork, accountKeys: keys,
             makeTransport: { factory.make() }, log: { log.append($0) }, timing: timing)
         // A change notification of this fixture's own, never an install's `route key` one.

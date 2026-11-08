@@ -196,6 +196,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `doctor` | Diagnostics (see [troubleshooting](./troubleshooting.md#doctor-checks)) | ✓ | `DoctorCommand.swift` (`Doctor`) |
 | `models` | `list`, `catalog`, `download`, `remove` | ✓ | `ModelsCommand.swift` (`Models`) |
 | `local` | Print the local API's address and key | | `LocalCommand.swift` (`Local`) |
+| `route` | Where your requests go when this Mac's local API can't take them: `this-mac`, `my-macs` or `my-macs-first` saves `[local] route` ([below](#darkbloom-route-this-mac-my-macs-my-macs-first)); `key` saves the account API key | ✓ | `RouteCommand.swift` (`Route`), `RouteChoiceCommand.swift` (`RouteChoiceFlow`) |
 | `cluster` | Set up two Macs to serve one model together ([guided setup](./two-mac-cluster.md)); `cluster local` serves without a coordinator. In a terminal, the first setup asks how the pair serves (**Only me (this pair, local)**, **Darkbloom network**, or **Both, me first**, preselected: the leader's local API beside Darkbloom, which pauses while you use it), saves the answer in `[local] mode`, and asks nothing without a terminal ([Both, me first](./two-mac-cluster.md#both-me-first-the-pairs-own-api-beside-darkbloom)). Run again on a paired Mac it works like `darkbloom start` (which opens the same screen there): both Macs, the cable and the status, then the pair's models with the current one preselected (Enter keeps it or starts it again), each with the modes it runs there, the recommended one first and no speed, **Change how the pair serves** (the three choices below; `cluster local`'s list keeps its line to switch to Darkbloom), and **Start over**; another model asks once before the serving one stops, and every start ends with the outcome, the pair's card and `darkbloom stop` / `restart` / `status` ([after setup](./two-mac-cluster.md#the-steps-once)). It offers **Start over** after one question (also when the other Mac does not answer over the cable: the screen then names that Mac and what to run there), and **Pair again** without it only when the saved pairing was made with another Secure Enclave key; both take the steps of `cluster pair --forget` (`ClusterUnpairing`), then pair ([pairing again](./two-mac-cluster.md#pairing-again)) | ✓ | `ClusterCommand.swift` (`Cluster`) |
 | `waitlist` | List the waitlists the coordinator offers and where the account stands (bare), or put the account on one and show where it stands (`waitlist cluster`, `waitlist sandbox`); waitlists are per account | ✓ | `Waitlist/WaitlistCommand.swift` (`Waitlist`) |
 | `login` | Link the machine to an account (RFC 8628 device code) | ✓ | `LoginCommand.swift` (`Login`) |
@@ -984,6 +985,52 @@ the start summary's words) and `requests:` (where your requests go)
 keyed server adds `tools:    darkbloom --opencode · --hermes` (`Local.toolsLine`). `--json`
 is unchanged.
 
+### `darkbloom route this-mac`, `my-macs`, `my-macs-first`
+
+| Command | Saves | A request this Mac can't take |
+|---|---|---|
+| `darkbloom route this-mac` | `[local] route = "this-mac"` | Gets this Mac's own answer; nothing is passed on. Needs no account key |
+| `darkbloom route my-macs` | `[local] route = "my-macs"` | Goes on to your other Macs, free; never to the Darkbloom network |
+| `darkbloom route my-macs-first` | `[local] route = "my-macs-first"` | Goes on to your other Macs (free), then to the Darkbloom network, billed to your balance |
+
+Each takes `-c`, `--config` (the `provider.toml` to save in) and writes only
+`[local] route` (`setLocalSettings`), so it replaces a hand edit of the file
+and `darkbloom start --route`. It then says what the route means; with
+`my-macs-first`, that requests from other machines (your LAN or tailnet) never
+use the paid network ([the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
+The same choice again writes nothing (`✓ Already saved. …`).
+
+- **Without a saved account key,** `my-macs` and `my-macs-first` save nothing
+  and exit 1: ``✗ Not saved: `darkbloom route my-macs` passes your requests on
+  with your account API key, and this Mac has none saved.``, then the command
+  that saves one (`darkbloom route key`) and the one to run again. It only asks
+  whether a key is saved, and never prints one.
+- **A local API running now uses it from its next request,** with no restart
+  and no model reload: `✓ Saved. Your local API uses it now.` With none
+  running: `✓ Saved. It applies when your local API starts.` Its router reads
+  `[local] route` again when `provider.toml` changes
+  ([the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
+  One without a local key (`--no-auth`) keeps every request on this Mac (on a
+  pair's leading Mac, on this pair), whatever the route, and the command says
+  so.
+- **In a two-Mac cluster,** the leading Mac's route applies: the pair's local
+  API runs there and passes on what the pair can't take, including requests
+  from the other Mac. Those reach it from another machine, so with
+  `my-macs-first` they never use the paid network, and both Macs say so. On
+  the leading Mac the command says so, or, with `this-mac`, that the pair's
+  local API passes nothing on. A pair's API without a local key
+  (`cluster local --no-auth`) gets the `--no-auth` line instead. On the other
+  Mac it saves the route for when that Mac serves alone (``It applies when
+  this Mac serves alone (`darkbloom start --solo`).``), says that the leading
+  Mac's route decides what the pair passes on (that Mac's route and key aren't
+  known here), and names the command to run there. Refused for want of a key,
+  it first names the leading Mac's `darkbloom route key` and route for the
+  pair, then a key saved here for this Mac alone.
+- A `provider.toml` that doesn't load is refused with its reason, and nothing
+  is written (exit 1).
+
+`RouteChoiceFlow` in `provider-swift/Sources/darkbloom/RouteChoiceCommand.swift`.
+
 ### `darkbloom route key`
 
 | Flag | Type | Default | Effect |
@@ -1004,9 +1051,29 @@ never printed (`RouteKeyFlow`, `provider-swift/Sources/darkbloom/RouteCommand.sw
 `KeychainLocalRouterAccountKeyStore`). After it saves or removes the key, it
 posts the Darwin notification `<keychain prefix>.route-key-changed`: a running
 local API keeps the key in memory and reads it again on its next request that
-needs it. When the local API running now has no local key (`--no-auth`), it
-says that this API keeps every request on this Mac and never uses the key. ^C at the hidden prompt gives the terminal its echo
-back before the command ends (`HiddenReadSignals`). See
+needs it, so it says `Your local API uses it now.` (or, with none running, `It
+applies when your local API starts.`). A key removed while the route passes
+requests on says what the next request does: ``Your local API uses it now.
+From its next request, one this Mac can't take gets this Mac's own answer
+instead of going to your other Macs or the Darkbloom network.`` That answer
+says an account key is needed (code `account_key_needed`, see
+[the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
+
+In a two-Mac cluster it says whose key the pair's local API uses, and on the
+leading Mac its summary names the pair (`Your requests: this pair first, then
+your other Macs (free).`):
+
+| This Mac | Saved | Removed |
+|---|---|---|
+| Leads (the pair's local API runs here) | `In this pair, the pair's local API runs on this Mac and passes requests on with this key.` | ``From its next request, one the pair can't take gets the pair's own answer …``, then `In this pair, the pair's local API runs on this Mac, so the pair passes nothing on until a key is saved here again.` |
+| Leads, with `[local] route = "this-mac"` | `In this pair, the pair's local API runs on this Mac and uses this Mac's key once its route passes requests on.` | `In this pair, the pair's local API runs on this Mac: once its route passes requests on, it needs a key saved here again.` |
+| Follows | ``In this pair, the pair's local API uses the leading Mac's key (…), not this one: run `darkbloom route key` there.`` | ``… not this one: to stop the pair passing requests on, run `darkbloom route key --remove` there.`` |
+
+When the local API running now has no local key (`--no-auth`), it says that
+this API keeps every request on this Mac (on the leading Mac, on this pair) and
+never uses the key; on the leading Mac it then says nothing of the pair's key. ^C at the hidden prompt
+gives the terminal its echo back before the command ends
+(`HiddenReadSignals`). See
 [the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router).
 
 ### Cluster placement request metadata
@@ -3221,12 +3288,16 @@ only, your other Macs (free), or your Macs first and then the Darkbloom network
 (billed), from `[local] route` and a saved account API key.
 
 ```bash
+darkbloom route this-mac       # your requests stay on this Mac
+darkbloom route my-macs        # then your other Macs (free); needs the account key
+darkbloom route my-macs-first  # then your other Macs (free), then the Darkbloom network (billed); needs the key
 darkbloom route key            # ask for the key with hidden input, check it, save it in the Keychain
 darkbloom route key --stdin    # read it from standard input
 darkbloom route key --remove   # remove it: requests stay on this Mac
 ```
 
-No output line contains the key. Flags: [`darkbloom route key`](#darkbloom-route-key).
+No output line contains the key. Details: [the three routes](#darkbloom-route-this-mac-my-macs-my-macs-first)
+and [`darkbloom route key`](#darkbloom-route-key).
 
 ## `darkbloom logs`
 

@@ -609,7 +609,10 @@ exists: on a contiguous slot by the shared reservation, on a paged slot by the
 engine's own admission (one that can never fit; the rest queue). This Mac's API
 answers it with 503, before any SSE header, streamed or not, and words that name
 this Mac's memory and what to change
-(`provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift`).
+(`provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift`). A
+request that queued and then wasn't admitted (the 120 s admission lease, or a
+paged pool full through its requeues) fails after the response head instead: a
+streamed answer ends with an error event.
 
 Loads and serving-set reserve raises must preserve each resident bridge's total
 `minimumServiceableGrantBytes`

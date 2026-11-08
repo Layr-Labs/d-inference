@@ -81,8 +81,8 @@ extension Start {
         print("  Shareable any time with: \(BuildEnvironment.current.cliName) local")
         print()
 
-        // `start --local` runs under the AppKit host, which turns Ctrl-C into a drain; "Only me" from the question
-        // or the saved choice runs here, so it takes the same signals itself.
+        // A start that serves here runs under the AppKit host, which turns Ctrl-C into a drain
+        // (`ProviderAppKitHost.shouldHost`); any other caller takes the same signals itself.
         #if os(macOS)
         let signals = ProviderAppKitHost.shouldHost(Array(CommandLine.arguments.dropFirst())) ? nil
             : ProviderSignalHandler { _ = await ProviderTermination.shared.request() }

@@ -162,7 +162,8 @@ this Mac, for example `http://127.0.0.1:8001/v1`:
   first** keeps serving Darkbloom, and `darkbloom status` and `darkbloom local`
   say why and name a free port, for example ``Serving: Darkbloom and you, me
   first — the local API isn't up: port 8001 is in use (`darkbloom start --port
-  8002`)``. **Only me** stops with the same advice. On a Mac in a pair they
+  8002`)``. **Only me** stops with the same advice (in its log, when it serves
+  in the background: `darkbloom logs`). On a Mac in a pair they
   name `darkbloom start --solo --port <n>` instead, or `darkbloom restart` for
   the pair's own API.
 - **The key:** `darkbloom local` shows the address and the key. Of the start

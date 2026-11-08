@@ -234,7 +234,10 @@ one `OperationFeed` outside page content; its body portal stays at the bottom
 on Home, My Macs (including remote Macs and all tabs), Leaderboard and Updates.
 Successful operations disappear after ten seconds, using their native completion
 time when available; navigation and state refresh do not reset the countdown.
-Failures and immediate `backend.error` messages remain until Close. Dismissal
+Failures and immediate `backend.error` messages remain until Close. A refused
+action's message is its own words: `useBackend`'s `act` drops the "Error invoking
+remote method …" prefix Electron puts on errors that cross IPC (`errorMessage`;
+`desktop-app/tests/actionRefusal.test.tsx`). Dismissal
 persists across remounts, and expanded details retain native diagnostic messages. Cooling labels use the
 enabled fan policy independently of its current firmware mode (`coolingStatus`).
 

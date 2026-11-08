@@ -3323,10 +3323,12 @@ The slot factory passes native context (or an explicitly lower operator limit)
 into the bridge; the generic bridge does not impose a second Qwen-sized cap
 on this or other model families. Coordinator admission owns SLA policy, while
 provider context and physical-memory checks remain mandatory.
-`EngineV2Bridge.submitTokenized` checks prompt plus the translated output
-reservation with overflow-safe arithmetic before cache probes or tickets.
-`advertisedContextExceeded` stays a content-free client error through both
-submission overloads and the shared HTTP mapper; cache hits cannot bypass it.
+`EngineV2Bridge.submitTokenized` cuts the output reservation to what the prompt
+leaves of the context and refuses a prompt that fills it
+(`promptExceedsContext`), with overflow-safe arithmetic, before cache probes or
+tickets. Both refusals (`promptExceedsContext`, and `advertisedContextExceeded`
+for an invalid reservation) stay client errors through both submission
+overloads and the shared HTTP mapper; cache hits cannot bypass them.
 The [candidate reference](../reference/qwen4-next-support.md) owns the
 identity, configuration and qualification boundary.
 

@@ -54,12 +54,11 @@ struct UnpairedMacServesNormallyTests {
         if case .refuse = Start.pairStart(pair(running: true), solo: true, terminal: false) {} else { Issue.record("not refused") }
     }
 
-    @Test("the app's Start serving (`start --model`) and Autopilot enroll (`start --autopilot`) need --solo to serve this Mac alone")
-    func theAppAndAutopilotNeedSolo() throws {
+    @Test("the app's Start serving (`start --model`) starts the pair; Autopilot enroll (`start --autopilot`) needs --solo")
+    func theAppStartsThePairAndAutopilotNeedsSolo() throws {
         let stale = pair(running: false)
         let appStart = try Start.parse(["--model", "acme/Alpha-4bit", "--local-endpoint"]).singleMacOptions
-        #expect(Start.pairStart(stale, solo: false, terminal: false, singleMacOptions: appStart)
-            == .refuseOptions(stale.singleMacOptionsRefusal(appStart)))
+        #expect(Start.pairStart(stale, solo: false, terminal: false, singleMacOptions: appStart) == .startPair)
         #expect(Start.pairStart(stale, solo: true, terminal: false, singleMacOptions: appStart) == .serveAlone(note: staleAlone))
         let enroll = try Start.parse(["--autopilot"]).singleMacOptions
         #expect(Start.pairStart(stale, solo: false, terminal: false, singleMacOptions: enroll)
@@ -78,7 +77,9 @@ struct UnpairedMacServesNormallyTests {
         let running = pair(running: true, reachable: true)
         #expect(Start.pairStart(running, solo: false, terminal: true) == .openScreen)
         #expect(Start.pairStart(running, solo: false, terminal: false) == .startPair)
-        if case .refuseOptions = Start.pairStart(running, solo: false, terminal: false, singleMacOptions: ["--model"]) {} else {
+        // The app's Start (no terminal) starts it, which it already does; a person at a terminal is told about --solo.
+        #expect(Start.pairStart(running, solo: false, terminal: false, singleMacOptions: ["--model"]) == .startPair)
+        if case .refuseOptions = Start.pairStart(running, solo: false, terminal: true, singleMacOptions: ["--model"]) {} else {
             Issue.record("options not refused")
         }
         // A service from before 0.10.9 gives no verdict: its saved start decides, as before.
@@ -88,12 +89,12 @@ struct UnpairedMacServesNormallyTests {
     @Test("a pair whose other Mac answers but hasn't served yet (a long first load) is never stopped without asking")
     func loadingPairIsNotStoppedUnasked() throws {
         let loading = pair(running: false, reachable: true)
-        // The app's Start serving and Autopilot enroll clicked by mistake: refused, as in every state of the pair.
-        for arguments in [["--model", "acme/Alpha-4bit"], ["--autopilot"]] {
-            let options = try Start.parse(arguments).singleMacOptions
-            if case .refuseOptions = Start.pairStart(loading, solo: false, terminal: false, singleMacOptions: options) {} else {
-                Issue.record("\(arguments) not refused")
-            }
+        // The app's Start serving starts (waits for) the pair, as a script's start does; Autopilot enroll is refused.
+        let appStart = try Start.parse(["--model", "acme/Alpha-4bit"]).singleMacOptions
+        #expect(Start.pairStart(loading, solo: false, terminal: false, singleMacOptions: appStart) == .startPair)
+        let enroll = try Start.parse(["--autopilot"]).singleMacOptions
+        if case .refuseOptions = Start.pairStart(loading, solo: false, terminal: false, singleMacOptions: enroll) {} else {
+            Issue.record("--autopilot not refused")
         }
         // A script starts (waits for) the pair, as before.
         #expect(Start.pairStart(loading, solo: false, terminal: false) == .startPair)
@@ -240,19 +241,25 @@ struct PairedMacStartTests {
         }
     }
 
-    @Test("--solo serves this Mac alone wherever the pair doesn't run here; single-Mac options without it start nothing")
+    @Test("--solo serves this Mac alone wherever the pair doesn't run here; the app's Start starts the pair; other single-Mac options start nothing")
     func soloIsTheWayToServeAlone() throws {
         for (state, pair) in everyPair where state != "running" {
             #expect(Start.pairStart(pair, solo: true, terminal: false) == .serveAlone(note: pair.servingAloneLine), "\(state)")
         }
-        // The app's Start (`start --model <id> --config <path>`, no terminal) and Autopilot enroll: refused by name, never
-        // served alone without --solo nor ignored.
-        for arguments in [["--model", "acme/Alpha-4bit", "--config", "/tmp/provider.toml"], ["--autopilot"]] {
+        // The app's Start (`start --model <id> [--local-endpoint] --config <path>`, no terminal) starts the pair, never
+        // this Mac alone. Autopilot enroll is refused by name, never served alone without --solo nor ignored.
+        for arguments in [["--model", "acme/Alpha-4bit", "--config", "/tmp/provider.toml"],
+                          ["--model", "acme/Alpha-4bit", "--local-endpoint", "--config", "/tmp/provider.toml"]] {
             let options = try Start.parse(arguments).singleMacOptions
             for (state, pair) in everyPair {
-                #expect(Start.pairStart(pair, solo: false, terminal: false, singleMacOptions: options)
-                    == .refuseOptions(pair.singleMacOptionsRefusal(options)), "\(arguments) \(state)")
+                #expect(Start.pairStart(pair, solo: false, terminal: false, singleMacOptions: options) == .startPair,
+                        "\(arguments) \(state)")
             }
+        }
+        let enroll = try Start.parse(["--autopilot"]).singleMacOptions
+        for (state, pair) in everyPair {
+            #expect(Start.pairStart(pair, solo: false, terminal: false, singleMacOptions: enroll)
+                == .refuseOptions(pair.singleMacOptionsRefusal(enroll)), "\(state)")
         }
     }
 

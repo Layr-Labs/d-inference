@@ -257,7 +257,9 @@ it('starts without overriding an automatic-update opt-out', async () => {
 it('offers Start serving for the pair on a paired Mac, never Autopilot', async () => {
   const { done } = toStartPage(pairedMac());
   expect(
-    screen.getByText('This Mac serves in a pair. Start serving starts the pair with Qwen 3.8 27B.'),
+    screen.getByText(
+      'This Mac is in a pair, which is stopped. Start serving starts it with Qwen 3.8 27B.',
+    ),
   ).toBeVisible();
   expect(screen.getByText('Starts the pair with Qwen 3.8 27B, on both Macs.')).toBeVisible();
   expect(screen.getByText('The pair keeps its model loaded until you change it.')).toBeVisible();
@@ -271,4 +273,42 @@ it('offers Start serving for the pair on a paired Mac, never Autopilot', async (
   );
   expect(api.act).not.toHaveBeenCalled();
   await waitFor(() => expect(done).toHaveBeenCalled());
+});
+
+// The pair as it is: a pair that serves is kept serving, and the page says so (#1905's review).
+it('says a serving pair serves, and that Start serving keeps it', () => {
+  toStartPage(pairedMac({ state: 'serving' }));
+  expect(
+    screen.getByText(
+      'This Mac serves in a pair with Qwen 3.8 27B. Start serving keeps it serving.',
+    ),
+  ).toBeVisible();
+  expect(screen.getByText('Keeps the pair serving Qwen 3.8 27B, on both Macs.')).toBeVisible();
+  expect(screen.getByRole('button', { name: /^Start serving/ })).toBeEnabled();
+});
+
+// A pair with no model yet, or a pairing record that can't be read: Start serving would be refused,
+// so the page says what works first, in Terminal, and offers no Start (#1905's review).
+it('offers no Start serving where the pair needs Terminal first, and says why', () => {
+  const noModel = toStartPage(pairedMac({ model: null, leads: false }));
+  expect(
+    screen.getByText(
+      'This Mac is in a pair that has no model yet. Choose one with “darkbloom cluster” in Terminal on the other Mac, which leads the pair, then come back to Start serving.',
+    ),
+  ).toBeVisible();
+  expect(screen.getByRole('button', { name: /^Start serving/ })).toBeDisabled();
+  expect(screen.getByText('Choose the pair’s model in Terminal first.')).toBeVisible();
+  expect(screen.queryByRole('region', { name: 'What happens next' })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: /^Start serving/ }));
+  expect(backend.act).not.toHaveBeenCalled();
+  expect(noModel.done).not.toHaveBeenCalled();
+  cleanup();
+  toStartPage(pairedMac({ model: null, state: 'unreadable', leads: null }));
+  expect(
+    screen.getByText(
+      'This Mac’s pairing record couldn’t be read, so it may be in a pair. Run “darkbloom cluster” in Terminal on this Mac to check it.',
+    ),
+  ).toBeVisible();
+  expect(screen.getByRole('button', { name: /^Start serving/ })).toBeDisabled();
+  expect(screen.getByText('Check the pairing in Terminal first.')).toBeVisible();
 });

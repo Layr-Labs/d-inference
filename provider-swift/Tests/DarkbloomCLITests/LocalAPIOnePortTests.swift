@@ -96,14 +96,14 @@ struct LocalAPIOnePortTests {
         defer { fresh.remove() }
         let named = try #require(try ScriptedTerminal().resolve(try fresh.start(["--local", "--port", "8007"]),
                                                                 terminal: false))
-        #expect(named.port == 8007 && fresh.local == LocalSettings(port: 8007))
+        #expect(named.port == 8007 && fresh.local == LocalSettings(mode: .local, port: 8007))
         #expect(named.portNote == "Local API port: 8007 (saved).")
 
         let saved = try TempConfig(Self.plain + "\n[local]\nport = 8005\n")
         defer { saved.remove() }
         let moved = try #require(try ScriptedTerminal().resolve(try saved.start(["--me-first", "--port", "8007"]),
                                                                 terminal: false))
-        #expect(moved.port == 8007 && saved.local == LocalSettings(port: 8007))
+        #expect(moved.port == 8007 && saved.local == LocalSettings(mode: .both, port: 8007))
         #expect(moved.portNote == "Local API port: 8007 (saved, instead of 8005: tools set up for 8005 need "
             + "`darkbloom --opencode` or `--hermes` again).")
 
@@ -140,7 +140,8 @@ struct LocalAPIOnePortTests {
         let child = try #require(try script.resolve(start, terminal: false))
         #expect(child.mode == .local && child.port == Self.first && child.bind == "127.0.0.1" && child.change.isEmpty)
         #expect(script.reads == 0 && script.probed.isEmpty && config.bytes == before)
-        #expect(!start.bannerShowsKey(child))
+        #expect(!start.localServerBanner(serving: child, models: [], token: "dk-local-fixture")
+            .contains { $0.contains("dk-local-fixture") })
 
         // Saved: the same port again, nothing probed or written.
         let again = try Desktop.StartLocal.localAPI(configPath: config.path.path, ownLivePort: { nil },

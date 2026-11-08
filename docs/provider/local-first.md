@@ -208,11 +208,24 @@ model.
   When your OpenCode config sets no default model, Darkbloom's first model
   becomes the default for new sessions, and the `Use it:` line names it
   instead (`new sessions use darkbloom/<model>`).
-- **Run it again** when your models change, or when the port or the key
-  changes; with nothing new, it changes nothing. Run it again too once a model
-  you just started is loaded: until then this Mac doesn't know its limits, the
-  tools get the catalog's, and the start says so.
-  <!-- pending LS-4: the start waits for the model to load before it writes the limits, and the tools follow the address and the key by themselves. -->
+- **It waits for your model.** While this Mac still loads the models it started
+  with, the start waits before it writes anything, on one live line
+  (`⠙ Loading Gemma 4 26B before setting up OpenCode… 42s`; without a terminal,
+  one line as it starts and one as it ends). So the tools get the limits this
+  Mac gives each model, not the catalog's. It waits at most 10 minutes: a model
+  still loading then, or one that doesn't load, sets nothing up, and the line
+  names the next step. Ctrl-C stops the wait; nothing is written, and the start
+  says so. Darkbloom keeps serving either way.
+- **Run it again** when your models change; with nothing new, it changes
+  nothing. A model that isn't loading as it runs (one unloaded when idle, or
+  one that loads on a request) gets the catalog's limits, and one line says to
+  run it again once `darkbloom status` shows it loaded.
+- **If the address or the key changes** (another port, another `--bind`, or
+  another key file), the next `darkbloom start` says so in one line and names
+  the command that points the tools there again:
+  ``OpenCode points at http://127.0.0.1:8001/v1, not this Mac's local API
+  (http://127.0.0.1:8002/v1): `darkbloom --opencode` points it there.`` A
+  start without `--opencode` or `--hermes` never changes a tool's file.
   <!-- pending R-FULL: the tools get each model's full context window, output length and capabilities. -->
 - **Offline** (Darkbloom's catalog unreachable), a run again keeps the names,
   image support and limits already set up. A model set up for the first time

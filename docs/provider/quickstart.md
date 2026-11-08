@@ -1,6 +1,6 @@
 # Provider quickstart
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 From a fresh Apple Silicon Mac to OpenCode or Hermes on this Mac's own models;
 then, if you want, to earning on the Darkbloom network. For anyone setting up a
@@ -12,6 +12,7 @@ exec $SHELL -l                       # or open a new Terminal window
 darkbloom start --opencode           # or --hermes
   How should this Mac serve?  1 Only me · 2 Darkbloom network · 3 Both, me first  [3]
   Enter → your models (downloads offered) → memory when idle → serves in the background
+  ⠙ Loading Gemma 4 26B before setting up OpenCode… 42s
   ✓ OpenCode can use Darkbloom
 opencode                             # then /models → Darkbloom
 ```
@@ -20,7 +21,6 @@ Two Macs: run `darkbloom cluster` on each, then `darkbloom start --opencode` on
 the leading Mac.
 
 <!-- pending LS-1: choice 1, Only me, also offers the model list and the memory question, and serves in the background. -->
-<!-- pending LS-4: the start waits for the model to load, on one live line, before it sets OpenCode up. -->
 <!-- pending LS-3: in a pair, start with opencode on either Mac. -->
 
 ## Prerequisites
@@ -104,12 +104,13 @@ first**, `start` then checks the Mac and goes on
    `provider.auto_restart = true` (the default) it also arms the crash-recovery
    watchdog `io.darkbloom.watchdog`
    (`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`).
-5. **OpenCode:** once this Mac's local API answers (it waits up to 30 seconds),
-   it adds a `darkbloom` provider to OpenCode's config, keeps a backup and
-   prints the one-line undo. A model that is still loading gets its limits
-   from Darkbloom's catalog, and the start says to run it again once the model
-   is loaded. OpenCode's config never holds your key: OpenCode reads it from
-   Darkbloom's key file
+5. **OpenCode:** once this Mac's local API answers (it waits up to 30 seconds)
+   and the models it started with are loaded (one live line,
+   `⠙ Loading Gemma 4 26B before setting up OpenCode… 42s`, for up to 10
+   minutes; Ctrl-C stops it and writes nothing), it adds a `darkbloom` provider
+   to OpenCode's config with the limits this Mac gives each model, keeps a
+   backup and prints the one-line undo. OpenCode's config never holds your key:
+   OpenCode reads it from Darkbloom's key file
    ([Use it from OpenCode or Hermes](./local-first.md#use-it-from-opencode-or-hermes)).
 
 With **Only me**, OpenCode is set up the same way once its server listens.

@@ -175,6 +175,36 @@ struct HermesConfigPlanTests {
         """ + added + block)
     }
 
+    @Test("the main model Darkbloom replaces is named with its provider; none, or Darkbloom's own, isn't")
+    func namesTheMainModelItReplaces() throws {
+        let cases: [(String?, String?)] = [
+            ("model:\n  default: gpt-6-astra\n  provider: opencodex\n  base_url: http://127.0.0.1:10100/v1\n",
+             "gpt-6-astra via opencodex"),
+            ("model:\n  provider: \"custom:ollama-launch\"\n  default: \"qwen3.6\"\n", "qwen3.6 via ollama-launch"),
+            ("model:\n  model: openrouter/some-model\n", "openrouter/some-model"),
+            ("model: gpt-4o\n", "gpt-4o"),
+            ("model: \"\"\n", nil),
+            ("model: ~\n", nil),
+            ("model:\n  provider: opencodex\n", nil),
+            (nil, nil),
+        ]
+        for (owner, before) in cases {
+            #expect(F.summary(plan(owner))?.replacedDefault == before, "\(owner ?? "no file")")
+        }
+        // Darkbloom's own main model, kept or switched to another of its models.
+        let created = try #require(F.newText(plan(nil)))
+        #expect(F.summary(plan(created, models: [F.glm]))?.replacedDefault == nil)
+    }
+
+    @Test("a pair's model is the main one, as this Mac's would be")
+    func aPairsModelIsTheMainModel() {
+        let pair = IntegrationModel(id: "qwen3.8-27b", name: "Qwen 3.8 27B (your pair)", location: .yourPair,
+                                    contextLength: 262_144, outputLimit: 65_536, tools: true, imageInput: true,
+                                    reasoning: false)
+        #expect(F.summary(plan(nil, models: [F.glm, pair]))?.defaultModel == "qwen3.8-27b")
+        #expect(F.summary(plan(nil, models: [F.glm]))?.defaultModel == "glm-5.3-flash")
+    }
+
     @Test("a Darkbloom default that is still listed with 64K or more is kept")
     func keepsTheCurrentDefault() throws {
         let created = try #require(F.newText(plan(nil)))

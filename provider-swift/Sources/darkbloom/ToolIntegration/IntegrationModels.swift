@@ -7,6 +7,9 @@ struct IntegrationModel: Equatable, Sendable {
     /// `Comparable` gives them.
     enum Location: Comparable, CaseIterable, Sendable {
         case thisMac
+        /// The pair this Mac is part of, of two Macs or more: the local API is the pair's, and its models are the
+        /// pair's (`IntegrationEndpoint.servesThePair`).
+        case yourPair
         case yourMacs
         /// Other Darkbloom machines: the local router lists them only when the owner opted into "My Macs first".
         case network
@@ -14,6 +17,7 @@ struct IntegrationModel: Equatable, Sendable {
         var label: String {
             switch self {
             case .thisMac: "this Mac"
+            case .yourPair: "your pair"
             case .yourMacs: "your Macs"
             case .network: "Darkbloom network, billed"
             }
@@ -181,7 +185,8 @@ enum IntegrationModels {
     ///   text input only (the engine refuses images on text-only builds) and no reasoning claim.
     /// - A model the catalog doesn't describe carries `fallback`: a tool's own entry for it keeps its values
     ///   (`keeping(_:entries:)`).
-    static func resolve(_ listed: [EndpointModel], catalog: CatalogSnapshot?) -> [IntegrationModel] {
+    static func resolve(_ listed: [EndpointModel], catalog: CatalogSnapshot?,
+                        here: IntegrationModel.Location = .thisMac) -> [IntegrationModel] {
         var nearest: [String: (entry: EndpointModel, location: IntegrationModel.Location)] = [:]
         for entry in listed {
             let location = location(ownedBy: entry.ownedBy)

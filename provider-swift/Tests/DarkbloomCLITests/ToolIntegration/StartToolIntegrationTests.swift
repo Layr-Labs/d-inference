@@ -341,13 +341,15 @@ struct StartToolIntegrationTests {
         #expect(ok)
         #expect(sandbox.said == [
             "✓ OpenCode can use Darkbloom: 2 models.",
-            "  Changed: ~/.config/opencode/opencode.jsonc (a new file with the \"darkbloom\" provider)",
-            "  Use it:  in OpenCode, /models → Darkbloom; new sessions use darkbloom/gemma-4-26b-qat-4bit.",
+            "  Changed: ~/.config/opencode/opencode.jsonc (a new file with the \"darkbloom\" provider and the default "
+                + "model)",
+            "  New OpenCode sessions now use Darkbloom's gemma-4-26b-qat-4bit. Switch back with /models.",
             "  Undo:    rm \(ToolIntegration.shellQuoted(sandbox.openCodeFile.path))",
-            "✓ Hermes uses Darkbloom: new Hermes chats run qwen3.8-27b (this Mac).",
-            "  Changed: ~/.hermes/config.yaml (a new file with the \"darkbloom\" provider, made the main model)",
-            "  Switch back: hermes model   ·   Undo: rm \(ToolIntegration.shellQuoted(sandbox.hermesFile.path))   ·   "
-                + "Chats already open keep their model.",
+            "✓ Hermes can use Darkbloom: 1 model.",
+            "  Changed: ~/.hermes/config.yaml (a new file with the \"darkbloom\" provider as the main model)",
+            "  New Hermes chats now use Darkbloom's qwen3.8-27b. Switch back: hermes model",
+            "  Undo:    rm \(ToolIntegration.shellQuoted(sandbox.hermesFile.path))   ·   Chats already open keep their "
+                + "model.",
             "  Left out: gemma-4-26b-qat-4bit (Hermes needs 64K context)",
             "  Darkbloom's catalog wasn't reachable: run `darkbloom --opencode --hermes` again online for the "
                 + "models' names and image support.",
@@ -374,7 +376,7 @@ struct StartToolIntegrationTests {
             "✓ OpenCode can use Darkbloom: 1 model.",
             "  Changed: ~/.config/opencode/opencode.jsonc (updated the \"darkbloom\" provider; nothing else changed)",
             "  Backup:  ~/.darkbloom/integrations/backups/opencode/\(backup.lastPathComponent)",
-            "  Use it:  in OpenCode, /models → Darkbloom. Your default model is unchanged.",
+            "  Your default stays darkbloom/gemma-4-26b-qat-4bit; switch with /models.",
             "  Undo:    cp \(ToolIntegration.shellQuoted(backup.path)) \(ToolIntegration.shellQuoted(sandbox.openCodeFile.path))",
         ])
 

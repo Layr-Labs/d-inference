@@ -10,6 +10,17 @@ enum OpenCodeConfigPlan {
     /// OpenCode's package for an OpenAI-compatible endpoint.
     static let package = "@opencode/ai/providers/openai-compatible"
 
+    /// The default model OpenCode's global config files set (their top-level `model`).
+    enum GlobalDefault: Equatable, Sendable {
+        /// None of them sets one: OpenCode picks a model itself, so Darkbloom's may become the default.
+        case none
+        /// The model they set, `provider/model`, the later file's when two do.
+        case model(String)
+        /// One of them sets `model` to something else than a model name, or can't be read: Darkbloom leaves the
+        /// default alone without naming it.
+        case unnamed
+    }
+
     /// `$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`: the last existing of `opencode.json` and
     /// `opencode.jsonc` (OpenCode loads both, `.jsonc` last, and saves to the same one), else a new `opencode.jsonc`.
     static func configFile(home: URL, variables: [String: String]) -> URL {
@@ -21,10 +32,10 @@ enum OpenCodeConfigPlan {
     }
 
     /// The file's new bytes. A `.json` file stays strict JSON when it was: it gets no comment line. The top-level
-    /// `model` is added only when neither this file nor, by `defaultModelElsewhere`, another global file sets one.
+    /// `model` is added only when neither this file nor, by `defaultElsewhere`, another global file sets one.
     static func plan(
         existing: Data?, fileName: String, endpoint: IntegrationEndpoint, models listed: [IntegrationModel],
-        provider: IntegrationProvider, home: URL, defaultModelElsewhere: Bool = false
+        provider: IntegrationProvider, home: URL, defaultElsewhere: GlobalDefault = .none
     ) -> ToolConfigPlan {
         guard !listed.isEmpty else {
             return .refused(.models("Darkbloom's endpoint lists no chat models yet, so OpenCode has none to use."))
@@ -51,7 +62,7 @@ enum OpenCodeConfigPlan {
         var rootMembers: [[String]] = fresh ? [["\"$schema\": \(jsonString(schemaURL))"]] : []
         let modelKeys = root.members(named: "model")
         guard modelKeys.count < 2 else { return .refused(.file("it has two \"model\" keys")) }
-        let defaultModel = modelKeys.isEmpty && !defaultModelElsewhere ? "\(provider.id)/\(models[0].id)" : nil
+        let defaultModel = modelKeys.isEmpty && defaultElsewhere == .none ? "\(provider.id)/\(models[0].id)" : nil
         if let defaultModel { rootMembers.append(["\"model\": \(jsonString(defaultModel))"]) }
 
         let change: ToolConfigSummary.ProviderChange
@@ -162,7 +173,7 @@ enum OpenCodeConfigPlan {
     /// tell). OpenCode loads `opencode.json`, then `opencode.jsonc`, and Darkbloom edits the last that exists, so a
     /// `model` it added would override the owner's in the other file. Project, system and managed configs load after
     /// the global ones and win over them, so a global `model` never replaces theirs.
-    static func otherGlobalConfigSetsModel(besides file: URL) -> Bool {
+    static func otherGlobalDefault(besides file: URL) -> GlobalDefault {
         let directory = file.deletingLastPathComponent()
         return globalFileNames.filter { $0 != file.lastPathComponent }.contains { name in
             let other = directory.appendingPathComponent(name)
@@ -170,7 +181,7 @@ enum OpenCodeConfigPlan {
             guard let data = try? Data(contentsOf: other), let document = try? JSONCDocument([UInt8](data)),
                   let root = document.root.object else { return true }
             return !root.members(named: "model").isEmpty
-        }
+        } ? .unnamed : .none
     }
 
     static func jsonString(_ value: String) -> String {

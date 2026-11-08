@@ -159,6 +159,21 @@ struct IntegrationModelsTests {
         ])
     }
 
+    @Test("a pair's API: its own models are named (your pair); the others keep where they run")
+    func aPairsOwnModels() {
+        let models = IntegrationModels.resolve([
+            EndpointModel(id: "z-net", ownedBy: "darkbloom"),
+            EndpointModel(id: "b-mine", ownedBy: "my-macs"),
+            EndpointModel(id: "q-pair", ownedBy: "this-mac"),
+        ], catalog: nil, here: .yourPair)
+        #expect(models.map(\.name) == ["q-pair (your pair)", "b-mine (your Macs)", "z-net (Darkbloom network, billed)"])
+        #expect(models.first?.location == .yourPair)
+        // Read back from a tool's file without where it runs, so a run without the catalog keeps the name.
+        #expect(IntegrationModel.displayName(in: "Qwen 3.8 27B (your pair)") == "Qwen 3.8 27B")
+        #expect(IntegrationModel.Location.allCases.map(\.label)
+            == ["this Mac", "your pair", "your Macs", "Darkbloom network, billed"])
+    }
+
     @Test("non-chat catalog models are left out; an alias ID takes the alias's name and its build's limits")
     func catalogKindsAndAliases() {
         let snapshot = catalog([

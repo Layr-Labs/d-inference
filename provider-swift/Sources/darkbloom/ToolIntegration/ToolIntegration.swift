@@ -32,7 +32,7 @@ enum IntegrationTool: String, CaseIterable, Sendable {
         case .opencode:
             OpenCodeConfigPlan.plan(existing: existing, fileName: file.lastPathComponent, endpoint: endpoint,
                                     models: models, provider: provider, home: home,
-                                    defaultModelElsewhere: OpenCodeConfigPlan.otherGlobalConfigSetsModel(besides: file))
+                                    defaultElsewhere: OpenCodeConfigPlan.otherGlobalDefault(besides: file))
         case .hermes:
             HermesConfigPlan.plan(existing: existing, endpoint: endpoint, models: models, provider: provider)
         }
@@ -57,11 +57,14 @@ struct IntegrationEndpoint: Equatable, Sendable {
     /// `http://<host>:<port>/v1`, as `local.json` names the live server.
     let baseURL: String
     let keyFile: URL
+    /// The server is this Mac's part of a pair (of two Macs or more): the models it serves itself are the pair's.
+    var servesThePair = false
 
     /// The live local server `info`, by default the one in `local.json` (its own port, never an assumed one), with the
     /// key file for that port; nil when no server runs, it serves without a key, or no key file holds its key.
     static func live(_ info: LocalEndpoint.Info? = LocalEndpoint.readLiveInfo(),
-                     keyFile: (UInt16) -> URL? = { LocalEndpoint.keyFile(forPort: Int($0)) }) -> IntegrationEndpoint? {
+                     keyFile: (UInt16) -> URL? = { LocalEndpoint.keyFile(forPort: Int($0)) },
+                     pairPart: () -> Int32? = { nil }) -> IntegrationEndpoint? {
         guard let info, !info.apiKey.isEmpty, let file = keyFile(info.port) else { return nil }
         return IntegrationEndpoint(baseURL: info.baseURL, keyFile: file)
     }

@@ -69,8 +69,7 @@ extension Start {
         guard let endpoint = runningLocalAPI(live, keyFile: { LocalEndpoint.keyFile(forPort: Int($0)) }) else {
             return false
         }
-        print("Darkbloom already serves on \(live.host):\(live.port); setting up "
-            + "\(ToolIntegrationStep.names(requestedTools)) for it.")
+        print(ToolIntegrationStep.alreadyServes(live, tools: requestedTools))
         try await setUpToolsWithSavedSettings(endpoint, step: step)
         return true
     }

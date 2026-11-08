@@ -69,7 +69,7 @@ struct OpenCodeConfigPlanTests {
             defaultModel: "darkbloom/gemma-4-26b-qat-4bit"))
         #expect(plan(text) == .unchanged(ToolConfigSummary(
             provider: .unchanged, models: ["gemma-4-26b-qat-4bit", "qwen3.8-27b", "glm-5.3-flash"],
-            defaultModel: nil)))
+            defaultModel: nil, keptDefault: "darkbloom/gemma-4-26b-qat-4bit")))
     }
 
     @Test("an owner's file: only the providers block grows; comments, trailing commas, others and the model stay")
@@ -100,12 +100,13 @@ struct OpenCodeConfigPlanTests {
         """ + suffix)
         #expect(F.summary(result)?.provider == .added)
         #expect(F.summary(result)?.defaultModel == nil)
+        #expect(F.summary(result)?.keptDefault == "anthropic/claude-sonnet-5-5")
         #expect(F.summary(result)?.droppedComments == 0)
 
         // The same run again changes nothing.
         #expect(plan(text) == .unchanged(ToolConfigSummary(
             provider: .unchanged, models: ["gemma-4-26b-qat-4bit", "qwen3.8-27b", "glm-5.3-flash"],
-            defaultModel: nil)))
+            defaultModel: nil, keptDefault: "anthropic/claude-sonnet-5-5")))
 
         // A changed model list rewrites only the models member.
         let fewer = plan(text, models: [F.qwen])
@@ -117,7 +118,8 @@ struct OpenCodeConfigPlanTests {
         let tail = "\n      }\n    },\n" + suffix
         #expect(text.hasSuffix(tail) && rewritten.hasSuffix(tail))
         #expect(rewritten.contains("\"qwen3.8-27b\"") && !rewritten.contains("gemma"))
-        #expect(F.summary(fewer) == ToolConfigSummary(provider: .updated, models: ["qwen3.8-27b"], defaultModel: nil))
+        #expect(F.summary(fewer) == ToolConfigSummary(provider: .updated, models: ["qwen3.8-27b"], defaultModel: nil,
+                                                       keptDefault: "anthropic/claude-sonnet-5-5"))
     }
 
     @Test("without the catalog, each model keeps its entry's name, capabilities and limits: nothing changes")
@@ -130,7 +132,8 @@ struct OpenCodeConfigPlanTests {
             EndpointModel(id: "glm-5.3-flash", ownedBy: "my-macs"),
         ], catalog: nil)
         #expect(plan(online, models: offline) == .unchanged(ToolConfigSummary(
-            provider: .unchanged, models: ["gemma-4-26b-qat-4bit", "qwen3.8-27b", "glm-5.3-flash"], defaultModel: nil)))
+            provider: .unchanged, models: ["gemma-4-26b-qat-4bit", "qwen3.8-27b", "glm-5.3-flash"], defaultModel: nil,
+            keptDefault: "darkbloom/gemma-4-26b-qat-4bit")))
 
         // A model the file has no entry for gets what is known; the others keep theirs.
         let more = offline + IntegrationModels.resolve(
@@ -183,45 +186,65 @@ struct OpenCodeConfigPlanTests {
         #expect((parsed["providers"] as? [String: Any])?["darkbloom"] != nil)
     }
 
-    @Test("a default model the owner set is kept; none set means Darkbloom's first model")
+    @Test("a default model the owner set is kept, and named when it is a model; none set means Darkbloom's first model")
     func defaultModel() throws {
-        let kept = try #require(F.newText(plan("{\n  \"model\": \"\"\n}\n")))
+        let unnamed = plan("{\n  \"model\": \"\"\n}\n")
+        let kept = try #require(F.newText(unnamed))
         #expect(kept.hasPrefix("{\n  \"model\": \"\",\n  \"providers\": {"))
+        #expect(F.summary(unnamed)?.defaultModel == nil && F.summary(unnamed)?.keptDefault == nil)
+        let named = plan("{\n  \"model\": \"omlx/qwen\"\n}\n")
+        #expect(F.summary(named)?.defaultModel == nil && F.summary(named)?.keptDefault == "omlx/qwen")
         let set = plan("{\n  \"theme\": \"dark\"\n}\n")
         #expect(F.newText(set)?.contains("  \"model\": \"darkbloom/gemma-4-26b-qat-4bit\",\n") == true)
         #expect(F.summary(set)?.defaultModel == "darkbloom/gemma-4-26b-qat-4bit")
+        #expect(F.summary(set)?.keptDefault == nil)
     }
 
-    @Test("a default model set in another global file means none is added here, to a new file either")
+    @Test("a default model set in another global file means none is added here, to a new file either; it is named")
     func defaultModelSetElsewhere() throws {
-        let result = OpenCodeConfigPlan.plan(
-            existing: Data("{\n  \"theme\": \"dark\"\n}\n".utf8), fileName: "opencode.jsonc", endpoint: F.endpoint,
-            models: F.models, provider: F.provider, home: F.home, defaultModelElsewhere: true)
-        let text = try #require(F.newText(result))
-        #expect(!text.contains("\"model\""))
-        #expect(F.summary(result)?.defaultModel == nil)
-        let created = OpenCodeConfigPlan.plan(
-            existing: nil, fileName: "opencode.jsonc", endpoint: F.endpoint, models: F.models, provider: F.provider,
-            home: F.home, defaultModelElsewhere: true)
-        #expect(F.newText(created)?.contains("\"model\"") == false)
+        for elsewhere in [OpenCodeConfigPlan.GlobalDefault.model("omlx/q"), .unnamed] {
+            let result = OpenCodeConfigPlan.plan(
+                existing: Data("{\n  \"theme\": \"dark\"\n}\n".utf8), fileName: "opencode.jsonc", endpoint: F.endpoint,
+                models: F.models, provider: F.provider, home: F.home, defaultElsewhere: elsewhere)
+            let text = try #require(F.newText(result))
+            #expect(!text.contains("\"model\""))
+            #expect(F.summary(result)?.defaultModel == nil)
+            #expect(F.summary(result)?.keptDefault == (elsewhere == .unnamed ? nil : "omlx/q"))
+            let created = OpenCodeConfigPlan.plan(
+                existing: nil, fileName: "opencode.jsonc", endpoint: F.endpoint, models: F.models, provider: F.provider,
+                home: F.home, defaultElsewhere: elsewhere)
+            #expect(F.newText(created)?.contains("\"model\"") == false)
+        }
+        // This file's own default wins over the files it outranks.
+        let own = OpenCodeConfigPlan.plan(
+            existing: Data("{ \"model\": \"mine/m\" }".utf8), fileName: "opencode.jsonc", endpoint: F.endpoint,
+            models: F.models, provider: F.provider, home: F.home, defaultElsewhere: .model("omlx/q"))
+        #expect(F.summary(own)?.keptDefault == "mine/m")
     }
 
-    @Test("another global file sets a default: its own top-level model key, or it can't be read")
-    func otherGlobalConfigSetsModel() throws {
+    @Test("the global files' default, merged as OpenCode 2 merges them: opencode.json, then opencode.jsonc")
+    func otherGlobalDefault() throws {
         let directory = try TemporaryDirectory()
         let folder = directory.file("opencode")
         let jsonc = folder.appendingPathComponent("opencode.jsonc")
-        #expect(!OpenCodeConfigPlan.otherGlobalConfigSetsModel(besides: jsonc))
+        #expect(OpenCodeConfigPlan.otherGlobalDefault(besides: jsonc) == .none)
         try directory.write("{\n  \"theme\": \"dark\"\n}\n", to: "opencode/opencode.json")
-        #expect(!OpenCodeConfigPlan.otherGlobalConfigSetsModel(besides: jsonc))
+        #expect(OpenCodeConfigPlan.otherGlobalDefault(besides: jsonc) == .none)
         try directory.write("{ \"agent\": { \"build\": { \"model\": \"x/y\" } } }", to: "opencode/opencode.json")
-        #expect(!OpenCodeConfigPlan.otherGlobalConfigSetsModel(besides: jsonc))
+        #expect(OpenCodeConfigPlan.otherGlobalDefault(besides: jsonc) == .none)
         try directory.write("{\n  // mine\n  \"model\": \"omlx/q\",\n}\n", to: "opencode/opencode.json")
-        #expect(OpenCodeConfigPlan.otherGlobalConfigSetsModel(besides: jsonc))
+        #expect(OpenCodeConfigPlan.otherGlobalDefault(besides: jsonc) == .model("omlx/q"))
+        try directory.write("{ \"model\": null }", to: "opencode/opencode.json")
+        #expect(OpenCodeConfigPlan.otherGlobalDefault(besides: jsonc) == .unnamed)
         try directory.write("{ \"model\": ", to: "opencode/opencode.json")
-        #expect(OpenCodeConfigPlan.otherGlobalConfigSetsModel(besides: jsonc))
+        #expect(OpenCodeConfigPlan.otherGlobalDefault(besides: jsonc) == .unnamed)
         // The file being edited isn't another one: its own model is the planner's to read.
-        #expect(!OpenCodeConfigPlan.otherGlobalConfigSetsModel(besides: folder.appendingPathComponent("opencode.json")))
+        try directory.write("{ \"model\": \"omlx/q\" }", to: "opencode/opencode.json")
+        #expect(OpenCodeConfigPlan.otherGlobalDefault(besides: folder.appendingPathComponent("opencode.json")) == .none)
+        // OpenCode 1's config.json: OpenCode 2 doesn't load it ("does not load legacy config.json files").
+        try directory.write("{ \"model\": \"legacy/m\" }", to: "opencode/config.json")
+        #expect(OpenCodeConfigPlan.otherGlobalDefault(besides: folder.appendingPathComponent("opencode.json")) == .none)
+        #expect(OpenCodeConfigPlan.globalFileNames == ["opencode.json", "opencode.jsonc"])
     }
 
     @Test("an empty object and a one-line object get the provider on their own lines")

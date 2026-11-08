@@ -265,6 +265,11 @@ struct ToolIntegrationStep {
         }
     }
 
+    /// The line beside a local API that already serves as the start would.
+    static func alreadyServes(_ live: LocalEndpoint.Info, tools: [IntegrationTool]) -> String {
+        "Darkbloom already serves on \(live.host):\(live.port); setting up \(names(tools)) for it."
+    }
+
     /// The line when this start has no local API for the tools.
     static func noLocalAPI(_ tools: [IntegrationTool]) -> String {
         "This Mac serves only the Darkbloom network, so \(names(tools)) \(tools.count == 1 ? "has" : "have") no local "

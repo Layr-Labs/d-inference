@@ -2722,14 +2722,20 @@ struct DesktopAppOnAPairedMacTests {
         for code: Int32 in [1, 4, 5, 64] {
             #expect(pair().appStartLines(named: ["acme/Alpha-4bit"], localEndpoint: true, code: code).isEmpty, "exit \(code)")
         }
-        // Both, me first gives a local API on the leading Mac only: its role says so before the pair runs, while its part
-        // doesn't run rank 0 yet. Only me gives one on both Macs.
+        // The leading Mac gets a local API from Both, me first or Only me: its role says so before the pair runs, while its
+        // part doesn't run rank 0 yet. The other Mac gets one only with the pair's API on every address, through its relay
+        // (#1894; its words are pinned in `ClusterPairMemberRelayCLITests`): kept on the leading Mac, it gets none.
         for role in [ClusterPairSummary.Role.leader, .member] {
-            var meFirst = pair(role: role)
-            meFirst.localAPI = ClusterPairLocalAPI(runsRankZero: false, listening: nil, meFirst: nil)
-            #expect(meFirst.appStartLines(named: [], localEndpoint: true, code: 0)
-                == (role == .leader ? [String]() : [appStartNoLocalAPILine]), "\(role)")
-            #expect(pair(role: role, localOnly: true).appStartLines(named: [], localEndpoint: true, code: 0).isEmpty, "\(role)")
+            for bind in ["0.0.0.0", "127.0.0.1"] {
+                var meFirst = pair(role: role)
+                meFirst.localAPI = ClusterPairLocalAPI(runsRankZero: false, listening: nil, meFirst: nil)
+                meFirst.localAPIBind = bind
+                var onlyMe = pair(role: role, localOnly: true)
+                onlyMe.localAPIBind = bind
+                let expected = role == .leader || bind == "0.0.0.0" ? [String]() : [appStartNoLocalAPILine]
+                #expect(meFirst.appStartLines(named: [], localEndpoint: true, code: 0) == expected, "Both, \(role), \(bind)")
+                #expect(onlyMe.appStartLines(named: [], localEndpoint: true, code: 0) == expected, "Only me, \(role), \(bind)")
+            }
         }
     }
 

@@ -93,6 +93,42 @@ struct ClusterPairMemberRelayCLITests {
                 "back: its address again")
     }
 
+    /// The app's Start on a member (`Start.appStartOptions`, `--local-endpoint`) never says "No local API was added"
+    /// while its relay gives it one (#1905's rule for whichever of the two landed second): relaying, or still starting, it
+    /// says nothing of one; with the other Mac away, or while Darkbloom doesn't have the pair, it says this Mac's state in
+    /// `status`'s words. Only where the pair gives this Mac none (its API kept on the leading Mac) does that line stand.
+    @Test func theAppsStartNeverSaysNoLocalAPIWhileTheRelayGivesOne() {
+        let none = "No local API was added on this Mac: a pair's local API comes from how the pair serves "
+            + "(`\(ClusterPairSummary.cli) cluster` on the leading Mac changes it)."
+        var away = member(), waiting = member(relaying: nil)
+        away.relayRankZeroAway = true
+        waiting.relayWaitsForOffer = true
+        for code: Int32 in [0, 3] {
+            #expect(member().appStartLines(named: [], localEndpoint: true, code: code).isEmpty, "relaying, exit \(code)")
+            #expect(member(relaying: nil).appStartLines(named: [], localEndpoint: true, code: code).isEmpty,
+                    "its relay still starting, exit \(code)")
+            #expect(away.appStartLines(named: [], localEndpoint: true, code: code)
+                == ["Local API: http://127.0.0.1:8003/v1 on this Mac answers 503 for now. \(Self.awayWords)"], "away, exit \(code)")
+            #expect(waiting.appStartLines(named: [], localEndpoint: true, code: code)
+                == ["Local API: none on this Mac while Darkbloom doesn't have the pair; meanwhile the pair answers only on "
+                        + "\(Self.other) (`\(ClusterPairSummary.cli) local` there shows its address and key)"], "not offered, exit \(code)")
+            for bind in ["127.0.0.1", "192.168.1.5"] {
+                #expect(member(relaying: nil, bind: bind).appStartLines(named: [], localEndpoint: true, code: code) == [none],
+                        "kept on the leading Mac (\(bind)), exit \(code)")
+            }
+        }
+        #expect(away.appStartLines(named: [], localEndpoint: false, code: 0).isEmpty, "no local API asked for")
+        // Only me: a local API on every Mac only with the pair's API on every address (#1905's review, nit 2).
+        func onlyMe(_ pair: ClusterPairSummary) -> ClusterPairSummary {
+            var pair = pair
+            pair.localAPI = nil
+            pair.localOnly = true
+            return pair
+        }
+        #expect(onlyMe(member()).appStartLines(named: [], localEndpoint: true, code: 0).isEmpty)
+        #expect(onlyMe(member(relaying: nil, bind: "127.0.0.1")).appStartLines(named: [], localEndpoint: true, code: 0) == [none])
+    }
+
     /// The Mac that runs the pair's API says the other Mac answers on its own port too, once the API is on every address:
     /// from where it listens, so an API on this Mac only (Both while Darkbloom doesn't have the pair) says it runs none.
     @Test func theLeadersStatusSaysTheOtherMacAnswersToo() {

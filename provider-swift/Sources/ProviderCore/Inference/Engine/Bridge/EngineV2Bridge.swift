@@ -327,6 +327,10 @@ public actor EngineV2Bridge {
     /// Me first: how often the owner's request, while it has no first token, looks whether it waits in the engine's
     /// queue (`EngineV2Bridge+OwnerWait.swift`).
     var ownerWaitPollInterval: Duration = .milliseconds(250)
+    /// Streamed local requests whose response head waits for the engine to admit them
+    /// (`EngineV2Bridge+HeadHold.swift`), and the memory refusal of each one the engine ended before admitting it.
+    var headHeldIDs: Set<String> = []
+    var headHoldRefusals: [String: String] = [:]
 
     /// Upper bound on a caller-supplied request-id we will use verbatim.
     /// Coordinator/provider ids are short (`req-<uuid-prefix>` or a

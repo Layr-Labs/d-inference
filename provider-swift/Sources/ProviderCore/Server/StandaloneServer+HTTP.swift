@@ -207,6 +207,11 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
                     code: "context_length_exceeded")
             case .tokenBudgetExhausted?:
                 return Self.openAIErrorResponse(status: status, message: Self.memoryRefusalMessage)
+            case .platformTerminal(cause: .admissionTimeout, _, _)?:
+                // A request the engine queued for memory and couldn't admit
+                // within its admission lease (not streamed: a streamed one is
+                // refused at its head, `EngineV2Bridge.holdHeadUntilAdmitted`).
+                return Self.openAIErrorResponse(status: .serviceUnavailable, message: Self.memoryRefusalMessage)
             default:
                 return Self.openAIErrorResponse(status: status, message: failure.message)
             }

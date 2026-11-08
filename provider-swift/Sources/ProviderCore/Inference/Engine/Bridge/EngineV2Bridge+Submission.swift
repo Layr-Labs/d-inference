@@ -1113,8 +1113,15 @@ extension EngineV2Bridge {
             emitVisionSubmitTelemetry(requestId: id, mediaKind: mediaKind)
         }
 
-        // The engine has the prompt: a streamed local request says so until its first token.
-        prefillProgress?.accept(promptTokens: promptTokens.count)
+        // A streamed request on this Mac's API sends its response head only once the engine admits it, so an end
+        // before admission for this Mac's memory is answered with the memory 503 (`holdHeadUntilAdmitted`). Its
+        // prompt progress starts there too. A pair's API, whose queue is before its engine, says its prompt now.
+        let holdsHead = prefillProgress != nil && distributed == nil
+        if holdsHead {
+            headHeldIDs.insert(id)
+        } else {
+            prefillProgress?.accept(promptTokens: promptTokens.count)
+        }
 
         // The pump owns these resources through engine terminal; each cache
         // manages pending durable publication and receipt retention.
@@ -1139,6 +1146,11 @@ extension EngineV2Bridge {
             if case .cancelled = termination {
                 Task { await bridge.cancel(requestId: id) }
             }
+        }
+        if holdsHead {
+            try await holdHeadUntilAdmitted(id: id)
+            // The engine has admitted the prompt: it says so until its first token.
+            prefillProgress?.accept(promptTokens: promptTokens.count)
         }
         return stream
     }

@@ -2020,8 +2020,9 @@ carries `CBv2RequestTiming`, copied verbatim onto the wire and folded into
 A streamed request on the local API carries a `LocalPrefillProgress`
 (`provider-swift/Sources/ProviderCore/Server/LocalPrefillProgress.swift`, the task-local
 `LocalPrefillProgress.current` that `LocalChatUploadResponder` binds around the frames call). The
-bridge reports into it what the engine reports of the prompt: its tokens once the request is active
-(`accept(promptTokens:)`), all of them from `CBv2Request.onPrefillCompleted`, and the end at the
+bridge reports into it what the engine reports of the prompt: its tokens once the engine admits the
+request (`accept(promptTokens:)` after `holdHeadUntilAdmitted`; on a pair's API once its engine accepts it),
+all of them from `CBv2Request.onPrefillCompleted`, and the end at the
 first committed token (the pump's first-token branch) or when the pump ends without one. The engine
 publishes no count in between (`EngineLoopV2` keeps each row's `numComputedTokens` for its prefill
 lease only), so until the prompt is done the API's comments give only its size
@@ -3786,7 +3787,7 @@ evidence, not a change to the normal final-row contract or the near-tie rule
 | `token_budget_exhausted: … shared KV budget has no headroom` | Two failed `GlobalKVCacheBudget` reservations; thrown before any stream exists (in-band to a nonthrowing caller) | `EngineV2Bridge+Submission.swift` |
 | `token_budget_exhausted: …` from engine admission | On one Mac, a request the engine's own admission can never hold (a paged slot's only memory gate, `EngineV2.requireRequestCanEverFit`); thrown before any stream exists, so a streamed local request gets 503 (in-band to a nonthrowing caller) | `EngineV2Bridge+Submission.swift` (`submitTokenized`) |
 | `PreContentDeadlineFailure.deadlineUnreachable` | First-content budget spent before submit or during prefill projection | `CoordinatorClientTypes.swift`, `EngineV2Bridge+Submission.swift`, `EngineV2Bridge+Admission.swift` |
-| Request cancelled by lease | No admission/prefill/decode progress within 120 s, or a step over 30 s. On the local API this comes after the response head, so a queued request that waits out the admission lease ends a streamed answer with an error event (as does a paged pool that stays full through its requeues) | `EngineLoopV2.swift`; `EngineV2Bridge+Events.swift` |
+| Request cancelled by lease | No admission/prefill/decode progress within 120 s, or a step over 30 s. On this Mac's API a streamed request's head waits for its admission (`holdHeadUntilAdmitted`), so a queued request that waits out the admission lease gets the memory 503 before any SSE header, as does one a paged pool keeps full through its requeues; one that isn't streamed gets the same words | `EngineLoopV2.swift`; `EngineV2Bridge+Events.swift`; `EngineV2Bridge+HeadHold.swift` |
 | `promptExceedsContext` (400) | The prompt alone fills the slot's window (its advertised context, else its model's); a larger output is cut, never refused | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`) |
 | `advertisedContextExceeded` (400) | Candidate output reservation is negative or overflows; with the output cut to the window, nothing larger reaches it on one Mac | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`); `provider-swift/Sources/ProviderCore/ProviderLoop+ErrorMapping.swift` (`sanitizedInferenceFailure`) |
 | `unsupportedReasoningEffort` (400) | Active effort outside `low`/`medium`/`xhigh` on a restricted-effort template (Flash-Next, Qwen3.8-27B) | `provider-swift/Sources/ProviderCore/Inference/Qwen4SupportPolicy.swift` (`validateReasoningContext`) |

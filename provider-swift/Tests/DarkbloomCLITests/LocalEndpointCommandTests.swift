@@ -60,8 +60,9 @@ struct LocalEndpointCommandTests {
         }
         let stdout = text(result?.standardOutputContent)
         let stderr = text(result?.standardErrorContent)
-        #expect(stderr.components(separatedBy: "No local server running.\nStart one with:  darkbloom start --local\n")
-            .count - 1 == 2)
+        #expect(stderr.components(separatedBy: "No local server running.\n"
+            + "Start one with:  darkbloom start --me-first   (Darkbloom and you, you first)\n"
+            + "             or: darkbloom start --local      (only you, on this Mac)\n").count - 1 == 2)
 
         let sections = stdout.components(separatedBy: "---")
         try #require(sections.count == 9)

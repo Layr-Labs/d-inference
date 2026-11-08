@@ -38,6 +38,18 @@ extension ProviderLoop {
         )
     }
 
+    /// A coordinator `prefetch_model`. While admission is closed or the owner
+    /// pause holds Darkbloom work it gets the draining failure, which the
+    /// coordinator retries later.
+    func handleCoordinatorPrefetch(modelId: String, priority: Int, send: SendHandle) async {
+        if isDraining || ownerPausesPublic {
+            sendDrainingPrefetchFailure(modelId: modelId, send: send)
+            return
+        }
+        staleDesiredPrefetches.remove(modelId)
+        await handlePrefetchModelRequest(modelId: modelId, priority: priority, send: send)
+    }
+
     /// Handle a coordinator `prefetch_model` request by delegating to the
     /// background prefetch coordinator. Non-blocking: returns as soon as the
     /// `.started` status is queued; the download runs on a low-priority task and
@@ -321,10 +333,11 @@ extension ProviderLoop {
     }
 
     internal func handleDesiredModels(_ entries: [CoordinatorMessage.DesiredModelEntry], send: SendHandle) async {
-        if isDraining || prefetchCoordinator == nil {
+        if isDraining || ownerPausesPublic || prefetchCoordinator == nil {
             // Declarative state: keep only the latest snapshot until a switch
-            // restores prefetching or an update aborts. A reconnect gets a
-            // fresh snapshot. Never consume it with an absent subsystem.
+            // restores prefetching, an update aborts, or an add-on hold or the
+            // owner pause ends. A reconnect gets a fresh snapshot. Never
+            // consume it with an absent subsystem.
             deferredDesiredModels = entries
             logger.info("Deferring desired_models until prefetch is ready (\(entries.count) entr(ies))")
         } else {
@@ -333,6 +346,18 @@ extension ProviderLoop {
             deferredDesiredModels = nil
             await reconcileDesiredModels(entries, send: send)
         }
+    }
+
+    /// Replays the snapshot `handleDesiredModels` deferred, once no drain,
+    /// add-on hold or owner pause refuses Darkbloom work. The end of a hold
+    /// and of the pause both call it, so whichever ends last replays it.
+    /// `phrase` completes the log line.
+    internal func replayDesiredModels(deferred phrase: String) async {
+        guard !servingDrain.refusing, !addonHoldActive, !ownerPausesPublic,
+              let entries = deferredDesiredModels, let send = outboundSend else { return }
+        deferredDesiredModels = nil
+        logger.info("Replaying desired_models deferred \(phrase) (\(entries.count) entr(ies))")
+        await reconcileDesiredModels(entries, send: send)
     }
 
     /// Reconcile the coordinator's declarative desired-state: for each public model

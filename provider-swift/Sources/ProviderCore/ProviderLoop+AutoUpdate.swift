@@ -98,7 +98,7 @@ extension ProviderLoop {
             resumeServing: { await me.resumeServingAfterUpdate() },
             check: {
                 guard let session = await me.activeUpdateSession() else {
-                    return .checkFailed(reason: "cross-process update lease was lost")
+                    return .checkFailed(.init(.thisMac, "cross-process update lease was lost"))
                 }
                 return await updater.checkForUpdate(session: session)
             },
@@ -237,7 +237,8 @@ extension ProviderLoop {
         // A lifecycle-owned drain cannot replay model work after a cancelled update.
         guard !servingDrain.refusing else { return }
         lifecycleStatus = .init()
-        if let entries = deferredDesiredModels {
+        // An owner pause that goes on replays it when it ends.
+        if !ownerPausesPublic, let entries = deferredDesiredModels {
             deferredDesiredModels = nil
             if let send = outboundSend {
                 logger.info("Replaying desired_models deferred during update drain (\(entries.count) entr(ies))")

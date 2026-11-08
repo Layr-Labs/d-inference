@@ -1,0 +1,5 @@
+### The Mac that follows no longer says a serving pair hasn't served
+
+- On the Mac that follows in a two-Mac pair serving through Darkbloom, `darkbloom status` and `darkbloom cluster status` said ``The pair hasn't served for N min since it started (the other Mac answers). Run …`` from 15 minutes after every start, while the pair served, before the leading Mac's `✓ Serving …`. That Mac looked for the pair's serving line in its own log, but only the leading Mac's part writes it.
+- Because of that line, that Mac also treated the pair as not running there. `darkbloom start --solo` was allowed and stopped its part of a serving pair. The leading Mac's next lease then started the part again, and it waited behind single-Mac serving.
+- Now the Mac that follows counts its part as serving while it runs and the leading Mac answers, as the other parts do, and leaves whether the pair serves to the leading Mac's lines. It still says the pair hasn't served when its own part never ran in the first 15 minutes, and it still gives its part up when the leading Mac hasn't answered for 15 minutes.

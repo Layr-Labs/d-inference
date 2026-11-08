@@ -122,11 +122,11 @@ extension CoordinatorClient {
             ? (config.apnsEnvironment ?? "production")
             : config.apnsEnvironment
 
-        // A drain (update / shutdown) outranks serving/idle: the box may still
-        // be decoding in-flight work, but it refuses new work, and the
-        // coordinator must stop selecting it now rather than after enough
-        // 503 bounces trip a cooldown.
-        let status: ProviderStatus = state.refusingNewWork
+        // A drain (update / shutdown) or the owner pause outranks
+        // serving/idle: the box may still be decoding in-flight work, but it
+        // refuses new work, and the coordinator must stop selecting it now
+        // rather than after enough 503 bounces trip a cooldown.
+        let status: ProviderStatus = state.refusingDarkbloomWork
             ? .draining : (isActive ? .serving : .idle)
         // Busy fields explain a draining status; never send them beside a
         // routable one.

@@ -1094,18 +1094,20 @@ private final class GLM5NextEvaluationProbe: @unchecked Sendable {
         #expect(mediaTokens == 2 && followingTokens == 3 && mediaErrors.isEmpty,
             "protected media errors: \(mediaErrors)")
         #expect(mtpEngine.nativeCompletionFault == nil)
-        // The enforced bound is advertised: over-length work is a client
-        // rejection before native admission, never a retained engine fault.
+        // The enforced bound is advertised: a prompt that fills it is a client
+        // rejection before native admission, naming the bound, never a
+        // retained engine fault. (An output that would pass it is cut.)
         #expect(mtpBridge.advertisedContextTokens == 32)
+        #expect(mtpBridge.outputTokens(requested: 31, promptTokens: 2) == 30)
         let overBound = await mtpBridge.submitTokenized(
-            promptTokens: [3, 3],
-            request: .init(model: fixture.catalog.id, messages: [], temperature: 0, max_tokens: 31),
+            promptTokens: Array(repeating: 3, count: 32),
+            request: .init(model: fixture.catalog.id, messages: [], temperature: 0, max_tokens: 1),
             requestId: "glm-bridge-over-bound", cacheEnabled: false)
         var overBoundErrors: [String] = []
         for await event in overBound {
             if case .error(let reason) = event { overBoundErrors.append(reason) }
         }
-        #expect(overBoundErrors == [Qwen4SupportPolicy.contextRejectionMessage])
+        #expect(overBoundErrors == [windowRefusalMarker(32)])
         #expect(mtpEngine.nativeCompletionFault == nil)
         #expect(await mtpBridge.canSubmitWithNativeOwner())
         #if DEBUG

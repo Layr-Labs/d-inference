@@ -18,8 +18,8 @@ struct ClusterPairWatchTests {
         #expect(verdict == .otherMacSilent(seconds: 15 * minute))
         #expect(verdict.givesUpPart && !verdict.running)
         #expect(ClusterPairWatch.line(verdict, otherMac: "Apple M5 Max, 128 GB", cli: "darkbloom")
-            == "The other Mac (Apple M5 Max, 128 GB) hasn't answered for 15 min; this Mac's part stopped. Run `darkbloom start` "
-                + "to serve this Mac alone, or `darkbloom cluster` to start the pair again.")
+            == "The other Mac (Apple M5 Max, 128 GB) hasn't answered for 15 min; this Mac's part stopped. Run "
+                + "`darkbloom start --solo` to serve this Mac alone, or `darkbloom start` to start the pair again.")
     }
 
     @Test("time asleep doesn't count: waking after a long sleep keeps the part, and gives up 15 awake minutes later")
@@ -89,7 +89,8 @@ struct ClusterPairWatchTests {
         let verdict = watch.tick(now: 15 * minute, intent: true, otherAnsweredAt: 15 * minute, serving: false)
         #expect(verdict == .notServing(seconds: 15 * minute))
         #expect(!verdict.running && !verdict.givesUpPart)
-        #expect(ClusterPairWatch.line(verdict, otherMac: nil, cli: "darkbloom-dev")?.contains("`darkbloom-dev start`") == true)
+        #expect(ClusterPairWatch.line(verdict, otherMac: nil, cli: "darkbloom-dev")?.hasSuffix("Run `darkbloom-dev start --solo` to "
+            + "serve this Mac alone, or `darkbloom-dev start` to start the pair again.") == true)
     }
 
     @Test("a pair that served once is never 'not serving' through an outage while the other Mac answers")

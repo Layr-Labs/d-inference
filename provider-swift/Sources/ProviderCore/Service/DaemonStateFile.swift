@@ -122,6 +122,30 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// Add-on holds of a provider serving the add-on socket; nil for older
     /// or standalone providers (`darkbloom addon` requires it).
     public var addonHold: AddonHoldSnapshot?
+    /// Me first: whether Darkbloom work is paused for the owner, and until
+    /// when. Nil while me first is off, and for older daemons.
+    public var meFirst: MeFirstSnapshot?
+    /// The local API this provider was asked to open beside Darkbloom and
+    /// couldn't, so `status` and `local` say why instead of reading its
+    /// absence as "Darkbloom network only". Nil while it listens or there is
+    /// none, and for older daemons.
+    public var localAPIFailure: LocalAPIFailure?
+
+    public struct LocalAPIFailure: Codable, Sendable, Equatable {
+        public var host: String
+        public var port: UInt16
+        /// Another program listens on the port (`EADDRINUSE`).
+        public var portInUse: Bool
+        /// What the system answered, for any other failure.
+        public var reason: String?
+
+        public init(host: String, port: UInt16, portInUse: Bool, reason: String? = nil) {
+            self.host = host
+            self.port = port
+            self.portInUse = portInUse
+            self.reason = reason
+        }
+    }
 
     public struct Trust: Codable, Sendable, Equatable {
         public var trustLevel: String
@@ -394,9 +418,13 @@ public struct DaemonState: Codable, Sendable, Equatable {
         autopilot: ModelAutopilotSnapshot? = nil,
         autopilotPhase: String? = nil,
         autopilotOperation: AutopilotOperation? = nil,
-        addonHold: AddonHoldSnapshot? = nil
+        addonHold: AddonHoldSnapshot? = nil,
+        meFirst: MeFirstSnapshot? = nil,
+        localAPIFailure: LocalAPIFailure? = nil
     ) {
         self.addonHold = addonHold
+        self.meFirst = meFirst
+        self.localAPIFailure = localAPIFailure
         self.schema = schema
         self.pid = pid
         self.processIdentity = processIdentity

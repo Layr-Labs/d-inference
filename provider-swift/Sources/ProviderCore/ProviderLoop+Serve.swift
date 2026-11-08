@@ -409,12 +409,7 @@ extension ProviderLoop {
                     handleLoadModelRequest(modelId: modelId, send: send)
 
                 case .prefetchModel(let modelId, let priority):
-                    if isDraining {
-                        sendDrainingPrefetchFailure(modelId: modelId, send: send)
-                    } else {
-                        staleDesiredPrefetches.remove(modelId)
-                        await handlePrefetchModelRequest(modelId: modelId, priority: priority, send: send)
-                    }
+                    await handleCoordinatorPrefetch(modelId: modelId, priority: priority, send: send)
 
                 case .desiredModels(let entries):
                     await handleDesiredModels(entries, send: send)
@@ -498,6 +493,7 @@ extension ProviderLoop {
             // No grant or key is retained across a control connection boundary.
             memberConnectionID = nil
             state.refusingNewWork = true
+            cancelMeFirstResumeTimer()
             // A refused or unanswered negotiation ended the client: a waiting
             // start reports that, not a plain connection end.
             let roleRefused = await coordinator.memberRoleFailure
@@ -524,6 +520,7 @@ extension ProviderLoop {
         // session shutdown is closing (its shutdown check has a hop).
         pendingRetirementReconnect?.cancel()
         idleMonitorTask = nil
+        cancelMeFirstResumeTimer()
         capacityRefreshTask?.cancel()
         await stopServiceAllowanceRefreshMonitor()
         await stopPerformanceRefreshMonitor()

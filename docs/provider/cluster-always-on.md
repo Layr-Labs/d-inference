@@ -1,6 +1,6 @@
 # Keep a cluster member always on
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-08
 
 `darkbloom cluster` on each Mac does all of this. Nothing below is needed: it
 explains what the onboarding sets up and how to check it.
@@ -130,7 +130,7 @@ supervisor starts (`Watchdog.settings`,
 | Step | Single Mac | Pair (both Macs) |
 |---|---|---|
 | When | 5 min after start, then every 30 min | Every 30 min at the update slot of the pairing's cluster ID (`ClusterMemberUpdateSlot`), the same moment on both Macs; or at once for `darkbloom update` |
-| Check, download, verify, stage | While serving (`SelfUpdater`) | The same, on each Mac, while the pair serves |
+| Check, download, verify, stage | While serving (`SelfUpdater`). The check makes up to 3 tries of 15 s | The same, on each Mac, while the pair serves. At the slot or catching up with the other Mac, a check without an answer makes a second round 60–120 s later (`ReleaseCheck.pairCycle`, `ClusterPairUpdateCycle.Environment.live(automatic:)`); the other Mac waits for its fresh `checking` |
 | Stop taking requests | Once staged | Once staged on both Macs (each reads the other's progress, `ClusterPairUpdateProgress`, from the other cluster service's status over the link) |
 | Drain | Accepted requests finish, at most 120 s; never cancelled | The part that serves the pair (rank 0) finishes its accepted requests, at most 120 s (`ClusterUpdateDrainRequest`, through its lifecycle mailbox); the other part serves none. A request still running reopens the pair on both Macs and defers to the next slot |
 | Install | Commit the staged bundle | Each Mac commits once both drained |
@@ -326,6 +326,29 @@ deferred: <reason>; no request was cancelled; the next update slot tries again`,
 does not restart into it; restored v<previous> and quarantined v<version>`,
 `cluster update: starting the cluster service on candidate v<version>` and
 `cluster update: this Mac's part serves again on v<version>`.
+
+Planning again and registering again both act only once the other Mac has
+confirmed the leader's claim, or hasn't answered for the lease's 30 s
+(`ClusterControlNode.leadershipConfirmed`): the two Macs restart seconds apart,
+and the one that comes back first may take control after the lease's 30 s, so a
+restarted leader's saved claim may be superseded. Both stop the pair
+(`OnboardingLive.localStop`, which clears the pair's saved start first) only to
+start it again
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService+RestartingStop.swift`):
+when the stop fails, the saved start is put back and the stop request it left
+is dropped, so the next check tries again. The log says `could not set the
+cluster up again after the update: <reason>` or `could not stop the parts to
+change the cluster approval: <reason>`, followed by `The pair stays started`.
+While the other Mac doesn't answer its status, a change of approval that would
+stop a serving pair waits: every change is sent to the other Mac. The
+coordinator is still asked at each check.
+
+An owner's stop is never undone by either step. Every stop of the pair takes
+the control command lock: `darkbloom cluster stop`, `darkbloom stop` (also on a
+Mac where the pair doesn't run and the other Mac doesn't answer) and
+`darkbloom start --solo`, which wait up to 10 minutes for a cluster command that
+runs. A step that waited for the lock goes on only while the pair's start is
+still saved.
 
 ## Permissions asked once
 

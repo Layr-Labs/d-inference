@@ -92,6 +92,8 @@ public struct StandaloneServerConfig: Sendable {
     public let mtpAcceptance: String?
     public let mtpAcceptanceByModel: [String: String]
     public let coordinatorURL: String
+    /// The local router (`LocalRouter`); nil serves this Mac's engine only.
+    public let router: LocalRouterConfig?
 
     public init(
         port: UInt16 = BuildEnvironment.current.defaultLocalPort,
@@ -112,7 +114,8 @@ public struct StandaloneServerConfig: Sendable {
         mtpDrafterPath: String? = nil,
         mtpAcceptance: String? = nil,
         mtpAcceptanceByModel: [String: String] = [:],
-        coordinatorURL: String = CoordinatorSettings().url
+        coordinatorURL: String = CoordinatorSettings().url,
+        router: LocalRouterConfig? = nil
     ) {
         self.port = port
         self.host = host
@@ -134,6 +137,7 @@ public struct StandaloneServerConfig: Sendable {
         self.mtpAcceptance = mtpAcceptance
         self.mtpAcceptanceByModel = mtpAcceptanceByModel
         self.coordinatorURL = coordinatorURL
+        self.router = router
     }
 }
 
@@ -445,7 +449,7 @@ public actor StandaloneServer {
 
     /// Internal access so the +HTTP extension can pass the same
     /// default through to ``MultiModelBatchSchedulerEngine``.
-    static let slotDefaultMaxTokens = 4096
+    static let slotDefaultMaxTokens = SlotSizingSnapshot.defaultOutputTokens
 
     /// Update the advertised model list (e.g. after a rescan). Applies the
     /// same CBv2 supported-set filter as init. The serving set is part of

@@ -11,10 +11,13 @@ struct Restart: AsyncParsableCommand {
         picker or change what you serve. Use this to pick up a new binary or
         recover a wedged provider.
 
-        If the service is installed but not running, it is started.
+        If the service is installed but not running, it is started (on a Mac in a two-Mac
+        cluster, only with --solo).
 
         On a Mac in a two-Mac cluster it restarts the pair on both Macs with its current model, then
-        waits until it serves. With --solo it restarts single-Mac serving on this Mac only.
+        waits until it serves. While the pair doesn't run on this Mac (stopped, or the other Mac gone),
+        it restarts single-Mac serving that runs here and never starts the pair. With --solo it
+        restarts single-Mac serving on this Mac only.
         """
     )
 
@@ -35,27 +38,31 @@ struct Restart: AsyncParsableCommand {
     enum PairRestart: Equatable {
         /// Restart the pair on both Macs (`ClusterPairCommands.restart`).
         case restartPair
-        /// Nothing restarts, and why: the pairing record can't be read, or `--solo` without single-Mac serving.
+        /// Nothing restarts, and why: the pairing record can't be read, `--solo` without single-Mac serving, or neither
+        /// the pair nor single-Mac serving runs here.
         case refuse([String])
-        /// Single-Mac serving as on any Mac (`--solo`, or not in a cluster).
+        /// Single-Mac serving as on any Mac: `--solo`, not in a cluster, or it runs here and the pair doesn't.
         case restartSingleMac
     }
 
-    static func pairRestart(_ pair: ClusterPairSummary, singleMacInstalled: Bool, solo: Bool) -> PairRestart {
+    /// A plain `restart` on a Mac in a cluster acts only on what runs: the pair (`restartRestartsPair`), otherwise
+    /// single-Mac serving whose job is loaded (`singleMacRunning`). It never brings back single-Mac serving that `stop`
+    /// stopped: `stop` unloads the job but keeps its plist (`singleMacInstalled`). Only `--solo`, which names single-Mac
+    /// serving, starts an installed job that isn't loaded, as `restart` does on a Mac that isn't in a cluster.
+    static func pairRestart(_ pair: ClusterPairSummary, singleMacInstalled: Bool, singleMacRunning: Bool,
+                            solo: Bool) -> PairRestart {
         guard pair.paired else { return .restartSingleMac }
         if solo { return singleMacInstalled ? .restartSingleMac : .refuse(pair.restartRefusal) }
         if pair.pairingUnreadable { return .refuse(pair.unsureRefusal("restart", "restarted")) }
-        // The pair doesn't run here: what this Mac serves alone restarts; the pair is never started by a restart.
-        // One whose other Mac answers may still be loading: the pair restarts, as for a pair that runs.
-        guard pair.pairIdle, !pair.started || !pair.otherMacReachable else { return .restartPair }
-        return singleMacInstalled ? .restartSingleMac : .refuse(pair.idleRestartRefusal)
+        if pair.restartRestartsPair { return .restartPair }
+        return singleMacRunning ? .restartSingleMac : .refuse(pair.idleRestartRefusal)
     }
 
     mutating func run() async throws {
         let pair = ClusterPairSummary.local()
         let wasLoaded = LaunchAgent.isLoaded()
         let installed = LaunchAgent.isInstalled() || wasLoaded
-        let restart = Self.pairRestart(pair, singleMacInstalled: installed, solo: solo)
+        let restart = Self.pairRestart(pair, singleMacInstalled: installed, singleMacRunning: wasLoaded, solo: solo)
         if case .refuse(let lines) = restart {
             for line in lines { print(line) }
             throw ExitCode.failure
@@ -76,12 +83,8 @@ struct Restart: AsyncParsableCommand {
             return
         }
         // A pair that doesn't run here may still have a leftover part holding this Mac's serving lock.
-        if !solo, pair.pairIdle, pair.started, pair.serviceRunning {
-            print(pair.servingAloneLine)
-            guard await Start.releaseLeftoverPart() else {
-                for line in pair.releaseFailedLines { print(line) }
-                throw ExitCode.failure
-            }
+        if !solo, pair.leftoverPartHere {
+            try await Start.releaseLeftoverPartToServeAlone(pair)
         }
         let soloState = ServiceDrain.soloProviderState()
         let previous = soloState?.processIdentity ?? LaunchAgent.launchSnapshot()?.process

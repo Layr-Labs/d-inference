@@ -142,9 +142,11 @@ def run_command(step):
 CHECKOUT = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2"
 CACHE_RESTORE = "actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0"
 CACHE_SAVE = "actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0"
-# Pushes to master and dev save caches; pull requests never do.
-SAVE_POLICY = ("  SAVE_CACHES: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/master' "
-               "|| github.ref == 'refs/heads/dev') }}\n")
+# Pushes to master and dev, and dispatches on dev (the hourly full run),
+# save caches; pull requests never do.
+SAVE_POLICY = ("  SAVE_CACHES: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/master' "
+               "|| github.ref == 'refs/heads/dev')) || (github.event_name == 'workflow_dispatch' "
+               "&& github.ref == 'refs/heads/dev') }}\n")
 SAVE_CACHES = "env.SAVE_CACHES == 'true'"
 SAVE_INPUT = "inputs.save-caches == 'true'"
 VALIDATE_GIT = """if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&

@@ -33,9 +33,10 @@ permissions:
 # master; BuildEnvironmentTests checks that the build is the one requested.
 env:
   DARKBLOOM_RELEASE_ENVIRONMENT: prod
-  # Only pushes to master and dev save caches. A pull request restores its
-  # base branch's entries and saves none (docs/developer/build.md#ci-caching).
-  SAVE_CACHES: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/dev') }}
+  # Only pushes to master and dev, and the hourly dispatch on dev, save
+  # caches. A pull request restores its base branch's entries and saves none
+  # (docs/developer/build.md#ci-caching).
+  SAVE_CACHES: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/dev')) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev') }}
   # Every checkout but Docs Lint's skips the evidence tarballs and landing media
   # (408 MB of the tree), which only Docs Lint reads. The rest of the evidence
   # stays: provider-ci-cache.py hashes every tracked Package.swift.

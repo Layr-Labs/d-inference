@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 import ProviderCore
 
-/// The agent tools Darkbloom sets up to use it as a provider (`start --opencode` / `--hermes`).
+/// The agent tools Darkbloom sets up to use it as a provider (`darkbloom --opencode` / `--hermes`).
 enum IntegrationTool: String, CaseIterable, Sendable {
     case opencode
     case hermes

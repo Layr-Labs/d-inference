@@ -1357,7 +1357,7 @@ struct ClusterPairControlTests {
             + ClusterPairSummary.releaseBusyLines + [""])
     }
 
-    /// On DevNet pair-2 a `darkbloom start --opencode` that got no answer hung on "Serve on this Mac alone / Start the
+    /// On DevNet pair-2 a start with `--opencode` that got no answer hung on "Serve on this Mac alone / Start the
     /// pair". No start asks a question without a terminal: on a paired Mac one starts the pair, with or without the tool
     /// flags, and never reads standard input (`neverAnswering`).
     @Test("a start without a terminal on a paired Mac starts the pair and never reads standard input, with or without --opencode or --hermes")

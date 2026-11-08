@@ -190,6 +190,10 @@ class InstallerIdentityTests(unittest.TestCase):
         self.assertIn(f"Installed: Darkbloom Dev v0.9.20-dev.152 in {home}/.darkbloom-dev", result.stdout)
         self.assertIn("Command:   darkbloom-dev\n", result.stdout)
         self.assertIn("darkbloom-dev login", result.stdout)
+        self.assertIn("  darkbloom-dev --opencode asks how this Mac serves", result.stdout)
+        self.assertTrue(result.stdout.endswith("  Next: ~/.darkbloom-dev/bin/darkbloom-dev --opencode\n\n"),
+                        result.stdout[-300:])
+        self.assertNotIn("start --opencode", result.stdout)
         self.assertIn(f"ln -sf {home}/.darkbloom-dev/bin/darkbloom-dev /usr/local/bin/darkbloom-dev", trace)
         self.assertNotIn("profiles", trace)
         for text in (result.stdout, result.stderr, trace):
@@ -218,6 +222,12 @@ class InstallerIdentityTests(unittest.TestCase):
         self.assertIn(f"Provider: Darkbloom (darkbloom, installs in {home}/.darkbloom)", result.stdout)
         self.assertIn(f"Installed: Darkbloom v0.9.20 in {home}/.darkbloom", result.stdout)
         self.assertIn("Command:   darkbloom\n", result.stdout)
+        # The last line is the one command to run next, with its full path: the shell reads the new PATH line only
+        # once it restarts.
+        self.assertIn("  darkbloom --opencode asks how this Mac serves", result.stdout)
+        self.assertTrue(result.stdout.endswith("  Next: ~/.darkbloom/bin/darkbloom --opencode\n\n"),
+                        result.stdout[-300:])
+        self.assertNotIn("start --opencode", result.stdout)
         for text in (result.stdout, result.stderr, trace):
             self.assertNotIn("darkbloom-dev", text)
             self.assertNotIn("Darkbloom Dev", text)

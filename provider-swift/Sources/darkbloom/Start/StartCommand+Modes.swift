@@ -56,7 +56,7 @@ extension Start {
         // A start that serves here runs under the AppKit host, which turns Ctrl-C into a drain
         // (`ProviderAppKitHost.shouldHost`); any other caller takes the same signals itself.
         #if os(macOS)
-        let signals = ProviderAppKitHost.shouldHost(Array(CommandLine.arguments.dropFirst())) ? nil
+        let signals = ProviderAppKitHost.shouldHost(Darkbloom.commandLineArguments) ? nil
             : ProviderSignalHandler { _ = await ProviderTermination.shared.request() }
         defer { withExtendedLifetime(signals) {} }
         #endif

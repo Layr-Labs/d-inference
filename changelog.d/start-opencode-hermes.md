@@ -1,8 +1,8 @@
-### `darkbloom start --opencode` and `--hermes`
+### One flag sets OpenCode or Hermes up: `--opencode` and `--hermes`
 
 - One flag sets OpenCode 2 or Hermes Agent up to use Darkbloom, as `ollama launch` and `omlx launch` do:
-  `darkbloom start --opencode`, `--hermes`, or both. If this Mac's local API already runs, nothing restarts; otherwise
-  `start` runs as usual and the tools are set up once its local API answers.
+  `darkbloom --opencode`, `darkbloom --hermes`, or both. If this Mac's local API already runs, nothing restarts;
+  otherwise `start` runs as usual and the tools are set up once its local API answers.
 - It prints the file it changed, the backup and a one-line undo, then where your requests go and the two variables
   other OpenAI clients need (naming the key file, never the key). No line, and no tool file, holds the key.
 - A Hermes older than v0.20.2 is set up with one warning line: it can't read the key until `hermes update`.

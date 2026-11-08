@@ -2,7 +2,7 @@ import ArgumentParser
 import Foundation
 import ProviderCore
 
-// `darkbloom start --opencode` / `--hermes`: start Darkbloom only if no local API runs, then point the tools at it
+// `darkbloom --opencode` / `--hermes`: start Darkbloom only if no local API runs, then point the tools at it
 // (ToolIntegrationStep). They run once, at start: never in the launchd child, never per request. A start without a
 // tool flag reads nothing here. No line, and no tool file, holds a key.
 extension Start {
@@ -26,7 +26,7 @@ extension Start {
         }
         if distributed {
             return "`\(first.flag)` doesn't start a cluster. Start it first, then run "
-                + "`\(BuildEnvironment.current.cliName) start \(first.flag)` on its own: it sets "
+                + "`\(ToolIntegrationStep.command([first]))` on its own: it sets "
                 + "\(first.displayName) up for the cluster's local API."
         }
         return nil

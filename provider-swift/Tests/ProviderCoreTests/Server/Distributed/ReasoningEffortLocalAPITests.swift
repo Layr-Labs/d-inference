@@ -1,4 +1,8 @@
 import Foundation
+import Hummingbird
+import Logging
+import NIOCore
+import NIOEmbedded
 import Testing
 @testable import ProviderCore
 
@@ -140,4 +144,64 @@ struct ReasoningEffortLocalAPITests {
         } catch { await servers.stop(); throw error }
         await servers.stop()
     }
+
+    /// Nemotron 3.5 Super reads both fields and doesn't choose between two that
+    /// differ, even two names (`NemotronSuperPromptContract.controls(body:)`).
+    /// Its local API refuses them as it refuses an unknown name, on text and
+    /// media requests alike: 400, `invalid_reasoning_effort`, with `param` and
+    /// the message naming both fields and the names, never the values sent.
+    /// The same effort in both fields, in any spelling, is served.
+    @Test func superRefusesTwoDifferentEffortsInWords() async throws {
+        func body(_ top: String, _ nested: String) -> Data {
+            Data(#"{"model":"m","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"\#(top)","reasoning":{"effort":"\#(nested)"}}"#.utf8)
+        }
+        for (top, nested) in [("high", "max"), ("max", "high"), ("minimal", "medium"), ("turbo", "low")] {
+            let error = try #require(throws: (any Error).self, "\(top)/\(nested)") {
+                try NemotronSuperPromptContract.controls(body: body(top, nested))
+            }
+            for media in [false, true] {
+                let (status, refusal) = try await Self.localAnswer(SuperHTTPErrors.map(error, media: media))
+                let place = "\(top)/\(nested), media \(media)"
+                #expect(status == .badRequest, "\(place)")
+                #expect(refusal["type"] as? String == "invalid_request_error", "\(place)")
+                #expect(refusal["code"] as? String == "invalid_reasoning_effort", "\(place): \(refusal)")
+                #expect(refusal["param"] as? String == "reasoning_effort, reasoning.effort", "\(place): \(refusal)")
+                #expect(refusal["message"] as? String == "reasoning_effort and reasoning.effort must be the same "
+                    + "when both are sent, one of: none, minimal, low, medium, high, xhigh, max.", "\(place): \(refusal)")
+            }
+        }
+        for (top, nested) in [("high", " HIGH "), ("none", "None")] {
+            _ = try NemotronSuperPromptContract.controls(body: body(top, nested))
+        }
+    }
+
+    /// The local API's answer (`CORSResponder`) to an error its engine threw.
+    static func localAnswer(_ error: any Error) async throws -> (HTTPResponse.Status, [String: Any]) {
+        let context = BasicRequestContext(source: ApplicationRequestContextSource(
+            channel: EmbeddedChannel(), logger: Logger(label: "reasoning-effort")))
+        let request = Request(head: .init(method: .post, scheme: "http", authority: "localhost",
+                                          path: "/v1/chat/completions"), body: .init(buffer: ByteBuffer()))
+        let response = try await CORSResponder(inner: EffortThrowingResponder(error: error))
+            .respond(to: request, context: context)
+        let body = EffortCollectedBody()
+        try await response.body.write(body)
+        let envelope = try #require(
+            JSONSerialization.jsonObject(with: Data(String(buffer: body.bytes).utf8)) as? [String: Any])
+        return (response.status, try #require(envelope["error"] as? [String: Any]))
+    }
+}
+
+private struct EffortThrowingResponder: HTTPResponder {
+    typealias Context = BasicRequestContext
+    let error: any Error
+    func respond(to request: Request, context: Context) async throws -> Response { throw error }
+}
+
+private final class EffortCollectedBody: ResponseBodyWriter, @unchecked Sendable {
+    var bytes = ByteBuffer()
+    func write(_ buffer: ByteBuffer) async throws {
+        var buffer = buffer
+        bytes.writeBuffer(&buffer)
+    }
+    func finish(_ trailingHeaders: HTTPFields?) async throws {}
 }

@@ -122,10 +122,12 @@ struct RouteKeyFlow {
             return 1
         }
         say("✓ Account key saved in this Mac's Keychain. " + note)
-        for line in Self.routeLines(savedRoute: savedRoute, keySaved: true) { say(line) }
+        for line in Self.routeLines(savedRoute: savedRoute, keySaved: true, here: RouteSaved.thisMacOrPair(pair)) {
+            say(line)
+        }
         if liveEndpointHasNoLocalKey {
-            say("The running local API has no local key (--no-auth): it keeps every request on this Mac and never "
-                + "uses the account key.")
+            say("The running local API has no local key (--no-auth): it keeps every request on "
+                + "\(RouteSaved.thisMacOrPair(pair)) and never uses the account key.")
         } else {
             say(RouteSaved.when(running: localAPIRunning, pair: pair))
         }
@@ -141,7 +143,9 @@ struct RouteKeyFlow {
             return 1
         }
         say("✓ Account key removed from this Mac's Keychain.")
-        for line in Self.routeLines(savedRoute: savedRoute, keySaved: false) { say(line) }
+        for line in Self.routeLines(savedRoute: savedRoute, keySaved: false, here: RouteSaved.thisMacOrPair(pair)) {
+            say(line)
+        }
         // A local API without a local key (`--no-auth`) never used the key, so nothing changes for it. Any other one
         // whose route passed requests on with the key stops doing so from its next request: on the leading Mac of a
         // pair, the pair's.
@@ -167,19 +171,20 @@ struct RouteKeyFlow {
         return RouteSaved.pairKeyLine(pair, removed: removed, routePassesOn: routeWithTheKey != .thisMac)
     }
 
-    /// Where requests go with this route and key, in the iPhone app's words. Never a speed.
-    static func routeLines(savedRoute: LocalSettings.Route?, keySaved: Bool) -> [String] {
+    /// Where requests go with this route and key, in the iPhone app's words, from `here`: this Mac, or this pair on the
+    /// leading Mac (`RouteSaved.thisMacOrPair`). Never a speed.
+    static func routeLines(savedRoute: LocalSettings.Route?, keySaved: Bool, here: String = "this Mac") -> [String] {
         let route = LocalSettings(route: savedRoute).resolvedRoute(accountKeySaved: keySaved)
         switch (route, keySaved) {
         case (.thisMac, true):
-            return ["Your requests: this Mac only ([local] route = \"this-mac\"). The key is used once you choose your "
+            return ["Your requests: \(here) only ([local] route = \"this-mac\"). The key is used once you choose your "
                         + "Macs: `\(BuildEnvironment.current.cliName) route my-macs`."]
         case (_, false):
-            return ["Your requests: this Mac only, until an account key is saved again."]
+            return ["Your requests: \(here) only, until an account key is saved again."]
         case (.myMacs, true):
-            return ["Your requests: this Mac first, then your other Macs (free)."]
+            return ["Your requests: \(here) first, then your other Macs (free)."]
         case (.myMacsFirst, true):
-            return ["Your requests: this Mac first, then your other Macs (free), then the Darkbloom network (billed to "
+            return ["Your requests: \(here) first, then your other Macs (free), then the Darkbloom network (billed to "
                         + "your balance; the network needs a positive balance).",
                     "With a self-route-only key, Darkbloom answers only from your Macs, even with My Macs first."]
         }

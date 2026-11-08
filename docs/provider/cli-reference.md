@@ -983,16 +983,22 @@ The same choice again writes nothing (`✓ Already saved. …`).
   running: `✓ Saved. It applies when your local API starts.` Its router reads
   `[local] route` again when `provider.toml` changes
   ([the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
-  One without a local key (`--no-auth`) keeps every request on this Mac,
-  whatever the route, and the command says so.
+  One without a local key (`--no-auth`) keeps every request on this Mac (on a
+  pair's leading Mac, on this pair), whatever the route, and the command says
+  so.
 - **In a two-Mac cluster,** the leading Mac's route applies: the pair's local
   API runs there and passes on what the pair can't take, including requests
-  the other Mac forwards to it. On the leading Mac the command says so, or,
-  with `this-mac`, that the pair's local API passes nothing on. A pair's API
-  without a local key (`cluster local --no-auth`) gets the `--no-auth` line
-  instead. On the other Mac it saves the route for when that Mac serves alone
-  (``It applies when this Mac serves alone (`darkbloom start --solo`).``) and
-  names the command to run on the leading Mac.
+  from the other Mac. Those reach it from another machine, so with
+  `my-macs-first` they never use the paid network, and both Macs say so. On
+  the leading Mac the command says so, or, with `this-mac`, that the pair's
+  local API passes nothing on. A pair's API without a local key
+  (`cluster local --no-auth`) gets the `--no-auth` line instead. On the other
+  Mac it saves the route for when that Mac serves alone (``It applies when
+  this Mac serves alone (`darkbloom start --solo`).``), says that the leading
+  Mac's route decides what the pair passes on (that Mac's route and key aren't
+  known here), and names the command to run there. Refused for want of a key,
+  it first names the leading Mac's `darkbloom route key` and route for the
+  pair, then a key saved here for this Mac alone.
 - A `provider.toml` that doesn't load is refused with its reason, and nothing
   is written (exit 1).
 
@@ -1026,17 +1032,19 @@ instead of going to your other Macs or the Darkbloom network.`` That answer
 says an account key is needed (code `account_key_needed`, see
 [the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
 
-In a two-Mac cluster it says whose key the pair's local API uses:
+In a two-Mac cluster it says whose key the pair's local API uses, and on the
+leading Mac its summary names the pair (`Your requests: this pair first, then
+your other Macs (free).`):
 
 | This Mac | Saved | Removed |
 |---|---|---|
 | Leads (the pair's local API runs here) | `In this pair, the pair's local API runs on this Mac and passes requests on with this key.` | ``From its next request, one the pair can't take gets the pair's own answer …``, then `In this pair, the pair's local API runs on this Mac, so the pair passes nothing on until a key is saved here again.` |
-| Leads, with `[local] route = "this-mac"` | `In this pair, the pair's local API runs on this Mac and uses this Mac's key once its route passes requests on.` | The same |
+| Leads, with `[local] route = "this-mac"` | `In this pair, the pair's local API runs on this Mac and uses this Mac's key once its route passes requests on.` | `In this pair, the pair's local API runs on this Mac: once its route passes requests on, it needs a key saved here again.` |
 | Follows | ``In this pair, the pair's local API uses the leading Mac's key (…), not this one: run `darkbloom route key` there.`` | ``… not this one: to stop the pair passing requests on, run `darkbloom route key --remove` there.`` |
 
 When the local API running now has no local key (`--no-auth`), it says that
-this API keeps every request on this Mac and never uses the key; on the
-leading Mac it then says nothing of the pair's key. ^C at the hidden prompt
+this API keeps every request on this Mac (on the leading Mac, on this pair) and
+never uses the key; on the leading Mac it then says nothing of the pair's key. ^C at the hidden prompt
 gives the terminal its echo back before the command ends
 (`HiddenReadSignals`). See
 [the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router).

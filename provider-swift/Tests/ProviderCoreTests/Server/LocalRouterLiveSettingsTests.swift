@@ -241,7 +241,7 @@ struct LocalRouterLiveSettingsTests {
         func route() -> LocalSettings.Route? {
             routes.route(in: file.url, startingWith: .thisMac, log: { log.append($0) }, read: { url in
                 reads.append(url.lastPathComponent)
-                return try ConfigManager.load(from: url).local?.route
+                return try Data(contentsOf: url)
             })
         }
         #expect(route() == .myMacs)
@@ -267,12 +267,12 @@ struct LocalRouterLiveSettingsTests {
         var editsDuringTheRead = 1
         func route() -> LocalSettings.Route? {
             routes.route(in: file.url, startingWith: .thisMac, log: { _ in }, read: { url in
-                let route = try ConfigManager.load(from: url).local?.route
+                let bytes = try Data(contentsOf: url)
                 if editsDuringTheRead > 0 {
                     editsDuringTheRead -= 1
                     try file.save(.myMacsFirst)
                 }
-                return route
+                return bytes
             })
         }
         #expect(route() == .myMacs)
@@ -288,7 +288,7 @@ struct LocalRouterLiveSettingsTests {
         func route() -> LocalSettings.Route? {
             routes.route(in: file.url, startingWith: .myMacs, log: { log.append($0) }, read: { url in
                 reads.append(url.lastPathComponent)
-                return try ConfigManager.load(from: url).local?.route
+                return try Data(contentsOf: url)
             })
         }
         #expect(route() == .myMacs)
@@ -388,7 +388,7 @@ struct LocalRouterLiveSettingsTests {
                         pending = nil
                         try file.writeInPlace(text)
                     }
-                    return try ConfigManager.load(from: url).local?.route
+                    return try Data(contentsOf: url)
                 })
             }
             #expect(route() == .thisMac, "\(midSave.debugDescription)")

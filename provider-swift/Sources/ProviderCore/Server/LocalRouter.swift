@@ -155,6 +155,10 @@ struct LocalRouterEffectiveRoute: Sendable {
 /// - A file that doesn't read as a provider config (a malformed edit, or a file that is gone) keeps the last good
 ///   route, said once in the log until it reads again. A file missing at the first call isn't read: the route stays as
 ///   the router started with.
+/// - Only a whole file counts (`route(inWhole:stamped:)`). An editor that saves in place empties the file, then writes
+///   it, so a read can find it empty, or holding only its start, which can parse without `[local] route`: "no route",
+///   which with a key is `my-macs`. Either keeps the last good route like a malformed edit, so a saved `this-mac`
+///   never passes a request on while the file is saved.
 /// - A line names the file and a route (one of its fixed names) only, never text from the file: the file can hold
 ///   credentials.
 final class LocalRouterRouteFile: @unchecked Sendable {
@@ -172,17 +176,16 @@ final class LocalRouterRouteFile: @unchecked Sendable {
     var checks: Int { lock.withLock { checkCount } }
 
     /// The route the file says now: `initial` (the router's own) until a good read, and the last good one after a bad
-    /// read.
+    /// read. `read` hands back the file's bytes.
     func route(in file: URL, startingWith initial: LocalSettings.Route?, log: (String) -> Void,
-               read: (URL) throws -> LocalSettings.Route? = { try ConfigManager.load(from: $0).local?.route })
-        -> LocalSettings.Route? {
+               read: (URL) throws -> Data = { try Data(contentsOf: $0) }) -> LocalSettings.Route? {
         lock.withLock {
             checkCount += 1
             let now = Stamp(file)
             let current = lastGood ?? initial
             guard now != stamp else { return current }
             stamp = now
-            let outcome = Result { try read(file) }
+            let outcome = Result { try Self.route(inWhole: read(file), stamped: now) }
             guard case .success(let route) = outcome else {
                 // The last good route stands. The error isn't said: it can quote the file.
                 if !failing {
@@ -200,6 +203,18 @@ final class LocalRouterRouteFile: @unchecked Sendable {
     }
 
     static func name(_ route: LocalSettings.Route?) -> String { route?.rawValue ?? "not set" }
+
+    /// `[local] route` in `bytes`, which must be the whole file as `stamp` saw it: not empty, the size the `stat` gave,
+    /// and a provider config. Anything less is a save in place caught half done (or a file that is gone or broken),
+    /// and throws.
+    static func route(inWhole bytes: Data, stamped stamp: Stamp?) throws -> LocalSettings.Route? {
+        guard !bytes.isEmpty, Int64(bytes.count) == stamp?.size, let text = String(data: bytes, encoding: .utf8)
+        else { throw NotWhole() }
+        return try ConfigManager.parseValidating(text).local?.route
+    }
+
+    /// A read that isn't the whole file the `stat` saw.
+    struct NotWhole: Error {}
 
     /// What tells one version of the file from another without reading it.
     struct Stamp: Equatable {

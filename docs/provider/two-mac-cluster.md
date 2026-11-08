@@ -800,7 +800,9 @@ With **Both, me first**:
   and the pair's API uses it from its next request, with no restart; on the
   other Mac it says to run it on the leading Mac.
   Requests from other machines never use the paid network; they can use the
-  pair and your other Macs.
+  pair and your other Macs. That includes the pair's other Mac: its requests
+  reach the leading Mac from another machine, so with `my-macs-first` tools
+  there use the pair and your other Macs, never the paid network.
 - **Me first:** while one of your requests runs on it, or waits for a lane, the
   pair takes no new Darkbloom request, and Darkbloom's running requests finish.
   It takes Darkbloom requests again 2 minutes after your last request ends

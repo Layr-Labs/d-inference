@@ -238,8 +238,11 @@ never does. A change is logged (`local router: route is now my-macs-first
 malformed edit or a file that is gone, keeps the last good route and is said
 once in the log until it reads again (`local router: provider.toml doesn't read
 as a provider config now; requests keep the route my-macs until it does`); the
-line holds nothing from the file. A pair's local API reads the leading Mac's
-`provider.toml`. The
+line holds nothing from the file. Only a whole file counts: an editor that
+saves in place empties the file before it writes it, so a read that finds it
+empty, or shorter than its `stat` said, keeps the last good route the same way,
+and a saved `this-mac` never passes a request on while the file is saved. A
+pair's local API reads the leading Mac's `provider.toml`. The
 key is read once, by the first request that needs it, and kept in memory:
 `darkbloom route key` tells a running local API when it saves or removes the
 key (a Darwin notification, `<keychain prefix>.route-key-changed`), and the

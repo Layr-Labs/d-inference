@@ -73,8 +73,17 @@ struct RouteChoiceFlow {
         if route != .thisMac, !accountKeySaved() {
             say("✗ Not saved: `\(cli) route \(route.rawValue)` passes your requests on with your account API key, and "
                 + "this Mac has none saved.")
-            say("Save one from the Darkbloom console with `\(cli) route key` (a self-route-only key is safest), then run "
-                + "`\(cli) route \(route.rawValue)` again.")
+            // On the Mac that follows, the pair's route and key are the leading Mac's: said first, so a key meant for
+            // the pair isn't saved here, where it counts only when this Mac serves alone.
+            if case .follows(let leader) = pair {
+                say("In this pair, the leading Mac's route and key apply (\(leader)): for the pair, run `\(cli) route key` "
+                    + "and `\(cli) route \(route.rawValue)` there.")
+                say("For this Mac alone (`\(cli) start --solo`), save one here from the Darkbloom console with "
+                    + "`\(cli) route key` (a self-route-only key is safest), then run `\(cli) route \(route.rawValue)` again.")
+            } else {
+                say("Save one from the Darkbloom console with `\(cli) route key` (a self-route-only key is safest), then "
+                    + "run `\(cli) route \(route.rawValue)` again.")
+            }
             return 1
         }
         let changed: Bool
@@ -91,8 +100,8 @@ struct RouteChoiceFlow {
         say(keyless ? head : head + " " + RouteSaved.when(running: liveEndpoint != nil, pair: pair))
         for line in Self.meaning(route) { say(line) }
         if keyless {
-            say("The local API running now has no local key (--no-auth): it keeps every request on this Mac, "
-                + "whatever the route.")
+            say("The local API running now has no local key (--no-auth): it keeps every request on "
+                + "\(RouteSaved.thisMacOrPair(pair)), whatever the route.")
         } else if let pair {
             say(RouteSaved.pairRouteLine(pair, route: route))
         }
@@ -126,8 +135,8 @@ struct RouteChoiceFlow {
 /// When a saved route or account key counts. A running local API uses both from its next request that needs them:
 /// its router reads `[local] route` again once provider.toml changes (`LocalRouterRouteFile`), and the key's change
 /// notification makes it read the key again, so nothing restarts and no model reloads. In a two-Mac cluster, the
-/// pair's local API runs on the leading Mac and uses that Mac's route and key; the other Mac's own port forwards
-/// requests to it.
+/// pair's local API runs on the leading Mac and uses that Mac's route and key. Requests from the other Mac reach it
+/// from another machine (a relay, or tools that dial its address), so it never sends them to the paid network.
 enum RouteSaved {
     /// This Mac's part in a two-Mac cluster.
     enum PairPart: Equatable, Sendable {
@@ -160,17 +169,30 @@ enum RouteSaved {
         return running ? usesItNow : appliesAtStart
     }
 
-    /// Whose route the pair's local API uses.
+    /// What serves your requests here: the pair on the leading Mac, whose local API is the pair's; else this Mac (alone,
+    /// or the Mac that follows, whose route counts when it serves alone).
+    static func thisMacOrPair(_ pair: PairPart?) -> String {
+        if case .leads = pair { return "this pair" }
+        return "this Mac"
+    }
+
+    /// Whose route the pair's local API uses. The Mac that follows can't know the leading Mac's route or key, so it says
+    /// only whose route decides. Requests from the other Mac reach the leading Mac's API from another machine, so with
+    /// `my-macs-first` they never use the paid network, and both Macs say so.
     static func pairRouteLine(_ pair: PairPart, route: LocalSettings.Route) -> String {
+        let neverPaid = route == .myMacsFirst
         switch pair {
         case .leads(let other):
             let passes = route == .thisMac ? "passes nothing on" : "passes on what the pair can't take"
             return "In this pair, this Mac's route applies: the pair's local API runs here and \(passes), including "
-                + "requests \(other) forwards to it."
+                + "requests from \(other)"
+                + (neverPaid ? "; to this Mac those come from another machine, so they never use the paid network." : ".")
         case .follows(let leader):
-            return "In this pair, the leading Mac's route applies (\(leader)): its local API passes on what the pair can't "
-                + "take, including requests this Mac forwards to it. Run `\(BuildEnvironment.current.cliName) route "
-                + "\(route.rawValue)` there."
+            return "In this pair, the leading Mac's route applies (\(leader)): its route decides what the pair passes on, "
+                + "including requests from this Mac"
+                + (neverPaid ? "; to the leading Mac those come from another machine, so they never use the paid network."
+                    : ".")
+                + " Run `\(BuildEnvironment.current.cliName) route \(route.rawValue)` there."
         }
     }
 
@@ -181,7 +203,11 @@ enum RouteSaved {
         switch pair {
         case .leads:
             let runsHere = "In this pair, the pair's local API runs on this Mac"
-            if !routePassesOn { return runsHere + " and uses this Mac's key once its route passes requests on." }
+            if !routePassesOn {
+                // A removed key can't be named: say what a route that passes requests on will need.
+                return removed ? runsHere + ": once its route passes requests on, it needs a key saved here again."
+                    : runsHere + " and uses this Mac's key once its route passes requests on."
+            }
             return removed ? runsHere + ", so the pair passes nothing on until a key is saved here again."
                 : runsHere + " and passes requests on with this key."
         case .follows(let leader):

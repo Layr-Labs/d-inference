@@ -57,6 +57,22 @@ struct OnlyMeServerStartTests {
         let off = try await Self.steps(["--foreground", "--local"], launchdJob: true, idleMinutes: 0, autoUpdate: false)
         #expect(Self.besides(off).suffix(2) == ["idle unload 0", "updates off"], "\(off)")
     }
+
+    /// Only me's background service after an update can load for longer than the watchdog's 5 minutes: its preload
+    /// waits for every model it serves, with no time limit. Its heartbeat (the daemon state, kept fresh, and the
+    /// lifecycle mailbox) starts before that, after its release confirmation, as the network provider's do
+    /// (`runForeground`, `ProviderLoop.run`), so a long first load is never taken for a failed start, killed, and after
+    /// three kills rolled back (`WatchdogRecoveryIntegrationTests.onlyMeLongPreloadAfterAnUpdate`).
+    @Test("Only me's heartbeat starts before its preload, which has no time limit, after its release confirmation")
+    func heartbeatBeforeThePreload() async throws {
+        let service = try await Self.steps(["--foreground", "--local", "--port", "8003"], launchdJob: true)
+        #expect(Array(service.prefix(3)) == ["confirm \(Self.coordinator)", "heartbeat", "preload"], "\(service)")
+        let here = try await Self.steps(["--local", "--here"], launchdJob: false)
+        #expect(Array(here.prefix(2)) == ["heartbeat", "preload"], "\(here)")
+        // Without a startup preload, before the listener.
+        let lazy = try await Self.steps(["--foreground", "--local"], launchdJob: true, preload: false)
+        #expect(Array(lazy.prefix(3)) == ["confirm \(Self.coordinator)", "heartbeat", "listen"], "\(lazy)")
+    }
 }
 
 /// Steps in the order they happened, from any task.

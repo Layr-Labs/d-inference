@@ -456,7 +456,7 @@ struct OnlyMeServiceTests {
 }
 
 /// A provider job's plist in its own temp folder, as `start` writes one, with a key a rewrite keeps.
-private struct JobPlist {
+struct JobPlist {
     let directory: URL
     let path: URL
 

@@ -324,6 +324,37 @@ struct WatchdogRecoveryIntegrationTests {
             .loadState().candidate?.failureCount == 1)
     }
 
+    /// Only me's background service after an update: its preload waits for every model it serves, with no time limit,
+    /// and its server writes the daemon state from before that preload, refreshed every 250 ms
+    /// (`StandaloneServer.startLifecycleControl`, which `Start.startOnlyMeServer` starts first). At every watchdog tick
+    /// of a 10-minute first load the new release has a fresh heartbeat: it is promoted, and never charged a failed
+    /// start, killed or rolled back. Without the heartbeat the same load is a failed start at 5 minutes
+    /// (`hungCandidateCountsAsFailedStart`), and three are a rollback (`threeFailureRollback`).
+    @Test("a 10-minute Only me preload after an update, with its heartbeat: promoted, never killed or rolled back")
+    func onlyMeLongPreloadAfterAnUpdate() async throws {
+        // The new release launched at 100 s; its startup window is 5 minutes.
+        let context = try await installedCandidate()
+        defer { context.fixture.cleanup() }
+        defer { Task { await context.mock.shutdown() } }
+        let restartsBefore = context.restarts.value
+
+        var outcomes: [WatchdogRecoveryService.HealthOutcome] = []
+        for now in stride(from: 160.0, through: 760, by: 60) {
+            // Only me's state as its server writes it while the preload runs: this release, a quarter second old.
+            let heartbeat = DaemonState(pid: 4242, processIdentity: ProcessIdentity(pid: 4242, startTimeMicros: 100_000_000),
+                                        version: "2.0.0", writtenAt: now - 0.25, startedAt: 100,
+                                        inferenceActive: false, lifecycle: ProviderDrainStatus())
+            outcomes.append(context.service.observeHealthyProvider(providerRunning: true, daemonState: heartbeat,
+                                                                   now: now))
+        }
+        #expect(!outcomes.contains { if case .inactiveCandidate = $0 { true } else { false } }, "\(outcomes)")
+        #expect(outcomes.contains(.promoted(version: "2.0.0")), "\(outcomes)")
+        #expect(context.restarts.value == restartsBefore, "never killed")
+        let state = try recoveryStore(context.fixture).loadState()
+        #expect(state.current?.version == "2.0.0" && state.quarantine == nil, "never rolled back")
+        #expect(try context.fixture.liveBinaryContents() == "2.0.0-darkbloom")
+    }
+
     @Test("process death after atomic app exchange is recovered")
     func crashBetweenRenameAndMetadata() throws {
         enum InjectedCrash: Error { case afterExchange }

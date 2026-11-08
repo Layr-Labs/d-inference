@@ -60,6 +60,8 @@ enum LocalFirstStatusFixtures {
                                         accountKeySaved: { true })
         }
         lines += Status.servingLines(state: state(), liveEndpoint: nil, route: nil, accountKeySaved: { false })
+        lines += Status.servingLines(state: state(connected: false), liveEndpoint: nil, route: nil,
+                                     accountKeySaved: { false })
         for failure in [portInUse, addressGone] {
             for meFirst in [open, nil] {
                 for free in [UInt16(8002), nil] {
@@ -145,6 +147,18 @@ struct LocalFirstStatusTests {
             #expect(Status.servingLines(state: F.state(meFirst: F.open), liveEndpoint: endpoint, route: nil,
                                         accountKeySaved: { Issue.record("Keychain read"); return false }) == [
                 "Serving: Darkbloom network only — this Mac has no local API",
+            ])
+        }
+    }
+
+    /// Only me's background service reports itself from the start of its first load (`Start.startOnlyMeServer`), which
+    /// waits for every model it serves, before its local API listens: that is never "network only".
+    @Test("Only me loading its models, before its local API listens, is never \"network only\"")
+    func onlyMeWhileItLoads() {
+        for endpoint in [nil, F.endpoint(pid: 9_999)] {
+            #expect(Status.servingLines(state: F.state(connected: false), liveEndpoint: endpoint, route: nil,
+                                        accountKeySaved: { Issue.record("Keychain read"); return false }) == [
+                "Serving: only you, on this Mac — starting: its local API opens once its models are loaded",
             ])
         }
     }

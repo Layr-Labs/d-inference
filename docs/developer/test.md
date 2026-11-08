@@ -989,15 +989,16 @@ config.
 
 ```bash
 swift test --skip-build --no-parallel \
-  --filter 'OpenCodeConfigPlanTests|HermesConfigPlanTests|HermesVersionTests|ToolConfigWriterTests|IntegrationModelsTests|ToolIntegrationTests|AtomicFileTests|keyFileIsTheFileHoldingThePortsKey'
+  --filter 'OpenCodeConfigPlanTests|HermesConfigPlanTests|HermesVersionTests|ToolConfigWriterTests|IntegrationModelsTests|ToolIntegrationTests|ToolSetupWordsTests|AtomicFileTests|keyFileIsTheFileHoldingThePortsKey'
 ```
 
 | Coverage | Suites |
 |---|---|
-| New file, an owner's commented JSONC file, strict `.json`, a V1 `provider` map, the default model (also when the other global file sets one), re-runs, refusals, the config file choice | `OpenCodeConfigPlanTests` |
-| New file, Hermes' fresh-install `model: ""`, a file as oMLX writes it (PyYAML's column-0 lists too), the `model:` alias key, the kept default, the 64,000-token floor, quoting, refusals, every written key against Hermes' documented keys; the `key_cmd` version warning | `HermesConfigPlanTests`, `HermesVersionTests` |
+| New file, an owner's commented JSONC file, strict `.json`, a V1 `provider` map, the default model (also when the other global file sets one, merged as OpenCode 2 merges them, and named when kept), re-runs, refusals, the config file choice | `OpenCodeConfigPlanTests` |
+| New file, Hermes' fresh-install `model: ""`, a file as oMLX writes it (PyYAML's column-0 lists too), the `model:` alias key, the kept default, the main model it replaces, a pair's model as the main one, the 64,000-token floor, quoting, refusals, every written key against Hermes' documented keys; the `key_cmd` version warning | `HermesConfigPlanTests`, `HermesVersionTests` |
 | Backups (exact bytes, 0600, five kept), unchanged writes nothing, atomic replace, symlinks, a concurrent edit, dry run, the undo command run through `/bin/sh` | `ToolConfigWriterTests`, `AtomicFileTests` |
-| Catalog names, limits and capability aliases; the fetch with the key file's key; `local.json`'s endpoint and key file; the modes of new files; the owner's default in the other global OpenCode file; no written file holds the key | `IntegrationModelsTests`, `ToolIntegrationTests`, `keyFileIsTheFileHoldingThePortsKey` |
+| Catalog names, limits and capability aliases; a pair's models named `(your pair)`; the fetch with the key file's key; `local.json`'s endpoint and key file; the modes of new files; the owner's default in the other global OpenCode file; no written file holds the key | `IntegrationModelsTests`, `ToolIntegrationTests`, `keyFileIsTheFileHoldingThePortsKey` |
+| What a start says, in a temp home with a user's two OpenCode files and his Hermes config: the default model's own line (none set, set in either file, OpenCode 1's `config.json`), Hermes' main model before, the URL for an API on `0.0.0.0`, a pair's API (`(your pair)`, a run again online and offline changes nothing) | `ToolSetupWordsTests` |
 
 `scripts/integrations/opencode-smoke.sh` then runs the real OpenCode 2 on the
 written config. It runs the writer through the opt-in `OpenCodeSmokeSetup`

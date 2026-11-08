@@ -193,13 +193,28 @@ Then, in OpenCode, `/models` → Darkbloom. Hermes uses Darkbloom as its main
 model.
 
 - **Starts Darkbloom only if needed.** If this Mac's local API already runs,
-  nothing restarts: `Darkbloom already serves on 127.0.0.1:8001; setting up
-  OpenCode for it.` Otherwise `start` runs as usual, and the tools are set up
-  once the local API answers: a background start waits up to 30 seconds for it.
+  nothing restarts: `Darkbloom already serves at http://127.0.0.1:8001/v1;
+  setting up OpenCode for it.` (the address the tools use, also for a pair's
+  API that listens on every address). Otherwise `start` runs as usual, and the
+  tools are set up once the local API answers: a background start waits up to
+  30 seconds for it.
 - **What it changes:** one `darkbloom` provider in OpenCode's
   `~/.config/opencode/opencode.jsonc` (or your existing `opencode.json`), and
   in Hermes' `~/.hermes/config.yaml`, where it also becomes the main model, as
   Ollama and oMLX do. Everything else in those files stays as it was.
+- **Your default model:** OpenCode's stays when any of its global config files
+  sets one (`opencode.json`, then `opencode.jsonc`, merged as OpenCode 2 merges
+  them; OpenCode 2 doesn't read OpenCode 1's `config.json`). Nothing is
+  written for it, and the start names it: `Your default stays
+  exo/llama-3.3-70b; pick Darkbloom with /models.` When none does, Darkbloom's
+  first model becomes the default for new sessions, on a line of its own: `New
+  OpenCode sessions now use Darkbloom's Qwen 3.8 27B. Switch back with
+  /models.` Hermes always makes Darkbloom its main model and names the one
+  before: `New Hermes chats now use Darkbloom's Qwen 3.8 27B (before:
+  gpt-6-astra via opencodex). Switch back: hermes model`.
+- **Where each model runs** is in its name: `Qwen 3.8 27B (this Mac)`, `(your
+  pair)` on the Mac that serves a pair's API, whatever its size, `(your Macs)`,
+  or `(Darkbloom network, billed)`.
 - **Your key stays out of them.** The tools read it from Darkbloom's own key
   file, and `darkbloom --opencode` never prints it.
 - **Undo in one line:** every change is backed up first, and the start prints
@@ -209,13 +224,14 @@ model.
   ✓ OpenCode can use Darkbloom: 3 models.
     Changed: ~/.config/opencode/opencode.jsonc (added the "darkbloom" provider; nothing else changed)
     Backup:  ~/.darkbloom/integrations/backups/opencode/opencode.jsonc.20261106T221500Z
-    Use it:  in OpenCode, /models → Darkbloom. Your default model is unchanged.
+    Your default stays exo/llama-3.3-70b; pick Darkbloom with /models.
     Undo:    cp '<backup>' '<file>'
   ```
 
-  When your OpenCode config sets no default model, Darkbloom's first model
-  becomes the default for new sessions, and the `Use it:` line names it
-  instead (`new sessions use darkbloom/<model>`).
+  When Darkbloom's model became the default, the `Changed:` line says `added
+  the "darkbloom" provider and the default model`, and the line before `Undo:`
+  is `New OpenCode sessions now use Darkbloom's <model>. Switch back with
+  /models.`
 - **It waits for your model.** While this Mac still loads the models it started
   with, the start waits before it writes anything, on one live line
   (`⠙ Loading Gemma 4 26B before setting up OpenCode… 42s`; without a terminal,

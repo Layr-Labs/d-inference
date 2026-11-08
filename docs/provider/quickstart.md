@@ -124,8 +124,9 @@ opencode
 
 In OpenCode, `/models` → **Darkbloom**, then pick a model. If your OpenCode
 config sets no default model, Darkbloom's first model becomes the default for
-new sessions; otherwise yours stays. The start's `Use it:` line says which. With
-`--hermes`, Darkbloom is Hermes' main model: run `hermes`. Any other OpenAI
+new sessions; otherwise yours stays. The start says which on a line of its
+own (`New OpenCode sessions now use Darkbloom's …` or `Your default stays …`).
+With `--hermes`, Darkbloom is Hermes' main model: run `hermes`. Any other OpenAI
 client: `darkbloom local` prints the address, the key and a `curl` to try
 ([the local API](./direct-mode.md)).
 

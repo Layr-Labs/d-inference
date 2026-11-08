@@ -39,9 +39,12 @@ flowchart LR
 1. **Endpoint.** `IntegrationEndpoint.live` reads the live server's address from `local.json`, so the port is
    whatever that server bound, and takes the key file from `LocalEndpoint.keyFile(forPort:)`
    (`provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift`): the file that holds exactly the key the server
-   on that port requires, `local_token` or a pair's `cluster_local_token`.
+   on that port requires, `local_token` or a pair's `cluster_local_token`. The endpoint serves the pair
+   (`servesThePair`) when `local.json`'s pid is this Mac's running part of a pair
+   (`ClusterPairSummary.runningPartPID()`), as `status` decides whose API it is.
 2. **Models.** `IntegrationModels.fetch` asks the endpoint's `GET /v1/models` with that key; `resolve` names each
-   chat model from the catalog (`display_name`, with where it runs: this Mac, your Macs, the network), takes its
+   chat model from the catalog (`display_name`, with where it runs: this Mac, or your pair when the endpoint serves
+   it, whatever its size; your Macs; the network), takes its
    context from the endpoint, else the catalog's maximum, its output cap as `min(max output, context / 4)` with
    `defaultOutputCap = 32_768`, and its capabilities from the catalog's names (tools on and text-only input when the
    catalog is unreachable). A model the catalog doesn't describe (offline, or one it doesn't list) carries
@@ -63,19 +66,26 @@ flowchart LR
    `providers.<id>` value, or appends it in the file's indentation and trailing-comma style. The block has the base
    URL, `apiKey: "{file:<key file>}"` (under `~` in the home directory), `compatibility.maxTokensField: "max_tokens"`
    (OpenCode otherwise sends `max_completion_tokens`, which the engine ignores) and each model's name, `limit` and
-   `capabilities`. The top-level `model` is set only when no global config file sets one
-   (`OpenCodeConfigPlan.otherGlobalConfigSetsModel`): OpenCode loads `opencode.json`, then `opencode.jsonc`, and
-   Darkbloom edits the last that exists, so a `model` added to `.jsonc` would override the owner's in `.json`.
-   Project, system and managed configs load after the global ones and win over them, so a global `model` never
-   replaces theirs.
+   `capabilities`. The top-level `model` is set only when no global config file sets one: the global files are
+   merged as OpenCode 2 merges them (`OpenCodeConfigPlan.globalFileNames`, its `ConfigDiscovery.names`:
+   `opencode.json`, then `opencode.jsonc`, the later winning; OpenCode 2 doesn't load OpenCode 1's `config.json`), and
+   Darkbloom edits the last that exists, so a `model` added to `.jsonc` would override the owner's in `.json`. The
+   edited file's own `model` wins, then the others' (`OpenCodeConfigPlan.otherGlobalDefault`, a `GlobalDefault`):
+   a name is kept and named (`ToolConfigSummary.keptDefault`); `""`, `null` or a file that can't be read is kept
+   without a name. Project, system and managed configs load after the global ones and win over them, so a global
+   `model` never replaces theirs.
 4. **Hermes.** `HermesConfigPlan.plan` splices two top-level sections of `config.yaml` by lines: `providers.<id>`
    (`api`, `key_cmd: "/bin/cat <key file>"`, `transport`, `default_model`, `extra_body.max_tokens` and each model's
    `context_length` / `supports_vision`) and `model` (`provider: "custom:<id>"` and `default`; the previous endpoint's
    pins, `previousEndpointKeys`, go). Models under `minimumContext = 64_000`, Hermes' own floor, are left out;
    `extra_body.max_tokens` is the smallest output cap of the rest. Lists at their key's own indent, as PyYAML writes
-   them (so oMLX's `omlx launch hermes`, and Hermes up to v0.17), are part of that key.
+   them (so oMLX's `omlx launch hermes`, and Hermes up to v0.17), are part of that key. The main model is the one
+   already set when it is Darkbloom's and still usable, else the nearest usable one that isn't on the network (this
+   Mac or its pair, then your Macs); the one it replaces is named with its provider
+   (`ToolConfigSummary.replacedDefault`, `gpt-6-astra via opencodex`).
 5. **Write.** `ToolConfigWriter.apply` makes the planned edit (invariants below) and returns the file, the backup
-   and the exact undo command.
+   and the exact undo command. `ToolIntegrationStep.lines` says them, with the default model on a line of its own
+   (`openCodeDefault`; Hermes' names the main model before).
 6. **Follow the address.** A start without a tool flag that serves a local API reads each tool's provider block back
    (`OpenCodeConfigPlan.pointer`, `HermesConfigPlan.pointer`: the base URL, and the file `{file:}` or
    `key_cmd: /bin/cat <file>` reads) and compares it with that API: its base URL and `LocalEndpoint.tokenPath()`, or
@@ -132,9 +142,10 @@ flowchart LR
 
 | Concern | File, symbol |
 |---|---|
-| Entry point, endpoint, identity, paths | `provider-swift/Sources/darkbloom/ToolIntegration/ToolIntegration.swift` (`ToolIntegration.configure`, `IntegrationEndpoint.live`, `IntegrationProvider`) |
-| Models | `provider-swift/Sources/darkbloom/ToolIntegration/IntegrationModels.swift` (`IntegrationModels.fetch`, `resolve`) |
-| OpenCode | `provider-swift/Sources/darkbloom/ToolIntegration/OpenCodeConfigPlan.swift`, `provider-swift/Sources/darkbloom/ToolIntegration/JSONCDocument.swift` |
+| Entry point, endpoint, identity, paths | `provider-swift/Sources/darkbloom/ToolIntegration/ToolIntegration.swift` (`ToolIntegration.configure`, `IntegrationEndpoint.live`, `servesThePair`, `IntegrationProvider`) |
+| Models | `provider-swift/Sources/darkbloom/ToolIntegration/IntegrationModels.swift` (`IntegrationModels.fetch`, `resolve`, `IntegrationModel.Location`) |
+| OpenCode | `provider-swift/Sources/darkbloom/ToolIntegration/OpenCodeConfigPlan.swift` (`plan`, `otherGlobalDefault`, `globalDefault(in:)`), `provider-swift/Sources/darkbloom/ToolIntegration/JSONCDocument.swift` |
+| What a start says | `provider-swift/Sources/darkbloom/ToolIntegration/ToolIntegrationStep.swift` (`lines`, `changed`, `openCodeDefault`, `alreadyServes`) |
 | Hermes | `provider-swift/Sources/darkbloom/ToolIntegration/HermesConfigPlan.swift` (`HermesConfigPlan.plan`, `previousEndpointKeys`), `provider-swift/Sources/darkbloom/ToolIntegration/HermesVersion.swift` (`HermesVersion.keyCommandWarning`) |
 | Plans and refusals | `provider-swift/Sources/darkbloom/ToolIntegration/ToolConfigPlan.swift` |
 | The wait for this Mac's models | `provider-swift/Sources/darkbloom/ToolIntegration/ModelLoadWait.swift` (`ModelLoadWait`, `ModelLoads`, `LiveLine`, `InterruptWatch`) |

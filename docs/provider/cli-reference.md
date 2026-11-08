@@ -377,9 +377,12 @@ They run once, at `start`:
    `--bind` given, if any) and no option changes what serves (`--model`,
    `--all`, `--idle-timeout`, `--schedule`, `--autopilot`/`--no-autopilot`,
    `--coordinator-url`, `--choose`, `--no-me-first`, `--me-first-idle`,
-   `--route`): nothing starts. `Darkbloom already serves on <host>:<port>;
-   setting up OpenCode for it.`, then the tools (`Start.runningLocalAPI`). One
-   without a key (`--no-auth`) is named instead, and nothing starts (exit 1):
+   `--route`): nothing starts. `Darkbloom already serves at
+   http://127.0.0.1:8001/v1; setting up OpenCode for it.` (the URL the tools
+   use, `local.json`'s `base_url`: `127.0.0.1` for an API on `0.0.0.0`;
+   `ToolIntegrationStep.alreadyServes`), then the tools
+   (`Start.runningLocalAPI`). One without a key (`--no-auth`) is named
+   instead, and nothing starts (exit 1):
    ``✗ Darkbloom's local API on :8001 has no key (--no-auth); tools need one:
    start it without --no-auth.``
 2. **Otherwise `start` runs as above**, then: `--local` and Only me set the tools
@@ -404,8 +407,19 @@ They run once, at `start`:
    (`IntegrationModel.keeping`), so a re-run changes nothing and says the catalog
    wasn't reachable; a model new to the file gets its ID and text input only, and
    one line says to run the start again online for names and image support.
-   The result block names the file changed, the backup and a one-line undo,
-   then `Requests:` (where your requests go) and
+   Each model's name says where it runs: `(this Mac)`, `(your pair)` when the
+   local API is this Mac's running part of a pair (its pid is the part's,
+   `IntegrationEndpoint.servesThePair`), `(your Macs)` or `(Darkbloom network,
+   billed)`.
+   The result block names the file changed, the backup, the default model on a
+   line of its own and a one-line undo. OpenCode's default is set only when none
+   of its global files (`opencode.json`, then `opencode.jsonc`, merged as
+   OpenCode 2 merges them) sets one: ``New OpenCode sessions now use
+   Darkbloom's Qwen 3.8 27B. Switch back with /models.``; else ``Your default
+   stays exo/llama-3.3-70b; pick Darkbloom with /models.`` Hermes' main model
+   is always Darkbloom's, and the line names the one before: ``New Hermes chats
+   now use Darkbloom's Qwen 3.8 27B (before: gpt-6-astra via opencodex). Switch
+   back: hermes model``. Then `Requests:` (where your requests go) and
    `Other tools:` (`OPENAI_BASE_URL` and `OPENAI_API_KEY="$(cat <key file>)"`).
    No line or file holds the key, and the `--local` banner shows no key when a
    tool flag is given (`Start.bannerShowsKey`); its `Your requests:` line and the

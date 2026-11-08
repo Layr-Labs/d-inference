@@ -326,7 +326,10 @@ coordinator's `self` list names this Mac's own builds by their aliases.
 The coordinator's lists are cached for 30 s and the catalog for 5 minutes; a
 coordinator that can't be reached leaves this Mac's models alone in the list
 and is asked again after 10 s. With `this-mac`, the list never leaves the Mac.
-Integrations (OpenCode, Hermes) read this list.
+Integrations (OpenCode, Hermes) read this list and name each model with where
+it runs: `this-mac` is `(this Mac)`, or `(your pair)` on a pair's API (the
+pair's model, whatever the pair's size); `my-macs` is `(your Macs)`, and
+`darkbloom` is `(Darkbloom network, billed)`.
 
 <!-- pending R-FULL: local and direct use offer each model's full context window and every capability; only the Mac's memory bounds a request, and the answer says so; OpenRouter is separate. -->
 

@@ -145,8 +145,11 @@ extension Start {
                                     localHostName: () -> String? = { Local.localHostName() },
                                     say: (String) -> Void = { print($0) }) {
         guard requestedTools.isEmpty, serving.hasLocalAPI,
-              let line = ToolAddress.notice(baseURL: serving.baseURL, keyFile: serving.noAuth ? nil : keyFile,
-                                            environment: environment, provider: provider) else { return }
+              let line = ToolAddress.notice(
+                  baseURL: serving.baseURL, keyFile: serving.noAuth ? nil : keyFile, environment: environment,
+                  provider: provider,
+                  thisMac: ToolAddress.thisMacsNames(listeningOn: serving.bind, localHostName: localHostName))
+        else { return }
         say("")
         say(line)
     }

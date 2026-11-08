@@ -205,16 +205,19 @@ struct ToolIntegrationStep {
         }
     }
 
-    /// This Mac's models the tools got no limits of this Mac's for, as the endpoint lists them: this Mac lists a model's
-    /// context only while it is loaded.
+    /// This Mac's models the tools got no limits of this Mac's for: those its process hasn't `loaded`, by its own word.
+    /// Without that word, those listed without a context, which this Mac lists only while a model is loaded (unless its
+    /// router fills the catalog's in, with an account key and a route that dials out).
     static func notLoaded(_ listed: [EndpointModel], loaded: Set<String>?) -> [EndpointModel] {
-        listed.filter { $0.contextLength == nil && IntegrationModels.location(ownedBy: $0.ownedBy) == .thisMac }
+        let thisMac = listed.filter { IntegrationModels.location(ownedBy: $0.ownedBy) == .thisMac }
+        guard let loaded else { return thisMac.filter { $0.contextLength == nil } }
+        return thisMac.filter { !loaded.contains($0.id) }
     }
 
     /// Waits (`modelLoadWait`; none without it) while the local API's process still loads this Mac's models in
     /// `listed`, then gives what the endpoint lists now, their own limits included, and what the process has loaded
     /// by its own word (nil without it); nil, said in one line, when nothing may be written: the model didn't load,
-    /// is still loading at the deadline, or Ctrl-C stopped the wait.
+    /// is still loading at the deadline, or Ctrl-C stopped the wait, even as it ended.
     private func waitForModels(_ listed: [EndpointModel], endpoint: IntegrationEndpoint, tools: [IntegrationTool],
                                catalog: CatalogSnapshot?) async -> (listed: [EndpointModel], loaded: Set<String>?)? {
         guard let wait = modelLoadWait else { return (listed, nil) }
@@ -222,6 +225,12 @@ struct ToolIntegrationStep {
         let name = { (id: String) in IntegrationModels.displayName(of: id, in: catalog) }
         switch await wait.run(thisMac: thisMac, tools: tools, name: name, say: say) {
         case .ready(let waited, let loaded):
+            // Ctrl-C after the wait's last look, as it ended: still nothing is written. Past the wait, Ctrl-C does
+            // what it did before it.
+            guard !wait.interrupt.wasPressed else {
+                say(ModelLoadWait.stoppedBeforeWriting(tools))
+                return nil
+            }
             guard waited else { return (listed, loaded) }
             return await readModels(endpoint, tools: tools).map { ($0, loaded) }
         case .notLoaded(let model):

@@ -31,17 +31,31 @@ enum ToolAddress {
         }
     }
 
-    /// The names loopback answers to.
+    /// The names loopback answers to, as every local API on this Mac does.
     static let loopbackNames: Set<String> = ["localhost", "127.0.0.1", "::1"]
 
-    /// The names of this Mac's local API listening on `bind`.
+    /// The names a tool on this Mac reaches its local API listening on `bind` by: loopback's, and this Mac's Bonjour
+    /// name (`localHostName`, with `.local`) when it listens on every address, as `darkbloom local` prints it then.
     static func thisMacsNames(listeningOn bind: String, localHostName: () -> String?) -> Set<String> {
-        loopbackNames
+        guard bind == "0.0.0.0" || bind == "::", let name = localHostName() else { return loopbackNames }
+        return loopbackNames.union(["\(name.lowercased()).local"])
     }
 
-    /// Whether two base URLs name the same local API.
+    /// Whether two base URLs reach the same local API: the same scheme, port (the scheme's own when none is given) and
+    /// path (one `/` at its end aside), and the same host in any case, `thisMac`'s names counting as one.
     static func sameAddress(_ one: String, _ other: String, thisMac: Set<String> = loopbackNames) -> Bool {
-        trimmed(one) == trimmed(other)
+        guard let first = URLComponents(string: one), let second = URLComponents(string: other),
+              first.host != nil, second.host != nil else { return trimmed(one) == trimmed(other) }
+        func scheme(_ url: URLComponents) -> String? { url.scheme?.lowercased() }
+        func host(_ url: URLComponents) -> String {
+            let name = (url.host ?? "").lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+            return thisMac.contains(name) ? "this Mac" : name
+        }
+        func port(_ url: URLComponents) -> Int? {
+            url.port ?? ["http": 80, "https": 443][scheme(url) ?? ""]
+        }
+        return scheme(first) == scheme(second) && host(first) == host(second) && port(first) == port(second)
+            && trimmed(first.path) == trimmed(second.path)
     }
 
     /// The tools set up for Darkbloom whose provider block misses the local API at `baseURL` that takes the key in

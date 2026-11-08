@@ -51,36 +51,7 @@ extension Start {
             token = try LocalEndpoint.loadOrCreateToken()
         }
 
-        let baseURL = serving.baseURL
-        // `--local` prints its key as it always has; "Only me" chosen at the question or saved, and a start that sets
-        // tools up, say where it is.
-        let printsKey = bannerShowsKey(serving)
-        print("\(BuildEnvironment.current.cliName) \(ProviderCore.version) (local / direct mode)")
-        if !printsKey { print("Serving: " + LocalFirstWords.serving(mode: .local, meFirst: false, idleMinutes: 0)) }
-        print("Preparing local server on \(bind):\(port)")
-        print("Models: \(advertised.count)")
-        for m in advertised {
-            print("  \(m.id) (\(String(format: "%.1f", m.estimatedMemoryGb)) GB)")
-        }
-        print()
-        print("OpenAI-compatible endpoint:")
-        print("  base URL: \(baseURL)")
-        if let token, printsKey {
-            print("  API key:  \(token)")
-            print()
-            print("  export OPENAI_BASE_URL=\(baseURL)")
-            print("  export OPENAI_API_KEY=\(token)")
-        } else if token != nil {
-            print("  API key:  `\(BuildEnvironment.current.cliName) local` shows it")
-            print("  Your requests: " + LocalFirstWords.requests(route: serving.route,
-                                                               accountKeySaved: serving.accountKeySaved ?? false))
-        } else {
-            print("  API key:  (auth disabled — --no-auth)")
-            print("  Requests: this Mac only. Without a local key nothing is passed on to your other Macs or the network.")
-        }
-        print()
-        print("  Shareable any time with: \(BuildEnvironment.current.cliName) local")
-        print()
+        for line in localServerBanner(serving: serving, models: advertised, token: token) { print(line) }
 
         // A start that serves here runs under the AppKit host, which turns Ctrl-C into a drain
         // (`ProviderAppKitHost.shouldHost`); any other caller takes the same signals itself.
@@ -159,6 +130,27 @@ extension Start {
         }
         // On the way out of `--here`: what serves now.
         if here { print(Self.hereEndedLine(saved: (try? savedLocalSettings(configPath: configOptions.config))?.mode)) }
+    }
+
+    /// The coordinator-less server's banner: how it serves, where, and with which models. No start screen prints the
+    /// key (`token` only says whether there is one): `darkbloom local` shows it.
+    func localServerBanner(serving: StartServing, models: [ModelInfo], token: String?) -> [String] {
+        let cli = BuildEnvironment.current.cliName
+        var lines = ["\(cli) \(ProviderCore.version) (local / direct mode)",
+                     "Serving: " + LocalFirstWords.serving(mode: .local, meFirst: false, idleMinutes: 0)]
+        lines += ["Preparing local server on \(serving.bind):\(serving.port)", "Models: \(models.count)"]
+        lines += models.map { "  \($0.id) (\(String(format: "%.1f", $0.estimatedMemoryGb)) GB)" }
+        lines += ["", "OpenAI-compatible endpoint:", "  base URL: \(serving.baseURL)"]
+        if token != nil {
+            lines += ["  API key:  `\(cli) local` shows it",
+                      "  Your requests: " + LocalFirstWords.requests(route: serving.route,
+                                                                     accountKeySaved: serving.accountKeySaved ?? false)]
+        } else {
+            lines += ["  API key:  (auth disabled — --no-auth)",
+                      "  Requests: this Mac only. Without a local key nothing is passed on to your other Macs or the "
+                        + "network."]
+        }
+        return lines + ["", "  Shareable any time with: \(cli) local", ""]
     }
 
     /// The models this Mac's own server serves (every one through engine v2), and a line for each other one: why it

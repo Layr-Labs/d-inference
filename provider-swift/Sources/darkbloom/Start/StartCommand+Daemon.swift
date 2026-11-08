@@ -26,7 +26,7 @@ extension Start {
         // Offer account linking before the model picker.
         await offerInlineLogin(coordinatorURL: coordinatorURL)
 
-        let enableAutopilot = try resolveAutopilotChoice(config)
+        let enableAutopilot = try resolveAutopilotChoice(config, mode: serving.mode)
         let selection = try await Self.prepareModelSelection(autopilot: enableAutopilot,
             select: {
                 try await selectStartupModels(snapshot: snapshot, config: config,

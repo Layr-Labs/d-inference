@@ -243,7 +243,7 @@ struct StartToolIntegrationTests {
             + "but no key file holds its key, so OpenCode wasn't set up.")
     }
 
-    @Test("start --local --opencode reads the account key once, for the banner and the tool block; no key shown")
+    @Test("start --local reads the account key once, with or without a tool flag; no start screen shows the key")
     func localWithAToolReadsTheAccountKeyOnce() throws {
         let directory = try TemporaryDirectory("start-tools-local")
         let config = try directory.write("[provider]\nname = \"d2b\"\n\n[local]\nroute = \"my-macs-first\"\n",
@@ -258,11 +258,13 @@ struct StartToolIntegrationTests {
         // The banner's words come from that one read: requests can leave this Mac, so it doesn't say "this Mac only".
         #expect(LocalFirstWords.requests(route: serving.route, accountKeySaved: serving.accountKeySaved ?? false)
             == "this Mac first, then your other Macs (free), then the Darkbloom network (billed)")
-        #expect(!start.bannerShowsKey(serving), "no key in the banner with a tool flag")
-        // `--local` alone keeps its banner, key included, and still never asks the Keychain.
+        let key = "dk-local-fixture"
+        #expect(!start.localServerBanner(serving: serving, models: [], token: key).contains { $0.contains(key) })
+        // `--local` alone says where requests go too, from one read of the Keychain, and shows no key either.
         let plain = try Start.parse(["--local", "--config", config.path])
         let plainServing = try #require(try plain.resolveServing(environment: environment))
-        #expect(plain.bannerShowsKey(plainServing) && plainServing.accountKeySaved == nil && lookups == 1)
+        #expect(plainServing.accountKeySaved == true && lookups == 2)
+        #expect(!plain.localServerBanner(serving: plainServing, models: [], token: key).contains { $0.contains(key) })
     }
 
     /// The local API's `/v1/models` waits for the coordinator's lists up to the router's own deadline

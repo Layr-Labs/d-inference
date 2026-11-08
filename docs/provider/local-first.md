@@ -179,9 +179,9 @@ this Mac, for example `http://127.0.0.1:8001/v1`:
   in the background: `darkbloom logs`). On a Mac in a pair they
   name `darkbloom start --solo --port <n>` instead, or `darkbloom restart` for
   the pair's own API.
-- **The key:** `darkbloom local` shows the address and the key. Of the start
-  screens, only `darkbloom start --local --here`'s prints the key. A pair's API
-  has a key of its own, the same on both Macs.
+- **The key:** `darkbloom local` shows the address and the key. No start
+  screen prints the key. A pair's API has a key of its own, the same on both
+  Macs.
 - **On your local network (LAN or tailnet):** the local API listens on this Mac
   only, unless you start with `--bind <address>`; it always needs the key
   unless you add `--no-auth`. Without a key your requests stay on this Mac:

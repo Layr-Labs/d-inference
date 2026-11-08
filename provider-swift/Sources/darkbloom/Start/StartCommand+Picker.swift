@@ -357,7 +357,8 @@ extension Start {
         }
 
         // Run the interactive TUI picker.
-        let selectedIndices = try runModelPicker(entries: entries, memoryGb: memoryGb, reserveMode: reserveMode)
+        let selectedIndices = try runModelPicker(entries: entries, memoryGb: memoryGb, reserveMode: reserveMode,
+                                                 lastUsed: config.backend.enabledModels)
 
         guard !selectedIndices.isEmpty else {
             return []
@@ -396,6 +397,29 @@ extension Start {
     static func catalogUnreachableOnlyMe(_ models: [String]) -> String {
         "Darkbloom's catalog can't be reached, so Only me serves the models already on this Mac: "
             + models.joined(separator: ", ") + "."
+    }
+
+    /// The rows the picker opens with selected: the last selection (`[backend] enabled_models`) still downloaded, when
+    /// it fits; else the largest downloaded model with room to spare (half its load budget or less, so long prompts
+    /// have room); else the smallest downloaded one that fits; else none. Never a model only the catalog has, which
+    /// selecting would download.
+    static func pickerPreselection(entries: [PickerEntry], memoryGb: Double, reserveMode: PickerReserveMode,
+                                   lastUsed: [String]) -> [Int] {
+        let downloadedFitting = entries.indices.filter {
+            entries[$0].downloaded && pickerSelectionFitsBudget([entries[$0]], memoryGb: memoryGb, reserveMode: reserveMode)
+        }
+        let last = downloadedFitting.filter { lastUsed.contains(entries[$0].id) }
+        if !last.isEmpty,
+           pickerSelectionFitsBudget(last.map { entries[$0] }, memoryGb: memoryGb, reserveMode: reserveMode) {
+            return last
+        }
+        func leavesRoom(_ index: Int) -> Bool {
+            let budget = pickerLoadBudgetGiB(memoryGb: memoryGb, modelIDs: reserveMode.modelIDs(for: [entries[index]]))
+            return entries[index].sizeGb <= budget / 2
+        }
+        let bySize = downloadedFitting.sorted { entries[$0].sizeGb < entries[$1].sizeGb }
+        if let largestWithRoom = bySize.last(where: leavesRoom) { return [largestWithRoom] }
+        return bySize.first.map { [$0] } ?? []
     }
 
     /// Simple numbered fallback picker for non-TTY environments.

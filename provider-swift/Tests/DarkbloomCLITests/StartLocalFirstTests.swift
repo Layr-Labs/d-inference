@@ -372,7 +372,7 @@ struct StartLocalFirstTests {
             let script = ScriptedTerminal(["1"])
             let local = try #require(try script.resolve(try config.start(["--local"]), terminal: terminal))
             #expect(local.mode == .local && local.source == .flag(.local) && local.port == firstNewPort)
-            #expect(local.bind == "127.0.0.1" && local.accountKeySaved == nil)
+            #expect(local.bind == "127.0.0.1" && local.accountKeySaved == false, "where requests go: whether a key is saved")
             #expect(local.change == LocalSettingsChange(mode: .local, port: firstNewPort), "the mode and the port")
             #expect(local.portNote == LocalAPIPort.note(chosen: firstNewPort, start: defaultPort))
 

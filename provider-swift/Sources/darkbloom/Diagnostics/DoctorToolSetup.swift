@@ -3,7 +3,8 @@ import ProviderCore
 
 /// What a tool's own config says of Darkbloom, for `darkbloom doctor`'s Local API section: the file the tool reads
 /// (as `darkbloom --opencode` / `--hermes` choose it) and the address and key file of Darkbloom's provider there. Read
-/// only; the key itself is never read.
+/// only. Of the key only the path of its file is kept (OpenCode's `{file:…}`, Hermes' `key_cmd`), never a key written
+/// into the config, so no line can show it.
 struct DoctorToolSetup: Equatable, Sendable {
     enum Found: Equatable, Sendable {
         /// The tool's config file doesn't exist.
@@ -19,14 +20,6 @@ struct DoctorToolSetup: Equatable, Sendable {
     let tool: IntegrationTool
     let file: URL
     let found: Found
-
-    /// The tool's name on screen.
-    var name: String {
-        switch tool {
-        case .opencode: "OpenCode"
-        case .hermes: "Hermes"
-        }
-    }
 
     /// Each tool's config in `environment`, as the tool chooses it.
     static func read(_ environment: ToolIntegrationEnvironment = .current,
@@ -47,10 +40,13 @@ struct DoctorToolSetup: Equatable, Sendable {
         case .opencode: return openCode(data, provider: provider)
         case .hermes:
             do {
-                guard let setUp = try HermesConfigPlan.setUp(in: String(decoding: data, as: UTF8.self), provider: provider)
+                guard let endpoint = try HermesConfigPlan.providerEndpoint(in: String(decoding: data, as: UTF8.self),
+                                                                           provider: provider)
                 else { return .noEntry }
-                guard let address = setUp.address else { return .unreadable("its \(provider.id) provider has no api address") }
-                return .entry(address: address, keyFile: setUp.keyFile)
+                guard let address = endpoint.address else {
+                    return .unreadable("its \(provider.id) provider has no api address")
+                }
+                return .entry(address: address, keyFile: endpoint.keyFile)
             } catch {
                 return .unreadable(error.reason)
             }
@@ -78,6 +74,7 @@ struct DoctorToolSetup: Equatable, Sendable {
         decoder.allowsJSON5 = true
         guard let written = try? decoder.decode(Settings.self, from: Data(document.bytes[settings.start..<settings.end])),
               let address = written.baseURL else { return .unreadable("its \(provider.id) provider has no baseURL") }
+        // `OpenCodeConfigPlan.keyReference`'s form; anything else, such as a key itself, is dropped here.
         let keyFile = written.apiKey.flatMap { key -> String? in
             guard key.hasPrefix("{file:"), key.hasSuffix("}") else { return nil }
             return String(key.dropFirst("{file:".count).dropLast())

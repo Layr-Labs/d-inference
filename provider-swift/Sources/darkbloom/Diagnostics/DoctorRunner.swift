@@ -23,9 +23,8 @@ enum DoctorRunner {
         }
     }
 
-    /// `networkChecks` false (a Mac set to Only me, `DoctorLocalAPI.onlyMe`): the sections about the Darkbloom
-    /// network (attestation key, App Attest, attestation readiness, trust, coordinator traffic, billing) are left out;
-    /// model fit, runtime and version stay.
+    /// `networkChecks` false (a Mac set to Only me, `DoctorLocalAPI.runsNetworkChecks`): the sections about the
+    /// Darkbloom network (`networkDiagnosis`) are left out; model fit, runtime and version stay.
     static func buildOperatorDiagnosis(
         snapshot: RuntimeSnapshot,
         coordinatorURL: String,
@@ -183,8 +182,6 @@ enum DoctorRunner {
             if !state.isStale(now: now) {
                 out.append(contentsOf: PrefixCacheDiagnosis.diagnostics(slots: state.slots))
             }
-            // ---- Billing ----
-            if networkChecks { out.append(usageReporting(state)) }
         }
 
         // ---- Version (coordinator) ----
@@ -233,8 +230,9 @@ enum DoctorRunner {
                           fix: nil)
     }
 
-    /// The sections about the Darkbloom network: attestation key, App Attest, attestation readiness, coordinator trust
-    /// and the coordinator traffic verdict.
+    /// The sections about the Darkbloom network: attestation key, App Attest, attestation readiness, coordinator trust,
+    /// the coordinator traffic verdict and billing. The report groups lines by section, so where they sit in the list
+    /// doesn't change it.
     private static func networkDiagnosis(snapshot: RuntimeSnapshot, coordinatorURL: String, state: DaemonState?,
                                          daemonUp: Bool, stateFresh: Bool, now: Double) -> [Diagnostic] {
         var out: [Diagnostic] = []
@@ -324,6 +322,9 @@ enum DoctorRunner {
         if stateFresh, let state, let verdict = ServingReadiness.verdict(state, now: now) {
             out.append(trafficDiagnostic(verdict))
         }
+
+        // ---- Billing ----
+        if let state, daemonUp { out.append(usageReporting(state)) }
         return out
     }
 

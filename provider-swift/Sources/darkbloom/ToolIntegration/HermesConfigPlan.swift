@@ -656,7 +656,7 @@ extension HermesConfigPlan {
 
     /// Where Darkbloom's provider block in `text` sends requests (`providers.<id>.api`) and the file its `key_cmd`
     /// reads the key from; nil when the file has no such block.
-    static func setUp(in text: String, provider: IntegrationProvider) throws(Unreadable)
+    static func providerEndpoint(in text: String, provider: IntegrationProvider) throws(Unreadable)
         -> (address: String?, keyFile: String?)? {
         do {
             return try HermesEdit(text: text, provider: provider).providerEndpoint()
@@ -667,7 +667,8 @@ extension HermesConfigPlan {
 }
 
 extension HermesEdit {
-    /// The provider block's `api` and the path its `key_cmd` (`/bin/cat <path>`, as `providerBlock` writes it) reads.
+    /// The provider block's `api` and the path its `key_cmd` (`/bin/cat <path>`, as `providerBlock` writes it) reads;
+    /// no other field is read, so a key written into the block is never kept.
     func providerEndpoint() -> (address: String?, keyFile: String?)? {
         guard let providers, providers.value.isEmpty,
               let mine = (try? children(of: providers))?.first(where: { $0.key == provider.id }),

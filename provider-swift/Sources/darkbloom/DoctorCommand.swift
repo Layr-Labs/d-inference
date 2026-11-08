@@ -44,11 +44,10 @@ struct Doctor: AsyncParsableCommand {
         let daemonState = DaemonStateFile.read()
         let daemonRunning = doctorDaemonProcessMatches(daemonState: daemonState)
         let pair = ClusterPairSummary.local()
-        // How this Mac serves you, first; on a Mac set to Only me the Darkbloom network's checks don't apply (unless
-        // --coordinator names one to check).
+        // How this Mac serves you comes first; on a Mac set to Only me the Darkbloom network's checks don't apply.
         let localAPI = await DoctorLocalAPI.live(config: snapshot.config, daemonState: daemonState,
                                                  daemonRunning: daemonRunning, pair: pair)
-        let networkChecks = !localAPI.onlyMe || coordinator != nil
+        let networkChecks = localAPI.runsNetworkChecks(coordinatorOverride: coordinator)
         var checks = buildDoctorChecks(snapshot: snapshot, bootSecurity: bootSecurity)
         if networkChecks {
             checks.append(contentsOf: await buildCoordinatorDoctorChecks(

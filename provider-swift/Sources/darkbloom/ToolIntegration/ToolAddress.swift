@@ -8,8 +8,8 @@ struct ToolPointer: Equatable, Sendable {
 }
 
 /// After a start without `--opencode` / `--hermes`, the tools set up for Darkbloom that point elsewhere than this
-/// Mac's local API, said in one line that names the command that points them at it again. It reads the tools' configs
-/// and never writes them.
+/// Mac's local API, said in one line that names the command that points them at it again. Read only: such a start never
+/// changes a tool's config; only that command does.
 enum ToolAddress {
     /// How a tool's provider block misses the local API.
     enum Miss: Equatable, Sendable {
@@ -33,10 +33,9 @@ enum ToolAddress {
 
     /// The tools set up for Darkbloom whose provider block misses the local API at `baseURL` that takes the key in
     /// `keyFile` (nil: the API takes no key, so any file does), and how.
-    static func misses(baseURL: String, keyFile: URL?, tools: [IntegrationTool] = IntegrationTool.allCases,
-                       environment: ToolIntegrationEnvironment,
+    static func misses(baseURL: String, keyFile: URL?, environment: ToolIntegrationEnvironment,
                        provider: IntegrationProvider) -> [(tool: IntegrationTool, miss: Miss)] {
-        tools.compactMap { tool in
+        IntegrationTool.allCases.compactMap { tool in
             guard let pointer = pointer(of: tool, environment: environment, provider: provider) else { return nil }
             if let url = pointer.baseURL, trimmed(url) != trimmed(baseURL) { return (tool, .address(url)) }
             if let keyFile, let theirs = pointer.keyFile, !sameKey(theirs, keyFile) {
@@ -55,16 +54,18 @@ enum ToolAddress {
         let one = tools.count == 1
         let names = ToolIntegrationStep.names(tools)
         let fix = "`\(ToolIntegrationStep.command(tools))` points \(one ? "it" : "them") there."
+        // Tools that miss it in different ways share one line that names no address or file.
+        guard misses.allSatisfy({ $0.miss == first }) else {
+            return "\(names) \(one ? "doesn't" : "don't") point at this Mac's local API (\(baseURL)): \(fix)"
+        }
         switch first {
-        case .address(let url) where misses.allSatisfy({ $0.miss == first }):
+        case .address(let url):
             return "\(names) \(one ? "points" : "point") at \(url), not this Mac's local API (\(baseURL)): \(fix)"
-        case .key(let path) where misses.allSatisfy({ $0.miss == first }):
+        case .key(let path):
             let theirs = ToolIntegration.displayPath(URL(fileURLWithPath: path), home: home)
             let ours = keyFile.map { " (\(ToolIntegration.displayPath($0, home: home)))" } ?? ""
             return "\(names) \(one ? "reads" : "read") the key in \(theirs), not the one this Mac's local API "
                 + "takes\(ours): \(fix)"
-        default:
-            return "\(names) \(one ? "doesn't" : "don't") point at this Mac's local API (\(baseURL)): \(fix)"
         }
     }
 

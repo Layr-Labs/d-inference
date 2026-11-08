@@ -151,8 +151,17 @@ enum OpenCodeConfigPlan {
         "{file:\(ToolIntegration.displayPath(keyFile, home: home))}"
     }
 
+    /// The key file a `keyReference` names; nil for a key given another way (`{env:…}`, the key itself), or a path
+    /// that isn't absolute or under `~`.
+    static func keyFile(inReference reference: String, home: URL) -> URL? {
+        guard reference.hasPrefix("{file:"), reference.hasSuffix("}") else { return nil }
+        let path = String(reference.dropFirst("{file:".count).dropLast())
+        if path == "~" || path.hasPrefix("~/") { return home.appendingPathComponent(String(path.dropFirst(2))) }
+        return path.hasPrefix("/") ? URL(fileURLWithPath: path) : nil
+    }
+
     /// Where the provider's block in a config's `bytes` points: its `settings.baseURL`, and the file its `apiKey`
-    /// reads (`keyReference`'s form); nil when the file has no such block or isn't JSONC.
+    /// reads (`keyFile(inReference:home:)`); nil when the file has no such block or isn't JSONC.
     static func pointer(in bytes: Data, provider: IntegrationProvider, home: URL) -> ToolPointer? {
         guard let document = try? JSONCDocument([UInt8](bytes)), let root = document.root.object,
               let block = root.members(named: "providers").first?.value.object?.members(named: provider.id).first?
@@ -162,12 +171,8 @@ enum OpenCodeConfigPlan {
             guard let value = settings?.members(named: key).first?.value else { return nil }
             return try? JSONDecoder().decode(String.self, from: Data(document.bytes[value.start..<value.end]))
         }
-        return ToolPointer(baseURL: string("baseURL"), keyFile: string("apiKey").flatMap { reference in
-            guard reference.hasPrefix("{file:"), reference.hasSuffix("}") else { return nil }
-            let path = String(reference.dropFirst("{file:".count).dropLast())
-            if path == "~" || path.hasPrefix("~/") { return home.appendingPathComponent(String(path.dropFirst(2))) }
-            return path.hasPrefix("/") ? URL(fileURLWithPath: path) : nil
-        })
+        return ToolPointer(baseURL: string("baseURL"),
+                           keyFile: string("apiKey").flatMap { keyFile(inReference: $0, home: home) })
     }
 
     /// The global config files, in the order OpenCode 2 loads and merges them, the later one winning: its

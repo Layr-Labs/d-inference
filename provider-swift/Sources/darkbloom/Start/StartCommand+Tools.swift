@@ -4,8 +4,8 @@ import ProviderCore
 
 // `darkbloom --opencode` / `--hermes`: start Darkbloom only if no local API runs, then point the tools at it
 // (ToolIntegrationStep). They run once, at start: never in the launchd child, never per request. A start without a
-// tool flag only reads the tools' configs, to say when one points elsewhere (ToolAddress). No line, and no tool file,
-// holds a key.
+// tool flag never writes a tool's config: it only reads the tools' configs, to say when one points elsewhere
+// (ToolAddress). No line, and no tool file, holds a key.
 extension Start {
     /// Why `--opencode` / `--hermes` can't go with these flags; nil when they can.
     var toolFlagsRefusal: String? {
@@ -87,7 +87,8 @@ extension Start {
     }
 
     /// Beside the coordinator-less server, once it is bound, on a task of its own: the server keeps serving whatever
-    /// happens there. Without a tool flag, a start someone typed says when a tool points elsewhere.
+    /// happens there. Without a tool flag, it says when a tool points elsewhere, except in a service's child
+    /// (`foreground`), whose lines go to a log.
     func setUpToolsBesideLocalServer(_ info: LocalEndpoint.Info, serving: StartServing, coordinatorURL: String) {
         guard !requestedTools.isEmpty else {
             if !foreground { noteToolsPointingElsewhere(serving) }
@@ -134,7 +135,8 @@ extension Start {
 
     /// A start without `--opencode` / `--hermes` that serves a local API never changes a tool's config: when a tool set
     /// up for Darkbloom points elsewhere (another port or address, or another key file), one line says so and names
-    /// the command that points it here (`ToolAddress`). `keyFile`: the one this Mac's local API takes.
+    /// the command that points it here (`ToolAddress`). With a tool flag, nothing: that start points the tools here
+    /// itself. `keyFile`: the one this Mac's local API takes.
     func noteToolsPointingElsewhere(_ serving: StartServing, environment: ToolIntegrationEnvironment = .current,
                                     provider: IntegrationProvider = .current,
                                     keyFile: URL = LocalEndpoint.tokenPath(), say: (String) -> Void = { print($0) }) {

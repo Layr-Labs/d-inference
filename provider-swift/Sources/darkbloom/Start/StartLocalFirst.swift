@@ -416,10 +416,10 @@ enum ServingQuestion {
 /// Plain words for how this Mac serves, shared by `start`, `status` and `local`. Never a speed.
 enum LocalFirstWords {
     /// "1 minute", "2 minutes".
-    static func minutes(_ count: UInt64) -> String { count == 1 ? "1 minute" : "\(count) minutes" }
+    static func minutes(_ count: UInt64) -> String { MeFirstWords.minutes(count) }
 
     /// A running provider's idle time (`MeFirstSnapshot.idleMs`) in whole minutes, at least one.
-    static func idleMinutes(milliseconds: Int64) -> UInt64 { UInt64(max(1, (milliseconds + 59_999) / 60_000)) }
+    static func idleMinutes(milliseconds: Int64) -> UInt64 { MeFirstWords.idleMinutes(milliseconds: milliseconds) }
 
     /// Where requests to a Mac's relay go (`ClusterLocalRelay`): to the pair's API on another Mac, whose route decides
     /// the rest; it sees them come from this Mac, another machine, so never to the paid network.

@@ -131,14 +131,23 @@ struct ClusterPairBothMeFirstCLITests {
         return pair
     }
 
+    /// The Mac that follows: its part doesn't run rank 0, so the pair's API and its pause are on the other Mac.
+    private func member() -> ClusterPairSummary {
+        var pair = leader()
+        pair.role = .member
+        pair.localAPI = ClusterPairLocalAPI(runsRankZero: false, listening: nil, meFirst: nil)
+        return pair
+    }
+
     @Test func theLeadingPartsMacSaysWhetherThePairIsPausedItsAddressAndTheMembers() {
-        let paused = leader().localAPILines(now: F.now, timeZone: F.utc)
+        let paused = leader().localAPILines(now: F.now)
         #expect(paused == [
-            "Pair: you first — Darkbloom paused since 14:02 (your last request 1 minute ago; back at about 14:13 if you stay idle)",
+            "Pair: you first — Darkbloom paused for 10 minutes (your last request 1 minute ago; back in about 1 minute if you "
+                + "stay idle)",
             "Local API: http://127.0.0.1:8001/v1 on this Mac, and port 8001 of its LAN or tailnet address (`\(ClusterPairSummary.cli) local` shows the key)",
             "Members: the other Mac (Apple M3 Ultra, 256 GB) is part of the pair; its own port passes your requests to this API",
         ])
-        let open = leader(listening: ClusterPairLocalAPI.Address(host: "127.0.0.1", port: 8002), meFirst: F.open).localAPILines(now: F.now, timeZone: F.utc)
+        let open = leader(listening: ClusterPairLocalAPI.Address(host: "127.0.0.1", port: 8002), meFirst: F.open).localAPILines(now: F.now)
         #expect(open == [
             "Pair: Darkbloom and you, me first — open to Darkbloom (none of your requests in the last 2 minutes)",
             "Local API: http://127.0.0.1:8002/v1 on this Mac (`\(ClusterPairSummary.cli) local` shows the key)",
@@ -146,32 +155,66 @@ struct ClusterPairBothMeFirstCLITests {
         ])
         let finishing = MeFirstSnapshot(idleMs: 120_000, paused: true, sinceMs: F.ms(14, 2), lastUseMs: F.ms(14, 11),
                                         localRequestsInFlight: 1, darkbloomRequestsFinishing: 2)
-        #expect(leader(meFirst: finishing).localAPILines(now: F.now, timeZone: F.utc).prefix(2) == [
-            "Pair: you first — Darkbloom paused since 14:02 (your request is running; back 2 minutes after it ends)",
+        #expect(leader(meFirst: finishing).localAPILines(now: F.now).prefix(2) == [
+            "Pair: you first — Darkbloom paused for 10 minutes (your request is running; back 2 minutes after it ends)",
             "      2 Darkbloom requests are finishing",
         ])
-        #expect(leader(meFirst: nil).localAPILines(now: F.now, timeZone: F.utc).first
+        #expect(leader(meFirst: nil).localAPILines(now: F.now).first
             == "Pair: Darkbloom and you, shared — Darkbloom keeps serving while you use the pair (me first is off)")
-        #expect(leader(listening: nil, meFirst: nil).localAPILines(now: F.now, timeZone: F.utc) == [
+        #expect(leader(listening: nil, meFirst: nil).localAPILines(now: F.now) == [
             "Local API: not listening yet; it starts with this Mac's part of the pair",
             "Members: the other Mac (Apple M3 Ultra, 256 GB) is part of the pair; its own port passes your requests to this API",
         ])
         // A stopped pair says how it serves, and nothing about an API that doesn't run.
-        #expect(leader(started: false).localAPILines(now: F.now, timeZone: F.utc).isEmpty)
+        #expect(leader(started: false).localAPILines(now: F.now).isEmpty)
     }
 
-    /// The pair's API kept on its own Mac (here on loopback): no other Mac relays it, so a member says where it is.
+    /// The pair's API kept on its own Mac (here no bind is saved): no other Mac relays it, so a member says where it is.
     /// On every address, a member names its own relay (`ClusterPairMemberRelayCLITests`).
     @Test func aMemberSaysItIsPartOfThePairAndWhereTheAPIIs() {
-        var pair = leader(listening: .init(host: "127.0.0.1", port: 8001))
-        pair.role = .member
-        pair.localAPI = ClusterPairLocalAPI(runsRankZero: false, listening: nil, meFirst: nil)
-        #expect(pair.localAPILines(now: F.now, timeZone: F.utc) == [
+        // An older leading Mac's status, which doesn't say whether the pair is paused: where to look.
+        #expect(member().localAPILines(now: F.now) == [
             "Local API: on the other Mac (Apple M3 Ultra, 256 GB), which runs the pair's API; `\(ClusterPairSummary.cli) local` "
                 + "there shows its address and key, and `\(ClusterPairSummary.cli) status` there whether Darkbloom is paused for you",
             "Members: this Mac is part of the pair; it runs no local API",
         ])
     }
+
+    /// Journey 2a (pair-2, J2-h): while the pair was paused for its owner, the Mac that follows said only "✓ Serving …
+    /// through Darkbloom". The leading Mac's status, which every status read on the other Mac asks for anyway, carries
+    /// the pause (`OnboardingLive.pauseLines`): that Mac says it under the pair's line, and points to the leading Mac
+    /// only for its address and key.
+    @Test("the Mac that follows says the pair is paused for its owner, for how long and when it comes back, from the leading Mac's status")
+    func aMemberSaysThePause() {
+        var pair = member()
+        pair.lines = Self.pausedStatus
+        let lines = pair.clusterStatusLines
+        #expect(lines.contains("\u{2713} Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel)."), "\(lines)")
+        #expect(lines.contains("  " + Self.pausedStatus[1]), "\(lines)")
+        #expect(lines.contains("Local API: on the other Mac (Apple M3 Ultra, 256 GB), which runs the pair's API; "
+            + "`\(ClusterPairSummary.cli) local` there shows its address and key"), "\(lines)")
+        #expect(!lines.joined(separator: "\n").contains("whether Darkbloom is paused"), "\(lines)")
+        #expect(lines.filter { $0.contains("Pair: ") }.count == 1, "\(lines)")
+    }
+
+    /// The Mac whose part runs rank 0 and leads reads its own status: the pause is said once, there.
+    @Test("the leading Mac says the pause once when its status already carries it")
+    func theLeaderSaysThePauseOnce() {
+        var pair = leader()
+        pair.lines = Self.pausedStatus
+        #expect(pair.localAPILines(now: F.now) == [
+            "Local API: http://127.0.0.1:8001/v1 on this Mac, and port 8001 of its LAN or tailnet address (`\(ClusterPairSummary.cli) local` shows the key)",
+            "Members: the other Mac (Apple M3 Ultra, 256 GB) is part of the pair; its own port passes your requests to this API",
+        ])
+        let lines = pair.clusterStatusLines
+        #expect(lines.filter { $0.contains("Pair: ") } == ["  " + Self.pausedStatus[1]], "\(lines)")
+    }
+
+    /// The leading Mac's status while the pair is paused, as `OnboardingLive.localStatus` writes it.
+    static let pausedStatus = [
+        "Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel).",
+        "Pair: you first — Darkbloom paused for 1 minute (your last request under a minute ago; back in about 2 minutes if you stay idle)",
+    ]
 
     /// The address a tool dials: an API that listens on ::1 alone isn't reached at 127.0.0.1 (review N8).
     @Test func anAPIOnIPv6LoopbackIsDialledThere() {
@@ -213,7 +256,7 @@ struct ClusterPairBothMeFirstCLITests {
                         var pair = leader(listening: listening, meFirst: snapshot)
                         pair.localAPI?.runsRankZero = rankZero
                         pair.relaying = rankZero ? nil : relaying
-                        lines += pair.localAPILines(now: F.now, timeZone: F.utc) + pair.clusterStatusLines + [pair.statusLine, pair.pairSentence]
+                        lines += pair.localAPILines(now: F.now) + pair.clusterStatusLines + [pair.statusLine, pair.pairSentence]
                     }
                 }
             }

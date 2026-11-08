@@ -434,7 +434,7 @@ struct StartLocalFirstTests {
         let state = LocalFirstStatusFixtures.state(meFirst: LocalFirstStatusFixtures.open)
         let noKeychain: () -> Bool = { Issue.record("Keychain read"); return true }
         #expect(Status.servingLines(state: state, liveEndpoint: keyless, route: .myMacsFirst, accountKeySaved: noKeychain,
-                                    now: LocalFirstStatusFixtures.now, timeZone: LocalFirstStatusFixtures.utc) == [
+                                    now: LocalFirstStatusFixtures.now) == [
             "Serving: Darkbloom and you, me first — open to Darkbloom (none of your requests in the last 2 minutes)",
             "Your requests: this Mac only · no local key (--no-auth), so nothing is passed on",
         ])

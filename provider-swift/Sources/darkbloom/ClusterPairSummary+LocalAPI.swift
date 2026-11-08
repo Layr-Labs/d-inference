@@ -26,13 +26,20 @@ extension ClusterPairSummary {
     /// now (`memberAPIDown`). Otherwise it says where to look. Nothing while the pair is stopped, or for the Darkbloom
     /// network alone. With Only me it names no address (`darkbloom local` does), only why this Mac's own port for the
     /// pair can't answer now. No key and no speed.
-    func localAPILines(now: Date = Date(), timeZone: TimeZone = .current) -> [String] {
+    ///
+    /// The pause comes only from the part that runs rank 0, never worked out here. The leading Mac's status carries it
+    /// when that part is its own (`OnboardingLive.pauseLines`), and every Mac shows those lines under the pair's line: it
+    /// is said once, there. A status that doesn't carry it (that part runs on the Mac that follows, the leading Mac's
+    /// build is older, or its answer didn't come) leaves it to the Mac whose part runs rank 0, from its own part; the
+    /// other Mac says where to look.
+    func localAPILines(now: Date = Date()) -> [String] {
         guard let localAPI else { return memberAPIDown.map { ["Local API: " + $0] } ?? [] }
         guard started, paired, !pairingUnreadable else { return [] }
+        let statusSaysPause = lines.contains { $0.hasPrefix(MeFirstWords.pairPrefix) }
         guard localAPI.runsRankZero else {
             guard answersOnEveryMac else {
-                return ["Local API: on \(otherMac), which runs the pair's API; `\(Self.cli) local` there shows its address and key, "
-                            + "and `\(Self.cli) status` there whether Darkbloom is paused for you",
+                return ["Local API: on \(otherMac), which runs the pair's API; `\(Self.cli) local` there shows its address and key"
+                            + (statusSaysPause ? "" : ", and `\(Self.cli) status` there whether Darkbloom is paused for you"),
                         "Members: this Mac is part of the pair; it runs no local API"]
             }
             let passes = "Members: \(otherMac) runs the pair's API; this Mac passes your requests to it, and Darkbloom pauses for them too"
@@ -47,8 +54,9 @@ extension ClusterPairSummary {
         guard let address = localAPI.listening else {
             return ["Local API: not listening yet; it starts with this Mac's part of the pair", members]
         }
-        return Self.pauseLines(localAPI.meFirst, now: now, timeZone: timeZone) + [Self.addressLine(address), members]
+        return (statusSaysPause ? [] : MeFirstWords.pairLines(localAPI.meFirst, now: now)) + [Self.addressLine(address), members]
     }
+
 
     /// Why this Mac, which relays the pair's API on every address (Both, me first or Only me), has no working address for
     /// it now, after "Local API: ", as `status`, `darkbloom local`, `--opencode` and the app's Start all say it: rank 0
@@ -89,20 +97,6 @@ extension ClusterPairSummary {
     /// This Mac's port for the pair's API before its relay is up, after "Local API: ".
     private var relayStartingWords: String {
         "not listening on this Mac yet; it starts once the pair's API on \(otherMac) answers"
-    }
-
-    /// Whether Darkbloom is paused for you, in `status`'s single-Mac words for "the pair" (`Status.meFirstLines`).
-    static func pauseLines(_ meFirst: MeFirstSnapshot?, now: Date, timeZone: TimeZone) -> [String] {
-        guard let meFirst else {
-            return ["Pair: Darkbloom and you, shared — Darkbloom keeps serving while you use the pair (me first is off)"]
-        }
-        let serving = "Serving: ", pair = "Pair: "
-        return Status.meFirstLines(meFirst, now: now, timeZone: timeZone).map { line in
-            if line.hasPrefix(serving) { return pair + line.dropFirst(serving.count) }
-            // The line under it keeps its words under the first one's.
-            let indent = String(repeating: " ", count: serving.count)
-            return line.hasPrefix(indent) ? String(repeating: " ", count: pair.count) + line.dropFirst(indent.count) : line
-        }
     }
 
     /// Where the pair's API listens on this Mac, as a tool dials it.

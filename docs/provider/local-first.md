@@ -275,10 +275,14 @@ model.
 `darkbloom status` says it in one line, for example:
 
 ```text
-Serving: you first — Darkbloom paused since 14:02 (your last request 1 minute ago; back at about 14:13 if you stay idle)
+Serving: you first — Darkbloom paused for 10 minutes (your last request 1 minute ago; back in about 1 minute if you stay idle)
          2 Darkbloom requests are finishing
 Your requests: this Mac first, then your other Macs (free) · account key saved
 ```
+
+Times are said from now ("paused for under a minute", "back in about 2
+minutes", "back any moment now"), never as a clock time, which an SSH session
+or another Mac would read in a zone it doesn't see.
 
 Other lines you may see:
 
@@ -319,6 +323,10 @@ each Mac answers at its own address, on its own saved port, with its own key.
   passes its own port on to it too, as with **Only me**: `darkbloom local` and
   `--opencode` work there as well, and your requests there pause the pair too.
   While Darkbloom doesn't have the pair, it answers on the leading Mac only.
+  `darkbloom status` on either Mac says whether the pair is paused for you,
+  for how long and when it comes back (``Pair: you first — Darkbloom paused
+  for 1 minute (…; back in about 2 minutes if you stay idle)``): the leading
+  Mac's status carries it to the other Mac.
 - Your answer is saved in `[local] mode` too. Without a terminal nothing is
   asked, and a pair keeps serving as it did
   ([Both, me first](./two-mac-cluster.md#both-me-first-the-pairs-own-api-beside-darkbloom)).

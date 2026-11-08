@@ -14,7 +14,7 @@ afterEach(() => {
 // with no model yet. The real `useBackend` and failure toast show only the action's own words.
 it('shows a refused action’s own words in the failure toast, without Electron’s prefix', async () => {
   const words =
-    'No model was chosen for the pair yet: run `darkbloom start` in a terminal to choose one.';
+    'No model was chosen for the pair yet: choose one with `darkbloom cluster` in a terminal on this Mac.';
   const refusal = new Error(`Error invoking remote method 'backend:act': Error: ${words}`);
   (window as any).darkbloom = {
     status: async () => ({ state: 'ready' }),

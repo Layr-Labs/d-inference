@@ -48,18 +48,18 @@ struct ClusterPairMemberRelayCLITests {
     /// The member's `status` names the address its tools dial on this Mac, and where its requests go.
     @Test func aMembersStatusNamesItsOwnAddress() {
         let passes = "Members: \(Self.other) runs the pair's API; this Mac passes your requests to it, and Darkbloom pauses for them too"
-        #expect(member().localAPILines(now: F.now, timeZone: F.utc) == [
+        #expect(member().localAPILines(now: F.now) == [
             "Local API: http://127.0.0.1:8003/v1 on this Mac, and port 8003 of its LAN or tailnet address (`\(ClusterPairSummary.cli) local` shows the key)",
             passes,
         ])
         #expect(member().clusterStatusLines.contains { $0.hasPrefix("Local API: http://127.0.0.1:8003/v1 on this Mac") })
         // Its relay isn't up yet (the pair's API is still starting on the other Mac).
-        #expect(member(relaying: nil).localAPILines(now: F.now, timeZone: F.utc) == [
+        #expect(member(relaying: nil).localAPILines(now: F.now) == [
             "Local API: not listening on this Mac yet; it starts once the pair's API on \(Self.other) answers", passes,
         ])
         // The pair's API kept on its own Mac (loopback or one address): nothing relays it, as before.
         for bind in ["127.0.0.1", "192.168.1.5"] {
-            #expect(member(relaying: nil, bind: bind).localAPILines(now: F.now, timeZone: F.utc) == [
+            #expect(member(relaying: nil, bind: bind).localAPILines(now: F.now) == [
                 "Local API: on \(Self.other), which runs the pair's API; `\(ClusterPairSummary.cli) local` there shows its address "
                     + "and key, and `\(ClusterPairSummary.cli) status` there whether Darkbloom is paused for you",
                 "Members: this Mac is part of the pair; it runs no local API",
@@ -73,14 +73,14 @@ struct ClusterPairMemberRelayCLITests {
         let neutral = "Members: \(Self.other) runs the pair's API; this Mac is part of the pair"
         var waiting = member(relaying: nil)
         waiting.relayWaitsForOffer = true
-        #expect(waiting.localAPILines(now: F.now, timeZone: F.utc) == [
+        #expect(waiting.localAPILines(now: F.now) == [
             "Local API: none on this Mac while Darkbloom doesn't have the pair; meanwhile the pair answers only on \(Self.other) "
                 + "(`\(ClusterPairSummary.cli) local` there shows its address and key)",
             neutral,
         ])
         var held = member(relaying: nil)
         held.relayPortHeld = 8001
-        #expect(held.localAPILines(now: F.now, timeZone: F.utc) == [
+        #expect(held.localAPILines(now: F.now) == [
             "Local API: port 8001 on this Mac is held by another program, so this Mac doesn't answer for the pair; free it, "
                 + "or set another `[local] port` in provider.toml, then `\(ClusterPairSummary.cli) restart`",
             neutral,
@@ -92,12 +92,12 @@ struct ClusterPairMemberRelayCLITests {
     @Test func aMembersStatusSaysItsPairsOtherMacIsAway() {
         var away = member()
         away.relayRankZeroAway = true
-        #expect(away.localAPILines(now: F.now, timeZone: F.utc) == [
+        #expect(away.localAPILines(now: F.now) == [
             "Local API: http://127.0.0.1:8003/v1 on this Mac answers 503 for now. \(Self.awayWords)",
             "Members: \(Self.other) runs the pair's API; this Mac is part of the pair",
         ])
         away.relayRankZeroAway = false
-        #expect(away.localAPILines(now: F.now, timeZone: F.utc).first?.hasPrefix("Local API: http://127.0.0.1:8003/v1 on this Mac,") == true,
+        #expect(away.localAPILines(now: F.now).first?.hasPrefix("Local API: http://127.0.0.1:8003/v1 on this Mac,") == true,
                 "back: its address again")
     }
 
@@ -143,12 +143,12 @@ struct ClusterPairMemberRelayCLITests {
         let awayLine = "Local API: http://127.0.0.1:8003/v1 on this Mac answers 503 for now. \(Self.awayWords)"
         let heldLine = "Local API: port 8001 on this Mac is held by another program, so this Mac doesn't answer for the pair; "
             + "free it, or set another `[local] port` in provider.toml, then `\(ClusterPairSummary.cli) restart`"
-        #expect(away.localAPILines(now: F.now, timeZone: F.utc) == [awayLine])
-        #expect(held.localAPILines(now: F.now, timeZone: F.utc) == [heldLine])
+        #expect(away.localAPILines(now: F.now) == [awayLine])
+        #expect(held.localAPILines(now: F.now) == [heldLine])
         #expect(away.appStartLines(named: [], localEndpoint: true, code: 0) == [awayLine])
         #expect(held.appStartLines(named: [], localEndpoint: true, code: 3) == [heldLine])
         for quiet in [Self.onlyMe(member()), Self.onlyMe(member(relaying: nil))] {
-            #expect(quiet.memberAPIDown == nil && quiet.localAPILines(now: F.now, timeZone: F.utc).isEmpty, "\(quiet.relaying as Any)")
+            #expect(quiet.memberAPIDown == nil && quiet.localAPILines(now: F.now).isEmpty, "\(quiet.relaying as Any)")
         }
     }
 
@@ -162,11 +162,11 @@ struct ClusterPairMemberRelayCLITests {
             pair.localAPIBind = bind ?? host
             return pair
         }
-        #expect(leader("0.0.0.0").localAPILines(now: F.now, timeZone: F.utc).last
+        #expect(leader("0.0.0.0").localAPILines(now: F.now).last
             == "Members: the other Mac (Apple M3 Ultra, 256 GB) is part of the pair; its own port passes your requests to this API")
-        #expect(leader("127.0.0.1").localAPILines(now: F.now, timeZone: F.utc).last
+        #expect(leader("127.0.0.1").localAPILines(now: F.now).last
             == "Members: the other Mac (Apple M3 Ultra, 256 GB) is part of the pair; it runs no local API")
-        #expect(leader("127.0.0.1", bind: "0.0.0.0").localAPILines(now: F.now, timeZone: F.utc).last
+        #expect(leader("127.0.0.1", bind: "0.0.0.0").localAPILines(now: F.now).last
             == "Members: the other Mac (Apple M3 Ultra, 256 GB) is part of the pair; it runs no local API",
             "the API on this Mac only while Darkbloom doesn't have the pair")
     }

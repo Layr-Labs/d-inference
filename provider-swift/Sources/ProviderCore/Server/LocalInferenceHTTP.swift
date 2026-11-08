@@ -204,13 +204,11 @@ func makeLocalInferenceApplication(
             router.localKeyRequired = false
             router.log("no local key (--no-auth): requests stay on this Mac, and the account key is never used")
         }
-        // Each model's limits and input from the server, and whether it reasons from its type.
+        // Each model's limits and input come from the server; whether it reasons comes from its type alone, here, for
+        // every server (one Mac, a pair's leader, the pair's own API).
         return LocalRouter(config: router, localModels: availableModels, localLimits: { model in
-            var limits = await modelLimits?(model)
-            if let reasons = LocalModelFeatures.reasons(modelID: model, modelType: await modelTypeProvider?(model)) {
-                limits = limits ?? LocalModelLimits()
-                limits?.reasoning = reasons
-            }
+            var limits = await modelLimits?(model) ?? LocalModelLimits()
+            limits.reasoning = LocalModelFeatures.reasons(modelID: model, modelType: await modelTypeProvider?(model))
             return limits
         })
     }

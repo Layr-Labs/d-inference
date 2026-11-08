@@ -1,13 +1,15 @@
 import Foundation
 
-/// `supported_features` in this Mac's `/v1/models`, in the coordinator's names: `reasoning` for a model that reasons
-/// and nothing else, an empty list for one that doesn't. A model reasons when its type's template does, by the table
-/// that takes every reasoning effort for it and refuses one that is none of the names
-/// (`ReasoningEffortPolicy.reasons`), so the list and the API never disagree. The one place the provider says which of
-/// the models it serves reason (one Mac, a pair's slot), and where the integrations read it back. Tools, JSON output
-/// and the rest stay the catalog's.
+/// `supported_features` in this Mac's `/v1/models`, in the coordinator's names: `["reasoning"]` for a model that
+/// reasons, `[]` for one that doesn't, and nothing else (tools, JSON output and the rest stay the catalog's). The one
+/// place the provider says which of the models it serves reason (one Mac, a pair's slot), and where the integrations
+/// read it back.
+///
+/// It asks the table that takes the reasoning effort (`ReasoningEffortPolicy.reasons`), so the list and the API never
+/// disagree: a model listed with `reasoning` takes each of the seven efforts and never answers one with a 400, and a
+/// model listed with `[]` ignores any effort.
 public enum LocalModelFeatures {
-    public static let reasoning = "reasoning"
+    private static let reasoning = "reasoning"
 
     /// `["reasoning"]` for a model that reasons, else none.
     static func list(reasons: Bool) -> [String] { reasons ? [reasoning] : [] }

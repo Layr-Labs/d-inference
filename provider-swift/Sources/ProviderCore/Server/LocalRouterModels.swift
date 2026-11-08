@@ -8,15 +8,14 @@ public struct LocalModelLimits: Sendable, Equatable {
     public var maxOutputLength: Int?
     /// What a request may carry, as this Mac's engine serves the model (`LocalInputModalities`).
     public var inputModalities: [String]?
-    /// Whether the model reasons, as its type says (`LocalModelFeatures`).
+    /// Whether the model reasons, by its type alone (`LocalModelFeatures`): `makeLocalInferenceApplication` sets it for
+    /// every model this Mac lists; nil when the type isn't known here.
     public var reasoning: Bool?
 
-    public init(contextLength: Int? = nil, maxOutputLength: Int? = nil, inputModalities: [String]? = nil,
-                reasoning: Bool? = nil) {
+    public init(contextLength: Int? = nil, maxOutputLength: Int? = nil, inputModalities: [String]? = nil) {
         self.contextLength = contextLength.flatMap { $0 > 0 ? $0 : nil }
         self.maxOutputLength = maxOutputLength.flatMap { $0 > 0 ? $0 : nil }
         self.inputModalities = inputModalities.flatMap { $0.isEmpty ? nil : $0 }
-        self.reasoning = reasoning
     }
 
     /// A single Mac slot's limits: its window holds a request's prompt and output

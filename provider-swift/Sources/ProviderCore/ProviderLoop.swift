@@ -549,6 +549,10 @@ public actor ProviderLoop {
     /// terminal read of MLX's allocator (active and peak bytes), for the same
     /// reason.
     internal var terminalMemoryForTesting: (@Sendable () -> (active: Int64, peak: Int64))?
+    /// Test seam, nil in production: awaited by a coordinator request's
+    /// handler right after its cancellation token is registered, so a test
+    /// can give way at that point and check the handler's exits.
+    internal var afterTokenRegisteredForTesting: (@Sendable (String) async -> Void)?
     internal var lifecycleStatus = ProviderDrainStatus()
     internal var lastLifecycleTelemetry: ProviderDrainStatus?
     internal var lifecycleDrainTask: Task<ProviderDrainStatus, Never>?

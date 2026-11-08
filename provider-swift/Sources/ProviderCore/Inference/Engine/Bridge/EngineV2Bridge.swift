@@ -255,6 +255,8 @@ public actor EngineV2Bridge {
         /// first token, cancel, and finish — never per token.
         var profile: RequestProfileBuilder? = nil
         var prefillReceipt: EnginePrefillReceipt? = nil
+        /// A Darkbloom request's coordinator id (`MeFirstDarkbloomRequest`); nil for every other request.
+        var darkbloomRequestId: String? = nil
     }
 
     var active: [String: ActiveRequestState] = [:]

@@ -2,6 +2,12 @@ import Foundation
 import Testing
 @testable import ProviderCore
 
+extension SelfUpdater.ReleaseCheck {
+    /// The standard tries and bounds, neither pausing between tries nor logging them: for updaters whose coordinator
+    /// isn't there (`http://127.0.0.1:1`), whose checks fail without an answer.
+    static let withoutPauses = Self(pause: { _ in }, log: { _ in })
+}
+
 struct UpdateRecoveryFixture {
     let root: URL
     let installRoot: URL

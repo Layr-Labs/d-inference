@@ -55,10 +55,10 @@ extension ProviderLoop {
     }
 
     /// The typed drain refusal, `capacity / 503 / draining`: coordinators
-    /// serve the request elsewhere before anything reaches its client, with
-    /// no retry charge or health strike. A dispatch refused at admission
-    /// above gets it, and so does a Darkbloom request that gave way to the
-    /// owner before it sent output (`giveWayToOwner`).
+    /// serve the request on another Mac, or answer a retryable 429 when none
+    /// can take it, with no retry charge or health strike. A dispatch refused
+    /// at admission above gets it, and so does a queued Darkbloom request that
+    /// gave way to the owner (`giveWayToOwner`).
     static func drainRefusal(modelId: String?, published: BackendCapacity?) -> InferenceFailure {
         CapacityRejectionEnrichment.enrich(
             InferenceFailure(code: .capacity, statusCode: 503, errorReason: .draining),
@@ -557,6 +557,7 @@ extension ProviderLoop {
         powerAssertion.acquire()
         syncWarmModelState()
         let token = await cancellationRegistry.register(requestId: requestId)
+        if let afterTokenRegistered = afterTokenRegisteredForTesting { await afterTokenRegistered(requestId) }
         // Me first: a request that gave way to the owner (`giveWayToOwner`)
         // ends with this one terminal, before or after its stream started.
         let sendGaveWayRefusal: @Sendable () -> Void = { [state] in
@@ -840,10 +841,10 @@ extension ProviderLoop {
                 }
             }
 
-            /// Me first: this request gave way to the owner before it sent
-            /// output (`giveWayToOwner`), so it ends with the re-route refusal.
+            /// Me first: this request gave way to the owner while it was still
+            /// queued (`giveWayToOwner`), so it ends with the re-route refusal.
             let endAfterGivingWay: @Sendable (Int, Int) -> Void = { framesEmitted, bytesEmitted in
-                log.info("[\(requestId)] Gave way to the owner before any output; the coordinator re-routes it")
+                log.info("[\(requestId)] Gave way to the owner while queued; the coordinator re-routes it")
                 finalizeProfile(framesEmitted, bytesEmitted, false, nil)
                 sendGaveWayRefusal()
             }
@@ -1022,9 +1023,12 @@ extension ProviderLoop {
             let frames: AsyncThrowingStream<String, Error>
             do {
                 if rejectExpiredDeadline() { return }
-                frames = try await service.streamChatCompletionFrames(
-                    request: streamingRequest
-                )
+                // Me first: the engine records the coordinator id, so a waiting
+                // owner's request can tell whether the engine has admitted this
+                // one (`giveWayToOwner`).
+                frames = try await MeFirstDarkbloomRequest.$id.withValue(requestId) {
+                    try await service.streamChatCompletionFrames(request: streamingRequest)
+                }
                 if rejectExpiredDeadline() { return }
             } catch {
                 // A cancel that lands while the stream is STARTING — the

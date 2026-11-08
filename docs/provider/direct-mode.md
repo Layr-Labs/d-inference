@@ -27,17 +27,17 @@ See [inference and logprob admission](../architecture/inference.md).
 
 - Provider installed ([installation](./installation.md)); no account or
   `darkbloom login` is needed for **Only me**.
-- At least one model downloaded with an engine-v2 adapter (gpt-oss, gemma-4
-  families); `darkbloom models list`. **Only me** serves the models already
-  here; for **Both, me first**, `darkbloom start`'s model list also downloads.
+- A model with an engine-v2 adapter (gpt-oss, gemma-4 families);
+  `darkbloom models list`. For either choice, `darkbloom start`'s model list
+  also downloads the ones you pick; without a model it can serve, the start
+  ends with ``No model to serve yet. See them: `darkbloom models catalog`. Get
+  one: `darkbloom models download <id>`, then `darkbloom start`.``
 - A free port: this Mac's one local API port, `[local] port`. The first start
   that serves a local API, whichever way it starts, keeps the port this Mac's
   local API already uses (`8000` on a Mac updated from 0.10.10), or on a Mac
   with none chooses the first free port from 8001, and saves it; every later
   start uses it. `--port` picks another and
   saves it.
-
-<!-- pending LS-1: Only me also gets the model list with downloads. -->
 
 ## Steps
 
@@ -51,15 +51,27 @@ See [inference and logprob admission](../architecture/inference.md).
    | Only me | `darkbloom start --local` | not contacted | `StandaloneServer`'s own slot cache (`provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift`) | no |
    | Both, me first | `darkbloom start --me-first` (older flag: `--local-endpoint`) | connected as usual | the live `ProviderLoop` slots — weights load once and local + fleet requests share one continuous-batching engine and KV budget (`provider-swift/Sources/ProviderCore/ProviderLoop+LocalEndpoint.swift`) | yes, for fleet traffic while you are not using the Mac (step 3) |
 
-2. Start **Only me**. It runs in the current terminal (no LaunchAgent) and
-   installs no service; a background service that was running stops first
-   (`ServiceDrain.prepareForegroundReplacement`), so once this server ends,
-   nothing serves until the next `darkbloom start`:
+2. Start **Only me**. It asks for your models (the list downloads the ones you
+   pick) and the memory setting, as the other choices do, then serves in the
+   background: the provider LaunchAgent runs `darkbloom start --foreground
+   --local --port <n> --bind <address> --model <id>…` (`Start.launchOnlyMeService`,
+   `provider-swift/Sources/darkbloom/Start/StartCommand+OnlyMe.swift`), which
+   starts at login, has the crash-recovery watchdog, updates itself (a check 5
+   minutes after it starts, then every 30 minutes; `StandaloneServer+AutoUpdate`)
+   and unloads models idle past the memory setting
+   (`StandaloneServer+IdleUnload`). The provider that served before is drained
+   first; when it served Darkbloom, the start says
+   ``Darkbloom network serving stops: this Mac serves only you from now on
+   (`darkbloom start --me-first` serves Darkbloom and you).`` Without a
+   terminal nothing is asked: the models you last chose that are still on this
+   Mac, else every one it can serve. `--here` serves in the current terminal
+   instead (no LaunchAgent), until Ctrl-C:
 
    ```bash
-   darkbloom start --local                              # every downloaded model it can serve
+   darkbloom start --local                              # the model list, then the memory question
    darkbloom start --local --model <model-id>           # only this one (repeatable)
    darkbloom start --local --port 8080 --bind 0.0.0.0   # another port / every interface
+   darkbloom start --local --here                       # in this terminal, for this session
    ```
 
    The port is this Mac's one local API port (`LocalAPIPort`,
@@ -73,8 +85,8 @@ See [inference and logprob admission](../architecture/inference.md).
    `127.0.0.1`. Before serving,
    `Start.runLocalStandalone` (`provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift`)
    loads or creates the API token, filters the chosen models to those with an
-   engine-v2 adapter (exit 1 with `No engine-v2-capable models available to
-   serve.` if none remain), and preloads the selected models before listening
+   engine-v2 adapter (exit 1 with ``No model to serve yet. See them: `darkbloom
+   models catalog`. …`` if none remain), and preloads the selected models before listening
    when `[backend] startup_preload` is enabled (the default). When a load is
    short of headroom the server first releases retained paged KV segments and
    drops the MLX buffer cache once, then evicts the least recently used idle
@@ -100,13 +112,14 @@ See [inference and logprob admission](../architecture/inference.md).
    127.0.0.1:8001: another program may use port 8001. Free it, or run
    `darkbloom start --port 8002`.``, naming the next free port), writes the
    discovery file and holds a fan-control lease while running
-   ([fan control](./fan-control.md)). Ctrl-C stops it and removes the
-   discovery file, and so does `darkbloom stop`. Closing the terminal window
-   does the same ([stop signals](./cli-reference.md#graceful-stop-and-restart)),
+   ([fan control](./fan-control.md)). `darkbloom stop` stops it and removes
+   the discovery file. With `--here`, Ctrl-C does the same, and so does closing
+   the terminal window ([stop signals](./cli-reference.md#graceful-stop-and-restart)),
    unless the command was started with hangups ignored (for example under
-   `nohup`), in which case it keeps serving.
-
-   <!-- pending LS-1: Only me serves in the background, after the model list and the memory question; a here flag keeps this terminal server. -->
+   `nohup`), in which case it keeps serving. `--here` stops the background
+   service while it runs and says so (``Darkbloom network serving stops while
+   this runs; it starts again with `darkbloom start`.``); when it ends it says
+   that nothing serves now and how to serve again.
 
 3. Or start **Both, me first**. This goes through the normal LaunchAgent path,
    so the flags are recorded in the plist and survive reboots:
@@ -133,14 +146,14 @@ See [inference and logprob admission](../architecture/inference.md).
    provider stops taking Darkbloom requests from the moment one of your
    requests holds a model, and takes them again once none of your requests
    has run for `[local] me_first_idle_minutes` (2 minutes by default).
-   Darkbloom requests already running finish once they have sent output. While
-   one of your requests waits for the engine's memory or room, each Darkbloom
-   request on that model that has sent nothing yet ends with the typed
-   `capacity / 503 / draining` refusal, which the coordinator re-routes to
-   another Mac before anything reaches its client, with no health strike
-   against this one (`ProviderLoop.giveWayToOwner`). Your request then waits
-   only for requests already answering, at most the engine's 120 s admission
-   lease. Model lists, health checks,
+   Darkbloom requests the engine has started finish. While one of your
+   requests waits for the engine's memory or room, each Darkbloom request on
+   that model still waiting in the engine's queue ends with the typed
+   `capacity / 503 / draining` refusal, with no health strike against this
+   one (`ProviderLoop.giveWayToOwner`): the coordinator serves it on another
+   Mac, or answers its client with a retryable 429 if no other Mac has room.
+   Your request then waits only for requests the engine has started, at most
+   the engine's 120 s admission lease. Model lists, health checks,
    `/metrics`, the tokenizer utilities and requests refused before they hold
    a model do not count. This is on for every Mac that serves Both, me first,
    including the desktop app's "Alongside the network". To share the Mac

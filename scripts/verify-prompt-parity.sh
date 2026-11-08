@@ -14,10 +14,15 @@ WORK="$(cd "$WORK" && pwd -P)"
 ARTIFACT_ROOT="${PROMPT_PARITY_ARTIFACT_ROOT:-$WORK/artifacts}"
 mkdir -p "$ARTIFACT_ROOT"
 ARTIFACT_ROOT="$(cd "$ARTIFACT_ROOT" && pwd -P)"
+# CI keeps verified downloads between runs (PROMPT_PARITY_DOWNLOAD_CACHE); every
+# byte restored from it is checked against its pin, and a mismatch downloads.
+download_cache=()
+[[ -z "${PROMPT_PARITY_DOWNLOAD_CACHE:-}" ]] || download_cache=(--download-cache "$PROMPT_PARITY_DOWNLOAD_CACHE")
 python3 "$ROOT/scripts/prepare-prompt-fixtures.py" \
   --manifest-source-directory "$ROOT/fixtures/prompt-contract/v1/manifests" \
   --cdn-url "${PROMPT_PARITY_CDN_URL:-https://models.darkbloom.ai}" \
-  --artifact-root "$ARTIFACT_ROOT" --manifest-directory "$WORK/manifests"
+  --artifact-root "$ARTIFACT_ROOT" --manifest-directory "$WORK/manifests" \
+  ${download_cache[@]+"${download_cache[@]}"}
 export PROMPT_PARITY_REQUIRED=1
 export PROMPT_PARITY_VECTORS="$ROOT/fixtures/prompt-contract/v1/production_vectors.json"
 export PROMPT_PARITY_ARTIFACT_ROOT="$ARTIFACT_ROOT"

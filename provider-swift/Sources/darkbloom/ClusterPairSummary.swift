@@ -288,12 +288,30 @@ struct ClusterPairSummary: Sendable, Equatable {
             + "here: `\(Self.cli) stop` on \(otherMac) stops the pair."
     }
 
-    /// The desktop app's Start on a paired Mac named `models` (`start --model <id>`); the pair started with its own. One
-    /// line the app shows when that isn't the one model named; nil when it is, or when no model was named.
-    func appStartModelLine(named models: [String]) -> String? {
-        guard !models.isEmpty, let saved = modelID, models != [saved] else { return nil }
-        return "This Mac serves in a pair: started the pair with \(modelName ?? saved); `\(Self.cli) cluster` changes its model."
+    /// The desktop app's Start on a paired Mac (`Start.appStartOptions`): after the pair's own lines, what the app asked
+    /// for and the pair didn't take. After a start that serves (`code` 0) or doesn't serve yet (3), one line when it named
+    /// another model than the pair's (`models`), and one when it asked for a local API (`localEndpoint`) that the pair
+    /// doesn't give this Mac. Nothing after another outcome: the pair's lines say it.
+    func appStartLines(named models: [String], localEndpoint: Bool, code: Int32) -> [String] {
+        guard code == 0 || code == 3 else { return [] }
+        var lines: [String] = []
+        if !models.isEmpty, let saved = modelID, models != [saved] {
+            let name = modelName ?? saved
+            let outcome = code == 0 ? "This Mac serves in a pair: the pair serves \(name)"
+                : "This Mac is in a pair: the pair was asked to start with \(name), and isn't serving (above)"
+            lines.append(outcome + "; `\(Self.cli) cluster` changes its model.")
+        }
+        if localEndpoint, !givesThisMacALocalAPI {
+            lines.append("No local API was added on this Mac: a pair's local API comes from how the pair serves "
+                + "(`\(Self.cli) cluster` on the leading Mac changes it).")
+        }
+        return lines
     }
+
+    /// The pair serves a local API on this Mac: Only me on both Macs (the other Mac relays its own port to the leader's),
+    /// Both, me first on the Mac that leads, whose part runs rank 0. The role says so before the pair runs too, as when
+    /// the app's Start reads it (`localAPI.runsRankZero` only once it runs). Through Darkbloom alone, on neither.
+    var givesThisMacALocalAPI: Bool { localOnly || (localAPI != nil && leads) }
 
     /// `darkbloom stop`, `start --solo`, `restart` and `update` on a Mac whose pair doesn't run, before its leftover part
     /// stops: what they do, said while nothing has changed yet.
@@ -521,6 +539,9 @@ extension ClusterPairSummary {
             return "\(ClusterOnboardingMacName.sentence(otherMac)) isn't answering over the cable. Its cluster service may "
                 + "have been turned off with `\(Self.cli) cluster stop --service`, or that Mac is asleep, off, or waiting for "
                 + "someone to log in. On that Mac, run `\(Self.cli) start` (or `\(Self.cli) cluster`)."
+                // Named only where `start --solo` serves (`Start.pairStart`: `pairIdle`): once this Mac's part was given
+                // up, it holds no serving lock. Before that, --solo would be refused.
+                + (pairIdle ? " Or serve this Mac alone: `\(Self.cli) start --solo`." : "")
         case .notServing:
             if let words = localNetworkWords { return words.next }
             let reason = reason ?? ""

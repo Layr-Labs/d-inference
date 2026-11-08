@@ -247,7 +247,7 @@ extension ProviderLoop {
             await self?.releaseLocalReservation(mid)
         }
         // Me first: while this request waits in the engine's queue, Darkbloom
-        // work on the model that hasn't answered gives way. In shared mode
+        // work on the model that is still queued gives way. In shared mode
         // there is no closure, so the request isn't watched at all.
         var makeRoomForOwner: (@Sendable () async -> Void)?
         if meFirst != nil {

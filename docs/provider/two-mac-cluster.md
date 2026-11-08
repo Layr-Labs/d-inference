@@ -767,9 +767,11 @@ leads.").
   goes ahead; q at the question or at the list saves nothing. `darkbloom start
   --solo` on this Mac then serves the same way
   ([no terminal, no question](./local-first.md#no-terminal-no-question)). A
-  saved **Only me** serves this Mac alone only in a terminal: while the pair
-  doesn't run here, `darkbloom start --solo` without one (a script) is refused
-  in one line before this Mac's part is stopped or its saved start cleared.
+  saved **Only me** is for this Mac alone: while the pair doesn't run here,
+  `darkbloom start --solo`, with or without a terminal (a script), serves this
+  Mac alone, Only me in the background, after this Mac's part is stopped, as a
+  network `--solo` start does. Without `--solo`, `darkbloom start` starts the
+  pair, the app's Start included.
 - **Only me** is `darkbloom cluster local`'s way of serving
   ([below](#serving-locally-only)). **Darkbloom network** is the pair as
   before, with no local API.
@@ -1393,7 +1395,12 @@ cluster service asks the coordinator for its latest release:
 
 A pair still running a request after 120 seconds takes requests again and tries
 at the next slot. A release that one Mac cannot download or verify is installed
-on neither Mac; both try again at the next slot. Until a new
+on neither Mac; both try again at the next slot. A Mac whose check gets no
+answer from the coordinator (3 tries of 15 seconds) asks once more 1 to 2
+minutes later, within the same slot, while the other Mac waits; only when that
+fails too do both Macs wait for the next slot. So a new release reaches the pair
+at its next slot, up to 30 minutes after it is published, and each failed try
+waits 30 minutes more; `darkbloom update` on both Macs updates at once. Until a new
 release's cluster service has stayed healthy for 10 minutes, three of its starts
 that end by themselves bring back the previous release and quarantine the new
 one, as the watchdog does for a single Mac. A Mac never restarts into a new
@@ -1685,8 +1692,13 @@ on its own), `darkbloom start --solo` serves this Mac alone:
   terminal and `darkbloom autopilot enable` are refused by name (exit 64). The
   app's **Start serving** has no `--solo`, so it starts the pair, as a plain
   `darkbloom start` does, never this Mac alone. When it named another model
-  than the pair's, it ends with ``This Mac serves in a pair: started the pair
-  with <the pair's model>; `darkbloom cluster` changes its model.``
+  than the pair's, it ends with ``This Mac serves in a pair: the pair serves
+  <the pair's model>; `darkbloom cluster` changes its model.`` (``… the pair
+  was asked to start with …, and isn't serving (above); …`` when it doesn't
+  serve yet), and when it asked for a local API this Mac doesn't get from the
+  pair, ``No local API was added on this Mac: …``. The app's onboarding offers
+  **Start serving** there, never Autopilot, which serves one Mac and is refused
+  on a paired Mac before it downloads anything.
 - A pair that is merely stopped gives one line: ``This Mac is in a two-Mac
   cluster with the other Mac (…), which is stopped: serving this Mac alone
   (`darkbloom start` starts the pair again).``

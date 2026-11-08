@@ -1,5 +1,6 @@
-// Start serving modes: --local standalone, launchd-foreground (coordinator +
-// optional unified local endpoint), startup auto-update, and scheduled windows.
+// Start serving modes: Only me's standalone server (--local --here, or Only me's
+// launchd child), launchd-foreground (coordinator + optional unified local
+// endpoint), startup auto-update, and scheduled windows.
 import Foundation
 import ArgumentParser
 import ProviderAppAttest
@@ -31,32 +32,12 @@ extension Start {
             runtimeCapabilities: runtimeCapabilities
         )
 
-        // v0.7.5 ONE ENGINE, fail loud: the standalone server serves
-        // everything through ContinuousBatchingV2, so a model whose family
-        // has no CBv2 adapter cannot serve at all. Say so per model, and
-        // refuse to start when nothing serveable remains — a silent empty
-        // catalog would 404 every request with no explanation.
-        let (adapted, unsupported) = GLM5NextLocalQualification.partition(selected)
-        for dropped in unsupported {
-            if let reason = GLM5NextLocalQualification.localSelectionRefusal(model: dropped) {
-                printError("Skipping \(dropped.id): \(reason)")
-                continue
-            }
-            printError(
-                "Skipping \(dropped.id): model_type '\(dropped.modelType ?? "unknown")' has no "
-                    + "engine-v2 adapter (v0.7.5 serves everything through engine v2)")
-        }
-        let (advertised, withoutNativeMTP) = GLM5NextLocalServing.partition(
-            adapted, mode: config.backend.mtpMode)
-        for dropped in withoutNativeMTP {
-            printError(
-                "Skipping \(dropped.id): GLM serves only with its embedded MTP, which is on by "
-                    + "default; remove backend mtp_mode = \"off\" and leave DARKBLOOM_CBV2_MTP enabled")
-        }
+        // v0.7.5 ONE ENGINE, fail loud: say why each model this server can't serve is skipped, and refuse to start
+        // when nothing serveable remains — a silent empty catalog would 404 every request with no explanation.
+        let (advertised, skipped) = Self.locallyServable(selected, mtpMode: config.backend.mtpMode)
+        for line in skipped { printError(line) }
         guard !advertised.isEmpty else {
-            printError(
-                "No engine-v2-capable models available to serve. "
-                    + "Download a supported model (gpt-oss / gemma-4 families) and retry.")
+            printError(Self.noModelToServe)
             throw ExitCode.failure
         }
 
@@ -70,44 +51,18 @@ extension Start {
             token = try LocalEndpoint.loadOrCreateToken()
         }
 
-        let baseURL = serving.baseURL
-        // `--local` prints its key as it always has; "Only me" chosen at the question or saved, and a start that sets
-        // tools up, say where it is.
-        let printsKey = bannerShowsKey(serving)
-        print("\(BuildEnvironment.current.cliName) \(ProviderCore.version) (local / direct mode)")
-        if !printsKey { print("Serving: " + LocalFirstWords.serving(mode: .local, meFirst: false, idleMinutes: 0)) }
-        print("Preparing local server on \(bind):\(port)")
-        print("Models: \(advertised.count)")
-        for m in advertised {
-            print("  \(m.id) (\(String(format: "%.1f", m.estimatedMemoryGb)) GB)")
-        }
-        print()
-        print("OpenAI-compatible endpoint:")
-        print("  base URL: \(baseURL)")
-        if let token, printsKey {
-            print("  API key:  \(token)")
-            print()
-            print("  export OPENAI_BASE_URL=\(baseURL)")
-            print("  export OPENAI_API_KEY=\(token)")
-        } else if token != nil {
-            print("  API key:  `\(BuildEnvironment.current.cliName) local` shows it")
-            print("  Your requests: " + LocalFirstWords.requests(route: serving.route,
-                                                               accountKeySaved: serving.accountKeySaved ?? false))
-        } else {
-            print("  API key:  (auth disabled — --no-auth)")
-            print("  Requests: this Mac only. Without a local key nothing is passed on to your other Macs or the network.")
-        }
-        print()
-        print("  Shareable any time with: \(BuildEnvironment.current.cliName) local")
-        print()
+        for line in localServerBanner(serving: serving, models: advertised, token: token) { print(line) }
 
-        // `start --local` runs under the AppKit host, which turns Ctrl-C into a drain; "Only me" from the question
-        // or the saved choice runs here, so it takes the same signals itself.
+        // A start that serves here runs under the AppKit host, which turns Ctrl-C into a drain
+        // (`ProviderAppKitHost.shouldHost`); any other caller takes the same signals itself.
         #if os(macOS)
         let signals = ProviderAppKitHost.shouldHost(Darkbloom.commandLineArguments) ? nil
             : ProviderSignalHandler { _ = await ProviderTermination.shared.request() }
         defer { withExtendedLifetime(signals) {} }
         #endif
+
+        // `--here` takes this Mac's one serving lock from the background service: say what stops.
+        if here, let line = Self.hereStopsLine(DaemonStateFile.read()) { print(line) }
 
         // Lock acquisition and exact legacy-artifact housekeeping are one
         // ordered operation shared with coordinator-connected foreground mode.
@@ -147,36 +102,7 @@ extension Start {
             ),
             models: advertised
         )
-        guard await runLocalStartupPreload(server: server, config: config) else { return }
-        try await server.start()
-        await ProviderTermination.shared.install {
-            await server.drainAndStop(timeoutSeconds: ProviderTermination.timeoutSeconds)
-        }
-        if await ProviderTermination.shared.terminationRequested {
-            await server.stop()
-            return
-        }
-
-        // Wait until the server CONFIRMS it bound the port before advertising it.
-        // start() launches Hummingbird in a child task and returns before the
-        // bind completes; we must not write a discovery record pointing at a dead
-        // (or, worse, a foreign) endpoint that `darkbloom local` / local-first
-        // clients would then trust. waitUntilBound reads the actor's own bind
-        // signal (Hummingbird onServerRunning), not an HTTP probe a process
-        // already holding the port could answer.
-        guard await server.waitUntilBound(timeoutSeconds: 5.0) else {
-            await server.stop()
-            printError(Self.localServerBindFailure(bind: bind, port: port, nextFree: LocalAPIPort.nextFree(besides: port),
-                                                   paired: ClusterPairSummary.local().paired))
-            throw ExitCode.failure
-        }
-        print("Listening on \(bind):\(port)")
-        // Only now that the start went ahead does "Only me" (or the port it chose) become the saved choice: a start
-        // refused above (no model it can serve, the running provider's drain, a port another program holds) saves
-        // nothing.
-        try saveServingChoice(serving)
-
-        await server.startLifecycleControl()
+        guard try await startOnlyMeServer(server, config: config, serving: serving) else { return }
 
         // Publish discovery metadata so a same-machine client (and
         // `darkbloom local`) can find + authenticate to this server. Removed on
@@ -202,8 +128,67 @@ extension Start {
         await withFanActivityLease(providerVersion: ProviderCore.version) {
             await server.waitUntilStopped()
         }
+        // On the way out of `--here`: what serves now.
+        if here { print(Self.hereEndedLine(saved: (try? savedLocalSettings(configPath: configOptions.config))?.mode)) }
     }
 
+    /// The coordinator-less server's banner: how it serves, where, and with which models. No start screen prints the
+    /// key (`token` only says whether there is one): `darkbloom local` shows it.
+    func localServerBanner(serving: StartServing, models: [ModelInfo], token: String?) -> [String] {
+        let cli = BuildEnvironment.current.cliName
+        var lines = ["\(cli) \(ProviderCore.version) (local / direct mode)",
+                     "Serving: " + LocalFirstWords.serving(mode: .local, meFirst: false, idleMinutes: 0)]
+        lines += ["Preparing local server on \(serving.bind):\(serving.port)", "Models: \(models.count)"]
+        lines += models.map { "  \($0.id) (\(String(format: "%.1f", $0.estimatedMemoryGb)) GB)" }
+        lines += ["", "OpenAI-compatible endpoint:", "  base URL: \(serving.baseURL)"]
+        if token != nil {
+            lines += ["  API key:  `\(cli) local` shows it",
+                      "  Your requests: " + LocalFirstWords.requests(route: serving.route,
+                                                                     accountKeySaved: serving.accountKeySaved ?? false)]
+        } else {
+            lines += ["  API key:  (auth disabled — --no-auth)",
+                      "  Requests: this Mac only. Without a local key nothing is passed on to your other Macs or the "
+                        + "network."]
+        }
+        return lines + ["", "  Shareable any time with: \(cli) local", ""]
+    }
+
+    /// The models this Mac's own server serves (every one through engine v2), and a line for each other one: why it
+    /// is skipped.
+    static func locallyServable(_ selected: [ModelInfo], mtpMode: MTPMode) -> (servable: [ModelInfo], skipped: [String]) {
+        let (adapted, unsupported) = GLM5NextLocalQualification.partition(selected)
+        var skipped = unsupported.map { dropped in
+            "Skipping \(dropped.id): " + (GLM5NextLocalQualification.localSelectionRefusal(model: dropped)
+                ?? "model_type '\(dropped.modelType ?? "unknown")' has no engine-v2 adapter (v0.7.5 serves everything "
+                + "through engine v2)")
+        }
+        let (servable, withoutNativeMTP) = GLM5NextLocalServing.partition(adapted, mode: mtpMode)
+        skipped += withoutNativeMTP.map {
+            "Skipping \($0.id): GLM serves only with its embedded MTP, which is on by default; remove backend mtp_mode = "
+                + "\"off\" and leave DARKBLOOM_CBV2_MTP enabled"
+        }
+        return (servable, skipped)
+    }
+
+    /// When no model can serve: where to see them, and how to get one.
+    static var noModelToServe: String {
+        let cli = BuildEnvironment.current.cliName
+        return "No model to serve yet. See them: `\(cli) models catalog`. Get one: `\(cli) models download <id>`, then "
+            + "`\(cli) start`."
+    }
+
+    /// What `--here` stops: the background service running now; nil when none runs.
+    static func hereStopsLine(_ state: DaemonState?, alive: (Int32) -> Bool = { daemonProcessAlive(pid: $0) }) -> String? {
+        guard let state, state.pid != ProcessInfo.processInfo.processIdentifier, alive(state.pid) else { return nil }
+        let what = state.servesOnlyItsOwner ? "Only me's background service" : "Darkbloom network serving"
+        return "\(what) stops while this runs; it starts again with `\(BuildEnvironment.current.cliName) start`."
+    }
+
+    /// On the way out of `--here`: nothing serves now, and how to serve again.
+    static func hereEndedLine(saved: LocalSettings.Mode?) -> String {
+        "Only me in this terminal stopped; nothing serves on this Mac now. `\(BuildEnvironment.current.cliName) start` "
+            + (saved.map { "serves it again as saved: \(LocalFirstWords.choice($0))." } ?? "serves it again.")
+    }
 
     /// The coordinator-less server couldn't listen on its port within 5 seconds; `nextFree` is the port
     /// `start --port` would take instead, with `--solo` on a Mac in a two-Mac cluster (`paired`), which refuses it
@@ -286,13 +271,7 @@ extension Start {
         }
         let runtimeHashes = (try? RuntimeHashReporter().report().coordinatorRuntimeHashes)
         let authToken = AuthTokenStore.load()
-        if let identity = ProcessIdentity.current() {
-            try? SelfUpdater(
-                coordinatorBaseURL: coordinatorURL
-            ).confirmRunningCandidateLaunch(
-                processStartedAt: Double(identity.startTimeMicros) / 1_000_000
-            )
-        }
+        Self.confirmRunningRelease(coordinatorURL: coordinatorURL)
 
         if config.provider.autoUpdate {
             try await runStartupAutoUpdate(coordinatorURL: coordinatorURL)
@@ -474,6 +453,8 @@ extension Start {
             printError("auto-update skipped: another update/recovery operation is active (\(reason))")
         case .cancelled(let reason):
             printError("auto-update cancelled: \(reason)")
+        case .checkFailed(let failure):
+            printError("auto-update skipped: update check failed: \(failure.reason)")
         case .downloadFailed(let reason):
             printError("auto-update skipped: \(reason)")
         case .hashMismatch(let expected, let got):

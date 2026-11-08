@@ -137,7 +137,7 @@ supervisor starts (`Watchdog.settings`,
 | Step | Single Mac | Pair (both Macs) |
 |---|---|---|
 | When | 5 min after start, then every 30 min | Every 30 min at the update slot of the pairing's cluster ID (`ClusterMemberUpdateSlot`), the same moment on both Macs; or at once for `darkbloom update` |
-| Check, download, verify, stage | While serving (`SelfUpdater`) | The same, on each Mac, while the pair serves |
+| Check, download, verify, stage | While serving (`SelfUpdater`). The check makes up to 3 tries of 15 s | The same, on each Mac, while the pair serves. At the slot or catching up with the other Mac, a check without an answer makes a second round 60–120 s later (`ReleaseCheck.pairCycle`, `ClusterPairUpdateCycle.Environment.live(automatic:)`); the other Mac waits for its fresh `checking` |
 | Stop taking requests | Once staged | Once staged on both Macs (each reads the other's progress, `ClusterPairUpdateProgress`, from the other cluster service's status over the link) |
 | Drain | Accepted requests finish, at most 120 s; never cancelled | The part that serves the pair (rank 0) finishes its accepted requests, at most 120 s (`ClusterUpdateDrainRequest`, through its lifecycle mailbox); the other part serves none. A request still running reopens the pair on both Macs and defers to the next slot |
 | Install | Commit the staged bundle | Each Mac commits once both drained |

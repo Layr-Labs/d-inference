@@ -133,9 +133,18 @@ public actor EngineV2Bridge {
     /// that has not been admitted.
     let samplingDefaults: EngineV2SamplingDefaults
     let defaultMaxTokens: Int
-    /// A cluster pair's context: an omitted `max_tokens` is the default cut
-    /// to what still fits after the prompt (nil everywhere else).
-    let defaultMaxTokensContextLimit: Int?
+    /// The context an omitted `max_tokens` is cut to fit after the prompt: the
+    /// smaller of the advertised context and the limit the slot was built with
+    /// (`defaultMaxTokensContextLimit`: a cluster pair's context, or a single
+    /// Mac slot's model window); nil when neither is known.
+    nonisolated let defaultOutputContextLimit: Int?
+    /// The window a single Mac slot holds every request to: its advertised
+    /// context, else its model's own (from its config), the smaller when it has
+    /// both. A `max_tokens` past what the prompt leaves is cut to fit
+    /// (`outputTokens(requested:promptTokens:)`), and only a prompt that leaves
+    /// no room is refused, naming the window. Nil on a pair, whose engine
+    /// refuses by its own limits, and on a slot that knows no window.
+    nonisolated let modelWindowTokens: Int?
     let maxConcurrentRequests: Int
     nonisolated let performanceProfile: ServingPerformanceProfile?
     nonisolated let deadlineProfile: DeadlinePerformanceProfile?
@@ -460,11 +469,15 @@ public actor EngineV2Bridge {
         self.pagedPageSize = kvBackendKind == .paged && (pagedPageSize ?? 0) > 0 ? pagedPageSize : nil
         self.kvBackendFallbackReason = kvBackendFallbackReason
         self.distributedFirstTokenBudgetPolicy = distributedFirstTokenBudgetPolicy
-        self.advertisedContextTokens =
-            Qwen4SupportPolicy.validatedContextTokens(advertisedContextTokens)
+        let advertised = Qwen4SupportPolicy.validatedContextTokens(advertisedContextTokens)
             ?? Qwen4SupportPolicy.contextLimit(modelID: modelId)
             ?? performanceProfile?.contextTokensMax
             ?? deadlineProfile?.configuredContextTokens
+        self.advertisedContextTokens = advertised
+        self.defaultOutputContextLimit = advertised.map { min($0, defaultMaxTokensContextLimit ?? $0) }
+            ?? defaultMaxTokensContextLimit
+        self.modelWindowTokens = engine is DistributedCBv2Engine
+            ? nil : defaultOutputContextLimit.flatMap { $0 > 0 ? $0 : nil }
         self.clampedKVBackendFallbackReason =
             Self.heartbeatFallbackReason(kvBackendFallbackReason)
         self.stopTokenIds = EngineV2Translation.stopTokenIds(
@@ -476,7 +489,6 @@ public actor EngineV2Bridge {
         self.stopStringScope = stopStringScope
         self.samplingDefaults = samplingDefaults
         self.defaultMaxTokens = defaultMaxTokens
-        self.defaultMaxTokensContextLimit = defaultMaxTokensContextLimit
         self.maxConcurrentRequests = maxConcurrentRequests
         self.performanceProfile = performanceProfile
         self.deadlineProfile = deadlineProfile

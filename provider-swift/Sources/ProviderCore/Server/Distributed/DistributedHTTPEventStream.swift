@@ -7,7 +7,8 @@ import NIOCore
 /// Distributed-only body writer. Existing solo response framing is unchanged.
 /// The native profile already bounds generation; these are additional limits
 /// on frames examined/written here, not a claim about upstream stream buffers.
-/// A single writer sends a comment probe every 500 ms while awaiting output;
+/// A single writer sends a comment probe every 500 ms while awaiting output
+/// (until the first token, every ~5 s, the prompt's progress in its place);
 /// comments are never visible content, tokens or a refreshed request budget.
 enum DistributedHTTPEventStream {
     static let maximumFrameBytes = 1_048_576
@@ -96,7 +97,10 @@ enum DistributedHTTPEventStream {
         return frame
     }
 
-    static func response(_ frames: AsyncThrowingStream<String, Error>, control: DistributedHTTPResponse) -> Response {
+    /// `prefillProgress`: the request's prompt progress, said in place of a probe every `ticker.interval` until the
+    /// first token, on the probes' own timer (`LocalPrefillProgress.startComments` is not used here).
+    static func response(_ frames: AsyncThrowingStream<String, Error>, control: DistributedHTTPResponse,
+                         prefillProgress: LocalPrefillProgress? = nil) -> Response {
         let lifetime = DistributedHTTPBodyLifetime(control)
         // The product's event-stream headers (`LocalChatUploadResponder.sseResponse`).
         return Response(status: .ok, headers: [.contentType: "text/event-stream; charset=utf-8", .cacheControl: "no-cache"],
@@ -106,7 +110,7 @@ enum DistributedHTTPEventStream {
                     // The caller's isolation, named: SDKs with the `nonisolated(nonsending)` overload would otherwise
                     // pick it and send the non-Sendable writer into this helper.
                     try await withTaskCancellationHandler(operation: {
-                        try await write(frames, control: control, writer: &writer)
+                        try await write(frames, control: control, prefillProgress: prefillProgress, writer: &writer)
                     }, onCancel: { control.disconnect() }, isolation: #isolation)
                 } catch {
                     control.disconnect(); throw error
@@ -115,11 +119,12 @@ enum DistributedHTTPEventStream {
     }
 
     private static func write(_ frames: AsyncThrowingStream<String, Error>, control: DistributedHTTPResponse,
+                              prefillProgress: LocalPrefillProgress?,
                               writer: inout any ResponseBodyWriter) async throws {
         let pump = DistributedHTTPFramePump(frames, maximumFrameBytes: maximumFrameBytes)
         do {
             try await withTaskCancellationHandler(operation: {
-                try await consume(pump, control: control, writer: &writer)
+                try await consume(pump, control: control, prefillProgress: prefillProgress, writer: &writer)
             }, onCancel: { _ = pump.cancel() }, isolation: #isolation)
         } catch {
             let producer = pump.cancel(); await producer?.value
@@ -129,9 +134,12 @@ enum DistributedHTTPEventStream {
     }
 
     private static func consume(_ pump: DistributedHTTPFramePump, control: DistributedHTTPResponse,
+                                prefillProgress: LocalPrefillProgress?,
                                 writer: inout any ResponseBodyWriter) async throws {
         let probe = ": keep-alive\n\n"
         var nextProbe = ContinuousClock.now.advanced(by: .milliseconds(500))
+        // When a probe next says the prompt's progress instead; nil without one, and once it has nothing more to say.
+        var nextProgressComment = prefillProgress.map { ContinuousClock.now.advanced(by: $0.ticker.interval) }
         var total = 0
         var writerFailed = false
         var upstreamFailed = false
@@ -146,9 +154,18 @@ enum DistributedHTTPEventStream {
                 case .closed: throw CancellationError()
                 case .probe:
                     try Task.checkCancellation()
-                    guard probe.utf8.count <= maximumStreamBytes - maximumTerminalBytes - total else { throw Failure.outputLimit }
-                    total += probe.utf8.count
-                    do { try await writer.write(ByteBuffer(string: probe)) }
+                    var line = probe
+                    if let due = nextProgressComment, let prefillProgress, ContinuousClock.now >= due {
+                        if let comment = prefillProgress.comment {
+                            line = comment
+                            nextProgressComment = ContinuousClock.now.advanced(by: prefillProgress.ticker.interval)
+                        } else {
+                            nextProgressComment = nil
+                        }
+                    }
+                    guard line.utf8.count <= maximumStreamBytes - maximumTerminalBytes - total else { throw Failure.outputLimit }
+                    total += line.utf8.count
+                    do { try await writer.write(ByteBuffer(string: line)) }
                     catch { writerFailed = true; throw error }
                     nextProbe = ContinuousClock.now.advanced(by: .milliseconds(500))
                     continue

@@ -74,7 +74,7 @@ struct Local: AsyncParsableCommand {
                 print(line)
             }
         }
-        if !info.apiKey.isEmpty { print("  tools:    \(BuildEnvironment.current.cliName) start --opencode · --hermes") }
+        if !info.apiKey.isEmpty { print(Self.toolsLine) }
         print()
         print("Use it with any OpenAI client:")
         print("  export OPENAI_BASE_URL=\(info.baseURL)")
@@ -133,6 +133,9 @@ struct Local: AsyncParsableCommand {
         return ["Start one with:  \(cli) start --me-first   (Darkbloom and you, you first)",
                 "             or: \(cli) start --local      (only you, on this Mac)"]
     }
+
+    /// The line under a keyed server's address: the commands that set the tools up for it.
+    static var toolsLine: String { "  tools:    \(BuildEnvironment.current.cliName) --opencode · --hermes" }
 
     /// For a server listening on every interface: this Mac's Bonjour (`.local`) URL, which other computers on the
     /// same network can dial; nil for a loopback or specific-address server, or when the Mac has no local host name.

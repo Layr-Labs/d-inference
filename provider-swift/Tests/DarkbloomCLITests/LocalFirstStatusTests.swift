@@ -58,6 +58,8 @@ enum LocalFirstStatusFixtures {
                                         accountKeySaved: { true })
         }
         lines += Status.servingLines(state: state(), liveEndpoint: nil, route: nil, accountKeySaved: { false })
+        lines += Status.servingLines(state: state(connected: false), liveEndpoint: nil, route: nil,
+                                     accountKeySaved: { false })
         for failure in [portInUse, addressGone] {
             for meFirst in [open, nil] {
                 for free in [UInt16(8002), nil] {
@@ -163,6 +165,24 @@ struct LocalFirstStatusTests {
                 "Serving: Darkbloom network only — this Mac has no local API",
             ])
         }
+    }
+
+    /// Only me's background service reports itself from the start of its first load (`Start.startOnlyMeServer`), which
+    /// waits for every model it serves, before its local API listens: that is never "network only".
+    @Test("Only me loading its models, before its local API listens, is never \"network only\"")
+    func onlyMeWhileItLoads() {
+        for endpoint in [nil, F.endpoint(pid: 9_999)] {
+            #expect(Status.servingLines(state: F.state(connected: false), liveEndpoint: endpoint, route: nil,
+                                        accountKeySaved: { Issue.record("Keychain read"); return false }) == [
+                "Serving: only you, on this Mac — starting: its local API opens once its models are loaded",
+            ])
+        }
+        // A network provider waiting for its schedule's window writes a coordinator and no capabilities: not Only me.
+        let waiting = DaemonState(pid: 4_242, version: "test", writtenAt: 0, startedAt: 0,
+                                  coordinatorURL: "wss://coordinator.invalid/ws/provider")
+        #expect(!waiting.servesOnlyItsOwner)
+        #expect(Status.servingLines(state: waiting, liveEndpoint: nil, route: nil, accountKeySaved: { false })
+            == ["Serving: Darkbloom network only — this Mac has no local API"])
     }
 
     @Test("a local API that couldn't listen is never \"network only\": status and local say why, and the next step")

@@ -151,11 +151,12 @@ struct SelfUpdaterTests {
         let result = await SelfUpdater(
             coordinatorBaseURL: baseURL.absoluteString
         ).checkForUpdate()
-        guard case .checkFailed(let reason) = result else {
+        guard case .checkFailed(let failure) = result else {
             Issue.record("wrong-platform release was accepted")
             return
         }
-        #expect(reason.contains("unsupported release platform"))
+        #expect(failure.cause == .badAnswer)
+        #expect(failure.reason.contains("latest release is for another platform (linux-amd64)"), "\(failure.reason)")
     }
 
     @Test("installBundle refuses a flat-only bundle and leaves the live install untouched")

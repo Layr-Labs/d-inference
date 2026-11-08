@@ -104,10 +104,13 @@ struct Desktop: AsyncParsableCommand {
     }
 
     /// Starts the app's local mode on `api`'s port with `start` (the stop, the drain and the job's install), and only
-    /// then saves a new port: a refused drain or a failed install saves nothing. A port another start saved meanwhile
-    /// stands. Returns the line that says which port was saved, if one was.
+    /// then saves the app's choice, Only me (`[local] mode`), as `start --local` saves it, so that the app's Start,
+    /// Restart and Update, login and the watchdog keep serving it; and a new port. A refused drain or a failed install
+    /// saves nothing. A port another start saved meanwhile stands. Returns the line that says which port was saved, if
+    /// one was.
     static func serve(_ api: LocalAPI, starting start: () async throws -> Void) async throws -> String? {
       try await start()
+      try ConfigManager.updateLocal(at: api.configPath, fallbackConfig: api.fallbackConfig) { $0.mode = .local }
       return try LocalAPIPort.save(api.choice, configPath: api.configPath, fallbackConfig: api.fallbackConfig).note
     }
 

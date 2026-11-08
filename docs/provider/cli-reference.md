@@ -17,9 +17,11 @@ adds it to the set before control can resume. Waiting and shadow Autopilot prese
 
 ## Local GLM qualification
 
-`darkbloom start --local --model EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`
+`darkbloom start --local --here --model EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`
 can include the experimental GLM root only when
 `DARKBLOOM_EXPERIMENTAL_GLM5_NEXT` names an absolute qualification JSON file.
+Use `--here`: the variable isn't passed to Only me's background service, which
+then serves no GLM.
 Unset, empty, `1`, malformed selections and mismatched identities refuse GLM.
 The file pins the exact catalog record, manifest and expected aggregate; see
 [configuration](../reference/configuration.md#local-glm-qualification) for its schema.
@@ -101,9 +103,10 @@ refuses there and says why instead of reporting a start (`Desktop.StartLocal.pai
 `desktop start-local --model <id>`, `stop-local`, and `restart-local` commands
 (each accepting `--config`) retain the native provider owner and termination handler. `start-local` serves on
 this Mac's one local API port (`Desktop.StartLocal.localAPI`, `LocalAPIPort.choose`): `[local] port`, else the one
-its local API already uses, else one chosen, all before anything stops (no free port starts nothing). A port not
-saved yet is saved only once the service started (`Desktop.StartLocal.serve`): a refused drain or a failed install
-saves nothing. Its LaunchAgent runs `start --foreground --local --port <n> --bind
+its local API already uses, else one chosen, all before anything stops (no free port starts nothing). Only once the
+service started does it save the app's choice, Only me (`[local] mode = "local"`), as `start --local` does, and a
+port not saved yet (`Desktop.StartLocal.serve`): a refused drain or a failed install saves nothing. The app's Start,
+Restart and Update then serve Only me, as login and the watchdog do. Its LaunchAgent runs `start --foreground --local --port <n> --bind
 <address>` (`LaunchAgent.localProgramArguments`), which never asks or saves and prints no key. Cooling uses
 `desktop configure-cooling --enabled <bool> --speed <percent> --temperature <celsius>`
 to request macOS administrator authorization for the existing signed helper.
@@ -142,6 +145,7 @@ upgrade warning. It is independent of `DARKBLOOM_NO_UPDATE_CHECK`.
 | Option | Type | Default | Effect | Source |
 |---|---|---|---|---|
 | `-c`, `--config <path>` | `String?` | `~/.config/darkbloom/provider.toml` | Provider TOML path. Accepted by the commands marked ✓ below | `provider-swift/Sources/darkbloom/Darkbloom.swift` (`ConfigOptions`); `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`defaultConfigPath`) |
+| `--opencode`, `--hermes` | flag | — | With no subcommand, `darkbloom --opencode` is `darkbloom start --opencode` (likewise `--hermes`, or both): every other `start` option goes with it, in any order (`darkbloom --opencode --me-first`), and `start`'s errors and refusals apply. `start --opencode` keeps working; a subcommand keeps its own options (`darkbloom status --opencode` is refused). `darkbloom --help` shows both in one line each ([Set up OpenCode or Hermes](#set-up-opencode-or-hermes)) | `provider-swift/Sources/darkbloom/Darkbloom.swift` (`Darkbloom.expandingToolShortcuts`), applied by `main.swift` before it parses or hosts |
 | `--version` | flag | — | Prints `ProviderCore.version` | `Darkbloom.configuration` |
 | `-h`, `--help` | flag | — | Help; `darkbloom` with no subcommand prints help | `Darkbloom.run` |
 
@@ -223,10 +227,11 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `--autopilot` | flag | `false` | Keep the normal startup selector, verify cached network inventory and save experimental enrollment; verification adds no downloads and the default rollout is shadow |
 | `--no-autopilot` | flag | `false` | Save opt-out and retain ordinary idle-policy mode |
 | `--foreground` / `--no-foreground` | flag, **hidden** | `false` | Serve in this process instead of installing the LaunchAgent; launchd passes it |
-| `--local` | flag | `false` | Only me: [the local API](./direct-mode.md) with no coordinator, in this terminal; not saved in `[local] mode` |
-| `--network` | flag | `false` | Darkbloom network: no local API (today's plain `start`); not saved in `[local] mode`, but the LaunchAgent keeps it until the next `start` |
-| `--me-first` / `--no-me-first` | flag | unset | `--me-first`: Both, me first: a local API beside Darkbloom, and Darkbloom pauses while you use it; not saved in `[local] mode`, but the LaunchAgent keeps it until the next `start`. `--no-me-first`: Darkbloom keeps serving while you use the local API (saved as `[local] me_first = false`); `--me-first` undoes it |
-| `--local-endpoint` | flag | `false` | Both, me first, the older flag: the local API beside Darkbloom, with me first on (Darkbloom requests pause while your local requests run and for `[local] me_first_idle_minutes` after) unless `--no-me-first` (`[local] me_first = false`); mutually exclusive with `--local` |
+| `--local` | flag | `false` | Only me: [the local API](./direct-mode.md) with no coordinator, in the background (the provider LaunchAgent: at login, with the watchdog and updates); saved in `[local] mode` |
+| `--here` | flag | `false` | With `--local`: serve Only me in this terminal for this session (Ctrl-C, or closing it, stops it) instead of the background service; saves no mode |
+| `--network` | flag | `false` | Darkbloom network: no local API (today's plain `start`); saved in `[local] mode` |
+| `--me-first` / `--no-me-first` | flag | unset | `--me-first`: Both, me first: a local API beside Darkbloom, and Darkbloom pauses while you use it; saved in `[local] mode`. `--no-me-first`: Darkbloom keeps serving while you use the local API (saved as `[local] me_first = false`); `--me-first` undoes it |
+| `--local-endpoint` | flag | `false` | Both, me first, the older flag: the local API beside Darkbloom, with me first on (Darkbloom requests pause while your local requests run and for `[local] me_first_idle_minutes` after) unless `--no-me-first` (`[local] me_first = false`); saved in `[local] mode`; mutually exclusive with `--local` |
 | `--me-first-idle <min>` | `UInt64?`, 1–120 | `[local] me_first_idle_minutes` (`2`) | Minutes with none of your requests before Darkbloom comes back; saved. Not `--idle-timeout` (model memory) |
 | `--route <route>` | `this-mac`, `my-macs`, `my-macs-first` | `[local] route` | Where your requests go when this Mac can't take them ([the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)); saved; needs an account key (`darkbloom route key`) |
 | `--choose` | flag | `false` | In a terminal: ask how this Mac serves again, although a choice is saved |
@@ -250,15 +255,13 @@ A single-Mac `start` decides how this Mac serves (`StartServingResolver`,
 [Use your Mac yourself, first](./local-first.md)):
 
 1. A mode flag: `--local`, `--network`, `--me-first` or `--local-endpoint`.
-   It isn't saved in `[local] mode`, but the LaunchAgent this start installs
-   keeps its arguments, so login, `restart`, updates and the watchdog serve
-   that way until the next `start`.
+   It is saved in `[local] mode`, as the question's answer is
+   (`LocalFirstOptions.savesModeFlag`), so the background service, `restart`
+   and `update` serve it from now on; `--local --here` (one terminal session)
+   and the `--foreground` service save no mode.
 2. `--choose` (a terminal only): the question again.
-3. The saved choice, `[local] mode`, with or without a terminal. A saved
-   `local` (Only me) serves in a terminal, so without one the start is refused
-   before anything stops or starts (exit 64): ``This Mac is set to Only me,
-   which serves in a terminal. Run `darkbloom start` in one, or name how to
-   serve: --local, --network or --me-first.``
+3. The saved choice, `[local] mode`, with or without a terminal, Only me
+   included: every choice serves in the background.
 4. In a terminal (stdin and stdout), the question, after the terms notice and
    before the model picker:
 
@@ -282,14 +285,42 @@ A single-Mac `start` decides how this Mac serves (`StartServingResolver`,
    scripts): today's behaviour, exactly. The Darkbloom network, no local port,
    no Keychain look-up, nothing written, and the same LaunchAgent arguments.
 
-Only the question saves a mode. The answer, its follow-up and the local API's
-port are written to `[local]` once the start goes ahead (after the model
-picker; for "Only me", once its server listens), so a cancelled or refused
-start saves nothing; "Only me" with `--schedule` or `--autopilot` is refused before
-saving. **Only me** then serves in this terminal as `--local` does (Ctrl-C
-drains it); **Darkbloom network** and **Both, me first** install the
-LaunchAgent with the arguments `--local-endpoint` has always used
-([configuration](../reference/configuration.md#local-first-use-local)).
+**The rule: the background service, `restart` and `update` always serve the
+saved choice.** The answer (or the mode flag), its follow-up and the local
+API's port are written to `[local]` once the start goes ahead (after the model
+picker; for `--here`, once its server listens), so a cancelled or refused start
+saves nothing; "Only me" with `--schedule` or `--autopilot` is refused before
+saving. Every choice then serves in the background, with the same model picker
+(downloads included) and memory question:
+
+- **Darkbloom network** and **Both, me first** install the LaunchAgent with the
+  arguments `--local-endpoint` has always used
+  ([configuration](../reference/configuration.md#local-first-use-local)).
+- **Only me** installs the same LaunchAgent the app's local mode uses, `start
+  --foreground --local --port <n> --bind <address> --model <id>…`
+  (`Start.launchOnlyMeService`, `StartCommand+OnlyMe.swift`): at login, with
+  the watchdog and the update loop (`StandaloneServer+AutoUpdate`: a check 5
+  minutes after it starts, then every 30 minutes), and models idle past the
+  memory setting are unloaded (`StandaloneServer+IdleUnload`). Where a provider
+  served Darkbloom, it says ``Darkbloom network serving stops: this Mac serves
+  only you from now on (`darkbloom start --me-first` serves Darkbloom and
+  you).`` When Darkbloom's catalog can't be read, it serves the models already
+  on this Mac; without a terminal it asks nothing, not even the models (the
+  last selection still on this Mac, else every one it serves,
+  `Start.onlyMeModelsWithoutAsking`). With no model it can serve, it stops
+  (exit 1) with ``No model to serve yet. See them: `darkbloom models catalog`.
+  Get one: `darkbloom models download <id>`, then `darkbloom start`.``
+- **`--local --here`** serves Only me in this terminal (`runLocalStandalone`;
+  Ctrl-C drains it) and saves no mode. When a background service runs, it says
+  ``Darkbloom network serving stops while this runs; it starts again with
+  `darkbloom start`.`` (or ``Only me's background service stops …``) before it
+  takes the serving lock, and on the way out ``Only me in this terminal
+  stopped; nothing serves on this Mac now. `darkbloom start` serves it again as
+  saved: <choice>.``
+- **AppKit** hosts only a start that serves in its own process (`--foreground`,
+  `--local --here`, `--local --distributed`, or a service's `start --local`;
+  `ProviderAppKitHost.shouldHost`), so Ctrl-C still ends Only me's background
+  setup at the picker or a download.
 
 - **One port per Mac** (`LocalAPIPort.choose`,
   `provider-swift/Sources/ProviderCore/Config/LocalAPIPort.swift`): every local
@@ -298,7 +329,7 @@ LaunchAgent with the arguments `--local-endpoint` has always used
   address the tools were given never moves:
   1. `--port <n>`: used as given, and saved when it isn't the saved port:
      ``Local API port: 8007 (saved, instead of 8005: tools set up for 8005 need
-     `darkbloom start --opencode` or `--hermes` again).``
+     `darkbloom --opencode` or `--hermes` again).``
   2. `[local] port`: used as it is, never probed or moved, even `8000` or a
      port another program holds (the local API then says why it isn't up).
   3. Otherwise the port this Mac's local API already uses: its running API's
@@ -318,9 +349,9 @@ LaunchAgent with the arguments `--local-endpoint` has always used
   The `--foreground` service (launchd's child) never chooses or saves: its
   arguments carry the port. So does `start --local` that a service runs (an
   app job an older version wrote, or the cluster service's solo part,
-  `Start.isServiceChild`). A saved port is kept whatever the mode; a mode flag
-  still saves no mode.
-- **A local API that can't listen:** Only me stops (exit 1):
+  `Start.isServiceChild`). A saved port is kept whatever the mode.
+- **A local API that can't listen:** Only me stops (exit 1; for the background
+  service, in its log):
   ``This Mac's local API couldn't listen on 127.0.0.1:8001: another program
   may use port 8001. Free it, or run `darkbloom start --port 8002`.`` Both, me
   first keeps serving Darkbloom, and `status` and `local` say why its local API
@@ -360,13 +391,17 @@ LaunchAgent with the arguments `--local-endpoint` has always used
   With `--no-auth` the local router passes nothing on, so the summary says
   `your requests: this Mac only` and `(no API key: --no-auth, so requests stay
   on this Mac)`, whatever the route, and the start doesn't ask the Keychain.
-  No start screen prints the key, except `--local`'s own banner, as before. A
+  No start screen prints the key: the banner of `--local --here` says
+  ``API key:  `darkbloom local` shows it`` and where your requests go
+  (`Start.localServerBanner`). A
   start that nothing chose (step 5) prints today's summary.
 
 #### Set up OpenCode or Hermes
 
-`--opencode` and `--hermes` point the tools at this Mac's local API with the
-config writers ([OpenCode and Hermes config writers](../architecture/tool-integrations.md);
+`--opencode` and `--hermes`, usually run as `darkbloom --opencode` /
+`darkbloom --hermes` ([global options](#global-options)), point the tools at
+this Mac's local API with the config writers
+([OpenCode and Hermes config writers](../architecture/tool-integrations.md);
 `ToolIntegrationStep`, `provider-swift/Sources/darkbloom/ToolIntegration/ToolIntegrationStep.swift`).
 They run once, at `start`:
 
@@ -395,20 +430,27 @@ They run once, at `start`:
    The endpoint's `GET /v1/models` (15 s, `ToolIntegrationStep.modelListTimeout`:
    well over the router's own wait for the coordinator's lists, which an
    unreachable coordinator runs out) and the catalog (5 s) give the models;
-   `ToolIntegration.configure` writes the block with a backup. Without the
-   catalog (offline, or a model it doesn't list), a model the tool's file
-   already lists keeps that entry's name, image input, reasoning and limits
-   (`IntegrationModel.keeping`), so a re-run changes nothing and says the catalog
-   wasn't reachable; a model new to the file gets its ID and text input only, and
-   one line says to run the start again online for names and image support.
+   `ToolIntegration.configure` writes the block with a backup. A model served
+   here (this Mac, or the pair it leads or relays to) gets image input exactly
+   when its `this-mac` entry lists `image` among its `input_modalities`,
+   catalog or not; a model served elsewhere, or one whose pair slot isn't up
+   yet, gets the catalog's, or the list's `image`. Reasoning comes from the
+   catalog only. Without the catalog (offline, or a model it doesn't list), a
+   model the tool's file already lists keeps that entry's name, image input
+   (unless this Mac lists what the model takes, or the list gives it images),
+   reasoning and limits (`IntegrationModel.keeping`), so a re-run changes
+   nothing and says the catalog wasn't reachable; a model new to the file gets
+   its ID, and text input unless the endpoint lists images, and one line says
+   to run the start again online for names and image support.
    The result block names the file changed, the backup and a one-line undo,
    then `Requests:` (where your requests go) and
    `Other tools:` (`OPENAI_BASE_URL` and `OPENAI_API_KEY="$(cat <key file>)"`).
-   No line or file holds the key, and the `--local` banner shows no key when a
-   tool flag is given (`Start.bannerShowsKey`); its `Your requests:` line and the
-   tool block come from one Keychain read. A model of this Mac's that isn't loaded
-   yet has no context in `/v1/models`, so one line says to run the start again
-   once it is loaded, to pick up its limits.
+   No line or file holds the key, and no start screen shows it
+   (`Start.localServerBanner`). The `--local` banner's `Your requests:` line
+   and the tool block come from one Keychain read, of whether an account key
+   is saved. A model of this Mac's that isn't loaded yet has no context in
+   `/v1/models`, so one line says to run the start again once it is loaded, to
+   pick up its limits.
 
 A tool it can't set up prints `✗` and why, writes nothing and ends with
 `Darkbloom keeps serving.`; the start then exits 1 (a background start keeps
@@ -558,6 +600,12 @@ detection fails, no model is selected, or the local server does not bind within
 A selection that would serve GLM-5.3-Flash below the macOS GPU wired-memory
 limits prints a `warning:` with the fix and continues
 ([GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit)).
+
+The picker opens with the last selection (`[backend] enabled_models`) still
+downloaded selected, when it fits; else the largest downloaded model with room to
+spare (half its load budget or less); else the smallest downloaded one that fits;
+never a model only the catalog has, which selecting would download
+(`Start.pickerPreselection`, `provider-swift/Sources/darkbloom/Start/StartCommand+Picker.swift`).
 
 The ordinary catalog picker uses the selected models' shared activation reserve
 when checking each model's load estimate. Adding an unmeasured model can raise
@@ -775,7 +823,7 @@ Use the [stop flags](#darkbloom-stop) and [restart flags](#darkbloom-restart) be
 for deadline recovery. Commands do not initiate graceful shutdown by killing the
 serve task. `SIGTERM`, `SIGINT` and AppKit termination enter the same drain;
 Only me (`--local`) also waits for active HTTP response bodies. `SIGHUP`
-enters it too for a provider started by hand (`start --local`, or
+enters it too for a provider started by hand (`start --local --here`, or
 `start --foreground` typed into a terminal), so closing its terminal window
 drains it instead of ending the process at once. `SIGHUP` is not a stop signal
 in two cases: the provider's launchd job does not take it, so it has whatever
@@ -833,6 +881,7 @@ this Mac serves, read from its state and `local.json` (`Status.servingLines`,
 | Both, me first, paused | `Serving: you first — Darkbloom paused for 10 minutes (your last request 1 minute ago; back in about 1 minute if you stay idle)`; while your requests run, `(your request is running; back 2 minutes after it ends)`; then, only while some finish, `         2 Darkbloom requests are finishing`. Times are said from now (`MeFirstWords`): `under a minute`, `1 hour 5 minutes`, `back in under a minute`, `back any moment now`; never a clock time, which another Mac or an SSH session would read in a zone it doesn't see |
 | Both, me first off | `Serving: Darkbloom and you, shared — Darkbloom keeps serving while you use this Mac (me first is off)` |
 | Only me (`--local`) | `Serving: only you, on this Mac — Darkbloom never contacts this Mac` |
+| Only me while it loads its models, before its local API listens | `Serving: only you, on this Mac — starting: its local API opens once its models are loaded` |
 
 With a local API it adds where your requests go and whether an account key is
 saved, never the key: `Your requests: this Mac first, then your other Macs
@@ -920,7 +969,7 @@ serves that endpoint, two lines follow `pid:`: `serving:` (how it serves, in
 the start summary's words) and `requests:` (where your requests go)
 (`Local.servingLines`). A server without a key says `requests: this Mac only
 (…)` under its API key line instead, and only `serving:` follows `pid:`. A
-keyed server adds `tools:    darkbloom start --opencode · --hermes`. `--json`
+keyed server adds `tools:    darkbloom --opencode · --hermes` (`Local.toolsLine`). `--json`
 is unchanged.
 
 ### `darkbloom route key`
@@ -1329,8 +1378,58 @@ and mixed prompt arrivals, see [the profiling workflow](https://github.com/Layr-
 | `--timeout <seconds>` | integer, 0–3600 | `600` | Drain the running service before activating the installed update or the rollback |
 | `--force` | flag | `false` | Explicitly permit interruption during update or rollback activation |
 
-Exit 1 on `quarantined`, `busy`, `cancelled`, `downloadFailed`, `hashMismatch`,
-`replaceFailed`, or a failed check (`UpdateResult`, `provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift`).
+Exit 1 on `quarantined`, `busy`, `cancelled`, `checkFailed`, `downloadFailed`, `hashMismatch` or
+`replaceFailed` (`UpdateResult`, `provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift`), and with
+`--check-only` on `checkFailed` (`UpdateCheckResult`).
+
+The release check, with or without `--check-only`, waits at most 15 s for each
+answer and makes up to 3 tries while a try fails on the way: no answer in time,
+a connection lost or refused, a name that didn't resolve, no network, a TLS
+handshake that broke off. It pauses 0.5 to 1 s, then 1 to 2 s between tries. An
+answer is final, a refusal (an HTTP error, a release for another platform)
+included (`ReleaseCheck`). A check that still fails prints, on standard error,
+what failed and what to do, and nothing is downloaded. Only a check that got no
+answer points at the network (`UpdateCheckFailure`, `Update.checkFailedLines`):
+
+```text
+Couldn't check for updates: api.darkbloom.dev didn't answer within 15 s (3 tries). Nothing was downloaded or changed.
+Run `darkbloom update` again in a minute. If it keeps failing, check this Mac's network connection.
+```
+
+| The check failed because | Its second line |
+|---|---|
+| No answer reached this Mac: none in time, a connection lost or refused, a name that didn't resolve, no network, a TLS handshake that broke off | ``Run `darkbloom update` again in a minute. If it keeps failing, check this Mac's network connection.`` |
+| The coordinator answered, but not with a release this Mac can use: an HTTP error, an answer that isn't a release, a release for another platform or with a version it can't read | ``The coordinator answered, so this Mac's network connection works. Run `darkbloom update` again later.`` |
+| This Mac didn't get as far as asking: its update record (`recovery/state.json`) can't be read, or the coordinator URL isn't one | ``This is on this Mac, not its network connection: fix it, then run `darkbloom update` again.`` |
+
+With `--check-only` the first line ends after the reason and the second names
+`darkbloom update --check-only`. The same check runs for the automatic updates
+(single Mac and pair), the watchdog, the startup check and `darkbloom doctor`.
+A pair's automatic cycle (at its update slot, or catching up with the other
+Mac) makes one more round of 3 tries, 60 to 120 s after a first round without an
+answer, within the same cycle (`ReleaseCheck.pairCycle`): a failed check there
+costs both Macs the slot. Each failed try is logged at info level, in the
+process's log (the provider's, the cluster service's, the watchdog's) or on
+standard error for this command: which try, how long it took, the error's domain
+and code, how it connected (HTTP version, a new or reused connection, direct or
+through a proxy, the address reached; `URLSessionTaskMetrics`) and what follows.
+It names the coordinator's host, never a URL:
+
+```text
+release check: try 1 of 3 to api.darkbloom.dev failed after 15.0 s: NSURLErrorDomain -1001 (h2, new connection, direct, 203.0.113.7:443); asking again in 0.8 s
+```
+
+After an install it restarts what serves in the background, as `restart` does:
+the saved choice, Only me included (waiting for its local API, not for
+authorization). With nothing in the background it says
+``Nothing serves in the background now; your next `darkbloom start` serves
+v<version>.``, or, beside Only me in a terminal, ``Only me serves in a terminal
+now (`darkbloom start --local --here`): press Ctrl-C there, then `darkbloom
+start` serves v<version> in the background.`` (`Update.nothingRestartedLine`).
+Only me's background service also updates itself, as the network provider
+does: a check 5 minutes after it starts, then every 30 minutes; it downloads
+while serving, lets your requests finish, then restarts into the release
+(`StandaloneServer+AutoUpdate`).
 
 `--rollback` cannot be combined with `--check-only`, `--override-quarantine` or
 `--coordinator`, and `--yes` applies only to it. It prints the plan (installed
@@ -1418,7 +1517,7 @@ Where `logs` and [`report`](#darkbloom-report) wait for a `log` child to finish,
 | `--all` | Serve all downloaded models |
 | `--idle-timeout <mins>` | Idle-memory policy, saved to `[backend] idle_timeout_mins` (0 = always ready); skips the memory prompt |
 | `--foreground` | Run in the foreground (used by launchd; normally implicit) |
-| `--local` | Only me: serve the local API only; do not connect to the coordinator |
+| `--local` | Only me: serve the local API only, in the background; do not connect to the coordinator. With `--here`, in this terminal |
 | `--local-endpoint` | Both, me first (older flag): serve the local API beside the coordinator; Darkbloom requests pause while you use it and for `[local] me_first_idle_minutes` after (`[local] me_first`) |
 | `--port <port>` | This Mac's local API port, used and saved (default `[local] port`, else the one this Mac's local API already uses, else the first free from 8001; saved the first time) |
 | `--bind <addr>` | Bind address for local modes (default 127.0.0.1) |
@@ -1444,7 +1543,7 @@ Memory when idle
 
 Enter keeps the policy already in force (`Free when idle` on a fresh install).
 The answer is written to `[backend] idle_timeout_mins` for ordinary coordinator-connected
-idle unloading; `--model`/`--all`, `--idle-timeout`, non-interactive runs and the
+idle unloading, and Only me's (`StandaloneServer.startIdleUnload`); `--model`/`--all`, `--idle-timeout`, non-interactive runs and the
 launchd relaunch never prompt. Autopilot enrollment also skips this prompt and
 preserves the saved policy. See [`darkbloom idle`](#darkbloom-idle).
 Every `darkbloom start` mode preloads selected models with the default
@@ -1499,8 +1598,13 @@ Every subcommand accepts `--config`.
 | `start --autopilot`, `start --autopilot --all` | Explicit scripted enrollment of all verified eligible downloaded network builds; `--all` cannot include arbitrary local/off-catalog models |
 | `start --no-autopilot` | Explicitly save the ordinary idle-policy mode |
 
-Every normal interactive `start` asks about experimental Autopilot again,
-explicitly naming shadow mode as not activated and a later live rollout. The
+Every normal interactive `start` that serves the Darkbloom network asks about
+experimental Autopilot again, explicitly naming shadow mode as not activated and
+a later live rollout. Autopilot is for the Darkbloom network: Both, me first
+never asks and keeps the saved answer (`resolveAutopilotChoice`), and
+`autopilot enable` enrolls it; Only me has no Autopilot, and there
+`autopilot enable` (`start --autopilot`) is refused with
+`Autopilot requires a network provider. Nothing was saved.` The question's
 first default is No (`[y/N]`); later prompts use the saved choice (`[Y/n]` when
 enrolled). Enter keeps that default. Explicit enrollment flags and automatic
 restarts do not prompt. Both answers follow the ordinary model picker and
@@ -2288,8 +2392,22 @@ Code: `provider-swift/Sources/darkbloom/UninstallCommand.swift` (`Uninstall`) an
 ## `darkbloom restart`
 
 Drain accepted work, reload the recorded launchd configuration, and confirm a
-new provider process with fresh serving authorization. The coordinator URL,
-model selection and provider config arguments are preserved.
+new provider process with fresh serving authorization (Only me: its local API
+answering, `ServiceDrain.waitForLocalRestart`). The coordinator URL, model
+selection and provider config arguments are preserved.
+
+**It serves the saved choice** (`SavedChoiceService.align`,
+`provider-swift/Sources/darkbloom/SavedChoiceService.swift`): with `[local]
+mode` saved, a job an earlier build or start left serving another way is
+rewritten to it first, with the same models, on this Mac's one port
+(`LaunchAgent.rewriteInstalledJob`), and the restart says so: ``Restarting as
+saved: Darkbloom network (the service was set up for Both, me first).``
+Without a saved mode, the job restarts as installed. Only me in a terminal
+(`start --local --here`) is never stopped: restart changes nothing, exits 1
+and says ``Only me serves in a terminal now (`darkbloom start --local --here`),
+and restart never stops it.`` / ``Press Ctrl-C there, then `darkbloom restart`
+starts the background service again.`` (`Restart.terminalOnlyMe`). `update`
+restarts the same way.
 
 ```bash
 darkbloom restart [--timeout <seconds>] [--force] [--startup-timeout <seconds>] [--config <path>]
@@ -2299,7 +2417,7 @@ darkbloom restart [--timeout <seconds>] [--force] [--startup-timeout <seconds>] 
 |---|---|---|---|
 | `--timeout <seconds>` | integer, 0–3600 | `600` | Wait for accepted work and the coordinator acknowledgement before restarting |
 | `--force` | flag | `false` | Explicitly permit interruption of unfinished work before restarting |
-| `--startup-timeout <seconds>` | integer, 1–3600 | `180` | Wait for a new process identity and fresh App Attest, legacy, or owner self-route authorization |
+| `--startup-timeout <seconds>` | integer, 1–3600 | `180` | Wait for a new process identity and fresh App Attest, legacy, or owner self-route authorization; for Only me, for its local API to answer, once its models are loaded |
 | `--config <path>` | path | unset | Override the config used to re-arm the watchdog; the provider keeps its recorded config arguments |
 | `--solo` | flag | `false` | On a Mac in a two-Mac cluster: restart single-Mac serving on this Mac only |
 
@@ -3154,7 +3272,7 @@ reason, keep the bare category, such as `Inference failure: invalid request`
 | `Inference failure: invalid request (native delimiter in history)` | A history argument name or string value contains GLM tool-call delimiter text | `GLM5NextPromptPolicy.normalizedTextInput` |
 | `Inference failure: invalid request (non-text content)` | Image, video or other non-text content on GLM-5.3-Flash's text path | same |
 | `Inference failure: invalid request (unsupported forced tool choice)` | A required or named `tool_choice` the model cannot enforce: a schema outside the enforceable subset, or GLM-5.3-Flash image or video input | `ToolChoicePromptPolicy`; `MultiModelBatchSchedulerEngine` |
-| `Inference failure: invalid request (request exceeds context)` | The prompt plus `max_tokens` exceeds the model's context window | `EngineV2Bridge` (`advertisedContextExceeded`) |
+| `Inference failure: invalid request (request exceeds context)` | The prompt alone fills the model's context window on one Mac (a larger `max_tokens` is cut to fit, not refused), or an output reservation is invalid | `EngineV2Bridge` (`promptExceedsContext`, `advertisedContextExceeded`) |
 | `Inference failure: invalid request (unsupported output control)` | An output control the model's engine cannot honor, such as logprobs on an engine without them | `EngineV2Bridge.nativeOutputControlRefusal` |
 
 Prompt-time refusals also use the earlier reasons: a GLM-5.3-Flash history call
@@ -3492,6 +3610,8 @@ automatic updates with `darkbloom autoupdate disable`.
 | Auto-update first check / interval / drain | `300` s / `1800` s / `120` s | `provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift` (`autoUpdateInitialDelay`, `autoUpdateInterval`, `updateDrainTimeout`) |
 | Update quarantine | `rollbackThreshold = 3`; `defaultStabilizationSeconds = 600` | `provider-swift/Sources/ProviderCore/Update/UpdateRecoveryState.swift` |
 | Release endpoint | `GET /v1/releases/latest?platform=macos-arm64` | `provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift` |
+| Release check: bound per try / tries / pauses | `15` s / `3`, after a failure on the way only / `0.5`–`1` s, then `1`–`2` s | `provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift` (`ReleaseCheck`: `requestTimeout`, `attempts`, `backoff`) |
+| Release check of a pair's automatic cycle: rounds / pause between them | `2` / `60`–`120` s (at most 6 tries, about 3.6 min) | `provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift` (`ReleaseCheck.pairCycle`: `rounds`, `roundPause`) |
 | Update banner timeout | 2 s | `provider-swift/Sources/ProviderCore/Update/UpdateBanner.swift` |
 | Local chat body cap | `localInferenceMaxUploadBytes = 32 * 1024 * 1024` | `provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift` |
 | Local bind wait | 5 s | `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`waitUntilBound`) |

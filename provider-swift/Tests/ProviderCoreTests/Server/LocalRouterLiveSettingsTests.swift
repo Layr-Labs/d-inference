@@ -347,4 +347,93 @@ struct LocalRouterLiveSettingsTests {
             "provider.toml doesn't read as a provider config now; requests keep the route my-macs-first until it does",
         ])
     }
+
+    // MARK: - A save in place
+
+    /// An editor that saves in place empties the file, then writes it. A request that finds it empty keeps the last good
+    /// route: with `this-mac` saved and a key, nothing is passed on (an empty file read as "no route" would mean
+    /// `my-macs`). Said once, and the whole file then reads as before, with no "route is now" line.
+    @Test func aFileFoundEmptyWhileItIsSavedInPlaceKeepsTheLastGoodRoute() async throws {
+        let file = try ConfigFile(route: .thisMac)
+        let fixture = RouterFixture(route: .thisMac, settingsFile: file.url)
+        try await fixture.app.test(.router) { client in
+            let before = try await Self.chat(client, upstream: fixture.upstream)
+            #expect(before == (.notFound, nil))
+            try file.writeInPlace("")
+            let midSave = try await Self.chat(client, upstream: fixture.upstream)
+            #expect(midSave == (.notFound, nil))
+            try file.writeInPlace(ConfigFile.text(.thisMac))
+            let after = try await Self.chat(client, upstream: fixture.upstream)
+            #expect(after == (.notFound, nil))
+        }
+        #expect(fixture.upstream.posts.count == 0)
+        #expect(fixture.log.lines == [
+            "provider.toml doesn't read as a provider config now; requests keep the route this-mac until it does",
+        ])
+    }
+
+    /// A read that catches a save in place half done keeps the last good route: the `stat` saw the whole file, and the
+    /// read finds it emptied, or holding only its start (which parses, without `[local] route`). The next call reads
+    /// the file whole.
+    @Test func aReadThatCatchesASaveInPlaceHalfDoneKeepsTheLastGoodRoute() throws {
+        let whole = ConfigFile.text(.thisMac)
+        let start = try #require(whole.components(separatedBy: "route = ").first)
+        for midSave in ["", start] {
+            let file = try ConfigFile(whole)
+            let routes = LocalRouterRouteFile()
+            var pending: String? = midSave
+            func route() -> LocalSettings.Route? {
+                routes.route(in: file.url, startingWith: .thisMac, log: { _ in }, read: { url in
+                    if let text = pending {
+                        pending = nil
+                        try file.writeInPlace(text)
+                    }
+                    return try ConfigManager.load(from: url).local?.route
+                })
+            }
+            #expect(route() == .thisMac, "\(midSave.debugDescription)")
+            try file.writeInPlace(whole)
+            #expect(route() == .thisMac, "\(midSave.debugDescription)")
+        }
+    }
+
+    /// `this-mac` saved in place over and over while requests this Mac can't take keep coming: not one is passed on.
+    @Test func aThisMacFileSavedInPlaceOverAndOverPassesNothingOn() async throws {
+        let file = try ConfigFile(route: .thisMac)
+        let fixture = RouterFixture(route: .thisMac, settingsFile: file.url)
+        let saving = SavingInPlace(file, text: ConfigFile.text(.thisMac))
+        try await fixture.app.test(.router) { client in
+            for _ in 0..<2_000 { _ = try await Self.chat(client, upstream: fixture.upstream) }
+        }
+        let saves = await saving.stop()
+        let passedOn = fixture.upstream.posts.count
+        #expect(saves > 100, "the file was saved only \(saves) times")
+        #expect(passedOn == 0, "\(passedOn) of 2,000 requests were passed on")
+        #expect(!fixture.log.lines.contains { $0.hasPrefix("route is now") }, "\(Set(fixture.log.lines))")
+    }
+
+    /// Saves `text` into `file` in place, over and over, from its own task until `stop()`, which returns how many times.
+    final class SavingInPlace: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stopped = false
+        private var task: Task<Int, Never>?
+
+        init(_ file: ConfigFile, text: String) {
+            task = Task.detached { [self] in
+                var saves = 0
+                while !isStopped {
+                    try? file.writeInPlace(text)
+                    saves += 1
+                }
+                return saves
+            }
+        }
+
+        private var isStopped: Bool { lock.withLock { stopped } }
+
+        func stop() async -> Int {
+            lock.withLock { stopped = true }
+            return await task?.value ?? 0
+        }
+    }
 }

@@ -145,19 +145,69 @@ struct RouteChoiceCommandTests {
         #expect(follower.choose(.myMacs) == 0)
         #expect(try ConfigManager.load(from: url).local?.route == .myMacs)
         #expect(followerLines.all.first == "✓ Saved. It applies when this Mac serves alone (`\(Self.cli) start --solo`).")
-        #expect(followerLines.all.last == "In this pair, the leading Mac's route applies (\(other)): its local API passes "
-            + "on what the pair can't take, including requests this Mac forwards to it. Run `\(Self.cli) route my-macs` there.")
+        // It can't know the leading Mac's route or key, so it says only whose route decides.
+        #expect(followerLines.all.last == "In this pair, the leading Mac's route applies (\(other)): its route decides "
+            + "what the pair passes on, including requests from this Mac. Run `\(Self.cli) route my-macs` there.")
         // The leading Mac runs the pair's API: it uses the route now.
-        let (leader, leaderLines) = flow(config: url, keySaved: true, live: Self.keyed, pair: .leads(other: other))
-        #expect(leader.choose(.myMacsFirst) == 0)
+        let leaderURL = try makeTempConfig()
+        defer { try? FileManager.default.removeItem(at: leaderURL.deletingLastPathComponent()) }
+        let (leader, leaderLines) = flow(config: leaderURL, keySaved: true, live: Self.keyed, pair: .leads(other: other))
+        #expect(leader.choose(.myMacs) == 0)
         #expect(leaderLines.all.first == "✓ Saved. Your local API uses it now.")
         #expect(leaderLines.all.last == "In this pair, this Mac's route applies: the pair's local API runs here and passes "
-            + "on what the pair can't take, including requests \(other) forwards to it.")
+            + "on what the pair can't take, including requests from \(other).")
         // With `this-mac`, the pair's API passes nothing on.
         let (pinned, pinnedLines) = flow(config: url, keySaved: true, live: Self.keyed, pair: .leads(other: other))
         #expect(pinned.choose(.thisMac) == 0)
         #expect(pinnedLines.all.last == "In this pair, this Mac's route applies: the pair's local API runs here and passes "
-            + "nothing on, including requests \(other) forwards to it.")
+            + "nothing on, including requests from \(other).")
+        // No line says the other Mac forwards anything: a Both pair's other Mac runs no relay.
+        #expect(!(followerLines.text + leaderLines.text + pinnedLines.text).contains("forwards"))
+    }
+
+    /// The pair's other Mac is another machine to the leading Mac's API: with `my-macs-first`, its requests go to your
+    /// other Macs, never to the paid network, and both Macs say so.
+    @Test func inAPairMyMacsFirstNeverPaysForTheOtherMacsRequests() throws {
+        let url = try makeTempConfig()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let other = "the other Mac (Apple M3 Ultra, 256 GB)"
+        let (leader, leaderLines) = flow(config: url, keySaved: true, live: Self.keyed, pair: .leads(other: other))
+        #expect(leader.choose(.myMacsFirst) == 0)
+        #expect(leaderLines.all.last == "In this pair, this Mac's route applies: the pair's local API runs here and passes "
+            + "on what the pair can't take, including requests from \(other); to this Mac those come from another "
+            + "machine, so they never use the paid network.")
+        let (follower, followerLines) = flow(config: url, keySaved: true, live: Self.keyed, pair: .follows(leader: other))
+        #expect(follower.choose(.myMacsFirst) == 0)
+        #expect(followerLines.all.last == "In this pair, the leading Mac's route applies (\(other)): its route decides "
+            + "what the pair passes on, including requests from this Mac; to the leading Mac those come from another "
+            + "machine, so they never use the paid network. Run `\(Self.cli) route my-macs-first` there.")
+    }
+
+    /// On the Mac that follows, a route refused for want of a key says first that the pair's route and key are the
+    /// leading Mac's, so no key is saved on the wrong Mac for the pair; a single Mac and the leading Mac say as before.
+    @Test func onTheMacThatFollowsTheNoKeyRefusalNamesTheLeadingMac() throws {
+        let url = try makeTempConfig()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let before = try Data(contentsOf: url)
+        let leading = "the leading Mac (Apple M3 Ultra, 256 GB)"
+        let (follower, lines) = flow(config: url, keySaved: false, live: Self.keyed, pair: .follows(leader: leading))
+        #expect(follower.choose(.myMacs) == 1)
+        #expect(try Data(contentsOf: url) == before)
+        #expect(lines.all == [
+            "✗ Not saved: `\(Self.cli) route my-macs` passes your requests on with your account API key, and this Mac has "
+                + "none saved.",
+            "In this pair, the leading Mac's route and key apply (\(leading)): for the pair, run `\(Self.cli) route key` "
+                + "and `\(Self.cli) route my-macs` there.",
+            "For this Mac alone (`\(Self.cli) start --solo`), save one here from the Darkbloom console with "
+                + "`\(Self.cli) route key` (a self-route-only key is safest), then run `\(Self.cli) route my-macs` again.",
+        ])
+        let saveHere = "Save one from the Darkbloom console with `\(Self.cli) route key` (a self-route-only key is safest), "
+            + "then run `\(Self.cli) route my-macs-first` again."
+        for pair in [RouteSaved.PairPart?.none, .leads(other: "the other Mac")] {
+            let (flow, lines) = flow(config: url, keySaved: false, live: Self.keyed, pair: pair)
+            #expect(flow.choose(.myMacsFirst) == 1)
+            #expect(lines.all.count == 2 && lines.all.last == saveHere, "\(String(describing: pair))")
+        }
     }
 
     /// The pair's local API on the leading Mac without a local key (`cluster local --no-auth`) passes nothing on, so no
@@ -171,8 +221,9 @@ struct RouteChoiceCommandTests {
         #expect(leader.choose(.myMacs) == 0)
         #expect(try ConfigManager.load(from: url).local?.route == .myMacs)
         #expect(lines.all.first == "✓ Saved.")
+        // That API is the pair's: it keeps every request on the pair, not on this Mac alone.
         #expect(lines.all.last == "The local API running now has no local key (--no-auth): it keeps every request on "
-            + "this Mac, whatever the route.")
+            + "this pair, whatever the route.")
         #expect(!lines.text.contains("passes on"))
     }
 

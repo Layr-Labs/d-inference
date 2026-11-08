@@ -250,6 +250,11 @@ struct Update: AsyncParsableCommand {
                 "It can't run beside the pair (both need this Mac's one serving lock). Run `\(cli) stop --solo` to remove it."]
     }
 
+    /// Nothing serves in the background to restart into `version`.
+    static func nothingRestartedLine(version: String, terminalOnlyMe: Bool = false) -> String {
+        "Restart the provider for v\(version) to take effect."
+    }
+
     private func restartInstalledProvider(_ updater: SelfUpdater, operation: String, look: DarkbloomCommandLook) async throws {
         let previous = LaunchAgent.launchSnapshot()?.process
         let session = try await look.working("Draining accepted requests") { try await ServiceDrain.prepare(options: drain) }

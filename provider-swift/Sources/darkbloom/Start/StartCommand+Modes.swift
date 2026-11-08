@@ -204,6 +204,36 @@ extension Start {
     }
 
 
+    /// The models this Mac's own server serves (every one through engine v2), and a line for each other one: why it
+    /// is skipped.
+    static func locallyServable(_ selected: [ModelInfo], mtpMode: MTPMode) -> (servable: [ModelInfo], skipped: [String]) {
+        let (adapted, unsupported) = GLM5NextLocalQualification.partition(selected)
+        var skipped = unsupported.map { dropped in
+            "Skipping \(dropped.id): " + (GLM5NextLocalQualification.localSelectionRefusal(model: dropped)
+                ?? "model_type '\(dropped.modelType ?? "unknown")' has no engine-v2 adapter (v0.7.5 serves everything "
+                + "through engine v2)")
+        }
+        let (servable, withoutNativeMTP) = GLM5NextLocalServing.partition(adapted, mode: mtpMode)
+        skipped += withoutNativeMTP.map {
+            "Skipping \($0.id): GLM serves only with its embedded MTP, which is on by default; remove backend mtp_mode = "
+                + "\"off\" and leave DARKBLOOM_CBV2_MTP enabled"
+        }
+        return (servable, skipped)
+    }
+
+    /// When no model can serve.
+    static var noModelToServe: String {
+        "No engine-v2-capable models available to serve. Download a supported model (gpt-oss / gemma-4 families) and retry."
+    }
+
+    /// What `--here` stops; nothing yet.
+    static func hereStopsLine(_ state: DaemonState?, alive: (Int32) -> Bool = { daemonProcessAlive(pid: $0) }) -> String? {
+        nil
+    }
+
+    /// On the way out of `--here`; nothing yet.
+    static func hereEndedLine(saved: LocalSettings.Mode?) -> String { "" }
+
     /// The coordinator-less server couldn't listen on its port within 5 seconds; `nextFree` is the port
     /// `start --port` would take instead.
     static func localServerBindFailure(bind: String, port: UInt16, nextFree: UInt16?) -> String {

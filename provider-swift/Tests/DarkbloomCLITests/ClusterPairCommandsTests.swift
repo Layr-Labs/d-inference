@@ -867,12 +867,10 @@ struct ClusterPairControlTests {
     /// A terminal `darkbloom cluster` saves the pair's "Only me" (`cluster local`) as `[local] mode = "local"`, which a
     /// single-Mac start on this Mac reads too. The desktop app's Start (`start --model <id> --config <path>`) and scripts
     /// run without a terminal: on a Mac whose pair doesn't run here (the other Mac asleep or gone, this Mac's part
-    /// serving alone or waiting), the start is refused in `start`'s one line before this Mac's part is stopped or its
-    /// saved start cleared, as for one Mac (L4's C1). Before, the part was stopped and the start cleared first.
-    @Test("without a terminal, the pair's saved Only me is refused before this Mac's part is stopped")
-    func nonTerminalStartWithThePairsOnlyMeLeavesThePart() async {
-        let refusal = "error: This Mac is set to Only me, which serves in a terminal. Run `darkbloom start` in one, or name "
-            + "how to serve: --local, --network or --me-first."
+    /// serving alone or waiting), Only me now serves this Mac alone in the background, as a network start does. It was
+    /// refused (L4's C1) while Only me needed a terminal.
+    @Test("without a terminal, the pair's saved Only me serves this Mac alone, as a network start does")
+    func nonTerminalStartWithThePairsOnlyMeServesAlone() async {
         let app = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent, \.standardErrorContent]) {
             var stale = stalePair()
             stale.localOnly = true
@@ -899,9 +897,11 @@ struct ClusterPairControlTests {
         }
         for (name, result) in [("the app's Start", app), ("--solo", solo)] {
             let stderr = text(result?.standardErrorContent), out = text(result?.standardOutputContent)
-            #expect(stderr.components(separatedBy: "\n").filter { $0 == refusal }.count == 1, "\(name): \(stderr)")
-            #expect(!stderr.contains("released"), "\(name): this Mac's part keeps running")
-            #expect(!out.contains("its saved start is cleared"), "\(name): \(out)")
+            #expect(!stderr.contains("serves in a terminal"), "\(name): \(stderr)")
+            #expect(out.contains("serving this Mac alone"), "\(name): \(out)")
+            #expect(stderr.contains("released"), "\(name): this Mac's part is released first")
+            // The single-Mac start went ahead: it ends at this sandbox's missing model, with the commands that get one.
+            #expect(stderr.contains("No model to serve yet. See them: `darkbloom models catalog`."), "\(name): \(stderr)")
             #expect(pairActionCalls(stderr).isEmpty, "\(name)")
         }
     }

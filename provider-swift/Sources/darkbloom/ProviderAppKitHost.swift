@@ -11,7 +11,7 @@ enum ProviderAppKitHost {
     /// The serve modes that run long and need APNs: `start --foreground` (the
     /// launchd-spawned daemon) and `start --local` (standalone). A bare `start`
     /// installs the launchd agent and exits — it must NOT host AppKit.
-    static func shouldHost(_ args: [String]) -> Bool {
+    static func shouldHost(_ args: [String], startedByAService: () -> Bool = { false }) -> Bool {
         guard args.first == "start" else { return false }
         return args.contains("--foreground") || args.contains("--local")
     }

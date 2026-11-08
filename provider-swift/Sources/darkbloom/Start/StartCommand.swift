@@ -53,6 +53,9 @@ struct Start: AsyncParsableCommand {
     @Flag(help: "Run a local OpenAI-compatible HTTP server only; do not connect to the coordinator.")
     var local = false
 
+    @Flag(help: "With --local: serve Only me in this terminal for this session.")
+    var here = false
+
     @Flag(help: "Serve a local OpenAI endpoint ALONGSIDE the coordinator (unified mode): same loaded models serve both the public fleet and local clients. Darkbloom pauses while you use it unless --no-me-first.")
     var localEndpoint = false
 
@@ -110,7 +113,7 @@ struct Start: AsyncParsableCommand {
     var localFirstOptions: LocalFirstOptions {
         LocalFirstOptions(local: local, localEndpoint: localEndpoint, network: network, meFirst: meFirst,
                           meFirstIdleMinutes: meFirstIdle, route: route, choose: choose, port: portOption,
-                          bind: bindOption, noAuth: noAuth, foreground: foreground)
+                          bind: bindOption, noAuth: noAuth, foreground: foreground, here: here)
     }
 
     /// How this start serves from its flags alone, as before `[local]`: for callers that resolved nothing (tests that

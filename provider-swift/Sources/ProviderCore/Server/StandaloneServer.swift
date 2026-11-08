@@ -153,6 +153,9 @@ public actor StandaloneServer {
     var lifecycleDrainTask: Task<ProviderDrainStatus, Never>?
     var lifecycleCommandID: String?
     var lifecycleStatus = ProviderDrainStatus()
+    /// Only me's background service: its update cycle and idle unload.
+    var autoUpdateTask: Task<Void, Never>?
+    var idleUnloadTask: Task<Void, Never>?
 
     /// One resident model: its v2 bridge, loaded container (the VLM owns both
     /// vision and the exact text tower served by the bridge), and KV sizing

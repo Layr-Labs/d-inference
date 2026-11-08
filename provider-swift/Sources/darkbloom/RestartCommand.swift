@@ -34,6 +34,14 @@ struct Restart: AsyncParsableCommand {
 
     @OptionGroup var configOptions: ConfigOptions
 
+    /// Whether Only me serves in a terminal now; not yet.
+    static func terminalOnlyMe(_ state: DaemonState?, launchJob: ProcessIdentity? = LaunchAgent.launchSnapshot()?.process,
+                               alive: (Int32) -> Bool = { daemonProcessAlive(pid: $0) }) -> Bool {
+        false
+    }
+
+    static var terminalOnlyMeLines: [String] { [] }
+
     /// What `darkbloom restart` does on a Mac in a two-Mac cluster.
     enum PairRestart: Equatable {
         /// Restart the pair on both Macs (`ClusterPairCommands.restart`).

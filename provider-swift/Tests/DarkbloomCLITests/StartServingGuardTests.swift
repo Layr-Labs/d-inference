@@ -125,8 +125,8 @@ struct StartServingGuardTests {
                 + "(v0.7.5 serves everything through engine v2)"))
         #expect(stderr.contains("Skipping fixture/untyped: model_type 'unknown' has no engine-v2 adapter"))
         #expect(stderr.contains(
-            "No engine-v2-capable models available to serve. "
-                + "Download a supported model (gpt-oss / gemma-4 families) and retry."))
+            "No model to serve yet. See them: `darkbloom models catalog`. Get one: `darkbloom models download <id>`, "
+                + "then `darkbloom start`."))
     }
 
     @Test("--local with no local models refuses to start")
@@ -145,7 +145,7 @@ struct StartServingGuardTests {
         let stderr = text(result?.standardErrorContent)
         #expect(!stderr.contains("WARNING"))
         #expect(!stderr.contains("Skipping"))
-        #expect(stderr.contains("No engine-v2-capable models available to serve."))
+        #expect(stderr.contains("No model to serve yet. See them: `darkbloom models catalog`."))
     }
 
     @Test("preflight accepts a Mac with enough RAM or unknown hardware")

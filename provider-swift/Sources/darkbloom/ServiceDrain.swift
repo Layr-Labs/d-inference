@@ -186,6 +186,11 @@ enum ServiceDrain {
         }
         throw ValidationError("Restart launched, but fresh authorization was not confirmed within \(timeout)s. The new service is still starting; inspect \(BuildEnvironment.current.cliName) status. No second restart was issued.")
     }
+    static func localRestartReady(state: DaemonState, info: LocalEndpoint.Info, previous: ProcessIdentity?, now: Double,
+                                  isCurrent: (ProcessIdentity) -> Bool = { $0.isCurrent() }) -> Bool {
+        false
+    }
+
     static func restartReady(state: DaemonState, previous: ProcessIdentity?, now: Double,
                              isCurrent: (ProcessIdentity) -> Bool = { $0.isCurrent() }) -> Bool {
         guard !state.isStale(now: now), let identity = state.processIdentity,

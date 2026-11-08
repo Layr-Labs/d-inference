@@ -41,6 +41,8 @@ struct LocalFirstOptions: Equatable, Sendable {
     var noAuth = false
     /// launchd's child: its flags say how it serves; it never asks and never saves.
     var foreground = false
+    /// `--local --here`: Only me in this terminal, for this session.
+    var here = false
 
     /// The mode flags given, in `ServingModeFlag` order.
     var modeFlags: [ServingModeFlag] {
@@ -127,6 +129,9 @@ struct LocalFirstOptions: Equatable, Sendable {
         }
         return terminal ? .ask(preselected: .both) : .decided(today, .today)
     }
+
+    /// Whether this start's mode flag is saved.
+    var savesModeFlag: Bool { false }
 }
 
 /// Where a start's mode came from.

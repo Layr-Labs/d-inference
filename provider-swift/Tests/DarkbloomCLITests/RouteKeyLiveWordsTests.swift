@@ -10,17 +10,11 @@ import Testing
 /// is in memory; no key is ever printed.
 @Suite("route key: when the key counts")
 struct RouteKeyLiveWordsTests {
-    static var cli: String { BuildEnvironment.current.cliName }
-    static let key = "sk-synthetic-route-key-5e1d0c9b8a7f6e5d"
-    static let other = "the other Mac (Apple M3 Ultra, 256 GB)"
+    typealias Lines = RouteKeyCommandTests.Lines
 
-    final class Lines: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [String] = []
-        var all: [String] { lock.withLock { stored } }
-        var text: String { all.joined(separator: "\n") }
-        func append(_ line: String) { lock.withLock { stored.append(line) } }
-    }
+    static var cli: String { BuildEnvironment.current.cliName }
+    static let key = RouteKeyCommandTests.key
+    static let other = "the other Mac (Apple M3 Ultra, 256 GB)"
 
     private func flow(route: LocalSettings.Route?, running: Bool, pair: RouteSaved.PairPart? = nil,
                       saved: String? = nil) -> (RouteKeyFlow, Lines) {

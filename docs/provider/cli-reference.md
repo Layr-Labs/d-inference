@@ -922,7 +922,7 @@ The same choice again writes nothing (`✓ Already saved. …`).
   and exit 1: ``✗ Not saved: `darkbloom route my-macs` passes your requests on
   with your account API key, and this Mac has none saved.``, then the command
   that saves one (`darkbloom route key`) and the one to run again. It only asks
-  whether a key is saved; it never reads or prints one.
+  whether a key is saved, and never prints one.
 - **A local API running now uses it from its next request,** with no restart
   and no model reload: `✓ Saved. Your local API uses it now.` With none
   running: `✓ Saved. It applies when your local API starts.` Its router reads

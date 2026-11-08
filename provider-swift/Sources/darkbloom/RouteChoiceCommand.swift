@@ -2,36 +2,45 @@ import ArgumentParser
 import Foundation
 import ProviderCore
 
+// Each command's `route` is both its name and what it saves, so `route my-macs` can't save another route.
+
 /// `darkbloom route this-mac`: your requests stay on this Mac.
 struct RouteThisMac: AsyncParsableCommand {
+    static let route = LocalSettings.Route.thisMac
     static let configuration = CommandConfiguration(
-        commandName: LocalSettings.Route.thisMac.rawValue,
+        commandName: route.rawValue,
         abstract: "Keep your requests on this Mac.",
         discussion: "Saves [local] route = \"this-mac\": a request this Mac can't take gets this Mac's own answer, and "
             + "nothing is passed on. Needs no account key.")
 
     @OptionGroup var configOptions: ConfigOptions
 
-    func run() async throws { throw ExitCode(RouteChoiceFlow.live(configPath: configOptions.config).choose(.thisMac)) }
+    func run() async throws {
+        throw ExitCode(RouteChoiceFlow.live(configPath: configOptions.config).choose(Self.route))
+    }
 }
 
 /// `darkbloom route my-macs`: a request this Mac can't take goes on to your other Macs.
 struct RouteMyMacs: AsyncParsableCommand {
+    static let route = LocalSettings.Route.myMacs
     static let configuration = CommandConfiguration(
-        commandName: LocalSettings.Route.myMacs.rawValue,
+        commandName: route.rawValue,
         abstract: "Send a request this Mac can't take to your other Macs (free).",
         discussion: "Saves [local] route = \"my-macs\": your other Macs answer, free; nothing goes to the Darkbloom "
             + "network. Needs your account API key (`\(BuildEnvironment.current.cliName) route key`).")
 
     @OptionGroup var configOptions: ConfigOptions
 
-    func run() async throws { throw ExitCode(RouteChoiceFlow.live(configPath: configOptions.config).choose(.myMacs)) }
+    func run() async throws {
+        throw ExitCode(RouteChoiceFlow.live(configPath: configOptions.config).choose(Self.route))
+    }
 }
 
 /// `darkbloom route my-macs-first`: your other Macs first, then the Darkbloom network.
 struct RouteMyMacsFirst: AsyncParsableCommand {
+    static let route = LocalSettings.Route.myMacsFirst
     static let configuration = CommandConfiguration(
-        commandName: LocalSettings.Route.myMacsFirst.rawValue,
+        commandName: route.rawValue,
         abstract: "Send it to your other Macs (free), then the Darkbloom network (billed).",
         discussion: "Saves [local] route = \"my-macs-first\": your other Macs first, free, then the Darkbloom network, "
             + "billed to your balance. Requests from other machines (your LAN or tailnet) never use the paid network. "
@@ -40,19 +49,20 @@ struct RouteMyMacsFirst: AsyncParsableCommand {
     @OptionGroup var configOptions: ConfigOptions
 
     func run() async throws {
-        throw ExitCode(RouteChoiceFlow.live(configPath: configOptions.config).choose(.myMacsFirst))
+        throw ExitCode(RouteChoiceFlow.live(configPath: configOptions.config).choose(Self.route))
     }
 }
 
 /// The steps of `route <choice>`, apart from the Keychain, the config file and the terminal: it saves `[local] route`
-/// and says where your requests go. A route that passes requests on needs a saved account key; it only asks whether
-/// one is saved, never reads or prints it. No line names a speed.
+/// and says where your requests go. A route that passes requests on needs a saved account key: the flow gets only
+/// whether one is saved, and no line names a key. No line names a speed.
 struct RouteChoiceFlow {
     /// Whether the local router's account key is saved; asked only for a route that passes requests on.
     let accountKeySaved: () -> Bool
     /// Saves `[local] route`; true when the file changed.
     let save: (LocalSettings.Route) throws -> Bool
-    /// The local API running now: its router reads the saved route before its next request that needs it.
+    /// The local API running now: its router uses the saved route from its next request that needs it. Only whether it
+    /// runs and whether it has a local key are read; its key is never said.
     var liveEndpoint: LocalEndpoint.Info?
     /// This Mac's part in a two-Mac cluster: the pair's local API uses the leading Mac's route.
     var pair: RouteSaved.PairPart?
@@ -111,10 +121,11 @@ struct RouteChoiceFlow {
     }
 }
 
-/// When a saved route or account key counts. A running local API reads both again before its next request that needs
-/// them (`LocalRouterRouteFile` for `[local] route`, the key's change notification), so nothing restarts and no model
-/// reloads. In a two-Mac cluster, the pair's local API runs on the leading Mac and uses that Mac's route and key; the
-/// other Mac's own port forwards requests to it.
+/// When a saved route or account key counts. A running local API uses both from its next request that needs them:
+/// its router reads `[local] route` again once provider.toml changes (`LocalRouterRouteFile`), and the key's change
+/// notification makes it read the key again, so nothing restarts and no model reloads. In a two-Mac cluster, the
+/// pair's local API runs on the leading Mac and uses that Mac's route and key; the other Mac's own port forwards
+/// requests to it.
 enum RouteSaved {
     /// This Mac's part in a two-Mac cluster.
     enum PairPart: Equatable, Sendable {

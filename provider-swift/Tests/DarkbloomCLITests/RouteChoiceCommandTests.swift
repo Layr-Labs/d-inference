@@ -10,13 +10,7 @@ import Testing
 /// Every test writes a temporary provider.toml and stands in for the Keychain; no key is ever read or printed.
 @Suite("route <choice>")
 struct RouteChoiceCommandTests {
-    final class Lines: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [String] = []
-        var all: [String] { lock.withLock { stored } }
-        var text: String { all.joined(separator: "\n") }
-        func append(_ line: String) { lock.withLock { stored.append(line) } }
-    }
+    typealias Lines = RouteKeyCommandTests.Lines
 
     static var cli: String { BuildEnvironment.current.cliName }
 
@@ -45,6 +39,9 @@ struct RouteChoiceCommandTests {
         #expect(try Darkbloom.parseAsRoot(["route", "my-macs", "--config", "/tmp/provider.toml"]) is RouteMyMacs)
         #expect(try Darkbloom.parseAsRoot(["route", "key", "--stdin"]) is RouteKey)
         #expect(throws: (any Error).self) { try Darkbloom.parseAsRoot(["route", "everywhere"]) }
+        // What each saves is the route it is named after: `route my-macs` never saves the paid route.
+        #expect(RouteThisMac.route == .thisMac && RouteMyMacs.route == .myMacs)
+        #expect(RouteMyMacsFirst.route == .myMacsFirst)
     }
 
     @Test func aChoiceIsSavedAsTheLocalRouteAndKeepsTheRestOfTheFile() throws {

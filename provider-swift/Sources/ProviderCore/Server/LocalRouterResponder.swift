@@ -98,7 +98,8 @@ public final class LocalRouter: Sendable {
         var local = try await inner.respond(to: request, context: context)
         local.headers[LocalRouterPolicy.servedByHeader] = LocalRouterPolicy.thisMac
         guard LocalRouterPolicy.passesOn(localStatus: local.status) else { return local }
-        // Only a request this Mac can't take reads the account key; without one, this Mac's answer stands.
+        // Only a request this Mac can't take reads the saved route (one `stat` of the config file) and the account key;
+        // without a key, this Mac's answer stands.
         let (saved, key) = config.effectiveRoute()
         guard let key else { return local }
         if local.status == .notFound,

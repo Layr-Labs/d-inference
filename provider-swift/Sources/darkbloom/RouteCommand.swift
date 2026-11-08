@@ -142,12 +142,13 @@ struct RouteKeyFlow {
         }
         say("✓ Account key removed from this Mac's Keychain.")
         for line in Self.routeLines(savedRoute: savedRoute, keySaved: false) { say(line) }
-        // A local API without a local key (`--no-auth`) never used the key, so nothing changes for it. Any other stops
-        // passing requests on from its next one: what the key let the route do.
-        let wentOn = LocalSettings(route: savedRoute).resolvedRoute(accountKeySaved: true)
-        if localAPIRunning, pair?.follows != true, wentOn != .thisMac {
+        // A local API without a local key (`--no-auth`) never used the key, so nothing changes for it. Any other one
+        // whose route passed requests on with the key stops doing so from its next request.
+        let routeWithTheKey = LocalSettings(route: savedRoute).resolvedRoute(accountKeySaved: true)
+        if localAPIRunning, pair?.follows != true, routeWithTheKey != .thisMac {
             say("\(RouteSaved.usesItNow) From its next request, one this Mac can't take gets this Mac's own answer "
-                + "instead of going to your other Macs" + (wentOn == .myMacsFirst ? " or the Darkbloom network." : "."))
+                + "instead of going to your other Macs"
+                + (routeWithTheKey == .myMacsFirst ? " or the Darkbloom network." : "."))
         } else if !liveEndpointHasNoLocalKey {
             say(RouteSaved.when(running: localAPIRunning, pair: pair))
         }

@@ -13,10 +13,12 @@ import Testing
 struct RouteKeyCommandTests {
     static let key = "sk-synthetic-route-key-5e1d0c9b8a7f6e5d"
 
+    /// What a flow said, line by line; the other `route` suites use it too.
     final class Lines: @unchecked Sendable {
         private let lock = NSLock()
         private var stored: [String] = []
         var all: [String] { lock.withLock { stored } }
+        var text: String { all.joined(separator: "\n") }
         func append(_ line: String) { lock.withLock { stored.append(line) } }
     }
 

@@ -83,9 +83,8 @@ struct Restart: AsyncParsableCommand {
             return
         }
         // A pair that doesn't run here may still have a leftover part holding this Mac's serving lock.
-        if !solo, pair.pairIdle, pair.started, pair.serviceRunning {
-            print(pair.servingAloneLine)
-            try await Start.releaseLeftoverPart(pair)
+        if !solo, pair.leftoverPartHere {
+            try await Start.releaseLeftoverPartToServeAlone(pair)
         }
         let soloState = ServiceDrain.soloProviderState()
         let previous = soloState?.processIdentity ?? LaunchAgent.launchSnapshot()?.process

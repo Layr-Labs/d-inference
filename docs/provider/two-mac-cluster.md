@@ -768,9 +768,8 @@ leads.").
   --solo` on this Mac then serves the same way
   ([no terminal, no question](./local-first.md#no-terminal-no-question)). A
   saved **Only me** serves this Mac alone only in a terminal: while the pair
-  doesn't run here, `darkbloom start` without one (the app's Start, a script)
-  is refused in one line before this Mac's part is stopped or its saved start
-  cleared.
+  doesn't run here, `darkbloom start --solo` without one (a script) is refused
+  in one line before this Mac's part is stopped or its saved start cleared.
 - **Only me** is `darkbloom cluster local`'s way of serving
   ([below](#serving-locally-only)). **Darkbloom network** is the pair as
   before, with no local API.
@@ -1602,9 +1601,9 @@ they control single-Mac serving on one Mac
 | Command | On a Mac in the pair |
 |---|---|
 | `darkbloom stop` (or `darkbloom cluster stop`) | Stops serving on both Macs. They stay stopped after a restart, and both cluster services stay up, idle, so the next start needs no visit to the other Mac. It waits until both Macs' parts have ended and says so (`Memory freed on both Macs ✓`) |
-| `darkbloom start` | While the pair runs: in a terminal, the same screen as `darkbloom cluster`; in a script, starts the saved model on both Macs and waits until it serves. While it doesn't run here, see [going back to serving on one Mac](#going-back-to-serving-on-one-mac) |
+| `darkbloom start` | Starts the pair, whatever its state, also after `darkbloom stop`: in a terminal, the same screen as `darkbloom cluster`; in a script, starts the saved model on both Macs and waits until it serves. `darkbloom start --solo` serves this Mac alone instead: see [going back to serving on one Mac](#going-back-to-serving-on-one-mac) |
 | `darkbloom restart` | Stops and starts the pair with its current model. While the pair doesn't run here, restarts single-Mac serving that runs here instead, and never starts the pair or single-Mac serving that was stopped |
-| `darkbloom status` | The pair first (who leads, the model, whether it serves now and what to do), then this Mac's fields; `darkbloom cluster status` gives the pair alone, with `--json` and exit codes |
+| `darkbloom status` | The pair first (who leads, the model, whether it serves now and what to do), then this Mac's fields. When this Mac serves alone instead (`start --solo`), a line under the pair says so, and single-Mac serving's own lines follow. `darkbloom cluster status` gives the pair alone, with `--json` and exit codes |
 
 Each says first that it acts on the pair. `--solo` on any of them acts on
 single-Mac serving on this Mac only and never touches the pair.
@@ -1638,8 +1637,8 @@ left set up, or a login or the watchdog started it), the Mac's cluster service
 stops it by itself, as `darkbloom stop --solo` does. It writes that to its log,
 and `darkbloom status` on that Mac says ``Single-Mac serving stepped aside for
 the pair at <time> (process <N>): …``. It doesn't stop single-Mac serving you
-chose yourself (`darkbloom start --solo`, or **Serve on this Mac alone**)
-until you start the pair from that Mac, or the other Mac's screen offers the
+chose yourself (`darkbloom start --solo`) until you start the pair from that
+Mac, or the other Mac's screen offers the
 stop and you accept. It never stops it while the pair isn't running there.
 Parts that ended because single-Mac serving held the lock don't make the pair
 fall back to local-only serving. Once the blocker is gone, the pair is offered
@@ -1652,8 +1651,9 @@ Mac doesn't answer, `darkbloom stop` says so and that
 
 ## Going back to serving on one Mac
 
-To stop clustering and serve each Mac on its own again, stop the pair, then
-serve each Mac alone:
+On a paired Mac, plain `darkbloom start` always starts the pair, in a terminal
+or not, also after `darkbloom stop`. To stop clustering and serve each Mac on its
+own again, stop the pair, then serve each Mac alone:
 
 ```bash
 darkbloom stop            # on either Mac: stops the pair on both
@@ -1662,23 +1662,34 @@ darkbloom start --solo    # then on each Mac: serves that Mac alone
 
 The pair "runs here" when this Mac's cluster service has heard from the other
 Mac in the last 15 minutes and, since its start, the pair has served or is still
-inside its first 15 minutes. When it doesn't run here (it was stopped, or the
-other Mac is unplugged, off, or serving on its own), `darkbloom start` serves
-this Mac alone:
+inside its first 15 minutes. While it runs here, `darkbloom start --solo` is
+refused: this Mac's part holds the serving lock, so stop the pair first. When it
+doesn't run here (it was stopped, or the other Mac is unplugged, off, or serving
+on its own), `darkbloom start --solo` serves this Mac alone:
 
-- In a terminal it asks **Serve on this Mac alone** or **Start the pair
-  (`darkbloom cluster`)**. Serving alone is the default when the other Mac isn't
-  answering.
-- `darkbloom start --solo`, `darkbloom start --model <id>`, the app's Go Online,
-  `darkbloom autopilot enable` and a script's `darkbloom start` serve this Mac
-  alone without asking. They say so in one line, for example ``This Mac is in a
-  two-Mac cluster with the other Mac (…), which isn't running here: serving this
-  Mac alone, and its saved start is cleared (`darkbloom cluster` starts the pair
-  again).``
-- Before single-Mac serving starts, a part of the pair still running on this Mac
-  is stopped and the pair's saved start on this Mac is cleared, so the part
-  doesn't take this Mac's serving lock back at the next login. The pairing
-  stays: `darkbloom cluster` starts the pair again.
+- It takes single-Mac options as on any Mac, for example `darkbloom start --solo
+  --model <id>`. Without a terminal it asks nothing: one that names no models
+  (`--model`, `--all`) says in one line to add them, before this Mac's part of
+  the pair is touched. Without `--solo`, single-Mac options start nothing on a
+  paired Mac, in every state of the pair: `darkbloom start --model <id>` in a
+  terminal and `darkbloom autopilot enable` are refused by name (exit 64). The
+  app's **Start serving** has no `--solo`, so it starts the pair, as a plain
+  `darkbloom start` does, never this Mac alone. When it named another model
+  than the pair's, it ends with ``This Mac serves in a pair: started the pair
+  with <the pair's model>; `darkbloom cluster` changes its model.``
+- A pair that is merely stopped gives one line: ``This Mac is in a two-Mac
+  cluster with the other Mac (…), which is stopped: serving this Mac alone
+  (`darkbloom start` starts the pair again).``
+- A part of a started pair still running on this Mac is stopped first, and the
+  pair's saved start on this Mac is cleared, so the part doesn't take this Mac's
+  serving lock back at the next login. It says ``… which isn't running here:
+  stopping this Mac's leftover part and clearing its saved start (`darkbloom
+  start` starts the pair again).`` first, and ``This Mac's leftover part of the
+  pair stopped, and its saved start is cleared: serving this Mac alone.`` only
+  once that is done. The pairing stays: `darkbloom start` starts the pair again.
+- While a cluster command runs on this Mac, it first waits for it (up to 10
+  minutes; ^C stops waiting and leaves the pair as it is). One still running
+  after 10 minutes stops and starts nothing, and says so.
 - If that part doesn't stop within 5 minutes, nothing starts, and the command
   names the step that always works: `darkbloom cluster pair --status`, then
   `darkbloom cluster pair --forget <pin>`, then `darkbloom start`.
@@ -1686,30 +1697,30 @@ this Mac alone:
 While the pair doesn't run here, `darkbloom stop` stops what runs on this Mac
 (single-Mac serving, and a leftover part of the pair) and never asks the other
 Mac, and `darkbloom restart` restarts single-Mac serving if it runs: with none
-running it changes nothing and names `darkbloom start` (serve this Mac alone) and
-`darkbloom cluster` (start the pair). `darkbloom update`
-restarts single-Mac serving if this Mac has it. The watchdog brings it back if it
-stopped. While the pair does run here, all of these act on the pair as above,
-and so do `stop`, `restart` and `update` while the pair is started and the other
-Mac answers.
+running it changes nothing and names `darkbloom start` (start the pair again)
+and `darkbloom start --solo` (serve this Mac alone). `darkbloom update`
+restarts single-Mac serving if this Mac has it. Before they serve this Mac
+alone, `restart` and `update` stop a leftover part as `start --solo` does, with
+the same lines. The watchdog brings single-Mac serving back if it stopped. While
+the pair does run here, all of these act on the pair as above, and so do `stop`,
+`restart` and `update` while the pair is started and the other Mac answers.
 
 **A part doesn't hold a Mac forever.** When the other Mac hasn't answered for
 15 minutes, this Mac's cluster service stops its part, which frees the serving
 lock, and `darkbloom status` says ``The other Mac (…) hasn't answered for 15 min;
-this Mac's part stopped. Run `darkbloom start` to serve this Mac alone, or
-`darkbloom cluster` to start the pair again.`` If single-Mac serving is set up on
+this Mac's part stopped. Run `darkbloom start --solo` to serve this Mac alone, or
+`darkbloom start` to start the pair again.`` If single-Mac serving is set up on
 this Mac, the watchdog starts it again. The part starts again by itself when the
 other Mac answers. A reboot of the other Mac that takes a few minutes doesn't
 stop the pair, and time a Mac spends asleep doesn't count toward the 15 minutes. When both Macs answer but the pair never served in its first 15
 minutes (it may still be loading a large model), `darkbloom status` says so, but
-nothing stops the part without you: only `darkbloom start --solo`, or **Serve on
-this Mac alone** in a terminal, serves this Mac alone then. The app's Go Online,
-`start --model`, Autopilot enroll, `restart`, a script's `start`, `update` and the
-watchdog act on the pair as while it runs.
+nothing stops the part without you: only `darkbloom start --solo` serves this
+Mac alone then. `restart`, `update` and the watchdog act on the pair as while it
+runs.
 
 **On the Mac that follows,** serving alone clears only that Mac's saved start.
 While the leading Mac keeps the pair started, it may start this Mac's part again
-once single-Mac serving stops here; `darkbloom start` says so. To stop that, run
+once single-Mac serving stops here; `darkbloom start --solo` says so. To stop that, run
 `darkbloom stop` on the leading Mac, which stops the pair.
 
 **On 0.10.8.** These commands act on the pair there, and `start --solo` is

@@ -1,7 +1,7 @@
-### OpenCode and Hermes: the config writers for `start --opencode` and `--hermes`
+### OpenCode and Hermes: the config writers for `--opencode` and `--hermes`
 
 - The writers that make OpenCode 2 and Hermes Agent ready to use Darkbloom as a provider, called by
-  `darkbloom start --opencode` / `--hermes`.
+  `darkbloom --opencode` / `--hermes`.
 - OpenCode gets a `providers.darkbloom` block in its global `opencode.jsonc` (or an existing `opencode.json`): the
   local endpoint at its live port from `local.json`, the models with their names, context and output limits and
   capabilities, and `max_tokens` as the output-cap field (OpenCode otherwise sends `max_completion_tokens`, which the

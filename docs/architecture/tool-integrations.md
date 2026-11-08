@@ -1,10 +1,10 @@
 # OpenCode and Hermes config writers
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 How Darkbloom points OpenCode 2 and Hermes Agent at its local API (Only me or Both, me first) by editing their own config files: the
 endpoint and key file, the models, the two planners and the safe-edit rules. This explanation is for provider
-developers. `darkbloom start --opencode` / `--hermes` call them (`ToolIntegrationStep`,
+developers. `darkbloom --opencode` / `--hermes` (`start` with the flag) call them (`ToolIntegrationStep`,
 `provider-swift/Sources/darkbloom/ToolIntegration/ToolIntegrationStep.swift`); for users, see
 [Use it from OpenCode or Hermes](../provider/local-first.md#use-it-from-opencode-or-hermes).
 
@@ -105,7 +105,7 @@ flowchart LR
 
 | Need | Why |
 |---|---|
-| Hermes v0.20.2 or later (release tag v2026.8.16) | `key_cmd` came in NousResearch/hermes-agent#86891. An older Hermes ignores it and sends its no-key placeholder, so Darkbloom answers every request with 401. `HermesVersion.keyCommandWarning` turns `hermes --version`'s first line into the one warning line `start --hermes` prints for an older Hermes |
+| Hermes v0.20.2 or later (release tag v2026.8.16) | `key_cmd` came in NousResearch/hermes-agent#86891. An older Hermes ignores it and sends its no-key placeholder, so Darkbloom answers every request with 401. `HermesVersion.keyCommandWarning` turns `hermes --version`'s first line into the one warning line `darkbloom --hermes` prints for an older Hermes |
 | Config v12 (`providers:` as a mapping, with `transport` and `default_model`) | Hermes' current format; `hermes update` migrates an older `custom_providers:` list |
 | `max_tokens` after a model switch | Open Hermes bug #124289 (fix #124290 not merged): a named provider's `extra_body` is dropped on `/model <model> --provider <bare name>` and on bare-named fallbacks, so those turns get the engine's 4,096-token default. New chats, and switches that name `custom:<id>`, keep it |
 | The profile Hermes reads | After `hermes profile use <name>`, Hermes reads `~/.hermes/profiles/<name>/config.yaml`; the writer edits `$HERMES_HOME/config.yaml`, else `~/.hermes/config.yaml`, and the result names the file it edited |

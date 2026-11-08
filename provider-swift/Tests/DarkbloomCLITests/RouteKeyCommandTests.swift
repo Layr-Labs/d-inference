@@ -80,7 +80,8 @@ struct RouteKeyCommandTests {
         #expect(flow.remove() == 0)
         #expect(try store.load() == nil)
         #expect(lines.all == ["✓ Account key removed from this Mac's Keychain.",
-                              "Your requests: this Mac only, until an account key is saved again."])
+                              "Your requests: this Mac only, until an account key is saved again.",
+                              "It applies when your local API starts."])
     }
 
     @Test func eachRouteIsSaidInPlainWordsWithoutSpeeds() {

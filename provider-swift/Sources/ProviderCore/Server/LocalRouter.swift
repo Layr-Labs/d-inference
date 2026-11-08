@@ -23,6 +23,10 @@ import notify
 public struct LocalRouterConfig: Sendable {
     /// The saved `[local]` settings; `route` decides the hops.
     public var settings: LocalSettings
+    /// The provider config file `settings` came from. A running router reads its `[local] route` again when the file
+    /// changes (`LocalRouterRouteFile`), so `darkbloom route <choice>` or an edit counts from the next request that
+    /// needs the route, with no restart. nil: `settings.route` stays as given.
+    public var settingsFile: URL?
     /// The coordinator's HTTP base URL (`LocalRouterPolicy.upstreamBaseURL`).
     public var upstreamBaseURL: URL
     /// This Mac takes Darkbloom work from the coordinator, so a `self` request could come back to it (`--local` and
@@ -43,13 +47,16 @@ public struct LocalRouterConfig: Sendable {
     var keyChangeNotification: String?
     /// The account key as last read, kept until it changes.
     let keyCache = LocalRouterKeyCache()
+    /// `[local] route` as `settingsFile` says it since it last changed.
+    let routeFile = LocalRouterRouteFile()
 
-    public init(settings: LocalSettings, upstreamBaseURL: URL, takesCoordinatorWork: Bool,
+    public init(settings: LocalSettings, settingsFile: URL? = nil, upstreamBaseURL: URL, takesCoordinatorWork: Bool,
                 accountKeys: any LocalRouterAccountKeyStore,
                 makeTransport: @escaping @Sendable () -> any LocalRouterTransport = { URLSessionLocalRouterTransport() },
                 log: @escaping @Sendable (String) -> Void = LocalRouter.standardErrorLog,
                 timing: LocalRouter.Timing = .init()) {
         self.settings = settings
+        self.settingsFile = settingsFile
         self.upstreamBaseURL = upstreamBaseURL
         self.takesCoordinatorWork = takesCoordinatorWork
         self.accountKeys = accountKeys
@@ -59,14 +66,20 @@ public struct LocalRouterConfig: Sendable {
         keyChangeNotification = (accountKeys as? KeychainLocalRouterAccountKeyStore)?.changeNotification
     }
 
-    /// The router of a host: `[local]` from the config (absent = today's defaults), the configured coordinator, and
-    /// the account key in the Keychain.
-    public static func host(local: LocalSettings?, coordinatorURL: String?, takesCoordinatorWork: Bool,
+    /// The router of a host: `[local]` from the config at `settingsFile` (absent = today's defaults), read again when
+    /// that file changes, the configured coordinator, and the account key in the Keychain.
+    public static func host(local: LocalSettings?, settingsFile: URL?, coordinatorURL: String?, takesCoordinatorWork: Bool,
                             accountKeys: any LocalRouterAccountKeyStore = KeychainLocalRouterAccountKeyStore())
         -> LocalRouterConfig {
-        LocalRouterConfig(settings: local ?? LocalSettings(),
+        LocalRouterConfig(settings: local ?? LocalSettings(), settingsFile: settingsFile,
                           upstreamBaseURL: LocalRouterPolicy.upstreamBaseURL(coordinatorURL: coordinatorURL),
                           takesCoordinatorWork: takesCoordinatorWork, accountKeys: accountKeys)
+    }
+
+    /// `[local] route` now: as `settingsFile` says it since it last changed, else as given.
+    func savedRoute() -> LocalSettings.Route? {
+        guard let settingsFile else { return settings.route }
+        return routeFile.route(in: settingsFile, startingWith: settings.route, log: log)
     }
 
     /// The route in effect now, and the key it uses. Without a saved key, or without a local key (`--no-auth`), nothing
@@ -74,9 +87,12 @@ public struct LocalRouterConfig: Sendable {
     /// (`LocalRouterKeyCache`); `route key` announces a change, and the next call reads it again, so a change counts
     /// from the next request without a restart. A saved `this-mac`, or no local key, never reads the Keychain. A key
     /// that can't be read (the Keychain won't hand it over without asking) isn't kept: it is said once per run of
-    /// failures, in a line without the key, and keeps requests on this Mac. `[local] route` itself is read at start.
+    /// failures, in a line without the key, and keeps requests on this Mac. `[local] route` counts from the next call
+    /// after the config file changes (`savedRoute`). Only a request this Mac can't take, and a model list, call this.
     func effectiveRoute() -> (route: LocalSettings.Route, accountKey: String?) {
-        guard localKeyRequired, settings.route != .thisMac else { return (.thisMac, nil) }
+        guard localKeyRequired else { return (.thisMac, nil) }
+        let saved = settings.route
+        guard saved != .thisMac else { return (.thisMac, nil) }
         let key: String?
         do {
             key = try keyCache.key(from: accountKeys, changes: keyChangeNotification)
@@ -89,9 +105,19 @@ public struct LocalRouterConfig: Sendable {
             }
             return (.thisMac, nil)
         }
-        let route = settings.resolvedRoute(accountKeySaved: key != nil)
+        let route = LocalSettings(route: saved).resolvedRoute(accountKeySaved: key != nil)
         guard let key, route != .thisMac else { return (.thisMac, nil) }
         return (route, key)
+    }
+}
+
+// Seam for the red tests of a live route, with today's behaviour: the router reads `[local] route` at start only.
+final class LocalRouterRouteFile: @unchecked Sendable {
+    var checks: Int { 0 }
+
+    func route(in file: URL, startingWith initial: LocalSettings.Route?, log: (String) -> Void,
+               read: (URL) throws -> LocalSettings.Route? = { _ in nil }) -> LocalSettings.Route? {
+        initial
     }
 }
 

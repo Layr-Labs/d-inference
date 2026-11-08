@@ -52,10 +52,10 @@ struct RouteChoiceFlow {
     let accountKeySaved: () -> Bool
     /// Saves `[local] route`; true when the file changed.
     let save: (LocalSettings.Route) throws -> Bool
-    /// The local API running now: it read its route when it started.
+    /// The local API running now: its router reads the saved route before its next request that needs it.
     var liveEndpoint: LocalEndpoint.Info?
-    /// On a Mac that follows in a two-Mac cluster, the leading Mac: the pair's API passes requests on as its route says.
-    var pairLeader: String?
+    /// This Mac's part in a two-Mac cluster: the pair's local API uses the leading Mac's route.
+    var pair: RouteSaved.PairPart?
     let say: (String) -> Void
 
     func choose(_ route: LocalSettings.Route) -> Int32 {
@@ -85,8 +85,8 @@ struct RouteChoiceFlow {
                     + "again: `\(cli) restart`.")
             }
         }
-        if let pairLeader {
-            say("In this Mac's two-Mac cluster, the pair's API passes requests on as \(pairLeader) says: run "
+        if case .follows(let leader) = pair {
+            say("In this Mac's two-Mac cluster, the pair's API passes requests on as \(leader) says: run "
                 + "`\(cli) route \(route.rawValue)` there.")
         }
         return 0
@@ -109,12 +109,35 @@ struct RouteChoiceFlow {
 
     /// This Mac's Keychain, provider.toml (`configPath`, else the default), local API and pairing.
     static func live(configPath: String?) -> RouteChoiceFlow {
-        let pair = ClusterPairSummary.local()
-        return RouteChoiceFlow(
+        RouteChoiceFlow(
             accountKeySaved: { Start.accountKeySaved() },
             save: { route in try setLocalSettings(configPath: configPath) { $0.route = route }.changed },
-            liveEndpoint: LocalEndpoint.readLiveInfo(),
-            pairLeader: pair.paired && pair.role == .member ? pair.otherMac : nil,
-            say: { print($0) })
+            liveEndpoint: LocalEndpoint.readLiveInfo(), pair: .of(ClusterPairSummary.local()), say: { print($0) })
+    }
+}
+
+/// When a saved route or account key counts. A running local API reads both again before its next request that needs
+/// them (`LocalRouterRouteFile` for `[local] route`, the key's change notification), so nothing restarts and no model
+/// reloads. In a two-Mac cluster, the pair's local API runs on the leading Mac and uses that Mac's route and key; the
+/// other Mac's own port forwards requests to it.
+enum RouteSaved {
+    /// This Mac's part in a two-Mac cluster.
+    enum PairPart: Equatable, Sendable {
+        /// This Mac leads: the pair's local API runs here.
+        case leads(other: String)
+        /// This Mac follows `leader`, whose local API is the pair's.
+        case follows(leader: String)
+
+        /// Whether this Mac follows: the pair doesn't use what it saves.
+        var follows: Bool {
+            if case .follows = self { return true }
+            return false
+        }
+
+        /// This Mac's part, when its pairing can be read; nil on a Mac in no pair.
+        static func of(_ pair: ClusterPairSummary) -> PairPart? {
+            guard pair.paired, !pair.pairingUnreadable, let role = pair.role else { return nil }
+            return role == .leader ? .leads(other: pair.otherMac) : .follows(leader: pair.otherMac)
+        }
     }
 }

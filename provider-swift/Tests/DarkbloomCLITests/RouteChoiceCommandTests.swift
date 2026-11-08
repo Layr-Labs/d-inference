@@ -29,12 +29,12 @@ struct RouteChoiceCommandTests {
     }
 
     private func flow(config url: URL, keySaved: Bool, live: LocalEndpoint.Info? = nil,
-                      pairLeader: String? = nil) -> (RouteChoiceFlow, Lines) {
+                      pair: RouteSaved.PairPart? = nil) -> (RouteChoiceFlow, Lines) {
         let lines = Lines()
         let flow = RouteChoiceFlow(
             accountKeySaved: { keySaved },
             save: { route in try setLocalSettings(configPath: url.path) { $0.route = route }.changed },
-            liveEndpoint: live, pairLeader: pairLeader, say: { lines.append($0) })
+            liveEndpoint: live, pair: pair, say: { lines.append($0) })
         return (flow, lines)
     }
 
@@ -56,7 +56,7 @@ struct RouteChoiceCommandTests {
         let config = try ConfigManager.load(from: url)
         #expect(config.local == LocalSettings(mode: .both, route: .myMacsFirst, port: 8003))
         #expect(config.provider.name == "route-test")
-        #expect(lines.all.first == "✓ Saved: [local] route = \"my-macs-first\".")
+        #expect(lines.all.first == "✓ Saved. It applies when your local API starts.")
 
         #expect(flow.choose(.thisMac) == 0)
         #expect(try ConfigManager.load(from: url).local?.route == .thisMac)
@@ -69,7 +69,7 @@ struct RouteChoiceCommandTests {
         let (flow, lines) = flow(config: url, keySaved: true)
         #expect(flow.choose(.myMacs) == 0)
         #expect(try Data(contentsOf: url) == before)
-        #expect(lines.all.first == "✓ Already saved: [local] route = \"my-macs\".")
+        #expect(lines.all.first == "✓ Already saved. It applies when your local API starts.")
     }
 
     @Test(arguments: [LocalSettings.Route.myMacs, .myMacsFirst])
@@ -115,32 +115,47 @@ struct RouteChoiceCommandTests {
         }
     }
 
-    @Test func aRunningLocalAPIKeepsItsRouteUntilItStartsAgain() throws {
+    static let keyed = LocalEndpoint.Info(host: "127.0.0.1", port: 8001, apiKey: "dk-local-fixture", version: "test",
+                                          pid: 4242, updatedAt: "now")
+
+    @Test func aRunningLocalAPIUsesTheSavedRouteNowWithNoRestart() throws {
         let url = try makeTempConfig()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let keyed = LocalEndpoint.Info(host: "127.0.0.1", port: 8001, apiKey: "dk-local-fixture", version: "test",
-                                       pid: 4242, updatedAt: "now")
+        let keyed = Self.keyed
         let (flow, lines) = flow(config: url, keySaved: true, live: keyed)
         #expect(flow.choose(.myMacs) == 0)
-        #expect(lines.text.contains("The local API running now (http://127.0.0.1:8001/v1) keeps the route it started "
-            + "with until it starts again: `\(Self.cli) restart`."))
+        #expect(lines.all.first == "✓ Saved. Your local API uses it now.")
+        #expect(!lines.text.contains("restart"))
         #expect(!lines.text.contains("dk-local-fixture"))
+        let (again, againLines) = self.flow(config: url, keySaved: true, live: keyed)
+        #expect(again.choose(.myMacs) == 0)
+        #expect(againLines.all.first == "✓ Already saved. Your local API uses it now.")
 
         var keyless = keyed
         keyless.apiKey = ""
         let (open, openLines) = self.flow(config: url, keySaved: true, live: keyless)
         #expect(open.choose(.myMacsFirst) == 0)
+        #expect(openLines.all.first == "✓ Saved.")
         #expect(openLines.text.contains("has no local key (--no-auth): it keeps every request on this Mac"))
     }
 
-    @Test func onAMacThatFollowsInAPairThePairsRouteIsTheLeadingMacs() throws {
+    @Test func inAPairTheLeadingMacsRouteApplies() throws {
         let url = try makeTempConfig()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let leader = "the other Mac (Apple M3 Ultra, 256 GB)"
-        let (flow, lines) = flow(config: url, keySaved: true, pairLeader: leader)
-        #expect(flow.choose(.myMacs) == 0)
+        let other = "the other Mac (Apple M3 Ultra, 256 GB)"
+        // The Mac that follows: saved for when it serves alone; the pair uses the leading Mac's.
+        let (follower, followerLines) = flow(config: url, keySaved: true, live: Self.keyed, pair: .follows(leader: other))
+        #expect(follower.choose(.myMacs) == 0)
         #expect(try ConfigManager.load(from: url).local?.route == .myMacs)
-        #expect(lines.text.contains("the pair's API passes requests on as \(leader) says: run `\(Self.cli) route my-macs` there"))
+        #expect(followerLines.all.first == "✓ Saved. It applies when this Mac serves alone (`\(Self.cli) start --solo`).")
+        #expect(followerLines.all.last == "In this pair, the leading Mac's route applies (\(other)): its local API passes "
+            + "on what the pair can't take, including requests this Mac forwards to it. Run `\(Self.cli) route my-macs` there.")
+        // The leading Mac runs the pair's API: it uses the route now.
+        let (leader, leaderLines) = flow(config: url, keySaved: true, live: Self.keyed, pair: .leads(other: other))
+        #expect(leader.choose(.myMacsFirst) == 0)
+        #expect(leaderLines.all.first == "✓ Saved. Your local API uses it now.")
+        #expect(leaderLines.all.last == "In this pair, this Mac's route applies: the pair's local API runs here and passes "
+            + "on what the pair can't take, including requests \(other) forwards to it.")
     }
 
     @Test func aRefusedFileSaysWhyAndChangesNothing() throws {
@@ -152,6 +167,21 @@ struct RouteChoiceCommandTests {
         #expect(try Data(contentsOf: url) == before)
         #expect(lines.all.first?.hasPrefix("✗ Not saved: ") == true)
         #expect(lines.text.contains("[local] mode must be"))
+    }
+
+    /// Both's local API and the pair's beside Darkbloom read their route again from the provider.toml they came from.
+    @Test func eachLocalAPIsRouterReadsTheConfigFileItCameFrom() throws {
+        let file = URL(fileURLWithPath: "/tmp/route-choice-wiring/provider.toml")
+        let serving = StartServing(mode: .both, source: .saved, meFirst: true, meFirstIdleMinutes: 2, route: .myMacs,
+                                   accountKeySaved: true, port: 8001, bind: "127.0.0.1", noAuth: false)
+        let both = try #require(try Start.unifiedLocalEndpoint(
+            serving: serving, config: ProviderConfig(provider: ProviderSettings(name: "wiring")), settingsFile: file,
+            coordinatorURL: "wss://coordinator.invalid/ws/provider", loadToken: { "dk-local-fixture" }))
+        #expect(both.router?.settingsFile == file)
+        let pair = Start.clusterMemberLocalEndpoint(requested: true, hostsPairSlot: true, bind: "0.0.0.0", port: 8001,
+                                                    local: nil, settingsFile: file, coordinatorURL: nil,
+                                                    loadToken: { "dk-local-fixture" }, say: { _ in })
+        #expect(pair?.router?.settingsFile == file)
     }
 
     @Test func routeKeyNamesTheCommandThatChoosesYourMacs() {

@@ -142,8 +142,8 @@ extension Start {
                 mtpAcceptanceByModel: config.backend.mtpAcceptanceByModel,
                 coordinatorURL: config.coordinator.url,
                 // `--local` never registers with the coordinator, so a `self` request can't come back to it.
-                router: .host(local: config.local, coordinatorURL: coordinatorURL ?? config.coordinator.url,
-                              takesCoordinatorWork: false)
+                router: .host(local: config.local, settingsFile: nil,
+                              coordinatorURL: coordinatorURL ?? config.coordinator.url, takesCoordinatorWork: false)
             ),
             models: advertised
         )
@@ -364,6 +364,7 @@ extension Start {
         }
 
         let localEndpointConfig = try Self.unifiedLocalEndpoint(serving: serving, config: config,
+                                                                 settingsFile: snapshot.configPath,
                                                                  coordinatorURL: coordinatorURL)
 
         let loopConfig = ProviderLoopConfig(
@@ -408,7 +409,7 @@ extension Start {
     /// only, which then binds nothing and creates no key. Reuses the same persistent bearer token and address as
     /// `--local`; `--no-auth` opts out of the token (trusted/airgapped only).
     static func unifiedLocalEndpoint(
-        serving: StartServing, config: ProviderConfig, coordinatorURL: String,
+        serving: StartServing, config: ProviderConfig, settingsFile: URL? = nil, coordinatorURL: String,
         loadToken: () throws -> String = { try LocalEndpoint.loadOrCreateToken() }
     ) throws -> LocalInferenceHTTPConfig? {
         guard serving.mode == .both else { return nil }
@@ -430,7 +431,8 @@ extension Start {
         print("Local endpoint: \(serving.baseURL)\(token != nil ? "  (API key from `\(BuildEnvironment.current.cliName) local`)" : "  (auth disabled: requests stay on this Mac)")")
         return LocalInferenceHTTPConfig(
             host: serving.bind, port: serving.port, authToken: token,
-            router: .host(local: config.local, coordinatorURL: coordinatorURL, takesCoordinatorWork: true))
+            router: .host(local: config.local, settingsFile: nil, coordinatorURL: coordinatorURL,
+                          takesCoordinatorWork: true))
     }
 
     /// A provider that launchd runs relaunches through launchd, as the

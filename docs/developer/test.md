@@ -1304,6 +1304,16 @@ production prompt pipeline, and
 `ReasoningEffortLocalAPITests` sends them to one Mac's local API and a pair
 leader's over the `ClusterAPIParityTests` harness.
 
+`fixtures/prompt-contract/v1/reasoning_effort_vectors.json` (354 cases) is
+also this repository's: every family's reading of every effort, in both fields
+and other spellings, with the field an unknown effort is refused in.
+`scripts/generate-reasoning-effort-vectors.py` writes it from the tables in
+`ReasoningEffort.swift`; regenerate it with them, and check the result with
+`CachePromptParityTests.reasoningEffortVectors`, which runs every case through
+the production prompt pipeline. darkbloom-platform holds the same bytes and
+checks its ingress refusal, first-party pool and prompt sidecar against them,
+so a change to a table changes the file in both repositories together.
+
 darkbloom-platform keeps byte-identical copies of the provider's
 `paged_footprint_wire.json` and `process_memory_wire.json` for its own
 coordinator and console tests. Coordinate fixture changes with the platform and

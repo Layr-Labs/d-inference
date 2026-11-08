@@ -66,8 +66,9 @@ struct ReasoningEffortValuesTests {
             #expect(effort.oneDepthThinking == thinks, "MiMo, DiffusionGemma and Gemma 4, \(name)")
             #expect(FlintRequestPolicy.acceptsEffort(name), "Flint, \(name)")
             #expect(ReasoningEffort.switchesThinkingOff(name) == !thinks, "Lightning, \(name)")
+            #expect(effort.harmonyLevel.rawValue == rule(name, ["low", "medium", "high"]), "GPT-OSS, \(name)")
             #expect(ReasoningEffortPolicy.templateEffort(name, modelID: "gpt-oss-20b", modelType: "gpt_oss", thinking: nil)
-                == rule(name, ["low", "medium", "high"]), "GPT-OSS, \(name)")
+                == rule(name, ["low", "medium", "high"]), "GPT-OSS rendered, \(name)")
         }
     }
 

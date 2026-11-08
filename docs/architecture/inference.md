@@ -2975,9 +2975,9 @@ as it is, or passes the request's body on unchanged.
 | The Qwen 3.5 template family (`qwen3_5`, `qwen3_5_moe`, `prism_hadamard_qwen35`: Qwen 3.5, 3.6 and 3.8, Bonsai 2) and the owned Qwen 3.8 Flash-Next build | Qwen 3.8's `low`, `medium` and `xhigh` (its default), and a thinking switch | While thinking: `minimal` and `low` render `low`, `medium` renders `medium`, `high`, `xhigh` and `max` render `xhigh`, as the coordinator's first-party pool sends `high`. Thinking off: the effort as sent, which the template ignores. The 3.5, 3.6 and Bonsai templates read only the switch | `ReasoningEffort.qwen38Level`, `ReasoningEffortPolicy.templateEffort`, `Qwen4SupportPolicy.ownsEffortTemplate` |
 | GLM-5.3-Flash | `low`, `high` and `max` (its default); thinking off closes `<think>` | `minimal` and `low` render `low`, `medium` and `high` render `high`, `xhigh` and `max` render `max`, as the platform sidecar maps them | `ReasoningEffort.glmLevel` (`GLM5NextPromptPolicy`) |
 | Nemotron 3.5 Super | `medium_effort`, and the template's default depth | `minimal`, `low` and `medium` set `medium_effort`; `high`, `xhigh` and `max` keep the default | `ReasoningEffort.nemotronSuperMediumEffort` (`NemotronSuperPromptContract.controls(body:)`) |
-| MiMo V2.6, DiffusionGemma | one depth, and a thinking switch | Every effort but `none` thinks | `ReasoningEffort.oneDepthThinking` (`MiMoV26TemplateFix`, `DiffusionGemmaReasoningControl`) |
-| Gemma 4, Nemotron 3.5 Lightning | a thinking switch | `none` switches thinking off; any other effort keeps the template's default (Gemma 4: off) | `MultiModelBatchSchedulerEngine.templateAdditionalContext` |
-| GPT-OSS | Harmony's `low`, `medium` and `high` | The effort as sent, except `high`, which renders `medium` | `GPTOSSHarmonyTemplateFix.effectiveReasoningEffort` |
+| MiMo V2.6, Gemma 4 (`gemma4`, `gemma4_text`, `gemma4_vision`), DiffusionGemma | one depth, and a thinking switch | Every effort but `none` thinks (Gemma 4's template defaults thinking off) | `ReasoningEffort.oneDepthThinking` (`MiMoV26TemplateFix`; `ReasoningEffortPolicy.effortSetsThinkingSwitch` in `templateAdditionalContext`; `DiffusionGemmaReasoningControl`) |
+| Nemotron 3.5 Lightning | a thinking switch | `none` switches thinking off; any other effort keeps the template's default (on) | `MultiModelBatchSchedulerEngine.templateAdditionalContext` |
+| GPT-OSS | Harmony's `low`, `medium` (its default) and `high`; no thinking switch | `none`, `minimal` and `low` render `low`, `medium` renders `medium`, `high`, `xhigh` and `max` render `high`. The coordinator caps OpenRouter's traffic at `medium` (#703) | `ReasoningEffort.harmonyLevel`, `ReasoningEffortPolicy.templateEffort` |
 | Flint | none: Flint decides whether to reason | Every effort is taken, with no effect | `FlintRequestPolicy` |
 
 An effort that is none of the names is refused before anything renders or is
@@ -2989,10 +2989,20 @@ coordinator receives the closed `invalid_request` failure, which it shows as
 "invalid inference request". A model of no family above ignores any effort
 (`ReasoningEffortPolicy.validate`).
 
-Gemma 4 and GPT-OSS keep the prompts they rendered before: the coordinator's
-prompt sidecar plans those prompts for cache-aware routing, so changing one
-needs the sidecar's matching change and a new normalization version.
-<!-- pending B-J2-1: Gemma 4 thinks for an effort other than none, and GPT-OSS renders each effort as its nearest Harmony level, once the platform's prompt sidecar renders them so. -->
+The coordinator maps every effort from a copy of these tables: darkbloom-platform's
+ingress refusal, first-party pool and prompt sidecar, which plans these prompts
+for cache-aware routing. `fixtures/prompt-contract/v1/reasoning_effort_vectors.json`
+is the agreement test, the provider's reading of 354 requests: every family,
+every effort in both fields, other spellings, an effort that is none of the
+names, and both fields together. `scripts/generate-reasoning-effort-vectors.py`
+writes it, `CachePromptParityTests.reasoningEffortVectors` runs every case
+through the production prompt pipeline, and the platform checks its readers
+against the same bytes. Gemma 4's thinking switch and GPT-OSS's Harmony levels
+change the prompt of the requests that name such an effort, which the platform's
+production prompt vectors carry (`ProductionPromptParityTests`). The platform
+keeps its normalization version, so while a provider and the sidecar render
+different levels, during a staggered rollout, those requests' cache receipts
+mismatch and their cache affinity is quarantined; serving continues.
 
 ### Vision constraints
 

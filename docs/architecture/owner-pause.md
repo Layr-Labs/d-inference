@@ -1,6 +1,6 @@
 # Owner pause ("me first")
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 How a provider that serves Darkbloom and its owner from one Mac stops taking
 Darkbloom work while the owner uses the Mac through its local API, and returns
@@ -138,6 +138,7 @@ sequenceDiagram
 | Racing dispatches | The leader's client forwards them while the slot exists, and `rejectIfDraining` refuses them with `capacity / 503 / draining` before they reach the pair |
 | The idle time | The resume timer, and the member beat (`clusterMemberHeartbeat`, every 5 s), because a member runs no idle monitor. A stopping leader cancels the timer |
 | Every other member | Untouched. It runs no local API, so nothing calls the hook and me first stays off; its heartbeat stays control-only `draining` with no busy fields |
+| What each Mac says | The leader's status lines, which every `status` on the other Mac asks for over the cable anyway, carry the pause under the pair's serving line (`OnboardingLive.pauseLines`, read from the leader part's own state file, `MeFirstWords.pairLines`): `Pair: you first — Darkbloom paused for 1 minute (…; back in about 2 minutes if you stay idle)`. Times are said from now, never as a clock time. Nothing is added to the heartbeat or the link |
 | Ranks | Nothing counts them: the leader is the slot's host, a role, not a rank |
 | `darkbloom cluster local` | Unchanged: no member loop and no coordinator, so nothing to pause |
 
@@ -191,6 +192,9 @@ The pause is event-driven:
 - With me first off, `noteLocalUse` returns at once, and no timer or task exists.
 - On a pair's leader, the member beat that already runs every 5 seconds adds
   one O(1) check, and the hook adds one call to each local request.
+- A `status` on either Mac of a pair reads the pause once, from the leader
+  part's state file, in the leader's status the other Mac already asks for: no
+  new message, and nothing per request.
 
 ## Invariants
 

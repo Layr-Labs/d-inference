@@ -246,6 +246,7 @@ struct StartLocalFirstTests {
             var tokenAsked = false
             let endpoint = try Start.unifiedLocalEndpoint(
                 serving: serving, config: ProviderConfig(provider: ProviderSettings(name: "l4")),
+                settingsFile: URL(fileURLWithPath: "/tmp/start-local-first/provider.toml"),
                 coordinatorURL: "wss://coordinator.invalid/ws/provider",
                 loadToken: { tokenAsked = true; return "dk-local-fixture" })
             #expect(endpoint == nil && !tokenAsked)
@@ -422,7 +423,8 @@ struct StartLocalFirstTests {
         var served = ProviderConfig(provider: ProviderSettings(name: "l4"))
         served.local = config.local
         let endpoint = try #require(try Start.unifiedLocalEndpoint(
-            serving: serving, config: served, coordinatorURL: "wss://coordinator.invalid/ws/provider",
+            serving: serving, config: served, settingsFile: URL(fileURLWithPath: "/tmp/start-local-first/provider.toml"),
+            coordinatorURL: "wss://coordinator.invalid/ws/provider",
             loadToken: { Issue.record("--no-auth reads no token"); return "dk-local-fixture" }))
         #expect(endpoint.authToken == nil && endpoint.router?.settings.route == .myMacsFirst)
         #expect(serving.summaryLines.suffix(2) == [
@@ -434,7 +436,7 @@ struct StartLocalFirstTests {
         let state = LocalFirstStatusFixtures.state(meFirst: LocalFirstStatusFixtures.open)
         let noKeychain: () -> Bool = { Issue.record("Keychain read"); return true }
         #expect(Status.servingLines(state: state, liveEndpoint: keyless, route: .myMacsFirst, accountKeySaved: noKeychain,
-                                    now: LocalFirstStatusFixtures.now, timeZone: LocalFirstStatusFixtures.utc) == [
+                                    now: LocalFirstStatusFixtures.now) == [
             "Serving: Darkbloom and you, me first — open to Darkbloom (none of your requests in the last 2 minutes)",
             "Your requests: this Mac only · no local key (--no-auth), so nothing is passed on",
         ])

@@ -13,7 +13,8 @@ extension LocalRouterConfig {
     /// leader: one other Mac serving the model would read as this Mac alone (`this_mac_only`). The pair's API beside
     /// Darkbloom is the coordinator-paired member's (`start --cluster-member --local-endpoint`), whose router takes
     /// Darkbloom work.
-    public static func pairLeaderOutsideDarkbloom(local: LocalSettings?, coordinatorURL: String?) -> LocalRouterConfig {
-        .host(local: local, coordinatorURL: coordinatorURL, takesCoordinatorWork: false)
+    public static func pairLeaderOutsideDarkbloom(local: LocalSettings?, settingsFile: URL?,
+                                                  coordinatorURL: String?) -> LocalRouterConfig {
+        .host(local: local, settingsFile: settingsFile, coordinatorURL: coordinatorURL, takesCoordinatorWork: false)
     }
 }

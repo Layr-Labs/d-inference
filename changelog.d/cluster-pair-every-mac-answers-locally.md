@@ -31,6 +31,10 @@
 - On the other Mac, `darkbloom local` and `darkbloom start --opencode` say why it has no address for the pair (Darkbloom
   doesn't have the pair yet, its port is held, or the leading Mac is away), as `darkbloom status` does: `local` no
   longer prints the pair's key there, and `--opencode` says it at once instead of after a 30-second wait.
+- The app's **Start serving** on the other Mac no longer says "No local API was added on this Mac" when the pair's API
+  is on every address: that Mac's relay gives it one. While the relay can't answer (the leading Mac away, Darkbloom not
+  having the pair, its port held), the app says `status`'s `Local API:` line instead. With the pair's API kept on the
+  leading Mac, **Only me** included, the line stands.
 - The solo server a pair falls back to when one Mac is away for 10 minutes takes that Mac's own saved `[local] port`
   too, instead of 8000, so its tools keep their address.
 - A request on the other Mac's port pauses Darkbloom for the pair, as one on the leading Mac does, and never uses the

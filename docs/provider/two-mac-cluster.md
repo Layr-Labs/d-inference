@@ -1758,7 +1758,12 @@ on its own), `darkbloom start --solo` serves this Mac alone:
   <the pair's model>; `darkbloom cluster` changes its model.`` (``… the pair
   was asked to start with …, and isn't serving (above); …`` when it doesn't
   serve yet), and when it asked for a local API this Mac doesn't get from the
-  pair, ``No local API was added on this Mac: …``. The app's onboarding offers
+  pair (Darkbloom only, or the pair's API kept on the leading Mac),
+  ``No local API was added on this Mac: …``. On the other Mac with the pair's
+  API on every address, its relay gives it one, so the app never says that
+  there; while that relay can't answer once the start is over (the other Mac
+  away, Darkbloom not having the pair, its port held), it says `status`'s
+  `Local API:` line. The app's onboarding offers
   **Start serving** there, never Autopilot, which serves one Mac and is refused
   on a paired Mac before it downloads anything.
 - A pair that is merely stopped gives one line: ``This Mac is in a two-Mac

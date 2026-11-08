@@ -71,7 +71,7 @@ struct ToolShortcutTests {
         #expect(Darkbloom.message(for: network) == "`--opencode` needs this Mac's local API, which `--network` "
             + "doesn't serve. Use --me-first or --local instead.")
         let typo = try #require(Self.failure(["--opencode", "--me-firs"]))
-        #expect(Darkbloom.message(for: typo) == "Unknown option '--me-firs'")
+        #expect(Darkbloom.message(for: typo) == "Unknown option '--me-firs'. Did you mean '--me-first'?")
         #expect(Darkbloom.fullMessage(for: typo, columns: 80).contains("Usage: \(Self.cli) start "))
     }
 

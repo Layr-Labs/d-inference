@@ -118,7 +118,7 @@ struct Local: AsyncParsableCommand {
     }
 
     /// The line under a keyed server's address: the commands that set the tools up for it.
-    static var toolsLine: String { "  tools:    \(BuildEnvironment.current.cliName) start --opencode · --hermes" }
+    static var toolsLine: String { "  tools:    \(BuildEnvironment.current.cliName) --opencode · --hermes" }
 
     /// For a server listening on every interface: this Mac's Bonjour (`.local`) URL, which other computers on the
     /// same network can dial; nil for a loopback or specific-address server, or when the Mac has no local host name.

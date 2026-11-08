@@ -26,7 +26,7 @@ extension Start {
         }
         if distributed {
             return "`\(first.flag)` doesn't start a cluster. Start it first, then run "
-                + "`\(BuildEnvironment.current.cliName) start \(first.flag)` on its own: it sets "
+                + "`\(ToolIntegrationStep.command([first]))` on its own: it sets "
                 + "\(first.displayName) up for the cluster's local API."
         }
         return nil

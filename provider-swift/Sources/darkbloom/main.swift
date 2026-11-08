@@ -34,17 +34,20 @@ if rawArgs.first == AppAttestQualificationCommand.argument {
 // (`ClusterCandidateRecovery.startCheckFailure`).
 MacOSUpgradeNotice.emit()
 
+// `darkbloom --opencode` / `--hermes` are `start`'s, hosted and parsed as `start --opencode` would be.
+let commandArgs = Darkbloom.commandLineArguments
+
 #if os(macOS)
-if ProviderAppKitHost.shouldHost(rawArgs) {
+if ProviderAppKitHost.shouldHost(commandArgs) {
     // Takes over the main thread with the AppKit run loop and never returns.
-    ProviderAppKitHost.runHosted(rawArgs)
+    ProviderAppKitHost.runHosted(commandArgs)
 }
 #endif
 
 // Non-serve path: parse + dispatch as ArgumentParser's async main() would, done
 // manually because @main is removed (it would fight AppKit for the main thread).
 do {
-    var command = try Darkbloom.parseAsRoot(rawArgs)
+    var command = try Darkbloom.parseAsRoot(commandArgs)
     if var asyncCommand = command as? any AsyncParsableCommand {
         try await runAsyncCommand(&asyncCommand)
     } else {

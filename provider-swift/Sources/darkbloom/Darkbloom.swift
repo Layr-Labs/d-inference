@@ -24,7 +24,13 @@ struct Darkbloom: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: BuildEnvironment.current.cliName,
         abstract: "Swift-native provider CLI for Darkbloom.",
-        discussion: "Runs on Apple Silicon Macs. Connects to the coordinator, serves inference requests via mlx-swift.",
+        discussion: """
+        Runs on Apple Silicon Macs. Connects to the coordinator, serves inference requests via mlx-swift.
+
+        Shortcuts (any `start` option can be added):
+          \(BuildEnvironment.current.cliName) --opencode   Set up OpenCode (same as `start --opencode`)
+          \(BuildEnvironment.current.cliName) --hermes     Set up Hermes Agent (same as `start --hermes`)
+        """,
         version: ProviderCore.version,
         subcommands: [
             Start.self,
@@ -77,10 +83,19 @@ struct Darkbloom: AsyncParsableCommand {
 // MARK: - Tool shortcuts
 
 extension Darkbloom {
-    /// The arguments to parse for `arguments`, as typed after `darkbloom`.
+    /// The arguments to parse for `arguments`, as typed after `darkbloom`: `darkbloom --opencode` and
+    /// `darkbloom --hermes`, alone, together or with other `start` options in any order, are `start`'s. With no
+    /// subcommand named (the first argument is an option) and a tool flag before any `--`, `start` goes first.
+    /// Anything else (no arguments, `--help` or `--version` without a tool flag, a subcommand) is parsed as typed.
     static func expandingToolShortcuts(_ arguments: [String]) -> [String] {
-        arguments
+        let toolFlags = Set(IntegrationTool.allCases.map(\.flag))
+        guard arguments.first?.hasPrefix("-") == true,
+              arguments.prefix(while: { $0 != "--" }).contains(where: toolFlags.contains) else { return arguments }
+        return ["start"] + arguments
     }
+
+    /// This process's arguments as `main` parses them (`expandingToolShortcuts`).
+    static var commandLineArguments: [String] { expandingToolShortcuts(Array(CommandLine.arguments.dropFirst())) }
 }
 
 // MARK: - Update banner (best-effort, non-blocking)

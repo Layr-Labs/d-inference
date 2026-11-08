@@ -11,8 +11,14 @@ extension Start {
         return answer.isEmpty ? defaultEnabled : ["y", "yes"].contains(answer)
     }
 
+    /// Whether this start enrolls the experimental Autopilot: `--autopilot` / `--no-autopilot` as given, else the saved
+    /// answer. Autopilot is for the Darkbloom network, so only a start that serves the Darkbloom network alone asks, in
+    /// a terminal. Both, me first never asks and keeps the saved answer (`darkbloom autopilot enable` enrolls it). Only
+    /// me has no Autopilot: its starts don't come here, and `--autopilot` is refused for it. `mode` has no default, so
+    /// a caller can't leave it out.
     func resolveAutopilotChoice(
         _ config: ProviderConfig,
+        mode: LocalSettings.Mode,
         interactive: Bool = isatty(STDIN_FILENO) != 0,
         ask: (Bool) -> Bool = { Start.promptAutopilotChoice(defaultEnabled: $0) }
     ) throws -> Bool {
@@ -24,7 +30,7 @@ extension Start {
             return autopilot
         }
         let settings = config.backend.modelAutopilot
-        guard interactive, !foreground, model.isEmpty, !all else { return settings.hasConsent }
+        guard interactive, !foreground, model.isEmpty, !all, mode == .network else { return settings.hasConsent }
         return ask(settings.hasConsent)
     }
 

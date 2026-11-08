@@ -58,6 +58,15 @@ export function snapshot(overrides: Partial<Snapshot> = {}): Snapshot {
   };
 }
 
+// A Mac in a two-Mac pair, as the runtime reports it: it names the pair, its model, its state from
+// this Mac's own view and whether this Mac leads it, and offers no Autopilot, which serves one Mac.
+// Here the leading Mac of a stopped pair, unless `pair` says otherwise.
+export const pairedMac = (pair: Partial<NonNullable<Snapshot['pair']>> = {}) =>
+  snapshot({
+    capabilities: ['account-signin', 'account-signout', 'request-history'],
+    pair: { model: 'Qwen 3.8 27B', state: 'stopped', leads: true, ...pair },
+  });
+
 // As the runtime reports it: the only catalog model does not fit, so it is not eligible.
 export const eightGBMac = (base = snapshot()) =>
   snapshot({

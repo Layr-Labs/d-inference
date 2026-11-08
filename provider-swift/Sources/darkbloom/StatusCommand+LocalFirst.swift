@@ -3,8 +3,9 @@ import ProviderCore
 
 extension DaemonState {
     /// Whether the provider that wrote this state serves only its owner: the coordinator-less server (`--local`,
-    /// "Only me") is the only one that writes no runtime capabilities.
-    var servesOnlyItsOwner: Bool { runtimeCapabilities == nil }
+    /// "Only me") is the only one that writes neither runtime capabilities nor a coordinator. A network provider
+    /// waiting for its schedule's window writes a coordinator alone (`Start.waitOutsideSchedule`).
+    var servesOnlyItsOwner: Bool { runtimeCapabilities == nil && coordinatorUrl == nil }
 }
 
 extension LocalFirstWords.LocalAPIServer {
@@ -28,6 +29,8 @@ extension Status {
                              server: LocalFirstWords.LocalAPIServer = .singleMac(paired: false),
                              now: Date = Date(), timeZone: TimeZone = .current) -> [String] {
         guard let liveEndpoint, liveEndpoint.pid == state.pid else {
+            // Only me's server reports itself from the start of its first load, before its local API listens.
+            if state.servesOnlyItsOwner { return [onlyMeStartingLine] }
             guard let failure = state.localAPIFailure else {
                 return ["Serving: Darkbloom network only — this Mac has no local API"]
             }
@@ -48,6 +51,8 @@ extension Status {
                      : requestsLine(route: route, accountKeySaved: accountKeySaved()))
         return lines
     }
+
+    static let onlyMeStartingLine = "Serving: only you, on this Mac — starting: its local API opens once its models are loaded"
 
     static let noLocalKeyRequestsLine = "Your requests: this Mac only · no local key (--no-auth), so nothing is passed on"
 

@@ -15,14 +15,11 @@ darkbloom --opencode              # or --hermes
 ```
 
 It asks how this Mac serves: **Only me**, **Darkbloom network** or
-**Both, me first**. Press Enter for Both, me first: it asks which models to
-serve, serves them in the background and sets OpenCode up. Only me serves the
-models already on this Mac, in that Terminal window. Darkbloom network gives
-OpenCode no address on this Mac. Then, in OpenCode, `/models` → Darkbloom. Two
-Macs: run `darkbloom cluster` on each, then `darkbloom --opencode` on either
-Mac.
-
-<!-- pending LS-1: Only me also asks which models to serve, and serves them in the background. -->
+**Both, me first**. Press Enter for Both, me first. Every choice asks which
+models to serve and serves them in the background; with Only me or Both, me
+first, `--opencode` sets OpenCode up. Darkbloom network gives OpenCode no
+address on this Mac. Then, in OpenCode, `/models` → Darkbloom. Two Macs: run
+`darkbloom cluster` on each, then `darkbloom --opencode` on either Mac.
 
 The [quickstart](docs/provider/quickstart.md) walks through it, and
 [Use your Mac yourself, first](docs/provider/local-first.md) says what each

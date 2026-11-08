@@ -57,6 +57,25 @@ final class OutputRecordingEngine: CBv2Engine, @unchecked Sendable {
     func shutdown() async {}
 }
 
+/// A paged slot's engine that can never hold the request: its own admission
+/// refuses every submission, as `EngineV2.requireRequestCanEverFit` does when a
+/// request needs more KV than the slot's grant. A paged slot takes no bridge
+/// reservation, so this is its only memory refusal.
+final class NeverFitsEngine: CBv2Engine, @unchecked Sendable {
+    private let lock = NSLock()
+    private var attempts = 0
+    var submissions: Int { lock.withLock { attempts } }
+    func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
+        lock.withLock { attempts += 1 }
+        throw CBv2KVError.capacityExhausted(needed: 40_000_000, available: 10_000_000)
+    }
+    func cancel(_ id: CBv2RequestID) {}
+    func capacity() -> CBv2CapacitySnapshot {
+        .init(activeRequests: 0, waitingRequests: 0, kvBytesInUse: 0, kvBytesCapacity: 0, activeTokens: 0)
+    }
+    func shutdown() async {}
+}
+
 /// Renders every conversation to `count` tokens.
 struct FixedLengthTokenizer: MLXLMCommon.Tokenizer {
     var count = 1

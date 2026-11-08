@@ -74,6 +74,13 @@ Starts without a terminal never ask:
   API and no new port.
 - **A saved Only me** serves in a terminal, so a start without one says so and
   stops before it changes anything.
+- **The models:** a start for **Darkbloom network** or **Both, me first** that
+  names none (`--model <id>`, `--all`) can't pick them without a terminal, so it
+  says in one line to add them and stops, instead of waiting for an answer.
+- **On a Mac in a pair,** a start without a terminal starts the pair, with or
+  without `--opencode` or `--hermes`, and so does the app's Start: the pair
+  serves its own model, and a line says so when the app named another
+  ([Two Macs](#two-macs)).
 - **Some app buttons choose for you:** the app's onboarding, its Autopilot and
   Studio's "Alongside the network" start **Both, me first** (`--local-endpoint`)
   whatever you saved; Studio's "Local only" starts **Only me** in the
@@ -172,13 +179,14 @@ this Mac, for example `http://127.0.0.1:8001/v1`:
 
 ## Use it from OpenCode or Hermes
 
-Add `--opencode` or `--hermes` (or both) to `darkbloom start`, as you would run
-`ollama launch` or `omlx launch`:
+Run `darkbloom --opencode` or `darkbloom --hermes` (or both), as you would run
+`ollama launch` or `omlx launch`. Each runs `darkbloom start` with the flag, so
+any `start` option goes with it, in any order:
 
 ```bash
-darkbloom start --opencode          # set OpenCode up
-darkbloom start --hermes            # set Hermes Agent up
-darkbloom start --me-first --opencode --hermes
+darkbloom --opencode                # set OpenCode up
+darkbloom --hermes                  # set Hermes Agent up
+darkbloom --opencode --hermes --me-first
 ```
 
 Then, in OpenCode, `/models` → Darkbloom. Hermes uses Darkbloom as its main
@@ -193,7 +201,7 @@ model.
   in Hermes' `~/.hermes/config.yaml`, where it also becomes the main model, as
   Ollama and oMLX do. Everything else in those files stays as it was.
 - **Your key stays out of them.** The tools read it from Darkbloom's own key
-  file, and `start --opencode` never prints it.
+  file, and `darkbloom --opencode` never prints it.
 - **Undo in one line:** every change is backed up first, and the start prints
   the file it changed, the backup and the command that puts it back:
 
@@ -244,7 +252,7 @@ model.
   which Darkbloom changes: unset it, or copy the `darkbloom` provider there. A
   Hermes profile chosen with `hermes profile use <name>` reads
   `~/.hermes/profiles/<name>/config.yaml`: set that profile up with
-  `HERMES_HOME=~/.hermes/profiles/<name> darkbloom start --hermes`. The start
+  `HERMES_HOME=~/.hermes/profiles/<name> darkbloom --hermes`. The start
   always names the file it changed.
 
 ## Check how this Mac serves
@@ -279,7 +287,7 @@ A pair gets the same three choices. Run `darkbloom cluster` on each Mac: it
 pairs them, then the leading Mac asks how the pair serves (**Only me**,
 **Darkbloom network** or **Both, me first**, preselected) and which model; its
 list's **Change how the pair serves** asks again. Then run
-`darkbloom start --opencode` on the leading Mac, which runs the pair's API.
+`darkbloom --opencode` on the leading Mac, which runs the pair's API.
 
 - **Only me:** no Mac of the pair contacts Darkbloom. `darkbloom cluster local`
   serves the pair this way too. The other Mac passes its own port on to the
@@ -297,9 +305,11 @@ list's **Change how the pair serves** asks again. Then run
   asked, and a pair keeps serving as it did
   ([Both, me first](./two-mac-cluster.md#both-me-first-the-pairs-own-api-beside-darkbloom)).
 
-On a Mac in a pair, `darkbloom start` starts the pair, and the flags above are
-for serving this Mac alone: add `--solo`
-([Two Macs as one provider](./two-mac-cluster.md)).
+On a Mac in a pair, `darkbloom start` starts the pair, in a terminal or not,
+also after `darkbloom stop`. The flags above are for serving this Mac alone:
+add `--solo`. Without it they start nothing and say why; the app's Start, which
+has no `--solo`, starts the pair. `darkbloom status` says under the pair when the
+Mac serves alone ([Two Macs as one provider](./two-mac-cluster.md)).
 
 ## Related
 

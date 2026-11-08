@@ -168,6 +168,26 @@ struct LocalContextWindowTests {
         await bridge.shutdown()
     }
 
+    /// On a paged slot (the automatic backend of every catalog single-Mac
+    /// model) the engine's own admission is the memory gate: a request that
+    /// can never fit is refused with the same 503 and words, before any SSE
+    /// header, streamed or not.
+    @Test(arguments: [false, true])
+    func aPagedSlotSaysWhenItsMemoryCantHoldARequest(stream: Bool) async throws {
+        let engine = NeverFitsEngine()
+        let tokenizer = FixedLengthTokenizer(count: 8)
+        let bridge = EngineV2Bridge(engine: engine, modelId: "window/model", tokenizer: TokenizerHandle(tokenizer),
+            eosTokenIds: [], defaultMaxTokens: 32_768, defaultMaxTokensContextLimit: Self.window,
+            maxConcurrentRequests: 1, kvBytesPerToken: 4_000, kvBudget: roomyKVBudget(), kvBackendKind: .paged)
+        let answer = try await Self.answer(bridge, tokenizer: tokenizer, stream: stream)
+        #expect(answer.status == 503)
+        #expect(answer.contentType == "application/json")
+        #expect(answer.error["message"] as? String == "This Mac's memory can't hold this request right now. Lower "
+            + "max_tokens or shorten the prompt (or send less media), or retry when this Mac's other requests finish.")
+        #expect(engine.submissions == 1)
+        await bridge.shutdown()
+    }
+
     /// Within the window, this Mac's memory decides: a request reserves its
     /// prompt and output when it starts, and one the memory can't hold is
     /// refused as busy (503, which the local router may pass on) in words that

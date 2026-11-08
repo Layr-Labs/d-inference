@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models, the
@@ -111,8 +111,9 @@ and `provider-swift/Sources/darkbloom/Diagnostics/DoctorRunner.swift`, using
 | `Cannot start: …` | `Start.prepareServeRuntime` — `GPUEnforcement.requireMetal` failed, or the Gemma runtime environment could not be applied (`GemmaOptimizationEnvironment.apply`) | Confirm a Metal GPU (`system_profiler SPDisplaysDataType`); retry |
 | `Cannot start: hardware detection failed …` | `sysctl`/`system_profiler` failed | Retry; report the output of `sysctl machdep.cpu.brand_string hw.memsize` |
 | `No models selected.` | Picker cancelled or `--model` ids not local | `darkbloom models list`; `darkbloom models download <id>` |
+| ``Without a terminal, `darkbloom start` can't ask which models to serve: …`` (exit 64) | A script, an agent or a start with its input redirected named no models; no start asks a question without a terminal | Add `--model <id>` (`darkbloom models list`) or `--all`, or run `darkbloom start` in a terminal to pick |
 | `No engine-v2-capable models available to serve.` (`--local`) | Every local model's family lacks a CBv2 adapter | Download a supported family (gpt-oss, gemma-4) |
-| ``This Mac's local API couldn't listen on <addr>:<port>: another program may use port <port>. …`` (Only me) | Another program holds this Mac's local API port | Stop the other program, or run the `darkbloom start --port <n>` it names: the new port is saved, and tools set up for the old one need `darkbloom start --opencode` or `--hermes` again |
+| ``This Mac's local API couldn't listen on <addr>:<port>: another program may use port <port>. …`` (Only me) | Another program holds this Mac's local API port | Stop the other program, or run the `darkbloom start --port <n>` it names: the new port is saved, and tools set up for the old one need `darkbloom --opencode` or `--hermes` again |
 | ``Serving: Darkbloom and you, me first — the local API isn't up: port <port> is in use (…)`` (`status`; `local` says `The local API isn't up: …`) | Both, me first serves Darkbloom, but another program holds the local API's port (`DaemonState.localAPIFailure`) | As above; after freeing the port, `darkbloom restart` |
 | `Cannot start --local-endpoint: failed to create the local API token …` | `~/.darkbloom` not writable | Fix permissions, or `--no-auth` on a trusted network |
 | `warning: … RETIRED knob and is IGNORED` | A retired `[backend]` key or env var is set | Remove it; see [beta features](./beta-features.md#retired) |
@@ -277,7 +278,9 @@ On a paired Mac `darkbloom stop`, `start`, `restart` and `status` control the pa
 | Symptom | Cause | Fix |
 |---|---|---|
 | `darkbloom stop` says `stopping both Macs` on a Mac in a cluster | On a paired Mac `stop` controls the pair, as on one Mac it controls single-Mac serving (`Stop.pairedStop`) | Expected: both Macs stop and stay stopped; `darkbloom start` on either Mac starts the pair again. `darkbloom stop --solo` stops single-Mac serving only |
-| `darkbloom start` opens the cluster's screen, or in a script ends with `✗ Not serving: …` | On a paired Mac `start` starts the pair (`Start.pairStart`); a script gets `darkbloom cluster status`'s exit status | Follow the result block's `Next:` line. `darkbloom start --solo` serves this Mac alone |
+| `darkbloom start` opens the cluster's screen, or in a script ends with `✗ Not serving: …` | On a paired Mac `start` starts the pair whatever its state, also after `darkbloom stop` (`Start.pairStart`); a script gets `darkbloom cluster status`'s exit status | Follow the result block's `Next:` line. `darkbloom start --solo` serves this Mac alone |
+| `darkbloom start --model <id>` in a terminal, or `darkbloom autopilot enable`, says ``This Mac is in a two-Mac cluster with the other Mac (…): `--model` is for single-Mac serving, so nothing was started.`` (exit 64) | On a paired Mac single-Mac options need `--solo`, in every state of the pair; nothing was started or stopped | To start the pair: `darkbloom start`. To serve this Mac alone: `darkbloom start --solo --model <id>` (stop the pair first while it runs) |
+| The app's **Start serving** on a paired Mac started the pair, and says ``This Mac serves in a pair: started the pair with <model>; `darkbloom cluster` changes its model.`` | The app has no `--solo`, so on a paired Mac its Start starts the pair, with the pair's own model, never this Mac alone | Expected. To change the pair's model: `darkbloom cluster` on the leading Mac. To serve this Mac alone: `darkbloom stop`, then `darkbloom start --solo --model <id>` in a terminal |
 | Is the pair serving? Why not? | `darkbloom cluster` needs a terminal | `darkbloom cluster status` (or `--json`; exit 0 only while it serves) |
 | `This Mac's pairing record couldn't be read (…), so it may be in a two-Mac cluster.` (`cluster status` exit 7) | The pairing store can't be read (a damaged or unsafe file); the commands treat the Mac as maybe in a cluster, so `start`, `stop` and `restart` need `--solo` (`ClusterPairSummary.membership`) | `darkbloom cluster` on this Mac checks the pairing |
 | `darkbloom cluster link --remove` asks `Remove it? [y/N]` | The Mac is paired; removing the port setup stops the cluster on both Macs until it is set up again | Answer `n` unless the cable port must go; never remove it because of a doctor line alone. `--yes` for scripts |

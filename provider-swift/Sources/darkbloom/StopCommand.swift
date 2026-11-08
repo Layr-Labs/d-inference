@@ -104,7 +104,7 @@ struct Stop: AsyncParsableCommand {
             if code != 0 { throw ExitCode(code) }
             return
         }
-        if stop == .stopHere, pair.started, pair.serviceRunning {
+        if stop == .stopHere, pair.leftoverPartHere {
             print(pair.leftoverStopLine)
             try await Start.releaseLeftoverPart(pair)
         }

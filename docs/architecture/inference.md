@@ -3783,9 +3783,10 @@ evidence, not a change to the normal final-row contract or the near-tie rule
 | Symptom | Cause | Where |
 |---|---|---|
 | `token_budget_exhausted: duplicate request ID` | Request id already live on the bridge | `EngineV2Bridge+Submission.swift` |
-| `token_budget_exhausted: … shared KV budget has no headroom` | Two failed `GlobalKVCacheBudget` reservations | `EngineV2Bridge+Submission.swift` |
+| `token_budget_exhausted: … shared KV budget has no headroom` | Two failed `GlobalKVCacheBudget` reservations; thrown before any stream exists (in-band to a nonthrowing caller) | `EngineV2Bridge+Submission.swift` |
+| `token_budget_exhausted: …` from engine admission | On one Mac, a request the engine's own admission can never hold (a paged slot's only memory gate, `EngineV2.requireRequestCanEverFit`); thrown before any stream exists, so a streamed local request gets 503 (in-band to a nonthrowing caller) | `EngineV2Bridge+Submission.swift` (`submitTokenized`) |
 | `PreContentDeadlineFailure.deadlineUnreachable` | First-content budget spent before submit or during prefill projection | `CoordinatorClientTypes.swift`, `EngineV2Bridge+Submission.swift`, `EngineV2Bridge+Admission.swift` |
-| Request cancelled by lease | No admission/prefill/decode progress within 120 s, or a step over 30 s | `EngineLoopV2.swift` |
+| Request cancelled by lease | No admission/prefill/decode progress within 120 s, or a step over 30 s. On the local API this comes after the response head, so a queued request that waits out the admission lease ends a streamed answer with an error event (as does a paged pool that stays full through its requeues) | `EngineLoopV2.swift`; `EngineV2Bridge+Events.swift` |
 | `promptExceedsContext` (400) | The prompt alone fills the slot's window (its advertised context, else its model's); a larger output is cut, never refused | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`) |
 | `advertisedContextExceeded` (400) | Candidate output reservation is negative or overflows; with the output cut to the window, nothing larger reaches it on one Mac | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`); `provider-swift/Sources/ProviderCore/ProviderLoop+ErrorMapping.swift` (`sanitizedInferenceFailure`) |
 | `unsupportedReasoningEffort` (400) | Active effort outside `low`/`medium`/`xhigh` on a restricted-effort template (Flash-Next, Qwen3.8-27B) | `provider-swift/Sources/ProviderCore/Inference/Qwen4SupportPolicy.swift` (`validateReasoningContext`) |
@@ -4143,16 +4144,18 @@ reason with the command to serve this Mac alone. `ClusterService.pairServesHere`
 status) read the verdict. Nothing automatic stops a `notServing` part, whose pair
 may still be loading: `ClusterService.pairKeepsLock` keeps update and the watchdog
 off the serving lock while the other Mac answers, and `Start.pairStart` and
-`Restart.pairRestart` act on the pair then, except for `start --solo` and the
-terminal's choice. A 0.10.8 service publishes none; its control mode then
+`Restart.pairRestart` act on the pair then, except for `start --solo`. A plain
+`start` starts the pair in every state; only `--solo` serves this Mac alone. A
+0.10.8 service publishes none; its control mode then
 decides (`waiting`, `alone`, `cannotServe` and `idle` mean the other Mac isn't
 taking part). A reboot of a few minutes stays `running`. The windows run on
 `ClusterControlClock.awakeSeconds` (`CLOCK_UPTIME_RAW`, paused in system sleep):
 `ClusterPairWatch.tick(raw:awake:...)` places each new answer from the lease clock
 on the awake clock no earlier than the previous tick, so waking from a long sleep
-never gives up a part by itself. `darkbloom start` on a
-Mac whose pair doesn't run clears the intent and waits for the part to end
-(`ClusterService.releaseForSingleMac`) before single-Mac serving starts
+never gives up a part by itself. `darkbloom start --solo` (and `restart` or
+`update` when they serve this Mac alone) on a Mac whose pair doesn't run clears
+the intent and waits for the part to end (`ClusterService.releaseForSingleMac`,
+`Start.releaseLeftoverPartToServeAlone`) before single-Mac serving starts
 ([going back to serving on one Mac](../provider/two-mac-cluster.md#going-back-to-serving-on-one-mac)).
 
 Single-Mac serving holds a Mac's one serving lock and never ends by itself, so

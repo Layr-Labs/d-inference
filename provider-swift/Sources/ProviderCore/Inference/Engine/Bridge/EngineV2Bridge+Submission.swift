@@ -1078,8 +1078,18 @@ extension EngineV2Bridge {
             // `token_budget_exhausted:` prefix contract so
             // `fromSchedulerMessage` classifies it as a retryable capacity
             // error (429/503) exactly as the legacy engine's rejections.
-            continuation.yield(.error(EngineV2Translation.admissionErrorMessage(
-                for: error, distributedProfile: distributedProfile)))
+            let message = EngineV2Translation.admissionErrorMessage(for: error, distributedProfile: distributedProfile)
+            // A request this Mac's engine can't hold (a paged slot's only memory
+            // gate: one that can never fit its grant) is refused before any
+            // stream exists, as the shared KV gate's is, so a streamed local
+            // request gets 503, not a 200 stream that fails at once.
+            // Nonthrowing callers still get the message in-band.
+            if distributed == nil, !retirementTransfer.isClaimed,
+               case .tokenBudgetExhausted = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message) {
+                continuation.finish()
+                throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(message)
+            }
+            continuation.yield(.error(message))
             continuation.finish()
             return stream
         }

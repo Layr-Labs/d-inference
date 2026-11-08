@@ -324,6 +324,9 @@ public actor EngineV2Bridge {
     /// bridge-side limit would just shadow the engine's admission with a
     /// second constant to keep in sync.
     var pumpTasks: [String: Task<Void, Never>] = [:]
+    /// Me first: how often the owner's request, while it has no first token, looks whether it waits in the engine's
+    /// queue (`EngineV2Bridge+OwnerWait.swift`).
+    var ownerWaitPollInterval: Duration = .milliseconds(250)
 
     /// Upper bound on a caller-supplied request-id we will use verbatim.
     /// Coordinator/provider ids are short (`req-<uuid-prefix>` or a

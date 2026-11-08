@@ -82,8 +82,8 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
     /// as `localOnly` is. Nil from an older build.
     public var localAPI: Bool? = nil
     /// In the answer to a `status` command: the ports of `ClusterLocalServing.servingPorts` free on this Mac (those
-    /// its own API, relay or solo server holds count as free), so rank 0 takes a port free on both Macs. Nil from an
-    /// older build.
+    /// its own API, relay or solo server holds count as free), which an older build's rank 0 reads to take a port free
+    /// on both Macs; this build's rank 0 takes its own Mac's port (`LocalAPIPort.thisMac`). Nil from an older build.
     public var freePorts: [Int]? = nil
     /// In the answer to a `status` command, from the Mac whose part runs rank 0: the port the pair's local API listens
     /// on, on every address, once bound (its part's discovery record), Both or local only. Every other Mac's relay

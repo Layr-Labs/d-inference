@@ -20,10 +20,12 @@ struct ClusterPairLocalAPI: Sendable, Equatable {
 
 extension ClusterPairSummary {
     /// `status` and `cluster status` on a pair that serves Both, me first: whether Darkbloom is paused for you, where the
-    /// pair's local API listens, and what the other Macs do. The Mac whose part runs rank 0 says it from its own part.
-    /// With the API on every address, every other Mac names its own relay's address, which passes your requests to it;
-    /// otherwise it says where to look. Nothing while the pair is stopped, and nothing for the other two ways to serve.
-    /// No key and no speed.
+    /// pair's local API listens, and what the other Macs do. The Mac whose part runs rank 0 says it from its own part,
+    /// and that the other Macs pass requests to it only while its API listens on every address. With the API on every
+    /// address, every other Mac names its own relay's address, which passes your requests to it, or why it has none:
+    /// rank 0 answers on its own Mac only while Darkbloom doesn't have the pair, or another program holds this Mac's
+    /// port. Otherwise it says where to look. Nothing while the pair is stopped, and nothing for the other two ways to
+    /// serve. No key and no speed.
     func localAPILines(now: Date = Date(), timeZone: TimeZone = .current) -> [String] {
         guard let localAPI, started, paired, !pairingUnreadable else { return [] }
         guard localAPI.runsRankZero else {
@@ -34,12 +36,23 @@ extension ClusterPairSummary {
             }
             let passes = "Members: \(otherMac) runs the pair's API; this Mac passes your requests to it, and Darkbloom pauses for them too"
             guard let relaying else {
+                let partOf = "Members: \(otherMac) runs the pair's API; this Mac is part of the pair"
+                if relayWaitsForOffer {
+                    return ["Local API: none on this Mac while Darkbloom doesn't have the pair; meanwhile the pair answers only on "
+                                + "\(otherMac) (`\(Self.cli) local` there shows its address and key)", partOf]
+                }
+                if let held = relayPortHeld {
+                    return ["Local API: port \(held) on this Mac is held by another program, so this Mac doesn't answer for the pair; "
+                                + "free it, or set another `[local] port` in provider.toml, then `\(Self.cli) restart`", partOf]
+                }
                 return ["Local API: not listening on this Mac yet; it starts once the pair's API on \(otherMac) answers", passes]
             }
             return [Self.addressLine(relaying), passes]
         }
+        // From where this Mac's API listens once it does: on this Mac only while Darkbloom doesn't have the pair.
+        let everyMac = localAPI.listening.map { ClusterServingScope.answersOnEveryMac(bind: $0.host) } ?? answersOnEveryMac
         let members = "Members: \(otherMac) is part of the pair; "
-            + (answersOnEveryMac ? "its own port passes your requests to this API" : "it runs no local API")
+            + (everyMac ? "its own port passes your requests to this API" : "it runs no local API")
         guard let address = localAPI.listening else {
             return ["Local API: not listening yet; it starts with this Mac's part of the pair", members]
         }

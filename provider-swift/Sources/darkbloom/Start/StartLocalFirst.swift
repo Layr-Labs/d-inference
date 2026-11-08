@@ -438,17 +438,16 @@ enum LocalFirstWords {
                 + "; `\(cli) restart\(solo)` tries again"
         }
         guard server != .pair else {
-            return "port \(failure.port) is in use ("
-                + (nextFree == nil ? "free it, then `\(cli) restart`" : "`\(cli) restart` starts the pair's API on a free port")
-                + ")"
+            return "port \(failure.port) is in use (free it, or set "
+                + (nextFree.map { "`[local] port = \($0)`" } ?? "another `[local] port`") + " in provider.toml, then `\(cli) restart`)"
         }
         return "port \(failure.port) is in use (" + (nextFree.map { "`\(cli) start\(solo) --port \($0)`" }
             ?? "free it, or name another with `\(cli) start\(solo) --port <n>`") + ")"
     }
 
     /// Whose local API isn't up, for the command its line names: single-Mac serving's (`start --port`, which a Mac in
-    /// a two-Mac cluster takes only with `--solo`), or the pair's (its port isn't `[local] port`: the pair picks a free
-    /// one when it starts again).
+    /// a two-Mac cluster takes only with `--solo`), or the pair's (its port is this Mac's `[local] port` too, used as it
+    /// is: a paired Mac changes it in provider.toml, then `restart`).
     enum LocalAPIServer: Equatable, Sendable {
         case singleMac(paired: Bool)
         case pair

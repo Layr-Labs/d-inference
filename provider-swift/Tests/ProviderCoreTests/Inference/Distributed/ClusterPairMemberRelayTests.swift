@@ -309,6 +309,24 @@ struct ClusterPairMemberRelayTests {
         #expect(ClusterLocalRelay.pairAPIPort(part: part, record: nil) == nil, "its API isn't bound yet")
     }
 
+    /// The setup's card prints this Mac's own address for the pair's API once its port is up: the record its part (rank
+    /// 0's API) or its cluster service (the relay) wrote, never another server's, and never an address `127.0.0.1` can't
+    /// dial; 0 (the card says where to find it) otherwise.
+    @Test func theCardsAddressIsThisMacsOwnPort() throws {
+        let published = try JSONDecoder().decode(ClusterServiceStatus.self, from: Data(
+            #"{"serving":true,"sessionLeader":false,"child":{"running":true,"starts":1,"pid":5000},"servicePID":4242}"#.utf8))
+        func record(pid: Int32, host: String = "0.0.0.0") -> LocalEndpoint.Info {
+            LocalEndpoint.Info(host: host, port: 8001, apiKey: "dk-local-k", version: "t", pid: pid, updatedAt: "")
+        }
+        #expect(OnboardingLive.ownPairAPIPort(published, live: record(pid: 4242)) == 8001, "the relay's")
+        #expect(OnboardingLive.ownPairAPIPort(published, live: record(pid: 5000)) == 8001, "rank 0's part's")
+        #expect(OnboardingLive.ownPairAPIPort(published, live: record(pid: 5000, host: "127.0.0.1")) == 8001, "kept on loopback")
+        #expect(OnboardingLive.ownPairAPIPort(published, live: record(pid: 5000, host: "192.168.1.5")) == 0, "one other address")
+        #expect(OnboardingLive.ownPairAPIPort(published, live: record(pid: 77)) == 0, "another server's")
+        #expect(OnboardingLive.ownPairAPIPort(published, live: nil) == 0, "not up yet")
+        #expect(OnboardingLive.ownPairAPIPort(nil, live: record(pid: 4242)) == 0)
+    }
+
     /// Each Mac's local API or relay takes that Mac's own port (`LocalAPIPort.thisMac`: its saved `[local] port`), whatever
     /// the other Macs saved, so tools on each Mac keep its address; every relay passes to rank 0's own port. When rank 0
     /// moves to another Mac, every Mac still answers on its own port.

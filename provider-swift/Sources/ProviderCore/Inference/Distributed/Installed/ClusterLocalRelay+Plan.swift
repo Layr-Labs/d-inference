@@ -23,29 +23,36 @@ extension ClusterLocalRelay {
         return roster.first { $0.rank == 0 }?.host
     }
 
-    /// The port the relay takes on this Mac: rank 0's when it is free here, so the pair's address is the same on every
-    /// Mac. Beside Darkbloom (Both), otherwise the first free port the pair's API may take
-    /// (`ClusterLocalServing.localAPIPorts`: never 8000 or a cable port, which are never even test-bound); local only
-    /// keeps its rule, 8000 or the next free one.
+    /// The port the relay takes on this Mac: this Mac's own (`own`: `LocalAPIPort.thisMac`, its saved `[local] port`, used
+    /// as it is, even 8000 on a Mac updated from 0.10.10), whatever rank 0's is, so tools here keep this Mac's address
+    /// whichever Mac runs rank 0. Only without it (`own` nil: the provider config can't be read, or no port is free for a
+    /// new choice) the earlier rule: rank 0's port when free here; else, beside Darkbloom (Both), the first free port the
+    /// pair's API may take (`ClusterLocalServing.localAPIPorts`: never 8000 or a cable port, which are never even
+    /// test-bound); local only, 8000 or the next free one.
     public static func port(own: Int?, for target: Target, scope: ClusterServingScope,
                             isFree: (Int) -> Bool = ClusterLocalServing.portIsFree) -> Int {
+        if let own { return own }
         guard scope.addsLocalAPI else { return isFree(target.port) ? target.port : ClusterLocalServing.servingPort(isFree: isFree) }
         return ClusterLocalServing.localAPIPort(localFree: ClusterLocalServing.localAPIFreePorts(isFree: isFree), peersFree: nil,
                                                 preferred: target.port)
     }
 
-    /// Rank 0's API port as the status of the Mac that runs it says: where its pair API listens (`pairAPIPort`), or, from
-    /// an older build serving locally only, its ready session's. Nil from any other Mac.
+    /// Rank 0's API port as the status of the Mac that runs it says: where its pair API listens on every address
+    /// (`pairAPIPort`). Only an older build's `cluster local`, which doesn't say it, is relayed at its ready session's
+    /// port; never Both, me first (`localAPI`), whose session while Darkbloom doesn't have the pair listens on loopback
+    /// with that Mac's own key alone. Nil from any other Mac.
     public static func rankZeroPort(in status: ClusterServiceStatus) -> Int? {
         guard status.sessionLeader else { return nil }
-        return status.pairAPIPort ?? (status.session?.ready == true ? status.session?.port : nil)
+        if let port = status.pairAPIPort { return port }
+        guard status.localAPI != true, status.session?.ready == true else { return nil }
+        return status.session?.port
     }
 
     /// Rank 0's status says the pair answers on that Mac only, as Both, me first does while Darkbloom doesn't have the
     /// pair: a ready local session (on loopback, with that Mac's own key alone) and no API on every address. A member then
     /// has nothing to pass on.
     public static func rankZeroAnswersOnItsMacOnly(in status: ClusterServiceStatus) -> Bool {
-        false
+        status.sessionLeader && status.localAPI == true && status.pairAPIPort == nil && status.session?.ready == true
     }
 
     /// Where the pair's API listens on every address of the Mac whose part runs rank 0, for the other Macs' relays

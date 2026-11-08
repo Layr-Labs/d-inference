@@ -107,6 +107,8 @@ extension ClusterPairSummary {
         if leadership.scope.addsLocalAPI { summary.localAPI = localAPIFacts(own: own) }
         summary.localAPIBind = leadership.scope.localAPIBind
         summary.relaying = relayAddress(own: own, live: LocalEndpoint.readLiveInfo())
+        summary.relayPortHeld = own?.relayPortHeld
+        summary.relayWaitsForOffer = own?.relayWaitsForOffer == true
         (summary.state, summary.reason) = ownState(started: summary.started, own: own, localOnly: summary.localOnly)
         summary.pairRunning = summary.started && ClusterService.pairRuns(own)
         summary.pairNotRunning = own?.pairNotRunning

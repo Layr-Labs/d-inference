@@ -211,7 +211,7 @@ extension OnboardingChecks {
                                 "saveServingChoice both", "waitReady", "pairServing"],
                "list: no new plan (both serve through Darkbloom), the scope and the answer saved, then the pair awaited: \(recorder.all)")
         expect(text.contains(block("\u{2713}", "Serving Qwen3.8-27B-4bit-mtp through Darkbloom on both Macs (pipeline)",
-                                   [bothAPILine(port: 8000), "Test response in 0.61 s"])), "list: the outcome: \(text)")
+                                   [bothAPILineHere, "Test response in 0.61 s"])), "list: the outcome: \(text)")
         expectNoSpeed(text, "list")
         transcript("both-from-the-list", text, keys: run.keys)
     }

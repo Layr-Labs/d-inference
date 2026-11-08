@@ -146,10 +146,13 @@ public enum ClusterLocalServing {
     }
 
     /// The port the pair's API takes on the Mac whose part runs rank 0 (`ClusterService.leaderAPIPort`), for every way a
-    /// pair serves: beside Darkbloom, the port used last (`previous`) while free, else the first free one it may take
-    /// (`localAPIPort`); otherwise the port used last while free, else 8000 or the next free one (`sharedPort`).
+    /// pair serves: this Mac's own (`own`: `LocalAPIPort.thisMac`, its saved `[local] port`, used as it is, even 8000),
+    /// whatever the other Macs' are. Only without it the earlier rule, on this Mac alone: beside Darkbloom, the port used
+    /// last (`previous`) while free, else the first free one it may take (`localAPIPort`); otherwise the port used last
+    /// while free, else 8000 or the next free one (`sharedPort`).
     public static func apiPort(own: Int?, scope: ClusterServingScope, previous: Int?,
                                isFree: (Int) -> Bool = portIsFree) -> Int {
+        if let own { return own }
         guard scope.addsLocalAPI else { return sharedPort(localFree: freePorts(isFree: isFree), peerFree: nil, preferred: previous) }
         return localAPIPort(localFree: localAPIFreePorts(isFree: isFree), peersFree: nil, preferred: previous)
     }

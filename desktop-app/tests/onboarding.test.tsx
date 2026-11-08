@@ -7,7 +7,7 @@ import type { BackendState } from '../src/renderer/useBackend';
 import { previewAPI } from '../src/renderer/preview';
 import App from '../src/renderer/App';
 import { Onboarding } from '../src/renderer/components/Onboarding';
-import { backendWith, models, operation, snapshot } from './onboardingFixtures';
+import { backendWith, models, operation, pairedMac, snapshot } from './onboardingFixtures';
 
 const api = vi.hoisted(() => ({
   install: vi.fn(),
@@ -252,17 +252,17 @@ it('starts without overriding an automatic-update opt-out', async () => {
   expect(backend.act).not.toHaveBeenCalled();
 });
 
-// On a Mac in a two-Mac pair, the runtime reports no Autopilot (it serves one Mac) and names the pair: onboarding
-// offers Start serving, which starts the pair with the pair's own model, and asks for no model or local API.
+// On a Mac in a two-Mac pair onboarding offers Start serving, which starts the pair with the pair's
+// own model, and asks for no model or local API.
 it('offers Start serving for the pair on a paired Mac, never Autopilot', async () => {
-  const paired = snapshot({
-    capabilities: ['account-signin', 'account-signout', 'request-history'],
-    pair: { model: 'Qwen 3.8 27B' },
-  });
-  const { done } = toStartPage(paired);
+  const { done } = toStartPage(pairedMac());
   expect(
     screen.getByText('This Mac serves in a pair. Start serving starts the pair with Qwen 3.8 27B.'),
   ).toBeVisible();
+  expect(screen.getByText('Starts the pair with Qwen 3.8 27B, on both Macs.')).toBeVisible();
+  expect(screen.getByText('The pair keeps its model loaded until you change it.')).toBeVisible();
+  // The pair's model is chosen in `darkbloom cluster`, not here.
+  expect(screen.getByRole('button', { name: 'Advanced', hidden: true })).not.toBeVisible();
   expect(screen.queryByRole('button', { name: /with Autopilot/ })).not.toBeInTheDocument();
   await act(async () => fireEvent.click(screen.getByRole('button', { name: /^Start serving/ })));
   expect(backend.act).toHaveBeenCalledExactlyOnceWith(

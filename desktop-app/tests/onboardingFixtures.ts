@@ -58,6 +58,14 @@ export function snapshot(overrides: Partial<Snapshot> = {}): Snapshot {
   };
 }
 
+// A Mac in a two-Mac pair, as the runtime reports it: it names the pair and its model, and offers
+// no Autopilot, which serves one Mac.
+export const pairedMac = () =>
+  snapshot({
+    capabilities: ['account-signin', 'account-signout', 'request-history'],
+    pair: { model: 'Qwen 3.8 27B' },
+  });
+
 // As the runtime reports it: the only catalog model does not fit, so it is not eligible.
 export const eightGBMac = (base = snapshot()) =>
   snapshot({

@@ -6,7 +6,14 @@ import { Button, External, Notice } from '../UI';
 import { AdvancedOptions } from './AdvancedOptions';
 import { ServingSummary } from './ServingSummary';
 import { pinnedMemory, startingModel } from '../../models/selection';
-import { methodFor, startAction, startModels, usablePins, type StartMethod } from './startPlan';
+import {
+  methodFor,
+  pairModel,
+  startAction,
+  startModels,
+  usablePins,
+  type StartMethod,
+} from './startPlan';
 import { useStartServing } from './useStartServing';
 import styles from './startServing.module.css';
 import { networkEarnings, recommendedModels } from '../../features/models/recommendations';
@@ -25,14 +32,12 @@ const copy: Record<StartMethod, { lead: string; start: string; empty: string }> 
   },
 };
 
-// A paired Mac starts its pair, with the pair's model: never Autopilot, which serves one Mac.
-function pairCopy(model: string | null) {
-  return {
-    lead: `This Mac serves in a pair. Start serving starts the pair with ${model ?? 'its model'}.`,
-    start: 'Start serving',
-    empty: '',
-  };
-}
+// A paired Mac starts its pair (`startAction`), never Autopilot, which serves one Mac: the plain
+// start's page, with the pair's words.
+const pairCopy = (pair: NonNullable<Snapshot['pair']>) => ({
+  ...copy.manual,
+  lead: `This Mac serves in a pair. Start serving starts the pair with ${pairModel(pair)}.`,
+});
 
 function accountLine(snapshot: Snapshot) {
   return snapshot.linked
@@ -64,7 +69,7 @@ export function StartServing({
   const manualOnly = !!snapshot.capabilities && !snapshot.capabilities.includes('autopilot');
   const pair = snapshot.pair;
   const method = methodFor(serving.rejected || manualOnly || !!pair);
-  const text = pair ? pairCopy(pair.model) : copy[method];
+  const text = pair ? pairCopy(pair) : copy[method];
   const pins = usablePins(snapshot, pinned);
   const network = networkEarnings(backend.network);
   const recommended =

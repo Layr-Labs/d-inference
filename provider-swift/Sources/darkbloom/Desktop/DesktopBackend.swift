@@ -27,7 +27,8 @@ actor DesktopBackend {
   var resourceTasks: [String: Task<JSONValue, Error>] = [:]
   var localAt = Date.distantPast
   var localModels: [ModelInfo] = []
-  /// This Mac's pair, as the snapshot reports it (`pairSnapshot`); read again after 30 s.
+  /// This Mac's pair for the snapshot (`snapshotCapabilities`, `pairSnapshot`), read again after 30 s, since
+  /// `ClusterPairSummary.local()` asks launchctl. An action reads it afresh (`arguments(for:)`).
   var pairAt = Date.distantPast
   var pair = ClusterPairSummary.notPaired
   var link: JSONValue = .null
@@ -177,7 +178,8 @@ actor DesktopBackend {
   }
 
   func arguments(for request: DesktopAction) throws -> [String] {
-    // Before anything runs, `runAutopilot`'s downloads included.
+    // First, so a refused Autopilot downloads nothing: `runAutopilot` downloads only after this. `paired` is the test
+    // `start` makes (`Start.pairStart`), so a pairing record that can't be read counts too.
     if Self.pairRefusedActions.contains(request.action), ClusterPairSummary.local().paired {
       throw ValidationError(Self.pairAutopilotRefusal)
     }
@@ -208,6 +210,8 @@ actor DesktopBackend {
     if let arguments = autopilotArguments(for: request, config: config) { return arguments }
     switch request.action {
     case "start":
+      // Never `--solo`: on a paired Mac this `start` starts the pair (`Start.appStartOptions`) and local mode refuses
+      // (`Desktop.StartLocal.pairRefusal`), so the app never serves a paired Mac alone.
       guard request.local != true else { return ["desktop", "start-local"] + models + config }
       return ["start"] + models + (request.endpoint == true ? ["--local-endpoint"] : []) + config
     case "switch":

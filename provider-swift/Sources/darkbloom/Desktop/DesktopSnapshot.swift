@@ -170,11 +170,11 @@ extension DesktopBackend {
     ["account-signin", "account-signout", "request-history"] + (paired ? [] : ["autopilot"])
   }
 
-  /// The pair this Mac serves in, for the app's words ("Start serving starts the pair with …"): its model's name, or
-  /// null before one was chosen. Null when this Mac isn't paired.
+  /// The pair this Mac is in, for the app's words ("Start serving starts the pair with …"): its model (the name, else the
+  /// ID), or null before one was chosen. Null when this Mac isn't paired.
   static func pairSnapshot(_ pair: ClusterPairSummary) -> JSONValue {
     guard pair.paired else { return .null }
-    return .dict(["model": (pair.modelName ?? pair.modelID).map(DV.string) ?? .null])
+    return .dict(["model": pair.model.map(DV.string) ?? .null])
   }
 
   /// What the live coordinator registration carries for a model: `routable`

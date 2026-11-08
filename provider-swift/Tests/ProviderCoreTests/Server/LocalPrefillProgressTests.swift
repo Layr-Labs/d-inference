@@ -312,21 +312,26 @@ struct LocalPrefillProgressTests {
         let (frames, source) = AsyncThrowingStream<String, Error>.makeStream()
         let response = DistributedHTTPEventStream.response(frames, control: control, prefillProgress: prefill,
                                                            clockForTesting: clock)
-        let roleWritten = LocalHostLatch()
+        let (roleWritten, role) = AsyncStream<Void>.makeStream()
         let writer = HTTPDeliveryWriter(capture: capture, beforeWrite: { text in
-            if text.contains(#""role":"assistant""#) { roleWritten.complete() }
+            if text.contains(#""role":"assistant""#) { role.yield() }
         })
         let writing = Task { try await response.body.write(writer) }
+        defer { writing.cancel() }
         source.yield(try httpDeliveryFrame(role: "assistant"))
-        await roleWritten.wait()
+        // Every wait below answers cancellation, so the suite's time limit ends a writer that stops writing or
+        // sleeping: the stream's iterator then returns nil, and `nextSleep()` throws.
+        var roleSignals = roleWritten.makeAsyncIterator()
+        let roleSignal: Void? = await roleSignals.next()
+        try #require(roleSignal != nil, "the role chunk was written")
         // Each probe: the writer sleeps until 500 ms after the last line, and the clock moves there.
         for probe in 1...20 {
-            let due = await clock.nextSleep()
+            let due = try await clock.nextSleep()
             #expect(due == .init(offset: .milliseconds(500 * probe)), "probe \(probe)")
             clock.advance(to: due)
         }
         // The 21st sleep begins once the 20th probe's line is written.
-        #expect(await clock.nextSleep() == .init(offset: .milliseconds(500 * 21)))
+        #expect(try await clock.nextSleep() == .init(offset: .milliseconds(500 * 21)))
         let keepAlive = ": keep-alive\n\n", comment = ": prefill in progress, 8 prompt tokens\n\n"
         let fiveSeconds = Array(repeating: keepAlive, count: 9) + [comment]
         #expect(Array(capture.values.dropFirst()) == fiveSeconds + fiveSeconds, "\(capture.values)")
@@ -436,7 +441,8 @@ final class PrefillTestClock: @unchecked Sendable {
 
 /// A `Clock` the test moves: `now` changes only in `advance(to:)`, which wakes every sleep it reaches. No real time
 /// passes and nothing polls: the test waits for a sleep to begin (`nextSleep()`), checks when it is due, then moves
-/// the clock there. A sleep due at another time fails that check rather than leaving the test waiting.
+/// the clock there. A sleep due at another time fails that check rather than leaving the test waiting, and a writer
+/// that stops sleeping leaves `nextSleep()` waiting only until the test is cancelled (the suite's time limit).
 final class ProbeTestClock: Clock, @unchecked Sendable {
     typealias Duration = Swift.Duration
 
@@ -448,7 +454,7 @@ final class ProbeTestClock: Clock, @unchecked Sendable {
         static func < (lhs: Instant, rhs: Instant) -> Bool { lhs.offset < rhs.offset }
     }
 
-    private typealias Watcher = CheckedContinuation<Instant, Never>
+    private typealias Watcher = CheckedContinuation<Instant, Error>
 
     private let lock = NSLock()
     private var current = Instant(offset: .zero)
@@ -478,15 +484,24 @@ final class ProbeTestClock: Clock, @unchecked Sendable {
         }
     }
 
-    /// When the sleep under way is due; without one, when the next sleep to begin is.
-    func nextSleep() async -> Instant {
-        await withCheckedContinuation { (watcher: Watcher) in
-            let due = lock.withLock { () -> Instant? in
-                if let due = sleepers.values.map({ $0.deadline }).min() { return due }
-                self.watcher = watcher
-                return nil
+    /// When the sleep under way is due; without one, when the next sleep to begin is. Throws `CancellationError` if
+    /// the waiting task is cancelled first.
+    func nextSleep() async throws -> Instant {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (watcher: Watcher) in
+                let due = lock.withLock { () -> Result<Instant, Error>? in
+                    if let due = sleepers.values.map({ $0.deadline }).min() { return .success(due) }
+                    if Task.isCancelled { return .failure(CancellationError()) }
+                    self.watcher = watcher
+                    return nil
+                }
+                if let due { watcher.resume(with: due) }
             }
-            if let due { watcher.resume(returning: due) }
+        } onCancel: {
+            lock.withLock { () -> Watcher? in
+                defer { self.watcher = nil }
+                return self.watcher
+            }?.resume(throwing: CancellationError())
         }
     }
 

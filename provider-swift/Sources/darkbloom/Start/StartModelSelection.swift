@@ -31,6 +31,20 @@ extension Start {
         return StartModelSelection(hostedModels: hosted, autopilotModels: cached)
     }
 
+    /// No start asks a question without a terminal. A start that names no models (`--model`, `--all`) picks them in the
+    /// picker (`selectStartupModels`), whose numbered list reads standard input when there is no terminal and waits
+    /// forever on input that stays open, as a script's or an agent's can. So such a start stops here, in one line on
+    /// standard error (exit 64), before anything is stopped or started. Only me (`mode` local) without a terminal takes
+    /// the last selection still on this Mac, never the picker (`onlyMeModelsWithoutAsking`), and launchd's
+    /// `--foreground` child the models its job names: neither reaches the picker.
+    func requireModelsNamedWithoutTerminal(mode: LocalSettings.Mode) throws {
+        guard mode != .local, !foreground, model.isEmpty, !all, isatty(STDIN_FILENO) == 0 else { return }
+        let cli = BuildEnvironment.current.cliName
+        printError("Without a terminal, `\(cli) start` can't ask which models to serve: add --model <id> "
+            + "(`\(cli) models list` shows this Mac's models) or --all.")
+        throw ExitCode.validationFailure
+    }
+
     /// `--model` or `--all` as given, else the picker with downloads. `whenCatalogUnreachable`, for Only me: the
     /// models it serves when Darkbloom's catalog can't be read, instead of stopping.
     func selectStartupModels(snapshot: RuntimeSnapshot, config: ProviderConfig,

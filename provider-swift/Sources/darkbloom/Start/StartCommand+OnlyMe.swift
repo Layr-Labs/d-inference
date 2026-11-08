@@ -60,10 +60,14 @@ extension Start {
     /// Only me's models, picked as the other two choices pick theirs: `--model` or `--all` as given; in a terminal, the
     /// picker with downloads (the models already on this Mac when Darkbloom's catalog can't be read); without one,
     /// nothing is asked, so a script or the app's Start never waits (`onlyMeModelsWithoutAsking`). Only the ones this
-    /// Mac's own server serves are kept; with none, the start ends with the commands that get one.
+    /// Mac's own server serves are kept; with none, the start ends with the commands that get one. The picker downloads
+    /// the models picked that aren't on this Mac yet, which the scan `start` took before it misses: then this Mac is
+    /// scanned again (`modelsOnThisMacNow`). `select` stands in for `selectStartupModels`, `scan` for that scan.
     func onlyMeModels(snapshot: RuntimeSnapshot, config: ProviderConfig, coordinatorURL: String,
                       runtimeCapabilities: Set<ProviderRuntimeCapability>,
-                      terminal: Bool = ClusterPairCommands.isTerminal()) async throws -> [String] {
+                      terminal: Bool = ClusterPairCommands.isTerminal(),
+                      select: (() async throws -> [String])? = nil,
+                      scan: (() -> [ModelInfo])? = nil) async throws -> [String] {
         let onThisMac = Self.locallyServable(
             advertisedModels(from: snapshot.models, config: config, includeDisabled: true,
                              runtimeCapabilities: runtimeCapabilities),
@@ -73,12 +77,18 @@ extension Start {
         if asks, !terminal {
             picked = Self.onlyMeModelsWithoutAsking(lastSelection: config.backend.enabledModels, onThisMac: onThisMac)
         } else {
-            picked = try await selectStartupModels(snapshot: snapshot, config: config, coordinatorURL: coordinatorURL,
-                                                   runtimeCapabilities: runtimeCapabilities, autopilot: false,
-                                                   whenCatalogUnreachable: { onThisMac })
+            if let select {
+                picked = try await select()
+            } else {
+                picked = try await selectStartupModels(
+                    snapshot: snapshot, config: config, coordinatorURL: coordinatorURL,
+                    runtimeCapabilities: runtimeCapabilities, autopilot: false, whenCatalogUnreachable: { onThisMac })
+            }
             if asks, picked.isEmpty { throw ValidationError("No models selected.") }
         }
-        let byID = Dictionary(snapshot.models.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let scanned = Set(snapshot.models.map(\.id))
+        let onDisk = picked.allSatisfy(scanned.contains) ? snapshot.models : scan?() ?? Self.modelsOnThisMacNow(snapshot)
+        let byID = Dictionary(onDisk.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let (servable, skipped) = Self.locallyServable(picked.compactMap { byID[$0] }, mtpMode: config.backend.mtpMode)
         for line in skipped { printError(line) }
         guard !servable.isEmpty else {
@@ -86,6 +96,13 @@ extension Start {
             throw ExitCode.failure
         }
         return servable.map(\.id)
+    }
+
+    /// This Mac's models as they are now, scanned as `loadRuntimeSnapshot` scans them.
+    static func modelsOnThisMacNow(_ snapshot: RuntimeSnapshot) -> [ModelInfo] {
+        guard let hardware = snapshot.hardware else { return snapshot.models }
+        let cache = ModelScanner.resolveCache(configuredDirectory: snapshot.configuredModelCacheDirectory).url
+        return ModelScanner.scanModels(in: cache, availableMemoryGB: hardware.memoryAvailableGb)
     }
 
     /// Without a terminal: the last selection still on this Mac, else every model this Mac's own server serves.

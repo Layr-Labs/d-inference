@@ -23,10 +23,11 @@ extension ClusterPairSummary {
     /// pair's local API listens, and that the other members are part of the pair and run none. Nothing while the pair is
     /// stopped, and nothing for the other ways to serve. No key and no speed.
     ///
-    /// The pause comes from the part that runs rank 0. The leading Mac's status carries it when that part is its own
-    /// (`OnboardingLive.pauseLines`), and every Mac shows those lines under the pair's line: it is said once, there. A
-    /// status that doesn't carry it (that part runs on the Mac that follows, or the leading Mac's build is older) leaves
-    /// it to the Mac whose part runs rank 0, from its own part, and the other Mac says where to look.
+    /// The pause comes only from the part that runs rank 0, never worked out here. The leading Mac's status carries it
+    /// when that part is its own (`OnboardingLive.pauseLines`), and every Mac shows those lines under the pair's line: it
+    /// is said once, there. A status that doesn't carry it (that part runs on the Mac that follows, the leading Mac's
+    /// build is older, or its answer didn't come) leaves it to the Mac whose part runs rank 0, from its own part; the
+    /// other Mac says where to look.
     func localAPILines(now: Date = Date()) -> [String] {
         guard let localAPI, started, paired, !pairingUnreadable else { return [] }
         let statusSaysPause = lines.contains { $0.hasPrefix(MeFirstWords.pairPrefix) }

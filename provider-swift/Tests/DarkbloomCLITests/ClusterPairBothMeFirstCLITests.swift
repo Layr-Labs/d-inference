@@ -126,6 +126,14 @@ struct ClusterPairBothMeFirstCLITests {
         return pair
     }
 
+    /// The Mac that follows: its part doesn't run rank 0, so the pair's API and its pause are on the other Mac.
+    private func member() -> ClusterPairSummary {
+        var pair = leader()
+        pair.role = .member
+        pair.localAPI = ClusterPairLocalAPI(runsRankZero: false, listening: nil, meFirst: nil)
+        return pair
+    }
+
     @Test func theLeadingPartsMacSaysWhetherThePairIsPausedItsAddressAndTheMembers() {
         let paused = leader().localAPILines(now: F.now)
         #expect(paused == [
@@ -157,11 +165,8 @@ struct ClusterPairBothMeFirstCLITests {
     }
 
     @Test func aMemberSaysItIsPartOfThePairAndWhereTheAPIIs() {
-        var pair = leader()
-        pair.role = .member
-        pair.localAPI = ClusterPairLocalAPI(runsRankZero: false, listening: nil, meFirst: nil)
         // An older leading Mac's status, which doesn't say whether the pair is paused: where to look.
-        #expect(pair.localAPILines(now: F.now) == [
+        #expect(member().localAPILines(now: F.now) == [
             "Local API: on the other Mac (Apple M3 Ultra, 256 GB), which runs the pair's API; `\(ClusterPairSummary.cli) local` "
                 + "there shows its address and key, and `\(ClusterPairSummary.cli) status` there whether Darkbloom is paused for you",
             "Members: this Mac is part of the pair; it runs no local API",
@@ -172,11 +177,9 @@ struct ClusterPairBothMeFirstCLITests {
     /// through Darkbloom". The leading Mac's status, which every status read on the other Mac asks for anyway, carries
     /// the pause (`OnboardingLive.pauseLines`): that Mac says it under the pair's line, and points to the leading Mac
     /// only for its address and key.
-    @Test("the Mac that follows says the pair is paused for its owner, since when and back when, from the leading Mac's status")
+    @Test("the Mac that follows says the pair is paused for its owner, for how long and when it comes back, from the leading Mac's status")
     func aMemberSaysThePause() {
-        var pair = leader()
-        pair.role = .member
-        pair.localAPI = ClusterPairLocalAPI(runsRankZero: false, listening: nil, meFirst: nil)
+        var pair = member()
         pair.lines = Self.pausedStatus
         let lines = pair.clusterStatusLines
         #expect(lines.contains("\u{2713} Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel)."), "\(lines)")

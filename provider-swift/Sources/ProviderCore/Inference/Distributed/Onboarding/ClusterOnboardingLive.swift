@@ -2223,9 +2223,9 @@ final class OnboardingLive: @unchecked Sendable {
 
     /// One look at a pair offered for pairing, from both Macs' reports: whether it serves (rank 0's part runs the pair's
     /// slot and says so, with its first request's time), what it is doing, and why it does not serve when the Macs know
-    /// (a Mac without a Darkbloom login, which the coordinator never pairs; a member still without the App Attest
-    /// authorization pair membership requires once its check is slow or held back, `ClusterOnboardingAppleCheck`, while
-    /// a new part's check is progress; a committed start that stopped).
+    /// (a Mac without a Darkbloom login, which the coordinator never pairs; a member whose App Attest check, which pair
+    /// membership requires, warns for real (`ClusterOnboardingAppleCheck`); a committed start that stopped). A new part's
+    /// check is what the pair waits for, never a reason (`ClusterOnboardingPairWait.words`).
     func pairLook() -> (serving: Bool, test: String?, progress: String, reason: String?) {
         let own = ClusterService.published()
         let peer = try? JSONDecoder().decode(ClusterServiceStatus.self, from: command(.init(op: .status), seconds: 10))
@@ -2250,13 +2250,12 @@ final class OnboardingLive: @unchecked Sendable {
             ClusterOnboardingAppleCheck.Mac(name: mac, verified: child?.appAttest, retryAt: child?.appAttestRetryAt,
                                             startedAt: child?.startedAt)
         }, now: Date().timeIntervalSince1970)
-        var wait = rankZero == .starting ? "the coordinator paired both Macs" : "waiting for the coordinator to pair both Macs"
-        if rankZero != .starting, case .checking(let words) = apple { wait = words }
+        let wait = ClusterOnboardingPairWait.words(rankZero: rankZero, apple: apple)
         let progress = wait + "\n" + row(here, own?.child) + "\n" + row(there, peer?.child)
         let missing = missingLogins(peer: peer)
         if !missing.isEmpty { return (false, nil, progress, ClusterOnboardingNotServing.notLoggedIn(missing)) }
-        // Not verified by Apple, slow or held back: with when this Mac's key-generation safeguard lets it try again, when
-        // it says. A new part's check is the progress above.
+        // Apple's warning, only once it is real: with when this Mac's key-generation safeguard lets it try again, when it
+        // says.
         if case .slow(let reason) = apple { return (false, nil, progress, reason) }
         if case .stopped(let why)? = rankZero {
             // Apple verification is named only when a Mac reports it missing.
@@ -2384,11 +2383,14 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     /// While the pair serves Both, me first: whether Darkbloom is paused for its owner, for how long and until when
-    /// (`MeFirstWords.pairLines`), from this Mac's part when it runs the pair's API (rank 0). The status every Mac shows
-    /// is the leading Mac's, so the Mac that follows says it too (journey 2a on pair-2, J2-h: it said "✓ Serving …
-    /// through Darkbloom" through the whole pause). One read of that part's own state file per status: nothing per
-    /// request. Nothing for the other ways to serve, nor where this Mac's part doesn't run rank 0: that Mac's own status
-    /// says it then (`ClusterPairSummary.localAPILines`).
+    /// (`MeFirstWords.pairLines`), from this Mac's part when it runs the pair's API (rank 0). Journey 2a on pair-2 (J2-h):
+    /// the Mac that follows said "✓ Serving … through Darkbloom" through the whole pause.
+    ///
+    /// The pause comes only from that part, never worked out elsewhere. Every Mac shows the leading Mac's status (the Mac
+    /// that follows asks for it over the cable on each `status`), so these lines are how the other Mac learns it: made
+    /// here, from that part's state file and this Mac's clock, and carried as text. The cost is one read of that file per
+    /// status: nothing per request, and no new message on the link or the heartbeat. Nothing for the other ways to serve,
+    /// nor while rank 0 runs on the other Mac: that Mac says it from its own part (`ClusterPairSummary.localAPILines`).
     static func pauseLines(scope: ClusterServingScope?, own: ClusterServiceStatus?, state: DaemonState?, now: Date = Date()) -> [String] {
         guard scope?.addsLocalAPI == true, let own, own.sessionLeader, own.child.running, let part = own.child.pid,
               let state, state.pid == part else { return [] }

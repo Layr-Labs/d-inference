@@ -183,10 +183,10 @@ struct ClusterPairSummary: Sendable, Equatable {
     /// "This Mac is in a two-Mac cluster with the other Mac (Apple M5 Max, 128 GB): stopping both Macs."
     func actingLine(_ action: String) -> String { "This Mac is in a two-Mac cluster with \(otherMac): \(action)." }
 
-    /// The line `darkbloom start` says in a terminal before the pair's screen, as that screen goes on: on the leading Mac
-    /// of a stopped pair, its model list, where Enter starts the model last used (with none chosen yet, the choice);
-    /// otherwise the pair's screen as it is, where the Mac that follows starts nothing. Never "starting": nothing starts
-    /// there before a choice (journey 2a on pair-2, J2-d).
+    /// The line `darkbloom start` says in a terminal before the pair's screen, in words for what that screen does: on the
+    /// leading Mac of a stopped pair, Enter starts the model last used (before one is chosen, the choice); otherwise the
+    /// screen shows the pair as it is, and the Mac that follows starts nothing there. Never "starting": nothing starts
+    /// before a choice (journey 2a on pair-2, J2-d).
     var screenLine: String {
         guard role == .leader, !started else { return actingLine("opening the pair's screen") }
         let stopped = "This Mac is in a two-Mac cluster with \(otherMac), which is stopped."
@@ -483,10 +483,6 @@ extension ClusterPairSummary {
     /// (`ClusterControlNode.mode`: running the cluster, or confirming its claim).
     static let otherMacPresentModes: Set<String> = ["cluster", "confirming"]
 
-    /// The coordinator's pairing, in the status line's reason place: progress, not a reason (`pairLook`'s wait), as is
-    /// Apple's check of new parts (`ClusterOnboardingAppleCheck.isChecking`).
-    static let pairingProgress: Set<String> = ["the coordinator paired both Macs", "waiting for the coordinator to pair both Macs"]
-
     /// A reason that ends a start's wait: one that needs a person (a login, the clock, a coordinator rule, matching
     /// builds, a pair not offered to Darkbloom, which only a new plan or approval changes, single-Mac serving on a Mac). Others (Apple verification
     /// retrying, memory freeing, a busy or reconnecting Mac, the coordinator retrying) are waited through, as the setup
@@ -508,8 +504,9 @@ extension ClusterPairSummary {
         }
         if first.hasPrefix("Serving ") { return (.serving, nil) }
         if let reason = ClusterOnboardingNotServing.reason(inStatusLine: first) {
-            let progress = Self.pairingProgress.contains(reason) || ClusterOnboardingAppleCheck.isChecking(reason)
-            return (progress ? .loading : .notServing, reason)
+            // What the pair waits for (the coordinator's pairing, or Apple's check of a new part) is progress, read as
+            // loading: the leading Mac's look turns Apple's check into the ✗ only once its warning is real.
+            return (ClusterOnboardingPairWait.isProgress(reason) ? .loading : .notServing, reason)
         }
         if first.hasPrefix("Stopped") { return (.stopped, nil) }
         if first.hasPrefix("Loading ") || first.hasPrefix("Starting ") || first == ClusterOnboardingUpdate.statusLine

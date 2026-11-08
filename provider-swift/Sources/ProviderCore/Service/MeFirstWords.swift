@@ -3,7 +3,8 @@ import Foundation
 /// Me first in words: whether Darkbloom is paused for its owner, for how long, and when it comes back. `darkbloom status`
 /// says it for one Mac ("Serving: …"), and the leading Mac's status for a pair ("Pair: …", `OnboardingLive.pauseLines`),
 /// which both Macs show. Times are said from now: a clock time read on another Mac, or over SSH, is in a zone the reader
-/// doesn't see (journey 2a on pair-2, J2-i: "paused since 21:41", read at 05:41 UTC). No speed.
+/// doesn't see (journey 2a on pair-2, J2-i: "paused since 21:41", read at 05:41 UTC). The words are made on the Mac whose
+/// part wrote the snapshot, with its clock (`now`), so two Macs' clocks are never mixed. No speed.
 public enum MeFirstWords {
     /// The start of the pair's line.
     public static let pairPrefix = "Pair: "

@@ -272,10 +272,13 @@ public enum ClusterOnboardingNotServing {
 }
 
 /// Apple's check of each Mac of a pair the coordinator forms (App Attest), which pair membership requires. A part that
-/// just started has none: its authorization lands about a minute after it registers, so the coordinator's first trust
-/// status for it carries none. While every Mac without one is that new, the status says so in progress words; the
-/// warning (`ClusterOnboardingNotServing.notVerified`) waits until a Mac's check is slow or held back. Journey 2a on
-/// pair-2 (J2-c): every healthy 45-second start said "isn't verified by Apple yet … Don't restart either Mac" for both.
+/// just started has none yet: its authorization lands about a minute after it registers, so the coordinator's first
+/// trust status for it carries none (journey 2a on pair-2, J2-c: every healthy 45-second start said "isn't verified by
+/// Apple yet … Don't restart either Mac" for both Macs).
+///
+/// The warning (`ClusterOnboardingNotServing.notVerified`) is said only when it is real (`Mac.warns`); until then the
+/// check is progress, said in the status line's reason place and read as loading. Only the leading Mac's look decides
+/// which (`OnboardingLive.pairLook`, from both Macs' reports); every other reader reads its words (`isChecking`).
 public enum ClusterOnboardingAppleCheck {
     /// How long a Mac's part may run without App Attest before its check is slow: the usual minute, twice over.
     public static let slowSeconds: Double = 120
@@ -297,6 +300,15 @@ public enum ClusterOnboardingAppleCheck {
             self.retryAt = retryAt
             self.startedAt = startedAt
         }
+
+        /// The warning is real for this Mac: it reports no App Attest authorization, and its key-generation safeguard
+        /// holds it back, or its part has run `slowSeconds` without one, or its part's age is unknown (an older build's
+        /// status, as before). A Mac with the authorization, or with no trust status yet, never warns. The age counts
+        /// from this part's start, in that Mac's clock: a part that starts again starts a new wait.
+        func warns(now: Double) -> Bool {
+            verified == false
+                && (retryAt != nil || startedAt.map { now - $0 >= ClusterOnboardingAppleCheck.slowSeconds } ?? true)
+        }
     }
 
     public enum Look: Sendable, Equatable {
@@ -304,25 +316,27 @@ public enum ClusterOnboardingAppleCheck {
         case verified
         /// Every Mac without it is new to the check: words for the status line's reason place, read as loading.
         case checking(String)
-        /// A Mac's check is slow or held back: the warning, as the reason.
+        /// A Mac's warning is real (`Mac.warns`): the warning, as the reason.
         case slow(String)
     }
 
-    /// The pair's check now. A part of unknown age (an older build's status) is counted slow, as before.
+    /// The pair's check now: the first Mac whose warning is real, else the Macs still checking.
     public static func look(_ macs: [Mac], now: Double, timeZone: TimeZone = .current) -> Look {
-        let unverified = macs.filter { $0.verified == false }
-        if let slow = unverified.first(where: { $0.retryAt != nil || $0.startedAt.map { now - $0 >= slowSeconds } ?? true }) {
+        if let slow = macs.first(where: { $0.warns(now: now) }) {
             return .slow(ClusterOnboardingNotServing.notVerified(slow.name, retryAt: slow.retryAt.map { Date(timeIntervalSince1970: $0) },
                                                                  timeZone: timeZone))
         }
-        guard !unverified.isEmpty else { return .verified }
-        let named = unverified.count > 1 && unverified.count == macs.count ? "both Macs"
-            : ClusterOnboardingNotServing.joined(unverified.map(\.name))
-        return .checking("checking \(named) with Apple")
+        let checking = macs.filter { $0.verified == false }
+        guard !checking.isEmpty else { return .verified }
+        let named = checking.count > 1 && checking.count == macs.count ? "both Macs"
+            : ClusterOnboardingNotServing.joined(checking.map(\.name))
+        return .checking(checkingPrefix + named + checkingSuffix)
     }
 
-    /// Whether a status line's reason is `look`'s progress words.
-    public static func isChecking(_ reason: String) -> Bool { reason.hasPrefix("checking ") && reason.hasSuffix(" with Apple") }
+    /// Whether a status line's reason is `look`'s progress words ("checking both Macs with Apple").
+    public static func isChecking(_ reason: String) -> Bool { reason.hasPrefix(checkingPrefix) && reason.hasSuffix(checkingSuffix) }
+
+    private static let checkingPrefix = "checking ", checkingSuffix = " with Apple"
 }
 
 /// The leading Mac's wait for the coordinator to pair both Macs (`OnboardingLive.pairServing`), decided look by look:
@@ -357,6 +371,24 @@ public struct ClusterOnboardingPairWait: Sendable {
     public static func notPaired(minutes: Int = 15) -> String {
         "The coordinator didn't pair both Macs within \(minutes) minutes; both are registered with it, and it gave no reason"
     }
+
+    /// What the pair waits for, in the status line's reason place (`OnboardingLive.pairLook`): the start the coordinator
+    /// committed (both Macs load their share), else Apple's check of a new part, which comes before the coordinator can
+    /// pair it, else the coordinator's pairing.
+    static func words(rankZero: ClusterOnboardingPairReport.State?, apple: ClusterOnboardingAppleCheck.Look) -> String {
+        if rankZero == .starting { return paired }
+        if case .checking(let checking) = apple { return checking }
+        return pairing
+    }
+
+    /// Whether a status line's reason is the wait's words (`words`): progress, never a reason, so it reads as loading on
+    /// both Macs, which read the leading Mac's words and never work them out themselves.
+    public static func isProgress(_ reason: String) -> Bool {
+        reason == pairing || reason == paired || ClusterOnboardingAppleCheck.isChecking(reason)
+    }
+
+    static let pairing = "waiting for the coordinator to pair both Macs"
+    static let paired = "the coordinator paired both Macs"
 }
 
 /// A stop from anywhere (`darkbloom cluster stop` in another window, or on the other Mac) while a screen waits for the

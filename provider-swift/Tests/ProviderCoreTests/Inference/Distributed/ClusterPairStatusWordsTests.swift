@@ -45,6 +45,50 @@ struct ClusterPairStatusWordsTests {
         #expect(Apple.look([], now: Self.now) == .verified)
     }
 
+    /// The warning is said only when it is real (`Mac.warns`): it is never about a Mac that has the authorization, or
+    /// that has no trust status yet, however long its part has run and whatever its safeguard says; it starts at exactly
+    /// 2 minutes; and of two Macs whose warning is real, this Mac's is said, as before the check had a wait.
+    @Test("the warning only when real: never for a Mac with App Attest or no trust status yet, from 2 minutes on, this Mac's first")
+    func appleWarningOnlyWhenReal() {
+        let retry = Self.now + 600
+        for verified in [true, nil] as [Bool?] {
+            for (ranFor, retryAt) in [(300, nil), (nil, nil), (20, retry), (300, retry)] as [(Double?, Double?)] {
+                let mac = Self.mac("this Mac", verified, ranFor: ranFor, retryAt: retryAt)
+                #expect(!mac.warns(now: Self.now), "\(mac)")
+                #expect(Apple.look([mac, Self.mac(Self.other, verified, ranFor: ranFor, retryAt: retryAt)], now: Self.now) == .verified,
+                        "\(mac)")
+            }
+        }
+        #expect(Self.mac("this Mac", false, ranFor: Apple.slowSeconds).warns(now: Self.now))
+        #expect(!Self.mac("this Mac", false, ranFor: Apple.slowSeconds - 0.001).warns(now: Self.now))
+        #expect(Apple.look([Self.mac("this Mac", false, ranFor: 300), Self.mac(Self.other, false, retryAt: retry)], now: Self.now)
+            == .slow(ClusterOnboardingNotServing.notVerified("this Mac")))
+    }
+
+    /// What the pair waits for, said in the status line's reason place (`OnboardingLive.pairLook`'s first progress line),
+    /// and how every Mac reads it: Apple's check of a new part comes before the coordinator can pair it, and a start the
+    /// coordinator committed outranks it. All of it is progress, never a reason.
+    @Test("the wait's words: the committed start, else Apple's check of a new part, else the coordinator's pairing; all read as progress")
+    func waitWordsAreProgress() {
+        let checking = Apple.Look.checking("checking both Macs with Apple")
+        let slow = Apple.Look.slow(ClusterOnboardingNotServing.notVerified("this Mac"))
+        #expect(ClusterOnboardingPairWait.words(rankZero: .starting, apple: checking) == "the coordinator paired both Macs")
+        for rankZero in [nil, .stopped("memory_gate_refused")] as [ClusterOnboardingPairReport.State?] {
+            #expect(ClusterOnboardingPairWait.words(rankZero: rankZero, apple: checking) == "checking both Macs with Apple")
+            for apple in [Apple.Look.verified, slow] {
+                #expect(ClusterOnboardingPairWait.words(rankZero: rankZero, apple: apple) == "waiting for the coordinator to pair both Macs")
+            }
+        }
+        for words in ["the coordinator paired both Macs", "waiting for the coordinator to pair both Macs", "checking both Macs with Apple",
+                      "checking \(Self.other) with Apple"] {
+            #expect(ClusterOnboardingPairWait.isProgress(words), "\(words)")
+        }
+        for reason in [ClusterOnboardingNotServing.notVerified("this Mac"), ClusterOnboardingNotServing.notLoggedIn(["this Mac"]),
+                       "This Mac lacks free memory for its share", ""] {
+            #expect(!ClusterOnboardingPairWait.isProgress(reason), "\(reason)")
+        }
+    }
+
     /// The progress takes the status line's reason place, as the coordinator's pairing does; `cluster status` reads it
     /// as loading on both Macs, and the Mac that joined, following the leading Mac's start, says it as it is.
     @Test("the check's words in the status, on the Mac that joined, and never read as the warning")

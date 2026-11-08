@@ -746,8 +746,9 @@ private func onlyMeStalePair() -> ClusterPairSummary {
 }
 
 /// A pair stopped with `darkbloom stop`: its saved start is off, and both cluster services stay up, so the other Mac answers.
-private func stoppedPair() -> ClusterPairSummary {
-    var summary = pair(started: false)
+/// `model: false`: its leading Mac never chose a model.
+private func stoppedPair(model: Bool = true) -> ClusterPairSummary {
+    var summary = pair(started: false, model: model)
     summary.pairRunning = false
     summary.otherMacReachable = true
     return summary
@@ -789,8 +790,9 @@ private func servingPair(role: ClusterPairSummary.Role = .leader) -> ClusterPair
 private let resultFooter = ["", "  darkbloom stop     Stop both Macs", "  darkbloom restart  Restart with the current model",
                             "  darkbloom status   Check status"]
 
-/// The first line of a start on a pair that already serves (J2-b), and of one in a terminal that opens the pair's screen
-/// (J2-d): neither says "starting".
+/// A paired start's first line: one that starts the pair; one on a pair that already serves (J2-b) and one in a terminal
+/// that opens the pair's screen (J2-d), neither of which says "starting".
+private let startingThePair = "This Mac is in a two-Mac cluster with \(otherMac): starting the pair."
 private let alreadyServes = "This Mac is in a two-Mac cluster with \(otherMac): the pair already serves."
 private let openingScreen = "This Mac is in a two-Mac cluster with \(otherMac): opening the pair's screen."
 
@@ -1116,8 +1118,7 @@ struct ClusterPairControlTests {
                 try await runCLICommand(Start.self, ["start"])
             }
         }
-        #expect(lines(result?.standardOutputContent) == ["This Mac is in a two-Mac cluster with \(otherMac): starting the pair.",
-            ClusterPairSummary.noModelLine, ""])
+        #expect(lines(result?.standardOutputContent) == [startingThePair, ClusterPairSummary.noModelLine, ""])
         let calls = pairActionCalls(text(result?.standardErrorContent))
         #expect(calls.isEmpty, "\(calls)")
     }
@@ -1228,8 +1229,7 @@ struct ClusterPairControlTests {
                 }
             }
         }
-        #expect(lines(result?.standardOutputContent) == ["This Mac is in a two-Mac cluster with \(otherMac): starting the pair."]
-            + servingBlock + [""])
+        #expect(lines(result?.standardOutputContent) == [startingThePair] + servingBlock + [""])
         #expect(pairActionCalls(text(result?.standardErrorContent)) == ["ensureService", "serve"])
     }
 
@@ -1289,10 +1289,9 @@ struct ClusterPairControlTests {
                 }
             }
         }
-        let starting = "This Mac is in a two-Mac cluster with \(otherMac): starting the pair."
         // The app also asked for a local API (`--local-endpoint`); a pair that serves through Darkbloom only gives none.
-        #expect(lines(other?.standardOutputContent) == [starting] + servingBlock + [appStartServesLine, appStartNoLocalAPILine, ""])
-        #expect(lines(same?.standardOutputContent) == [starting] + servingBlock + [""])
+        #expect(lines(other?.standardOutputContent) == [startingThePair] + servingBlock + [appStartServesLine, appStartNoLocalAPILine, ""])
+        #expect(lines(same?.standardOutputContent) == [startingThePair] + servingBlock + [""])
         for (name, result) in [("another model", other), ("the pair's model", same)] {
             let stderr = text(result?.standardErrorContent)
             #expect(pairActionCalls(stderr) == ["ensureService", "serve"], "\(name): \(pairActionCalls(stderr))")
@@ -1409,12 +1408,11 @@ struct ClusterPairControlTests {
                 }
             }
         }
-        let starting = "This Mac is in a two-Mac cluster with \(otherMac): starting the pair."
-        #expect(lines(plain?.standardOutputContent) == [starting] + servingBlock + [""])
+        #expect(lines(plain?.standardOutputContent) == [startingThePair] + servingBlock + [""])
         // The pair serves through Darkbloom only, so no local API on this Mac takes the tool: one line names the way.
-        #expect(lines(opencode?.standardOutputContent) == [starting] + servingBlock
+        #expect(lines(opencode?.standardOutputContent) == [startingThePair] + servingBlock
             + [ToolIntegrationStep.noPairAPI([.opencode]), ToolIntegrationStep.keepsServing, ""])
-        #expect(lines(hermes?.standardOutputContent) == [starting] + servingBlock
+        #expect(lines(hermes?.standardOutputContent) == [startingThePair] + servingBlock
             + [ToolIntegrationStep.noPairAPI([.hermes]), ToolIntegrationStep.keepsServing, ""])
         for (name, result) in [("start", plain), ("--opencode", opencode), ("--hermes", hermes)] {
             let calls = pairActionCalls(text(result?.standardErrorContent))
@@ -2603,7 +2601,6 @@ struct ClusterStatusModeTests {
 @Suite("the desktop app on a paired Mac")
 struct DesktopAppOnAPairedMacTests {
     private static let autopilotRefusal = "This Mac serves in a pair; Autopilot isn't available for pairs yet. Use Start serving."
-    private static let starting = "This Mac is in a two-Mac cluster with \(otherMac): starting the pair."
 
     @Test("the app's Autopilot enroll and its model refresh on a paired Mac are refused in its words, before any download; its Start is not")
     func autopilotIsRefusedFirst() async {
@@ -2661,7 +2658,7 @@ struct DesktopAppOnAPairedMacTests {
                 }
             }
         }
-        #expect(lines(paired?.standardOutputContent) == ["posted: succeeded: start --config <config>", Self.starting]
+        #expect(lines(paired?.standardOutputContent) == ["posted: succeeded: start --config <config>", startingThePair]
             + servingBlock + [""])
         let pairedStderr = text(paired?.standardErrorContent)
         #expect(pairActionCalls(pairedStderr) == ["ensureService", "serve"], "\(pairActionCalls(pairedStderr))")
@@ -2833,7 +2830,7 @@ struct PairStartFirstLineTests {
     @Test("in a terminal, a stopped pair's first line says how its screen starts it, and nothing else says starting")
     func terminalWordsMatchTheScreen() async {
         let noModel = await #expect(processExitsWith: .success, observing: [\.standardOutputContent, \.standardErrorContent]) {
-            try await exitWithPair(noModelStoppedPair(), actions: pairActions(serving: false)) { _ in try await runStartInATerminal() }
+            try await exitWithPair(stoppedPair(model: false), actions: pairActions(serving: false)) { _ in try await runStartInATerminal() }
         }
         let member = await #expect(processExitsWith: .success, observing: [\.standardOutputContent, \.standardErrorContent]) {
             try await exitWithPair(memberPair(stoppedPair()), actions: pairActions(role: .member, serving: false)) { _ in
@@ -2886,7 +2883,7 @@ struct PairStartFirstLineTests {
             }
         }
         let loadingOut = lines(loading?.standardOutputContent)
-        #expect(loadingOut.first == "This Mac is in a two-Mac cluster with \(otherMac): starting the pair.", "\(loadingOut)")
+        #expect(loadingOut.first == startingThePair, "\(loadingOut)")
         #expect(loadingOut.contains("  Loading Qwen 3.8 27B on both Macs."), "\(loadingOut)")
         #expect(loadingOut.contains("✓ Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel)."), "\(loadingOut)")
         #expect(pairActionCalls(text(loading?.standardErrorContent)) == ["ensureService", "serve"])
@@ -2902,7 +2899,7 @@ struct PairStartFirstLineTests {
             }
         }
         let awayOut = lines(away?.standardOutputContent)
-        #expect(Array(awayOut.prefix(2)) == ["This Mac is in a two-Mac cluster with \(otherMac): starting the pair.", "live read"],
+        #expect(Array(awayOut.prefix(2)) == [startingThePair, "live read"],
                 "\(awayOut)")
         #expect(pairActionCalls(text(away?.standardErrorContent)) == ["ensureService", "serve"])
     }
@@ -2923,15 +2920,6 @@ private func runStartInATerminal() async throws {
             try await runCLICommand(Start.self, ["start"])
         }
     }
-}
-
-/// A stopped pair whose leading Mac never chose a model.
-private func noModelStoppedPair() -> ClusterPairSummary {
-    var summary = stoppedPair()
-    summary.modelID = nil
-    summary.modelName = nil
-    summary.deployment = nil
-    return summary
 }
 
 /// `summary` as the Mac that follows reads it.

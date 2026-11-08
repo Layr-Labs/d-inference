@@ -172,9 +172,10 @@ enum ClusterPairCommands {
     }
 
     /// The pair's own look, nil unless it serves: a start then asks nothing of either Mac (journey 2a on pair-2, J2-b: a
-    /// script's start on a serving pair said "starting the pair"). Asked only while this Mac's own view says the pair
-    /// runs here and the other Mac answers, so a start whose other Mac is away goes on at once, as before. Like the
-    /// wait's looks (`waitUntilServing`), it waits for the answer as long as it takes, never cut short.
+    /// script's start on a serving pair said "starting the pair"). Only that look, the status `cluster status` reads (on
+    /// the Mac that follows, the leading Mac's answer), says the pair serves; this Mac's own view decides only whether to
+    /// ask: while the pair runs here and the other Mac answers, so a start whose other Mac is away goes on at once, as
+    /// before. Like the wait's looks (`waitUntilServing`), it waits for the answer as long as it takes, never cut short.
     private static func servingLook(_ pair: ClusterPairSummary, config: String?) async -> ClusterPairSummary? {
         guard pair.started, pair.partServes, pair.otherMacReachable else { return nil }
         let look = await ClusterPairSummary.live(config: config)

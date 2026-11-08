@@ -6,9 +6,8 @@ import Foundation
 /// was left set up by a `darkbloom start` from before 0.10.8). Single-Mac serving then holds the Mac's one serving lock,
 /// and the pair can never start again. So on a Mac whose pair is started and wants its part, the cluster service stops
 /// single-Mac serving by itself, as `darkbloom stop --solo` does (`stepsAside`), unless the person chose it: `start
-/// --solo`, the terminal's "Serve on this Mac alone" and Go Online serving alone record the choice here (`record`), and
-/// an explicit start of the pair or `stop --solo` on this Mac clears it (`clear`). A Mac updated from 0.10.8 has no
-/// record, so the started pair wins.
+/// --solo` records the choice here (`record`), and an explicit start of the pair or `stop --solo` on this Mac clears it
+/// (`clear`). A Mac updated from 0.10.8 has no record, so the started pair wins.
 public enum ClusterSoloChoice {
     /// The choice's file in this Mac's cluster setup directory.
     static func file(in directory: URL) -> URL { directory.appendingPathComponent("solo-choice.json") }

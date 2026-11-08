@@ -70,6 +70,10 @@ class ComponentPathsTests(unittest.TestCase):
             "libs/darkbloom-cluster/Package.swift": {"provider", "cluster"},
             "libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh": {"provider", "cluster"},
             "provider-swift/Tests/ClusterConsoleChecks/run.sh": {"provider", "cluster"},
+            "provider-swift/Tests/ClusterDiagnosticsChecks/run.sh": {"provider", "cluster"},
+            "provider-swift/Tests/ClusterPlacementChecks/run-flow.sh": {"provider", "cluster"},
+            # A provider file outside the cluster names that those runners compile.
+            "provider-swift/Sources/ProviderCore/Diagnostics/GLM5NextGPULimitEligibility.swift": {"provider", "cluster"},
             "provider-swift/Tests/ClusterPairingChecks/PairingTerminalChecks.swift": {"provider", "cluster"},
             "provider-swift/Sources/ProviderBuildEnvironment/BuildEnvironment.swift": {"provider", "cluster"},
             "handoff/TUI-wiring.md": {"provider", "cluster"},

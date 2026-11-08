@@ -58,7 +58,7 @@ struct ClusterLeaveFlow {
     var ask: (String) -> String?
     /// Stops this Mac's part and turns its cluster service off (`Cluster.Stop.beforeUnpairing`): `.done(nil)` when the
     /// pair stopped together, `.done(note)` when the other Mac was not asked, `.skipped` with no cluster service here.
-    /// It returns only once this Mac's cluster service, and with it its part, no longer runs; else it throws.
+    /// It must return only once this Mac's cluster service, and with it its part, has ended, and throw otherwise.
     var stopPart: () async throws -> ProviderUninstall.Outcome
     /// Forgets the pairing with the Mac whose pin it is (`cluster pair --forget <pin>`).
     var forget: (String) throws -> Void

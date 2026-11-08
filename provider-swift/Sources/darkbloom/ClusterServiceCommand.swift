@@ -228,11 +228,13 @@ extension Cluster {
         /// as when the other Mac doesn't answer), only this Mac's part stops, as `--local-only` does. Skipped when this
         /// Mac has no cluster service.
         ///
-        /// It returns only once no cluster service runs on this Mac: `turnServiceOff` ends with
-        /// `ClusterService.removeFromLogin`, which waits for the service to end and throws when it doesn't. So a caller
-        /// that unpairs after it never unpairs a Mac whose part still runs. These are the steps `darkbloom uninstall`
-        /// took before they were shared (`cluster stop --service`, then `--local-only`); `leaving` only leaves out the
-        /// hints to start the service again and to stop the other Mac's, whose place the caller's last lines take.
+        /// It returns only after `turnServiceOff`'s last step, `ClusterService.removeFromLogin`, stopped this Mac's
+        /// cluster service: it waits for launchd's job to exit, and for a service started outside launchd that its pid
+        /// file names, and throws when one doesn't end. So a caller that unpairs after it doesn't unpair a Mac whose part
+        /// still runs; the one service it can't wait for is one started outside launchd without a readable pid file.
+        /// These are the steps `darkbloom uninstall` took before they were shared (`cluster stop --service`, then
+        /// `--local-only`); `leaving` only leaves out the hints to start the service again and to stop the other Mac's,
+        /// whose place the caller's last lines take.
         static func beforeUnpairing(executable: URL, say: (String) -> Void) async throws -> ProviderUninstall.Outcome {
             try await beforeUnpairing(hasService: hasService(executable: executable), say: say) { localOnly in
                 try await turnServiceOff(config: nil, worker: nil, localOnly: localOnly, leaving: true)

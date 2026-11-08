@@ -628,10 +628,9 @@ public final class ClusterService: @unchecked Sendable {
 
     /// The discovery record this Mac's relay writes for its tools (`darkbloom local`, `start --opencode`): its port on
     /// every address, and this Mac's own key, which the relay passes on as the pair's.
-    public static func relayDiscovery(port: Int, keys: ClusterLocalRelay.Keys, pid: Int32 = getpid(),
-                                      now: Date = Date()) -> LocalEndpoint.Info {
+    public static func relayDiscovery(port: Int, keys: ClusterLocalRelay.Keys) -> LocalEndpoint.Info {
         LocalEndpoint.Info(host: ClusterServingScope.localOnlyDefaultBind, port: UInt16(port), apiKey: keys.own,
-                           version: ProviderCore.version, pid: pid, updatedAt: ISO8601DateFormatter().string(from: now))
+                           version: ProviderCore.version, pid: getpid(), updatedAt: ISO8601DateFormatter().string(from: Date()))
     }
 
     /// This Mac is rank 0 now: its relay gives the port back first.
@@ -646,7 +645,7 @@ public final class ClusterService: @unchecked Sendable {
     /// loopback or one address.
     private func pairAPIPort() -> Int? {
         guard let part = lock.withLock({ child?.isRunning == true && childSetup?.hasPrefix("cluster:") == true ? child?.processIdentifier : nil }),
-              let info = LocalEndpoint.readLiveInfo(), info.pid == part, info.host == ClusterServingScope.localOnlyDefaultBind
+              let info = LocalEndpoint.readLiveInfo(), info.pid == part, ClusterServingScope.answersOnEveryMac(bind: info.host)
         else { return nil }
         return Int(info.port)
     }
@@ -2171,7 +2170,7 @@ public final class ClusterService: @unchecked Sendable {
     /// pair port (`ClusterLocalServing.localAPIPort`), and never test-bound there. This service asks its one other Mac;
     /// the pair API's rule takes the free ports of any number of Macs.
     private func leaderAPIPort(scope: ClusterServingScope, say: @Sendable (String) -> Void) -> Int {
-        let peerFree = scope.localAPIBind == "0.0.0.0" ? peerFreePorts(seconds: 5) : nil
+        let peerFree = scope.answersOnEveryMac ? peerFreePorts(seconds: 5) : nil
         let previous = lock.withLock { apiPort }
         if scope.addsLocalAPI {
             let port = ClusterLocalServing.localAPIPort(localFree: ClusterLocalServing.localAPIFreePorts(),

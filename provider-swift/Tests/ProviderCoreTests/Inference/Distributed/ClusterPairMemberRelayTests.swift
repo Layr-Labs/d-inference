@@ -18,7 +18,7 @@ private let leaderKey = "dk-local-LeaderOwnKeyCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC
 private let relayKeys = ClusterLocalRelay.Keys(own: ownKey, pair: pairKey)
 
 /// Loopback sockets for the relay's checks: a listener on a port the OS picks, whole writes and reads to the end.
-enum RelaySockets {
+private enum RelaySockets {
     static func listen() throws -> (fd: Int32, port: Int) {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         try #require(fd >= 0)
@@ -122,13 +122,13 @@ enum RelaySockets {
     }
 }
 
-struct RelayCheckFailure: Error, CustomStringConvertible {
+private struct RelayCheckFailure: Error, CustomStringConvertible {
     let description: String
     init(_ description: String) { self.description = description }
 }
 
 /// The port a server reports once it is bound.
-final class BoundPort: @unchecked Sendable {
+private final class BoundPort: @unchecked Sendable {
     private let lock = NSLock()
     private var value: Int?
     var port: Int? { lock.withLock { value } }
@@ -138,7 +138,7 @@ final class BoundPort: @unchecked Sendable {
 /// Rank 0's API as a stand-in on loopback: records every byte each connection brings, and answers each request it reads
 /// (a head, then its Content-Length body) with a two-byte 200. A request with any other framing is answered once its
 /// sender half-closes.
-final class RecordingAPI: @unchecked Sendable {
+private final class RecordingAPI: @unchecked Sendable {
     static let reply = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
     let port: Int
     private let lock = NSLock()
@@ -364,6 +364,30 @@ struct ClusterPairMemberRelayTests {
         #expect(api.received.last == swapped(second) + swapped(second))
     }
 
+    /// A body is read to its length and no further, however the client's writes fall: here the body's end comes in the
+    /// same write as the next request, whose key is swapped all the same.
+    @Test func aBodyIsReadToItsLengthAndNoFurther() async throws {
+        let api = try RecordingAPI()
+        defer { api.stop() }
+        let relay = try RelaySockets.relay(to: api.port, keys: relayKeys)
+        defer { relay.stop() }
+        let body = String(repeating: "b", count: 1_000)
+        let head = "POST /v1/chat/completions HTTP/1.1\r\nHost: h\r\nAuthorization: Bearer \(ownKey)\r\n"
+            + "Content-Length: \(body.utf8.count)\r\n\r\n"
+        let next = "GET /v1/models HTTP/1.1\r\nHost: h\r\nAuthorization: Bearer \(ownKey)\r\n\r\n"
+        func swapped(_ head: String) -> String { head.replacingOccurrences(of: ownKey, with: pairKey) }
+        let client = try RelaySockets.connect(relay.port)
+        defer { close(client) }
+        let start = String(body.prefix(100)), rest = String(body.dropFirst(100))
+        RelaySockets.write(client, head + start)
+        // The relay has passed the head and the body's start, and reads the rest of the body from the client.
+        #expect(await clusterPairWait { api.received.first == swapped(head) + start })
+        RelaySockets.write(client, rest + next)
+        shutdown(client, SHUT_WR)
+        #expect(RelaySockets.read(client) == RecordingAPI.reply + RecordingAPI.reply)
+        #expect(api.received == [swapped(head) + body + swapped(next)])
+    }
+
     /// A body whose end the relay doesn't frame by its length (chunked) ends the connection after it: the head says
     /// `Connection: close` in place of any other, and the rest passes as it comes.
     @Test func aChunkedRequestEndsItsConnection() throws {
@@ -415,6 +439,29 @@ struct ClusterPairMemberRelayTests {
         shutdown(client, SHUT_WR)
         #expect(RelaySockets.read(client) == RecordingAPI.reply)
         #expect(api.received == [request])
+    }
+
+    /// The byte copy every relay's answers take (`cluster local`'s too) stops at the first write the other side refuses:
+    /// a client that leaves mid-answer ends the copy, so the relay closes its connection to rank 0's API instead of
+    /// reading the rest of the answer into nothing.
+    @Test func theCopyStopsAtTheFirstWriteRefused() throws {
+        var toAPI: [Int32] = [0, 0], toClient: [Int32] = [0, 0]
+        try #require(socketpair(AF_UNIX, SOCK_STREAM, 0, &toAPI) == 0)
+        try #require(socketpair(AF_UNIX, SOCK_STREAM, 0, &toClient) == 0)
+        // The relay's two sockets and the API's end; the client's end is closed: the client left.
+        let (upstream, apiEnd, downstream) = (toAPI[0], toAPI[1], toClient[0])
+        ClusterLocalRelay.configure(downstream)
+        close(toClient[1])
+        let copying = DispatchGroup()
+        copying.enter()
+        Thread.detachNewThread {
+            ClusterLocalRelay.pump(from: upstream, to: downstream)
+            copying.leave()
+        }
+        // Closing the API's end ends a copy still reading, before the copy's own descriptors close.
+        defer { close(apiEnd); _ = copying.wait(timeout: .now() + 5); close(upstream); close(downstream) }
+        RelaySockets.write(apiEnd, "data: {\"token\":1}\n\n")
+        #expect(copying.wait(timeout: .now() + 5) == .success, "the copy ended at the refused write while the API still sends")
     }
 
     // MARK: - Rank 0's API
@@ -616,7 +663,7 @@ struct ClusterPairMemberRelayTests {
 
 /// Rank 0's API as a streamer on loopback: for each request it answers a head, then `frames` frames of 64 bytes, 50 µs
 /// apart, each holding the time it was sent (`DispatchTime` nanoseconds).
-final class StreamingAPI: @unchecked Sendable {
+private final class StreamingAPI: @unchecked Sendable {
     static let frameBytes = 64
     static let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
     let port: Int

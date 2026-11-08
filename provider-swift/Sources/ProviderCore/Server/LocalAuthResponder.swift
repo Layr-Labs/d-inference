@@ -67,9 +67,10 @@ public enum LocalAuthPolicy {
         guard header.hasPrefix(prefix) else { return false }
         let provided = String(header.dropFirst(prefix.count))
         // Both keys are always compared: the time taken says nothing of which one came close.
-        let own = constantTimeEquals(provided, token)
-        let pair = constantTimeEquals(provided, pairToken ?? "") && !(pairToken ?? "").isEmpty
-        return own || pair
+        let pairToken = pairToken ?? ""
+        let matchesOwn = constantTimeEquals(provided, token)
+        let matchesPair = constantTimeEquals(provided, pairToken) && !pairToken.isEmpty
+        return matchesOwn || matchesPair
     }
 
     /// Length-checked constant-time comparison. Tokens are fixed-length, so the

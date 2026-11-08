@@ -64,13 +64,6 @@ extension ClusterLocalRelay {
     /// reads no further, or `upstream` takes no more; then half-closes as `pump` does.
     static func pumpRequests(from client: Int32, to upstream: Int32, keys: Keys) {
         var pending: [UInt8] = [], buffer = [UInt8](repeating: 0, count: 64 * 1024)
-        func readMore() -> Int {
-            while true {
-                let count = buffer.withUnsafeMutableBytes { read(client, $0.baseAddress, $0.count) }
-                if count < 0, errno == EINTR { continue }
-                return count
-            }
-        }
         // False when `upstream` takes no more: the client's side is shut down, as `pump` does.
         func send(_ bytes: ArraySlice<UInt8>) -> Bool {
             guard writeAll(upstream, bytes) else { shutdown(client, SHUT_RD); return false }
@@ -80,7 +73,7 @@ extension ClusterLocalRelay {
             var end = headEnd(pending, from: 0)
             while end == nil, pending.count <= maximumHeadBytes {
                 let searched = max(0, pending.count - 3)
-                let count = readMore()
+                let count = readSome(client, into: &buffer)
                 guard count > 0 else {
                     // The client ended, between requests or inside a head: what came still goes on, then the end.
                     if !pending.isEmpty { _ = send(pending[...]) }
@@ -107,26 +100,11 @@ extension ClusterLocalRelay {
             pending.removeFirst(buffered)
             remaining -= buffered
             while remaining > 0 {
-                let count = buffer.withUnsafeMutableBytes { read(client, $0.baseAddress, min(remaining, $0.count)) }
-                if count < 0, errno == EINTR { continue }
+                let count = readSome(client, into: &buffer, upTo: remaining)
                 guard count > 0 else { shutdown(upstream, SHUT_WR); return }
                 guard send(buffer[..<count]) else { return }
                 remaining -= count
             }
-        }
-    }
-
-    /// Writes all of `bytes`; false when `fd` takes no more.
-    private static func writeAll(_ fd: Int32, _ bytes: ArraySlice<UInt8>) -> Bool {
-        bytes.withUnsafeBytes { raw in
-            var offset = 0
-            while offset < raw.count {
-                let written = write(fd, raw.baseAddress! + offset, raw.count - offset)
-                if written < 0, errno == EINTR { continue }
-                guard written > 0 else { return false }
-                offset += written
-            }
-            return true
         }
     }
 

@@ -150,6 +150,34 @@ struct ClusterPairMemberRelayCLITests {
             + "--opencode` on that Mac.")
     }
 
+    /// A member whose API doesn't answer within the wait says why: with the pair's API on every address its relay isn't
+    /// up yet, so run the start again later; with the API kept on the Mac that runs it, run the start on that Mac.
+    @Test func aMemberWhoseAPIDoesNotAnswerSaysWhy() async throws {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            for bind in ["0.0.0.0", "127.0.0.1"] {
+                let sandbox = try ToolSandbox()
+                var pair = ClusterPairSummary(paired: true, role: .member, otherMacName: "Apple M5 Ultra, 256 GB",
+                                              modelID: "qwen", modelName: "Qwen 3.8 27B", started: true,
+                                              serviceRunning: true, state: .serving)
+                pair.localAPI = ClusterPairLocalAPI(runsRankZero: false, listening: nil, meFirst: nil)
+                pair.localAPIBind = bind
+                print("--- \(bind)")
+                let start = try Start.parse(["--opencode", "--config", sandbox.config.path])
+                do {
+                    try await start.setUpToolsBesidePair(pair: pair, waitForAPI: { .notUp }, step: sandbox.step())
+                    print("--- set up")
+                } catch {}
+            }
+            exit(0)
+        }
+        let stdout = String(decoding: result?.standardOutputContent ?? [], as: UTF8.self)
+        let notUp = ToolIntegrationStep.notUp([.opencode], seconds: Start.toolWaitSeconds)
+        let elsewhere = ToolIntegrationStep.pairAPIElsewhere([.opencode], bind: "127.0.0.1")
+        #expect(stdout.contains("--- 0.0.0.0\n\(notUp)\n\(ToolIntegrationStep.keepsServing)\n"), "\(stdout)")
+        #expect(stdout.contains("--- 127.0.0.1\n\(elsewhere)\n\(ToolIntegrationStep.keepsServing)\n"), "\(stdout)")
+        #expect(!stdout.contains("--- set up"), "\(stdout)")
+    }
+
     // MARK: - The leading part's keys
 
     /// The part that runs the pair's API takes this Mac's own key (its tools' key) and the pair's (every relay's);

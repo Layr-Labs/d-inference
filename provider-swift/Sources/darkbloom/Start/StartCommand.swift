@@ -167,7 +167,7 @@ struct Start: AsyncParsableCommand {
                 throw ValidationError("--always-on installs the service that runs --supervise; use one of them.")
             }
             // The pair's local API beside Darkbloom (Both, me first): the cluster service passes --local-endpoint, its
-            // port and its address to the part it runs; the API always needs the pair's key.
+            // port and its address to the part it runs; the API always needs a key (this Mac's own, or the pair's).
             if localEndpoint {
                 guard !noAuth else {
                     throw ValidationError("The pair's local API always needs its key: --cluster-member --local-endpoint doesn't take --no-auth.")

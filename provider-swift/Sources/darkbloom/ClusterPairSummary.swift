@@ -76,6 +76,10 @@ struct ClusterPairSummary: Sendable, Equatable {
     /// says; nil while none runs.
     var relaying: ClusterPairLocalAPI.Address?
 
+    /// The pair's API listens on every address, so every Mac that doesn't run it relays it on its own port
+    /// (`ClusterServingScope.answersOnEveryMac`).
+    var answersOnEveryMac: Bool { ClusterServingScope.answersOnEveryMac(bind: localAPIBind) }
+
     static let notPaired = ClusterPairSummary(paired: false, state: .notPaired)
 
     /// Where the summary starts from what this Mac holds: in a cluster when it holds a pairing; a cluster service

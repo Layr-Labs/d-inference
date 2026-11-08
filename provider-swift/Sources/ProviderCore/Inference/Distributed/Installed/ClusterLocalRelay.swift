@@ -8,6 +8,11 @@ import Darwin
 /// each request's head is read on its way so this Mac's own key goes on as the pair's (`ClusterLocalRelay+Requests`);
 /// every other byte, and every byte of every answer, passes as it comes. The API checks the key. Nothing is kept.
 ///
+/// Rank 0's API sees each relayed request arrive on it from this Mac's cable address. So the request is the owner's
+/// use there (with Both, me first, the pair pauses for it as for one made on that Mac), and it comes from another
+/// machine (`LocalHTTPClient.isAnotherMachine`), so rank 0's router never takes the paid network for it, whoever on
+/// this Mac sent it. Each holds only because the relay dials rank 0's API at its cable address (`rankZeroHost`).
+///
 /// Each descriptor is closed only by the thread that uses it (`stop` only shuts them down), so a stopped relay never
 /// closes a number another socket of this process has taken since. At most `maximumConnections` pass at once, and a
 /// connection idle for `idleSeconds` in both directions is ended.
@@ -31,7 +36,7 @@ public final class ClusterLocalRelay: @unchecked Sendable {
 
     public let port: Int
     public let target: Target
-    /// Nil: every byte passes as it comes, keys included.
+    /// Nil: every byte passes as it comes, keys included (the relay the cluster service starts always has keys).
     public let keys: Keys?
     private let listener: Int32
     private let lock = NSLock()
@@ -151,18 +156,35 @@ public final class ClusterLocalRelay: @unchecked Sendable {
     static func pump(from: Int32, to: Int32) {
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         while true {
-            let count = buffer.withUnsafeMutableBytes { read(from, $0.baseAddress, $0.count) }
-            if count < 0, errno == EINTR { continue }
+            let count = readSome(from, into: &buffer)
             guard count > 0 else { break }
-            var offset = 0
-            while offset < count {
-                let written = buffer.withUnsafeBytes { write(to, $0.baseAddress! + offset, count - offset) }
-                if written < 0, errno == EINTR { continue }
-                guard written > 0 else { shutdown(from, SHUT_RD); return }
-                offset += written
-            }
+            guard writeAll(to, buffer[..<count]) else { shutdown(from, SHUT_RD); return }
         }
         shutdown(to, SHUT_WR)
+    }
+
+    /// One read into `buffer`, of at most `limit` bytes, again when a signal cuts it short: the count, 0 at the end,
+    /// or -1 (an error, or the idle bound passed).
+    static func readSome(_ fd: Int32, into buffer: inout [UInt8], upTo limit: Int = .max) -> Int {
+        while true {
+            let count = buffer.withUnsafeMutableBytes { read(fd, $0.baseAddress, min(limit, $0.count)) }
+            if count < 0, errno == EINTR { continue }
+            return count
+        }
+    }
+
+    /// Writes all of `bytes`; false when `fd` takes no more.
+    static func writeAll(_ fd: Int32, _ bytes: ArraySlice<UInt8>) -> Bool {
+        bytes.withUnsafeBytes { raw in
+            var offset = 0
+            while offset < raw.count {
+                let written = write(fd, raw.baseAddress! + offset, raw.count - offset)
+                if written < 0, errno == EINTR { continue }
+                guard written > 0 else { return false }
+                offset += written
+            }
+            return true
+        }
     }
 
     static func connect(_ target: Target) -> Int32? {

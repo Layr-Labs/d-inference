@@ -38,7 +38,7 @@ public enum ClusterServingScope: Sendable, Equatable {
     /// The local API listens on `bind` and needs its API key.
     case localOnly(bind: String)
     /// Both, me first: through Darkbloom as `publicServing`, and the pair's local API on the part that hosts the pair's
-    /// slot, on `bind` with the pair's key; Darkbloom pauses while the owner uses it.
+    /// slot, on `bind`, with that Mac's own key and the pair's; Darkbloom pauses while the owner uses it.
     case publicServingWithLocalAPI(bind: String)
 
     /// Every interface of the leading Mac (LAN or tailnet) unless the person chose an address (owner, 2026-10-15).
@@ -71,7 +71,8 @@ public enum ClusterServingScope: Sendable, Equatable {
     }
 
     /// Local only's address (`darkbloom cluster local`); nil for the other two, so what reads it for local only (the
-    /// leading part's `--no-coordinator`, the solo server, the relay) never sees Both.
+    /// leading part's `--no-coordinator`, the solo server) never sees Both. The relay serves Both too, so it reads
+    /// `answersOnEveryMac` instead.
     public var bind: String? {
         if case .localOnly(let bind) = self { return bind }
         return nil
@@ -102,7 +103,11 @@ public enum ClusterServingScope: Sendable, Equatable {
     /// The local API listens on every address of the Mac that runs it (local only's default, and Both's): every other Mac
     /// of the pair then answers on its own port too, passing each connection over the cable (`ClusterLocalRelay`). A
     /// loopback or one-address API isn't reached over the cable, and no other Mac opens what the person kept closed.
-    public var answersOnEveryMac: Bool { localAPIBind == Self.localOnlyDefaultBind }
+    public var answersOnEveryMac: Bool { Self.answersOnEveryMac(bind: localAPIBind) }
+
+    /// The same rule for a pair's local API on `bind` (nil: none), where only its address is known: a status summary,
+    /// or the discovery record of the API itself.
+    public static func answersOnEveryMac(bind: String?) -> Bool { bind == localOnlyDefaultBind }
 
     /// True when hosts other than this Mac can reach the API (any address that is not loopback).
     public var reachableFromNetwork: Bool {

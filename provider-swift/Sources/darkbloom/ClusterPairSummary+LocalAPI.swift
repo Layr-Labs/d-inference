@@ -26,9 +26,8 @@ extension ClusterPairSummary {
     /// No key and no speed.
     func localAPILines(now: Date = Date(), timeZone: TimeZone = .current) -> [String] {
         guard let localAPI, started, paired, !pairingUnreadable else { return [] }
-        let everyMac = localAPIBind == ClusterServingScope.localOnlyDefaultBind
         guard localAPI.runsRankZero else {
-            guard everyMac else {
+            guard answersOnEveryMac else {
                 return ["Local API: on \(otherMac), which runs the pair's API; `\(Self.cli) local` there shows its address and key, "
                             + "and `\(Self.cli) status` there whether Darkbloom is paused for you",
                         "Members: this Mac is part of the pair; it runs no local API"]
@@ -40,7 +39,7 @@ extension ClusterPairSummary {
             return [Self.addressLine(relaying), passes]
         }
         let members = "Members: \(otherMac) is part of the pair; "
-            + (everyMac ? "its own port passes your requests to this API" : "it runs no local API")
+            + (answersOnEveryMac ? "its own port passes your requests to this API" : "it runs no local API")
         guard let address = localAPI.listening else {
             return ["Local API: not listening yet; it starts with this Mac's part of the pair", members]
         }

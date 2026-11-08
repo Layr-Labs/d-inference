@@ -99,8 +99,8 @@ public enum ClusterLocalServing {
 
     /// The coordinator-paired part's start (`start --foreground --cluster-member` and the configuration). With Both, me
     /// first, the part that runs rank 0, which hosts the pair's slot, also runs the pair's local API on `port`, on the
-    /// scope's address, with the pair's key (`darkbloom start` reads it). Every other rank, and the other two scopes,
-    /// start as before. Only the rank decides: nothing counts the Macs.
+    /// scope's address, with that Mac's own key and the pair's (`darkbloom start` reads them). Every other rank, and the
+    /// other two scopes, start as before. Only the rank decides: nothing counts the Macs.
     public static func memberArguments(_ base: [String], scope: ClusterServingScope, localRank: Int, port: Int) -> [String] {
         guard case .publicServingWithLocalAPI(let bind) = scope, localRank == 0 else { return base }
         return base + ["--local-endpoint", "--port", String(port), "--bind", bind]

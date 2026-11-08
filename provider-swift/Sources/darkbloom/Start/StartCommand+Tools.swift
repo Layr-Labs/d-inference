@@ -96,12 +96,14 @@ extension Start {
         guard let bind = pair.localAPIBind else { try fail(ToolIntegrationStep.noPairAPI(requestedTools)) }
         switch await waitForAPI() {
         case .ready(let endpoint):
+            // `pair` was read before the wait, maybe before the relay was up: on a member in Both, whose part runs no
+            // API, the API that answered is its relay all the same.
             let relayed = pair.relaying != nil || pair.localAPI?.runsRankZero == false
             try await setUpToolsWithSavedSettings(endpoint, step: step, relayed: relayed)
         case .noKeyFile:
             try fail(ToolIntegrationStep.noKeyFile(requestedTools, port: LocalEndpoint.readLiveInfo()?.port ?? 0))
         case .notUp:
-            try fail(bind == ClusterServingScope.localOnlyDefaultBind
+            try fail(pair.answersOnEveryMac
                 ? ToolIntegrationStep.notUp(requestedTools, seconds: Self.toolWaitSeconds)
                 : ToolIntegrationStep.pairAPIElsewhere(requestedTools, bind: bind))
         }
@@ -156,8 +158,8 @@ extension Start {
         let saved = try? savedConfig(configPath: configOptions.config)
         let coordinator = coordinatorURL ?? saved?.coordinator.url ?? BuildEnvironment.current.coordinatorWebSocketURL
         let ready = relayed
-            ? await (step ?? ToolIntegrationStep.live(tools: requestedTools, coordinatorURL: coordinator))
-                .run(endpoint: endpoint, requests: LocalFirstWords.relayedRequests)
+            ? await setUpTools(endpoint: endpoint, requests: LocalFirstWords.relayedRequests, coordinatorURL: coordinator,
+                               step: step)
             : await setUpTools(endpoint: endpoint, route: saved?.local?.route, accountKeySaved: nil,
                                coordinatorURL: coordinator, step: step)
         guard ready else { throw ExitCode.failure }
@@ -168,8 +170,16 @@ extension Start {
     func setUpTools(endpoint: IntegrationEndpoint, route: LocalSettings.Route?, accountKeySaved: Bool?,
                     coordinatorURL: String, step: ToolIntegrationStep? = nil) async -> Bool {
         let keySaved = accountKeySaved ?? Start.accountKeySaved()
-        return await (step ?? ToolIntegrationStep.live(tools: requestedTools, coordinatorURL: coordinatorURL))
-            .run(endpoint: endpoint, requests: LocalFirstWords.requests(route: route, accountKeySaved: keySaved))
+        return await setUpTools(endpoint: endpoint,
+                                requests: LocalFirstWords.requests(route: route, accountKeySaved: keySaved),
+                                coordinatorURL: coordinatorURL, step: step)
+    }
+
+    /// The same, with where the tools' requests go already in words (`LocalFirstWords`).
+    private func setUpTools(endpoint: IntegrationEndpoint, requests: String, coordinatorURL: String,
+                            step: ToolIntegrationStep?) async -> Bool {
+        await (step ?? ToolIntegrationStep.live(tools: requestedTools, coordinatorURL: coordinatorURL))
+            .run(endpoint: endpoint, requests: requests)
     }
 
     /// How long a background start waits for its local API before setting tools up.

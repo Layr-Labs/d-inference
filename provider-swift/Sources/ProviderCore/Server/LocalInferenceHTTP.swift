@@ -74,7 +74,8 @@ public typealias LocalInferenceApplication =
 ///   fails, `runService` throws instead and this never fires.
 /// - Parameter modelLimits: this Mac's engine limits for a model (context and
 ///   output tokens, input modalities), which the router's `/v1/models` carries;
-///   nil knows none.
+///   nil knows none. The list says whether a model reasons from its type
+///   (`modelTypeProvider`, `LocalModelFeatures`).
 /// - Parameter prefillTicker: how often a streamed request's prompt is
 ///   commented on until its first token (`LocalPrefillProgress`); nil, never.
 func makeLocalInferenceApplication(
@@ -203,7 +204,15 @@ func makeLocalInferenceApplication(
             router.localKeyRequired = false
             router.log("no local key (--no-auth): requests stay on this Mac, and the account key is never used")
         }
-        return LocalRouter(config: router, localModels: availableModels, localLimits: modelLimits ?? { _ in nil })
+        // Each model's limits and input from the server, and whether it reasons from its type.
+        return LocalRouter(config: router, localModels: availableModels, localLimits: { model in
+            var limits = await modelLimits?(model)
+            if let reasons = LocalModelFeatures.reasons(modelID: model, modelType: await modelTypeProvider?(model)) {
+                limits = limits ?? LocalModelLimits()
+                limits?.reasoning = reasons
+            }
+            return limits
+        })
     }
     let routedResponder = LocalRouterResponder(inner: corsResponder, router: localRouter)
     // Auth rejects unauthenticated requests before body/model handling. The

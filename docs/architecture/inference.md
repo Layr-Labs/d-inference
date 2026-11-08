@@ -2984,7 +2984,12 @@ reserved, on any model that reasons, with
 the names ([direct mode](../provider/direct-mode.md#reasoning-effort)); the
 coordinator receives the closed `invalid_request` failure, which it shows as
 "invalid inference request". A model of no family above ignores any effort
-(`ReasoningEffortPolicy.validate`).
+(`ReasoningEffortPolicy.validate`). The same table (`ReasoningEffortPolicy.reasons`)
+says which models the local `/v1/models` lists as reasoning
+(`"supported_features": ["reasoning"]`, `LocalModelFeatures` in
+`provider-swift/Sources/ProviderCore/Server/LocalModelFeatures.swift`), by the
+type a model registers or a pair installs, so the list and the API never
+disagree ([the list](../provider/direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
 
 Gemma 4 and GPT-OSS keep the prompts they rendered before: the coordinator's
 prompt sidecar plans those prompts for cache-aware routing, so changing one

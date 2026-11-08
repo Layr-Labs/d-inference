@@ -27,7 +27,7 @@ extension ClusterLocalRelay {
     /// Mac. Beside Darkbloom (Both), otherwise the first free port the pair's API may take
     /// (`ClusterLocalServing.localAPIPorts`: never 8000 or a cable port, which are never even test-bound); local only
     /// keeps its rule, 8000 or the next free one.
-    public static func port(for target: Target, scope: ClusterServingScope,
+    public static func port(own: Int?, for target: Target, scope: ClusterServingScope,
                             isFree: (Int) -> Bool = ClusterLocalServing.portIsFree) -> Int {
         guard scope.addsLocalAPI else { return isFree(target.port) ? target.port : ClusterLocalServing.servingPort(isFree: isFree) }
         return ClusterLocalServing.localAPIPort(localFree: ClusterLocalServing.localAPIFreePorts(isFree: isFree), peersFree: nil,
@@ -39,5 +39,22 @@ extension ClusterLocalRelay {
     public static func rankZeroPort(in status: ClusterServiceStatus) -> Int? {
         guard status.sessionLeader else { return nil }
         return status.pairAPIPort ?? (status.session?.ready == true ? status.session?.port : nil)
+    }
+
+    /// Rank 0's status says the pair answers on that Mac only, as Both, me first does while Darkbloom doesn't have the
+    /// pair: a ready local session (on loopback, with that Mac's own key alone) and no API on every address. A member then
+    /// has nothing to pass on.
+    public static func rankZeroAnswersOnItsMacOnly(in status: ClusterServiceStatus) -> Bool {
+        false
+    }
+
+    /// Where the pair's API listens on every address of the Mac whose part runs rank 0, for the other Macs' relays
+    /// (`ClusterServiceStatus.pairAPIPort`): the port of the discovery record (`record`) that this Mac's running part
+    /// (`part`, its pid) wrote once its API was bound. Nil without a running part, for a record another process wrote,
+    /// and for an API on loopback or one address, which the cable doesn't reach (Both, me first while Darkbloom doesn't
+    /// have the pair, or an API kept on its Mac with `--bind`).
+    public static func pairAPIPort(part: Int32?, record: (pid: Int32, host: String, port: UInt16)?) -> Int? {
+        guard let part, let record, record.pid == part, ClusterServingScope.answersOnEveryMac(bind: record.host) else { return nil }
+        return Int(record.port)
     }
 }

@@ -654,7 +654,7 @@ public final class ClusterService: @unchecked Sendable {
         guard let wanted, let scope = leadership?.scope,
               let keys = try? ClusterLocalRelay.Keys(own: LocalEndpoint.loadOrCreateToken(), pair: LocalEndpoint.loadOrCreateClusterToken())
         else { return }
-        let port = ClusterLocalRelay.port(for: wanted, scope: scope)
+        let port = ClusterLocalRelay.port(own: nil, for: wanted, scope: scope)
         guard let started = ClusterLocalRelay(port: port, target: wanted, keys: keys) else { return }
         lock.withLock { relay = started; apiPort = port }
         // The discovery file only when no other live server on this Mac owns it (`darkbloom start --local`).
@@ -673,6 +673,16 @@ public final class ClusterService: @unchecked Sendable {
                            version: ProviderCore.version, pid: getpid(), updatedAt: ISO8601DateFormatter().string(from: Date()))
     }
 
+    /// This Mac's one local API port, which the pair's API or relay on this Mac takes as every local API here does
+    /// (`LocalAPIPort.thisMac`, from the provider config at `configPath`): the saved `[local] port` as it is, else the
+    /// one this Mac's local API already uses, else a new choice, saved there. Throws without a provider config (the
+    /// service writes none), when the config can't be read, and when no port is free for a new choice.
+    static func ownAPIPort(configPath: URL, ownLivePort: () -> UInt16? = LocalAPIPort.ownLivePort,
+                           installedPort: () -> UInt16? = LocalAPIPort.installedJobPort,
+                           isFree: (UInt16) -> Bool = LocalAPIPort.isFreeOnThisMac) throws -> LocalAPIPort.Choice {
+        throw CocoaError(.featureUnsupported)
+    }
+
     /// This Mac is rank 0 now: its relay gives the port back first.
     private func handRelayPortBack() {
         guard let passing = lock.withLock({ () -> ClusterLocalRelay? in defer { relay = nil }; return relay }) else { return }
@@ -684,10 +694,8 @@ public final class ClusterService: @unchecked Sendable {
     /// record (written once that part's API is bound). Nil while there is none, for a solo server, and for an API on
     /// loopback or one address.
     private func pairAPIPort() -> Int? {
-        guard let part = lock.withLock({ child?.isRunning == true && childSetup?.hasPrefix("cluster:") == true ? child?.processIdentifier : nil }),
-              let info = LocalEndpoint.readLiveInfo(), info.pid == part, ClusterServingScope.answersOnEveryMac(bind: info.host)
-        else { return nil }
-        return Int(info.port)
+        let part = lock.withLock { child?.isRunning == true && childSetup?.hasPrefix("cluster:") == true ? child?.processIdentifier : nil }
+        return ClusterLocalRelay.pairAPIPort(part: part, record: LocalEndpoint.readLiveInfo().map { ($0.pid, $0.host, $0.port) })
     }
 
     /// Asks the other Mac (every 10 s, never on this loop's thread) where its rank 0 API listens.

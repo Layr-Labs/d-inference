@@ -75,6 +75,11 @@ struct ClusterPairSummary: Sendable, Equatable {
     /// This Mac's relay to the pair's API on the Mac that runs rank 0 (`ClusterLocalRelay`), as its discovery record
     /// says; nil while none runs.
     var relaying: ClusterPairLocalAPI.Address?
+    /// Why this Mac's relay isn't up, as its cluster service says: its port, which another program holds
+    /// (`ClusterServiceStatus.relayPortHeld`), or rank 0 answering on its own Mac only while Darkbloom doesn't have the
+    /// pair (`relayWaitsForOffer`).
+    var relayPortHeld: Int?
+    var relayWaitsForOffer = false
 
     /// The pair's API listens on every address, so every Mac that doesn't run it relays it on its own port
     /// (`ClusterServingScope.answersOnEveryMac`).

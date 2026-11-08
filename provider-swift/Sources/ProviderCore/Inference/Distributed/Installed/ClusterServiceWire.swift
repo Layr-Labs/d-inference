@@ -89,6 +89,13 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
     /// on, on every address, once bound (its part's discovery record), Both or local only. Every other Mac's relay
     /// passes there (`ClusterLocalRelay`). Nil otherwise, and from an older build (its local only session's port then).
     public var pairAPIPort: Int? = nil
+    /// On a Mac whose relay passes the pair's API (`ClusterLocalRelay`): this Mac's port, which another program holds, so
+    /// the relay can't listen. Nil otherwise, and from an older build.
+    public var relayPortHeld: Int? = nil
+    /// On a Mac whose relay passes the pair's API: rank 0 answers on its own Mac only, as Both, me first does while
+    /// Darkbloom doesn't have the pair (`ClusterLocalRelay.rankZeroAnswersOnItsMacOnly`), so this Mac passes nothing on.
+    /// Nil otherwise, and from an older build.
+    public var relayWaitsForOffer: Bool? = nil
     /// This Mac's coordinator-paired parts that ended in a row right after starting (`ClusterApprovalCheck`); the
     /// control leader makes the pair serve locally when either Mac's count reaches the solo server's limit. Nil from an
     /// older build.

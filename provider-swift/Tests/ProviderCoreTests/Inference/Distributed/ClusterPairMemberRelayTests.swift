@@ -268,23 +268,145 @@ struct ClusterPairMemberRelayTests {
         #expect(try JSONDecoder().decode(ClusterServiceStatus.self, from: JSONEncoder().encode(sent)).pairAPIPort == 8011)
     }
 
-    /// The relay takes rank 0's port when it is free here, so the address is the same on every Mac. Beside Darkbloom
-    /// (Both), anything else is the first free port the pair's API may take: never 8000 or a cable port, which are
-    /// never even test-bound. `cluster local` keeps its own rule.
-    @Test func theRelayTakesRankZerosPortElseNeverAReservedOne() {
-        let target = ClusterLocalRelay.Target(host: "10.219.1.1", port: 8003)
-        #expect(ClusterLocalRelay.port(for: target, scope: Self.both, isFree: { _ in true }) == 8003)
+    /// Both, me first is relayed only to its API on every address (`pairAPIPort`). While Darkbloom doesn't have the pair,
+    /// rank 0 serves a ready local session on loopback with its own key alone: no member relays there, so no member's
+    /// `status` or `darkbloom local` names an address whose every connection is reset. Only an older build's
+    /// `cluster local`, which doesn't say `pairAPIPort`, is still relayed at its ready session's port.
+    @Test func bothIsNeverRelayedToRankZerosOwnMacOnlySession() throws {
+        func status(_ json: String) throws -> ClusterServiceStatus {
+            try JSONDecoder().decode(ClusterServiceStatus.self, from: Data(json.utf8))
+        }
+        let leader = #""serving":true,"sessionLeader":true,"child":{"running":true,"starts":1}"#
+        let ready = #""session":{"observed":true,"ready":true,"readyRanks":2,"ranks":2,"port":8001}"#
+        let notOffered = try status(#"{\#(leader),"localAPI":true,\#(ready)}"#)
+        #expect(ClusterLocalRelay.rankZeroPort(in: notOffered) == nil, "Both while Darkbloom doesn't have the pair")
+        #expect(ClusterLocalRelay.rankZeroAnswersOnItsMacOnly(in: notOffered), "so the member says why it passes nothing on")
+        let offered = try status(#"{\#(leader),"localAPI":true,"pairAPIPort":8003}"#)
+        #expect(ClusterLocalRelay.rankZeroPort(in: offered) == 8003)
+        #expect(!ClusterLocalRelay.rankZeroAnswersOnItsMacOnly(in: offered))
+        let starting = try status(#"{\#(leader),"localAPI":true}"#)
+        #expect(ClusterLocalRelay.rankZeroPort(in: starting) == nil)
+        #expect(!ClusterLocalRelay.rankZeroAnswersOnItsMacOnly(in: starting), "rank 0's API is still starting")
+        for older in [#"{\#(leader),"localOnly":true,"localAPI":false,\#(ready)}"#, #"{\#(leader),\#(ready)}"#] {
+            let localOnly = try status(older)
+            #expect(ClusterLocalRelay.rankZeroPort(in: localOnly) == 8001, "an older build's cluster local: \(older)")
+            #expect(!ClusterLocalRelay.rankZeroAnswersOnItsMacOnly(in: localOnly))
+        }
+    }
+
+    /// Rank 0's Mac tells the relays its pair API's port only from its own part's record, and only once that API is on
+    /// every address: never an API on loopback or one address (Both while Darkbloom doesn't have the pair, or kept on its
+    /// Mac with `--bind`), never another process's record, and nothing without a part.
+    @Test func rankZerosPairAPIPortIsItsOwnPartsAPIOnEveryAddress() {
+        let part: Int32 = 5000
+        #expect(ClusterLocalRelay.pairAPIPort(part: part, record: (pid: part, host: "0.0.0.0", port: 8003)) == 8003)
+        for host in ["127.0.0.1", "localhost", "::1", "192.168.1.5", "10.219.1.1"] {
+            #expect(ClusterLocalRelay.pairAPIPort(part: part, record: (pid: part, host: host, port: 8003)) == nil, "\(host)")
+        }
+        #expect(ClusterLocalRelay.pairAPIPort(part: part, record: (pid: 77, host: "0.0.0.0", port: 8003)) == nil,
+                "another process's record")
+        #expect(ClusterLocalRelay.pairAPIPort(part: nil, record: (pid: part, host: "0.0.0.0", port: 8003)) == nil, "no part runs")
+        #expect(ClusterLocalRelay.pairAPIPort(part: part, record: nil) == nil, "its API isn't bound yet")
+    }
+
+    /// Each Mac's local API or relay takes that Mac's own port (`LocalAPIPort.thisMac`: its saved `[local] port`), whatever
+    /// the other Macs saved, so tools on each Mac keep its address; every relay passes to rank 0's own port. When rank 0
+    /// moves to another Mac, every Mac still answers on its own port.
+    @Test(arguments: [2, 3])
+    func everyMacAnswersOnItsOwnSavedPort(macs: Int) {
+        let saved = ["mac-0": 8002, "mac-1": 8001, "mac-2": 8005]
+        /// Each Mac's port, and the target of each relay, for a roster whose rank 0 is `rankZero`.
+        func ports(rankZero: String, scope: ClusterServingScope) -> (ports: [String: Int], targets: [String: ClusterLocalRelay.Target]) {
+            let ids = (0..<macs).map { "mac-\($0)" }
+            let ordered = [rankZero] + ids.filter { $0 != rankZero }
+            let roster = ordered.enumerated().map { ClusterLocalRelay.RosterMac(id: $1, rank: $0, host: "10.219.\($0 + 1).\($0 + 1)") }
+            let apiPort = ClusterLocalServing.apiPort(own: saved[rankZero], scope: scope, previous: 8004, isFree: { _ in true })
+            var ports = [rankZero: apiPort], targets: [String: ClusterLocalRelay.Target] = [:]
+            for mac in roster where mac.rank != 0 {
+                let host = ClusterLocalRelay.rankZeroHost(serving: true, scope: scope, memberID: mac.id, roster: roster, partRuns: true)
+                let target = ClusterLocalRelay.Target(host: host ?? "none", port: apiPort)
+                ports[mac.id] = ClusterLocalRelay.port(own: saved[mac.id], for: target, scope: scope, isFree: { _ in true })
+                targets[mac.id] = target
+            }
+            return (ports, targets)
+        }
+        let own = saved.filter { Int($0.key.dropFirst(4))! < macs }
+        for scope in [Self.both, Self.localOnly] {
+            let first = ports(rankZero: "mac-0", scope: scope)
+            #expect(first.ports == own, "\(macs) Macs, \(scope): \(first.ports)")
+            #expect(first.targets.count == macs - 1 && first.targets.values.allSatisfy { $0 == .init(host: "10.219.1.1", port: 8002) },
+                    "every relay passes to rank 0's own port: \(first.targets)")
+            let moved = ports(rankZero: "mac-1", scope: scope)
+            #expect(moved.ports == own, "rank 0 moved to mac-1: every Mac keeps its own port: \(moved.ports)")
+            #expect(moved.targets.count == macs - 1 && moved.targets.values.allSatisfy { $0 == .init(host: "10.219.1.1", port: 8001) },
+                    "\(moved.targets)")
+        }
+    }
+
+    /// A Mac updated from 0.10.10 saved 8000, where its tools point: its relay, or its part's API as rank 0, takes 8000
+    /// as it is, never probed or moved. Only a new choice avoids 8000 and the pair ports (`LocalAPIPort.thisMac`).
+    @Test func anUpdatedMacOn8000KeepsIt() {
         var asked: [Int] = []
-        #expect(ClusterLocalRelay.port(for: target, scope: Self.both, isFree: { asked.append($0); return ![8001, 8003].contains($0) }) == 8002)
+        let target = ClusterLocalRelay.Target(host: "10.219.1.1", port: 8002)
+        for scope in [Self.both, Self.localOnly] {
+            #expect(ClusterLocalRelay.port(own: 8000, for: target, scope: scope, isFree: { asked.append($0); return false }) == 8000)
+            #expect(ClusterLocalServing.apiPort(own: 8000, scope: scope, previous: 8003, isFree: { asked.append($0); return false }) == 8000)
+        }
+        #expect(asked.isEmpty, "a saved port is never probed: \(asked)")
+    }
+
+    /// Only when this Mac's port can't be read or chosen (`LocalAPIPort.thisMac` threw) the earlier rules: the relay takes
+    /// rank 0's port when free here, else, beside Darkbloom, the first free port the pair's API may take (never 8000 or a
+    /// cable port, which are never even test-bound); `cluster local`'s relay 8000 or the next free one. Rank 0's API keeps
+    /// the port it used last while free.
+    @Test func withoutThisMacsPortTheEarlierRulesHold() {
+        let target = ClusterLocalRelay.Target(host: "10.219.1.1", port: 8003)
+        #expect(ClusterLocalRelay.port(own: nil, for: target, scope: Self.both, isFree: { _ in true }) == 8003)
+        var asked: [Int] = []
+        #expect(ClusterLocalRelay.port(own: nil, for: target, scope: Self.both, isFree: { asked.append($0); return ![8001, 8003].contains($0) }) == 8002)
         for reserved in ClusterLocalServing.neverChosenPorts {
             asked = []
-            let port = ClusterLocalRelay.port(for: .init(host: "10.219.1.1", port: reserved), scope: Self.both,
+            let port = ClusterLocalRelay.port(own: nil, for: .init(host: "10.219.1.1", port: reserved), scope: Self.both,
                                               isFree: { asked.append($0); return true })
             #expect(port == 8001, "rank 0 said \(reserved)")
             #expect(!asked.contains { ClusterLocalServing.neverChosenPorts.contains($0) }, "probed \(asked)")
         }
-        #expect(ClusterLocalRelay.port(for: .init(host: "10.219.1.1", port: 8000), scope: Self.localOnly, isFree: { _ in true }) == 8000,
+        #expect(ClusterLocalRelay.port(own: nil, for: .init(host: "10.219.1.1", port: 8000), scope: Self.localOnly, isFree: { _ in true }) == 8000,
                 "cluster local: the same port as rank 0, as before")
+        #expect(ClusterLocalServing.apiPort(own: nil, scope: Self.both, previous: 8004, isFree: { _ in true }) == 8004)
+        asked = []
+        #expect(ClusterLocalServing.apiPort(own: nil, scope: Self.both, previous: nil, isFree: { asked.append($0); return true }) == 8001)
+        #expect(!asked.contains { ClusterLocalServing.neverChosenPorts.contains($0) }, "probed \(asked)")
+        #expect(ClusterLocalServing.apiPort(own: nil, scope: Self.localOnly, previous: nil, isFree: { _ in true }) == 8000,
+                "cluster local: 8000 or the next free one, as before")
+    }
+
+    /// The cluster service reads this Mac's port as every local API does (`LocalAPIPort.thisMac`), from its provider
+    /// config: a saved port as it is (8000 too, never probed), else a new choice from 8001, saved there. Without a
+    /// provider config it chooses nothing and writes nothing.
+    @Test func theServiceTakesThisMacsSavedPortFromItsConfig() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("relay-port-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let upgraded = directory.appendingPathComponent("upgraded.toml")
+        try "[provider]\nname = \"m\"\n\n[local]\nport = 8000\n".write(to: upgraded, atomically: true, encoding: .utf8)
+        let kept = try ClusterService.ownAPIPort(configPath: upgraded, ownLivePort: { nil }, installedPort: { nil },
+                                                 isFree: { _ in Issue.record("a saved port is never probed"); return true })
+        #expect(kept.port == 8000 && !kept.saves)
+        let fresh = directory.appendingPathComponent("fresh.toml")
+        try "[provider]\nname = \"m\"\n".write(to: fresh, atomically: true, encoding: .utf8)
+        let chosen = try ClusterService.ownAPIPort(configPath: fresh, ownLivePort: { nil }, installedPort: { nil },
+                                                   isFree: { $0 != 8001 })
+        #expect(chosen.port == 8002 && chosen.saves, "8000 is never chosen, 8001 is taken")
+        #expect(try ConfigManager.load(from: fresh).local?.port == 8002, "the choice is saved")
+        let relayed = try ClusterService.ownAPIPort(configPath: fresh, ownLivePort: { 8009 }, installedPort: { nil },
+                                                    isFree: { _ in true })
+        #expect(relayed.port == 8002, "once saved, the saved port")
+        let missing = directory.appendingPathComponent("missing.toml")
+        #expect(throws: (any Error).self) {
+            try ClusterService.ownAPIPort(configPath: missing, ownLivePort: { nil }, installedPort: { nil }, isFree: { _ in true })
+        }
+        #expect(!FileManager.default.fileExists(atPath: missing.path), "the service writes no provider config")
     }
 
     // MARK: - The keys

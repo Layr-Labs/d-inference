@@ -50,19 +50,43 @@ struct ClusterPairMemberRelayCLITests {
         }
     }
 
-    /// The Mac that runs the pair's API says the other Mac answers on its own port too, once the API is on every address.
+    /// While Darkbloom doesn't have the pair, rank 0 answers on its own Mac only, so the member passes nothing on and
+    /// says so, never an address that resets every connection; a port another program holds is named, with what to do.
+    @Test func aMemberSaysWhyItsPortDoesNotAnswer() {
+        let neutral = "Members: \(Self.other) runs the pair's API; this Mac is part of the pair"
+        var waiting = member(relaying: nil)
+        waiting.relayWaitsForOffer = true
+        #expect(waiting.localAPILines(now: F.now, timeZone: F.utc) == [
+            "Local API: none on this Mac while Darkbloom doesn't have the pair; meanwhile the pair answers only on \(Self.other) "
+                + "(`\(ClusterPairSummary.cli) local` there shows its address and key)",
+            neutral,
+        ])
+        var held = member(relaying: nil)
+        held.relayPortHeld = 8001
+        #expect(held.localAPILines(now: F.now, timeZone: F.utc) == [
+            "Local API: port 8001 on this Mac is held by another program, so this Mac doesn't answer for the pair; free it, "
+                + "or set another `[local] port` in provider.toml, then `\(ClusterPairSummary.cli) restart`",
+            neutral,
+        ])
+    }
+
+    /// The Mac that runs the pair's API says the other Mac answers on its own port too, once the API is on every address:
+    /// from where it listens, so an API on this Mac only (Both while Darkbloom doesn't have the pair) says it runs none.
     @Test func theLeadersStatusSaysTheOtherMacAnswersToo() {
-        func leader(_ host: String) -> ClusterPairSummary {
+        func leader(_ host: String, bind: String? = nil) -> ClusterPairSummary {
             var pair = ClusterPairSummary(paired: true, role: .leader, otherMacName: "Apple M3 Ultra, 256 GB", modelID: "qwen",
                                           modelName: "Qwen 3.8 27B", started: true, serviceRunning: true, state: .serving)
             pair.localAPI = ClusterPairLocalAPI(runsRankZero: true, listening: .init(host: host, port: 8003), meFirst: F.open)
-            pair.localAPIBind = host
+            pair.localAPIBind = bind ?? host
             return pair
         }
         #expect(leader("0.0.0.0").localAPILines(now: F.now, timeZone: F.utc).last
             == "Members: the other Mac (Apple M3 Ultra, 256 GB) is part of the pair; its own port passes your requests to this API")
         #expect(leader("127.0.0.1").localAPILines(now: F.now, timeZone: F.utc).last
             == "Members: the other Mac (Apple M3 Ultra, 256 GB) is part of the pair; it runs no local API")
+        #expect(leader("127.0.0.1", bind: "0.0.0.0").localAPILines(now: F.now, timeZone: F.utc).last
+            == "Members: the other Mac (Apple M3 Ultra, 256 GB) is part of the pair; it runs no local API",
+            "the API on this Mac only while Darkbloom doesn't have the pair")
     }
 
     /// This Mac's relay is the discovery record its own cluster service wrote: not its part's, and not another server's.

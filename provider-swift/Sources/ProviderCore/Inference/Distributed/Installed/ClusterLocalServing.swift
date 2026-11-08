@@ -145,6 +145,15 @@ public enum ClusterLocalServing {
         return sharedPort(localFree: here, peerFree: freeOnEveryMac, preferred: preferred)
     }
 
+    /// The port the pair's API takes on the Mac whose part runs rank 0 (`ClusterService.leaderAPIPort`), for every way a
+    /// pair serves: beside Darkbloom, the port used last (`previous`) while free, else the first free one it may take
+    /// (`localAPIPort`); otherwise the port used last while free, else 8000 or the next free one (`sharedPort`).
+    public static func apiPort(own: Int?, scope: ClusterServingScope, previous: Int?,
+                               isFree: (Int) -> Bool = portIsFree) -> Int {
+        guard scope.addsLocalAPI else { return sharedPort(localFree: freePorts(isFree: isFree), peerFree: nil, preferred: previous) }
+        return localAPIPort(localFree: localAPIFreePorts(isFree: isFree), peersFree: nil, preferred: previous)
+    }
+
     /// The solo server (this Mac alone after the absence grace) is coordinator-less already; local-only serving gives
     /// it the same address as the cluster's API.
     public static func soloArguments(_ base: [String], scope: ClusterServingScope) -> [String] {

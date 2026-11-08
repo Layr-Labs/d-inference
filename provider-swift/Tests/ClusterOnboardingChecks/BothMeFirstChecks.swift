@@ -26,7 +26,8 @@ extension OnboardingChecks {
 
     /// The other Mac's screen (its own `darkbloom cluster`, which the leading Mac answers): with the pair's API on every
     /// address, that Mac answers on its own port too (its relay), so its card names its own API, as the leading Mac's
-    /// does. With the API kept on the leading Mac (loopback or one address), the card points there, as before.
+    /// does: its address once this Mac's port is up, else where to find it. With the API kept on the leading Mac
+    /// (loopback or one address), the card points there, as before.
     static func theOtherMacsCardNamesItsOwnAPI() {
         let there = ClusterOnboardingMacName.other(named: "Apple M5 Ultra, 256 GB")
         let everyAddress = ClusterServingScope.publicServingWithLocalAPI(bind: "0.0.0.0")
@@ -43,7 +44,16 @@ extension OnboardingChecks {
         expect(kept.bothAPILine == "Local API: on \(there), you first (Darkbloom pauses while you use it; `darkbloom local` there "
                + "shows its address and key)", "kept on the leading Mac: \(kept.bothAPILine)")
         let leading = ClusterOnboardingReady(servedBy: ClusterOnboardingMacName.this, port: 0, offered: "offered for pairing", relayed: true)
-        expect(leading.bothAPILine == bothAPILineHere, "the leading Mac's card is as it was")
+        expect(leading.bothAPILine == bothAPILineHere, "the leading Mac's card, its API not up yet: \(leading.bothAPILine)")
+        // Each Mac's card prints its own address once its port is up: rank 0's API, or the other Mac's relay.
+        for (servedBy, port) in [(ClusterOnboardingMacName.this, 8002), (there, 8001), (there, 8000)] {
+            let up = ClusterOnboardingReady(servedBy: servedBy, port: port, offered: "offered for pairing", relayed: true)
+            expect(up.bothAPILine == bothAPILine(port: port), "\(servedBy) on \(port): \(up.bothAPILine)")
+        }
+        expect(bothAPILine(port: 8001) == "Local API: http://127.0.0.1:8001/v1 on this Mac, you first (Darkbloom pauses "
+               + "while you use it; `darkbloom local` shows the key)", "the address, never the key")
+        let keptUp = ClusterOnboardingReady(servedBy: there, port: 8003, offered: "offered for pairing")
+        expect(keptUp.bothAPILine == kept.bothAPILine, "kept on the leading Mac: no address of this Mac's: \(keptUp.bothAPILine)")
     }
 
     /// Plain `darkbloom cluster` in a terminal: the question is asked, and its answer saved, as the live operations do.
@@ -64,7 +74,14 @@ extension OnboardingChecks {
             + "  " + (enter == 1 ? prompt(3) : prompt(3, enter: enter))
     }
 
-    static let bothAPILineHere = "Local API: on this Mac, you first (Darkbloom pauses while you use it; `darkbloom local` shows its address and key)"
+    /// The card's line on a Mac whose own port for the pair's API isn't up yet.
+    static let bothAPILineHere = "Local API: on this Mac, you first (Darkbloom pauses while you use it; `darkbloom local` shows its address "
+        + "and key once this Mac's port is up)"
+
+    /// The card's line on a Mac whose own port for the pair's API is up (`port`).
+    static func bothAPILine(port: Int) -> String {
+        "Local API: http://127.0.0.1:\(port)/v1 on this Mac, you first (Darkbloom pauses while you use it; `darkbloom local` shows the key)"
+    }
     static let bothServes = "  Serves:  through Darkbloom, and on its local API with you first\n"
 
     /// Owner rule: no speed in any choice or line.
@@ -92,7 +109,7 @@ extension OnboardingChecks {
                                 "waitReady", "pairServing"],
                "both: asked once, planned for Darkbloom, the answer saved with the scope after the adopt: \(recorder.all)")
         expect(text.contains(block("\u{2713}", "Serving Qwen3.8-27B-4bit-mtp through Darkbloom on both Macs (pipeline)",
-                                   [bothAPILineHere, "Test response in 0.61 s"])), "both: the outcome says where the pair's API is: \(text)")
+                                   [bothAPILine(port: 8000), "Test response in 0.61 s"])), "both: the outcome says where the pair's API is: \(text)")
         expect(!text.contains(ClusterOnboardingReady.offeredAPILine), "both: never 'No local API'")
         expect(text.contains(bothServes), "both: the card")
         expectNoSpeed(text, "both")
@@ -194,7 +211,7 @@ extension OnboardingChecks {
                                 "saveServingChoice both", "waitReady", "pairServing"],
                "list: no new plan (both serve through Darkbloom), the scope and the answer saved, then the pair awaited: \(recorder.all)")
         expect(text.contains(block("\u{2713}", "Serving Qwen3.8-27B-4bit-mtp through Darkbloom on both Macs (pipeline)",
-                                   [bothAPILineHere, "Test response in 0.61 s"])), "list: the outcome: \(text)")
+                                   [bothAPILine(port: 8000), "Test response in 0.61 s"])), "list: the outcome: \(text)")
         expectNoSpeed(text, "list")
         transcript("both-from-the-list", text, keys: run.keys)
     }
@@ -287,7 +304,8 @@ extension OnboardingChecks {
                "both to network: what the switch does: \(text)")
         expect(recorder.all == ["ensureService", "status", "reachMembers", "planModels", "servingChoice", "setScope public",
                                 "saveServingChoice network", "waitReady", "pairServing"], "both to network: \(recorder.all)")
-        expect(text.contains("  " + ClusterOnboardingReady.offeredAPILine + "\n") && !text.contains(bothAPILineHere),
+        expect(text.contains("  " + ClusterOnboardingReady.offeredAPILine + "\n") && !text.contains(bothAPILineHere)
+               && !text.contains(bothAPILine(port: 8000)),
                "both to network: no local API line: \(text)")
         expectNoSpeed(text, "both to network")
         transcript("both-to-network", text, keys: run.keys)

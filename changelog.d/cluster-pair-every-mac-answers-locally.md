@@ -24,13 +24,15 @@
 - While the Mac that runs the pair's API is away (unplugged, asleep), the other Mac's own port answers every request at
   once with a `503` (`code` `pair_mac_unreachable`) that says so: "Your pair's other Mac (…) isn't reachable; this Mac
   relays to it. Requests resume when it's back, or run `darkbloom stop`, then `darkbloom start --solo`, to serve this
-  Mac alone." With **Only me**, that port used to close each connection unanswered then, for up to 15 minutes.
-  `darkbloom status` and `darkbloom local` now say the same, and relaying resumes by itself within about 10 seconds of
-  that Mac answering again. A request while that Mac's API doesn't listen gets a `503` with `code`
-  `pair_api_unavailable`.
+  Mac alone." That Mac counts as away once it hasn't answered over the cable for 12 seconds. Only a request with this
+  Mac's key or the pair's gets those words; any other gets the local API's usual `401`, or a `503` without names where
+  the API needs no key. With **Only me**, that port used to close each connection unanswered then, for up to 15 minutes.
+  `darkbloom status` and `darkbloom local` now say the same, and relaying resumes by itself within seconds of that Mac
+  answering again. A request while that Mac's API doesn't listen gets a `503` with `code` `pair_api_unavailable`.
 - On the other Mac, `darkbloom local` and `darkbloom start --opencode` say why it has no address for the pair (Darkbloom
   doesn't have the pair yet, its port is held, or the leading Mac is away), as `darkbloom status` does: `local` no
-  longer prints the pair's key there, and `--opencode` says it at once instead of after a 30-second wait.
+  longer prints the pair's key there, and `--opencode` says it at once instead of after a 30-second wait. While that
+  address is still starting, `local` says so beside the pair's key, instead of "No local server running."
 - The app's **Start serving** on the other Mac no longer says "No local API was added on this Mac" when the pair's API
   is on every address: that Mac's relay gives it one. While the relay can't answer (the leading Mac away, Darkbloom not
   having the pair, its port held), the app says `status`'s `Local API:` line instead. With the pair's API kept on the

@@ -1222,18 +1222,23 @@ While the Mac that runs the pair's API is away, the other Mac's own port for it
 connection that just closes: it answers every request at once with a `503`
 (`code` `pair_mac_unreachable`), ``Your pair's other Mac (…) isn't reachable;
 this Mac relays to it. Requests resume when it's back, or run `darkbloom stop`,
-then `darkbloom start --solo`, to serve this Mac alone.`` That Mac is away after
-the first status request to it fails, or after 12 s without an answer over the
-cable. `darkbloom status` and `darkbloom local` there say the same, after
+then `darkbloom start --solo`, to serve this Mac alone.`` Those words name the
+other Mac only to a request with this Mac's key or the pair's: any other gets
+the local API's own `401`, as that API would answer it, and a liveness check or
+a browser's preflight, which need no key, the `503` without names. That Mac is
+away once it hasn't answered over the cable for 12 s; a status request to it
+that fails while it answers there doesn't count (only before it has answered at
+all since this Mac's cluster service started do two failed in a row).
+`darkbloom status` and `darkbloom local` there say the same, after
 `Local API: http://127.0.0.1:<port>/v1 on this Mac answers 503 for now.`, and
 `darkbloom start --opencode` there says it at once. Relaying resumes by itself
-within about 10 s of that Mac answering again. `darkbloom start --solo` alone
-is refused while this Mac's part holds its serving lock (up to the 15 minutes
-in [going back to serving on one Mac](#going-back-to-serving-on-one-mac)), hence
-`darkbloom stop` first. A
+within seconds of that Mac answering over the cable again.
+`darkbloom start --solo` alone is refused while this Mac's part holds its
+serving lock (up to the 15 minutes in [going back to serving on one
+Mac](#going-back-to-serving-on-one-mac)), hence `darkbloom stop` first. A
 request on that port while the API on the other Mac doesn't listen (its part
-starting again) gets a `503` with `code` `pair_api_unavailable` the same way.
-A Mac that serves the model alone after the 10 minutes does so on its own saved
+starting again) gets a `503` with `code` `pair_api_unavailable` the same way. A
+Mac that serves the model alone after the 10 minutes does so on its own saved
 port (`[local] port`), so its tools keep their address.
 
 ## How the split is chosen

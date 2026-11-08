@@ -974,7 +974,12 @@ address now, it prints the `Local API:` line `status` gives there instead
 (`ClusterPairSummary.memberAPIDown`): Darkbloom doesn't have the pair yet, or
 another program holds its port; never the pair's key. With the relay up while
 the pair's other Mac can't be reached, the endpoint's lines are followed by that
-`Local API: … answers 503 for now. …` line.
+`Local API: … answers 503 for now. …` line. While that port is still starting,
+it says so in `status`'s words, ``Local API: not listening on this Mac yet; it
+starts once the pair's API on the other Mac (…) answers.``, then the pair's key
+as before, under ``The pair's API key (the same on both Macs, and taken on this
+Mac's port once it listens):`` (`ClusterPairSummary.memberAPIStarting`), never
+`No local server running.`
 A server bound to `0.0.0.0` or `::` also prints a `network:` line with this
 Mac's Bonjour (`.local`) URL (`Local.networkURL`). When the running provider
 serves that endpoint, two lines follow `pid:`: `serving:` (how it serves, in
@@ -1169,9 +1174,11 @@ Mac passes your requests to it, and Darkbloom pauses for them too`. Until it run
 
   each with `Members: the other Mac (…) runs the pair's API; this Mac is part of the pair`; otherwise
   `Local API: not listening on this Mac yet; …` with the `Members:` line above. While it runs and the other Mac can't
-  be reached (`ClusterServiceStatus.relayRankZeroAway`: the first failed status request to it, or 12 s without an
-  answer over the cable), it answers every request a `503` and the line says so in the `503`'s words
-  (`ClusterLocalRelay.Refusals`): ``Local API: http://127.0.0.1:8003/v1 on this Mac answers 503 for now. Your pair's
+  be reached (`ClusterServiceStatus.relayRankZeroAway`: 12 s without an answer over the cable; before any answer since
+  this Mac's cluster service started, two failed status requests in a row), it answers every request a `503`, in words
+  that name the other Mac only to a request with this Mac's key or the pair's (any other gets the local API's own
+  `401`, and a liveness check or a CORS preflight the `503` without names: `ClusterLocalRelay.Caller`). The line says
+  so in the `503`'s words (`ClusterLocalRelay.Refusals`): ``Local API: http://127.0.0.1:8003/v1 on this Mac answers 503 for now. Your pair's
   other Mac (…) isn't reachable; this Mac relays to it. Requests resume when it's back, or run `darkbloom stop`, then
   `darkbloom start --solo`, to serve this Mac alone.``, with the same `Members:` line. `darkbloom local` there prints
   the same `Local API:` line (`ClusterPairSummary.memberAPIDown`), and `start --opencode` says it at once

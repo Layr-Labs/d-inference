@@ -136,7 +136,8 @@ struct LocalAPIOnePortTests {
         let child = try #require(try script.resolve(start, terminal: false))
         #expect(child.mode == .local && child.port == Self.first && child.bind == "127.0.0.1" && child.change.isEmpty)
         #expect(script.reads == 0 && script.probed.isEmpty && config.bytes == before)
-        #expect(!start.bannerShowsKey(child))
+        #expect(!start.localServerBanner(serving: child, models: [], token: "dk-local-fixture")
+            .contains { $0.contains("dk-local-fixture") })
 
         // Saved: the same port again, nothing probed or written.
         let again = try Desktop.StartLocal.localAPI(configPath: config.path.path, ownLivePort: { nil },

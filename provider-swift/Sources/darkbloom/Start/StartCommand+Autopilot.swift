@@ -13,6 +13,7 @@ extension Start {
 
     func resolveAutopilotChoice(
         _ config: ProviderConfig,
+        mode: LocalSettings.Mode = .network,
         interactive: Bool = isatty(STDIN_FILENO) != 0,
         ask: (Bool) -> Bool = { Start.promptAutopilotChoice(defaultEnabled: $0) }
     ) throws -> Bool {

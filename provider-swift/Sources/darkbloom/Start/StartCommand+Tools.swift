@@ -79,8 +79,8 @@ extension Start {
     /// Beside a pair that just started: once this Mac's local API for it answers (its part's own on the Mac that runs the
     /// pair's API; on every other Mac, with that API on every address, its relay), waiting at most `toolWaitSeconds`. A
     /// pair that serves only the Darkbloom network has none anywhere, said at once; one whose API stays on its own Mac
-    /// has none on another, said once the wait ends. A pair starts only without single-Mac options, so no option here
-    /// changes what serves.
+    /// has none on another, said once the wait ends. A pair starts only without single-Mac options, or with the app's
+    /// Start's (`Start.appStartOptions`), which don't change what the pair serves.
     func setUpToolsBesidePair(pair given: ClusterPairSummary? = nil,
                               waitForAPI: () async -> LocalAPIWait = {
                                   await Start.waitForLocalAPI(port: nil, seconds: Start.toolWaitSeconds)

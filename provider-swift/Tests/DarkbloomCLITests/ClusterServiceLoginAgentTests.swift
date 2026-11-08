@@ -49,7 +49,7 @@ struct ClusterServiceLoginAgentTests {
             ["This Mac stopped serving; the other Mac (Apple M5 Max, 128 GB) did not answer (the other Mac's cluster service did not answer on the cable). This Mac's cluster service tells it to stop as soon as it answers again."],
             otherMacUnanswered: other))
         var removals = 0
-        let lines = try Cluster.Stop.finishStop(stopped) { removals += 1; return ["fixture"] }
+        let lines = try Cluster.Stop.finishStop(stopped) { removals += 1; return ["fixture"] }.lines
         #expect(removals == 1, "this Mac's service and login agent go although the other Mac did not answer")
         #expect(lines == [
             "This Mac stopped serving.",
@@ -71,7 +71,7 @@ struct ClusterServiceLoginAgentTests {
         let outcomes: [Result<[String], ClusterOnboardingFailure>?] = [.success(["pair drained"]), nil]
         for stopped in outcomes {
             var removals = 0
-            let lines = try Cluster.Stop.finishStop(stopped) { removals += 1; return ["fixture"] }
+            let lines = try Cluster.Stop.finishStop(stopped) { removals += 1; return ["fixture"] }.lines
             #expect(removals == 1)
             #expect(lines.last?.contains("will not start at login") == true)
             if stopped != nil { #expect(lines.first == "pair drained") }
@@ -88,11 +88,11 @@ struct ClusterServiceLoginAgentTests {
         #expect(try Cluster.Stop.parse(["--local-only"]).localOnly)
         #expect(try !Cluster.Stop.parse([]).localOnly)
         var removals = 0
-        let lines = try Cluster.Stop.finishStop(nil, localOnly: true) { removals += 1; return ["fixture"] }
+        let lines = try Cluster.Stop.finishStop(nil, localOnly: true) { removals += 1; return ["fixture"] }.lines
         #expect(removals == 1)
         #expect(lines.contains { $0.contains("will not start at login") })
         #expect(lines.last == "The other Mac was not asked to stop. If it comes back, run `darkbloom cluster stop --service` there too.")
-        let ordinary = try Cluster.Stop.finishStop(nil) { ["fixture"] }
+        let ordinary = try Cluster.Stop.finishStop(nil) { ["fixture"] }.lines
         #expect(!ordinary.contains { $0.contains("not asked to stop") })
     }
 

@@ -148,11 +148,21 @@ busy, they can go on, like the Darkbloom iPhone app:
 Requests from other machines never use the paid network; they can use this Mac
 and your other Macs.
 
-This needs your account API key, from the Darkbloom console, saved with
-`darkbloom route key`. It goes into this Mac's Keychain and is never printed.
-With a key saved, the question asks this too; you can also start with
-`--route this-mac`, `--route my-macs` or `--route my-macs-first`. The details
-are in [the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router).
+Choose with one command; it saves your choice and says what it means:
+
+```bash
+darkbloom route this-mac        # Only this Mac
+darkbloom route my-macs         # Only my Macs (free)
+darkbloom route my-macs-first   # My Macs first, then the network (billed)
+```
+
+The last two need your account API key, from the Darkbloom console, saved
+with `darkbloom route key`; without it they save nothing and say so. The key
+goes into this Mac's Keychain and is never printed. With a key saved, the
+start question asks this too. A running local API uses a new choice, and a key
+saved or removed, from its next request: no restart, and no model reload. The
+details are in
+[the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router).
 
 ## Your local API
 

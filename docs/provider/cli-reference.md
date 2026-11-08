@@ -196,6 +196,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `doctor` | Diagnostics (see [troubleshooting](./troubleshooting.md#doctor-checks)) | ✓ | `DoctorCommand.swift` (`Doctor`) |
 | `models` | `list`, `catalog`, `download`, `remove` | ✓ | `ModelsCommand.swift` (`Models`) |
 | `local` | Print the local API's address and key | | `LocalCommand.swift` (`Local`) |
+| `route` | Where your requests go when this Mac's local API can't take them: `this-mac`, `my-macs` or `my-macs-first` saves `[local] route` ([below](#darkbloom-route-this-mac-my-macs-my-macs-first)); `key` saves the account API key | ✓ | `RouteCommand.swift` (`Route`), `RouteChoiceCommand.swift` (`RouteChoiceFlow`) |
 | `cluster` | Set up two Macs to serve one model together ([guided setup](./two-mac-cluster.md)); `cluster local` serves without a coordinator. In a terminal, the first setup asks how the pair serves (**Only me (this pair, local)**, **Darkbloom network**, or **Both, me first**, preselected: the leader's local API beside Darkbloom, which pauses while you use it), saves the answer in `[local] mode`, and asks nothing without a terminal ([Both, me first](./two-mac-cluster.md#both-me-first-the-pairs-own-api-beside-darkbloom)). Run again on a paired Mac it works like `darkbloom start` (which opens the same screen there): both Macs, the cable and the status, then the pair's models with the current one preselected (Enter keeps it or starts it again), each with the modes it runs there, the recommended one first and no speed, **Change how the pair serves** (the three choices below; `cluster local`'s list keeps its line to switch to Darkbloom), and **Start over**; another model asks once before the serving one stops, and every start ends with the outcome, the pair's card and `darkbloom stop` / `restart` / `status` ([after setup](./two-mac-cluster.md#the-steps-once)). It offers **Start over** after one question (also when the other Mac does not answer over the cable: the screen then names that Mac and what to run there), and **Pair again** without it only when the saved pairing was made with another Secure Enclave key; both take the steps of `cluster pair --forget` (`ClusterUnpairing`), then pair ([pairing again](./two-mac-cluster.md#pairing-again)) | ✓ | `ClusterCommand.swift` (`Cluster`) |
 | `waitlist` | List the waitlists the coordinator offers and where the account stands (bare), or put the account on one and show where it stands (`waitlist cluster`, `waitlist sandbox`); waitlists are per account | ✓ | `Waitlist/WaitlistCommand.swift` (`Waitlist`) |
 | `login` | Link the machine to an account (RFC 8628 device code) | ✓ | `LoginCommand.swift` (`Login`) |
@@ -980,6 +981,52 @@ the start summary's words) and `requests:` (where your requests go)
 keyed server adds `tools:    darkbloom --opencode · --hermes` (`Local.toolsLine`). `--json`
 is unchanged.
 
+### `darkbloom route this-mac`, `my-macs`, `my-macs-first`
+
+| Command | Saves | A request this Mac can't take |
+|---|---|---|
+| `darkbloom route this-mac` | `[local] route = "this-mac"` | Gets this Mac's own answer; nothing is passed on. Needs no account key |
+| `darkbloom route my-macs` | `[local] route = "my-macs"` | Goes on to your other Macs, free; never to the Darkbloom network |
+| `darkbloom route my-macs-first` | `[local] route = "my-macs-first"` | Goes on to your other Macs (free), then to the Darkbloom network, billed to your balance |
+
+Each takes `-c`, `--config` (the `provider.toml` to save in) and writes only
+`[local] route` (`setLocalSettings`), so it replaces a hand edit of the file
+and `darkbloom start --route`. It then says what the route means; with
+`my-macs-first`, that requests from other machines (your LAN or tailnet) never
+use the paid network ([the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
+The same choice again writes nothing (`✓ Already saved. …`).
+
+- **Without a saved account key,** `my-macs` and `my-macs-first` save nothing
+  and exit 1: ``✗ Not saved: `darkbloom route my-macs` passes your requests on
+  with your account API key, and this Mac has none saved.``, then the command
+  that saves one (`darkbloom route key`) and the one to run again. It only asks
+  whether a key is saved, and never prints one.
+- **A local API running now uses it from its next request,** with no restart
+  and no model reload: `✓ Saved. Your local API uses it now.` With none
+  running: `✓ Saved. It applies when your local API starts.` Its router reads
+  `[local] route` again when `provider.toml` changes
+  ([the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
+  One without a local key (`--no-auth`) keeps every request on this Mac (on a
+  pair's leading Mac, on this pair), whatever the route, and the command says
+  so.
+- **In a two-Mac cluster,** the leading Mac's route applies: the pair's local
+  API runs there and passes on what the pair can't take, including requests
+  from the other Mac. Those reach it from another machine, so with
+  `my-macs-first` they never use the paid network, and both Macs say so. On
+  the leading Mac the command says so, or, with `this-mac`, that the pair's
+  local API passes nothing on. A pair's API without a local key
+  (`cluster local --no-auth`) gets the `--no-auth` line instead. On the other
+  Mac it saves the route for when that Mac serves alone (``It applies when
+  this Mac serves alone (`darkbloom start --solo`).``), says that the leading
+  Mac's route decides what the pair passes on (that Mac's route and key aren't
+  known here), and names the command to run there. Refused for want of a key,
+  it first names the leading Mac's `darkbloom route key` and route for the
+  pair, then a key saved here for this Mac alone.
+- A `provider.toml` that doesn't load is refused with its reason, and nothing
+  is written (exit 1).
+
+`RouteChoiceFlow` in `provider-swift/Sources/darkbloom/RouteChoiceCommand.swift`.
+
 ### `darkbloom route key`
 
 | Flag | Type | Default | Effect |
@@ -1000,9 +1047,29 @@ never printed (`RouteKeyFlow`, `provider-swift/Sources/darkbloom/RouteCommand.sw
 `KeychainLocalRouterAccountKeyStore`). After it saves or removes the key, it
 posts the Darwin notification `<keychain prefix>.route-key-changed`: a running
 local API keeps the key in memory and reads it again on its next request that
-needs it. When the local API running now has no local key (`--no-auth`), it
-says that this API keeps every request on this Mac and never uses the key. ^C at the hidden prompt gives the terminal its echo
-back before the command ends (`HiddenReadSignals`). See
+needs it, so it says `Your local API uses it now.` (or, with none running, `It
+applies when your local API starts.`). A key removed while the route passes
+requests on says what the next request does: ``Your local API uses it now.
+From its next request, one this Mac can't take gets this Mac's own answer
+instead of going to your other Macs or the Darkbloom network.`` That answer
+says an account key is needed (code `account_key_needed`, see
+[the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
+
+In a two-Mac cluster it says whose key the pair's local API uses, and on the
+leading Mac its summary names the pair (`Your requests: this pair first, then
+your other Macs (free).`):
+
+| This Mac | Saved | Removed |
+|---|---|---|
+| Leads (the pair's local API runs here) | `In this pair, the pair's local API runs on this Mac and passes requests on with this key.` | ``From its next request, one the pair can't take gets the pair's own answer …``, then `In this pair, the pair's local API runs on this Mac, so the pair passes nothing on until a key is saved here again.` |
+| Leads, with `[local] route = "this-mac"` | `In this pair, the pair's local API runs on this Mac and uses this Mac's key once its route passes requests on.` | `In this pair, the pair's local API runs on this Mac: once its route passes requests on, it needs a key saved here again.` |
+| Follows | ``In this pair, the pair's local API uses the leading Mac's key (…), not this one: run `darkbloom route key` there.`` | ``… not this one: to stop the pair passing requests on, run `darkbloom route key --remove` there.`` |
+
+When the local API running now has no local key (`--no-auth`), it says that
+this API keeps every request on this Mac (on the leading Mac, on this pair) and
+never uses the key; on the leading Mac it then says nothing of the pair's key. ^C at the hidden prompt
+gives the terminal its echo back before the command ends
+(`HiddenReadSignals`). See
 [the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router).
 
 ### Cluster placement request metadata
@@ -1112,8 +1179,8 @@ on both Macs, and a scripted `darkbloom start` waits through it.
 |---|---|---|
 | `0` | `serving` | The pair serves: through Darkbloom once the coordinator has it, or on the leading Mac's local API when it serves Only me |
 | `3` | `loading`, `not_serving`, `unknown` | Not serving yet: loading, or a reason in `reason` (such as macOS keeping a Mac off the local network, or a pair not offered to Darkbloom, below). A load whose part keeps ending gives that end as its reason, as the start's screen says it: "this Mac's part ended (exit 1: deadline) and starts again by itself" |
-| `4` | `stopped` | Stopped (Stop in `darkbloom cluster`, or `darkbloom cluster stop`), also while the other Mac isn't answering |
-| `5` | `other_mac_away` | The pair is started and the other Mac isn't answering over the cable (its cluster service is off, it sleeps, or waits for a login). Once this Mac's part was given up (15 minutes), `next` also says ``Or serve this Mac alone: `darkbloom start --solo`.`` |
+| `4` | `stopped` | Stopped (Stop in `darkbloom cluster`, or `darkbloom cluster stop`), also while the other Mac isn't answering. `next` says that `darkbloom start` starts the pair again, and ends ``If the other Mac left the pair, `darkbloom cluster leave` here unpairs this Mac too.`` ([leaving](#darkbloom-cluster-leave)) |
+| `5` | `other_mac_away` | The pair is started and the other Mac isn't answering over the cable (its cluster service is off, it sleeps, or waits for a login). Once this Mac's part was given up (15 minutes), `next` also says ``Or serve this Mac alone: `darkbloom start --solo`.``, and it ends with the line about the other Mac leaving, as for `4` |
 | `6` | `not_paired` | This Mac isn't in a cluster |
 | `7` | `pairing_unreadable` | This Mac's pairing record couldn't be read, so it may be in a cluster; `reason` says why when known |
 
@@ -1239,6 +1306,51 @@ resident assistant, GLM-5.3-Flash in tensor parallel), otherwise
 
 `darkbloom cluster --help` ends with these commands and what each is for
 (`Cluster.commandList`).
+
+### `darkbloom cluster leave`
+
+Leave the pair on this Mac, from either Mac, in one command
+(`Cluster.Leave`, `ClusterLeaveFlow` in
+`provider-swift/Sources/darkbloom/ClusterLeaveCommand.swift`).
+
+```bash
+darkbloom cluster leave         # says what it does, then asks: Leave the pair? [y/N]
+darkbloom cluster leave --yes   # scripts: no question
+```
+
+| Step | What it does |
+|---|---|
+| 1. Ask | Says the pair in one sentence (`ClusterPairSummary.pairSentence`) and what leaving does, then asks `Leave the pair? [y/N]`. Enter, `n`, anything but `y`/`yes`, or the input's end: `Nothing changed.`, exit 0. Without a terminal it needs `--yes` (`-y`): ``… there's no terminal to ask in: run it in Terminal, or add --yes.``, exit 1, nothing changed |
+| 2. Stop this Mac's part | As `darkbloom uninstall` stops it (`Cluster.Stop.beforeUnpairing`): the pair stops on both Macs and this Mac's cluster service stops and leaves login, as `cluster stop --service`; when the pair can't stop together (the other Mac doesn't answer), only this Mac's part stops, as `cluster stop --local-only`. Its lines say only what stopped (`Cluster.Stop.finishStop`, `leaving`): not the pair stop's own ``Run `darkbloom cluster` to serve again.``, nor "start it again". On the leading Mac whose other Mac doesn't answer: `This Mac stopped serving.` and ``The other Mac (…) did not answer (…), so it was not asked to stop (…).`` A part that doesn't stop ends the command, exit 1: ``This Mac is still paired. Try `darkbloom cluster leave` again; …`` |
+| 3. Forget the pairing | Each pairing of this install, as `cluster pair --forget <pin>` and **Start over** do (`ClusterUnpairing`): the leading Mac first tells the other Mac over the cable, which reclaims its pair cache and stops its part. When it isn't reached (it may have left the pair already): ``The other Mac was not reached (…). If that Mac is still paired, run `darkbloom cluster leave` there.`` (`ClusterService.memberNotReachedLine`; `cluster pair --forget` and `uninstall` say the same) |
+| 4. Say what's next | ``✓ This Mac left the pair. Nothing serves on this Mac now: `darkbloom start` serves it alone, or `darkbloom cluster` pairs it again.`` (or ``Single-Mac serving keeps running on this Mac; `darkbloom cluster` pairs it again.``), then the other Mac's line (below), then ``To pair these two Macs again instead, run `darkbloom cluster` on each Mac; if the other Mac offers Start over, choose it.`` |
+
+What the other Mac's line says follows what the stop did
+(`ClusterLeaveFlow.otherMacLine`, `Cluster.Stop.BeforeUnpairing`):
+
+| The stop | The line |
+|---|---|
+| The pair stopped on both Macs | ``The other Mac (…) stopped serving the pair too. It keeps its pairing until you run `darkbloom cluster leave` there.`` |
+| The other Mac didn't answer (on the leading Mac, or forwarded to the Mac that follows) | ``The other Mac (…) didn't answer, so it wasn't asked to stop; it may have left the pair already. If it hasn't, `darkbloom cluster leave` there unpairs it too.`` |
+| It wasn't asked: the Mac that follows a pair that isn't serving, or a pair that couldn't stop together | ``The other Mac (…) wasn't asked to stop. It keeps its pairing until …`` |
+| No cluster service on this Mac | ``The other Mac (…) wasn't asked anything. It keeps its pairing until …`` |
+
+On a Mac in no pair it says `This Mac isn't in a two-Mac cluster: nothing to
+leave.` (exit 0), and names `darkbloom cluster stop --service` when a cluster
+service from an earlier pairing is still there. When the pairing record can't
+be read, nothing changes (exit 1). Single-Mac serving, the models and the
+cable port setup stay (`darkbloom cluster link --remove` undoes the cable
+setup). `darkbloom uninstall` takes steps 2 and 3 the same way, and its lines
+no longer say to serve the pair or start the cluster service again either.
+
+The other Mac stays paired until it leaves too, and can't tell this Mac having
+left from this Mac being off. So where its `status`, `cluster status` and a
+`start`'s result say how to start the pair (stopped, the other Mac not
+answering, the pair not running there), they end ``If the other Mac left the
+pair, `darkbloom cluster leave` here unpairs this Mac too.``
+(`ClusterPairSummary.leftBehindLine`). Its `darkbloom cluster` adds ``If it left
+the pair, choose Start over to pair again, or Quit and run `darkbloom cluster
+leave` here.`` (`ClusterOnboardingDriver.otherMacSilentLine`).
 
 Provider-local Chat Completions, Completions and Responses reject negative output
 token limits with HTTP 400 before model invocation or streaming headers. Explicit
@@ -2310,7 +2422,7 @@ A failed step does not stop the safe steps after it.
 | # | Step | Through | Skipped when |
 |---|---|---|---|
 | 1 | Stop serving on this Mac | the [stop](#darkbloom-stop) drain (`ServiceDrain`) | the provider service was not running. When a cluster service serves here instead, the step says whose (step 2 handles it) |
-| 2 | Stop this Mac's cluster part and remove its service | `darkbloom cluster stop --service`; when the other Mac does not answer, `cluster stop --local-only`. It stops a running cluster service whose command is `darkbloom cluster service`, launchd's or one a session started, wherever it runs from, even outside this install's app (`ClusterService.stopDetached`), and removes this install's own login agents only (`ClusterServiceAgent.installedLabels`, `ClusterServiceAgentPlan.isOwnAgent`). Each install has its own pair, service lock and agent, so another install's pair and agent are never touched. A service under another command name is not stopped: this step fails with that stop's own message, and nothing is deleted. Anything else holding the lock is refused, and nothing is deleted: a service from neither app, a pid that is no cluster service, or a lock or pid file that can't be read. Whose a service is follows its executable with links resolved (`ProviderUninstall.owner`) | no cluster service on this Mac. The dry run says what this step does to a cluster service running here (`ClusterService.running`) |
+| 2 | Stop this Mac's cluster part and remove its service | `darkbloom cluster stop --service`; when the other Mac does not answer, `cluster stop --local-only` (`Cluster.Stop.beforeUnpairing`, as [`darkbloom cluster leave`](#darkbloom-cluster-leave) takes it: its lines say only what stopped, not the pair stop's ``Run `darkbloom cluster` to serve again.``, and the summary says what to do on the other Mac). When the leading Mac's other Mac doesn't answer, the summary's step line ends `: the other Mac did not answer, so it was not asked to stop`; when the pair can't stop together, `: the other Mac was not asked to stop (…)`, as before (`BeforeUnpairing.outcome`). It stops a running cluster service whose command is `darkbloom cluster service`, launchd's or one a session started, wherever it runs from, even outside this install's app (`ClusterService.stopDetached`), and removes this install's own login agents only (`ClusterServiceAgent.installedLabels`, `ClusterServiceAgentPlan.isOwnAgent`). Each install has its own pair, service lock and agent, so another install's pair and agent are never touched. A service under another command name is not stopped: this step fails with that stop's own message, and nothing is deleted. Anything else holding the lock is refused, and nothing is deleted: a service from neither app, a pid that is no cluster service, or a lock or pid file that can't be read. Whose a service is follows its executable with links resolved (`ProviderUninstall.owner`) | no cluster service on this Mac. The dry run says what this step does to a cluster service running here (`ClusterService.running`) |
 | 3–5 | Remove the provider, watchdog and desktop API launch agents | what `stop --uninstall` runs (`LaunchAgent.uninstall`, `WatchdogAgent.uninstall`, `DesktopService.uninstall`) | not installed, or serving did not stop in step 1 |
 | 6 | Revoke this Mac's account token, best effort | what `darkbloom logout` does (`Logout.revokeSavedToken`) | no saved token, the coordinator did not confirm it, or serving did not stop. It never fails the uninstall; the token file goes with `~/.darkbloom` |
 | 7 | Forget the pairing with the other Mac | `darkbloom cluster pair --forget <pin>`, once per pairing of this install | this Mac is not paired |
@@ -3217,12 +3329,16 @@ only, your other Macs (free), or your Macs first and then the Darkbloom network
 (billed), from `[local] route` and a saved account API key.
 
 ```bash
+darkbloom route this-mac       # your requests stay on this Mac
+darkbloom route my-macs        # then your other Macs (free); needs the account key
+darkbloom route my-macs-first  # then your other Macs (free), then the Darkbloom network (billed); needs the key
 darkbloom route key            # ask for the key with hidden input, check it, save it in the Keychain
 darkbloom route key --stdin    # read it from standard input
 darkbloom route key --remove   # remove it: requests stay on this Mac
 ```
 
-No output line contains the key. Flags: [`darkbloom route key`](#darkbloom-route-key).
+No output line contains the key. Details: [the three routes](#darkbloom-route-this-mac-my-macs-my-macs-first)
+and [`darkbloom route key`](#darkbloom-route-key).
 
 ## `darkbloom logs`
 

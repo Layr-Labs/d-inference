@@ -95,10 +95,13 @@ extension StandaloneServer {
         slots[modelId]?.modelType ?? models.first(where: { $0.id == modelId })?.modelType
     }
 
-    /// A resident model's context as its engine admits it, for the router's `/v1/models`; nil while not loaded.
+    /// What the router's `/v1/models` says of a model this Mac serves: the input it takes (`LocalInputModalities`), and
+    /// once it is loaded its window as its engine admits it, the most a prompt or its output may be.
     func localModelLimits(_ modelId: String) -> LocalModelLimits? {
-        guard let slot = slots[modelId] else { return nil }
-        return LocalModelLimits(contextLength: slot.bridge.advertisedContextTokens ?? slot.sizing.maxContextLength)
+        let input = models.first(where: { $0.id == modelId }).map { LocalInputModalities.of($0) }
+        guard let slot = slots[modelId] else { return input.map { LocalModelLimits(inputModalities: $0) } }
+        return LocalModelLimits(window: slot.bridge.advertisedContextTokens ?? slot.sizing.maxContextLength,
+                                inputModalities: input)
     }
 }
 
@@ -170,6 +173,9 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
             return Self.openAIErrorResponse(
                 status: HTTPResponse.Status(code: Int(failure.statusCode)),
                 message: failure.message)
+        } catch MultiModelBatchSchedulerEngineError.promptExceedsContext(let message) {
+            // The model window this Mac holds requests to, in plain words.
+            return Self.openAIErrorResponse(status: .badRequest, message: message, code: "context_length_exceeded")
         } catch MultiModelBatchSchedulerEngineError.distributedRequestRefused(let refusal, let message) {
             // A cluster pair's refusal names its rule and the model's limits
             // (a closed template, never request content): the client sees why.
@@ -190,8 +196,35 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
                 FileHandle.standardError.write(Data("local API: error text (debug): \(String(describing: error).prefix(400))\n".utf8))
             }
             let status = HTTPResponse.Status(code: Int(failure.statusCode))
-            return Self.openAIErrorResponse(status: status, message: failure.message)
+            // A request beyond what this Mac's memory holds now, or one an
+            // advertised context's own guard refuses (with the output cut to
+            // the window, only an invalid output reaches it), is answered in
+            // words that name the bound and what to change (fixed text, never
+            // request content).
+            switch error as? MultiModelBatchSchedulerEngineError {
+            case .advertisedContextExceeded?:
+                return Self.openAIErrorResponse(status: status, message: Self.advertisedContextExceededMessage,
+                    code: "context_length_exceeded")
+            case .tokenBudgetExhausted?:
+                return Self.openAIErrorResponse(status: status, message: Self.memoryRefusalMessage)
+            default:
+                return Self.openAIErrorResponse(status: status, message: failure.message)
+            }
         }
+    }
+
+    /// This Mac's answer to a prompt and `max_tokens` that together pass an
+    /// advertised context.
+    static var advertisedContextExceededMessage: String {
+        "The prompt and max_tokens together don't fit in this model's context window "
+            + "(its context_length in /v1/models). Shorten the prompt or lower max_tokens."
+    }
+
+    /// This Mac's answer to a request its memory can't hold now: each request
+    /// reserves its prompt and its output when it starts.
+    static var memoryRefusalMessage: String {
+        "This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt "
+            + "(or send less media), or retry when this Mac's other requests finish."
     }
 
     /// Headers returned on a `OPTIONS` preflight. Matches the

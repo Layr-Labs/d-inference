@@ -251,8 +251,10 @@ final class ParityClusterSession: DistributedLocalServerSession, @unchecked Send
     private var phase: DistributedInstalledSessionStatus = .prepared
 
     init(family: ParityFamily, directory: URL, supportsLogprobs: Bool = true) throws {
+        // The standard request's output, as the registered rows serve it, so an
+        // omitted max_tokens defaults alike on both endpoints (32,768).
         profile = try .init(id: "fabricated-greedy", vocabularySize: 512, maxPromptTokens: 8192,
-                            maxOutputTokens: 4096, maxContextTokens: 8192 + 4096, requestTimeout: .seconds(315),
+                            maxOutputTokens: 32_768, maxContextTokens: 8192 + 32_768, requestTimeout: .seconds(315),
                             supportsLogprobs: supportsLogprobs)
         model = .init(publicModelID: family.modelID, directory: directory, modelType: family.modelType,
                       eosTokenIDs: try family.installedEOS(), vocabularySize: 512)

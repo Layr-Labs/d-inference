@@ -136,8 +136,24 @@ enum OpenCodeConfigPlan {
         "{file:\(ToolIntegration.displayPath(keyFile, home: home))}"
     }
 
-    /// Where the provider's block in a config's `bytes` points. Skeleton: never read.
-    static func pointer(in bytes: Data, provider: IntegrationProvider, home: URL) -> ToolPointer? { nil }
+    /// Where the provider's block in a config's `bytes` points: its `settings.baseURL`, and the file its `apiKey`
+    /// reads (`keyReference`'s form); nil when the file has no such block or isn't JSONC.
+    static func pointer(in bytes: Data, provider: IntegrationProvider, home: URL) -> ToolPointer? {
+        guard let document = try? JSONCDocument([UInt8](bytes)), let root = document.root.object,
+              let block = root.members(named: "providers").first?.value.object?.members(named: provider.id).first?
+                .value.object else { return nil }
+        let settings = block.members(named: "settings").first?.value.object
+        func string(_ key: String) -> String? {
+            guard let value = settings?.members(named: key).first?.value else { return nil }
+            return try? JSONDecoder().decode(String.self, from: Data(document.bytes[value.start..<value.end]))
+        }
+        return ToolPointer(baseURL: string("baseURL"), keyFile: string("apiKey").flatMap { reference in
+            guard reference.hasPrefix("{file:"), reference.hasSuffix("}") else { return nil }
+            let path = String(reference.dropFirst("{file:".count).dropLast())
+            if path == "~" || path.hasPrefix("~/") { return home.appendingPathComponent(String(path.dropFirst(2))) }
+            return path.hasPrefix("/") ? URL(fileURLWithPath: path) : nil
+        })
+    }
 
     /// The global config files, in the order OpenCode loads them.
     static let globalFileNames = ["opencode.json", "opencode.jsonc"]

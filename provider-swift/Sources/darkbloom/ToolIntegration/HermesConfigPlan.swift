@@ -62,8 +62,11 @@ enum HermesConfigPlan {
         }
     }
 
-    /// Where the provider's block in a config's `bytes` points. Skeleton: never read.
-    static func pointer(in bytes: Data, provider: IntegrationProvider) -> ToolPointer? { nil }
+    /// Where the provider's block in a config's `bytes` points: its `api`, and the file its `key_cmd` reads
+    /// (`/bin/cat <file>`, as `plan` writes it); nil when the file has no such block or can't be read.
+    static func pointer(in bytes: Data, provider: IntegrationProvider) -> ToolPointer? {
+        (try? HermesEdit(text: String(decoding: bytes, as: UTF8.self), provider: provider))?.pointer()
+    }
 
     private static func floorReason(_ models: [IntegrationModel]) -> String {
         guard let largest = models.compactMap(\.contextLength).max() else {
@@ -278,6 +281,25 @@ private struct HermesEdit {
                 imageInput: value("supports_vision", in: values)?.lowercased() == "true")
         }
         return entries
+    }
+
+    /// Where Darkbloom's provider block points (`HermesConfigPlan.pointer`); nil without one it can read.
+    func pointer() -> ToolPointer? {
+        guard let providers, providers.value.isEmpty,
+              let mine = (try? children(of: providers))?.first(where: { $0.key == provider.id }),
+              let fields = try? children(of: mine) else { return nil }
+        func value(_ key: String) -> String? { fields.first { $0.key == key }.flatMap { Self.scalar($0.value) } }
+        return ToolPointer(baseURL: value("api"), keyFile: value("key_cmd").flatMap { command in
+            let prefix = "/bin/cat "
+            guard command.hasPrefix(prefix) else { return nil }
+            var path = String(command.dropFirst(prefix.count))
+            // `ToolIntegration.shellQuoted`'s single quotes, each quote inside as '\''.
+            if path.hasPrefix("'") {
+                guard path.count >= 2, path.hasSuffix("'") else { return nil }
+                path = String(path.dropFirst().dropLast()).replacingOccurrences(of: "'\\''", with: "'")
+            }
+            return path.hasPrefix("/") ? URL(fileURLWithPath: path) : nil
+        })
     }
 
     // MARK: - Result

@@ -4,7 +4,8 @@ import ProviderCore
 
 // `darkbloom start --opencode` / `--hermes`: start Darkbloom only if no local API runs, then point the tools at it
 // (ToolIntegrationStep). They run once, at start: never in the launchd child, never per request. A start without a
-// tool flag reads nothing here. No line, and no tool file, holds a key.
+// tool flag only reads the tools' configs, to say when one points elsewhere (ToolAddress). No line, and no tool file,
+// holds a key.
 extension Start {
     /// Why `--opencode` / `--hermes` can't go with these flags; nil when they can.
     var toolFlagsRefusal: String? {
@@ -87,9 +88,12 @@ extension Start {
     }
 
     /// Beside the coordinator-less server, once it is bound, on a task of its own: the server keeps serving whatever
-    /// happens there.
+    /// happens there. Without a tool flag, a start someone typed says when a tool points elsewhere.
     func setUpToolsBesideLocalServer(_ info: LocalEndpoint.Info, serving: StartServing, coordinatorURL: String) {
-        guard !requestedTools.isEmpty else { return }
+        guard !requestedTools.isEmpty else {
+            if !foreground { noteToolsPointingElsewhere(serving) }
+            return
+        }
         guard let endpoint = IntegrationEndpoint.live(info) else {
             print("✗ \(ToolIntegrationStep.names(requestedTools)) couldn't be set up: no key file holds this server's "
                 + "key. \(ToolIntegrationStep.keepsServing)")
@@ -100,13 +104,17 @@ extension Start {
     }
 
     /// After the background provider started: once its local API is bound, which `local.json` says, waiting at most
-    /// `toolWaitSeconds`. A step that fails ends the start with exit 1; the provider keeps serving.
+    /// `toolWaitSeconds`. A step that fails ends the start with exit 1; the provider keeps serving. Without a tool flag,
+    /// it says when a tool points elsewhere.
     func setUpToolsBesideDaemon(serving: StartServing, coordinatorURL: String,
                                 waitForAPI: (UInt16) async -> LocalAPIWait = {
                                     await Start.waitForLocalAPI(port: $0, seconds: Start.toolWaitSeconds)
                                 },
                                 step: ToolIntegrationStep? = nil) async throws {
-        guard !requestedTools.isEmpty else { return }
+        guard !requestedTools.isEmpty else {
+            noteToolsPointingElsewhere(serving)
+            return
+        }
         let endpoint: IntegrationEndpoint
         switch await waitForAPI(serving.port) {
         case .ready(let found):
@@ -125,10 +133,18 @@ extension Start {
                                coordinatorURL: coordinatorURL, step: step) else { throw ExitCode.failure }
     }
 
-    /// A start without `--opencode` / `--hermes`: says when a tool points elsewhere. Skeleton: says nothing, unwired.
+    /// A start without `--opencode` / `--hermes` that serves a local API never changes a tool's config: when a tool set
+    /// up for Darkbloom points elsewhere (another port or address, or another key file), one line says so and names
+    /// the command that points it here (`ToolAddress`). `keyFile`: the one this Mac's local API takes.
     func noteToolsPointingElsewhere(_ serving: StartServing, environment: ToolIntegrationEnvironment = .current,
                                     provider: IntegrationProvider = .current,
-                                    keyFile: URL = LocalEndpoint.tokenPath(), say: (String) -> Void = { print($0) }) {}
+                                    keyFile: URL = LocalEndpoint.tokenPath(), say: (String) -> Void = { print($0) }) {
+        guard requestedTools.isEmpty, serving.hasLocalAPI,
+              let line = ToolAddress.notice(baseURL: serving.baseURL, keyFile: serving.noAuth ? nil : keyFile,
+                                            environment: environment, provider: provider) else { return }
+        say("")
+        say(line)
+    }
 
     /// For a local API this start didn't resolve (one already running, or the pair's): where your requests go comes
     /// from the saved `[local] route`, and the catalog from `--coordinator-url`, else the config's, else the build's.

@@ -1315,7 +1315,7 @@ was cut off by `max_tokens` fails with 422 `invalid_request` / `client_error`;
 GLM-5.3-Flash validates its withheld JSON itself and keeps 422
 `generation_failure` / `tool_noncompliance` for a truncated one. Local HTTP names
 the part type and the service-validated cut-off
-([direct mode](../provider/direct-mode.md#refused-request-shapes)). Sources:
+([the local API](../provider/direct-mode.md#refused-request-shapes)). Sources:
 `provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`
 (`handleInferenceRequest`), `provider-swift/Sources/ProviderCore/ProviderLoop+ErrorMapping.swift`
 (`mapInferenceErrorToStatus`).

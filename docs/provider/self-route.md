@@ -1,6 +1,6 @@
 # Self-route: use your own machine through the coordinator
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-07
 
 Send your normal Darkbloom API requests to the provider your account owns —
 free, end-to-end, through the same `api.darkbloom.dev` endpoint and SDK
@@ -9,9 +9,10 @@ operators who run a provider and also consume the network. Nothing changes on
 the provider; the policy lives entirely on the coordinator
 ([coordinator/api/inference/self_route.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/inference/self_route.go), `resolveSelfRoutePolicy`).
 
-Self-route is not [direct mode](./direct-mode.md): direct mode is a local
-socket on the provider Mac with no coordinator involved; self-route is regular
-fleet traffic whose scheduler is told which machine may serve it.
+Self-route is not [the local API](./direct-mode.md): the local API is a
+socket on the provider Mac that your tools call directly (**Only me** or
+**Both, me first**); self-route is regular fleet traffic whose scheduler is
+told which machine may serve it.
 
 ## Prerequisites
 
@@ -123,7 +124,7 @@ Exclusive self-route fails fast with the real cause instead of queueing
 |---|---|---|
 | `409 no_linked_machine` | No provider is linked to the account that owns the key | `darkbloom login` on the Mac under that account |
 | `503 machine_offline` (`Retry-After: 30`) | Linked machine(s) exist but none is online | `darkbloom start`; `darkbloom doctor` for connection problems ([troubleshooting](./troubleshooting.md)) |
-| `503 model_not_loaded` (`Retry-After: 15`) | Online, but no owned machine serves this model id | `darkbloom models download <id>`, then `darkbloom restart`; list ids with the `self` header |
+| `503 model_not_loaded` (`Retry-After: 15`) | Online, but no owned machine serves this model id | `darkbloom start` in a terminal and pick the model in its list, which downloads it if needed; `darkbloom restart` adds no model. List ids with the `self` header |
 | `503 model_capability_unsupported` | Machine serves the model but not this request shape (inference-enforced `tool_choice` without the tool-constraint advertisement, media on a text-only build) | `darkbloom update`; load a vision-capable build |
 | `prefer` requests are billed | Your machine could not serve at that moment, so the fleet did | Check the same causes as above; use `self` if you never want the fallback |
 | Key with `self_route_only` returns 409/503 for every request | The ceiling applies to all traffic on that key | Use a different key for public routing |
@@ -142,7 +143,7 @@ with `self`, which needs neither.
 
 ## Related
 
-- [Direct mode](./direct-mode.md) — local HTTP endpoint without the coordinator.
+- [The local API](./direct-mode.md) — your Mac's own OpenAI-compatible address, for your tools.
 - [Attestation](./attestation.md) — trust levels and the flags self-route does not bypass.
 - [architecture/billing.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/billing.md) — free vs. charged settlement.
 - [CLI reference](./cli-reference.md) — `private_only` and the other `provider.toml` keys.

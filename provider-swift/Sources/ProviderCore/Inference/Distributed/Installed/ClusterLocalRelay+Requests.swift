@@ -116,22 +116,18 @@ extension ClusterLocalRelay {
     /// local API's key check reads its head with `keys` (`caller`).
     @discardableResult
     static func readRequest(_ client: Int32, keys: Keys?) -> Caller {
-        defer { dropRequest(client) }
-        return .keyed
-    }
-
-    private static func dropRequest(_ client: Int32) {
         var pending: [UInt8] = [], buffer = [UInt8](repeating: 0, count: 64 * 1024)
         var end = headEnd(pending, from: 0)
         while end == nil, pending.count <= maximumHeadBytes {
             let searched = max(0, pending.count - 3)
             let count = readSome(client, into: &buffer)
-            guard count > 0 else { return }
+            guard count > 0 else { return caller(of: [], keys: keys) }
             pending += buffer[..<count]
             end = headEnd(pending, from: searched)
         }
-        guard let headLength = end else { return }
-        let lengths = split(pending[..<headLength].dropLast(4)).dropFirst().compactMap { line -> Int? in
+        guard let headLength = end else { return caller(of: [], keys: keys) }
+        let lines = split(pending[..<headLength].dropLast(4))
+        let lengths = lines.dropFirst().compactMap { line -> Int? in
             guard let colon = line.firstIndex(of: UInt8(ascii: ":")),
                   lowercased(line[line.startIndex..<colon]) == "content-length" else { return nil }
             return decimal(trimmed(line[line.index(after: colon)...]))
@@ -139,9 +135,35 @@ extension ClusterLocalRelay {
         var remaining = min(lengths.first ?? 0, maximumRefusedBodyBytes) - (pending.count - headLength)
         while remaining > 0 {
             let count = readSome(client, into: &buffer, upTo: remaining)
-            guard count > 0 else { return }
+            guard count > 0 else { break }
             remaining -= count
         }
+        return caller(of: lines, keys: keys)
+    }
+
+    /// Who sent the request whose head is `lines` (its request line first), as the local API's key check reads it
+    /// (`LocalAuthPolicy.authorize`): `Authorization` is `Bearer` with this Mac's own key or the pair's, each compared in
+    /// constant time; else a CORS preflight or a liveness check, which the API takes without a key; else neither, as is
+    /// a head the relay couldn't read. A relay without keys knows no caller's.
+    static func caller(of lines: [ArraySlice<UInt8>], keys: Keys?) -> Caller {
+        guard let keys else { return .open }
+        let authorization = lines.dropFirst().lazy.compactMap { line -> ArraySlice<UInt8>? in
+            guard let colon = line.firstIndex(of: UInt8(ascii: ":")),
+                  lowercased(line[line.startIndex..<colon]) == "authorization" else { return nil }
+            return trimmed(line[line.index(after: colon)...])
+        }.first
+        if let authorization {
+            // Both keys are always compared: how long it takes says nothing of which one came close.
+            let own = constantTimeEquals(authorization, Array("Bearer \(keys.own)".utf8)) && !keys.own.isEmpty
+            let pair = constantTimeEquals(authorization, Array("Bearer \(keys.pair)".utf8)) && !keys.pair.isEmpty
+            if own || pair { return .keyed }
+        }
+        guard let requestLine = lines.first, let method = method(of: requestLine) else { return .unknown }
+        if method == "OPTIONS" { return .open }
+        let target = requestLine.split(separator: space, omittingEmptySubsequences: false)[1]
+        let path = String(decoding: target.prefix { $0 != UInt8(ascii: "?") }, as: UTF8.self)
+        if method == "GET" || method == "HEAD", ["/", "/health", "/v1/health"].contains(path) { return .open }
+        return .unknown
     }
 
     /// Where the blank line that ends a head ends in `bytes`, searching from `start`; nil before it came.

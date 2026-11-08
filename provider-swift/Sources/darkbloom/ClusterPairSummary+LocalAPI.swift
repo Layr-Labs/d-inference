@@ -37,9 +37,7 @@ extension ClusterPairSummary {
             }
             let passes = "Members: \(otherMac) runs the pair's API; this Mac passes your requests to it, and Darkbloom pauses for them too"
             if let down = memberAPIDown { return ["Local API: " + down, "Members: \(otherMac) runs the pair's API; this Mac is part of the pair"] }
-            guard let relaying else {
-                return ["Local API: not listening on this Mac yet; it starts once the pair's API on \(otherMac) answers", passes]
-            }
+            guard let relaying else { return ["Local API: " + relayStartingWords, passes] }
             return [Self.addressLine(relaying), passes]
         }
         // From where this Mac's API listens once it does: on this Mac only while Darkbloom doesn't have the pair.
@@ -79,8 +77,19 @@ extension ClusterPairSummary {
     }
 
     /// This Mac relays the pair's API on every address, and its port for it isn't up yet, with nothing against it
-    /// (`memberAPIDown`): in `status`'s words, after "Local API: ". Nil otherwise.
-    var memberAPIStarting: String? { nil }
+    /// (`memberAPIDown`): in `status`'s words, after "Local API: ". Nil otherwise. With Only me, whose `localAPI` (Both's)
+    /// doesn't say which Mac runs rank 0, the Mac that follows stands for the one that relays, as in
+    /// `givesThisMacALocalAPI`.
+    var memberAPIStarting: String? {
+        guard relaying == nil, memberAPIDown == nil, answersOnEveryMac, started, paired, !pairingUnreadable,
+              localAPI.map({ !$0.runsRankZero }) ?? (localOnly && role == .member) else { return nil }
+        return relayStartingWords
+    }
+
+    /// This Mac's port for the pair's API before its relay is up, after "Local API: ".
+    private var relayStartingWords: String {
+        "not listening on this Mac yet; it starts once the pair's API on \(otherMac) answers"
+    }
 
     /// Whether Darkbloom is paused for you, in `status`'s single-Mac words for "the pair" (`Status.meFirstLines`).
     static func pauseLines(_ meFirst: MeFirstSnapshot?, now: Date, timeZone: TimeZone) -> [String] {

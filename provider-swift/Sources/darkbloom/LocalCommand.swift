@@ -34,6 +34,13 @@ struct Local: AsyncParsableCommand {
                 print("{}")
             } else if pair.relaying == nil, let down = pair.memberAPIDown {
                 printError("Local API: " + down)
+            } else if let starting = pair.memberAPIStarting {
+                // This Mac's port for the pair's API starts once that API answers; meanwhile the pair's key, as ever.
+                printError("Local API: \(starting).")
+                if let key = LocalEndpoint.existingClusterToken() {
+                    printError("The pair's API key (the same on both Macs, and taken on this Mac's port once it listens):")
+                    printError("  \(key)")
+                }
             } else if let notUp = Self.runningProviderLocalAPIFailure() {
                 printError(Self.notUpLine(notUp.failure, nextFree: LocalAPIPort.nextFree(besides: notUp.failure.port),
                                           server: notUp.server))

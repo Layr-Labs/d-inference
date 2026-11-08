@@ -233,10 +233,15 @@ public final class ClusterService: @unchecked Sendable {
         return (state.held?.port, state.waitsForOffer ? true : nil, state.away ? true : nil)
     }
 
-    /// Whether rank 0's Mac is away for this Mac's relay: an ask of it failed (`askFailures`), or it hasn't answered over
-    /// the cable (`otherAnsweredAt`, `ClusterControlNode`) for `otherMacSilentSeconds`.
+    /// Whether rank 0's Mac is away for this Mac's relay: it hasn't answered over the cable (`otherAnsweredAt`, its
+    /// lease or answer, `ClusterControlNode`) for `otherMacSilentSeconds`. A failed ask of it says nothing then: the
+    /// exchange can be slow or busy while that Mac is there (its answer behind another command, a lost discovery, this
+    /// Mac's exchange lock busy), and the 503 tells the owner to stop the pair. Only before it has answered over the cable
+    /// in this service's life do the asks decide: `askFailuresWithoutLease` failed in a row. A connection rank 0 never
+    /// takes gets its 503 within `ClusterLocalRelay.connectSeconds` either way.
     static func relayAway(askFailures: Int, otherAnsweredAt: Double?, now: Double) -> Bool {
-        askFailures > 0 || otherAnsweredAt.map { now - $0 >= otherMacSilentSeconds } == true
+        guard let answered = otherAnsweredAt else { return askFailures >= askFailuresWithoutLease }
+        return now - answered >= otherMacSilentSeconds
     }
     private var relayAsked = Date.distantPast
     private var relayAsking = false

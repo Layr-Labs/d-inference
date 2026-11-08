@@ -13,6 +13,9 @@ import TOMLKit
 struct ClusterPairBothMeFirstCLITests {
     typealias F = LocalFirstStatusFixtures
 
+    /// The provider.toml the pair's local API reads its route from again (never read here: no request is made).
+    static let configFile = URL(fileURLWithPath: "/tmp/pair-both-me-first/provider.toml")
+
     // MARK: - The leading part
 
     @Test("the cluster service's part takes the local API's flags", arguments: [
@@ -39,7 +42,8 @@ struct ClusterPairBothMeFirstCLITests {
     @Test func onlyThePartThatHostsThePairsSlotStartsTheLocalAPI() {
         var said: [String] = []
         let leader = Start.clusterMemberLocalEndpoint(requested: true, hostsPairSlot: true, bind: "0.0.0.0", port: 8001,
-            local: LocalSettings(route: .thisMac), coordinatorURL: "wss://example.invalid/ws/provider",
+            local: LocalSettings(route: .thisMac), settingsFile: Self.configFile,
+            coordinatorURL: "wss://example.invalid/ws/provider",
             loadToken: { "dk-cluster-fixture" }, say: { said.append($0) })
         #expect(leader?.host == "0.0.0.0" && leader?.port == 8001)
         #expect(leader?.authToken == "dk-cluster-fixture", "always the pair's key, as `cluster local`")
@@ -50,17 +54,20 @@ struct ClusterPairBothMeFirstCLITests {
         // Every other member: no API, no key read, one line.
         var loads = 0
         let other = Start.clusterMemberLocalEndpoint(requested: true, hostsPairSlot: false, bind: "0.0.0.0", port: 8001,
-            local: nil, coordinatorURL: nil, loadToken: { loads += 1; return "dk" }, say: { said.append($0) })
+            local: nil, settingsFile: Self.configFile, coordinatorURL: nil,
+            loadToken: { loads += 1; return "dk" }, say: { said.append($0) })
         #expect(other == nil && loads == 0 && said.count == 1)
 
         // Today's member, without --local-endpoint: nothing at all.
         let today = Start.clusterMemberLocalEndpoint(requested: false, hostsPairSlot: true, bind: "127.0.0.1", port: 8000,
-            local: nil, coordinatorURL: nil, loadToken: { loads += 1; return "dk" }, say: { said.append($0) })
+            local: nil, settingsFile: Self.configFile, coordinatorURL: nil,
+            loadToken: { loads += 1; return "dk" }, say: { said.append($0) })
         #expect(today == nil && loads == 0 && said.count == 1)
 
         // A key that can't be read: Darkbloom keeps serving, and the API never opens without its key.
         let keyless = Start.clusterMemberLocalEndpoint(requested: true, hostsPairSlot: true, bind: "0.0.0.0", port: 8001,
-            local: nil, coordinatorURL: nil, loadToken: { throw CocoaError(.fileWriteNoPermission) }, say: { said.append($0) })
+            local: nil, settingsFile: Self.configFile, coordinatorURL: nil,
+            loadToken: { throw CocoaError(.fileWriteNoPermission) }, say: { said.append($0) })
         #expect(keyless == nil && said.count == 2)
     }
 

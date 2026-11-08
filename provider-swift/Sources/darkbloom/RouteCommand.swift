@@ -55,9 +55,7 @@ struct RouteKey: AsyncParsableCommand {
             savedRoute: loaded?.config.local?.route,
             check: { key in await RouteKeyFlow.checkWithDarkbloom(key: key, upstream: upstream) },
             say: { print($0) })
-        let live = LocalEndpoint.readLiveInfo()
-        flow.liveEndpointHasNoLocalKey = live.map { $0.apiKey.isEmpty } ?? false
-        flow.localAPIRunning = live.map { !$0.apiKey.isEmpty } ?? false
+        flow.seesLocalAPI(LocalEndpoint.readLiveInfo())
         flow.pair = .of(ClusterPairSummary.local())
         if remove {
             throw ExitCode(flow.remove())
@@ -98,6 +96,13 @@ struct RouteKeyFlow {
     var localAPIRunning = false
     /// This Mac's part in a two-Mac cluster: the pair's local API uses the leading Mac's key.
     var pair: RouteSaved.PairPart?
+
+    /// The local API running now (`LocalEndpoint.readLiveInfo`), if any: with a local key it reads the account key again
+    /// before its next request that needs it; without one (`--no-auth`) it never uses it.
+    mutating func seesLocalAPI(_ live: LocalEndpoint.Info?) {
+        liveEndpointHasNoLocalKey = live.map { $0.apiKey.isEmpty } ?? false
+        localAPIRunning = live.map { !$0.apiKey.isEmpty } ?? false
+    }
 
     func save(_ rawKey: String) async -> Int32 {
         let key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)

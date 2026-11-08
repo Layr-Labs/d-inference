@@ -246,6 +246,7 @@ struct StartLocalFirstTests {
             var tokenAsked = false
             let endpoint = try Start.unifiedLocalEndpoint(
                 serving: serving, config: ProviderConfig(provider: ProviderSettings(name: "l4")),
+                settingsFile: URL(fileURLWithPath: "/tmp/start-local-first/provider.toml"),
                 coordinatorURL: "wss://coordinator.invalid/ws/provider",
                 loadToken: { tokenAsked = true; return "dk-local-fixture" })
             #expect(endpoint == nil && !tokenAsked)
@@ -422,7 +423,8 @@ struct StartLocalFirstTests {
         var served = ProviderConfig(provider: ProviderSettings(name: "l4"))
         served.local = config.local
         let endpoint = try #require(try Start.unifiedLocalEndpoint(
-            serving: serving, config: served, coordinatorURL: "wss://coordinator.invalid/ws/provider",
+            serving: serving, config: served, settingsFile: URL(fileURLWithPath: "/tmp/start-local-first/provider.toml"),
+            coordinatorURL: "wss://coordinator.invalid/ws/provider",
             loadToken: { Issue.record("--no-auth reads no token"); return "dk-local-fixture" }))
         #expect(endpoint.authToken == nil && endpoint.router?.settings.route == .myMacsFirst)
         #expect(serving.summaryLines.suffix(2) == [

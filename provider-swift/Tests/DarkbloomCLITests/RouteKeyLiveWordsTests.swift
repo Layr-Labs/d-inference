@@ -135,4 +135,22 @@ struct RouteKeyLiveWordsTests {
         #expect(keylessRemove.remove() == 0)
         #expect(!keylessRemoveLines.text.contains("In this pair"))
     }
+
+    /// What `route key` reads of the local API running now: one with a local key uses the account key from its next
+    /// request; one without (`--no-auth`) never uses it; with none running, it counts at the next start.
+    @Test func theLocalAPIRunningNowIsReadAsKeyedOrKeyless() {
+        let keyed = LocalEndpoint.Info(host: "127.0.0.1", port: 8001, apiKey: "dk-local-fixture", version: "test",
+                                       pid: 4242, updatedAt: "now")
+        var keyless = keyed
+        keyless.apiKey = ""
+        let cases: [(name: String, live: LocalEndpoint.Info?, running: Bool, keyless: Bool)] = [
+            ("keyed", keyed, true, false), ("--no-auth", keyless, false, true), ("none", nil, false, false),
+        ]
+        for (name, live, running, noKey) in cases {
+            var flow = RouteKeyFlow(store: InMemoryLocalRouterAccountKeyStore(), savedRoute: .myMacs,
+                                    check: { _ in .accepted(models: 1) }, say: { _ in })
+            flow.seesLocalAPI(live)
+            #expect(flow.localAPIRunning == running && flow.liveEndpointHasNoLocalKey == noKey, "\(name)")
+        }
+    }
 }

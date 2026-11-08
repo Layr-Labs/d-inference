@@ -87,9 +87,10 @@ extension Start {
     /// refuses an endpoint on a member without the slot (`admitsClusterPairLocalAPI`), which would end the part.
     /// Never without a key: always the pair's (`cluster local`'s); `validate` refuses `--no-auth`, the loop refuses a
     /// keyless endpoint, and a key that can't be read here leaves the pair serving Darkbloom without the API, never
-    /// with an open one.
+    /// with an open one. Its router reads `[local] route` again from `settingsFile`, this Mac's provider.toml, when it
+    /// changes.
     static func clusterMemberLocalEndpoint(requested: Bool, hostsPairSlot: Bool, bind: String, port: UInt16,
-                                           local: LocalSettings?, settingsFile: URL? = nil, coordinatorURL: String?,
+                                           local: LocalSettings?, settingsFile: URL, coordinatorURL: String?,
                                            loadToken: () throws -> String = { try LocalEndpoint.loadOrCreateClusterToken() },
                                            say: (String) -> Void = printError) -> LocalInferenceHTTPConfig? {
         guard requested else { return nil }

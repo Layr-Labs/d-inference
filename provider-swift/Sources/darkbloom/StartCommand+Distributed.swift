@@ -46,10 +46,7 @@ extension Start {
         let batching = try DistributedAutomaticBatchFactory(providerConfiguration: configPath, stopNotice: announce)
         // The pair is this Mac's engine, and it takes no Darkbloom work here, whatever the registration wait below
         // decides: local only, or a control-only member that hosts no pair slot (`pairLeaderOutsideDarkbloom`).
-        let providerConfig = FileManager.default.fileExists(atPath: configPath.path)
-            ? try? ConfigManager.load(from: configPath) : nil
-        let router = LocalRouterConfig.pairLeaderOutsideDarkbloom(
-            local: providerConfig?.local, settingsFile: configPath, coordinatorURL: coordinatorURL ?? providerConfig?.coordinator.url)
+        let router = Self.clusterLocalRouter(configFile: configPath, coordinatorURL: coordinatorURL)
         let server = DistributedLocalServer(
             session: session, config: .init(host: bind, port: port, authToken: token, router: router),
             firstTokenBudgetPolicy: budget, batchReplacement: { try await batching.replacement(for: $0) })
@@ -151,6 +148,16 @@ extension Start {
         if case .failure(let error)? = memberResult, !(error is CancellationError) { throw error }
         // A stop nobody asked for is never a clean exit: a supervisor restarts it.
         if let member, await member.memberStopReason != nil { throw DistributedStartRuntimeError.memberControlEnded }
+    }
+
+    /// The router of `cluster local`'s API (and a control-only member's that hosts no pair slot): `[local]` and the
+    /// coordinator from the provider.toml at `configFile` (today's defaults when there is none, or it doesn't load),
+    /// read again from that file when it changes.
+    static func clusterLocalRouter(configFile: URL, coordinatorURL: String?) -> LocalRouterConfig {
+        let providerConfig = FileManager.default.fileExists(atPath: configFile.path)
+            ? try? ConfigManager.load(from: configFile) : nil
+        return .pairLeaderOutsideDarkbloom(local: providerConfig?.local, settingsFile: configFile,
+                                           coordinatorURL: coordinatorURL ?? providerConfig?.coordinator.url)
     }
 }
 

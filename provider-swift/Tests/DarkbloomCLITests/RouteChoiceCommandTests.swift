@@ -238,19 +238,48 @@ struct RouteChoiceCommandTests {
         #expect(lines.text.contains("[local] mode must be"))
     }
 
-    /// Both's local API and the pair's beside Darkbloom read their route again from the provider.toml they came from.
+    /// Every local API's router reads its route again from the provider.toml its start loaded: Only me's, Both's, the
+    /// pair's beside Darkbloom and `cluster local`'s. Each start passes that file to the function tested here, which
+    /// takes it as a `URL` (never optional), so a start that drops it doesn't build.
     @Test func eachLocalAPIsRouterReadsTheConfigFileItCameFrom() throws {
         let file = URL(fileURLWithPath: "/tmp/route-choice-wiring/provider.toml")
+        let config = ProviderConfig(provider: ProviderSettings(name: "wiring"))
+        let onlyMe = Start.onlyMeRouter(config: config, configFile: file, coordinatorURL: nil)
+        #expect(onlyMe.settingsFile == file)
+        #expect(!onlyMe.takesCoordinatorWork, "Only me never registers, so a `self` request can't come back to it")
         let serving = StartServing(mode: .both, source: .saved, meFirst: true, meFirstIdleMinutes: 2, route: .myMacs,
                                    accountKeySaved: true, port: 8001, bind: "127.0.0.1", noAuth: false)
         let both = try #require(try Start.unifiedLocalEndpoint(
-            serving: serving, config: ProviderConfig(provider: ProviderSettings(name: "wiring")), settingsFile: file,
+            serving: serving, config: config, settingsFile: file,
             coordinatorURL: "wss://coordinator.invalid/ws/provider", loadToken: { "dk-local-fixture" }))
         #expect(both.router?.settingsFile == file)
         let pair = Start.clusterMemberLocalEndpoint(requested: true, hostsPairSlot: true, bind: "0.0.0.0", port: 8001,
                                                     local: nil, settingsFile: file, coordinatorURL: nil,
                                                     loadToken: { "dk-local-fixture" }, say: { _ in })
         #expect(pair?.router?.settingsFile == file)
+        // `cluster local` loads `[local]` and the coordinator from that file itself, and has today's defaults without it.
+        let saved = try makeTempConfig(
+            "[local]\nroute = \"my-macs-first\"\n\n[coordinator]\nurl = \"wss://saved.invalid/ws/provider\"\n")
+        defer { try? FileManager.default.removeItem(at: saved.deletingLastPathComponent()) }
+        let clusterLocal = Start.clusterLocalRouter(configFile: saved, coordinatorURL: nil)
+        #expect(clusterLocal.settingsFile == saved && clusterLocal.settings.route == .myMacsFirst)
+        #expect(clusterLocal.upstreamBaseURL == URL(string: "https://saved.invalid"))
+        #expect(!clusterLocal.takesCoordinatorWork)
+        let fresh = Start.clusterLocalRouter(configFile: file, coordinatorURL: "wss://flag.invalid/ws/provider")
+        #expect(fresh.settingsFile == file && fresh.settings == LocalSettings())
+        #expect(fresh.upstreamBaseURL == URL(string: "https://flag.invalid"))
+    }
+
+    /// Each Mac's part comes from its pairing role: the leading Mac's lines name the other Mac, the other Mac's name the
+    /// leading one. A Mac in no pair, or whose pairing or role can't be read, has none.
+    @Test func eachMacsPartInAPairComesFromItsRole() {
+        let leading = ClusterPairSummary(paired: true, role: .leader, otherMacName: "Apple M3 Ultra, 256 GB")
+        #expect(RouteSaved.PairPart.of(leading) == .leads(other: leading.otherMac))
+        let following = ClusterPairSummary(paired: true, role: .member, otherMacName: "Apple M5 Max, 128 GB")
+        #expect(RouteSaved.PairPart.of(following) == .follows(leader: following.otherMac))
+        #expect(RouteSaved.PairPart.of(.notPaired) == nil)
+        #expect(RouteSaved.PairPart.of(ClusterPairSummary(paired: true, role: .leader, state: .pairingUnreadable)) == nil)
+        #expect(RouteSaved.PairPart.of(ClusterPairSummary(paired: true)) == nil)
     }
 
     @Test func routeKeyNamesTheCommandThatChoosesYourMacs() {

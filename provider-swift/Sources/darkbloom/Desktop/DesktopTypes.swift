@@ -59,7 +59,9 @@ struct DesktopAction: Codable, Sendable, Equatable {
   var speed: Int?
   var temperature: Int?
 
-  func validate() throws {
+  /// `startsThePair`: asked only for a `start` that names no models, whether it starts this Mac's pair, which serves its
+  /// own model (`DesktopBackend.startsThePair`: the app's Start on a paired Mac). Every other start names its models.
+  func validate(startsThePair: () throws -> Bool = { false }) throws {
     guard UUID(uuidString: id) != nil else { throw ValidationError("Invalid request ID") }
     let known = [
       "start", "switch", "stop", "restart", "download", "remove", "settings", "link", "unlink",
@@ -69,7 +71,9 @@ struct DesktopAction: Codable, Sendable, Equatable {
     ]
     guard known.contains(action) else { throw ValidationError("Unknown action") }
     if ["start", "switch", "autopilot", "autopilot_pin", "autopilot_unpin"].contains(action) {
-      guard let models, !models.isEmpty, models.count <= 32, Set(models).count == models.count
+      let models = self.models ?? []
+      let pairStart = try models.isEmpty && action == "start" && local != true && startsThePair()
+      guard !models.isEmpty || pairStart, models.count <= 32, Set(models).count == models.count
       else { throw ValidationError("Choose at least one model") }
       try models.forEach(Self.validateModel)
     }

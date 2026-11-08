@@ -1,6 +1,6 @@
 # Set up Darkbloom with an AI agent
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 This page is a setup prompt for an AI agent. The agent installs Darkbloom,
 logs in with the person's help, makes one Mac (or two Macs joined by one
@@ -621,7 +621,7 @@ Check all three:
    | `3` | `not_serving` with another `reason` | Follow `next` and [troubleshooting](#troubleshooting) |
    | `3` | `loading`, `unknown` | Check again every few minutes, for up to 15 minutes, without restarting anything (rule 8). If it still says so after 15 minutes, **STOP**: the human runs `darkbloom cluster` on the leader, which shows more |
    | `4` | `stopped` | The pair is stopped. If the other Mac isn't answering too, the lines add ``The other Mac (…) isn't answering over the cable.``. During a model or mode change, or while the pair updates Darkbloom, `status` and `cluster status` can read `stopped` (exit 4) or `unknown` for a minute or two while the pair is actually reloading. If such a change happened recently, or the status showed "Updating…", wait about a minute and check again before you act. Only if it still reads `stopped`: **STOP**, ask the human, then run `darkbloom start` |
-   | `5` | `other_mac_away` | The other Mac isn't answering over the cable. **STOP**: `next` says why and what to run on that Mac |
+   | `5` | `other_mac_away` | The other Mac isn't answering over the cable. **STOP**: `next` says why and what to run on that Mac, and, once this Mac's part was given up, that `darkbloom start --solo` serves this Mac alone (only with the human's go) |
    | `6` | `not_paired` | This Mac isn't in a pair. Go back to [step 5](#5-two-macs-pair-them) |
    | `7` | `pairing_unreadable` | This Mac's pairing record couldn't be read. **STOP**: the human runs `darkbloom cluster` on this Mac to check it |
 
@@ -696,8 +696,10 @@ it says ``No model was chosen for the pair yet: run `darkbloom start` in a
 terminal to choose one.`` and exits with status 1. Other single-Mac options
 are refused there by name, without `--solo` (exit status 64); `--model <id>`
 (and `--local-endpoint`), the desktop app's Start, start the pair with its own
-model and end with ``This Mac serves in a pair: started the pair with <model>;
-`darkbloom cluster` changes its model.`` when that isn't `<id>`.
+model and end with ``This Mac serves in a pair: the pair serves <model>;
+`darkbloom cluster` changes its model.`` when that isn't `<id>` (after exit
+status 3: ``This Mac is in a pair: the pair was asked to start with <model>, and
+isn't serving (above); …``).
 Without a terminal it looks like this:
 
 ```text

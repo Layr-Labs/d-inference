@@ -815,6 +815,12 @@ private func commandStillRunning(_ waiting: () -> Void) -> ClusterService.Single
     return .commandStillRunning
 }
 
+/// The app's Start on a paired Mac that asked for another model and a local API (`ClusterPairSummary.appStartLines`):
+/// the model the pair serves, and that a pair serving through Darkbloom only gives this Mac no local API.
+private let appStartServesLine = "This Mac serves in a pair: the pair serves Qwen 3.8 27B; `darkbloom cluster` changes its model."
+private let appStartNoLocalAPILine = "No local API was added on this Mac: a pair's local API comes from how the pair serves "
+    + "(`darkbloom cluster` on the leading Mac changes it)."
+
 @Suite("darkbloom start, stop, restart and status control the pair on a Mac in a two-Mac cluster")
 struct ClusterPairControlTests {
     @Test("`darkbloom stop` on the leading Mac stops both Macs, keeps them stopped and checks the memory; launchd untouched")
@@ -1241,7 +1247,8 @@ struct ClusterPairControlTests {
     /// The desktop app's Start runs `DesktopBackend.arguments` (`start --model <id> [--local-endpoint] --config <path>`)
     /// in its worker, standard input `/dev/null` (`DesktopWorker`). The app has no --solo, so on a paired Mac its Start
     /// starts the pair, as a plain start does, and never serves this Mac alone. When it asked for another model than the
-    /// pair's, one line the app shows says which model the pair started with, and where to change it.
+    /// pair's, a line the app shows names the model the pair serves, and where to change it; another says when the local
+    /// API it asked for wasn't added (`ClusterPairSummary.appStartLines`).
     @Test("the app's Start on a paired Mac starts the pair with the pair's model, says so when it asked for another, and never serves alone")
     func appStartStartsThePair() async {
         let other = await #expect(processExitsWith: .success, observing: [\.standardOutputContent, \.standardErrorContent]) {
@@ -1273,8 +1280,8 @@ struct ClusterPairControlTests {
             }
         }
         let starting = "This Mac is in a two-Mac cluster with \(otherMac): starting the pair."
-        #expect(lines(other?.standardOutputContent) == [starting] + servingBlock
-            + ["This Mac serves in a pair: started the pair with Qwen 3.8 27B; `darkbloom cluster` changes its model.", ""])
+        // The app also asked for a local API (`--local-endpoint`); a pair that serves through Darkbloom only gives none.
+        #expect(lines(other?.standardOutputContent) == [starting] + servingBlock + [appStartServesLine, appStartNoLocalAPILine, ""])
         #expect(lines(same?.standardOutputContent) == [starting] + servingBlock + [""])
         for (name, result) in [("another model", other), ("the pair's model", same)] {
             let stderr = text(result?.standardErrorContent)
@@ -2569,4 +2576,231 @@ struct ClusterStatusModeTests {
         let unmarked = Self.glmPair(mode: nil, status: ["Serving \(Self.glm) at http://localhost:8000."])
         #expect(unmarked.json.mode == nil && unmarked.json.split == nil)
     }
+}
+
+/// The desktop app on a paired Mac. Its onboarding starts with Autopilot, which serves one Mac: on a paired Mac it
+/// downloaded a model first and then showed the CLI's three lines, again at each Retry. The app needs to hear that before
+/// anything runs, in its own words, and the snapshot it reads must let it offer Start serving, which starts the pair. Its
+/// Start's own lines say what happened.
+@Suite("the desktop app on a paired Mac")
+struct DesktopAppOnAPairedMacTests {
+    private static let autopilotRefusal = "This Mac serves in a pair; Autopilot isn't available for pairs yet. Use Start serving."
+    private static let starting = "This Mac is in a two-Mac cluster with \(otherMac): starting the pair."
+
+    @Test("the app's Autopilot enroll and its model refresh on a paired Mac are refused in its words, before any download; its Start is not")
+    func autopilotIsRefusedFirst() async {
+        let paired = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await exitWithPair(stoppedPair(), actions: nil) { sandbox in
+                let backend = DesktopBackend(configPath: sandbox.config.path)
+                for action in ["autopilot", "autopilot_models", "start"] {
+                    let request = DesktopAction(id: "x", action: action, models: ["acme/Alpha-4bit"], downloads: ["acme/Alpha-4bit"],
+                                                endpoint: true)
+                    // The arguments come before `runAutopilot`'s downloads: a refusal here downloads nothing.
+                    do {
+                        let argv = try await backend.arguments(for: request)
+                        print("\(action): \(argv.prefix(2).joined(separator: " "))")
+                    } catch { print("\(action): refused: \(error)") }
+                }
+            }
+        }
+        #expect(lines(paired?.standardOutputContent) == ["autopilot: refused: \(Self.autopilotRefusal)",
+                                                         "autopilot_models: refused: \(Self.autopilotRefusal)",
+                                                         "start: start --model", ""])
+        let single = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await exitWithPair(.notPaired, actions: nil) { sandbox in
+                let request = DesktopAction(id: "x", action: "autopilot", models: ["acme/Alpha-4bit"])
+                let argv = try await DesktopBackend(configPath: sandbox.config.path).arguments(for: request)
+                print("autopilot: \(argv.prefix(2).joined(separator: " "))")
+            }
+        }
+        #expect(lines(single?.standardOutputContent) == ["autopilot: start --autopilot", ""])
+    }
+
+    @Test("the app's snapshot on a paired Mac offers no Autopilot and names the pair's model, so the app offers Start serving")
+    func snapshotOffersStartServing() async {
+        let paired = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await exitWithPair(stoppedPair(), actions: nil) { sandbox in try await printSnapshotAutopilotAndPair(sandbox) }
+        }
+        #expect(lines(paired?.standardOutputContent) == ["autopilot: false", #"pair: {"model":"Qwen 3.8 27B"}"#, ""])
+        let single = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await exitWithPair(.notPaired, actions: nil) { sandbox in try await printSnapshotAutopilotAndPair(sandbox) }
+        }
+        #expect(lines(single?.standardOutputContent) == ["autopilot: true", "pair: null", ""])
+    }
+
+    /// The app's Start on a paired Mac names no model (`startPlan.startAction`). As its main process posts it, through the
+    /// desktop API's own decode and `submit`: taken only on a paired Mac, where `start` starts the pair.
+    @Test("the app's Start as the app posts it: on a paired Mac `start` runs and starts the pair; elsewhere it is refused, and a pair with no model says so in one line")
+    func appStartAsPosted() async {
+        // A paired Mac: `start` runs with the pair's arguments, no model and no local API of its own, and starts the pair.
+        let paired = await #expect(processExitsWith: .success, observing: [\.standardOutputContent, \.standardErrorContent]) {
+            try await exitWithPair(stoppedPair(), actions: pairActions(serving: false)) { sandbox in
+                let posted = try await postAppStart(sandbox)
+                print("posted: \(posted)")
+                guard posted == "succeeded: start --config <config>" else { return }
+                try await ClusterPairSummary.$readerForTesting.withValue({ live in live ? servingPair() : stoppedPair() }) {
+                    try await runAppStart(sandbox, [])
+                }
+            }
+        }
+        #expect(lines(paired?.standardOutputContent) == ["posted: succeeded: start --config <config>", Self.starting]
+            + servingBlock + [""])
+        let pairedStderr = text(paired?.standardErrorContent)
+        #expect(pairActionCalls(pairedStderr) == ["ensureService", "serve"], "\(pairActionCalls(pairedStderr))")
+        #expect(changingLaunchctlCalls(pairedStderr).isEmpty, "\(changingLaunchctlCalls(pairedStderr))")
+        // A Mac that isn't paired: refused at once, as before.
+        let single = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await exitWithPair(.notPaired, actions: nil) { sandbox in print("posted: \(try await postAppStart(sandbox))") }
+        }
+        #expect(lines(single?.standardOutputContent)
+            == ["posted: refused (400 Bad Request), nothing ran: Choose at least one model", ""])
+        // A pair with no model yet: refused at once with the CLI's line for it, never "starting the pair".
+        let noModel = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await exitWithPair(pair(started: false, model: false), actions: nil) { sandbox in
+                print("posted: \(try await postAppStart(sandbox))")
+            }
+        }
+        #expect(lines(noModel?.standardOutputContent) == ["posted: refused (400 Bad Request), nothing ran: "
+            + "No model was chosen for the pair yet: run `darkbloom start` in a terminal to choose one.", ""])
+    }
+
+    @Test("only a plain start may name no models, and only where it starts the pair: `start`'s own test of a paired Mac")
+    func startWithoutModelsOnlyStartsAPair() throws {
+        #expect(try !DesktopBackend.startsThePair(.notPaired))
+        #expect(try DesktopBackend.startsThePair(stoppedPair()))
+        // An unreadable pairing record counts as paired, as in `start`, which then refuses without --solo.
+        #expect(try DesktopBackend.startsThePair(unreadable()))
+        let noModel = #expect(throws: ValidationError.self) { try DesktopBackend.startsThePair(pair(started: false, model: false)) }
+        #expect(noModel?.message == ClusterPairSummary.noModelLine)
+        // Local mode and a switch still name their models, paired or not.
+        for request in [DesktopAction(id: UUID().uuidString, action: "start", models: [], local: true),
+                        DesktopAction(id: UUID().uuidString, action: "switch", models: [])] {
+            let refused = #expect(throws: ValidationError.self) { try request.validate(startsThePair: { true }) }
+            #expect(refused?.message == "Choose at least one model", "\(request.action)")
+        }
+    }
+
+    @Test("the app's Start says what happened: the pair serves its model, or was asked to start and isn't serving, and no local API was added")
+    func appStartLinesAreTrue() async {
+        // A pair that already serves: it "serves" its model; nothing was "started", and this Mac doesn't serve alone.
+        let serving = await #expect(processExitsWith: .success, observing: [\.standardOutputContent, \.standardErrorContent]) {
+            try await exitWithPair(servingPair(), actions: pairActions()) { sandbox in
+                try await runAppStart(sandbox, ["--model", "acme/Alpha-4bit", "--local-endpoint"])
+            }
+        }
+        #expect(lines(serving?.standardOutputContent) == [Self.starting] + servingBlock + [appStartServesLine, appStartNoLocalAPILine, ""])
+        let servingStderr = text(serving?.standardErrorContent)
+        #expect(changingLaunchctlCalls(servingStderr).isEmpty, "\(changingLaunchctlCalls(servingStderr))")
+        // Still loading when the wait ends (exit 3): asked to start, not serving.
+        let loading = await #expect(processExitsWith: .exitCode(3), observing: [\.standardOutputContent]) {
+            try await exitWithPair(stoppedPair(), actions: pairActions(serving: false)) { sandbox in
+                try await ClusterPairSummary.$readerForTesting.withValue({ live in live ? loadingPair() : stoppedPair() }) {
+                    try await runAppStart(sandbox, ["--model", "acme/Alpha-4bit", "--local-endpoint"])
+                }
+            }
+        }
+        let loadingOut = lines(loading?.standardOutputContent)
+        #expect(Array(loadingOut.suffix(3)) == ["This Mac is in a pair: the pair was asked to start with Qwen 3.8 27B, and "
+            + "isn't serving (above); `darkbloom cluster` changes its model.", appStartNoLocalAPILine, ""], "\(loadingOut)")
+        #expect(!loadingOut.contains { $0.hasPrefix("This Mac serves in a pair") }, "\(loadingOut)")
+        // A pair that serves Only me answers on its local API from this Mac too: nothing to say about one.
+        let onlyMe = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await exitWithPair(onlyMeServingPair(), actions: pairActions()) { sandbox in
+                try await runAppStart(sandbox, ["--local-endpoint"])
+            }
+        }
+        let onlyMeOut = lines(onlyMe?.standardOutputContent)
+        #expect(!onlyMeOut.contains(appStartNoLocalAPILine), "\(onlyMeOut)")
+        #expect(!onlyMeOut.contains { $0.hasPrefix("This Mac serves in a pair") || $0.hasPrefix("This Mac is in a pair") },
+                "\(onlyMeOut)")
+    }
+
+    @Test("the app's Start adds nothing after another outcome, and says no local API was added only where the pair gives none")
+    func appStartLinesOnlyWhereTrue() {
+        // Away (5), stopped (4), refused or failed (1, 64): the pair's own lines say what happened.
+        for code: Int32 in [1, 4, 5, 64] {
+            #expect(pair().appStartLines(named: ["acme/Alpha-4bit"], localEndpoint: true, code: code).isEmpty, "exit \(code)")
+        }
+        // Both, me first gives a local API on the leading Mac only: its role says so before the pair runs, while its part
+        // doesn't run rank 0 yet. Only me gives one on both Macs.
+        for role in [ClusterPairSummary.Role.leader, .member] {
+            var meFirst = pair(role: role)
+            meFirst.localAPI = ClusterPairLocalAPI(runsRankZero: false, listening: nil, meFirst: nil)
+            #expect(meFirst.appStartLines(named: [], localEndpoint: true, code: 0)
+                == (role == .leader ? [String]() : [appStartNoLocalAPILine]), "\(role)")
+            #expect(pair(role: role, localOnly: true).appStartLines(named: [], localEndpoint: true, code: 0).isEmpty, "\(role)")
+        }
+    }
+
+    @Test("a pair whose other Mac is away and whose part was given up here also names `start --solo`")
+    func otherMacAwayNamesSolo() {
+        var givenUp = pair()
+        givenUp.state = .otherMacAway
+        givenUp.pairRunning = false
+        #expect(givenUp.next?.hasSuffix(" Or serve this Mac alone: `darkbloom start --solo`.") == true, "\(givenUp.next ?? "")")
+        // Still inside its 15 minutes: the part holds the lock, so --solo would be refused; it isn't named.
+        var waiting = pair()
+        waiting.state = .otherMacAway
+        #expect(waiting.next?.contains("--solo") == false, "\(waiting.next ?? "")")
+    }
+}
+
+/// The app's snapshot on the sandbox's Mac (`DesktopBackend.state()`): whether it offers Autopilot, and its `pair`.
+private func printSnapshotAutopilotAndPair(_ sandbox: CLICommandSandbox) async throws {
+    let state = try await DesktopBackend(configPath: sandbox.config.path).state()
+    guard case .array(let capabilities) = state.field("capabilities") else { throw ExitCode(97) }
+    print("autopilot: \(capabilities.contains(.string("autopilot")))")
+    print("pair: \(String(decoding: try JSONEncoder().encode(state.field("pair")), as: UTF8.self))")
+}
+
+/// The app's Start as its main process posts it on a paired Mac: `startPlan.startAction`'s action with an id
+/// (`backend.ts`'s `act`; the app's backend test pins this JSON), through the desktop API's own decode and `submit`, with
+/// `echo` in place of the CLI. What came of it: the finished operation's state and the arguments it ran, or the API's
+/// refusal and whether anything ran.
+private func postAppStart(_ sandbox: CLICommandSandbox) async throws -> String {
+    setenv("DARKBLOOM_DESKTOP_DIR", sandbox.root.appendingPathComponent("desktop", isDirectory: true).path, 1)
+    setenv("DARKBLOOM_LOCAL_DIR", sandbox.root.appendingPathComponent("local", isDirectory: true).path, 1)
+    let body = #"{"action":"start","models":[],"local":false,"id":"\#(UUID().uuidString)"}"#
+    let backend = DesktopBackend(configPath: sandbox.config.path, executable: URL(fileURLWithPath: "/bin/echo"))
+    let operation: DesktopOperation
+    do {
+        operation = try await backend.submit(DesktopHTTP.decodeAction(Data(body.utf8)))
+    } catch {
+        let refusal = DesktopHTTP.errorResponse(for: error)
+        let ran = await backend.operations.isEmpty ? "nothing ran" : "an operation was recorded"
+        return "refused (\(refusal.status)), \(ran): \(refusal.message)"
+    }
+    for _ in 0..<500 {
+        if let done = await backend.operations.first(where: { $0.id == operation.id }), done.state != "running" {
+            let ran = done.message.trimmingCharacters(in: .whitespacesAndNewlines)
+            return "\(done.state): " + ran.replacingOccurrences(of: sandbox.config.path, with: "<config>")
+        }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    return "still running after 5 s"
+}
+
+/// The app's Start as its worker runs it on a paired Mac: `start` with `options` and the sandbox's config, no terminal,
+/// standard input that never answers, and the pair's wait cut to nothing.
+private func runAppStart(_ sandbox: CLICommandSandbox, _ options: [String]) async throws {
+    try neverAnswering(sandbox)
+    try await ClusterPairCommands.$waitForTesting.withValue(.init(seconds: 0, interval: 0)) {
+        try await runCLICommand(Start.self, ["start"] + options + ["--config", sandbox.config.path])
+    }
+}
+
+/// A pair still loading its model when a start's wait ends (`cluster status` exit 3).
+private func loadingPair() -> ClusterPairSummary {
+    var summary = pair()
+    summary.state = .loading
+    summary.lines = ["Loading Qwen 3.8 27B on both Macs."]
+    return summary
+}
+
+/// A pair that serves Only me: its local API answers on this Mac too (the other Mac relays its own port).
+private func onlyMeServingPair() -> ClusterPairSummary {
+    var summary = pair(localOnly: true)
+    summary.state = .serving
+    summary.lines = ["Serving Qwen 3.8 27B at http://localhost:8000."]
+    return summary
 }

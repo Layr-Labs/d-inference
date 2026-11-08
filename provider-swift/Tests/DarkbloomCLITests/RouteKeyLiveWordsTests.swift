@@ -17,11 +17,12 @@ struct RouteKeyLiveWordsTests {
     static let other = "the other Mac (Apple M3 Ultra, 256 GB)"
 
     private func flow(route: LocalSettings.Route?, running: Bool, pair: RouteSaved.PairPart? = nil,
-                      saved: String? = nil) -> (RouteKeyFlow, Lines) {
+                      saved: String? = nil, keyless: Bool = false) -> (RouteKeyFlow, Lines) {
         let lines = Lines()
         var flow = RouteKeyFlow(store: InMemoryLocalRouterAccountKeyStore(saved), savedRoute: route,
                                 check: { _ in .accepted(models: 1) }, say: { lines.append($0) })
-        flow.localAPIRunning = running
+        flow.localAPIRunning = running && !keyless
+        flow.liveEndpointHasNoLocalKey = running && keyless
         flow.pair = pair
         return (flow, lines)
     }
@@ -62,7 +63,7 @@ struct RouteKeyLiveWordsTests {
         #expect(await follower.save(Self.key) == 0)
         #expect(followerLines.all.suffix(2) == [
             "It applies when this Mac serves alone (`\(Self.cli) start --solo`).",
-            "In this pair, the pair's local API passes requests on with the leading Mac's key (\(Self.other)): run "
+            "In this pair, the pair's local API uses the leading Mac's key (\(Self.other)), not this one: run "
                 + "`\(Self.cli) route key` there.",
         ])
         let (leader, leaderLines) = flow(route: .myMacs, running: true, pair: .leads(other: Self.other))
@@ -72,5 +73,56 @@ struct RouteKeyLiveWordsTests {
             "In this pair, the pair's local API runs on this Mac and passes requests on with this key.",
         ])
         #expect(!(followerLines.text + leaderLines.text).contains(Self.key))
+    }
+
+    /// `route key --remove`, in each role's true words: a single Mac's next request stays on it; the pair's local API on
+    /// the leading Mac passes nothing on until a key is saved there again; on the other Mac, the pair keeps using the
+    /// leading Mac's key.
+    @Test func aKeyRemovedSaysWhatChangesForEachRole() {
+        let (single, singleLines) = flow(route: .myMacs, running: true, saved: Self.key)
+        #expect(single.remove() == 0)
+        #expect(singleLines.all.last == "Your local API uses it now. From its next request, one this Mac can't take gets "
+            + "this Mac's own answer instead of going to your other Macs.")
+
+        let (leader, leaderLines) = flow(route: .myMacsFirst, running: true, pair: .leads(other: Self.other), saved: Self.key)
+        #expect(leader.remove() == 0)
+        #expect(leaderLines.all.suffix(2) == [
+            "Your local API uses it now. From its next request, one the pair can't take gets the pair's own answer "
+                + "instead of going to your other Macs or the Darkbloom network.",
+            "In this pair, the pair's local API runs on this Mac, so the pair passes nothing on until a key is saved "
+                + "here again.",
+        ])
+        #expect(!leaderLines.text.contains("passes requests on with this key"))
+
+        let (follower, followerLines) = flow(route: .myMacs, running: true, pair: .follows(leader: Self.other),
+                                             saved: Self.key)
+        #expect(follower.remove() == 0)
+        #expect(followerLines.all.suffix(2) == [
+            "It applies when this Mac serves alone (`\(Self.cli) start --solo`).",
+            "In this pair, the pair's local API uses the leading Mac's key (\(Self.other)), not this one: to stop the "
+                + "pair passing requests on, run `\(Self.cli) route key --remove` there.",
+        ])
+    }
+
+    /// The leading Mac's key with a route that passes nothing on, or a pair API without a local key: no line says it
+    /// passes requests on.
+    @Test func theLeadingMacNeverClaimsToPassRequestsOnWhenItDoesnt() async {
+        let pinnedLine = "In this pair, the pair's local API runs on this Mac and uses this Mac's key once its route "
+            + "passes requests on."
+        let (pinned, pinnedLines) = flow(route: .thisMac, running: true, pair: .leads(other: Self.other))
+        #expect(await pinned.save(Self.key) == 0)
+        #expect(pinnedLines.all.last == pinnedLine)
+        let (pinnedRemove, pinnedRemoveLines) = flow(route: .thisMac, running: true, pair: .leads(other: Self.other),
+                                                     saved: Self.key)
+        #expect(pinnedRemove.remove() == 0)
+        #expect(pinnedRemoveLines.all.suffix(2) == ["Your local API uses it now.", pinnedLine])
+        let (keyless, keylessLines) = flow(route: .myMacs, running: true, pair: .leads(other: Self.other), keyless: true)
+        #expect(await keyless.save(Self.key) == 0)
+        #expect(keylessLines.all.last?.contains("never uses the account key") == true)
+        #expect(!keylessLines.text.contains("passes requests on with this key"))
+        let (keylessRemove, keylessRemoveLines) = flow(route: .myMacs, running: true, pair: .leads(other: Self.other),
+                                                       saved: Self.key, keyless: true)
+        #expect(keylessRemove.remove() == 0)
+        #expect(!keylessRemoveLines.text.contains("In this pair"))
     }
 }

@@ -72,7 +72,7 @@ struct LocalRouterRemoteClientTests {
 
     /// The local API's responder stack answering one request on a connection whose TCP peer is `peer`.
     static func respond(_ fixture: RouterFixture, peer: String, method: HTTPRequest.Method, path: String,
-                        body: String?) async throws -> (status: HTTPResponse.Status, routeUsed: String?) {
+                        body: String?) async throws -> (status: HTTPResponse.Status, routeUsed: String?, body: String) {
         let channel = NIOAsyncTestingChannel()
         channel.remoteAddress = try SocketAddress(ipAddress: peer, port: 50_123)
         let context = LocalDisconnectContext(source: ApplicationRequestContextSource(
@@ -84,8 +84,9 @@ struct LocalRouterRemoteClientTests {
                                           headerFields: headers),
                               body: .init(buffer: buffer))
         let response = try await fixture.app.responder.respond(to: request, context: context)
-        try await response.body.write(RouterRecordingWriter())
+        let writer = RouterRecordingWriter()
+        try await response.body.write(writer)
         try await channel.close()
-        return (response.status, response.headers[LocalRouterPolicy.routeUsedHeader])
+        return (response.status, response.headers[LocalRouterPolicy.routeUsedHeader], writer.text)
     }
 }

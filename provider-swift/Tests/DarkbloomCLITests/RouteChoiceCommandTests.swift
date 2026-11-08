@@ -153,6 +153,27 @@ struct RouteChoiceCommandTests {
         #expect(leaderLines.all.first == "✓ Saved. Your local API uses it now.")
         #expect(leaderLines.all.last == "In this pair, this Mac's route applies: the pair's local API runs here and passes "
             + "on what the pair can't take, including requests \(other) forwards to it.")
+        // With `this-mac`, the pair's API passes nothing on.
+        let (pinned, pinnedLines) = flow(config: url, keySaved: true, live: Self.keyed, pair: .leads(other: other))
+        #expect(pinned.choose(.thisMac) == 0)
+        #expect(pinnedLines.all.last == "In this pair, this Mac's route applies: the pair's local API runs here and passes "
+            + "nothing on, including requests \(other) forwards to it.")
+    }
+
+    /// The pair's local API on the leading Mac without a local key (`cluster local --no-auth`) passes nothing on, so no
+    /// line says it does.
+    @Test func aLeadingMacWithoutALocalKeyNeverClaimsToPassRequestsOn() throws {
+        let url = try makeTempConfig()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        var keyless = Self.keyed
+        keyless.apiKey = ""
+        let (leader, lines) = flow(config: url, keySaved: true, live: keyless, pair: .leads(other: "the other Mac"))
+        #expect(leader.choose(.myMacs) == 0)
+        #expect(try ConfigManager.load(from: url).local?.route == .myMacs)
+        #expect(lines.all.first == "✓ Saved.")
+        #expect(lines.all.last == "The local API running now has no local key (--no-auth): it keeps every request on "
+            + "this Mac, whatever the route.")
+        #expect(!lines.text.contains("passes on"))
     }
 
     @Test func aRefusedFileSaysWhyAndChangesNothing() throws {

@@ -131,11 +131,12 @@ struct LocalRouterLiveSettingsTests {
             try fixture.keys.remove()
             notify_post(notification)
             #expect(await holdsWithinTwoSeconds { !router.keyCache.keepsACopy })
-            // This Mac's own answer, as without a key: its 404, served by this Mac.
+            // This Mac's 404, served by this Mac, saying that your other Macs need a key (`LocalRouterMissingKeyTests`).
             try await client.execute(uri: "/v1/chat/completions", method: .post, headers: RouterFixture.authorized,
                                      body: ByteBuffer(string: RouterFixture.chat("absent"))) { response in
                 #expect(response.status == .notFound)
                 #expect(response.headers[LocalRouterPolicy.servedByHeader] == "this-mac")
+                #expect(String(buffer: response.body).contains("account_key_needed"))
             }
         }
         #expect(fixture.upstream.posts.map(\.route) == ["self"])

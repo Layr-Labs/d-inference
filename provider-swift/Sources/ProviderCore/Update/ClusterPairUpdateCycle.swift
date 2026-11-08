@@ -289,7 +289,7 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
     }
 
     private func check() async -> UpdateCheckResult {
-        guard let session = lock.withLock({ session }) else { return .checkFailed(reason: "the update lease was lost") }
+        guard let session = lock.withLock({ session }) else { return .checkFailed(.init(.thisMac, "the update lease was lost")) }
         let result = await environment.updater.checkForUpdate(session: session)
         lock.withLock {
             switch result {
@@ -579,13 +579,17 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
 
 extension ClusterPairUpdateCycle.Environment {
     /// This Mac's cluster service: the installed release's updater (with the watchdog's bounded network session), the
-    /// part its status publishes, and the other Mac's progress over the link.
-    public static func live(serviceDirectory: URL, coordinatorURL: String,
+    /// part its status publishes, and the other Mac's progress over the link. `automatic`: a cycle at the pair's update
+    /// slot or catching up with the other Mac, not one `darkbloom update` asked for. Its release check makes a second
+    /// round 1–2 min after one without an answer (`SelfUpdater.ReleaseCheck.pairCycle`): a failed check would cost both
+    /// Macs the slot, and the other Mac waits for this one's `checking` up to 15 min.
+    public static func live(serviceDirectory: URL, coordinatorURL: String, automatic: Bool = false,
                             log: @escaping @Sendable (String) -> Void) -> Self {
         let partHealth = ClusterServiceAgent.partHealthPath(serviceDirectory: serviceDirectory)
         let peer = ClusterPairUpdateCycle.PeerAddress()
         return Self(
-            updater: SelfUpdater(coordinatorBaseURL: coordinatorURL, urlSession: SelfUpdater.watchdogURLSession()),
+            updater: SelfUpdater(coordinatorBaseURL: coordinatorURL, urlSession: SelfUpdater.watchdogURLSession(),
+                                 releaseCheck: automatic ? .pairCycle : .standard),
             progressPath: ClusterServiceAgent.updateProgressPath(serviceDirectory: serviceDirectory),
             partner: { ClusterPairUpdateCycle.livePartner(peer) },
             part: { ClusterPairUpdateCycle.livePart() },

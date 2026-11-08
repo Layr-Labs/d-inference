@@ -32,12 +32,6 @@ extension Start {
         return nil
     }
 
-    /// Whether `--local`'s banner prints its key: only for `--local` itself, as it always has, never with a tool flag,
-    /// whose start prints no key anywhere, and never in launchd's child, whose banner goes to the log.
-    func bannerShowsKey(_ serving: StartServing) -> Bool {
-        serving.source == .flag(.local) && requestedTools.isEmpty && !foreground
-    }
-
     /// Options that change what serves: with any of them, a running local API isn't enough, and the start runs.
     var changesWhatServes: Bool {
         !model.isEmpty || all || idleTimeout != nil || schedule || autopilot != nil || coordinatorURL != nil
@@ -100,15 +94,17 @@ extension Start {
     }
 
     /// After the background provider started: once its local API is bound, which `local.json` says, waiting at most
-    /// `toolWaitSeconds`. A step that fails ends the start with exit 1; the provider keeps serving.
+    /// `waitSeconds` (Only me listens only once its models are loaded, so it waits longer). A step that fails ends the
+    /// start with exit 1; the provider keeps serving.
     func setUpToolsBesideDaemon(serving: StartServing, coordinatorURL: String,
-                                waitForAPI: (UInt16) async -> LocalAPIWait = {
-                                    await Start.waitForLocalAPI(port: $0, seconds: Start.toolWaitSeconds)
+                                waitSeconds: Int = Start.toolWaitSeconds,
+                                waitForAPI: (_ port: UInt16, _ seconds: Int) async -> LocalAPIWait = {
+                                    await Start.waitForLocalAPI(port: $0, seconds: $1)
                                 },
                                 step: ToolIntegrationStep? = nil) async throws {
         guard !requestedTools.isEmpty else { return }
         let endpoint: IntegrationEndpoint
-        switch await waitForAPI(serving.port) {
+        switch await waitForAPI(serving.port, waitSeconds) {
         case .ready(let found):
             endpoint = found
         case .noKeyFile:
@@ -116,7 +112,7 @@ extension Start {
             print(ToolIntegrationStep.keepsServing)
             throw ExitCode.failure
         case .notUp:
-            print(ToolIntegrationStep.notUp(requestedTools, seconds: Self.toolWaitSeconds))
+            print(ToolIntegrationStep.notUp(requestedTools, seconds: waitSeconds))
             print(ToolIntegrationStep.keepsServing)
             throw ExitCode.failure
         }

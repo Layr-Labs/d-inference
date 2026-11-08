@@ -181,8 +181,8 @@ struct StartServing: Equatable, Sendable {
     var meFirst: Bool
     var meFirstIdleMinutes: UInt64
     var route: LocalSettings.Route?
-    /// Whether the local router's account key is saved; nil when not looked up (no local API, `--local`, `--no-auth`,
-    /// or the --foreground service).
+    /// Whether the local router's account key is saved; nil when not looked up (no local API, `--no-auth`, or the
+    /// --foreground service).
     var accountKeySaved: Bool?
     /// The local API's port and address, with `mode` local or both.
     var port: UInt16

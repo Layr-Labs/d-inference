@@ -5,23 +5,29 @@ import Testing
 @testable import ProviderCore
 @testable import darkbloom
 
-/// A simpler start (UX audit R16; the journey test's picker default and banner): the experimental Autopilot question
-/// only for the Darkbloom network, a model picker that opens on what fits this Mac (the last selection, else a
-/// downloaded model with room to spare), and no start screen that prints the local key.
+/// A simpler start: the experimental Autopilot question only for the Darkbloom network, a model picker that opens on
+/// what fits this Mac (the last selection, else a downloaded model with room to spare, never one it would download),
+/// and no start screen that prints the local key.
 @Suite("A simpler start: the Autopilot question, the picker's default, no key on screen")
 struct StartFlowSimplerTests {
-    @Test("the Autopilot question is asked only for the Darkbloom network; Both, me first never asks")
+    @Test("the Autopilot question is asked only for the Darkbloom network; Both, me first and Only me never ask")
     func autopilotOnlyForTheNetwork() throws {
-        let config = ProviderConfig(provider: ProviderSettings(name: "flow"))
+        var config = ProviderConfig(provider: ProviderSettings(name: "flow"))
         let start = try Start.parse([])
         var asked = 0
         let ask: (Bool) -> Bool = { _ in asked += 1; return true }
         #expect(try start.resolveAutopilotChoice(config, mode: .network, interactive: true, ask: ask))
         #expect(asked == 1)
         #expect(try !start.resolveAutopilotChoice(config, mode: .both, interactive: true, ask: ask))
-        #expect(asked == 1, "Both, me first never asks")
+        #expect(try !start.resolveAutopilotChoice(config, mode: .local, interactive: true, ask: ask))
+        #expect(asked == 1, "Both, me first and Only me never ask")
         #expect(try Start.parse(["--autopilot"]).resolveAutopilotChoice(config, mode: .both, interactive: true, ask: ask))
         #expect(asked == 1, "an explicit flag still decides, without a question")
+        // Without the question, a saved enrollment stands.
+        config.backend.modelAutopilot = .init(enabled: true, consentRecorded: true, selectedModels: ["chosen"],
+                                              revision: "saved")
+        #expect(try start.resolveAutopilotChoice(config, mode: .both, interactive: true, ask: ask))
+        #expect(asked == 1)
     }
 
     private static let memory = 256.0
@@ -38,7 +44,7 @@ struct StartFlowSimplerTests {
             .map { entries[$0].id }
     }
 
-    /// The journey test's picker pre-selected MiMo, 176 GiB: the biggest downloaded model that fit.
+    /// Before, the picker pre-selected the biggest downloaded model that fit: MiMo, 176 GiB, on a 256 GB Mac.
     @Test("the picker opens on the last selection, else a downloaded model with room to spare, never the biggest")
     func pickerDefault() {
         // Downloaded first, larger first, as the picker lists them.
@@ -46,6 +52,8 @@ struct StartFlowSimplerTests {
                        Self.entry("gemma", fraction: 0.1), Self.entry("catalog-only", fraction: 0.01, downloaded: false)]
         #expect(Self.preselected(entries) == ["qwen"], "the largest with room to spare, not mimo at 90% of the budget")
         #expect(Self.preselected(entries, lastUsed: ["gemma"]) == ["gemma"], "the last selection")
+        #expect(Self.preselected(entries, lastUsed: ["gemma", "catalog-only", "mimo"]) == ["mimo", "gemma"],
+                "the last selection's models still downloaded, the biggest included")
         #expect(Self.preselected(entries, lastUsed: ["catalog-only"]) == ["qwen"], "never a model only the catalog has")
         // Nothing with room to spare: the smallest that fits. Nothing downloaded: nothing selected.
         #expect(Self.preselected([Self.entry("big", fraction: 0.8), Self.entry("bigger", fraction: 0.9)]) == ["big"])

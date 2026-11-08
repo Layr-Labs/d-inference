@@ -405,20 +405,20 @@ extension Start {
     /// selecting would download.
     static func pickerPreselection(entries: [PickerEntry], memoryGb: Double, reserveMode: PickerReserveMode,
                                    lastUsed: [String]) -> [Int] {
-        let fitting = entries.indices.filter {
+        let downloadedFitting = entries.indices.filter {
             entries[$0].downloaded && pickerSelectionFitsBudget([entries[$0]], memoryGb: memoryGb, reserveMode: reserveMode)
         }
-        let last = fitting.filter { lastUsed.contains(entries[$0].id) }
+        let last = downloadedFitting.filter { lastUsed.contains(entries[$0].id) }
         if !last.isEmpty,
            pickerSelectionFitsBudget(last.map { entries[$0] }, memoryGb: memoryGb, reserveMode: reserveMode) {
             return last
         }
-        func roomy(_ index: Int) -> Bool {
+        func leavesRoom(_ index: Int) -> Bool {
             let budget = pickerLoadBudgetGiB(memoryGb: memoryGb, modelIDs: reserveMode.modelIDs(for: [entries[index]]))
             return entries[index].sizeGb <= budget / 2
         }
-        let bySize = fitting.sorted { entries[$0].sizeGb < entries[$1].sizeGb }
-        if let roomiest = bySize.last(where: roomy) { return [roomiest] }
+        let bySize = downloadedFitting.sorted { entries[$0].sizeGb < entries[$1].sizeGb }
+        if let largestWithRoom = bySize.last(where: leavesRoom) { return [largestWithRoom] }
         return bySize.first.map { [$0] } ?? []
     }
 

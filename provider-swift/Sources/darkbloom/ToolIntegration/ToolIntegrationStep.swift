@@ -249,14 +249,14 @@ struct ToolIntegrationStep {
     static func noPairAPI(_ tools: [IntegrationTool]) -> String {
         "✗ This pair serves only the Darkbloom network, so \(names(tools)) \(tools.count == 1 ? "has" : "have") no "
             + "local address to use and \(tools.count == 1 ? "wasn't" : "weren't") set up. In `\(cli) cluster`, Change "
-            + "how the pair serves to \"Both, me first\" or \"Only me\", then run `\(cli) start \(flags(tools))` again."
+            + "how the pair serves to \"Both, me first\" or \"Only me\", then run `\(command(tools))` again."
     }
 
     /// The line on a Mac whose pair keeps its local API on the Mac that runs it, on `bind` only: no other Mac passes
     /// its port on.
     static func pairAPIElsewhere(_ tools: [IntegrationTool], bind: String) -> String {
         "✗ The pair's local API listens on the Mac that runs it only (\(bind)), so \(notSetUp(tools)) on this Mac: run "
-            + "`\(cli) start \(flags(tools))` on that Mac."
+            + "`\(command(tools))` on that Mac."
     }
 
     /// The line beside a running local API without a key (`--no-auth`), which tools can't use.

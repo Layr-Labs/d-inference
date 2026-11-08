@@ -67,6 +67,44 @@ struct LocalContextWindowTests {
         await bridge.shutdown()
     }
 
+    /// A token constraint is sized for the output the bridge resolves: a JSON
+    /// answer's `max_tokens` past what the prompt leaves of the window is cut,
+    /// and its constraint gets the same budget, which the engine requires.
+    @Test func aConstrainedAnswerIsCutWithItsConstraint() async throws {
+        let request = try QwenAnswerFixture.request(format: QwenAnswerFixture.jsonObject, maxTokens: 64)
+        let prompt = QwenByteTestTokenizer.tokens(QwenByteTestTokenizer.prompt(thinking: false)).count
+        let engine = OutputRecordingEngine()
+        let handle = TokenizerHandle(QwenByteTestTokenizer())
+        let bridge = EngineV2Bridge(engine: engine, modelId: request.model, tokenizer: handle,
+            eosTokenIds: QwenAnswerFixture.stops, defaultMaxTokens: 32_768,
+            defaultMaxTokensContextLimit: prompt + 40, maxConcurrentRequests: 1, kvBudget: roomyKVBudget())
+        let scheduler = MultiModelBatchSchedulerEngine(registryProvider: {
+            [request.model: .init(tokenizer: handle, modelType: "qwen3_5", engineV2Bridge: bridge)]
+        })
+        // The engine writes nothing, so the answer then fails its JSON check;
+        // only what the engine was asked for matters here.
+        do { for try await _ in try await scheduler.streamChatCompletion(request: request) {} } catch {}
+        #expect(engine.submittedOutputs == [40])
+        #expect(engine.submittedConstraintBudgets == [40])
+        await bridge.shutdown()
+    }
+
+    /// A pair refuses by its own limits, so the window is never held on it: a
+    /// `max_tokens` reaches it as asked, and only an omitted one is cut, to
+    /// the pair's context.
+    @Test func aPairKeepsItsOwnLimits() async throws {
+        let profile = try distributedTestProfile()
+        let bridge = EngineV2Bridge(engine: try distributedTestEngine(DistributedTestOwner()), modelId: "pair/model",
+            tokenizer: TokenizerHandle(FixedLengthTokenizer()), eosTokenIds: [],
+            defaultMaxTokens: profile.maxOutputTokens, defaultMaxTokensContextLimit: profile.maxContextTokens,
+            maxConcurrentRequests: 1)
+        let prompt = profile.maxContextTokens - 20
+        #expect(bridge.modelWindowTokens == nil)
+        #expect(bridge.outputTokens(requested: 300_000, promptTokens: prompt) == 300_000)
+        #expect(bridge.outputTokens(requested: nil, promptTokens: prompt) == 20)
+        await bridge.shutdown()
+    }
+
     @Test func theNonthrowingStreamKeepsTheWindowRefusalTyped() async {
         let engine = OutputRecordingEngine()
         let bridge = Self.bridge(engine)

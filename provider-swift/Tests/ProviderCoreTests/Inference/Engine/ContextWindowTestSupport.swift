@@ -11,13 +11,24 @@ func roomyKVBudget() -> GlobalKVCacheBudget {
     })
 }
 
-/// No tensors or token generation: records the output each admitted request asks for.
+/// No tensors or token generation: records the output each admitted request
+/// asks for, and its token constraint's budget when it has one.
 final class OutputRecordingEngine: CBv2Engine, @unchecked Sendable {
     private let lock = NSLock()
     private var outputs: [Int] = []
+    private var constraintBudgets: [Int] = []
     var submittedOutputs: [Int] { lock.withLock { outputs } }
+    var submittedConstraintBudgets: [Int] { lock.withLock { constraintBudgets } }
     func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
-        lock.withLock { outputs.append(request.maxTokens) }
+        // As EngineV2 admits: a token constraint shares the request's budget.
+        if let constraint = request.tokenConstraint, constraint.maxTokens != request.maxTokens {
+            throw CBv2SchedulerError.tokenConstraintBudgetMismatch(
+                request: request.maxTokens, constraint: constraint.maxTokens)
+        }
+        lock.withLock {
+            outputs.append(request.maxTokens)
+            if let constraint = request.tokenConstraint { constraintBudgets.append(constraint.maxTokens) }
+        }
         return AsyncStream { $0.finish() }
     }
     func cancel(_ id: CBv2RequestID) {}

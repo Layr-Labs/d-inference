@@ -23,6 +23,10 @@ public enum LocalAPIPort {
     /// The port of this install's running local API (`local.json`), which a new start takes over; nil when none runs.
     public static func ownLivePort() -> UInt16? { LocalEndpoint.readLiveInfo()?.port }
 
+    /// The port the installed LaunchAgent's job serves its local API on (`LaunchAgent.installedLocalAPIPort`), which
+    /// the next start brings back on a stopped Mac; nil without one.
+    public static func installedJobPort() -> UInt16? { LaunchAgent.installedLocalAPIPort() }
+
     /// Whether no other program listens on `port` on this Mac: a test bind (`ClusterLocalServing.portIsFree`).
     public static func isFreeOnThisMac(_ port: UInt16) -> Bool { ClusterLocalServing.portIsFree(Int(port)) }
 
@@ -46,7 +50,7 @@ public enum LocalAPIPort {
     /// holds: tools point at it); else the first free one from `firstTried`. `ownLivePort` (this install's running
     /// local API, which the new start replaces) and `isFree` are asked only for a new choice.
     public static func choose(named: UInt16?, saved: UInt16?, ownLivePort: () -> UInt16?,
-                              isFree: (UInt16) -> Bool) throws -> Choice {
+                              installedPort: () -> UInt16?, isFree: (UInt16) -> Bool) throws -> Choice {
         if let named {
             guard named != saved else { return Choice(port: named, saves: false, note: nil) }
             return Choice(port: named, saves: true, note: note(named: named, saved: saved))
@@ -66,10 +70,20 @@ public enum LocalAPIPort {
     @discardableResult
     public static func thisMac(configPath: URL, fallbackConfig: ProviderConfig,
                                ownLivePort: () -> UInt16? = LocalAPIPort.ownLivePort,
+                               installedPort: () -> UInt16? = LocalAPIPort.installedJobPort,
                                isFree: (UInt16) -> Bool = LocalAPIPort.isFreeOnThisMac) throws -> Choice {
         let config = try FileManager.default.fileExists(atPath: configPath.path)
             ? ConfigManager.load(from: configPath) : fallbackConfig
-        let choice = try choose(named: nil, saved: config.local?.port, ownLivePort: ownLivePort, isFree: isFree)
+        let choice = try choose(named: nil, saved: config.local?.port, ownLivePort: ownLivePort,
+                                installedPort: installedPort, isFree: isFree)
+        return try save(choice, configPath: configPath, fallbackConfig: fallbackConfig)
+    }
+
+    /// Saves `choice` in `[local] port` of the config at `configPath` (`fallbackConfig` when that file doesn't exist
+    /// yet) when it `saves`, unless another start saved a port meanwhile, which stands. Returns this Mac's port from
+    /// then on.
+    @discardableResult
+    public static func save(_ choice: Choice, configPath: URL, fallbackConfig: ProviderConfig) throws -> Choice {
         guard choice.saves else { return choice }
         var stands: UInt16?
         try ConfigManager.updateLocal(at: configPath, fallbackConfig: fallbackConfig) { local in
@@ -92,6 +106,11 @@ public enum LocalAPIPort {
         guard chosen != start else { return "Local API port: \(chosen) (saved)." }
         let why = neverChosen.contains(start) ? "is left for other apps" : "is in use"
         return "Local API port: \(chosen) (saved; \(start) \(why))."
+    }
+
+    /// Says that the port this Mac's local API already uses is kept, and now saved.
+    public static func note(kept port: UInt16) -> String {
+        "Local API port: \(port) (saved; this Mac's local API already uses it)."
     }
 
     /// Says that a named port replaces the saved one, and that tools set up for the old one need setting up again.

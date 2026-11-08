@@ -27,9 +27,13 @@ struct Local: AsyncParsableCommand {
         // readLiveInfo() returns nil when the recorded server process is gone,
         // so a stale local.json from a Ctrl-C/crash is treated as "not running"
         // rather than advertising a dead endpoint.
+        // On a Mac that relays a pair's API: why it has no working address now, in `status`'s words.
+        let pair = ClusterPairSummary.local()
         guard let info = LocalEndpoint.readLiveInfo() else {
             if json {
                 print("{}")
+            } else if pair.relaying == nil, let down = pair.memberAPIDown {
+                printError("Local API: " + down)
             } else if let notUp = Self.runningProviderLocalAPIFailure() {
                 printError(Self.notUpLine(notUp.failure, nextFree: LocalAPIPort.nextFree(besides: notUp.failure.port),
                                           server: notUp.server))
@@ -67,6 +71,8 @@ struct Local: AsyncParsableCommand {
             print("  API key:  \(info.apiKey)")
         }
         print("  pid:      \(info.pid)")
+        // This record is this Mac's relay, which answers 503 while the pair's other Mac can't be reached.
+        if pair.relaying?.port == info.port, let down = pair.memberAPIDown { print("Local API: " + down) }
         if let state = DaemonStateFile.read(), state.pid == info.pid {
             let route = (try? savedLocalSettings(configPath: nil))?.route
             for line in Self.servingLines(info: info, state: state, route: route,

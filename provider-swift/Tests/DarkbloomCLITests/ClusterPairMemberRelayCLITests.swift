@@ -143,6 +143,7 @@ struct ClusterPairMemberRelayCLITests {
             try own.write(to: directory.appendingPathComponent("local_token"), atomically: true, encoding: .utf8)
             try pair.write(to: directory.appendingPathComponent("cluster_local_token"), atomically: true, encoding: .utf8)
             try LocalEndpoint.writeInfo(ClusterService.relayDiscovery(port: 8003, keys: .init(own: own, pair: pair)))
+            keepCommandsOffThisMacsCluster()
             var command = try Local.parse([])
             try await command.run()
             let keyFile = LocalEndpoint.keyFile(forPort: 8003)?.lastPathComponent

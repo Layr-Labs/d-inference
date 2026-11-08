@@ -2028,9 +2028,9 @@ final class OnboardingLive: @unchecked Sendable {
         if let control = published?.control, control.mode == "alone" {
             // Only THIS service's solo server counts as ready, never whatever answers on the port.
             switch ClusterService.soloReadiness(published) {
-            case .ready: return (.init(servedBy: here, port: ClusterService.soloPort, deployment: "Serving \(leadership?.modelName ?? "the model") on \(here) alone while \(thereShort) is away"), control.line, nil)
+            case .ready: return (.init(servedBy: here, port: ClusterService.soloPort(of: published), deployment: "Serving \(leadership?.modelName ?? "the model") on \(here) alone while \(thereShort) is away"), control.line, nil)
             case .loading: return (nil, control.line + " (loading)", nil)
-            case .foreign: return (nil, control.line + " (another program answers on port \(ClusterService.soloPort), so \(hereShort)'s solo server cannot serve there)", nil)
+            case .foreign: return (nil, control.line + " (another program answers on port \(ClusterService.soloPort(of: published)), so \(hereShort)'s solo server cannot serve there)", nil)
             }
         }
         if let updating = published?.updating { return (nil, updating, nil) }
@@ -2326,10 +2326,11 @@ final class OnboardingLive: @unchecked Sendable {
         let answer: ClusterServicePromptAnswer
         if alone {
             // Degraded: this Mac serves alone on its own loopback, once its own solo server holds the port.
-            guard ClusterService.soloReadiness(ClusterService.published()) == .ready else {
-                return .failure(.init("\(Self.sentence(here)) serves alone, but its solo server is not answering on port \(ClusterService.soloPort) yet."))
+            let published = ClusterService.published()
+            guard ClusterService.soloReadiness(published) == .ready else {
+                return .failure(.init("\(Self.sentence(here)) serves alone, but its solo server is not answering on port \(ClusterService.soloPort(of: published)) yet."))
             }
-            answer = ClusterService.prompt(context, text: text, port: ClusterService.soloPort)
+            answer = ClusterService.prompt(context, text: text, port: ClusterService.soloPort(of: published))
         } else if context.savedConfiguration().configuration?.role == .leader {
             answer = ClusterService.prompt(context, text: text)
         } else {
@@ -2401,10 +2402,11 @@ final class OnboardingLive: @unchecked Sendable {
             // Serving alone is said only once this service's own solo server answers, as the setup's wait counts it.
             var line = control.line
             if control.mode == "alone" {
-                switch ClusterService.soloReadiness(ClusterService.published()) {
+                let published = ClusterService.published()
+                switch ClusterService.soloReadiness(published) {
                 case .ready: break
                 case .loading: line += " (its solo server is still loading)"
-                case .foreign: line += " (another program answers on port \(ClusterService.soloPort), so its solo server cannot serve there)"
+                case .foreign: line += " (another program answers on port \(ClusterService.soloPort(of: published)), so its solo server cannot serve there)"
                 }
             }
             lines.append((answering ? Self.sentence(hereShort) + ": " : "") + line + ".")

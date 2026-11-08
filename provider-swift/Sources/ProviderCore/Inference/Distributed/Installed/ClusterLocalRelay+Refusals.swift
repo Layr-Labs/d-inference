@@ -36,4 +36,30 @@ extension ClusterLocalRelay {
     public static let unreachableCode = "pair_mac_unreachable"
     /// The `code` of a 503 while rank 0's API doesn't listen.
     public static let notAnsweringCode = "pair_api_unavailable"
+
+    /// A 503 as the local API words its own (`{"error":{…}}`, `type` `server_error`), with `code` and `message`, to be
+    /// tried again in 10 s, and the connection's last.
+    static func refusal(code: String, message: String) -> [UInt8] {
+        let error = ["code": code, "message": message, "type": "server_error"]
+        let body = (try? JSONSerialization.data(withJSONObject: ["error": error], options: [.sortedKeys]))
+            ?? Data(#"{"error":{"message":"the pair's API can't be reached","type":"server_error"}}"#.utf8)
+        let head = "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n"
+            + "Retry-After: 10\r\nConnection: close\r\nContent-Length: \(body.count)\r\n\r\n"
+        return Array(head.utf8) + Array(body)
+    }
+
+    /// Answers `client` the 503 instead of closing its connection: its request is read first (`readRequest`, bounded),
+    /// so the answer isn't lost to a reset, then the answer, then what the client still sends is read until it closes
+    /// (at most a second).
+    static func refuse(_ client: Int32, code: String, message: String) {
+        var wait = timeval(tv_sec: 2, tv_usec: 0)
+        _ = setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &wait, socklen_t(MemoryLayout<timeval>.size))
+        readRequest(client)
+        guard writeAll(client, refusal(code: code, message: message)[...]) else { return }
+        shutdown(client, SHUT_WR)
+        wait = timeval(tv_sec: 1, tv_usec: 0)
+        _ = setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &wait, socklen_t(MemoryLayout<timeval>.size))
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while readSome(client, into: &buffer) > 0 {}
+    }
 }

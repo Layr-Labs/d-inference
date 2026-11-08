@@ -35,16 +35,8 @@ extension ClusterPairSummary {
                         "Members: this Mac is part of the pair; it runs no local API"]
             }
             let passes = "Members: \(otherMac) runs the pair's API; this Mac passes your requests to it, and Darkbloom pauses for them too"
+            if let down = memberAPIDown { return ["Local API: " + down, "Members: \(otherMac) runs the pair's API; this Mac is part of the pair"] }
             guard let relaying else {
-                let partOf = "Members: \(otherMac) runs the pair's API; this Mac is part of the pair"
-                if relayWaitsForOffer {
-                    return ["Local API: none on this Mac while Darkbloom doesn't have the pair; meanwhile the pair answers only on "
-                                + "\(otherMac) (`\(Self.cli) local` there shows its address and key)", partOf]
-                }
-                if let held = relayPortHeld {
-                    return ["Local API: port \(held) on this Mac is held by another program, so this Mac doesn't answer for the pair; "
-                                + "free it, or set another `[local] port` in provider.toml, then `\(Self.cli) restart`", partOf]
-                }
                 return ["Local API: not listening on this Mac yet; it starts once the pair's API on \(otherMac) answers", passes]
             }
             return [Self.addressLine(relaying), passes]
@@ -57,6 +49,28 @@ extension ClusterPairSummary {
             return ["Local API: not listening yet; it starts with this Mac's part of the pair", members]
         }
         return Self.pauseLines(localAPI.meFirst, now: now, timeZone: timeZone) + [Self.addressLine(address), members]
+    }
+
+    /// Why this Mac, which relays the pair's API on every address, has no working address for it now, after "Local API: ",
+    /// as `status`, `darkbloom local` and `--opencode` all say it: rank 0 answers on its own Mac only while Darkbloom
+    /// doesn't have the pair, another program holds this Mac's port, or rank 0's Mac can't be reached (the relay answers
+    /// 503, in these words). Nil while it has one, while it starts, and on any other Mac or pair.
+    var memberAPIDown: String? {
+        guard let localAPI, !localAPI.runsRankZero, answersOnEveryMac, started, paired, !pairingUnreadable else { return nil }
+        if let relaying {
+            guard relayRankZeroAway else { return nil }
+            return "http://127.0.0.1:\(relaying.port)/v1 on this Mac answers 503 for now. "
+                + ClusterLocalRelay.Refusals.pair(otherMac: otherMacName, cli: Self.cli).unreachable
+        }
+        if relayWaitsForOffer {
+            return "none on this Mac while Darkbloom doesn't have the pair; meanwhile the pair answers only on \(otherMac) "
+                + "(`\(Self.cli) local` there shows its address and key)"
+        }
+        if let held = relayPortHeld {
+            return "port \(held) on this Mac is held by another program, so this Mac doesn't answer for the pair; free it, or "
+                + "set another `[local] port` in provider.toml, then `\(Self.cli) restart`"
+        }
+        return nil
     }
 
     /// Whether Darkbloom is paused for you, in `status`'s single-Mac words for "the pair" (`Status.meFirstLines`).

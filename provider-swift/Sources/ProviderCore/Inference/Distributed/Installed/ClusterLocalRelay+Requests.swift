@@ -108,6 +108,35 @@ extension ClusterLocalRelay {
         }
     }
 
+    /// The longest body the relay reads before it answers a request it can't pass on (`refuse`).
+    static let maximumRefusedBodyBytes = 16 << 20
+
+    /// Reads one request from `client` and drops it: its head, then a body framed by its Content-Length (at most
+    /// `maximumRefusedBodyBytes`), until the client stops sending (its read bound passes) or ends.
+    static func readRequest(_ client: Int32) {
+        var pending: [UInt8] = [], buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        var end = headEnd(pending, from: 0)
+        while end == nil, pending.count <= maximumHeadBytes {
+            let searched = max(0, pending.count - 3)
+            let count = readSome(client, into: &buffer)
+            guard count > 0 else { return }
+            pending += buffer[..<count]
+            end = headEnd(pending, from: searched)
+        }
+        guard let headLength = end else { return }
+        let lengths = split(pending[..<headLength].dropLast(4)).dropFirst().compactMap { line -> Int? in
+            guard let colon = line.firstIndex(of: UInt8(ascii: ":")),
+                  lowercased(line[line.startIndex..<colon]) == "content-length" else { return nil }
+            return decimal(trimmed(line[line.index(after: colon)...]))
+        }
+        var remaining = min(lengths.first ?? 0, maximumRefusedBodyBytes) - (pending.count - headLength)
+        while remaining > 0 {
+            let count = readSome(client, into: &buffer, upTo: remaining)
+            guard count > 0 else { return }
+            remaining -= count
+        }
+    }
+
     /// Where the blank line that ends a head ends in `bytes`, searching from `start`; nil before it came.
     static func headEnd(_ bytes: [UInt8], from start: Int) -> Int? {
         guard bytes.count >= 4, start <= bytes.count - 4 else { return nil }

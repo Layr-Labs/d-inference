@@ -134,9 +134,18 @@ public final class ClusterLocalRelay: @unchecked Sendable {
         }
     }
 
+    /// Passes `client` on to rank 0, or answers it a 503 that says why it can't: at once while rank 0's Mac is away
+    /// (`setAway`), else when the connection to rank 0 fails (`connectSeconds`). Never a connection that just closes.
     private func pass(_ client: Int32) {
         defer { untrack(client); close(client) }
-        guard let upstream = Self.connect(target) else { return }
+        let (away, refusals) = lock.withLock { (self.away, self.refusals) }
+        if away { return Self.refuse(client, code: Self.unreachableCode, message: refusals.unreachable) }
+        let upstream: Int32
+        switch Self.connect(target, within: Self.connectSeconds) {
+        case .connected(let fd): upstream = fd
+        case .refused: return Self.refuse(client, code: Self.notAnsweringCode, message: refusals.notAnswering)
+        case .unreachable: return Self.refuse(client, code: Self.unreachableCode, message: refusals.unreachable)
+        }
         guard track(upstream) else { close(upstream); return }
         defer { untrack(upstream); close(upstream) }
         let done = DispatchGroup()
@@ -199,19 +208,53 @@ public final class ClusterLocalRelay: @unchecked Sendable {
         }
     }
 
+    /// How long the relay waits for rank 0 to take a connection: on the cable one takes well under a millisecond, and a
+    /// Mac that is asleep or unplugged never answers (a blocking connect would wait 75 s).
+    public static let connectSeconds: Int32 = 3
+
+    /// How a connection to rank 0 went.
+    enum Connection {
+        case connected(Int32)
+        /// Rank 0's Mac answered and refused the port: its API doesn't listen.
+        case refused
+        /// No answer in time, or no way there: rank 0's Mac can't be reached.
+        case unreachable
+    }
+
     static func connect(_ target: Target) -> Int32? {
+        guard case .connected(let fd) = connect(target, within: connectSeconds) else { return nil }
+        return fd
+    }
+
+    /// A connection to `target`, waited for at most `seconds`.
+    static func connect(_ target: Target, within seconds: Int32) -> Connection {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
-        guard fd >= 0 else { return nil }
+        guard fd >= 0 else { return .unreachable }
         configure(fd)
         var address = sockaddr_in()
         address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         address.sin_family = sa_family_t(AF_INET)
         address.sin_port = in_port_t(UInt16(target.port).bigEndian)
-        guard inet_pton(AF_INET, target.host, &address.sin_addr) == 1 else { close(fd); return nil }
+        guard inet_pton(AF_INET, target.host, &address.sin_addr) == 1 else { close(fd); return .unreachable }
+        let flags = fcntl(fd, F_GETFL)
+        _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
         let result = withUnsafePointer(to: &address) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
         }
-        guard result == 0 else { close(fd); return nil }
-        return fd
+        var failure = result == 0 ? 0 : errno
+        if failure == EINPROGRESS {
+            var ready = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+            var polled: Int32
+            repeat { polled = poll(&ready, 1, seconds * 1000) } while polled < 0 && errno == EINTR
+            if polled > 0 {
+                var pending: Int32 = 0, length = socklen_t(MemoryLayout<Int32>.size)
+                failure = getsockopt(fd, SOL_SOCKET, SO_ERROR, &pending, &length) == 0 ? pending : errno
+            } else {
+                failure = ETIMEDOUT
+            }
+        }
+        guard failure == 0 else { close(fd); return failure == ECONNREFUSED ? .refused : .unreachable }
+        _ = fcntl(fd, F_SETFL, flags)
+        return .connected(fd)
     }
 }

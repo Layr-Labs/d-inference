@@ -227,13 +227,13 @@ public final class ClusterService: @unchecked Sendable {
     /// 0 answering on its own Mac only, and rank 0's Mac away.
     static func relayStatus(_ state: RelayState) -> (portHeld: Int?, waitsForOffer: Bool?, away: Bool?) {
         guard state.host != nil else { return (nil, nil, nil) }
-        return (state.held?.port, state.waitsForOffer ? true : nil, nil)
+        return (state.held?.port, state.waitsForOffer ? true : nil, state.away ? true : nil)
     }
 
     /// Whether rank 0's Mac is away for this Mac's relay: an ask of it failed (`askFailures`), or it hasn't answered over
     /// the cable (`otherAnsweredAt`, `ClusterControlNode`) for `otherMacSilentSeconds`.
     static func relayAway(askFailures: Int, otherAnsweredAt: Double?, now: Double) -> Bool {
-        false
+        askFailures > 0 || otherAnsweredAt.map { now - $0 >= otherMacSilentSeconds } == true
     }
     private var relayAsked = Date.distantPast
     private var relayAsking = false
@@ -688,13 +688,29 @@ public final class ClusterService: @unchecked Sendable {
             ClusterLocalRelay.rankZeroHost(serving: leadership.serving, scope: leadership.scope, memberID: saved.memberID,
                                            roster: saved.peers.map { .init(id: $0.id, rank: $0.rank, host: $0.host) }, partRuns: partRuns)
         } }
-        lock.withLock { relayState.host = host }
+        // Rank 0's Mac away (a failed ask, or silent over the cable): the relay answers each request a 503 that says so.
+        // Once that Mac answers over the cable again, asks go back to every 10 s (from up to 120 s), so relaying resumes
+        // within about 10 s, without asking on every tick.
+        let now = Self.monotonicSeconds()
+        let (away, words) = lock.withLock { () -> (Bool, ClusterLocalRelay.Refusals) in
+            relayState.host = host
+            let answered = control?.otherAnsweredAt
+            if host != nil, relayState.askFailures > 0, let answered, now - answered < Self.otherMacSilentSeconds {
+                relayAskInterval = 10
+            }
+            relayState.away = host != nil && Self.relayAway(askFailures: relayState.askFailures, otherAnsweredAt: answered, now: now)
+            return (relayState.away, .pair(otherMac: otherMacNameLocked(), cli: BuildEnvironment.current.cliName))
+        }
         if let host {
             askRankZeroPort()
             if let port = lock.withLock({ relayTargetPort }) { wanted = .init(host: host, port: port) }
         }
         let current = lock.withLock { relay }
-        if let current, current.target == wanted, !current.isStopped { return }
+        if let current, current.target == wanted, !current.isStopped {
+            current.setRefusals(words)
+            current.setAway(away)
+            return
+        }
         if let current {
             current.stop()
             lock.withLock { relay = nil }
@@ -709,6 +725,7 @@ public final class ClusterService: @unchecked Sendable {
             return Date().timeIntervalSince(held.retryAt) >= 0
         }
         guard due, let started = startRelay(to: wanted, scope: scope, keys: keys, say: say) else { return }
+        started.setAway(away)
         lock.withLock { relay = started; apiPort = started.port }
         // The discovery file only when no other live server on this Mac owns it (`darkbloom start --local`).
         if LocalEndpoint.readLiveInfo().map({ $0.pid == getpid() }) ?? true {
@@ -723,7 +740,8 @@ public final class ClusterService: @unchecked Sendable {
     func startRelay(to wanted: ClusterLocalRelay.Target, scope: ClusterServingScope, keys: ClusterLocalRelay.Keys,
                     say: @Sendable (String) -> Void) -> ClusterLocalRelay? {
         let port = ClusterLocalRelay.port(own: thisMacPort(say: say), for: wanted, scope: scope)
-        guard let started = ClusterLocalRelay(port: port, target: wanted, keys: keys) else {
+        let words = lock.withLock { ClusterLocalRelay.Refusals.pair(otherMac: otherMacNameLocked(), cli: BuildEnvironment.current.cliName) }
+        guard let started = ClusterLocalRelay(port: port, target: wanted, keys: keys, refusals: words) else {
             let first = lock.withLock { () -> Bool in
                 defer { relayState.held = .init(target: wanted, port: port, retryAt: Date().addingTimeInterval(Self.relayRetrySeconds)) }
                 return relayState.held.map { $0.target != wanted || $0.port != port } ?? true
@@ -806,11 +824,19 @@ public final class ClusterService: @unchecked Sendable {
                   let reply = try? ClusterSetupLinkExchange.command(pairing: pairing, selection: selection, peerAddress: nil,
                       body: body, seconds: 5).reply,
                   let status = try? JSONDecoder().decode(ClusterServiceStatus.self, from: reply) else {
-                self?.lock.withLock { if let self { self.relayAskInterval = min(self.relayAskInterval * 2, 120) } }
+                self?.lock.withLock {
+                    guard let self else { return }
+                    self.relayAskInterval = min(self.relayAskInterval * 2, 120)
+                    self.relayState.askFailures += 1
+                }
                 return
             }
             let port = ClusterLocalRelay.rankZeroPort(in: status), ownMacOnly = ClusterLocalRelay.rankZeroAnswersOnItsMacOnly(in: status)
-            self?.lock.withLock { self?.relayTargetPort = port; self?.relayState.waitsForOffer = ownMacOnly; self?.relayAskInterval = 10 }
+            self?.lock.withLock {
+                guard let self else { return }
+                self.relayTargetPort = port; self.relayState.waitsForOffer = ownMacOnly; self.relayAskInterval = 10
+                self.relayState.askFailures = 0
+            }
         }
     }
 
@@ -1031,15 +1057,23 @@ public final class ClusterService: @unchecked Sendable {
     /// How often a part that has not ended yet is sent SIGTERM again while it is waited for.
     static let stopResendSeconds: Double = 5
 
-    /// Degraded serving alone listens where `start --local` listens by default, on this Mac's loopback.
-    public static let soloPort = 8000
+    /// Degraded serving alone listens on this Mac's own saved port (`thisMacPort`), as every local API here does; only
+    /// when that can't be read, where `start --local` listened by default.
+    public static let defaultSoloPort = 8000
+
+    /// The port the solo server in `status` listens on (its published part's), for the screens that check it.
+    public static func soloPort(of status: ClusterServiceStatus?) -> Int {
+        guard status?.child.solo == true, let port = status?.child.port else { return defaultSoloPort }
+        return port
+    }
 
     /// What the solo port shows: THIS service's solo server (the published solo child, checked by its start time so a
     /// recycled process number never counts, or a process it started) holding the listening socket and answering its
     /// model list; that server still loading; or another program answering there (never taken for ours).
     public enum SoloReadiness: Equatable { case ready, loading, foreign }
 
-    static func soloReadiness(_ status: ClusterServiceStatus?, port: Int = soloPort) -> SoloReadiness {
+    static func soloReadiness(_ status: ClusterServiceStatus?, port given: Int? = nil) -> SoloReadiness {
+        let port = given ?? soloPort(of: status)
         guard let child = status?.child, child.running, child.solo == true, let pid = child.pid, let startedAt = child.startedAt,
               let now = ClusterProcessTable.startTime(of: pid), abs(now - startedAt) < 0.001 else { return .loading }
         let ours = ([pid] + ClusterProcessTable.descendants(of: pid)).contains { ClusterProcessTable.listeningTCPPorts(of: $0).contains(port) }
@@ -1119,7 +1153,7 @@ public final class ClusterService: @unchecked Sendable {
     /// `authorized`: whether a server answers its model list on the solo port with this Mac's local API token (only
     /// ever sent to this service's own solo server: see `soloReadiness`); otherwise whether anything answers HTTP there,
     /// asked without the token.
-    static func soloAnswers(port: Int = soloPort, authorized: Bool = true) -> Bool {
+    static func soloAnswers(port: Int = defaultSoloPort, authorized: Bool = true) -> Bool {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/models")!)
         request.timeoutInterval = 3
         if authorized, let token = LocalEndpoint.readToken() { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
@@ -1216,6 +1250,7 @@ public final class ClusterService: @unchecked Sendable {
                     pid: child?.isRunning == true ? child?.processIdentifier : oldPart?.pid,
                     startedAt: child?.isRunning == true ? childStartedAt : oldPart?.startedAt, lastRunSeconds: lastRunSeconds,
                     solo: child?.isRunning == true ? childSetup?.hasPrefix("solo:") == true : oldPart?.solo,
+                    port: child?.isRunning == true ? childPort : nil,
                     notice: oldPart != nil ? "the previous run's part is still releasing; waiting before starting another"
                         : child?.isRunning == true && childSetup?.hasPrefix("solo:") != true ? Self.servingNotice(in: serviceFiles.rankLog, from: childLogOffset) : nil,
                     configurationSHA256: child?.isRunning == true && childSetup?.hasPrefix("cluster:") == true
@@ -2152,9 +2187,12 @@ public final class ClusterService: @unchecked Sendable {
         var memberRank: Int?
         var port: Int?
         if case .solo(let model) = want {
-            arguments = ClusterLocalServing.soloArguments(settings.soloArguments, scope: scope) + ["--model", model, "--port", String(Self.soloPort)]
+            // This Mac's own port, as every local API here takes it: a relay that held it gives it back first.
+            handRelayPortBack()
+            let soloPort = thisMacPort(say: say) ?? Self.defaultSoloPort
+            arguments = ClusterLocalServing.soloArguments(settings.soloArguments, scope: scope) + ["--model", model, "--port", String(soloPort)]
             what = "degraded: serving \(model) on this Mac alone"
-            port = Self.soloPort
+            port = soloPort
         } else {
             guard let configuration = saved.configuration else { return }
             // After an update a member's saved setup still pins the earlier build's worker: its part would refuse the

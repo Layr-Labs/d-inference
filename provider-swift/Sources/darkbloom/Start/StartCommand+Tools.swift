@@ -94,6 +94,8 @@ extension Start {
         }
         let pair = given ?? ClusterPairSummary.local()
         guard let bind = pair.localAPIBind else { try fail(ToolIntegrationStep.noPairAPI(requestedTools)) }
+        // This Mac relays the pair's API, and its cluster service says why it can't answer now: said at once, no wait.
+        if let down = pair.memberAPIDown { try fail(ToolIntegrationStep.noMemberAddress(requestedTools, localAPI: down)) }
         switch await waitForAPI() {
         case .ready(let endpoint):
             // `pair` was read before the wait, maybe before the relay was up: on a member in Both, whose part runs no

@@ -21,6 +21,18 @@
 - While Darkbloom doesn't have a **Both, me first** pair (no approval yet), the pair answers on the leading Mac only,
   and the other Mac passes nothing on: its `darkbloom status` says so, and never shows an address that resets every
   connection.
+- While the Mac that runs the pair's API is away (unplugged, asleep), the other Mac's own port answers every request at
+  once with a `503` (`code` `pair_mac_unreachable`) that says so: "Your pair's other Mac (…) isn't reachable; this Mac
+  relays to it. Requests resume when it's back, or run `darkbloom stop`, then `darkbloom start --solo`, to serve this
+  Mac alone." With **Only me**, that port used to close each connection unanswered then, for up to 15 minutes.
+  `darkbloom status` and `darkbloom local` now say the same, and relaying resumes by itself within about 10 seconds of
+  that Mac answering again. A request while that Mac's API doesn't listen gets a `503` with `code`
+  `pair_api_unavailable`.
+- On the other Mac, `darkbloom local` and `darkbloom start --opencode` say why it has no address for the pair (Darkbloom
+  doesn't have the pair yet, its port is held, or the leading Mac is away), as `darkbloom status` does: `local` no
+  longer prints the pair's key there, and `--opencode` says it at once instead of after a 30-second wait.
+- The solo server a pair falls back to when one Mac is away for 10 minutes takes that Mac's own saved `[local] port`
+  too, instead of 8000, so its tools keep their address.
 - A request on the other Mac's port pauses Darkbloom for the pair, as one on the leading Mac does, and never uses the
   paid network: the pair's API sees it come from that Mac.
 - `darkbloom start --opencode` on a paired Mac waits up to 30 seconds for that Mac's local API after the pair starts,

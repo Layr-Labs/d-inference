@@ -7737,7 +7737,23 @@ flowchart LR
    so the relay adds nothing per token. Rank 0's API sees each relayed request
    come from the relaying Mac's cable address: another machine, so the router
    never takes the paid hop for it (`LocalHTTPClient.isAnotherMachine`), and it
-   is the owner's use like any local request (item 6).
+   is the owner's use like any local request (item 6). A relay never closes a
+   connection it can't pass on: while rank 0's Mac is away
+   (`ClusterService.relayAway`: the first failed status request to it, or
+   `otherMacSilentSeconds`, 12 s, without an answer over the cable) it answers
+   each request at once with a 503 in the local API's error shape, `code`
+   `pair_mac_unreachable`, in words that name the other Mac
+   (`ClusterLocalRelay.Refusals`), which the member's `status` and
+   `darkbloom local` repeat (`ClusterServiceStatus.relayRankZeroAway`);
+   otherwise it waits at most 3 s for rank 0 to take a connection
+   (`ClusterLocalRelay.connect(_:within:)`) and answers a failed one the same
+   way, `pair_api_unavailable` when rank 0's Mac refuses the port. The request
+   is read first, so the answer isn't lost to a reset. The next status request
+   rank 0 answers clears it, and asks go back to every 10 s once that Mac
+   answers over the cable again. The solo server a pair falls back to takes this
+   Mac's own port too (`thisMacPort`, else 8000), after the relay gives it back;
+   the status names the running part's port (`ClusterServiceStatus.Child.port`,
+   `ClusterService.soloPort(of:)`).
 
 ## Cluster pair capability honesty
 

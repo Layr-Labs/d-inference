@@ -905,7 +905,12 @@ you first) and `start --local` (only you, on this Mac). When the running
 provider's local API couldn't listen (`DaemonState.localAPIFailure`), it says
 why instead: ``The local API isn't up: port 8001 is in use (`darkbloom start
 --port 8002`).`` (`Local.notUpLine`), with the commands `status` names on a Mac
-in a two-Mac cluster.
+in a two-Mac cluster. On a Mac whose port relays a pair's API and has no working
+address now, it prints the `Local API:` line `status` gives there instead
+(`ClusterPairSummary.memberAPIDown`): Darkbloom doesn't have the pair yet, or
+another program holds its port; never the pair's key. With the relay up while
+the pair's other Mac can't be reached, the endpoint's lines are followed by that
+`Local API: … answers 503 for now. …` line.
 A server bound to `0.0.0.0` or `::` also prints a `network:` line with this
 Mac's Bonjour (`.local`) URL (`Local.networkURL`). When the running provider
 serves that endpoint, two lines follow `pid:`: `serving:` (how it serves, in
@@ -1099,7 +1104,14 @@ Mac passes your requests to it, and Darkbloom pauses for them too`. Until it run
   set another `[local] port` in provider.toml, then `darkbloom restart` `` (`relayPortHeld`);
 
   each with `Members: the other Mac (…) runs the pair's API; this Mac is part of the pair`; otherwise
-  `Local API: not listening on this Mac yet; …` with the `Members:` line above.
+  `Local API: not listening on this Mac yet; …` with the `Members:` line above. While it runs and the other Mac can't
+  be reached (`ClusterServiceStatus.relayRankZeroAway`: the first failed status request to it, or 12 s without an
+  answer over the cable), it answers every request a `503` and the line says so in the `503`'s words
+  (`ClusterLocalRelay.Refusals`): ``Local API: http://127.0.0.1:8003/v1 on this Mac answers 503 for now. Your pair's
+  other Mac (…) isn't reachable; this Mac relays to it. Requests resume when it's back, or run `darkbloom stop`, then
+  `darkbloom start --solo`, to serve this Mac alone.``, with the same `Members:` line. `darkbloom local` there prints
+  the same `Local API:` line (`ClusterPairSummary.memberAPIDown`), and `start --opencode` says it at once
+  (`ToolIntegrationStep.noMemberAddress`).
 With the API on loopback or one address: `Local API: on the other Mac (…), which runs the pair's API; …` and
 `Members: this Mac is part of the pair; it runs no local API`. `--json` is unchanged (`serves` stays `darkbloom`).
 
@@ -3116,7 +3128,8 @@ darkbloom local [--json]
 `darkbloom local` reads `~/.darkbloom/local.json`, but only advertises it if the
 recorded server process is still alive. On a Mac of a pair whose local API runs
 on another Mac, that record is this Mac's relay's (written by its cluster
-service): its own address and its own key.
+service): its own address and its own key. Without it, or with the pair's other
+Mac away, it says why, as `darkbloom status` does.
 
 ## `darkbloom route`
 

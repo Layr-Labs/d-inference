@@ -804,9 +804,13 @@ With **Both, me first**:
   passes its port on, and tools there dial that Mac.
 - **A port another program holds** stays that Mac's: Darkbloom never moves a
   saved port. The pair's API then can't listen there, or that Mac's port
-  passes nothing on, and `darkbloom status` there says which port. Free it, or
-  set another `[local] port` in that Mac's `provider.toml`, then run
+  passes nothing on, and `darkbloom status` there says which port, as
+  `darkbloom local` and `darkbloom start --opencode` there do. Free it, or set
+  another `[local] port` in that Mac's `provider.toml`, then run
   `darkbloom restart`.
+- **When the Mac that runs the pair's API is away** (unplugged, asleep), each
+  other Mac's port answers a `503` that says so, at once, until it is back
+  ([if a Mac goes away](#if-a-mac-goes-away)).
 - **Requests the pair can't take** (a model it doesn't serve, a full queue) go
   on as that Mac's `[local] route` says, with that Mac's account key
   ([the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
@@ -830,7 +834,8 @@ With **Both, me first**:
   ([above](#registered-with-the-coordinator-as-a-cluster-member)): on that Mac
   only (`127.0.0.1`), on the same port, with that Mac's own key alone
   (`darkbloom local` there shows it, and tools set up there keep working). The
-  other Macs pass nothing on meanwhile, and their `status` says so. Tools on
+  other Macs pass nothing on meanwhile, and their `status`, `darkbloom local`
+  and `darkbloom start --opencode` say so. Tools on
   other machines, the other Macs' ports, and tools set up with the pair's key
   reach the pair again once Darkbloom has it.
 
@@ -1209,6 +1214,25 @@ that joined took over leading, moves back to the Mac you set up on at its next
 plan: normally the re-plan after its update, which restarts both parts anyway.
 Manage the cluster on the Mac that leads; on the other
 Mac, `darkbloom cluster` shows the status and names the Mac to use.
+
+While the Mac that runs the pair's API is away, the other Mac's own port for it
+(with **Only me**, and with **Both, me first** on every address) is never a
+connection that just closes: it answers every request at once with a `503`
+(`code` `pair_mac_unreachable`), ``Your pair's other Mac (…) isn't reachable;
+this Mac relays to it. Requests resume when it's back, or run `darkbloom stop`,
+then `darkbloom start --solo`, to serve this Mac alone.`` That Mac is away after
+the first status request to it fails, or after 12 s without an answer over the
+cable. `darkbloom status` and `darkbloom local` there say the same, after
+`Local API: http://127.0.0.1:<port>/v1 on this Mac answers 503 for now.`, and
+`darkbloom start --opencode` there says it at once. Relaying resumes by itself
+within about 10 s of that Mac answering again. `darkbloom start --solo` alone
+is refused while this Mac's part holds its serving lock (up to the 15 minutes
+in [going back to serving on one Mac](#going-back-to-serving-on-one-mac)), hence
+`darkbloom stop` first. A
+request on that port while the API on the other Mac doesn't listen (its part
+starting again) gets a `503` with `code` `pair_api_unavailable` the same way.
+A Mac that serves the model alone after the 10 minutes does so on its own saved
+port (`[local] port`), so its tools keep their address.
 
 ## How the split is chosen
 

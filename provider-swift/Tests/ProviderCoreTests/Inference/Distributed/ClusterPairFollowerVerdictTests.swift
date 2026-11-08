@@ -7,7 +7,7 @@ import Testing
 /// (`ProviderLoop.serveCommittedStart`, `publishClusterPairSlot`). Rank 1's link follower reports to rank 0 over the cable
 /// and writes none. The Mac that follows read its own log for `Pair: serving` all the same, so 15 minutes after every
 /// start its service said "The pair hasn't served for 15 min" while the pair served, and `cluster status` there put that
-/// line before the leading Mac's ✓ (b3-restart.md §4; DevNet pair-2 and .95).
+/// line before the leading Mac's ✓ (seen on DevNet pair-2).
 @Suite("The Mac that follows judges the pair only by what it knows")
 struct ClusterPairFollowerVerdictTests {
     private let ttl = ClusterService.leaseTTLSeconds

@@ -2482,7 +2482,7 @@ darkbloom doctor [--strict] [--coordinator <url>] [--support] [--clear-backend-g
 | Flag | Description |
 |------|-------------|
 | `--strict` | Treat warnings as failures |
-| `--coordinator <url>` | Override coordinator URL for remote checks |
+| `--coordinator <url>` | Override coordinator URL for remote checks; on a Mac set to Only me, run them anyway |
 | `--support` | Print local identifiers useful for support |
 | `--clear-backend-guard` | Remove the crash-loop KV guard, reset its restart chain and exit; normal selection resumes on the next load |
 | `--hardware` | Print one whole-machine load sample and which counters this Mac exposes, as JSON ([format](../reference/desktop-control.md#hardware-load)), and exit |
@@ -2491,6 +2491,32 @@ The report header prints `Build` (`prod` or `dev`, fixed at compile time),
 `Coordinator` (the `--coordinator` value, else `[coordinator] url`) and
 `Model CDN` (`DARKBLOOM_R2_CDN_URL` from the shell, else the build default).
 `Model CDN` does not read the LaunchAgent plist.
+
+### The Local API section
+
+The report opens with `LOCAL API   (how this Mac serves you and your tools)`
+(`DoctorLocalAPI` in `provider-swift/Sources/darkbloom/Diagnostics/DoctorLocalAPI.swift`).
+No line shows the key or a speed, and every problem names the next command:
+
+| Line | What it says |
+|---|---|
+| `mode` | How this Mac serves, in the start summary's words: what the running provider serves (`serving now`, read as `status` reads it), else `[local] mode` (`saved`); a saved choice the running provider doesn't serve is named with `` serves at the next `darkbloom start` ``. Nothing saved and nothing running: ``not chosen yet: `darkbloom start` asks …``. On a paired Mac, the pair's way (**Only me (this pair)**, **Both, me first (this pair)** or **Darkbloom network (this pair)**) and the Mac that runs its API |
+| `darkbloom network` | Only with **Only me**: ``not needed (Only me): the account, trust, App Attest and coordinator checks are skipped; `darkbloom start --choose` changes how this Mac serves`` (on a pair, `darkbloom cluster`) |
+| `address` | With a local API: ✓ `http://127.0.0.1:8001/v1 — up on port 8001` once it answers `GET /health` (2 s); ✗ when its process runs but the port doesn't answer (fix `darkbloom restart`); ✗ `… isn't up` when the running provider's API couldn't listen, fix in `status`'s words (``port 8001 is in use (`darkbloom start --port 8002`)``); ⚠ `— not running` (fix `darkbloom start`). On a pair: ⚠ while it is stopped (`darkbloom start` starts the pair); on the Mac that doesn't run the pair's API, where it runs |
+| `key file` | ✓ the file the API's key is in (`~/.darkbloom/local_token`, `LocalEndpoint.keyFile`); ✗ when no file holds a running API's key, so tools that read it are refused (fix `darkbloom restart`); `none` for an API started with `--no-auth`, or before the first start |
+| `OpenCode`, `Hermes` | Darkbloom's provider in the tool's own config (`~/.config/opencode/opencode.jsonc` or `opencode.json`, `~/.hermes/config.yaml`, as `start --opencode` / `--hermes` choose them; `DoctorToolSetup`): ✓ `points here`; ⚠ `points at <address>, not this Mac's local API (…)`, or at the right address but another key file (fix `darkbloom start --opencode` / `--hermes`); ⚠ a config Darkbloom can't read, with why; `not set up` with the command that sets it up. With no local API (Darkbloom network), only a tool still pointing at one is shown (⚠, fix `darkbloom start --choose`) |
+
+With **Only me** (the running provider serves only its owner, or nothing runs and
+`[local] mode = "local"`; on a pair, a pair serving locally only), `doctor`
+skips the Darkbloom network's checks: `account link`, `mdm enrollment`,
+`coordinator health` and the coordinator trust check in the detailed checks,
+and the attestation key, App Attest, attestation readiness, trust, coordinator
+traffic and billing sections (`DoctorRunner.buildOperatorDiagnosis`,
+`networkChecks`). One detailed check stands for them:
+`darkbloom network: not needed (Only me): …`. Model fit, runtime, version and
+the hardware and security checks stay. `--coordinator <url>` runs the network
+checks anyway. ✗ lines here fail the run like any other; ⚠ lines fail it with
+`--strict`. `darkbloom verify` is unchanged.
 
 `darkbloom doctor` is read-only except for the subprocess calls used by public
 ProviderCore checks and the explicit `--clear-backend-guard` action

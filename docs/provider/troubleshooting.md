@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models, the
@@ -52,15 +52,18 @@ has started, leaves the previous install untouched.
 
 ## Doctor checks
 
-`darkbloom doctor` prints an operator diagnosis (sections attestation key,
-App Attest, attestation readiness, trust, model fit, runtime, billing, version;
-`provider-swift/Sources/darkbloom/Diagnostics/DoctorRunner.swift`,
-`buildOperatorDiagnosis`) followed by `DETAILED CHECKS`
+`darkbloom doctor` prints an operator diagnosis (sections local API,
+attestation key, App Attest, attestation readiness, trust, model fit, runtime,
+billing, version; `provider-swift/Sources/darkbloom/Diagnostics/DoctorRunner.swift`,
+`buildOperatorDiagnosis`, and `DoctorLocalAPI`) followed by `DETAILED CHECKS`
 (`provider-swift/Sources/darkbloom/DoctorCommand.swift`, `buildDoctorChecks`,
 `buildCoordinatorDoctorChecks`). Check names are stable identifiers:
 
 | Check | What it tests | When it is not ✓ |
 |---|---|---|
+| `mode`, `darkbloom network` | How this Mac serves (Only me, Darkbloom network or Both, me first), first in the report; with Only me, the account, trust, App Attest and coordinator checks are skipped as not needed (`provider-swift/Sources/darkbloom/Diagnostics/DoctorLocalAPI.swift`) | Informational. Not chosen yet: `darkbloom start` asks; `darkbloom start --choose` changes it |
+| `address`, `key file` | The local API answers `GET /health` on its port, and a key file holds its key; the key is never printed | Follow the printed fix: `darkbloom start` (not running), the free port it names (port in use), `darkbloom restart` (a port that doesn't answer, or no file holds the key) |
+| `OpenCode`, `Hermes` | Darkbloom's provider in the tool's config points at this Mac's local API and its key file | `darkbloom start --opencode` or `--hermes` points it here again; a config Darkbloom can't read says why |
 | `hardware`, `metal gpu`, `macos` | Chip/RAM detection, Metal device, OS version | Apple Silicon with a working GPU is required; nothing to configure |
 | `config` | `provider.toml` parses | Fix the TOML at `~/.config/darkbloom/provider.toml`; retired keys only warn |
 | `huggingface cache`, `local mlx models` | `~/.cache/huggingface/hub` exists and holds serveable models | `darkbloom models download <id>` |

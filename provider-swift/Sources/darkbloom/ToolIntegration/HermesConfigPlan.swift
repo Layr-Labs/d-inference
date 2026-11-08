@@ -645,3 +645,41 @@ private struct HermesEdit {
         String(text.reversed().drop { $0 == " " || $0 == "\t" }.reversed())
     }
 }
+
+// MARK: - What a set-up Hermes points at (`darkbloom doctor`)
+
+extension HermesConfigPlan {
+    /// Why Darkbloom can't read a Hermes config, as the clause after "can't read <file>: ".
+    struct Unreadable: Error {
+        let reason: String
+    }
+
+    /// Where Darkbloom's provider block in `text` sends requests (`providers.<id>.api`) and the file its `key_cmd`
+    /// reads the key from; nil when the file has no such block.
+    static func setUp(in text: String, provider: IntegrationProvider) throws(Unreadable)
+        -> (address: String?, keyFile: String?)? {
+        do {
+            return try HermesEdit(text: text, provider: provider).providerEndpoint()
+        } catch {
+            throw Unreadable(reason: error.reason)
+        }
+    }
+}
+
+extension HermesEdit {
+    /// The provider block's `api` and the path its `key_cmd` (`/bin/cat <path>`, as `providerBlock` writes it) reads.
+    func providerEndpoint() -> (address: String?, keyFile: String?)? {
+        guard let providers, providers.value.isEmpty,
+              let mine = (try? children(of: providers))?.first(where: { $0.key == provider.id }),
+              let fields = try? children(of: mine) else { return nil }
+        func value(_ key: String) -> String? { fields.first { $0.key == key }.flatMap { Self.scalar($0.value) } }
+        let reader = "/bin/cat "
+        let keyFile = value("key_cmd").flatMap { command -> String? in
+            guard command.hasPrefix(reader) else { return nil }
+            let word = String(command.dropFirst(reader.count))
+            guard word.count >= 2, word.hasPrefix("'"), word.hasSuffix("'") else { return word }
+            return String(word.dropFirst().dropLast()).replacingOccurrences(of: "'\\''", with: "'")
+        }
+        return (value("api"), keyFile)
+    }
+}

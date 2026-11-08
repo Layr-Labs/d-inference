@@ -4,10 +4,21 @@ import Foundation
 import MLXLMServer
 
 /// A reasoning effort a client names, least reasoning first: OpenAI's and
-/// OpenRouter's `none` through `xhigh`, and `max`. Every model that reasons
-/// takes all seven, as `reasoning_effort` or `reasoning.effort`; its template
-/// receives a level it renders.
-enum ReasoningEffort: String, CaseIterable, Comparable, Sendable {
+/// OpenRouter's `none` through `xhigh`, and `max`, which Hermes sends.
+///
+/// On one Mac, on a pair's leader and on the coordinator's path alike:
+/// - A model that reasons takes each of the seven, as `reasoning_effort` or
+///   `reasoning.effort`, and never answers one with a 400: its family's table
+///   (below) gives the level its template renders.
+/// - A value that is none of the seven is refused before anything renders or
+///   is reserved, with `MultiModelBatchSchedulerEngineError
+///   .unsupportedReasoningEffort(field)`. The local API answers it with the
+///   field and the seven names, never the value sent
+///   (`ReasoningEffortField.refusalMessage`); the coordinator shows its own
+///   closed text.
+/// - A model that doesn't reason ignores the effort, whatever it is
+///   (`ReasoningEffortPolicy.reasons`).
+enum ReasoningEffort: String, CaseIterable, Sendable {
     case none, minimal, low, medium, high, xhigh, max
 
     /// The names a refusal lists.
@@ -31,19 +42,71 @@ enum ReasoningEffort: String, CaseIterable, Comparable, Sendable {
     static func switchesThinkingOff(_ value: String) -> Bool {
         Self(clientValue: value) == ReasoningEffort.none
     }
+}
 
-    static func < (lhs: Self, rhs: Self) -> Bool {
-        allCases.firstIndex(of: lhs)! < allCases.firstIndex(of: rhs)!
+/// Each family's table: the level its template renders for each of the seven
+/// efforts. A family gets the effort's own level where it has one, else the
+/// next one up (toward more reasoning), and its highest past them all, so
+/// `minimal` gets its lowest level and `max` its highest; `none` switches
+/// thinking off where the model can. Each switch names all seven efforts and
+/// has no `default`, so a table that misses one doesn't build;
+/// `ReasoningEffortValuesTests.everyFamilyTableCoversEveryEffort` checks
+/// every row against that rule.
+///
+/// The other families take every effort too. Flint decides for itself whether
+/// to reason and reads no effort (`FlintRequestPolicy`). Gemma 4 and Nemotron
+/// 3.5 Lightning have only a thinking switch: `none` turns it off, and any
+/// other effort reaches the template as sent, which keeps its default. GPT-OSS
+/// gets each as sent, except `high`, which renders `medium`
+/// (`GPTOSSHarmonyTemplateFix`). The coordinator's prompt sidecar plans Gemma
+/// 4's and GPT-OSS's prompts, so they change only together with it.
+extension ReasoningEffort {
+    /// Qwen 3.8's template renders `low`, `medium` and `xhigh` (its default)
+    /// and raises for any other effort while thinking. The Qwen 3.5 template
+    /// family (Qwen 3.5, 3.6 and 3.8, and Bonsai 2) and the owned Flash-Next
+    /// build get these levels (`ReasoningEffortPolicy.takesQwen38Levels`); the
+    /// 3.5, 3.6 and Bonsai templates read only the thinking switch. `high`, the
+    /// effort clients send most, renders `xhigh`, as the coordinator's
+    /// first-party pool sends it. `none` gets a level only when a switch keeps
+    /// thinking on.
+    var qwen38Level: ReasoningEffort {
+        switch self {
+        case .none, .minimal, .low: .low
+        case .medium: .medium
+        case .high, .xhigh, .max: .xhigh
+        }
     }
 
-    /// The level of a model's own `levels` (lowest first) this effort selects:
-    /// its own where the model has it, else the next one up (an effort between
-    /// two levels rounds up, toward more reasoning), and the highest past them
-    /// all. So `minimal` selects the lowest level and `max` the highest, and
-    /// `none` the lowest where thinking can't be switched off.
-    func level(in levels: [ReasoningEffort]) -> ReasoningEffort {
-        precondition(!levels.isEmpty, "a model with named levels has at least one")
-        return levels.first { $0 >= self } ?? levels[levels.count - 1]
+    /// GLM-5.3-Flash's template renders `low`, `high` and `max` (its default);
+    /// nil switches thinking off. The coordinator's pool and prompt sidecar
+    /// map the same way.
+    var glmLevel: GLM5NextPromptPolicy.Effort? {
+        switch self {
+        case .none: nil
+        case .minimal, .low: .low
+        case .medium, .high: .high
+        case .xhigh, .max: .max
+        }
+    }
+
+    /// Nemotron 3.5 Super's template has two depths, `medium_effort` and its
+    /// default: this is the `medium_effort` an effort sets, and nil switches
+    /// thinking off.
+    var nemotronSuperMediumEffort: Bool? {
+        switch self {
+        case .none: nil
+        case .minimal, .low, .medium: true
+        case .high, .xhigh, .max: false
+        }
+    }
+
+    /// MiMo V2.6 and DiffusionGemma reason at one depth, so an effort only
+    /// switches thinking: on for every effort but `none`.
+    var oneDepthThinking: Bool {
+        switch self {
+        case .none: false
+        case .minimal, .low, .medium, .high, .xhigh, .max: true
+        }
     }
 }
 
@@ -53,24 +116,16 @@ public enum ReasoningEffortField: String, Sendable {
     case reasoningObject = "reasoning.effort"
     case templateKwargs = "chat_template_kwargs.reasoning_effort"
 
-    /// The refusal of an effort that is none of the names: fixed text, never
-    /// the value sent.
+    /// The refusal of an effort that is none of the names: the field and the
+    /// seven names, fixed text, never the value sent.
     var refusalMessage: String { "\(rawValue) must be one of: \(ReasoningEffort.acceptedNames)." }
 }
 
-/// The reasoning effort of the families whose template context
+/// Which models reason, and the `reasoning_effort` the template context
 /// `MultiModelBatchSchedulerEngine.templateAdditionalContext` builds. MiMo,
-/// GLM-5.3, Flint and Nemotron 3.5 Super resolve theirs in their own prompt
-/// policies, with the same names and rounding.
+/// GLM-5.3, Flint and Nemotron 3.5 Super read the effort in their own prompt
+/// policies, through their tables above.
 enum ReasoningEffortPolicy {
-    /// The levels of the Qwen 3.8 template, which raises for any other effort
-    /// while thinking: `xhigh` is its default. The Qwen 3.5 template family
-    /// (Qwen 3.5, 3.6 and 3.8, and Bonsai 2) and the owned Qwen 3.8 Flash-Next
-    /// build receive one of them; the 3.5 and 3.6 templates and Bonsai's read
-    /// only the thinking switch. `high`, the effort clients send most, renders
-    /// as `xhigh`, as the coordinator's first-party pool sends it.
-    static let qwen38Levels: [ReasoningEffort] = [.low, .medium, .xhigh]
-
     /// Model types whose templates reason: an effort none of the seven names
     /// is refused for them. Any other model ignores the effort.
     /// `qwen3_vl_moe` is left out: it holds instruct-only Qwen3-VL builds.
@@ -80,55 +135,57 @@ enum ReasoningEffortPolicy {
         "nemotron_h", "nemotron_h_omni", "mimo_v2", "glm5_next", "glm5_next_text", "glm5_next_mtp", "flint",
     ]
 
-    /// The levels a model's template renders through `reasoning_effort`, lowest
-    /// first; nil when its template reads no effort this policy maps.
-    static func namedLevels(modelID: String, modelType: String?) -> [ReasoningEffort]? {
-        if ["qwen3_5", "qwen3_5_moe", "prism_hadamard_qwen35"].contains(normalized(modelType))
+    /// The Qwen 3.5 template family's model types.
+    private static let qwen35TemplateTypes: Set<String> = ["qwen3_5", "qwen3_5_moe", "prism_hadamard_qwen35"]
+
+    /// Whether a model's template gets Qwen 3.8's levels
+    /// (`ReasoningEffort.qwen38Level`): the Qwen 3.5 template family, and the
+    /// owned Flash-Next build (`Qwen4SupportPolicy.ownsEffortTemplate`).
+    static func takesQwen38Levels(modelID: String, modelType: String?) -> Bool {
+        normalized(modelType).map(qwen35TemplateTypes.contains) == true
             || Qwen4SupportPolicy.ownsEffortTemplate(modelID: modelID, modelType: modelType)
-        {
-            return qwen38Levels
-        }
-        return nil
     }
 
     /// Whether a model reasons, by its template family.
     static func reasons(modelID: String, modelType: String?) -> Bool {
-        namedLevels(modelID: modelID, modelType: modelType) != nil
-            || normalized(modelType).map { reasoningModelTypes.contains($0) } == true
+        takesQwen38Levels(modelID: modelID, modelType: modelType)
+            || normalized(modelType).map(reasoningModelTypes.contains) == true
     }
 
-    /// Refuses the effort a request names when a model that reasons can't take
-    /// it, with the field it came in; the typed `reasoning.effort` wins over the
-    /// top-level spelling, as in the template context. A model that doesn't
-    /// reason ignores it.
+    /// Refuses an effort that is none of the seven names, on a model that
+    /// reasons, naming the field it came in. The typed `reasoning.effort` wins
+    /// over the top-level spelling, as in the template context. A model that
+    /// doesn't reason ignores the effort.
     static func validate(
         _ request: OpenAIChatCompletionRequest, controls: ChatTemplateControls, modelType: String?
     ) throws {
         guard reasons(modelID: request.model, modelType: modelType) else { return }
-        let named = request.reasoning?.effort.map { ($0, ReasoningEffortField.reasoningObject) }
-            ?? controls.reasoningEffort.map { ($0, ReasoningEffortField.reasoningEffort) }
-        if case let (effort, field)? = named, ReasoningEffort(clientValue: effort) == nil {
-            throw MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(field)
+        if let effort = request.reasoning?.effort {
+            guard ReasoningEffort(clientValue: effort) != nil else {
+                throw MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(.reasoningObject)
+            }
+        } else if let effort = controls.reasoningEffort, ReasoningEffort(clientValue: effort) == nil {
+            throw MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(.reasoningEffort)
         }
+    }
+
+    /// The `reasoning_effort` a template receives for `effort`: while
+    /// thinking, Qwen 3.8's level for it where the model takes those levels;
+    /// otherwise the effort as sent (a Qwen template ignores it with thinking
+    /// off), except that GPT-OSS's Harmony policy renders `high` as `medium`.
+    static func templateEffort(
+        _ effort: String, modelID: String, modelType: String?, thinking: Bool?
+    ) -> String {
+        if thinking != false, takesQwen38Levels(modelID: modelID, modelType: modelType),
+            let named = ReasoningEffort(clientValue: effort)
+        {
+            return named.qwen38Level.rawValue
+        }
+        let context = ChatTemplateFixContext(modelId: modelID, modelType: modelType)
+        return GPTOSSHarmonyTemplateFix.effectiveReasoningEffort(effort, context: context) ?? effort
     }
 
     private static func normalized(_ modelType: String?) -> String? {
         modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    }
-
-    /// The `reasoning_effort` a template receives for `effort`: while thinking,
-    /// the model's level for it (`namedLevels`); otherwise, and for a model
-    /// without named levels, the effort as sent, which such a template ignores.
-    /// GPT-OSS keeps its Harmony serving policy (`high` renders as `medium`).
-    static func templateEffort(
-        _ effort: String, modelID: String, modelType: String?, thinking: Bool?
-    ) -> String {
-        if thinking != false, let levels = namedLevels(modelID: modelID, modelType: modelType),
-            let named = ReasoningEffort(clientValue: effort)
-        {
-            return named.level(in: levels).rawValue
-        }
-        let context = ChatTemplateFixContext(modelId: modelID, modelType: modelType)
-        return GPTOSSHarmonyTemplateFix.effectiveReasoningEffort(effort, context: context) ?? effort
     }
 }

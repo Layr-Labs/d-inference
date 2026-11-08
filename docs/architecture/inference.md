@@ -2720,7 +2720,8 @@ spends the caller's `max_tokens` before any JSON is written. A nested
 `reasoning.enabled`, a raw `enable_thinking` or `chat_template_kwargs`
 switch, any reasoning effort, or a positive `reasoning.max_tokens` budget
 keeps the caller's choice. The family predicate also matches Qwen3.8
-Flash-Next by model ID, whose template takes the closed block. Other families keep their thinking defaults because the
+Flash-Next by model ID, whose template takes
+the closed block. Other families keep their thinking defaults because the
 predicate excludes them; GLM5-Next, MiMo and Nemotron Super also build their
 own template context, and Flint's template ignores the switch.
 The coordinator prompt sidecar mirrors the rule so cache planning renders the
@@ -2962,17 +2963,19 @@ them all. So `minimal` selects the lowest level and `max` the highest. `none`
 (also `off` or `0`) switches thinking off where the model can, and selects the
 lowest level where it can't. Spellings are trimmed and read in any case,
 except by GLM-5.3-Flash and Flint, which read the names exactly as written.
-The rule is `ReasoningEffort.level(in:)`
-(`provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningEffort.swift`);
-one Mac, a pair's leader (tensor parallel and pipeline) and the coordinator
-path render through the same prompt pipeline.
+Each family's table of the seven efforts is in one place,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningEffort.swift`,
+and `ReasoningEffortValuesTests` checks every row against this rule. One Mac,
+a pair's leader (tensor parallel and pipeline) and the coordinator path render
+through the same prompt pipeline; the local router returns this Mac's answer
+as it is, or passes the request's body on unchanged.
 
 | Family | Its levels | What each effort renders | Source |
 |---|---|---|---|
-| The Qwen 3.5 template family (`qwen3_5`, `qwen3_5_moe`, `prism_hadamard_qwen35`: Qwen 3.5, 3.6 and 3.8, Bonsai 2) and the owned Qwen 3.8 Flash-Next build | Qwen 3.8's `low`, `medium` and `xhigh` (its default), and a thinking switch | While thinking: `minimal` and `low` render `low`, `medium` renders `medium`, `high`, `xhigh` and `max` render `xhigh`, as the coordinator's first-party pool sends `high`. Thinking off: the effort as sent, which the template ignores. The 3.5, 3.6 and Bonsai templates read only the switch | `ReasoningEffortPolicy` (`qwen38Levels`, `templateEffort`), `Qwen4SupportPolicy.ownsEffortTemplate` |
-| GLM-5.3-Flash | `low`, `high` and `max` (its default); thinking off closes `<think>` | `minimal` and `low` render `low`, `medium` and `high` render `high`, `xhigh` and `max` render `max`, as the platform sidecar maps them | `GLM5NextPromptPolicy.Effort` |
-| Nemotron 3.5 Super | `medium_effort`, and the template's default depth | `minimal`, `low` and `medium` set `medium_effort`; `high`, `xhigh` and `max` keep the default | `NemotronSuperPromptContract.controls(body:)` |
-| MiMo V2.6, DiffusionGemma | one depth, and a thinking switch | Every effort but `none` thinks | `MiMoV26TemplateFix`, `DiffusionGemmaReasoningControl` |
+| The Qwen 3.5 template family (`qwen3_5`, `qwen3_5_moe`, `prism_hadamard_qwen35`: Qwen 3.5, 3.6 and 3.8, Bonsai 2) and the owned Qwen 3.8 Flash-Next build | Qwen 3.8's `low`, `medium` and `xhigh` (its default), and a thinking switch | While thinking: `minimal` and `low` render `low`, `medium` renders `medium`, `high`, `xhigh` and `max` render `xhigh`, as the coordinator's first-party pool sends `high`. Thinking off: the effort as sent, which the template ignores. The 3.5, 3.6 and Bonsai templates read only the switch | `ReasoningEffort.qwen38Level`, `ReasoningEffortPolicy.templateEffort`, `Qwen4SupportPolicy.ownsEffortTemplate` |
+| GLM-5.3-Flash | `low`, `high` and `max` (its default); thinking off closes `<think>` | `minimal` and `low` render `low`, `medium` and `high` render `high`, `xhigh` and `max` render `max`, as the platform sidecar maps them | `ReasoningEffort.glmLevel` (`GLM5NextPromptPolicy`) |
+| Nemotron 3.5 Super | `medium_effort`, and the template's default depth | `minimal`, `low` and `medium` set `medium_effort`; `high`, `xhigh` and `max` keep the default | `ReasoningEffort.nemotronSuperMediumEffort` (`NemotronSuperPromptContract.controls(body:)`) |
+| MiMo V2.6, DiffusionGemma | one depth, and a thinking switch | Every effort but `none` thinks | `ReasoningEffort.oneDepthThinking` (`MiMoV26TemplateFix`, `DiffusionGemmaReasoningControl`) |
 | Gemma 4, Nemotron 3.5 Lightning | a thinking switch | `none` switches thinking off; any other effort keeps the template's default (Gemma 4: off) | `MultiModelBatchSchedulerEngine.templateAdditionalContext` |
 | GPT-OSS | Harmony's `low`, `medium` and `high` | The effort as sent, except `high`, which renders `medium` | `GPTOSSHarmonyTemplateFix.effectiveReasoningEffort` |
 | Flint | none: Flint decides whether to reason | Every effort is taken, with no effect | `FlintRequestPolicy` |
@@ -3934,7 +3937,8 @@ minimal, low, medium, high, xhigh or max, exactly as written),
 `reasoning.enabled`, `enable_thinking` and
 `chat_template_kwargs.enable_thinking`/`thinking` with no effect on the
 prompt. Malformed values, unknown efforts (`invalid_reasoning_effort`),
-`preserve_thinking`, other reasoning keys and media are refused. When a request sets `reasoning.exclude` true,
+`preserve_thinking`, other reasoning
+keys and media are refused. When a request sets `reasoning.exclude` true,
 `include_reasoning` false or `reasoning.enabled` false, `NativeToolStreamRouter`
 withholds the generated reasoning, so chat completions, the Responses API and
 the coordinator relay return only content and tool calls. The withheld tokens

@@ -28,8 +28,8 @@ enum Qwen4SupportPolicy {
     }
 
     /// Whether a request renders this owned artifact's template, whose effort
-    /// contract the concrete Qwen3.8-27B builds share
-    /// (`ReasoningEffortPolicy.qwen38Levels`). Other Qwen4 artifacts may ship
+    /// levels the concrete Qwen3.8-27B builds share
+    /// (`ReasoningEffort.qwen38Level`). Other Qwen4 artifacts may ship
     /// different templates, so architecture identity alone is insufficient.
     static func ownsEffortTemplate(modelID: String, modelType: String?) -> Bool {
         (isOwnedModelID(modelID) && isQwen4ModelType(modelType))

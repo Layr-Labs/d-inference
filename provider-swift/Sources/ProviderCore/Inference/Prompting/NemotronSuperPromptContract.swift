@@ -23,9 +23,6 @@ enum NemotronSuperPromptContract {
         case unknownReasoningEffort(ReasoningEffortField)
     }
 
-    /// The template's two reasoning depths: `medium_effort`, and its default.
-    static let effortLevels: [ReasoningEffort] = [.medium, .high]
-
     /// Effective template and parser controls. Absent values take the pinned
     /// template's defaults; `forceNonemptyContent` is the ultra_v3 parser option.
     struct Controls: Equatable, Sendable {
@@ -125,8 +122,8 @@ enum NemotronSuperPromptContract {
     }
 
     /// The official template defaults thinking on even for images. Medium effort
-    /// is a separate template boolean, not the generic reasoning_effort key:
-    /// an effort renders the nearer of its two depths (`effortLevels`).
+    /// is a separate template boolean, not the generic reasoning_effort key: an
+    /// effort sets it by its row of `ReasoningEffort.nemotronSuperMediumEffort`.
     /// Contradictory spellings of one control are refused, never reconciled.
     static func controls(body: Data) throws -> Controls {
         let raw = try JSONDecoder().decode(RawControls.self, from: body)
@@ -149,9 +146,9 @@ enum NemotronSuperPromptContract {
         let enabled = raw.nestedEnabled ?? raw.enabled ?? !disabled
         if let explicit = raw.nestedEnabled ?? raw.enabled, effort != nil,
             explicit == disabled { throw Failure.conflictingControls }
-        let depth = disabled ? nil : effort?.level(in: effortLevels)
-        if let medium = raw.medium, let depth, medium != (depth == .medium) { throw Failure.conflictingControls }
-        let medium = raw.medium ?? (depth == .medium)
+        let effortMedium = effort?.nemotronSuperMediumEffort
+        if let medium = raw.medium, let effortMedium, medium != effortMedium { throw Failure.conflictingControls }
+        let medium = raw.medium ?? effortMedium ?? false
         guard !(medium && !enabled) else { throw Failure.conflictingControls }
         return Controls(enableThinking: enabled, mediumEffort: medium,
             truncateHistoryThinking: raw.truncate ?? true,

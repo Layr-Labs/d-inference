@@ -50,20 +50,10 @@ enum GLM5NextPromptPolicy {
     private static let contradictoryThinking =
         "thinking-off cannot be combined with a thinking-on switch, effort level or reasoning budget"
 
-    /// The template renders low, high or max. The other effort names map to
-    /// the nearest of those, rounding up between two
-    /// (`ReasoningEffort.level(in:)`), matching the platform prompt sidecar.
-    /// `none` and `off` turn thinking off; other values, spelled any other
-    /// way, are refused.
+    /// The levels the template renders (`max` is its default); an effort's
+    /// level is its row of `ReasoningEffort.glmLevel`.
     enum Effort: String, Sendable, Equatable {
         case low, high, max
-
-        static let disablingRequests: Set<String> = ["none", "off"]
-
-        init?(requested: String) {
-            guard let named = ReasoningEffort(rawValue: requested), named != ReasoningEffort.none else { return nil }
-            self.init(rawValue: named.level(in: [.low, .high, .max]).rawValue)
-        }
 
         /// A `reasoning.max_tokens` budget selects the nearest level using the
         /// budgets OpenAI-compatible APIs conventionally give `low` (1,024) and
@@ -71,6 +61,12 @@ enum GLM5NextPromptPolicy {
         init(reasoningBudget tokens: Int) {
             self = tokens <= 1024 ? .low : tokens <= 8192 ? .high : .max
         }
+    }
+
+    /// The effort a request names, read exactly as written, with `off` for
+    /// `none`; nil for any other value or spelling, which is refused.
+    private static func namedEffort(_ requested: String) -> ReasoningEffort? {
+        requested == "off" ? ReasoningEffort.none : ReasoningEffort(rawValue: requested)
     }
 
     /// Request-local original declarations survive the legacy model-blind
@@ -173,13 +169,13 @@ enum GLM5NextPromptPolicy {
                 ) throws -> Effort? {
                     guard try present(values, key, nullable: nullable) else { return nil }
                     let requested = try values.decode(String.self, forKey: Key(key))
-                    if Effort.disablingRequests.contains(requested) {
-                        result.disablesThinking = true
-                        return nil
-                    }
-                    guard let effort = Effort(requested: requested) else {
+                    guard let named = GLM5NextPromptPolicy.namedEffort(requested) else {
                         if result.invalidReason == nil { result.unknownEffort = field }
                         throw GLM5NextPromptPolicy.invalid("unsupported reasoning effort", .unsupportedReasoningControl)
+                    }
+                    guard let effort = named.glmLevel else {
+                        result.disablesThinking = true
+                        return nil
                     }
                     result.requestsThinking = true
                     return effort
@@ -403,12 +399,12 @@ enum GLM5NextPromptPolicy {
         var thinkingOn = raw.requestsThinking
         func checked(_ value: String?, _ field: ReasoningEffortField) throws -> Effort? {
             guard let value else { return nil }
-            if Effort.disablingRequests.contains(value) {
+            guard let named = namedEffort(value) else {
+                throw MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(field)
+            }
+            guard let effort = named.glmLevel else {
                 thinkingOff = true
                 return nil
-            }
-            guard let effort = Effort(requested: value) else {
-                throw MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(field)
             }
             thinkingOn = true
             return effort

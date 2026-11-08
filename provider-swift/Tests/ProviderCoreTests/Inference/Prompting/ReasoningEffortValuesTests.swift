@@ -13,7 +13,17 @@ import Testing
 struct ReasoningEffortValuesTests {
     static let efforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 
-    enum Spelling: CaseIterable { case topLevel, reasoningObject }
+    enum Spelling: CaseIterable {
+        case topLevel, reasoningObject
+
+        /// The field a refusal names.
+        var field: ReasoningEffortField {
+            switch self {
+            case .topLevel: .reasoningEffort
+            case .reasoningObject: .reasoningObject
+            }
+        }
+    }
 
     static func body(model: String, effort: String, _ spelling: Spelling) -> Data {
         let control = switch spelling {
@@ -29,6 +39,36 @@ struct ReasoningEffortValuesTests {
         _ = try ProviderPromptContractPipeline.tokenizeProviderBody(
             body(model: model, effort: effort, spelling), tokenizer: tokenizer, modelType: type)
         return try #require(tokenizer.contexts.last)
+    }
+
+    /// Every family's table (`ReasoningEffort.swift`) has a level for each of
+    /// the seven efforts, and each follows one rule: the effort's own level
+    /// where the family has it, else the next one up, and the family's highest
+    /// past them all, so `minimal` gets its lowest and `max` its highest.
+    /// `none` switches thinking off where the family can. The families without
+    /// a table take every name too. The tests below render each row.
+    @Test func everyFamilyTableCoversEveryEffort() throws {
+        #expect(ReasoningEffort.allCases.map(\.rawValue) == Self.efforts)
+        // The level `effort` selects among a family's `levels`, lowest first.
+        func rule(_ effort: String, _ levels: [String]) -> String {
+            let rank = { (name: String) in Self.efforts.firstIndex(of: name)! }
+            return levels.first { rank($0) >= rank(effort) } ?? levels[levels.count - 1]
+        }
+        let harmony = ChatTemplateFixContext(modelId: "gpt-oss-20b", modelType: "gpt_oss")
+        for name in Self.efforts {
+            let effort = try #require(ReasoningEffort(rawValue: name))
+            let thinks = name != "none"
+            #expect(effort.qwen38Level.rawValue == rule(name, ["low", "medium", "xhigh"]), "Qwen 3.8, \(name)")
+            #expect(effort.glmLevel?.rawValue == (thinks ? rule(name, ["low", "high", "max"]) : nil), "GLM, \(name)")
+            // Super's depths: `medium_effort`, then its default, ranked as `high`.
+            #expect(effort.nemotronSuperMediumEffort == (thinks ? rule(name, ["medium", "high"]) == "medium" : nil),
+                    "Super, \(name)")
+            #expect(effort.oneDepthThinking == thinks, "MiMo and DiffusionGemma, \(name)")
+            #expect(FlintRequestPolicy.acceptsEffort(name), "Flint, \(name)")
+            #expect(ReasoningEffort.switchesThinkingOff(name) == !thinks, "Gemma 4 and Lightning, \(name)")
+            #expect(GPTOSSHarmonyTemplateFix.effectiveReasoningEffort(name, context: harmony)
+                == (name == "high" ? "medium" : name), "GPT-OSS, \(name)")
+        }
     }
 
     /// The Qwen 3.8 template renders `low`, `medium` and `xhigh` and raises for
@@ -130,12 +170,14 @@ struct ReasoningEffortValuesTests {
     ]
 
     /// An effort that is none of the names is refused, never rendered or
-    /// silently ignored, by every model that reasons.
+    /// silently ignored, by every model that reasons, with the error that
+    /// names the field it came in.
     @Test func anUnknownEffortIsRefusedByEveryModelThatReasons() throws {
         for (model, type) in Self.reasoningModels {
             for spelling in Spelling.allCases {
                 let tokenizer = EffortContextTokenizer()
-                #expect(throws: (any Error).self, "\(type) \(spelling)") {
+                #expect(throws: MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(spelling.field),
+                        "\(type) \(spelling)") {
                     try ProviderPromptContractPipeline.tokenizeProviderBody(
                         Self.body(model: model, effort: "turbo", spelling), tokenizer: tokenizer, modelType: type)
                 }
@@ -143,9 +185,16 @@ struct ReasoningEffortValuesTests {
             }
         }
         for spelling in Spelling.allCases {
-            #expect(throws: (any Error).self) {
+            #expect(throws: NemotronSuperPromptContract.Failure.unknownReasoningEffort(spelling.field)) {
                 try NemotronSuperPromptContract.controls(body: Self.body(model: "m", effort: "turbo", spelling))
             }
+        }
+        // GLM-5.3-Flash also reads its template's own spelling.
+        let kwargs = #"{"model":"glm-5.3-flash","messages":[{"role":"user","content":"hi"}],"#
+            + #""chat_template_kwargs":{"reasoning_effort":"turbo"}}"#
+        #expect(throws: MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(.templateKwargs)) {
+            try ProviderPromptContractPipeline.tokenizeProviderBody(
+                Data(kwargs.utf8), tokenizer: EffortContextTokenizer(), modelType: "glm5_next")
         }
     }
 

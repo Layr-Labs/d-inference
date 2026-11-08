@@ -1886,7 +1886,9 @@ a pairing; **Pair again** and **Start over** in `darkbloom cluster`, and
 same steps (`ClusterUnpairing`). Run on the leader, it first tells the other Mac over the
 cable, which removes the pair's prompt-cache records (its own single-Mac cache
 stays) and stops its part; each Mac also removes its own pair records when it
-unpairs.
+unpairs. When the other Mac isn't reached, which it isn't once it left the pair,
+the leader says ``The other Mac was not reached (…). If that Mac is still paired,
+run `darkbloom cluster leave` there.``
 `darkbloom cluster stop --service` stops a Mac's cluster service and keeps it
 from starting at login. It stops the pair first, from either Mac. On the leader,
 when the other Mac's service is already off or does not answer, this Mac's

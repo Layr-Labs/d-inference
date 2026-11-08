@@ -8,8 +8,32 @@ import Testing
 private typealias F = ToolIntegrationFixtures
 
 /// A wait that never ends is a failure, not a hang: a fake local API process answers at most this many looks (2,500 s
-/// on the fake clock, past any deadline), then records an issue and presses Ctrl-C.
+/// on the fake clock, past any deadline), then records an issue, presses Ctrl-C and runs the clock out, so a wait ends
+/// even if it ignores one of the two.
 private let maximumLooks = 10_000
+
+/// A fake local API process and clock for a wait built by hand: `answer` gets each look's number (from 1).
+private final class FakeProcess: @unchecked Sendable {
+    let interrupt: InterruptWatch
+    let limit: Int
+    var looks = 0
+    var now: TimeInterval = 0
+
+    init(interrupt: InterruptWatch = InterruptWatch(), limit: Int = maximumLooks) {
+        self.interrupt = interrupt
+        self.limit = limit
+    }
+
+    func look(_ answer: (Int) -> ModelLoads?) -> ModelLoads? {
+        looks += 1
+        if looks == limit {
+            Issue.record("the wait never ended")
+            interrupt.press()
+            now += 1_000_000
+        }
+        return answer(looks)
+    }
+}
 
 /// A temp home with Darkbloom's key file, a clock that moves only between looks, a local API process that answers as
 /// scripted, and recorders for what the step says and what its live line draws. No tool runs, no port is bound, no
@@ -57,6 +81,7 @@ private final class WaitSandbox: @unchecked Sendable {
                 if looks == maximumLooks {
                     Issue.record("the wait never ended")
                     interrupt.press()
+                    now += 1_000_000
                 }
                 return answers[min(looks, answers.count - 1)]
             },
@@ -330,18 +355,12 @@ struct ModelLoadWaitTests {
 
     @Test("a model this Mac doesn't list, or one already loaded, isn't waited for")
     func onlyThisMacsLoadingModelsAreWaitedFor() async {
-        var looks = 0
-        let interrupt = InterruptWatch()
-        let wait = ModelLoadWait(loads: {
-            looks += 1
-            if looks == maximumLooks {
-                Issue.record("the wait never ended")
-                interrupt.press()
-            }
-            return ModelLoads(loaded: ["warm"], pending: ["warm", "elsewhere"])
-        }, clock: { 0 }, pause: {}, interrupt: interrupt)
+        let process = FakeProcess()
+        let answer = ModelLoads(loaded: ["warm"], pending: ["warm", "elsewhere"])
+        let wait = ModelLoadWait(loads: { process.look { _ in answer } }, clock: { process.now }, pause: {},
+                                 interrupt: process.interrupt)
         let outcome = await wait.run(thisMac: ["warm", "listed"], tools: [.opencode], name: { $0 }, say: { _ in })
-        #expect(outcome == .ready(waited: false, loaded: ["warm"]) && looks == 1)
+        #expect(outcome == .ready(waited: false, loaded: ["warm"]) && process.looks == 1)
         // This Mac lists none of its own (a relay): nothing to ask.
         #expect(await ModelLoadWait(loads: { Issue.record("asked"); return nil }).run(
             thisMac: [], tools: [.opencode], name: { $0 }, say: { _ in }) == .ready(waited: false))
@@ -368,35 +387,29 @@ struct ModelLoadWaitTests {
         // SIGUSR2 stands in for SIGINT, as above.
         let before = signal(SIGUSR2, SIG_DFL)
         defer { signal(SIGUSR2, before) }
-        let watch = InterruptWatch(signal: SIGUSR2)
+        let process = FakeProcess(interrupt: InterruptWatch(signal: SIGUSR2))
         var held: [Bool] = []
         let wait = ModelLoadWait(loads: {
-            held.append(ProviderStopSignals.isIgnored(SIGUSR2))
-            if held.count == maximumLooks {
-                Issue.record("the wait never ended")
-                watch.press()
+            process.look { look in
+                held.append(ProviderStopSignals.isIgnored(SIGUSR2))
+                return look < 3 ? ModelLoads(pending: ["a"]) : ModelLoads(loaded: ["a"])
             }
-            return held.count < 3 ? ModelLoads(pending: ["a"]) : ModelLoads(loaded: ["a"])
-        }, clock: { 0 }, pause: {}, interrupt: watch)
+        }, clock: { process.now }, pause: {}, interrupt: process.interrupt)
         #expect(await wait.run(thisMac: ["a"], tools: [.opencode], name: { $0 }, say: { _ in })
             == .ready(waited: true, loaded: ["a"]))
         #expect(held == [true, true, true], "the wait has the signal at every look")
         #expect(!ProviderStopSignals.isIgnored(SIGUSR2), "and gives it back")
 
         // The signal stops the wait. Raised only once the wait has it: the default action would end the test process.
-        let raised = InterruptWatch(signal: SIGUSR2)
-        var looks = 0
+        let raised = FakeProcess(interrupt: InterruptWatch(signal: SIGUSR2), limit: 2_000)
         let stopped = ModelLoadWait(loads: {
-            looks += 1
-            if looks == 2 {
-                if ProviderStopSignals.isIgnored(SIGUSR2) { raise(SIGUSR2) } else { Issue.record("the wait hasn't it") }
+            raised.look { look in
+                if look == 2 {
+                    if ProviderStopSignals.isIgnored(SIGUSR2) { raise(SIGUSR2) } else { Issue.record("the wait hasn't it") }
+                }
+                return ModelLoads(pending: ["a"])
             }
-            if looks == 2_000 {
-                Issue.record("the signal never stopped the wait")
-                raised.press()
-            }
-            return ModelLoads(pending: ["a"])
-        }, clock: { 0 }, pause: { try? await Task.sleep(for: .milliseconds(5)) }, interrupt: raised)
+        }, clock: { raised.now }, pause: { try? await Task.sleep(for: .milliseconds(5)) }, interrupt: raised.interrupt)
         #expect(await stopped.run(thisMac: ["a"], tools: [.opencode], name: { $0 }, say: { _ in })
             == .interrupted(model: "a"))
         #expect(!ProviderStopSignals.isIgnored(SIGUSR2), "given back after a stop too")

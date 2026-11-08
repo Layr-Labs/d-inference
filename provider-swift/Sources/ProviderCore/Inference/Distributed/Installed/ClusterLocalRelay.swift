@@ -41,14 +41,18 @@ public final class ClusterLocalRelay: @unchecked Sendable {
     private let listener: Int32
     private let lock = NSLock()
     private var stopped = false
+    /// Rank 0's Mac is away, as the cluster service finds it (`setAway`): each client gets the 503 at once.
+    private var away = false
+    /// The words of the relay's 503s (`setRefusals`).
+    private var refusals: Refusals
     private var open: Set<Int32> = []
     private var connections = 0
     /// Signalled when the accept thread has closed the listener (the port is free again).
     private let listenerClosed = DispatchSemaphore(value: 0)
 
     /// Listens on `bind` (IPv4) at `port` (nil when it cannot: another program holds it) and passes each connection
-    /// to `target`.
-    public init?(port: Int, bind: String = "0.0.0.0", target: Target, keys: Keys? = nil) {
+    /// to `target`, or answers it a 503 in `refusals`' words when it can't.
+    public init?(port: Int, bind: String = "0.0.0.0", target: Target, keys: Keys? = nil, refusals: Refusals = .generic) {
         guard (1...65_535).contains(port), (1...65_535).contains(target.port) else { return nil }
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
@@ -64,7 +68,7 @@ public final class ClusterLocalRelay: @unchecked Sendable {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
         }
         guard bound == 0, listen(fd, 64) == 0 else { close(fd); return nil }
-        self.port = port; self.target = target; self.keys = keys; listener = fd
+        self.port = port; self.target = target; self.keys = keys; self.refusals = refusals; listener = fd
         Thread.detachNewThread { [self] in acceptLoop() }
     }
 
@@ -84,6 +88,14 @@ public final class ClusterLocalRelay: @unchecked Sendable {
     }
 
     public var isStopped: Bool { lock.withLock { stopped } }
+
+    /// Whether rank 0's Mac is away: while it is, each client is answered the 503 for an unreachable Mac at once, and
+    /// relaying resumes by itself once the cluster service finds that Mac back.
+    public func setAway(_ away: Bool) { lock.withLock { self.away = away } }
+    public var isAway: Bool { lock.withLock { away } }
+
+    /// The words of the relay's 503s, as the cluster service names the pair's other Mac.
+    public func setRefusals(_ refusals: Refusals) { lock.withLock { self.refusals = refusals } }
 
     /// Registers a descriptor this relay may shut down; false (the caller closes it) once stopped.
     private func track(_ fd: Int32) -> Bool {

@@ -27,6 +27,9 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
         /// as it was), nil before the first such end and from an older build.
         public var lastRunSeconds: Double? = nil
         public var solo: Bool? = nil
+        /// While it runs: the port it listens on, rank 0's API or the solo server's (this Mac's own saved port, else the
+        /// earlier rule's); nil for any other part, and from an older build.
+        public var port: Int? = nil
         /// While it runs: `ClusterLocalServing.notice` when this part (rank 0) serves on its local API only because the
         /// coordinator cannot take the cluster member role; nil when it serves publicly or is not rank 0.
         public var notice: String? = nil
@@ -96,6 +99,10 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
     /// Darkbloom doesn't have the pair (`ClusterLocalRelay.rankZeroAnswersOnItsMacOnly`), so this Mac passes nothing on.
     /// Nil otherwise, and from an older build.
     public var relayWaitsForOffer: Bool? = nil
+    /// On a Mac whose relay passes the pair's API: rank 0's Mac can't be reached now (an ask of it failed, or it hasn't
+    /// answered over the cable for `ClusterService.otherMacSilentSeconds`), so the relay answers each request a 503 that
+    /// says so (`ClusterLocalRelay.Refusals`). Nil otherwise, and from an older build.
+    public var relayRankZeroAway: Bool? = nil
     /// This Mac's coordinator-paired parts that ended in a row right after starting (`ClusterApprovalCheck`); the
     /// control leader makes the pair serve locally when either Mac's count reaches the solo server's limit. Nil from an
     /// older build.

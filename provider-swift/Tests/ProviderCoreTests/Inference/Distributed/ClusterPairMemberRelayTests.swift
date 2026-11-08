@@ -46,12 +46,30 @@ private enum RelaySockets {
         return port
     }
 
-    static func relay(to port: Int, keys: ClusterLocalRelay.Keys?) throws -> ClusterLocalRelay {
+    static func relay(to port: Int, keys: ClusterLocalRelay.Keys?,
+                      refusals: ClusterLocalRelay.Refusals = .generic) throws -> ClusterLocalRelay {
         for _ in 0..<8 {
             if let relay = ClusterLocalRelay(port: try freePort(), bind: "127.0.0.1",
-                                             target: .init(host: "127.0.0.1", port: port), keys: keys) { return relay }
+                                             target: .init(host: "127.0.0.1", port: port), keys: keys, refusals: refusals) { return relay }
         }
         throw RelayCheckFailure("the relay did not listen on a loopback port")
+    }
+
+    /// One whole exchange through `port`: the request, this client's half-close, then everything the other side sends
+    /// until it closes.
+    static func exchange(_ port: Int, _ request: String) throws -> String {
+        let client = try connect(port)
+        defer { close(client) }
+        write(client, request)
+        shutdown(client, SHUT_WR)
+        return read(client)
+    }
+
+    /// The `error` object of an answer's JSON body.
+    static func error(in answer: String) throws -> [String: String] {
+        let body = try #require(answer.range(of: "\r\n\r\n").map { String(answer[$0.upperBound...]) }, "no body: \(answer)")
+        let object = try #require(try JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any], "\(body)")
+        return try #require(object["error"] as? [String: String], "\(body)")
     }
 
     /// A client connection whose reads give up after `readTimeout` seconds, so a check whose answer never ends fails
@@ -425,6 +443,116 @@ struct ClusterPairMemberRelayTests {
             try ClusterService.ownAPIPort(configPath: missing, ownLivePort: { nil }, installedPort: { nil }, isFree: { _ in true })
         }
         #expect(!FileManager.default.fileExists(atPath: missing.path), "the service writes no provider config")
+    }
+
+    // MARK: - Rank 0's Mac away
+
+    /// The words of a relay's 503s name the pair's other Mac, and say what to do: wait, or serve this Mac alone. While
+    /// that Mac is away this Mac's part keeps its serving lock, so serving alone takes `stop` first.
+    @Test func theRelaysWordsNameTheOtherMacAndWhatToDo() {
+        let words = ClusterLocalRelay.Refusals.pair(otherMac: "Apple M3 Ultra, 256 GB", cli: "darkbloom")
+        #expect(words.unreachable == "Your pair's other Mac (Apple M3 Ultra, 256 GB) isn't reachable; this Mac relays to it. "
+            + "Requests resume when it's back, or run `darkbloom stop`, then `darkbloom start --solo`, to serve this Mac alone.")
+        #expect(words.notAnswering == "The pair's API on your pair's other Mac (Apple M3 Ultra, 256 GB) isn't answering yet; "
+            + "this Mac relays to it. Requests resume when it answers.")
+        #expect(ClusterLocalRelay.Refusals.pair(otherMac: nil, cli: "darkbloom-dev").unreachable
+            .hasPrefix("Your pair's other Mac isn't reachable; this Mac relays to it."))
+    }
+
+    /// While rank 0's Mac is away the relay answers every request a typed 503 at once, in words that name the other Mac,
+    /// never a connection that just closes, and rank 0 never sees the request. Once that Mac is back, it relays again.
+    @Test func aRelayWhoseRankZeroIsAwayAnswersA503ThenRelaysAgain() throws {
+        let api = try RecordingAPI()
+        defer { api.stop() }
+        let words = ClusterLocalRelay.Refusals.pair(otherMac: "Apple M3 Ultra, 256 GB", cli: "darkbloom")
+        let relay = try RelaySockets.relay(to: api.port, keys: relayKeys, refusals: words)
+        defer { relay.stop() }
+        let body = #"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#
+        let request = "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer \(ownKey)\r\n"
+            + "Content-Length: \(body.utf8.count)\r\n\r\n\(body)"
+        relay.setAway(true)
+        #expect(relay.isAway)
+        let away = try RelaySockets.exchange(relay.port, request)
+        #expect(away.hasPrefix("HTTP/1.1 503 "), "\(away)")
+        #expect(away.lowercased().contains("content-type: application/json\r\n"), "\(away)")
+        let error = try RelaySockets.error(in: away)
+        #expect(error["code"] == ClusterLocalRelay.unreachableCode && error["message"] == words.unreachable, "\(error)")
+        #expect(error["type"] == "server_error")
+        #expect(api.received.isEmpty, "rank 0 never saw the request")
+        relay.setAway(false)
+        let back = try RelaySockets.exchange(relay.port, request)
+        #expect(back.hasPrefix("HTTP/1.1 200 "), "\(back)")
+        #expect(api.received.count == 1 && api.received.first?.contains("Bearer \(pairKey)") == true, "\(api.received)")
+    }
+
+    /// A connection rank 0 refuses (its Mac answers, its API doesn't listen, as while it starts again) is answered a 503
+    /// that says so, never a connection that just closes.
+    @Test func aRankZeroAPIThatDoesNotListenIsA503NeverAClose() throws {
+        let words = ClusterLocalRelay.Refusals.pair(otherMac: "Apple M3 Ultra, 256 GB", cli: "darkbloom")
+        let relay = try RelaySockets.relay(to: try RelaySockets.freePort(), keys: relayKeys, refusals: words)
+        defer { relay.stop() }
+        let answer = try RelaySockets.exchange(relay.port, "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        #expect(answer.hasPrefix("HTTP/1.1 503 "), "\(answer)")
+        let error = try RelaySockets.error(in: answer)
+        #expect(error["code"] == ClusterLocalRelay.notAnsweringCode && error["message"] == words.notAnswering, "\(error)")
+    }
+
+    /// Rank 0's Mac is away for the relay after the first failed ask of it, or once it hasn't answered over the cable for
+    /// `otherMacSilentSeconds`; back once an ask succeeds and it answers again.
+    @Test func rankZerosMacIsAwayAfterAFailedAskOrItsSilence() {
+        let silent = ClusterService.otherMacSilentSeconds
+        #expect(ClusterService.relayAway(askFailures: 1, otherAnsweredAt: 100, now: 101), "the first failed ask")
+        #expect(!ClusterService.relayAway(askFailures: 0, otherAnsweredAt: 100, now: 105))
+        #expect(ClusterService.relayAway(askFailures: 0, otherAnsweredAt: 100, now: 100 + silent + 1), "silent over the cable")
+        #expect(!ClusterService.relayAway(askFailures: 0, otherAnsweredAt: nil, now: 1_000),
+                "no answer yet in this service's life: the asks decide")
+    }
+
+    /// A cluster service with no pair, whose provider configuration holds `providerConfiguration` (none when nil).
+    private static func service(providerConfiguration text: String?) throws -> (ClusterService, URL) {
+        let home = try NativePairMemberFixture.privateRoot()
+        let provider = home.appendingPathComponent("provider.toml")
+        if let text { try text.write(to: provider, atomically: true, encoding: .utf8) }
+        let wizard = ClusterSetupOperations.LiveSettings(providerConfiguration: provider,
+            darkbloomExecutable: URL(fileURLWithPath: "/usr/bin/true"), sessionArguments: [], pair: nil, dryRun: true,
+            version: "fixture")
+        let service = ClusterService(settings: .init(wizard: wizard, leaderArguments: [], followerArguments: []),
+                                     paths: try ClusterUserPaths(homeDirectory: home))
+        return (service, home)
+    }
+
+    /// The service's status says why this Mac's relay passes nothing: rank 0 answers on its own Mac only, this Mac's
+    /// port is held, or rank 0's Mac is away; each only while this Mac would relay.
+    @Test func theServicesStatusSaysWhyItsRelayPassesNothing() throws {
+        let (service, home) = try Self.service(providerConfiguration: nil)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let quiet = service.status()
+        #expect(quiet.relayWaitsForOffer == nil && quiet.relayPortHeld == nil && quiet.relayRankZeroAway == nil)
+        service.lock.withLock { service.relayState = .init(host: "10.219.1.1", waitsForOffer: true) }
+        #expect(service.status().relayWaitsForOffer == true)
+        let target = ClusterLocalRelay.Target(host: "10.219.1.1", port: 8002)
+        service.lock.withLock { service.relayState = .init(host: "10.219.1.1", held: .init(target: target, port: 8001, retryAt: Date())) }
+        #expect(service.status().relayPortHeld == 8001)
+        service.lock.withLock { service.relayState = .init(host: "10.219.1.1", askFailures: 1, away: true) }
+        #expect(service.status().relayRankZeroAway == true)
+        service.lock.withLock { service.relayState = .init(host: nil, waitsForOffer: true, askFailures: 1, away: true) }
+        let none = service.status()
+        #expect(none.relayWaitsForOffer == nil && none.relayRankZeroAway == nil, "only while this Mac would relay")
+    }
+
+    /// The cluster service starts this Mac's relay on this Mac's own saved port (`LocalAPIPort.thisMac`), whatever rank
+    /// 0's port is.
+    @Test func theServiceStartsTheRelayOnThisMacsSavedPort() throws {
+        let saved = try RelaySockets.freePort()
+        let (service, home) = try Self.service(providerConfiguration: "[provider]\nname = \"m\"\n\n[local]\nport = \(saved)\n")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let api = try RecordingAPI()
+        defer { api.stop() }
+        let started = service.startRelay(to: .init(host: "127.0.0.1", port: api.port), scope: Self.both, keys: relayKeys,
+                                         say: { _ in })
+        let relay = try #require(started)
+        defer { relay.stop() }
+        #expect(relay.port == saved && relay.port != api.port)
     }
 
     // MARK: - The keys

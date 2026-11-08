@@ -17,6 +17,12 @@ struct ClusterPairMemberRelayCLITests {
     /// A member (its part isn't rank 0) of a pair serving Both, me first, with the pair's API on `bind`.
     private func member(relaying: ClusterPairLocalAPI.Address? = .init(host: "0.0.0.0", port: 8003),
                         bind: String? = "0.0.0.0") -> ClusterPairSummary {
+        Self.memberSummary(relaying: relaying, bind: bind)
+    }
+
+    /// The same, for an exit test's body, which captures nothing.
+    static func memberSummary(relaying: ClusterPairLocalAPI.Address? = .init(host: "0.0.0.0", port: 8003),
+                              bind: String? = "0.0.0.0") -> ClusterPairSummary {
         var pair = ClusterPairSummary(paired: true, role: .member, otherMacName: "Apple M5 Ultra, 256 GB", modelID: "qwen",
                                       modelName: "Qwen 3.8 27B", started: true, serviceRunning: true, state: .serving)
         pair.lines = ["Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel)."]
@@ -25,6 +31,9 @@ struct ClusterPairMemberRelayCLITests {
         pair.relaying = relaying
         return pair
     }
+
+    /// The relay's words while the other Mac is away, as the 503 says them.
+    static let awayWords = ClusterLocalRelay.Refusals.pair(otherMac: "Apple M5 Ultra, 256 GB", cli: ClusterPairSummary.cli).unreachable
 
     // MARK: - status
 
@@ -68,6 +77,20 @@ struct ClusterPairMemberRelayCLITests {
                 + "or set another `[local] port` in provider.toml, then `\(ClusterPairSummary.cli) restart`",
             neutral,
         ])
+    }
+
+    /// While rank 0's Mac can't be reached, the member's relay answers each request a 503, and its `status` says the
+    /// same words: its address answers 503 for now, why, and what to do.
+    @Test func aMembersStatusSaysItsPairsOtherMacIsAway() {
+        var away = member()
+        away.relayRankZeroAway = true
+        #expect(away.localAPILines(now: F.now, timeZone: F.utc) == [
+            "Local API: http://127.0.0.1:8003/v1 on this Mac answers 503 for now. \(Self.awayWords)",
+            "Members: \(Self.other) runs the pair's API; this Mac is part of the pair",
+        ])
+        away.relayRankZeroAway = false
+        #expect(away.localAPILines(now: F.now, timeZone: F.utc).first?.hasPrefix("Local API: http://127.0.0.1:8003/v1 on this Mac,") == true,
+                "back: its address again")
     }
 
     /// The Mac that runs the pair's API says the other Mac answers on its own port too, once the API is on every address:
@@ -134,6 +157,59 @@ struct ClusterPairMemberRelayCLITests {
         #expect(stdout.contains("---key file: local_token"), "tools read this Mac's own key file")
     }
 
+    /// `darkbloom local` on a member without its own address says why, as `status` does, and never shows the pair's key
+    /// (its API doesn't take it there): while Darkbloom doesn't have the pair, and while another program holds its port.
+    @Test func localOnAMemberSaysWhyItHasNoAddress() async throws {
+        for state in ["offer", "held"] {
+            let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
+                [state = state as String] in
+                let directory = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("member-relay-local-\(UUID().uuidString)", isDirectory: true)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                setenv("DARKBLOOM_LOCAL_DIR", directory.path, 1)
+                try "dk-local-PairKeyBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+                    .write(to: directory.appendingPathComponent("cluster_local_token"), atomically: true, encoding: .utf8)
+                var pair = ClusterPairMemberRelayCLITests.memberSummary(relaying: nil)
+                if state == "held" { pair.relayPortHeld = 8001 } else { pair.relayWaitsForOffer = true }
+                let summary = pair
+                ClusterPairSummary.processReaderForTesting = { _ in summary }
+                var command = try Local.parse([])
+                do { try await command.run() } catch { exit(1) }
+                exit(0)
+            }
+            let stderr = String(decoding: result?.standardErrorContent ?? [], as: UTF8.self)
+            let expected = state == "held"
+                ? "Local API: port 8001 on this Mac is held by another program, so this Mac doesn't answer for the pair"
+                : "Local API: none on this Mac while Darkbloom doesn't have the pair"
+            #expect(stderr.contains(expected), "\(state): \(stderr)")
+            #expect(!stderr.contains("PairKey") && !stderr.contains("No local server running"), "\(state): \(stderr)")
+        }
+    }
+
+    /// `darkbloom local` on a member whose pair's other Mac can't be reached shows its address, and says it answers 503
+    /// for now, in the 503's words.
+    @Test func localOnAMemberWhosePairsOtherMacIsAwaySaysSo() async throws {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("member-relay-local-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            setenv("DARKBLOOM_LOCAL_DIR", directory.path, 1)
+            let own = "dk-local-MemberOwnKeyAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            try own.write(to: directory.appendingPathComponent("local_token"), atomically: true, encoding: .utf8)
+            try LocalEndpoint.writeInfo(ClusterService.relayDiscovery(port: 8003, keys: .init(own: own, pair: own)))
+            var pair = ClusterPairMemberRelayCLITests.memberSummary()
+            pair.relayRankZeroAway = true
+            let summary = pair
+            ClusterPairSummary.processReaderForTesting = { _ in summary }
+            var command = try Local.parse([])
+            try await command.run()
+            exit(0)
+        }
+        let stdout = String(decoding: result?.standardOutputContent ?? [], as: UTF8.self)
+        #expect(stdout.contains("  base URL: http://127.0.0.1:8003/v1\n"), "\(stdout)")
+        #expect(stdout.contains("Local API: http://127.0.0.1:8003/v1 on this Mac answers 503 for now. \(Self.awayWords)"), "\(stdout)")
+    }
+
     // MARK: - start --opencode on a member
 
     /// The tools on a member point at its own relay, with its own key file, and say where its requests go: to the pair,
@@ -172,6 +248,27 @@ struct ClusterPairMemberRelayCLITests {
         #expect(ToolIntegrationStep.pairAPIElsewhere([.opencode], bind: "127.0.0.1") == "✗ The pair's local API listens "
             + "on the Mac that runs it only (127.0.0.1), so OpenCode wasn't set up on this Mac: run `darkbloom "
             + "--opencode` on that Mac.")
+    }
+
+    /// `--opencode` on a member that has no working address for the pair says why at once, as `status` does, instead of
+    /// waiting for an answer that can't come: while Darkbloom doesn't have the pair, its port held, or the other Mac away.
+    @Test func openCodeOnAMemberSaysAtOnceWhyItHasNoAddress() async throws {
+        var waiting = member(relaying: nil), held = member(relaying: nil), away = member()
+        waiting.relayWaitsForOffer = true
+        held.relayPortHeld = 8001
+        away.relayRankZeroAway = true
+        for pair in [waiting, held, away] {
+            let sandbox = try ToolSandbox()
+            await #expect(throws: ExitCode.failure) {
+                try await Start.parse(["--opencode", "--config", sandbox.config.path])
+                    .setUpToolsBesidePair(pair: pair, waitForAPI: { sandbox.waited(); return .notUp }, step: sandbox.step())
+            }
+            #expect(sandbox.waits == 0, "said at once, without the wait")
+            #expect(sandbox.said.isEmpty && !FileManager.default.fileExists(atPath: sandbox.openCodeFile.path))
+        }
+        #expect(ToolIntegrationStep.noMemberAddress([.opencode], localAPI: "none on this Mac while Darkbloom doesn't have the pair")
+            == "✗ OpenCode wasn't set up on this Mac. Local API: none on this Mac while Darkbloom doesn't have the pair. Run "
+                + "`darkbloom --opencode` again once this Mac answers.")
     }
 
     /// A member whose API doesn't answer within the wait says why: with the pair's API on every address its relay isn't

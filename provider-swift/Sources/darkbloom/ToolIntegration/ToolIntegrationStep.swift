@@ -259,6 +259,13 @@ struct ToolIntegrationStep {
             + "`\(command(tools))` on that Mac."
     }
 
+    /// The line on a Mac of a pair that has no working address for the pair now, said at once: its `status` line's
+    /// words (`localAPI`, after "Local API: ").
+    static func noMemberAddress(_ tools: [IntegrationTool], localAPI: String) -> String {
+        "✗ \(notSetUp(tools)) on this Mac. Local API: \(localAPI)\(localAPI.hasSuffix(".") ? "" : ".") Run "
+            + "`\(command(tools))` again once this Mac answers."
+    }
+
     /// The line beside a running local API without a key (`--no-auth`), which tools can't use.
     static func keyless(port: UInt16) -> String {
         "✗ Darkbloom's local API on :\(port) has no key (--no-auth); tools need one: start it without --no-auth."

@@ -80,6 +80,9 @@ struct ClusterPairSummary: Sendable, Equatable {
     /// pair (`relayWaitsForOffer`).
     var relayPortHeld: Int?
     var relayWaitsForOffer = false
+    /// Rank 0's Mac can't be reached now, so this Mac's relay answers each request a 503 that says so
+    /// (`ClusterServiceStatus.relayRankZeroAway`).
+    var relayRankZeroAway = false
 
     /// The pair's API listens on every address, so every Mac that doesn't run it relays it on its own port
     /// (`ClusterServingScope.answersOnEveryMac`).

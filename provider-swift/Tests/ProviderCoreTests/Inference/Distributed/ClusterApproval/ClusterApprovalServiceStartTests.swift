@@ -74,6 +74,14 @@ struct ClusterApprovalServiceStartTests {
         return (macs, service, parts)
     }
 
+    /// The arguments each part of `role` was started with (the fixture records them, one a line), in order.
+    private func arguments(_ parts: URL, _ role: String) -> [[String]] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: parts.path)) ?? []).sorted()
+            .filter { $0.hasPrefix(role + "-") && $0.hasSuffix(".args") }
+            .compactMap { try? String(contentsOf: parts.appendingPathComponent($0), encoding: .utf8) }
+            .map { $0.components(separatedBy: "\n") }
+    }
+
     private func started(_ parts: URL, _ role: String) -> Bool {
         ((try? FileManager.default.contentsOfDirectory(atPath: parts.path)) ?? []).contains { $0.hasPrefix(role + "-") && $0.hasSuffix(".ready") }
     }
@@ -114,6 +122,10 @@ struct ClusterApprovalServiceStartTests {
         let (reached, lines) = run(service, parts: parts) { started(parts, "leader") }
         #expect(reached, "the part that serves locally did not start: \(lines)")
         #expect(!started(parts, "member"), "an ended approval was offered to the coordinator")
+        // Its local API takes this Mac's own saved port (`LocalAPIPort.thisMac`), as every local API here does.
+        let port = String(ClusterApprovalMacs.savedPort)
+        #expect(arguments(parts, "leader").contains { zip($0, $0.dropFirst()).contains { $0 == "--port" && $1 == port } },
+                "\(arguments(parts, "leader"))")
         #expect(try macs.saved(macs.leader).configuration.nativeMember == nil, "the ended approval stayed saved")
         #expect(lines.contains { $0.contains("expired: saved this Mac's setup without it") }, "\(lines)")
     }

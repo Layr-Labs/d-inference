@@ -49,7 +49,7 @@ extension Start {
         let providerConfig = FileManager.default.fileExists(atPath: configPath.path)
             ? try? ConfigManager.load(from: configPath) : nil
         let router = LocalRouterConfig.pairLeaderOutsideDarkbloom(
-            local: providerConfig?.local, settingsFile: nil, coordinatorURL: coordinatorURL ?? providerConfig?.coordinator.url)
+            local: providerConfig?.local, settingsFile: configPath, coordinatorURL: coordinatorURL ?? providerConfig?.coordinator.url)
         let server = DistributedLocalServer(
             session: session, config: .init(host: bind, port: port, authToken: token, router: router),
             firstTokenBudgetPolicy: budget, batchReplacement: { try await batching.replacement(for: $0) })

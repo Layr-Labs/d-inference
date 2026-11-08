@@ -916,20 +916,26 @@ Each takes `-c`, `--config` (the `provider.toml` to save in) and writes only
 and `darkbloom start --route`. It then says what the route means; with
 `my-macs-first`, that requests from other machines (your LAN or tailnet) never
 use the paid network ([the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
-The same choice again writes nothing: `✓ Already saved: [local] route = "my-macs".`
+The same choice again writes nothing (`✓ Already saved. …`).
 
 - **Without a saved account key,** `my-macs` and `my-macs-first` save nothing
   and exit 1: ``✗ Not saved: `darkbloom route my-macs` passes your requests on
   with your account API key, and this Mac has none saved.``, then the command
   that saves one (`darkbloom route key`) and the one to run again. It only asks
   whether a key is saved; it never reads or prints one.
-- **A local API running now** read its route when it started, so it keeps that
-  route until it starts again: the command says `darkbloom restart`. One
-  without a local key (`--no-auth`) keeps every request on this Mac, whatever
-  the route, and the command says so.
-- **On the Mac that follows in a two-Mac cluster,** the pair's API passes
-  requests on as the leading Mac's route says: the route is saved for this Mac,
-  and the command says to run it on the leading Mac for the pair.
+- **A local API running now uses it from its next request,** with no restart
+  and no model reload: `✓ Saved. Your local API uses it now.` With none
+  running: `✓ Saved. It applies when your local API starts.` Its router reads
+  `[local] route` again when `provider.toml` changes
+  ([the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
+  One without a local key (`--no-auth`) keeps every request on this Mac,
+  whatever the route, and the command says so.
+- **In a two-Mac cluster,** the leading Mac's route applies: the pair's local
+  API runs there and passes on what the pair can't take, including requests
+  the other Mac forwards to it. On the leading Mac the command says so; on the
+  other Mac it saves the route for when that Mac serves alone (``It applies
+  when this Mac serves alone (`darkbloom start --solo`).``) and names the
+  command to run on the leading Mac.
 - A `provider.toml` that doesn't load is refused with its reason, and nothing
   is written (exit 1).
 
@@ -955,8 +961,15 @@ never printed (`RouteKeyFlow`, `provider-swift/Sources/darkbloom/RouteCommand.sw
 `KeychainLocalRouterAccountKeyStore`). After it saves or removes the key, it
 posts the Darwin notification `<keychain prefix>.route-key-changed`: a running
 local API keeps the key in memory and reads it again on its next request that
-needs it. When the local API running now has no local key (`--no-auth`), it
-says that this API keeps every request on this Mac and never uses the key. ^C at the hidden prompt gives the terminal its echo
+needs it, so it says `Your local API uses it now.` (or, with none running, `It
+applies when your local API starts.`). A key removed while the route passes
+requests on says what the next request does: ``Your local API uses it now.
+From its next request, one this Mac can't take gets this Mac's own answer
+instead of going to your other Macs or the Darkbloom network.`` On the Mac that
+follows in a two-Mac cluster, it says that the pair's local API passes requests
+on with the leading Mac's key, and to run `darkbloom route key` there. When the
+local API running now has no local key (`--no-auth`), it says that this API
+keeps every request on this Mac and never uses the key. ^C at the hidden prompt gives the terminal its echo
 back before the command ends (`HiddenReadSignals`). See
 [the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router).
 

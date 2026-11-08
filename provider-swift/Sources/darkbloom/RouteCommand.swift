@@ -15,8 +15,8 @@ struct Route: AsyncParsableCommand {
         This Mac's local API answers your requests first. A request it can't take stays on this Mac (`this-mac`), \
         goes on to your other Macs, free (`my-macs`), or to your other Macs and then the Darkbloom network, billed \
         (`my-macs-first`). Requests from other machines never use the paid network. `my-macs` and `my-macs-first` \
-        need your account API key, saved with `route key`. The choice is saved in [local] route; a running local API \
-        takes it when it starts again.
+        need your account API key, saved with `route key`. The choice is saved in [local] route, and a running local \
+        API uses it, and the key, from its next request: no restart.
         """,
         subcommands: [RouteThisMac.self, RouteMyMacs.self, RouteMyMacsFirst.self, RouteKey.self]
     )
@@ -127,8 +127,9 @@ struct RouteKeyFlow {
             say("The running local API has no local key (--no-auth): it keeps every request on this Mac and never "
                 + "uses the account key.")
         } else {
-            say("A running local API uses it from its next request that needs it; no restart is needed.")
+            say(RouteSaved.when(running: localAPIRunning, pair: pair))
         }
+        if let pair { say(RouteSaved.pairKeyLine(pair)) }
         return 0
     }
 
@@ -141,6 +142,16 @@ struct RouteKeyFlow {
         }
         say("✓ Account key removed from this Mac's Keychain.")
         for line in Self.routeLines(savedRoute: savedRoute, keySaved: false) { say(line) }
+        // A local API without a local key (`--no-auth`) never used the key, so nothing changes for it. Any other stops
+        // passing requests on from its next one: what the key let the route do.
+        let wentOn = LocalSettings(route: savedRoute).resolvedRoute(accountKeySaved: true)
+        if localAPIRunning, pair?.follows != true, wentOn != .thisMac {
+            say("\(RouteSaved.usesItNow) From its next request, one this Mac can't take gets this Mac's own answer "
+                + "instead of going to your other Macs" + (wentOn == .myMacsFirst ? " or the Darkbloom network." : "."))
+        } else if !liveEndpointHasNoLocalKey {
+            say(RouteSaved.when(running: localAPIRunning, pair: pair))
+        }
+        if let pair { say(RouteSaved.pairKeyLine(pair)) }
         return 0
     }
 

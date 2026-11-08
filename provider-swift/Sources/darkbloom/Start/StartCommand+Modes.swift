@@ -142,7 +142,7 @@ extension Start {
                 mtpAcceptanceByModel: config.backend.mtpAcceptanceByModel,
                 coordinatorURL: config.coordinator.url,
                 // `--local` never registers with the coordinator, so a `self` request can't come back to it.
-                router: .host(local: config.local, settingsFile: nil,
+                router: .host(local: config.local, settingsFile: snapshot.configPath,
                               coordinatorURL: coordinatorURL ?? config.coordinator.url, takesCoordinatorWork: false)
             ),
             models: advertised
@@ -431,7 +431,7 @@ extension Start {
         print("Local endpoint: \(serving.baseURL)\(token != nil ? "  (API key from `\(BuildEnvironment.current.cliName) local`)" : "  (auth disabled: requests stay on this Mac)")")
         return LocalInferenceHTTPConfig(
             host: serving.bind, port: serving.port, authToken: token,
-            router: .host(local: config.local, settingsFile: nil, coordinatorURL: coordinatorURL,
+            router: .host(local: config.local, settingsFile: settingsFile, coordinatorURL: coordinatorURL,
                           takesCoordinatorWork: true))
     }
 

@@ -74,21 +74,16 @@ struct RouteChoiceFlow {
             say("✗ Not saved: \(error)")
             return 1
         }
-        say((changed ? "✓ Saved" : "✓ Already saved") + ": [local] route = \"\(route.rawValue)\".")
+        // A local API without a local key (`--no-auth`) passes nothing on, whatever the route.
+        let keyless = pair == nil && liveEndpoint?.apiKey.isEmpty == true
+        let head = changed ? "✓ Saved." : "✓ Already saved."
+        say(keyless ? head : head + " " + RouteSaved.when(running: liveEndpoint != nil, pair: pair))
         for line in Self.meaning(route) { say(line) }
-        if let liveEndpoint {
-            if liveEndpoint.apiKey.isEmpty {
-                say("The local API running now has no local key (--no-auth): it keeps every request on this Mac, "
-                    + "whatever the route.")
-            } else {
-                say("The local API running now (\(liveEndpoint.baseURL)) keeps the route it started with until it starts "
-                    + "again: `\(cli) restart`.")
-            }
+        if keyless {
+            say("The local API running now has no local key (--no-auth): it keeps every request on this Mac, "
+                + "whatever the route.")
         }
-        if case .follows(let leader) = pair {
-            say("In this Mac's two-Mac cluster, the pair's API passes requests on as \(leader) says: run "
-                + "`\(cli) route \(route.rawValue)` there.")
-        }
+        if let pair { say(RouteSaved.pairRouteLine(pair, route: route)) }
         return 0
     }
 
@@ -138,6 +133,41 @@ enum RouteSaved {
         static func of(_ pair: ClusterPairSummary) -> PairPart? {
             guard pair.paired, !pair.pairingUnreadable, let role = pair.role else { return nil }
             return role == .leader ? .leads(other: pair.otherMac) : .follows(leader: pair.otherMac)
+        }
+    }
+
+    static let usesItNow = "Your local API uses it now."
+    static let appliesAtStart = "It applies when your local API starts."
+    static var appliesAlone: String { "It applies when this Mac serves alone (`\(BuildEnvironment.current.cliName) start --solo`)." }
+
+    /// When what was saved counts on this Mac: now, when a local API (or the pair's, on the leading Mac) runs; else at
+    /// its start. On the Mac that follows, only when it serves alone: the pair uses the leading Mac's.
+    static func when(running: Bool, pair: PairPart?) -> String {
+        if pair?.follows == true { return appliesAlone }
+        return running ? usesItNow : appliesAtStart
+    }
+
+    /// Whose route the pair's local API uses.
+    static func pairRouteLine(_ pair: PairPart, route: LocalSettings.Route) -> String {
+        switch pair {
+        case .leads(let other):
+            return "In this pair, this Mac's route applies: the pair's local API runs here and passes on what the pair "
+                + "can't take, including requests \(other) forwards to it."
+        case .follows(let leader):
+            return "In this pair, the leading Mac's route applies (\(leader)): its local API passes on what the pair can't "
+                + "take, including requests this Mac forwards to it. Run `\(BuildEnvironment.current.cliName) route "
+                + "\(route.rawValue)` there."
+        }
+    }
+
+    /// Whose account key the pair's local API uses.
+    static func pairKeyLine(_ pair: PairPart) -> String {
+        switch pair {
+        case .leads:
+            return "In this pair, the pair's local API runs on this Mac and passes requests on with this key."
+        case .follows(let leader):
+            return "In this pair, the pair's local API passes requests on with the leading Mac's key (\(leader)): run "
+                + "`\(BuildEnvironment.current.cliName) route key` there."
         }
     }
 }

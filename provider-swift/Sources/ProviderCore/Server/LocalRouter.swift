@@ -91,7 +91,7 @@ public struct LocalRouterConfig: Sendable {
     /// after the config file changes (`savedRoute`). Only a request this Mac can't take, and a model list, call this.
     func effectiveRoute() -> (route: LocalSettings.Route, accountKey: String?) {
         guard localKeyRequired else { return (.thisMac, nil) }
-        let saved = settings.route
+        let saved = savedRoute()
         guard saved != .thisMac else { return (.thisMac, nil) }
         let key: String?
         do {
@@ -111,13 +111,68 @@ public struct LocalRouterConfig: Sendable {
     }
 }
 
-// Seam for the red tests of a live route, with today's behaviour: the router reads `[local] route` at start only.
+/// `[local] route` as the provider config file says it now, for a running router. Each call compares the file with the
+/// one last read (one `stat`: its device, inode, size and modification time) and reads it again only when it changed,
+/// as `darkbloom route <choice>`'s atomic replace or an edit change it. A file that doesn't read as a provider config
+/// (a malformed edit, or a file that is gone) keeps the last good route, said once in the log until it reads again;
+/// the line names neither the file's content nor anything from it, since the file can hold credentials.
 final class LocalRouterRouteFile: @unchecked Sendable {
-    var checks: Int { 0 }
+    private let lock = NSLock()
+    /// The file as it was when last read; nil before the first read.
+    private var stamp: Stamp?
+    /// The last route read from a good file; nil before one was read.
+    private var lastGood: LocalSettings.Route??
+    private var failing = false
+    private var stats = 0
 
+    /// How many times the file was compared (one `stat` each).
+    var checks: Int { lock.withLock { stats } }
+
+    /// The route the file says now; `initial` (the start's) until a good read, and the last good one after a bad read.
     func route(in file: URL, startingWith initial: LocalSettings.Route?, log: (String) -> Void,
-               read: (URL) throws -> LocalSettings.Route? = { _ in nil }) -> LocalSettings.Route? {
-        initial
+               read: (URL) throws -> LocalSettings.Route? = { try ConfigManager.load(from: $0).local?.route })
+        -> LocalSettings.Route? {
+        lock.withLock {
+            stats += 1
+            let now = Stamp(file)
+            let current = lastGood ?? initial
+            guard now != stamp else { return current }
+            stamp = now
+            let read = Result { try read(file) }
+            guard case .success(let route) = read else {
+                if !failing {
+                    failing = true
+                    log("\(file.lastPathComponent) doesn't read as a provider config now; requests keep the route "
+                        + "\(Self.name(current)) until it does")
+                }
+                return current
+            }
+            failing = false
+            lastGood = .some(route)
+            if route != current { log("route is now \(Self.name(route)) (\(file.lastPathComponent) changed)") }
+            return route
+        }
+    }
+
+    static func name(_ route: LocalSettings.Route?) -> String { route?.rawValue ?? "not set" }
+
+    /// What tells one version of the file from another without reading it.
+    struct Stamp: Equatable {
+        let device: Int64
+        let inode: UInt64
+        let size: Int64
+        let modifiedSeconds: Int
+        let modifiedNanoseconds: Int
+
+        init?(_ file: URL) {
+            var info = stat()
+            guard stat(file.path, &info) == 0 else { return nil }
+            device = Int64(info.st_dev)
+            inode = UInt64(info.st_ino)
+            size = Int64(info.st_size)
+            modifiedSeconds = info.st_mtimespec.tv_sec
+            modifiedNanoseconds = info.st_mtimespec.tv_nsec
+        }
     }
 }
 

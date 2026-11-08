@@ -102,7 +102,7 @@ extension Start {
             return nil
         }
         return LocalInferenceHTTPConfig(host: bind, port: port, authToken: token,
-            router: .host(local: local, settingsFile: nil, coordinatorURL: coordinatorURL, takesCoordinatorWork: true))
+            router: .host(local: local, settingsFile: settingsFile, coordinatorURL: coordinatorURL, takesCoordinatorWork: true))
     }
 
     /// What a member's start that failed with `error` ends with. Refused because another Darkbloom app holds this Mac's

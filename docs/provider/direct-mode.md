@@ -214,7 +214,19 @@ this Mac's own path.
 `darkbloom route my-macs-first` save the route; the last two need a saved
 account key and refuse without one
 ([CLI reference](./cli-reference.md#darkbloom-route-this-mac-my-macs-my-macs-first)).
-The route is read when the local API starts (a change needs a restart). The
+A running local API uses a saved route from its next request that needs it,
+with no restart and no model reload: its router reads `[local] route` again
+when the provider config file it started with changes (`LocalRouterRouteFile`,
+`provider-swift/Sources/ProviderCore/Server/LocalRouter.swift`). Only a
+request this Mac can't take and a model list look at the file, one `stat` each
+(its device, inode, size and modification time); a request this Mac serves
+never does. A change is logged (`local router: route is now my-macs-first
+(provider.toml changed)`). A file that doesn't read as a provider config, a
+malformed edit or a file that is gone, keeps the last good route and is said
+once in the log until it reads again (`local router: provider.toml doesn't read
+as a provider config now; requests keep the route my-macs until it does`); the
+line holds nothing from the file. A pair's local API reads the leading Mac's
+`provider.toml`. The
 key is read once, by the first request that needs it, and kept in memory:
 `darkbloom route key` tells a running local API when it saves or removes the
 key (a Darwin notification, `<keychain prefix>.route-key-changed`), and the

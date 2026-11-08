@@ -41,6 +41,7 @@ struct Restart: AsyncParsableCommand {
         return state.processIdentity.map { $0 != launchJob } ?? (launchJob?.pid != state.pid)
     }
 
+    /// What `restart` says, and does nothing else, beside Only me in a terminal.
     static var terminalOnlyMeLines: [String] {
         let cli = BuildEnvironment.current.cliName
         return ["Only me serves in a terminal now (`\(cli) start --local --here`), and restart never stops it.",
@@ -111,23 +112,19 @@ struct Restart: AsyncParsableCommand {
             try await ServiceDrain.prepare(options: drain, state: soloState)
         }
         defer { session.release() }
-        // The background service always serves the saved choice: a job left serving another way restarts as saved.
-        let aligned: SavedChoiceService.Alignment
+        let restarted: SavedChoiceService.Alignment
         do {
-            aligned = try await look.working("Restarting the provider") {
+            restarted = try await look.working("Restarting the provider") {
                 try await ServiceDrain.stopDrainedProvider(unloadService: false, daemonState: ServiceDrain.soloProviderState())
-                let alignment = try SavedChoiceService.align(configPath: configOptions.config)
-                try LaunchAgent.restartAfterDrain()
-                return alignment
+                return try SavedChoiceService.restartAsSaved(configPath: configOptions.config)
             }
         } catch LaunchAgentError.notInstalled {
             printError("Provider is not running. Start it with `\(BuildEnvironment.current.cliName) start`.")
             throw ExitCode.failure
         }
-        if let line = aligned.line { print(line) }
-        let onlyMe = aligned.mode == .local
+        if let line = restarted.line { print(line) }
         if wasLoaded {
-            print(onlyMe ? "Drained Only me relaunched; waiting for its local API..."
+            print(restarted.mode == .local ? "Drained Only me relaunched; waiting for its local API..."
                 : "Drained provider relaunched; waiting for fresh authorization...")
         } else {
             print("Provider started.")
@@ -137,15 +134,8 @@ struct Restart: AsyncParsableCommand {
 
         // Let startup/update confirmation acquire its own process lease.
         session.release()
-        if onlyMe {
-            try await look.working("Waiting for Only me's local API") {
-                try await ServiceDrain.waitForLocalRestart(previous: previous, timeout: startupTimeout)
-            }
-        } else {
-            try await look.working("Waiting for the restarted provider's fresh authorization") {
-                try await ServiceDrain.waitForRestart(previous: previous, timeout: startupTimeout)
-            }
-        }
+        try await ServiceDrain.waitForRestartedService(serving: restarted.mode, previous: previous,
+                                                       timeout: startupTimeout, look: look)
         print("  \(BuildEnvironment.current.cliName) status  Check status")
         if pair.paired { print(pair.restartAddendum) }
     }

@@ -98,12 +98,13 @@ extension Start {
     /// start with exit 1; the provider keeps serving.
     func setUpToolsBesideDaemon(serving: StartServing, coordinatorURL: String,
                                 waitSeconds: Int = Start.toolWaitSeconds,
-                                waitForAPI: ((UInt16) async -> LocalAPIWait)? = nil,
+                                waitForAPI: (_ port: UInt16, _ seconds: Int) async -> LocalAPIWait = {
+                                    await Start.waitForLocalAPI(port: $0, seconds: $1)
+                                },
                                 step: ToolIntegrationStep? = nil) async throws {
         guard !requestedTools.isEmpty else { return }
         let endpoint: IntegrationEndpoint
-        let wait = waitForAPI ?? { await Start.waitForLocalAPI(port: $0, seconds: waitSeconds) }
-        switch await wait(serving.port) {
+        switch await waitForAPI(serving.port, waitSeconds) {
         case .ready(let found):
             endpoint = found
         case .noKeyFile:

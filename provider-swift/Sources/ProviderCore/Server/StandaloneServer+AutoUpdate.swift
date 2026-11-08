@@ -2,27 +2,22 @@ import Foundation
 
 /// StandaloneServer -- background self-update of Only me's background service.
 ///
-/// The cycle `ProviderLoop+AutoUpdate` runs (`AutoUpdateController`): check, then download, verify and stage while
-/// serving; then close admission, let this Mac's own requests finish, commit, and restart through launchd into the new
-/// release, which the watchdog confirms or rolls back. A drain that doesn't finish in time reopens admission and
+/// The cycle `ProviderLoop+AutoUpdate` runs (`AutoUpdateController`), on its cadence: the first check five minutes
+/// after start, then every 30 minutes. It checks, then downloads, verifies and stages while serving; then it closes
+/// admission, lets this Mac's own requests finish (two minutes at most), commits, and restarts through launchd into the
+/// new release, which the watchdog confirms or rolls back. A drain that doesn't finish in time reopens admission and
 /// installs nothing. Only launchd's service runs it; `start --local --here` doesn't.
 extension StandaloneServer {
-    /// First check five minutes after start, then every 30 minutes, as the network provider does.
-    static let autoUpdateInitialDelay: Duration = .seconds(300)
-    static let autoUpdateInterval: Duration = .seconds(1800)
-    /// How long the owner's requests in flight get to finish before an update waits for the next check.
-    static let updateDrainTimeout: Duration = .seconds(120)
-
     /// Starts the update cycle once; off with `auto_update = false` or `DARKBLOOM_NO_UPDATE_CHECK`.
     public func startAutoUpdateMonitor(coordinatorURL: String, enabled: Bool,
                                        environment: [String: String] = ProcessInfo.processInfo.environment) {
         guard enabled, environment["DARKBLOOM_NO_UPDATE_CHECK"] == nil, autoUpdateTask == nil else { return }
         autoUpdateTask = Task { [weak self] in
-            try? await Task.sleep(for: Self.autoUpdateInitialDelay)
+            try? await Task.sleep(for: ProviderLoop.autoUpdateInitialDelay)
             while !Task.isCancelled {
                 guard let self else { return }
                 await self.performAutoUpdateCheck(coordinatorURL: coordinatorURL)
-                try? await Task.sleep(for: Self.autoUpdateInterval)
+                try? await Task.sleep(for: ProviderLoop.autoUpdateInterval)
             }
         }
     }
@@ -52,7 +47,7 @@ extension StandaloneServer {
             restart: { try restart() },
             restartDidFail: { try? updater.cancelPendingCandidateAttempt(operation: "local-background-restart-failure") },
             log: { standaloneLogger.info("\($0, privacy: .public)") })
-        return await AutoUpdateController(deps: deps, drainTimeout: Self.updateDrainTimeout).run()
+        return await AutoUpdateController(deps: deps, drainTimeout: ProviderLoop.updateDrainTimeout).run()
     }
 
     /// Claims the cross-process update lease; false while another update, a stop or a drain owns this server.
@@ -110,7 +105,8 @@ extension StandaloneServer {
         responseTracker.setAccepting(false)
     }
 
-    /// Whether every accepted request finished within `timeout`.
+    /// Whether every accepted request finished within `timeout`, counted as a lifecycle drain counts them
+    /// (`acceptedWork`).
     func waitForUpdateDrain(_ timeout: Duration) async -> Bool {
         let deadline = ContinuousClock.now.advanced(by: timeout)
         while acceptedWork > 0 {
@@ -118,11 +114,6 @@ extension StandaloneServer {
             try? await Task.sleep(for: .milliseconds(100))
         }
         return true
-    }
-
-    /// Requests accepted and not finished, as a lifecycle drain counts them.
-    var acceptedWork: Int {
-        max(nativeMiMoGracefulWorkCount, max(responseTracker.activeCount, slotReservations.values.reduce(0, +)))
     }
 
     private func commitStagedUpdate(_ updater: SelfUpdater) -> AutoUpdateController.StepOutcome {

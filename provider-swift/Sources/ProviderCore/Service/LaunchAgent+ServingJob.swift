@@ -15,10 +15,9 @@ extension LaunchAgent {
         public var bind: String?
         public var noAuth: Bool
 
-        /// The job of a `start` argv; nil for a cluster member's or one this build doesn't read.
+        /// The job of a single-Mac `start` argv (`isSingleMacStartJob`); nil for any other.
         public init?(arguments: [String]) {
-            guard arguments.count >= 2, arguments[1] == "start", !LaunchAgent.isClusterMemberJob(arguments),
-                  !arguments.contains("--distributed") else { return nil }
+            guard LaunchAgent.isSingleMacStartJob(arguments) else { return nil }
             func values(_ flag: String) -> [String] {
                 arguments.indices.compactMap { arguments[$0] == flag && $0 + 1 < arguments.count ? arguments[$0 + 1] : nil }
             }
@@ -33,12 +32,16 @@ extension LaunchAgent {
         }
     }
 
+    /// Whether a job's argv is a single-Mac `start`: neither a cluster member's (`--cluster-member`) nor a cluster
+    /// session's (`--distributed`).
+    static func isSingleMacStartJob(_ arguments: [String]) -> Bool {
+        arguments.count >= 2 && arguments[1] == "start" && !isClusterMemberJob(arguments)
+            && !arguments.contains("--distributed")
+    }
+
     /// The installed job; nil without one, or for a job `ServingJob` doesn't read.
     public static func installedServingJob(at path: URL = plistPath()) -> ServingJob? {
-        guard let data = try? Data(contentsOf: path),
-              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
-              let arguments = plist["ProgramArguments"] as? [String] else { return nil }
-        return ServingJob(arguments: arguments)
+        (try? servingJobPlist(at: path))?.job
     }
 
     /// `job`'s arguments to serve `mode`, its local API on `port` and `bind`: the same binary, models, config and
@@ -61,14 +64,24 @@ extension LaunchAgent {
     @discardableResult
     public static func rewriteInstalledJob(serving mode: LocalSettings.Mode, port: UInt16, bind: String,
                                            coordinatorURL: String, at path: URL = plistPath()) throws -> Bool {
-        guard let data = try? Data(contentsOf: path),
-              var plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
-              let arguments = plist["ProgramArguments"] as? [String], let job = ServingJob(arguments: arguments)
-        else { return false }
-        let wanted = programArguments(for: job, serving: mode, port: port, bind: bind, coordinatorURL: coordinatorURL)
-        guard wanted != arguments else { return false }
+        guard let installed = try servingJobPlist(at: path) else { return false }
+        let wanted = programArguments(for: installed.job, serving: mode, port: port, bind: bind,
+                                      coordinatorURL: coordinatorURL)
+        guard wanted != installed.arguments else { return false }
+        var plist = installed.plist
         plist["ProgramArguments"] = wanted
         try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: path, options: .atomic)
         return true
+    }
+
+    /// The plist at `path`, its arguments and its job; nil without a file, or for a job `ServingJob` doesn't read.
+    /// Throws when the file isn't a property list.
+    private static func servingJobPlist(at path: URL) throws -> (plist: [String: Any], arguments: [String],
+                                                                  job: ServingJob)? {
+        guard let data = try? Data(contentsOf: path),
+              let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              let arguments = plist["ProgramArguments"] as? [String], let job = ServingJob(arguments: arguments)
+        else { return nil }
+        return (plist, arguments, job)
     }
 }

@@ -261,15 +261,12 @@ struct Update: AsyncParsableCommand {
             return
         }
         print("Accepted requests drained. Restarting the installed provider...")
-        // The background service always serves the saved choice: a job left serving another way restarts as saved.
-        let aligned: SavedChoiceService.Alignment
+        let restarted: SavedChoiceService.Alignment
         do {
-            aligned = try await look.working("Restarting the provider") {
+            restarted = try await look.working("Restarting the provider") {
                 try updater.prepareCandidateLaunch(session: session, baseline: LaunchAgent.launchSnapshot())
                 try await ServiceDrain.stopDrainedProvider(unloadService: false)
-                let alignment = try SavedChoiceService.align(configPath: configOptions.config)
-                try LaunchAgent.restartAfterDrain()
-                return alignment
+                return try SavedChoiceService.restartAsSaved(configPath: configOptions.config)
             }
             ServiceDrain.rearmWatchdog(explicitConfig: configOptions.config)
         } catch {
@@ -277,17 +274,10 @@ struct Update: AsyncParsableCommand {
             try? updater.cancelPendingCandidateAttempt(operation: operation + "-failure")
             throw error
         }
-        if let line = aligned.line { print(line) }
+        if let line = restarted.line { print(line) }
         session.release()
-        if aligned.mode == .local {
-            try await look.working("Waiting for Only me's local API") {
-                try await ServiceDrain.waitForLocalRestart(previous: previous, timeout: 180)
-            }
-        } else {
-            try await look.working("Waiting for the restarted provider's fresh authorization") {
-                try await ServiceDrain.waitForRestart(previous: previous, timeout: 180)
-            }
-        }
+        try await ServiceDrain.waitForRestartedService(serving: restarted.mode, previous: previous, timeout: 180,
+                                                       look: look)
     }
 
     /// Nothing serves in the background to restart into `version`: Only me in a terminal, or nothing at all.

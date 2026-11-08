@@ -211,7 +211,10 @@ struct StartToolIntegrationTests {
         let coordinator = "wss://coordinator.invalid/ws/provider"
         let sandbox = try StepSandbox()
         try await start.setUpToolsBesideDaemon(serving: serving, coordinatorURL: coordinator,
-                                               waitForAPI: { _ in .ready(sandbox.endpoint) },
+                                               waitForAPI: { port, seconds in
+                                                   #expect(port == 8123 && seconds == Start.toolWaitSeconds)
+                                                   return .ready(sandbox.endpoint)
+                                               },
                                                step: sandbox.step([.opencode]))
         #expect(FileManager.default.fileExists(atPath: sandbox.openCodeFile.path), "the step ran")
         // The tool block says where requests go from the key this start read, without reading it again.
@@ -220,15 +223,19 @@ struct StartToolIntegrationTests {
         let missing = try StepSandbox()
         await #expect(throws: ExitCode.failure) {
             try await start.setUpToolsBesideDaemon(serving: serving, coordinatorURL: coordinator,
-                                                   waitForAPI: { _ in .ready(missing.endpoint) },
+                                                   waitForAPI: { _, _ in .ready(missing.endpoint) },
                                                    step: missing.step([.opencode], installed: []))
         }
         #expect(missing.said.last == "Darkbloom keeps serving.")
         for wait in [Start.LocalAPIWait.noKeyFile, .notUp] {
             let untouched = try StepSandbox()
+            // A longer wait (Only me's, which listens once its models are loaded) reaches the wait as given.
             await #expect(throws: ExitCode.failure) {
-                try await start.setUpToolsBesideDaemon(serving: serving, coordinatorURL: coordinator,
-                                                       waitForAPI: { _ in wait }, step: untouched.step([.opencode]))
+                try await start.setUpToolsBesideDaemon(serving: serving, coordinatorURL: coordinator, waitSeconds: 150,
+                                                       waitForAPI: { _, seconds in
+                                                           #expect(seconds == 150)
+                                                           return wait
+                                                       }, step: untouched.step([.opencode]))
             }
             #expect(untouched.said.isEmpty && untouched.filesOtherThanTheKey().isEmpty, "\(wait)")
         }

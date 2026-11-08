@@ -14,6 +14,7 @@ struct Cluster: AsyncParsableCommand {
           darkbloom cluster local    Serve on the leading Mac's own API only, without Darkbloom.
           darkbloom cluster link     Check the Thunderbolt cable and this Mac's port setup.
           darkbloom cluster doctor   Check this Mac's cluster files, keys and cable.
+          darkbloom cluster leave    Leave the pair on this Mac: stop its part and forget its pairing.
         On a Mac in a cluster, `darkbloom start`, `stop`, `restart` and `status` control the pair (--solo: this Mac alone).
         Details: `darkbloom help cluster <command>`.
         """
@@ -22,7 +23,7 @@ struct Cluster: AsyncParsableCommand {
         abstract: abstract,
         subcommands: [Setup.self, Local.self, Console.self, Plan.self, Configure.self, Status.self, Doctor.self, Link.self, Recover.self, WorkerOwner.self,
                       Report.self, Inbox.self, LinkChannel.self, LinkFollower.self, MemberIdentity.self, Pair.self, Incidents.self,
-                      Service.self, Stop.self, Reap.self, VerifyTeardown.self, CancelAll.self, GLMCalibrationQuote.self, GLMCalibrationCandidates.self, GLMCalibrationRun.self, RuntimeFacts.self,
+                      Service.self, Stop.self, Leave.self, Reap.self, VerifyTeardown.self, CancelAll.self, GLMCalibrationQuote.self, GLMCalibrationCandidates.self, GLMCalibrationRun.self, RuntimeFacts.self,
                       GPULimit.self],
         defaultSubcommand: Setup.self)
 

@@ -10,8 +10,9 @@ extension DaemonState {
     enum CodingKeys: String, CodingKey {
         case schema, pid, processIdentity, version, writtenAt
         case startedAt, attestationPublicKey, trust, coordinatorUrl, currentModel
-        case warmModels, advertisedModels, servingSelection, registeredModels, evictionExclusions
-        case startupPreloadPendingModels, lifecycle, modelSwitch
+        case warmModels, advertisedModels, servingSelection, registeredModels
+        case enabledModelsAtStart, enabledModelsAtLastSwitch, evictionExclusions
+        case startupPreloadPendingModels, selectedModelRecovery, lifecycle, modelSwitch
         case configPath, runtimeCapabilities, inferenceActive, requestWorkPending, loadTransitionActive
         case stats, system, capacity, lastModelLoadError, slots
         case connectivity, autopilot, autopilotPhase, autopilotOperation, appAttest
@@ -36,8 +37,11 @@ extension DaemonState {
         advertisedModels = try c.decodeIfPresent([String].self, forKey: .advertisedModels)
         servingSelection = try c.decodeIfPresent([String].self, forKey: .servingSelection)
         registeredModels = try c.decodeIfPresent(RegisteredModels.self, forKey: .registeredModels)
+        enabledModelsAtStart = try c.decodeIfPresent([String].self, forKey: .enabledModelsAtStart)
+        enabledModelsAtLastSwitch = try c.decodeIfPresent([String].self, forKey: .enabledModelsAtLastSwitch)
         evictionExclusions = try c.decodeIfPresent([EvictionExclusion].self, forKey: .evictionExclusions)
         startupPreloadPendingModels = try c.decodeIfPresent([String].self, forKey: .startupPreloadPendingModels)
+        selectedModelRecovery = try c.decodeIfPresent([SelectedModelRecoveryEntry].self, forKey: .selectedModelRecovery)
         lifecycle = try c.decodeIfPresent(ProviderDrainStatus.self, forKey: .lifecycle)
         modelSwitch = try c.decodeIfPresent(ProviderModelSwitchStatus.self, forKey: .modelSwitch)
         configPath = try c.decodeIfPresent(String.self, forKey: .configPath)
@@ -78,8 +82,11 @@ extension DaemonState {
         try c.encodeIfPresent(advertisedModels, forKey: .advertisedModels)
         try c.encodeIfPresent(servingSelection, forKey: .servingSelection)
         try c.encodeIfPresent(registeredModels, forKey: .registeredModels)
+        try c.encodeIfPresent(enabledModelsAtStart, forKey: .enabledModelsAtStart)
+        try c.encodeIfPresent(enabledModelsAtLastSwitch, forKey: .enabledModelsAtLastSwitch)
         try c.encodeIfPresent(evictionExclusions, forKey: .evictionExclusions)
         try c.encodeIfPresent(startupPreloadPendingModels, forKey: .startupPreloadPendingModels)
+        try c.encodeIfPresent(selectedModelRecovery, forKey: .selectedModelRecovery)
         try c.encodeIfPresent(lifecycle, forKey: .lifecycle)
         try c.encodeIfPresent(modelSwitch, forKey: .modelSwitch)
         try c.encodeIfPresent(configPath, forKey: .configPath)

@@ -64,12 +64,23 @@ public struct DaemonState: Codable, Sendable, Equatable {
             self.autopilotInventory = autopilotInventory
         }
     }
+    /// The config's `enabled_models` when this daemon started. `status`
+    /// compares it with the saved filter, which applies only at a start.
+    /// Nil for older daemons.
+    public var enabledModelsAtStart: [String]?
+    /// The `enabled_models` the last committed `darkbloom switch` saved and
+    /// applied; `status` compares the saved filter with it instead of the
+    /// start's. Nil until a switch commits, and for older daemons.
+    public var enabledModelsAtLastSwitch: [String]?
     /// Resident models no load can evict now, each with every reason
     /// (`ProviderLoop.evictionExclusions`). Nil for older daemons.
     public var evictionExclusions: [EvictionExclusion]?
     /// Remaining startup preload plan, including the candidate currently
     /// loading. nil means an older daemon did not report this field.
     public var startupPreloadPendingModels: [String]?
+    /// Selected models the daemon keeps trying to load, with the next check
+    /// and what blocked the last one. Nil when none waits or for older daemons.
+    public var selectedModelRecovery: [SelectedModelRecoveryEntry]?
     public var lifecycle: ProviderDrainStatus?
     public var modelSwitch: ProviderModelSwitchStatus?
     public var configPath: String?
@@ -398,8 +409,11 @@ public struct DaemonState: Codable, Sendable, Equatable {
         advertisedModels: [String]? = nil,
         servingSelection: [String]? = nil,
         registeredModels: RegisteredModels? = nil,
+        enabledModelsAtStart: [String]? = nil,
+        enabledModelsAtLastSwitch: [String]? = nil,
         evictionExclusions: [EvictionExclusion]? = nil,
         startupPreloadPendingModels: [String]? = nil,
+        selectedModelRecovery: [SelectedModelRecoveryEntry]? = nil,
         inferenceActive: Bool = false,
         requestWorkPending: Bool? = nil,
         loadTransitionActive: Bool? = nil,
@@ -439,8 +453,11 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.advertisedModels = advertisedModels
         self.servingSelection = servingSelection
         self.registeredModels = registeredModels
+        self.enabledModelsAtStart = enabledModelsAtStart
+        self.enabledModelsAtLastSwitch = enabledModelsAtLastSwitch
         self.evictionExclusions = evictionExclusions
         self.startupPreloadPendingModels = startupPreloadPendingModels
+        self.selectedModelRecovery = selectedModelRecovery
         self.lifecycle = lifecycle
         self.modelSwitch = modelSwitch
         self.configPath = configPath

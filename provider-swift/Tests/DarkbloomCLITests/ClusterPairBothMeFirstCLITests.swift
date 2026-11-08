@@ -136,9 +136,11 @@ struct ClusterPairBothMeFirstCLITests {
         return pair
     }
 
-    /// The Mac that follows: its part doesn't run rank 0, so the pair's API and its pause are on the other Mac.
+    /// The Mac that follows: its part doesn't run rank 0, so the pair's API and its pause are on the other Mac. Here that
+    /// API is kept on the leading Mac (loopback), so this Mac says where to look; on every address it names its own
+    /// relay instead (`ClusterPairMemberRelayCLITests`, and `aMemberSaysThePause`).
     private func member() -> ClusterPairSummary {
-        var pair = leader()
+        var pair = leader(listening: .init(host: "127.0.0.1", port: 8001))
         pair.role = .member
         pair.localAPI = ClusterPairLocalAPI(runsRankZero: false, listening: nil, meFirst: nil)
         return pair
@@ -200,6 +202,16 @@ struct ClusterPairBothMeFirstCLITests {
             + "`\(ClusterPairSummary.cli) local` there shows its address and key"), "\(lines)")
         #expect(!lines.joined(separator: "\n").contains("whether Darkbloom is paused"), "\(lines)")
         #expect(lines.filter { $0.contains("Pair: ") }.count == 1, "\(lines)")
+        // With the pair's API on every address, this Mac names its own relay's address under the same pause.
+        var relaying = member()
+        relaying.lines = Self.pausedStatus
+        relaying.localAPIBind = "0.0.0.0"
+        relaying.relaying = .init(host: "0.0.0.0", port: 8003)
+        let relayed = relaying.clusterStatusLines
+        #expect(relayed.contains("  " + Self.pausedStatus[1]), "\(relayed)")
+        #expect(relayed.contains("Local API: http://127.0.0.1:8003/v1 on this Mac, and port 8003 of its LAN or tailnet address "
+            + "(`\(ClusterPairSummary.cli) local` shows the key)"), "\(relayed)")
+        #expect(relayed.filter { $0.contains("Pair: ") }.count == 1, "\(relayed)")
     }
 
     /// The Mac whose part runs rank 0 and leads reads its own status: the pause is said once, there.

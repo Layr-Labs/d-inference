@@ -252,7 +252,8 @@ extension Cluster {
         /// Keep the supervisor and its custody intact when the pair could not
         /// drain or the member did not acknowledge the saved stop request.
         static func finishStop(_ stopped: Result<[String], ClusterOnboardingFailure>?, localOnly: Bool = false,
-                               forwarded: Bool = false, removeFromLogin: () throws -> [String]) throws -> [String] {
+                               forwarded: Bool = false, leaving: Bool = false,
+                               removeFromLogin: () throws -> [String]) throws -> [String] {
             var lines: [String] = []
             var otherMacNotAsked = false
             if let stopped {

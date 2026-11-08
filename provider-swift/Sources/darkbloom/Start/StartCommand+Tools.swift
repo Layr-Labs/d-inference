@@ -125,6 +125,11 @@ extension Start {
                                coordinatorURL: coordinatorURL, step: step) else { throw ExitCode.failure }
     }
 
+    /// A start without `--opencode` / `--hermes`: says when a tool points elsewhere. Skeleton: says nothing, unwired.
+    func noteToolsPointingElsewhere(_ serving: StartServing, environment: ToolIntegrationEnvironment = .current,
+                                    provider: IntegrationProvider = .current,
+                                    keyFile: URL = LocalEndpoint.tokenPath(), say: (String) -> Void = { print($0) }) {}
+
     /// For a local API this start didn't resolve (one already running, or the pair's): where your requests go comes
     /// from the saved `[local] route`, and the catalog from `--coordinator-url`, else the config's, else the build's.
     /// Reads the config once, without detecting hardware.

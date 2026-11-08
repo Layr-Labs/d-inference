@@ -136,6 +136,9 @@ enum OpenCodeConfigPlan {
         "{file:\(ToolIntegration.displayPath(keyFile, home: home))}"
     }
 
+    /// Where the provider's block in a config's `bytes` points. Skeleton: never read.
+    static func pointer(in bytes: Data, provider: IntegrationProvider, home: URL) -> ToolPointer? { nil }
+
     /// The global config files, in the order OpenCode loads them.
     static let globalFileNames = ["opencode.json", "opencode.jsonc"]
 

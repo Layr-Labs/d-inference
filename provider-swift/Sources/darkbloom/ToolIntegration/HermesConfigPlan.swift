@@ -62,6 +62,9 @@ enum HermesConfigPlan {
         }
     }
 
+    /// Where the provider's block in a config's `bytes` points. Skeleton: never read.
+    static func pointer(in bytes: Data, provider: IntegrationProvider) -> ToolPointer? { nil }
+
     private static func floorReason(_ models: [IntegrationModel]) -> String {
         guard let largest = models.compactMap(\.contextLength).max() else {
             return """

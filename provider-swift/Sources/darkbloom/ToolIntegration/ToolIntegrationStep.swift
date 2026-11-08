@@ -87,6 +87,8 @@ struct ToolIntegrationStep {
     var say: (String) -> Void
     /// `<tool> --version`'s first line; nil when it doesn't answer.
     var versionOutput: (IntegrationTool, URL) -> String? = { _, _ in nil }
+    /// The wait before anything is written. Skeleton: unused.
+    var modelLoadWait: ModelLoadWait?
 
     /// How long the step waits for the local API's `/v1/models`. That list waits for the coordinator's up to the
     /// router's own deadline (`LocalRouter.Timing.list`), so with an unreachable coordinator it answers late: the step
@@ -182,9 +184,7 @@ struct ToolIntegrationStep {
             $0.contextLength == nil && IntegrationModels.location(ownedBy: $0.ownedBy) == .thisMac
         }
         if !unloaded.isEmpty {
-            let one = unloaded.count == 1
-            say("  Run `\(Self.cli) start \(Self.flags(ready.map(\.tool)))` again once the "
-                + "\(one ? "model is" : "models are") loaded, to pick up \(one ? "its" : "their") limits.")
+            say(Self.runAgainOnceLoaded(unloaded.map(\.id), tools: ready.map(\.tool)))
         }
         let keyFile = ToolIntegration.displayPath(endpoint.keyFile, home: environment.home)
         say("  Requests: \(requests)")
@@ -239,6 +239,13 @@ struct ToolIntegrationStep {
             + "(`\(cli) start --local \(flags(tools))`)."
     }
 
+    /// The line for this Mac's models that weren't loaded as the tools were set up. Skeleton: today's words.
+    static func runAgainOnceLoaded(_ models: [String], tools: [IntegrationTool]) -> String {
+        let one = models.count == 1
+        return "  Run `\(cli) start \(flags(tools))` again once the \(one ? "model is" : "models are") loaded, to pick "
+            + "up \(one ? "its" : "their") limits."
+    }
+
     /// The line when the local API didn't come up in time after a background start.
     static func notUp(_ tools: [IntegrationTool], seconds: Int) -> String {
         "✗ This Mac's local API didn't answer within \(seconds) seconds, so \(notSetUp(tools)). Run "
@@ -279,6 +286,10 @@ struct ToolIntegrationStep {
     static func names(_ tools: [IntegrationTool]) -> String { tools.map(\.displayName).joined(separator: " and ") }
 
     static func flags(_ tools: [IntegrationTool]) -> String { tools.map(\.flag).joined(separator: " ") }
+
+    /// The command that sets `tools` up: `darkbloom --opencode --hermes`, short for `darkbloom start --opencode
+    /// --hermes` (`Darkbloom.expandingToolShortcuts`).
+    static func command(_ tools: [IntegrationTool]) -> String { ([cli] + tools.map(\.flag)).joined(separator: " ") }
 
     /// "OpenCode wasn't set up", "OpenCode and Hermes weren't set up".
     static func notSetUp(_ tools: [IntegrationTool]) -> String {

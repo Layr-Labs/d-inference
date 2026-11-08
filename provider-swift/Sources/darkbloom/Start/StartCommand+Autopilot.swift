@@ -12,11 +12,13 @@ extension Start {
     }
 
     /// Whether this start enrolls the experimental Autopilot: `--autopilot` / `--no-autopilot` as given, else the saved
-    /// answer. Only a start that serves the Darkbloom network alone asks, in a terminal: Autopilot chooses models for
-    /// the network, so Both, me first and Only me never ask (`darkbloom autopilot enable` enrolls them).
+    /// answer. Autopilot is for the Darkbloom network, so only a start that serves the Darkbloom network alone asks, in
+    /// a terminal. Both, me first never asks and keeps the saved answer (`darkbloom autopilot enable` enrolls it). Only
+    /// me has no Autopilot: its starts don't come here, and `--autopilot` is refused for it. `mode` has no default, so
+    /// a caller can't leave it out.
     func resolveAutopilotChoice(
         _ config: ProviderConfig,
-        mode: LocalSettings.Mode = .network,
+        mode: LocalSettings.Mode,
         interactive: Bool = isatty(STDIN_FILENO) != 0,
         ask: (Bool) -> Bool = { Start.promptAutopilotChoice(defaultEnabled: $0) }
     ) throws -> Bool {

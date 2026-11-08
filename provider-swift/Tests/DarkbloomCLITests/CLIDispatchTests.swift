@@ -25,6 +25,10 @@ private final class BundleAnchor {}
     /// the subprocess can never read or write a real provider config
     /// on the host, and the update banner is disabled to keep the run offline.
     private func run(_ args: [String], home: URL) throws -> String {
+        try runWithStatus(args, home: home).output
+    }
+
+    private func runWithStatus(_ args: [String], home: URL) throws -> (output: String, status: Int32) {
         let proc = Process()
         proc.executableURL = binary
         proc.arguments = args
@@ -38,7 +42,7 @@ private final class BundleAnchor {}
         try proc.run()
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         proc.waitUntilExit()
-        return String(decoding: data, as: UTF8.self)
+        return (String(decoding: data, as: UTF8.self), proc.terminationStatus)
     }
 
     private func makeTempHome() throws -> URL {
@@ -72,5 +76,33 @@ private final class BundleAnchor {}
         let out = try run([], home: home)
         #expect(out.contains("SUBCOMMANDS"))
         #expect(out.contains("status"))
+    }
+
+    /// `darkbloom --help` is the root help, with a line for each tool shortcut.
+    @Test func rootHelpNamesTheToolShortcuts() throws {
+        let home = try makeTempHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let out = try run(["--help"], home: home)
+        #expect(out.contains("USAGE: darkbloom <subcommand>"), "Got:\n\(out)")
+        #expect(out.contains("  darkbloom --opencode ") && out.contains("  darkbloom --hermes "), "Got:\n\(out)")
+    }
+
+    /// `main` makes `darkbloom --opencode` `start --opencode` before it parses: with `--help`, start's help prints,
+    /// and nothing starts.
+    @Test func toolShortcutParsesAsStart() throws {
+        let home = try makeTempHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let (out, status) = try runWithStatus(["--opencode", "--help"], home: home)
+        #expect(status == 0)
+        #expect(out.contains("USAGE: darkbloom start"), "Got:\n\(out)")
+    }
+
+    /// A mistyped tool flag is the root command's usual unknown-option error.
+    @Test func mistypedToolFlagIsTheUsualError() throws {
+        let home = try makeTempHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let (out, status) = try runWithStatus(["--opencod"], home: home)
+        #expect(status == 64)
+        #expect(out.contains("Error: Unknown option '--opencod'\nUsage: darkbloom <subcommand>"), "Got:\n\(out)")
     }
 }

@@ -12,7 +12,7 @@ account key saved, one it can't take can go on to your other Macs, free, and
 with `my-macs-first` to the Darkbloom network, billed
 ([the local router](#when-this-mac-cant-take-a-request-the-local-router)). In a terminal,
 `darkbloom start` asks once which you want ([Use your Mac yourself,
-first](./local-first.md)); `darkbloom start --opencode` also sets OpenCode up
+first](./local-first.md)); `darkbloom --opencode` also sets OpenCode up
 ([Use it from OpenCode or Hermes](./local-first.md#use-it-from-opencode-or-hermes)).
 
 Chat completions accept `stop` as a string or string array and pass explicit
@@ -447,7 +447,7 @@ writes too (`StandaloneServer.startLifecycleControl`).
 | `401 Unauthorized` | Send `Authorization: Bearer $(cat ~/.darkbloom/local_token)`; the token in `local.json` is authoritative |
 | `413` on a chat request with images | Body above `localInferenceMaxUploadBytes`; downscale or send fewer images |
 | `darkbloom local` says no server is running but a process is listening | The listener is not a Darkbloom server (foreign process on the port) or a stale `local.json` was cleaned; restart with a free port |
-| ``the local API isn't up: port 8001 is in use (`darkbloom start --port 8002`)`` (`status`, `local`) | Another program listens on this Mac's local API port. Free it and run `darkbloom restart`, or run the command it names: the new port is saved, and tools set up for the old one need `darkbloom start --opencode` or `--hermes` again |
+| ``the local API isn't up: port 8001 is in use (`darkbloom start --port 8002`)`` (`status`, `local`) | Another program listens on this Mac's local API port. Free it and run `darkbloom restart`, or run the command it names: the new port is saved, and tools set up for the old one need `darkbloom --opencode` or `--hermes` again |
 | Model not in `/v1/models` | Only models with an engine-v2 adapter are advertised; `darkbloom models list` |
 | Endpoint unreachable from another machine | Default bind is loopback; `--bind 0.0.0.0` and open the port, then set a reverse proxy with TLS |
 | A DevNet build (`darkbloom-dev`) fails a request for a model it hasn't loaded with ``The production Darkbloom on this Mac holds this Mac's GPU: … no model of this build loads here until production stops serving`` | The production app serves on this Mac, and two models don't fit one Mac's memory: a DevNet build refuses each cold load at its start, before any eviction, weight hash or reservation (`StandaloneServer.ensureModelLoaded`, `ClusterGPUHold.productionServesHere`). A model it loaded before production started keeps serving. Retry once production stops serving here; production's own build never refuses this way |

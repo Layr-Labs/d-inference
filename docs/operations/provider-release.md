@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -380,7 +380,8 @@ selects the same names from the version that `/v1/releases/latest` returns
 (`scripts/install.sh`, `select_provider_identity`). The installer must work as
 `curl | bash`, so it keeps its own copy of the names; the test compares that copy
 with the JSON. Every command it prints uses the selected `cliName`, through its
-last line, `Next: ~/.<cliName>/bin/<cliName> start --opencode`; the platform
+last line, `Next: ~/.<cliName>/bin/<cliName> --opencode`
+(`scripts/test-install-identity.py` checks it for both identities); the platform
 serves its own snapshot of the script, so a change to these lines reaches
 `curl | bash` only once that snapshot is updated.
 

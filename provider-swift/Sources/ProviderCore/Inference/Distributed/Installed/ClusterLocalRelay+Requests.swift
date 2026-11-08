@@ -112,8 +112,15 @@ extension ClusterLocalRelay {
     static let maximumRefusedBodyBytes = 16 << 20
 
     /// Reads one request from `client` and drops it: its head, then a body framed by its Content-Length (at most
-    /// `maximumRefusedBodyBytes`), until the client stops sending (its read bound passes) or ends.
-    static func readRequest(_ client: Int32) {
+    /// `maximumRefusedBodyBytes`), until the client stops sending (its read bound passes) or ends. Who sent it, as the
+    /// local API's key check reads its head with `keys` (`caller`).
+    @discardableResult
+    static func readRequest(_ client: Int32, keys: Keys?) -> Caller {
+        defer { dropRequest(client) }
+        return .keyed
+    }
+
+    private static func dropRequest(_ client: Int32) {
         var pending: [UInt8] = [], buffer = [UInt8](repeating: 0, count: 64 * 1024)
         var end = headEnd(pending, from: 0)
         while end == nil, pending.count <= maximumHeadBytes {

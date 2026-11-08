@@ -275,6 +275,41 @@ struct ClusterPairMemberRelayCLITests {
         }
     }
 
+    /// `darkbloom local` on a member whose relay is still starting says so, in `status`'s words, then shows the pair's key
+    /// as it always has, in words true there: never "No local server running." while the pair's API runs on the other
+    /// Mac and this Mac's port starts. With Both, me first and with Only me. A Mac the pair gives no port (its API kept
+    /// on the other Mac) keeps the words it had.
+    @Test func localOnAMemberWhoseRelayStartsSaysSoBesideThePairsKey() async throws {
+        let key = "dk-local-PairKey" + String(repeating: "B", count: 36)
+        for kind in ["both", "onlyMe", "kept"] {
+            let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
+                [kind = kind as String, key = key as String] in
+                let directory = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("member-relay-local-\(UUID().uuidString)", isDirectory: true)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                setenv("DARKBLOOM_LOCAL_DIR", directory.path, 1)
+                try key.write(to: directory.appendingPathComponent("cluster_local_token"), atomically: true, encoding: .utf8)
+                var pair = ClusterPairMemberRelayCLITests.memberSummary(relaying: nil, bind: kind == "kept" ? "127.0.0.1" : "0.0.0.0")
+                if kind == "onlyMe" { pair = ClusterPairMemberRelayCLITests.onlyMe(pair) }
+                let summary = pair
+                ClusterPairSummary.processReaderForTesting = { _ in summary }
+                var command = try Local.parse([])
+                do { try await command.run() } catch { exit(1) }
+                exit(0)
+            }
+            let stderr = String(decoding: result?.standardErrorContent ?? [], as: UTF8.self)
+            #expect(stderr.contains("\n  \(key)\n"), "\(kind): \(stderr)")
+            if kind == "kept" {
+                #expect(stderr.contains("No local server running.\nThe cluster's API key (the same on both Macs;"), "\(kind): \(stderr)")
+            } else {
+                #expect(stderr.contains("Local API: not listening on this Mac yet; it starts once the pair's API on \(Self.other) "
+                    + "answers.\nThe pair's API key (the same on both Macs, and taken on this Mac's port once it listens):\n"),
+                        "\(kind): \(stderr)")
+                #expect(!stderr.contains("No local server running"), "\(kind): \(stderr)")
+            }
+        }
+    }
+
     // MARK: - start --opencode on a member
 
     /// The tools on a member point at its own relay, with its own key file, and say where its requests go: to the pair,

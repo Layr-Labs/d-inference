@@ -84,12 +84,17 @@ public enum LocalAuthPolicy {
         return diff == 0
     }
 
+    /// The 401's body. A pair's relay answers it too, word for word, to a caller without a key while it can't pass the
+    /// request on (`ClusterLocalRelay.Refusals.unauthorized`).
+    static var unauthorizedBody: Data {
+        Data(#"{"error":{"message":"missing or invalid local API key — get it from `\#(BuildEnvironment.current.cliName) local`","type":"authentication_error"}}"#.utf8)
+    }
+
     static func unauthorizedResponse() -> Response {
-        let body = Data(#"{"error":{"message":"missing or invalid local API key — get it from `\#(BuildEnvironment.current.cliName) local`","type":"authentication_error"}}"#.utf8)
         var headers = HTTPFields()
         headers[.contentType] = "application/json"
         headers[.wwwAuthenticate] = "Bearer"
         headers[.accessControlAllowOrigin] = "*"
-        return Response(status: .unauthorized, headers: headers, body: .init(byteBuffer: ByteBuffer(bytes: body)))
+        return Response(status: .unauthorized, headers: headers, body: .init(byteBuffer: ByteBuffer(bytes: unauthorizedBody)))
     }
 }

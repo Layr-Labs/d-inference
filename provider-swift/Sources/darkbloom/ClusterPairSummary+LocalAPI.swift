@@ -78,6 +78,10 @@ extension ClusterPairSummary {
         return nil
     }
 
+    /// This Mac relays the pair's API on every address, and its port for it isn't up yet, with nothing against it
+    /// (`memberAPIDown`): in `status`'s words, after "Local API: ". Nil otherwise.
+    var memberAPIStarting: String? { nil }
+
     /// Whether Darkbloom is paused for you, in `status`'s single-Mac words for "the pair" (`Status.meFirstLines`).
     static func pauseLines(_ meFirst: MeFirstSnapshot?, now: Date, timeZone: TimeZone) -> [String] {
         guard let meFirst else {

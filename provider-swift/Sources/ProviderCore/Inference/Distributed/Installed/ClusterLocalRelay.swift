@@ -134,22 +134,23 @@ public final class ClusterLocalRelay: @unchecked Sendable {
         }
     }
 
-    /// Passes `client` on to rank 0, or answers it a 503 that says why it can't: at once while rank 0's Mac is away
-    /// (`setAway`), else when the connection to rank 0 fails (`connectSeconds`). Never a connection that just closes.
+    /// Passes `client` on to rank 0, or answers it as the local API would when it can't (`refuse`): at once while rank
+    /// 0's Mac is away (`setAway`), else when the connection to rank 0 fails (`connectSeconds`). Never a connection that
+    /// just closes.
     private func pass(_ client: Int32) {
         defer { untrack(client); close(client) }
         let (away, refusals) = lock.withLock { (self.away, self.refusals) }
-        if away { return Self.refuse(client, code: Self.unreachableCode, message: refusals.unreachable) }
+        let keys = self.keys
+        if away { return Self.refuse(client, .unreachable, refusals: refusals, keys: keys) }
         let upstream: Int32
         switch Self.connect(target, within: Self.connectSeconds) {
         case .connected(let fd): upstream = fd
-        case .refused: return Self.refuse(client, code: Self.notAnsweringCode, message: refusals.notAnswering)
-        case .unreachable: return Self.refuse(client, code: Self.unreachableCode, message: refusals.unreachable)
+        case .refused: return Self.refuse(client, .notAnswering, refusals: refusals, keys: keys)
+        case .unreachable: return Self.refuse(client, .unreachable, refusals: refusals, keys: keys)
         }
         guard track(upstream) else { close(upstream); return }
         defer { untrack(upstream); close(upstream) }
         let done = DispatchGroup()
-        let keys = self.keys
         done.enter()
         Thread.detachNewThread {
             if let keys { Self.pumpRequests(from: client, to: upstream, keys: keys) } else { Self.pump(from: client, to: upstream) }

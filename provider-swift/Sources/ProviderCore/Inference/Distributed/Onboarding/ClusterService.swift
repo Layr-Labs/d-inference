@@ -188,8 +188,8 @@ public final class ClusterService: @unchecked Sendable {
     private var sameSplitReplans = 0
     static let memoryReplansWithSameSplit = 3
     /// The pair's API on every address (local only, or Both), on a Mac that is not rank 0: its own port passed to rank
-    /// 0's API (`ClusterLocalRelay`).
-    private var relay: ClusterLocalRelay?
+    /// 0's API (`ClusterLocalRelay`). Tests set it.
+    var relay: ClusterLocalRelay?
     /// Rank 0's API port as the other Mac's status last said it, and when it was asked (a thread of its own).
     private var relayTargetPort: Int?
     /// What this Mac's relay waits on, as `status()` publishes it (`relayStatus`); tests set it.
@@ -200,6 +200,9 @@ public final class ClusterService: @unchecked Sendable {
     /// How long the other Mac may go unheard over the cable (two missed lease renewals) before this Mac's relay answers
     /// that it can't be reached (`relayAway`).
     static let otherMacSilentSeconds: Double = 12
+    /// Failed asks in a row that make rank 0's Mac away while no lease from it was heard in this service's life
+    /// (`relayAway`).
+    static let askFailuresWithoutLease = 2
 
     /// What this Mac's relay waits on: set by `relayTick` and `askRankZeroPort`.
     struct RelayState: Equatable {
@@ -238,8 +241,8 @@ public final class ClusterService: @unchecked Sendable {
     private var relayAsked = Date.distantPast
     private var relayAsking = false
     /// Seconds before the next ask: 10 while the other Mac answers, longer (to 120) while it does not, so the link's
-    /// one-at-a-time request lock is not held for the other commands.
-    private var relayAskInterval: Double = 10
+    /// one-at-a-time request lock is not held for the other commands. Tests read it.
+    var relayAskInterval: Double = 10
     /// When each listener last checked its cable port and its pairing (`listenerChange`).
     var responderCheck = Date.distantPast
     var controlCheck = Date.distantPast
@@ -688,29 +691,13 @@ public final class ClusterService: @unchecked Sendable {
             ClusterLocalRelay.rankZeroHost(serving: leadership.serving, scope: leadership.scope, memberID: saved.memberID,
                                            roster: saved.peers.map { .init(id: $0.id, rank: $0.rank, host: $0.host) }, partRuns: partRuns)
         } }
-        // Rank 0's Mac away (a failed ask, or silent over the cable): the relay answers each request a 503 that says so.
-        // Once that Mac answers over the cable again, asks go back to every 10 s (from up to 120 s), so relaying resumes
-        // within about 10 s, without asking on every tick.
-        let now = Self.monotonicSeconds()
-        let (away, words) = lock.withLock { () -> (Bool, ClusterLocalRelay.Refusals) in
-            relayState.host = host
-            let answered = control?.otherAnsweredAt
-            if host != nil, relayState.askFailures > 0, let answered, now - answered < Self.otherMacSilentSeconds {
-                relayAskInterval = 10
-            }
-            relayState.away = host != nil && Self.relayAway(askFailures: relayState.askFailures, otherAnsweredAt: answered, now: now)
-            return (relayState.away, .pair(otherMac: otherMacNameLocked(), cli: BuildEnvironment.current.cliName))
-        }
+        let away = updateRelayAway(host: host, now: Self.monotonicSeconds())
         if let host {
             askRankZeroPort()
             if let port = lock.withLock({ relayTargetPort }) { wanted = .init(host: host, port: port) }
         }
         let current = lock.withLock { relay }
-        if let current, current.target == wanted, !current.isStopped {
-            current.setRefusals(words)
-            current.setAway(away)
-            return
-        }
+        if let current, current.target == wanted, !current.isStopped { return }
         if let current {
             current.stop()
             lock.withLock { relay = nil }
@@ -732,6 +719,27 @@ public final class ClusterService: @unchecked Sendable {
             try? LocalEndpoint.writeInfo(Self.relayDiscovery(port: started.port, keys: keys))
         }
         say("the pair's API answers on this Mac's own port \(started.port) too, passed over the cable to port \(wanted.port) on the other Mac (rank 0)")
+    }
+
+    /// Rank 0's Mac away or back for this Mac's relay (`relayAway`, from the cable's lease in `control` and the asks of
+    /// that Mac, `recordRankZeroAsk`): published (`relayState.away`), and told to the running relay with the words that
+    /// name the other Mac, so it answers a 503 at once while away. Once that Mac answers over the cable again after
+    /// failed asks, asks go back to every 10 s (from up to 120 s), so this Mac learns rank 0's port again within about
+    /// 10 s, without asking on every tick.
+    @discardableResult
+    func updateRelayAway(host: String?, now: Double) -> Bool {
+        let (away, words, running) = lock.withLock { () -> (Bool, ClusterLocalRelay.Refusals, ClusterLocalRelay?) in
+            relayState.host = host
+            let answered = control?.otherAnsweredAt
+            if host != nil, relayState.askFailures > 0, let answered, now - answered < Self.otherMacSilentSeconds {
+                relayAskInterval = 10
+            }
+            relayState.away = host != nil && Self.relayAway(askFailures: relayState.askFailures, otherAnsweredAt: answered, now: now)
+            return (relayState.away, .pair(otherMac: otherMacNameLocked(), cli: BuildEnvironment.current.cliName), relay)
+        }
+        running?.setRefusals(words)
+        running?.setAway(away)
+        return away
     }
 
     /// This Mac's relay to `wanted`, on this Mac's own port (`thisMacPort`, read only here, when a relay starts; else the
@@ -819,24 +827,32 @@ public final class ClusterService: @unchecked Sendable {
         let context = self.context, pairingStore = self.pairingStore
         Thread.detachNewThread { [weak self] in
             defer { self?.lock.withLock { self?.relayAsking = false } }
-            guard let pairing = try? ClusterSetupLinkExchange.pairing(store: pairingStore), let selection = try? context.linkSelection(),
-                  let body = try? JSONEncoder().encode(ClusterServiceCommand(op: .status)),
-                  let reply = try? ClusterSetupLinkExchange.command(pairing: pairing, selection: selection, peerAddress: nil,
-                      body: body, seconds: 5).reply,
-                  let status = try? JSONDecoder().decode(ClusterServiceStatus.self, from: reply) else {
-                self?.lock.withLock {
-                    guard let self else { return }
-                    self.relayAskInterval = min(self.relayAskInterval * 2, 120)
-                    self.relayState.askFailures += 1
-                }
+            let status: ClusterServiceStatus? = {
+                guard let pairing = try? ClusterSetupLinkExchange.pairing(store: pairingStore), let selection = try? context.linkSelection(),
+                      let body = try? JSONEncoder().encode(ClusterServiceCommand(op: .status)),
+                      let reply = try? ClusterSetupLinkExchange.command(pairing: pairing, selection: selection, peerAddress: nil,
+                          body: body, seconds: 5).reply else { return nil }
+                return try? JSONDecoder().decode(ClusterServiceStatus.self, from: reply)
+            }()
+            self?.recordRankZeroAsk(status)
+        }
+    }
+
+    /// What an ask of rank 0's Mac found (`askRankZeroPort`): its status, or nil when the ask failed (no answer within
+    /// 5 s, behind another command on that Mac or a lost discovery, or this Mac's exchange lock busy). A failed ask backs
+    /// the asks off, to 120 s, and is counted (`relayState.askFailures`, which `relayAway` reads); an answer gives rank
+    /// 0's port and resets both.
+    func recordRankZeroAsk(_ status: ClusterServiceStatus?) {
+        lock.withLock {
+            guard let status else {
+                relayAskInterval = min(relayAskInterval * 2, 120)
+                relayState.askFailures += 1
                 return
             }
-            let port = ClusterLocalRelay.rankZeroPort(in: status), ownMacOnly = ClusterLocalRelay.rankZeroAnswersOnItsMacOnly(in: status)
-            self?.lock.withLock {
-                guard let self else { return }
-                self.relayTargetPort = port; self.relayState.waitsForOffer = ownMacOnly; self.relayAskInterval = 10
-                self.relayState.askFailures = 0
-            }
+            relayTargetPort = ClusterLocalRelay.rankZeroPort(in: status)
+            relayState.waitsForOffer = ClusterLocalRelay.rankZeroAnswersOnItsMacOnly(in: status)
+            relayAskInterval = 10
+            relayState.askFailures = 0
         }
     }
 

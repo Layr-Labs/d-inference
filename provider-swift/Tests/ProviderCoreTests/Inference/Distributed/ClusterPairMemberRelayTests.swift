@@ -457,6 +457,12 @@ struct ClusterPairMemberRelayTests {
             + "this Mac relays to it. Requests resume when it answers.")
         #expect(ClusterLocalRelay.Refusals.pair(otherMac: nil, cli: "darkbloom-dev").unreachable
             .hasPrefix("Your pair's other Mac isn't reachable; this Mac relays to it."))
+        #expect(words.unauthorized == "missing or invalid local API key — get it from `darkbloom local`")
+        // For a caller without a key: no names, chip, memory or commands.
+        #expect(ClusterLocalRelay.unnamedUnreachable == "The pair's other Mac isn't reachable; this Mac relays to it. "
+            + "Requests resume when it's back.")
+        #expect(ClusterLocalRelay.unnamedNotAnswering == "The pair's API isn't answering yet; this Mac relays to it. "
+            + "Requests resume when it answers.")
     }
 
     /// While rank 0's Mac is away the relay answers every request a typed 503 at once, in words that name the other Mac,
@@ -491,21 +497,99 @@ struct ClusterPairMemberRelayTests {
         let words = ClusterLocalRelay.Refusals.pair(otherMac: "Apple M3 Ultra, 256 GB", cli: "darkbloom")
         let relay = try RelaySockets.relay(to: try RelaySockets.freePort(), keys: relayKeys, refusals: words)
         defer { relay.stop() }
-        let answer = try RelaySockets.exchange(relay.port, "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        let answer = try RelaySockets.exchange(relay.port, "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            + "Authorization: Bearer \(ownKey)\r\n\r\n")
         #expect(answer.hasPrefix("HTTP/1.1 503 "), "\(answer)")
         let error = try RelaySockets.error(in: answer)
         #expect(error["code"] == ClusterLocalRelay.notAnsweringCode && error["message"] == words.notAnswering, "\(error)")
     }
 
-    /// Rank 0's Mac is away for the relay after the first failed ask of it, or once it hasn't answered over the cable for
-    /// `otherMacSilentSeconds`; back once an ask succeeds and it answers again.
-    @Test func rankZerosMacIsAwayAfterAFailedAskOrItsSilence() {
-        let silent = ClusterService.otherMacSilentSeconds
-        #expect(ClusterService.relayAway(askFailures: 1, otherAnsweredAt: 100, now: 101), "the first failed ask")
-        #expect(!ClusterService.relayAway(askFailures: 0, otherAnsweredAt: 100, now: 105))
-        #expect(ClusterService.relayAway(askFailures: 0, otherAnsweredAt: 100, now: 100 + silent + 1), "silent over the cable")
-        #expect(!ClusterService.relayAway(askFailures: 0, otherAnsweredAt: nil, now: 1_000),
-                "no answer yet in this service's life: the asks decide")
+    /// Rank 0's address answers nothing at all (an asleep or unplugged Mac: no reset, no route answer): the relay waits
+    /// for it at most `connectSeconds`, then answers the 503 for an unreachable Mac, never a connection that just closes.
+    @Test func anUnansweringRankZeroIsA503WithinTheConnectBound() throws {
+        let words = ClusterLocalRelay.Refusals.pair(otherMac: "Apple M3 Ultra, 256 GB", cli: "darkbloom")
+        var started: ClusterLocalRelay?
+        for _ in 0..<8 where started == nil {
+            // TEST-NET-1 (RFC 5737): no host answers there.
+            started = ClusterLocalRelay(port: try RelaySockets.freePort(), bind: "127.0.0.1", target: .init(host: "192.0.2.1", port: 9),
+                                        keys: relayKeys, refusals: words)
+        }
+        let relay = try #require(started)
+        defer { relay.stop() }
+        let began = Date()
+        let answer = try RelaySockets.exchange(relay.port, "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            + "Authorization: Bearer \(ownKey)\r\n\r\n")
+        #expect(Date().timeIntervalSince(began) < Double(ClusterLocalRelay.connectSeconds) + 2)
+        #expect(answer.hasPrefix("HTTP/1.1 503 "), "\(answer)")
+        let error = try RelaySockets.error(in: answer)
+        #expect(error["code"] == ClusterLocalRelay.unreachableCode && error["message"] == words.unreachable, "\(error)")
+    }
+
+    /// The 503 names the other Mac (its chip and memory) only to a caller with this Mac's key or the pair's, as every
+    /// local API route takes them (`LocalAuthPolicy`): no unauthenticated caller, on the LAN or a web page, learns them.
+    /// A caller without one gets the local API's own 401, as rank 0's API would answer it. One the API takes without a
+    /// key (a browser's CORS preflight, a liveness check) gets the 503 with no names. Away, and while rank 0's API
+    /// doesn't listen.
+    @Test(arguments: [true, false])
+    func aRefusalNamesTheOtherMacOnlyToACallerWithAKey(away: Bool) throws {
+        let words = ClusterLocalRelay.Refusals.pair(otherMac: "Apple M3 Ultra, 256 GB", cli: "darkbloom")
+        let relay = try RelaySockets.relay(to: try RelaySockets.freePort(), keys: relayKeys, refusals: words)
+        defer { relay.stop() }
+        relay.setAway(away)
+        let code = away ? ClusterLocalRelay.unreachableCode : ClusterLocalRelay.notAnsweringCode
+        let named = away ? words.unreachable : words.notAnswering
+        let unnamed = away ? ClusterLocalRelay.unnamedUnreachable : ClusterLocalRelay.unnamedNotAnswering
+        func ask(_ head: String) throws -> String { try RelaySockets.exchange(relay.port, head + "\r\n") }
+        for key in [ownKey, pairKey] {
+            let answer = try ask("GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer \(key)\r\n")
+            #expect(answer.hasPrefix("HTTP/1.1 503 "), "\(answer)")
+            #expect(try RelaySockets.error(in: answer) == ["code": code, "message": named, "type": "server_error"])
+        }
+        let body = #"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#
+        // No key, another Mac's own key, a key without `Bearer`, and a path the API checks.
+        for request in ["POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: \(body.utf8.count)\r\n\r\n\(body)",
+                        "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer \(leaderKey)\r\n\r\n",
+                        "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: \(ownKey)\r\n\r\n",
+                        "GET /health/x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"] {
+            let answer = try RelaySockets.exchange(relay.port, request)
+            #expect(answer.hasPrefix("HTTP/1.1 401 "), "\(request): \(answer)")
+            #expect(answer.contains("WWW-Authenticate: Bearer\r\n") && answer.contains("Access-Control-Allow-Origin: *\r\n"))
+            #expect(!answer.contains("Apple") && !answer.contains("256 GB"), "\(answer)")
+        }
+        for head in ["OPTIONS /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: https://example.com\r\n",
+                     "GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n", "GET /v1/health?x=1 HTTP/1.1\r\nHost: 127.0.0.1\r\n",
+                     "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n"] {
+            let answer = try ask(head)
+            #expect(answer.hasPrefix("HTTP/1.1 503 "), "\(head): \(answer)")
+            #expect(try RelaySockets.error(in: answer) == ["code": code, "message": unnamed, "type": "server_error"], "\(head)")
+            #expect(!answer.contains("Apple") && !answer.contains("256 GB"), "\(answer)")
+        }
+    }
+
+    /// A caller without a key gets the local API's own 401 word for word (`LocalAuthPolicy.unauthorizedBody`).
+    @Test func theRelays401IsTheLocalAPIs() throws {
+        let words = ClusterLocalRelay.Refusals.pair(otherMac: "Apple M3 Ultra, 256 GB", cli: BuildEnvironment.current.cliName)
+        let relay = try RelaySockets.relay(to: try RelaySockets.freePort(), keys: relayKeys, refusals: words)
+        defer { relay.stop() }
+        relay.setAway(true)
+        let answer = try RelaySockets.exchange(relay.port, "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        #expect(answer.hasPrefix("HTTP/1.1 401 Unauthorized\r\n"), "\(answer)")
+        let body = try #require(answer.range(of: "\r\n\r\n").map { String(answer[$0.upperBound...]) })
+        #expect(Data(body.utf8) == LocalAuthPolicy.unauthorizedBody, "\(body)")
+    }
+
+    /// Rank 0's Mac is away for the relay once the cable's lease has been silent for `otherMacSilentSeconds`, whatever the
+    /// asks of it say: a slow or busy exchange fails an ask while the lease says that Mac is there. Only before any lease
+    /// in this service's life do the asks decide, and then `askFailuresWithoutLease` (two) in a row.
+    @Test func rankZerosMacIsAwayAfterTheLeasesSilenceOrTwoFailedAsksWithoutOne() {
+        let silent = ClusterService.otherMacSilentSeconds, twice = ClusterService.askFailuresWithoutLease
+        #expect(twice == 2)
+        #expect(!ClusterService.relayAway(askFailures: 1, otherAnsweredAt: 100, now: 101), "a failed ask, the lease heard")
+        #expect(!ClusterService.relayAway(askFailures: 9, otherAnsweredAt: 100, now: 100 + silent - 1))
+        #expect(ClusterService.relayAway(askFailures: 0, otherAnsweredAt: 100, now: 100 + silent), "silent over the cable")
+        #expect(!ClusterService.relayAway(askFailures: twice - 1, otherAnsweredAt: nil, now: 1_000), "no lease yet: one failed ask")
+        #expect(ClusterService.relayAway(askFailures: twice, otherAnsweredAt: nil, now: 1_000), "no lease yet: two in a row")
+        #expect(!ClusterService.relayAway(askFailures: 0, otherAnsweredAt: nil, now: 1_000))
     }
 
     /// A cluster service with no pair, whose provider configuration holds `providerConfiguration` (none when nil).
@@ -538,6 +622,93 @@ struct ClusterPairMemberRelayTests {
         service.lock.withLock { service.relayState = .init(host: nil, waitsForOffer: true, askFailures: 1, away: true) }
         let none = service.status()
         #expect(none.relayWaitsForOffer == nil && none.relayRankZeroAway == nil, "only while this Mac would relay")
+    }
+
+    /// The pair's two Macs as this Mac's control node knows them: this Mac follows, the other leads and runs rank 0.
+    private static let memberID = "mac-aaaaaaaaaaaa", leaderID = "mac-bbbbbbbbbbbb"
+    private static let claim = ClusterControlClaim(term: 1, leaderID: leaderID, members: [leaderID, memberID], reason: "fixture")
+
+    /// This Mac's control node, which last heard the other Mac's lease at `heardAt` (never, when nil).
+    private static func memberNode(heardAt: Double?) -> ClusterControlNode {
+        var node = ClusterControlNode(localID: memberID,
+            members: [.init(memberID: memberID, name: "Apple M5 Max, 128 GB", memoryBytes: 1, gpuCores: 1),
+                      .init(memberID: leaderID, name: "Apple M3 Ultra, 256 GB", memoryBytes: 1, gpuCores: 1)],
+            claim: claim, rankOrder: [leaderID, memberID], now: 0, ttl: 30)
+        if let heardAt { _ = node.receiveLease(from: leaderID, offered: claim, running: true, facts: [], now: heardAt) }
+        return node
+    }
+
+    /// Rank 0's status, as an ask of it that the other Mac answered brings it back.
+    private static func rankZeroStatus() throws -> ClusterServiceStatus {
+        try JSONDecoder().decode(ClusterServiceStatus.self, from: Data(
+            #"{"serving":true,"sessionLeader":true,"child":{"running":true,"starts":1},"pairAPIPort":8003}"#.utf8))
+    }
+
+    /// The cluster service tells its running relay that rank 0's Mac is away from the cable's lease, not from a failed
+    /// ask: a slow or busy exchange while the lease is heard leaves it relaying; the lease silent for
+    /// `otherMacSilentSeconds` makes it answer the 503, in words that name the other Mac; heard again, it relays again.
+    @Test func theServiceTellsItsRelayRankZeroIsAwayFromTheLeaseNotFromASlowAsk() throws {
+        let (service, home) = try Self.service(providerConfiguration: nil)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let api = try RecordingAPI()
+        defer { api.stop() }
+        let relay = try RelaySockets.relay(to: api.port, keys: relayKeys)
+        defer { relay.stop() }
+        service.lock.withLock { service.control = Self.memberNode(heardAt: 100); service.relay = relay }
+        let host = "10.219.1.1"
+        let request = "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer \(ownKey)\r\n\r\n"
+        // A slow ask failed while the lease is heard: still relaying.
+        service.recordRankZeroAsk(nil)
+        service.updateRelayAway(host: host, now: 105)
+        #expect(!relay.isAway && service.status().relayRankZeroAway == nil)
+        #expect(try RelaySockets.exchange(relay.port, request).hasPrefix("HTTP/1.1 200 "))
+        // The lease silent for 12 s: the 503, which names the other Mac to this Mac's key.
+        service.updateRelayAway(host: host, now: 100 + ClusterService.otherMacSilentSeconds)
+        #expect(relay.isAway && service.status().relayRankZeroAway == true)
+        let away = try RelaySockets.exchange(relay.port, request)
+        #expect(away.hasPrefix("HTTP/1.1 503 ") && away.contains("Apple M3 Ultra, 256 GB"), "\(away)")
+        // Heard again: relaying.
+        service.lock.withLock { service.control = Self.memberNode(heardAt: 130) }
+        service.updateRelayAway(host: host, now: 131)
+        #expect(!relay.isAway && service.status().relayRankZeroAway == nil)
+        #expect(try RelaySockets.exchange(relay.port, request).hasPrefix("HTTP/1.1 200 "))
+        #expect(api.received.count == 2, "rank 0 saw the two relayed requests, never the refused one")
+    }
+
+    /// Before any lease is heard in this service's life, the asks decide: one failed ask leaves rank 0's Mac there, two
+    /// in a row make it away, and an answer brings it back. Each failed ask doubles the wait before the next.
+    @Test func withoutALeaseTwoFailedAsksInARowMakeRankZeroAway() throws {
+        let (service, home) = try Self.service(providerConfiguration: nil)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let host = "10.219.1.1"
+        service.recordRankZeroAsk(nil)
+        service.updateRelayAway(host: host, now: 50)
+        #expect(service.status().relayRankZeroAway == nil, "one failed ask")
+        service.recordRankZeroAsk(nil)
+        service.updateRelayAway(host: host, now: 60)
+        #expect(service.status().relayRankZeroAway == true, "two in a row")
+        #expect(service.lock.withLock { service.relayAskInterval } == 40)
+        service.recordRankZeroAsk(try Self.rankZeroStatus())
+        service.updateRelayAway(host: host, now: 70)
+        #expect(service.status().relayRankZeroAway == nil, "an answer")
+        #expect(service.lock.withLock { service.relayAskInterval } == 10)
+    }
+
+    /// Once rank 0's Mac answers over the cable again after failed asks, the asks go back to every 10 s (from up to
+    /// 120 s), so this Mac learns rank 0's port again within about 10 s. While the lease is silent, they stay backed off.
+    @Test func theAsksGoBackToEveryTenSecondsOnceTheLeaseIsHeardAgain() throws {
+        let (service, home) = try Self.service(providerConfiguration: nil)
+        defer { try? FileManager.default.removeItem(at: home) }
+        service.lock.withLock {
+            service.control = Self.memberNode(heardAt: 100)
+            service.relayState.askFailures = 3
+            service.relayAskInterval = 80
+        }
+        service.updateRelayAway(host: "10.219.1.1", now: 100 + ClusterService.otherMacSilentSeconds)
+        #expect(service.lock.withLock { service.relayAskInterval } == 80, "silent: still backed off")
+        service.lock.withLock { service.control = Self.memberNode(heardAt: 130) }
+        service.updateRelayAway(host: "10.219.1.1", now: 131)
+        #expect(service.lock.withLock { service.relayAskInterval } == 10, "heard again")
     }
 
     /// The cluster service starts this Mac's relay on this Mac's own saved port (`LocalAPIPort.thisMac`), whatever rank

@@ -63,7 +63,7 @@ billing, version; `provider-swift/Sources/darkbloom/Diagnostics/DoctorRunner.swi
 |---|---|---|
 | `mode`, `darkbloom network` | How this Mac serves (Only me, Darkbloom network or Both, me first), first in the report; with Only me, the account, trust, App Attest and coordinator checks are skipped as not needed (`provider-swift/Sources/darkbloom/Diagnostics/DoctorLocalAPI.swift`) | Informational. Not chosen yet: `darkbloom start` asks; `darkbloom start --choose` changes it |
 | `address`, `key file` | The local API answers `GET /health` on its port, and a key file holds its key; the key is never printed | Follow the printed fix: `darkbloom start` (not running), the free port it names (port in use), `darkbloom restart` (a port that doesn't answer, or no file holds the key) |
-| `OpenCode`, `Hermes` | Darkbloom's provider in the tool's config points at this Mac's local API and its key file | `darkbloom start --opencode` or `--hermes` points it here again; a config Darkbloom can't read says why |
+| `OpenCode`, `Hermes` | Darkbloom's provider in the tool's config points at this Mac's local API and its key file | `darkbloom --opencode` or `--hermes` points it here again; a config Darkbloom can't read says why |
 | `hardware`, `metal gpu`, `macos` | Chip/RAM detection, Metal device, OS version | Apple Silicon with a working GPU is required; nothing to configure |
 | `config` | `provider.toml` parses | Fix the TOML at `~/.config/darkbloom/provider.toml`; retired keys only warn |
 | `huggingface cache`, `local mlx models` | `~/.cache/huggingface/hub` exists and holds serveable models | `darkbloom models download <id>` |

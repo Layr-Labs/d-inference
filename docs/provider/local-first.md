@@ -273,7 +273,7 @@ LOCAL API   (how this Mac serves you and your tools)
   [PASS] key file — ~/.darkbloom/local_token (`darkbloom local` shows the key)
   [PASS] OpenCode — points here (~/.config/opencode/opencode.jsonc)
   [WARN] Hermes — points at http://127.0.0.1:8000/v1, not this Mac's local API (http://127.0.0.1:8001/v1) (~/.hermes/config.yaml)
-         ↳ fix: `darkbloom start --hermes`
+         ↳ fix: `darkbloom --hermes`
 ```
 
 Each problem names the command that fixes it, and no line shows the key. With

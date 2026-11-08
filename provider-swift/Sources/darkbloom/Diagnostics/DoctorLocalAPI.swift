@@ -186,7 +186,7 @@ struct DoctorLocalAPI {
         switch setup.found {
         case .noFile, .noEntry:
             guard hasLocalAPI else { return nil }
-            return line(setup.name, .info, "not set up (`\(cli) start \(flag)` sets it up)")
+            return line(setup.name, .info, "not set up (`\(cli) \(flag)` sets it up)")
         case .unreadable(let why):
             guard hasLocalAPI else { return nil }
             return line(setup.name, .warn, "can't read \(file): \(why)")
@@ -198,12 +198,12 @@ struct DoctorLocalAPI {
             }
             guard DoctorToolSetup.sameAddress(pointsAt, here) else {
                 return line(setup.name, .warn, "points at \(pointsAt), not this Mac's local API (\(here)) (\(file))",
-                            fix: "`\(cli) start \(flag)`")
+                            fix: "`\(cli) \(flag)`")
             }
             if let keyFile, let ours = facts.keyFile,
                DoctorToolSetup.expanded(keyFile, home: facts.home) != ours.path {
                 return line(setup.name, .warn, "points here, but reads its key from \(keyFile), not "
-                    + ToolIntegration.displayPath(ours, home: facts.home) + " (\(file))", fix: "`\(cli) start \(flag)`")
+                    + ToolIntegration.displayPath(ours, home: facts.home) + " (\(file))", fix: "`\(cli) \(flag)`")
             }
             return line(setup.name, .pass, "points here (\(file))")
         }

@@ -2,7 +2,7 @@ import Foundation
 import ProviderCore
 
 /// What a tool's own config says of Darkbloom, for `darkbloom doctor`'s Local API section: the file the tool reads
-/// (as `start --opencode` / `--hermes` choose it) and the address and key file of Darkbloom's provider there. Read
+/// (as `darkbloom --opencode` / `--hermes` choose it) and the address and key file of Darkbloom's provider there. Read
 /// only; the key itself is never read.
 struct DoctorToolSetup: Equatable, Sendable {
     enum Found: Equatable, Sendable {

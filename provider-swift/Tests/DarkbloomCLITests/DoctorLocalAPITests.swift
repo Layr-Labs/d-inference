@@ -59,8 +59,8 @@ struct DoctorLocalAPITests {
         #expect(address.level == .warn)
         #expect(address.message == "http://127.0.0.1:8001/v1 — not running")
         #expect(address.fix == "`\(Self.cli) start`")
-        #expect(find("OpenCode", in: lines)?.message == "not set up (`\(Self.cli) start --opencode` sets it up)")
-        #expect(find("Hermes", in: lines)?.message == "not set up (`\(Self.cli) start --hermes` sets it up)")
+        #expect(find("OpenCode", in: lines)?.message == "not set up (`\(Self.cli) --opencode` sets it up)")
+        #expect(find("Hermes", in: lines)?.message == "not set up (`\(Self.cli) --hermes` sets it up)")
     }
 
     @Test func networkChecksRunAnywayDropTheNotNeededLine() {
@@ -158,7 +158,7 @@ struct DoctorLocalAPITests {
         #expect(hermes.level == .warn)
         #expect(hermes.message == "points at http://127.0.0.1:8000/v1, not this Mac's local API (http://127.0.0.1:8001/v1) "
             + "(~/.hermes/config.yaml)")
-        #expect(hermes.fix == "`\(Self.cli) start --hermes`")
+        #expect(hermes.fix == "`\(Self.cli) --hermes`")
 
         let otherKey = section(.init(saved: LocalSettings(mode: .both, port: 8001), running: Self.state(meFirst: Self.meFirst),
                                      live: Self.endpoint(), answers: true, keyFile: Self.keyFile,
@@ -168,7 +168,7 @@ struct DoctorLocalAPITests {
         #expect(stale.level == .warn)
         #expect(stale.message.hasPrefix("points here, but reads its key from ~/.darkbloom/cluster_local_token, not "
             + "~/.darkbloom/local_token"))
-        #expect(stale.fix == "`\(Self.cli) start --opencode`")
+        #expect(stale.fix == "`\(Self.cli) --opencode`")
     }
 
     @Test func aToolConfigThatCantBeReadIsAWarning() throws {

@@ -176,6 +176,44 @@ struct ClusterLeaveCommandTests {
         #expect(calls.all == ["stop", "forget a1a1", "forget b2b2"])
     }
 
+    /// The stop before unpairing, `darkbloom uninstall`'s step 2 too: skipped with no cluster service; the pair's stop
+    /// when it works; else this Mac's part alone, with why the other Mac wasn't asked; and an error when even that
+    /// fails, so neither command unpairs a Mac whose part still runs.
+    @Test func theStopBeforeUnpairingIsUninstallsStop() async throws {
+        struct NotAnswered: Error, CustomStringConvertible { var description: String { "the other Mac did not answer" } }
+        func stop(hasService: Bool = true, failing: Set<Bool> = []) async throws
+            -> (outcome: ProviderUninstall.Outcome, calls: [String], lines: [String]) {
+            let calls = Calls(), lines = Calls()
+            let outcome = try await Cluster.Stop.beforeUnpairing(hasService: hasService, say: { lines.append($0) }) { localOnly in
+                calls.append(localOnly ? "--local-only" : "--service")
+                if failing.contains(localOnly) { throw NotAnswered() }
+                return ["stopped \(localOnly ? "here" : "together")"]
+            }
+            return (outcome, calls.all, lines.all)
+        }
+
+        let none = try await stop(hasService: false)
+        #expect(none.outcome == .skipped("no cluster service on this Mac"))
+        #expect(none.calls.isEmpty && none.lines.isEmpty)
+
+        let together = try await stop()
+        #expect(together.outcome == .done())
+        #expect(together.calls == ["--service"] && together.lines == ["stopped together"])
+
+        let alone = try await stop(failing: [false])
+        #expect(alone.outcome == .done("the other Mac was not asked to stop (the other Mac did not answer)"))
+        #expect(alone.calls == ["--service", "--local-only"] && alone.lines == ["stopped here"])
+
+        let stuck = Calls()
+        await #expect(throws: NotAnswered.self) {
+            _ = try await Cluster.Stop.beforeUnpairing(hasService: true, say: { _ in }) { localOnly in
+                stuck.append(localOnly ? "--local-only" : "--service")
+                throw NotAnswered()
+            }
+        }
+        #expect(stuck.all == ["--service", "--local-only"])
+    }
+
     @Test func leavingStopsThisMacsServiceWithoutSayingToStartItAgain() throws {
         let ordinary = try Cluster.Stop.finishStop(.success([])) { ["agent"] }
         #expect(ordinary.last?.contains("Run `\(ClusterPairSummary.cli) cluster` to start it again.") == true)

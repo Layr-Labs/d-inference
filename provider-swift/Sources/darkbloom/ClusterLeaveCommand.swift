@@ -4,7 +4,7 @@ import ProviderCore
 
 extension Cluster {
     /// `darkbloom cluster leave`: this Mac leaves its pair, from either Mac, with the steps `darkbloom uninstall` takes
-    /// for the pair: this Mac's part stops (`Cluster.Stop.leavePair`), then its pairing is forgotten
+    /// for the pair: this Mac's part stops (`Cluster.Stop.beforeUnpairing`), then its pairing is forgotten
     /// (`cluster pair --forget`, `ClusterUnpairing`). Nothing else changes: single-Mac serving, models and the cable
     /// port setup stay.
     struct Leave: AsyncParsableCommand {
@@ -34,8 +34,8 @@ extension Cluster {
                     if answer == nil { print() }
                     return answer
                 },
-                stopPart: { try await Cluster.Stop.leavePair(executable: executable, say: ClusterPairCommands.printLine) },
-                forget: { pin in try Cluster.Pair.parse(["--forget", pin]).run() },
+                stopPart: { try await Cluster.Stop.beforeUnpairing(executable: executable, say: ClusterPairCommands.printLine) },
+                forget: Cluster.Pair.forget(pin:),
                 soloServing: { ServiceDrain.soloProviderState().map { daemonProcessAlive(pid: $0.pid) } ?? false },
                 say: ClusterPairCommands.printLine)
             let code = await flow.run()
@@ -56,8 +56,9 @@ struct ClusterLeaveFlow {
     var yes: Bool
     /// Asks `question` in the terminal and reads the answer; nil when the input ends.
     var ask: (String) -> String?
-    /// Stops this Mac's part and turns its cluster service off (`Cluster.Stop.leavePair`): `.done(nil)` when the pair
-    /// stopped together, `.done(note)` when the other Mac was not asked, `.skipped` with no cluster service here.
+    /// Stops this Mac's part and turns its cluster service off (`Cluster.Stop.beforeUnpairing`): `.done(nil)` when the
+    /// pair stopped together, `.done(note)` when the other Mac was not asked, `.skipped` with no cluster service here.
+    /// It returns only once this Mac's cluster service, and with it its part, no longer runs; else it throws.
     var stopPart: () async throws -> ProviderUninstall.Outcome
     /// Forgets the pairing with the Mac whose pin it is (`cluster pair --forget <pin>`).
     var forget: (String) throws -> Void
@@ -108,6 +109,7 @@ struct ClusterLeaveFlow {
         }
         if case .skipped(let reason) = stopped { say("  Nothing to stop: \(reason).") }
 
+        // Only now, with this Mac's part stopped: a Mac whose part still runs is never unpaired.
         say("→ Forgetting this Mac's pairing")
         for peer in pairing.peers {
             do {

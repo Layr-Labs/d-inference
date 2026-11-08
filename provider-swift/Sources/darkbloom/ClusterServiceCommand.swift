@@ -223,20 +223,42 @@ extension Cluster {
             }.value
         }
 
-        /// This Mac leaves its pair (`darkbloom cluster leave`, `darkbloom uninstall`): the pair stops together and this
-        /// Mac's cluster service goes off, as `--service` does; when the pair can't stop together (the other Mac doesn't
-        /// answer), only this Mac's part stops, as `--local-only` does. Skipped when this Mac has no cluster service.
-        static func leavePair(executable: URL, say: (String) -> Void) async throws -> ProviderUninstall.Outcome {
-            let current = ClusterServiceAgentPlan.label(executablePath: ClusterService.resolvedExecutable(executable))
-            guard !ClusterServiceAgent.installedLabels().isEmpty || ClusterServiceAgent.isLoaded(label: current)
-                    || ClusterService.running() else { return .skipped("no cluster service on this Mac") }
+        /// The stop before this Mac unpairs (`darkbloom cluster leave`, `darkbloom uninstall`): the pair stops together
+        /// and this Mac's cluster service goes off, as `--service` does; when that fails (the pair can't stop together,
+        /// as when the other Mac doesn't answer), only this Mac's part stops, as `--local-only` does. Skipped when this
+        /// Mac has no cluster service.
+        ///
+        /// It returns only once no cluster service runs on this Mac: `turnServiceOff` ends with
+        /// `ClusterService.removeFromLogin`, which waits for the service to end and throws when it doesn't. So a caller
+        /// that unpairs after it never unpairs a Mac whose part still runs. These are the steps `darkbloom uninstall`
+        /// took before they were shared (`cluster stop --service`, then `--local-only`); `leaving` only leaves out the
+        /// hints to start the service again and to stop the other Mac's, whose place the caller's last lines take.
+        static func beforeUnpairing(executable: URL, say: (String) -> Void) async throws -> ProviderUninstall.Outcome {
+            try await beforeUnpairing(hasService: hasService(executable: executable), say: say) { localOnly in
+                try await turnServiceOff(config: nil, worker: nil, localOnly: localOnly, leaving: true)
+            }
+        }
+
+        /// `beforeUnpairing` with this Mac's service and its stop given (`turnOff(localOnly)` returns the lines to say).
+        static func beforeUnpairing(hasService: Bool, say: (String) -> Void,
+                                    turnOff: (_ localOnly: Bool) async throws -> [String]) async throws
+            -> ProviderUninstall.Outcome {
+            guard hasService else { return .skipped("no cluster service on this Mac") }
             do {
-                for line in try await turnServiceOff(config: nil, worker: nil, localOnly: false, leaving: true) { say(line) }
+                for line in try await turnOff(false) { say(line) }
                 return .done()
             } catch {
-                for line in try await turnServiceOff(config: nil, worker: nil, localOnly: true, leaving: true) { say(line) }
+                for line in try await turnOff(true) { say(line) }
                 return .done("the other Mac was not asked to stop (\(error))")
             }
+        }
+
+        /// Whether this Mac has a cluster service to stop: this build's login agent installed, this executable's job
+        /// loaded, or a service running.
+        static func hasService(executable: URL) -> Bool {
+            let current = ClusterServiceAgentPlan.label(executablePath: ClusterService.resolvedExecutable(executable))
+            return !ClusterServiceAgent.installedLabels().isEmpty || ClusterServiceAgent.isLoaded(label: current)
+                || ClusterService.running()
         }
 
         /// The pair stop `--service` asks for first, saying what it waits for when it runs long.

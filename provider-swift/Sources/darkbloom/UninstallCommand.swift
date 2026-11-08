@@ -133,7 +133,7 @@ struct Uninstall: AsyncParsableCommand {
                 return wasLoaded ? .done() : .skipped("the provider service was not running")
             },
             // As `darkbloom cluster leave` stops it: the summary's last line says what to do on the other Mac.
-            stopClusterPart: { try await Cluster.Stop.leavePair(executable: executable, say: { print($0) }) },
+            stopClusterPart: { try await Cluster.Stop.beforeUnpairing(executable: executable, say: { print($0) }) },
             removeServices: [
                 ("Remove the provider service", {
                     try ProviderUninstall.removeAgent(plist: LaunchAgent.plistPath(), loaded: LaunchAgent.isLoaded(),
@@ -156,7 +156,7 @@ struct Uninstall: AsyncParsableCommand {
                 return await Logout.revokeSavedToken(token) ? .done()
                     : .skipped("the coordinator did not confirm it (offline, or the token's issuer is unknown)")
             },
-            forget: { pin in try Cluster.Pair.parse(["--forget", pin]).run() },
+            forget: Cluster.Pair.forget(pin:),
             removeCableSetup: {
                 let result = ClusterLinkRepair.remove(device: nil)
                 if result.outcome == .approvalUnavailable, ClusterLinkApprovalSession.cannotPrompt() {

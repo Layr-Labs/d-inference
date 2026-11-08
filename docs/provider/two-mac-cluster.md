@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -1723,6 +1723,40 @@ darkbloom start                            # single-Mac serving, as on any Mac
 Plain `darkbloom stop` on 0.10.8 stops the pair, not single-Mac serving, so it
 isn't the way back.
 
+## Leaving the pair
+
+To stop clustering for good, leave the pair on each Mac, in either order:
+
+```bash
+darkbloom cluster leave   # on each Mac; asks first (--yes for scripts)
+darkbloom start           # then on each Mac: serves that Mac alone
+```
+
+`darkbloom cluster leave` says the pair in one sentence and what leaving does,
+then asks `Leave the pair? [y/N]` (No by default; without a terminal it needs
+`--yes`). It then takes the steps `darkbloom uninstall` takes for the pair:
+
+1. **This Mac's part stops:** the pair stops on both Macs and this Mac's
+   cluster service leaves login, as `darkbloom cluster stop --service`. When the
+   other Mac doesn't answer, only this Mac's part stops
+   (`cluster stop --local-only`). A part that doesn't stop leaves the Mac
+   paired, and the command says to try again.
+2. **This Mac forgets its pairing,** as `darkbloom cluster pair --forget` and
+   **Start over** do ([undo](#undo)). Run on the Mac that leads, it first
+   tells the other Mac over the cable, which reclaims its pair cache and stops
+   its part.
+3. **It says what's next:** ``✓ This Mac left the pair. Nothing serves on this
+   Mac now: `darkbloom start` serves it alone.``, then that the other Mac
+   stopped serving the pair too (or wasn't reached) and keeps its pairing until
+   you run `darkbloom cluster leave` on it, and that `darkbloom cluster` on each
+   Mac pairs them again.
+
+Until it leaves too, the other Mac still holds its pairing: its
+`darkbloom cluster` no longer reaches this Mac and offers **Start over**. The
+models, single-Mac serving and the cable port setup stay on both Macs
+(`darkbloom cluster link --remove` undoes the cable setup). Every line:
+[CLI reference](./cli-reference.md#darkbloom-cluster-leave).
+
 ## Pairing again
 
 Pair the Macs again after the official installer reinstalls Darkbloom ("Secure
@@ -1767,8 +1801,9 @@ in [a saved pairing the onboarding cannot use](../architecture/inference.md#a-sa
 
 `darkbloom cluster link --remove` on each Mac restores the cable port's earlier
 network settings (one approval). `darkbloom cluster pair --forget <pin>` removes
-a pairing; **Pair again** and **Start over** in `darkbloom cluster`
-take the same steps (`ClusterUnpairing`). Run on the leader, it first tells the other Mac over the
+a pairing; **Pair again** and **Start over** in `darkbloom cluster`, and
+`darkbloom cluster leave` ([leaving the pair](#leaving-the-pair)), take the
+same steps (`ClusterUnpairing`). Run on the leader, it first tells the other Mac over the
 cable, which removes the pair's prompt-cache records (its own single-Mac cache
 stays) and stops its part; each Mac also removes its own pair records when it
 unpairs.

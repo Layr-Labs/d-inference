@@ -2138,15 +2138,12 @@ quantization, loaders and adapter paths are preserved. Sources:
 (`gemma4GeluProduct`), `libs/mlx-swift-lm/Libraries/MLXLMCommon/SwitchLayers.swift`
 (`compiledGeGLU`).
 
-For the production Gemma 4 MoE geometry with global affine4/group64
-quantization, `Gemma4DecodeCommandBuffers` supplies the existing CBv2 scoped
-command-buffer policy. It changes submission boundaries while preserving kernel
-arithmetic, data dependencies and synchronization correctness. Existing step-width,
-admission and memory-pressure checks remain in effect; paged attention, prefix
+This change does not alter command-buffer submission: Gemma 4's decode limits
+are the separate [operation-count policy](#gemma-decode-command-buffers).
+Step-width, admission and memory-pressure checks, paged attention, prefix
 caching and SSD write policy are unchanged. See the
 [hardware and memory qualification](hardware-support.md#gemma-4-dispatch-qualification)
-for the thresholds and their resource-lifetime limits. Source:
-`libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4DecodeCommandBuffers.swift`.
+for the measured memory scope.
 
 An [initial endpoint A/B/B/A screen](https://github.com/Layr-Labs/mlx-swift-lm/blob/a63b4c69b73f05ff3e08ed51d22bcbb60a2a1447/docs/benchmarks/gemma4-lossless-dispatch-2026-10-25/README.md) of
 `gemma-4-26b-qat-4bit` on one M5 Max measured a 3.45% and 3.90% improvement in
@@ -2154,8 +2151,11 @@ the two paired orderings of the HTTP decode proxy: approximately 99.2–99.6 to
 103.0–103.1 tok/s. Each leg used two fixed single-request prompts with 8,192
 cached tokens and 256 completion tokens, with exact MTP acceptance in both arms.
 Outputs and completion usage matched; the same candidate passed 12 endpoint
-capability smokes. The measurement combines both changes and establishes no
-prefill, broader-concurrency or sustained-load gain. The shared tower serves
+capability smokes. That candidate also carried an earlier scoped command-buffer
+limit (100 operations or 512 M distinct input elements, production geometry
+only), which the operation-count policy has since replaced. The measurement
+therefore does not isolate the GeGLU product, and it establishes no prefill,
+broader-concurrency or sustained-load gain. The shared tower serves
 text and VLM callers. Downstream clustering integration requires merging the
 shared-layer change with its stage-specific projection policies and separately
 qualifying command-buffer integration; updating its SDK pin alone is insufficient.

@@ -297,19 +297,14 @@ On M5 Ultra, Qwen3.5-9B peak MLX memory at 32,768 prompt tokens fell from
 ### Gemma 4 dispatch qualification
 
 The [Gemma 4 native dispatch change](inference.md#gemma-4-native-dispatch)
-uses the existing scoped command-buffer policy with `operations: 100` and
-`megabytes: 512` for eligible GPU models. Despite the second API field's name,
-the current MLX backend counts distinct input elements in units of 2^20, not
-bytes; both thresholds are checked after a primitive. They are submission
-heuristics, not memory caps. Later submission can retain resources longer, so
-the provider's OS reserve, activation floor, LOAD quotation, KV grants, admission
-and memory-pressure safeguards remain unchanged. Sources:
-`libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4DecodeCommandBuffers.swift`
-(`Gemma4DecodeCommandBuffers`),
-`libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/device.cpp`
-(`CommandEncoder::set_input_array`, `CommandEncoder::needs_commit`).
+fuses the dense GeGLU product and sets no command-buffer limit of its own; the
+decode limits in force are the
+[operation-count policy](inference.md#gemma-decode-command-buffers). The
+provider's OS reserve, activation floor, LOAD quotation, KV grants, admission
+and memory-pressure safeguards remain unchanged.
 
-The linked endpoint screen measured repeat RSS of about 16.269 GiB for the
+The linked endpoint screen, whose candidate also carried an earlier scoped
+command-buffer limit (`operations: 100`, `megabytes: 512`), measured repeat RSS of about 16.269 GiB for the
 candidate and 16.266 GiB for the baseline. The first candidate leg's lifetime
 physical-footprint peak included a cold prewarm and reached 20.06 GiB, versus
 17.54 GiB in the later warmed candidate leg. This is not a matched warm peak-memory

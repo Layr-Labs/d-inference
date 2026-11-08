@@ -29,22 +29,32 @@ extension EngineV2Bridge {
     ///   out, and the hold with it. One that reads as waiting after its admission (an older request preempted to the
     ///   front of the queue) is held until its first token.
     /// - A client that leaves during the hold cancels the request.
-    /// - The first look is at once, then one every `queuePollInterval`; nothing runs per token.
+    /// - The first look is at once, the next `headHoldFirstRecheck` later, and the wait doubles up to
+    ///   `queuePollInterval`. The engine counts a request as waiting from its submit until the step that admits it
+    ///   publishes, so the first look always reads waiting; a request the engine admits at its next step gets its
+    ///   head a few milliseconds after its submit, and a queued one is looked at every `queuePollInterval`. Nothing
+    ///   runs per token.
     func holdHeadUntilAdmitted(id: String) async throws {
         defer { heldHeads.removeValue(forKey: id) }
+        var wait = min(Self.headHoldFirstRecheck, queuePollInterval)
         while true {
             if case .refused(let message)? = heldHeads[id] {
                 throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(message)
             }
             guard let queue = queueState(of: id), queue.waiting else { return }
             do {
-                try await Task.sleep(for: queuePollInterval)
+                try await Task.sleep(for: wait)
             } catch {
                 cancel(requestId: id)
                 throw error
             }
+            wait = min(wait * 2, queuePollInterval)
         }
     }
+
+    /// The hold's first wait after its first look: an idle engine steps within a millisecond (EngineV2's idle
+    /// recheck), and a busy one at its next step.
+    static let headHoldFirstRecheck: Duration = .milliseconds(1)
 
     /// The pump's terminal for a request whose head is held: an end before admission for this Mac's memory becomes
     /// the hold's refusal. Called in the actor turn that records the terminal, so the hold finds the refusal no later

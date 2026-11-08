@@ -7,7 +7,10 @@
   it got HTTP 200 and then "Response generation failed".
 - A request that isn't streamed and outlasts the admission lease gets the same words (they were "Provider capacity is
   temporarily unavailable.").
-- The prompt progress comments start when the engine admits the request, so a queued request says nothing until then.
+- The prompt progress comments start when the engine admits the request, so a queued request says nothing until then:
+  while the engine keeps it queued, its client gets no bytes, headers included, for up to the 120 s lease before its
+  503. Before, it got its head at once and a `: prefill in progress` comment every 5 seconds. A request the engine
+  admits at once gets its head within a few milliseconds.
 - A pair's API, Darkbloom's requests and a Nemotron Super request that asks for logprobs (its entries are spliced as
   the stream is read) are unchanged. A request admitted and later preempted, and never admitted again, still ends a
   streamed answer with an error event.

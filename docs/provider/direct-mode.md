@@ -453,10 +453,14 @@ Each streamed request has one timer, from its first frame to its first token,
 and nothing runs per token. A request that isn't streamed gets nothing until its
 answer, as HTTP has no interim bytes: give such a client a timeout of minutes
 for a long prompt (the OpenAI SDKs wait 10 minutes by default), or stream.
-Before the engine accepts a request, nothing is sent either, not even the
-headers: while the model loads for it, while it waits for a pair's lane, and
-while its prompt is tokenized. A client that limits how long it waits for
-headers must allow a cold model load.
+Before the engine admits a request (on a pair, accepts it), nothing is sent
+either, not even the headers: while the model loads for it, while it waits for
+a pair's lane, while its prompt is tokenized, and, on one Mac, while it waits
+in the engine's queue for memory or room. That queue wait lasts up to the
+engine's 120 s admission lease, so a streamed request can see no bytes for up
+to 120 s before its 503. One the engine admits at once gets its headers within
+a few milliseconds. A client that limits how long it waits for headers must
+allow a cold model load and, on a busy Mac, those 120 s.
 
 ### Refused request shapes
 

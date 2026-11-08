@@ -399,15 +399,15 @@ extension EngineV2Bridge {
     /// window:
     /// - without `requested`, the default is cut to what the prompt leaves of
     ///   `defaultOutputContextLimit` (`EngineV2Translation.defaultOutputTokens`);
-    /// - on a slot held to its model window (`modelWindowTokens`), `requested` is
-    ///   cut to what the prompt leaves. Cut, not refused: the coordinator sizes a
-    ///   request by its own estimate of the prompt and the catalog's limits, so a
-    ///   request it sends may pass the window once tokenized here, and it is then
-    ///   served within the window rather than failed (OpenRouter's included). A
-    ///   prompt that fills the window is refused (`promptExceedsContext`);
-    /// - elsewhere `requested` is kept as asked: a slot with an advertised
-    ///   context refuses a request past it (`advertisedContextExceeded`), and a
-    ///   pair refuses by its own limits.
+    /// - on a single Mac slot (`modelWindowTokens`: its advertised context, else
+    ///   its model's window), `requested` is cut to what the prompt leaves. Cut,
+    ///   not refused, so a client gets the model's whole window: OpenCode and
+    ///   Hermes name a `max_tokens` on every request, and a long conversation
+    ///   would otherwise be refused long before the window is full; the
+    ///   coordinator sizes a request by its own estimate of the prompt, so one it
+    ///   sends may pass the window once tokenized here, and is served within it.
+    ///   Only a prompt that leaves no room is refused (`promptExceedsContext`);
+    /// - on a pair `requested` is kept as asked: it refuses by its own limits.
     /// Resolving the result again for the same prompt gives the same value, so
     /// the text path can name it on the request before the bridge resolves it.
     nonisolated func outputTokens(requested: Int?, promptTokens: Int) -> Int {

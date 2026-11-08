@@ -365,7 +365,9 @@ saving. Every choice then serves in the background, with the same model picker
   With `--no-auth` the local router passes nothing on, so the summary says
   `your requests: this Mac only` and `(no API key: --no-auth, so requests stay
   on this Mac)`, whatever the route, and the start doesn't ask the Keychain.
-  No start screen prints the key, except the banner of `--local --here`, as before. A
+  No start screen prints the key: the banner of `--local --here` says
+  ``API key:  `darkbloom local` shows it`` and where your requests go
+  (`Start.localServerBanner`). A
   start that nothing chose (step 5) prints today's summary.
 
 #### Set up OpenCode or Hermes
@@ -527,6 +529,12 @@ detection fails, no model is selected, or the local server does not bind within
 A selection that would serve GLM-5.3-Flash below the macOS GPU wired-memory
 limits prints a `warning:` with the fix and continues
 ([GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit)).
+
+The picker opens with the last selection (`[backend] enabled_models`) still
+downloaded selected, when it fits; else the largest downloaded model with room to
+spare (half its load budget or less); else the smallest downloaded one that fits;
+never a model only the catalog has, which selecting would download
+(`Start.pickerPreselection`, `provider-swift/Sources/darkbloom/Start/StartCommand+Picker.swift`).
 
 The ordinary catalog picker uses the selected models' shared activation reserve
 when checking each model's load estimate. Adding an unmeasured model can raise
@@ -1469,8 +1477,10 @@ Every subcommand accepts `--config`.
 | `start --autopilot`, `start --autopilot --all` | Explicit scripted enrollment of all verified eligible downloaded network builds; `--all` cannot include arbitrary local/off-catalog models |
 | `start --no-autopilot` | Explicitly save the ordinary idle-policy mode |
 
-Every normal interactive `start` asks about experimental Autopilot again,
-explicitly naming shadow mode as not activated and a later live rollout. The
+Every normal interactive `start` that serves the Darkbloom network asks about
+experimental Autopilot again, explicitly naming shadow mode as not activated and
+a later live rollout; Both, me first and Only me never ask (`resolveAutopilotChoice`),
+and `autopilot enable` enrolls them. The
 first default is No (`[y/N]`); later prompts use the saved choice (`[Y/n]` when
 enrolled). Enter keeps that default. Explicit enrollment flags and automatic
 restarts do not prompt. Both answers follow the ordinary model picker and

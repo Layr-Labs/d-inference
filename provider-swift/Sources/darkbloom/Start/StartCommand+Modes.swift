@@ -171,20 +171,16 @@ extension Start {
         if here { print(Self.hereEndedLine(saved: (try? savedLocalSettings(configPath: configOptions.config))?.mode)) }
     }
 
-    /// The coordinator-less server's banner: how it serves, where, and with which models. `--local` prints its key as
-    /// it always has; "Only me" chosen at the question or saved, and a start that sets tools up, say where it is.
+    /// The coordinator-less server's banner: how it serves, where, and with which models. No start screen prints the
+    /// key (`token` only says whether there is one): `darkbloom local` shows it.
     func localServerBanner(serving: StartServing, models: [ModelInfo], token: String?) -> [String] {
         let cli = BuildEnvironment.current.cliName
-        let printsKey = bannerShowsKey(serving)
-        var lines = ["\(cli) \(ProviderCore.version) (local / direct mode)"]
-        if !printsKey { lines.append("Serving: " + LocalFirstWords.serving(mode: .local, meFirst: false, idleMinutes: 0)) }
+        var lines = ["\(cli) \(ProviderCore.version) (local / direct mode)",
+                     "Serving: " + LocalFirstWords.serving(mode: .local, meFirst: false, idleMinutes: 0)]
         lines += ["Preparing local server on \(serving.bind):\(serving.port)", "Models: \(models.count)"]
         lines += models.map { "  \($0.id) (\(String(format: "%.1f", $0.estimatedMemoryGb)) GB)" }
         lines += ["", "OpenAI-compatible endpoint:", "  base URL: \(serving.baseURL)"]
-        if let token, printsKey {
-            lines += ["  API key:  \(token)", "", "  export OPENAI_BASE_URL=\(serving.baseURL)",
-                      "  export OPENAI_API_KEY=\(token)"]
-        } else if token != nil {
+        if token != nil {
             lines += ["  API key:  `\(cli) local` shows it",
                       "  Your requests: " + LocalFirstWords.requests(route: serving.route,
                                                                      accountKeySaved: serving.accountKeySaved ?? false)]

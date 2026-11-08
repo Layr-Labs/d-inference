@@ -635,8 +635,7 @@ struct Start: AsyncParsableCommand {
             guard serving.hasLocalAPI else {
                 throw ValidationError(ToolIntegrationStep.noLocalAPI(requestedTools) + " Nothing was started or saved.")
             }
-            // `--local` alone never asks the Keychain. With a tool flag, its banner and the tool block both say where
-            // requests go, so the account key is read once, here, for both.
+            // The banner and the tool block both say where requests go: the account key is read once, for both.
             if serving.accountKeySaved == nil { serving.accountKeySaved = environment.accountKeySaved() }
         }
         return serving

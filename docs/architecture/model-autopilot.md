@@ -1,6 +1,6 @@
 # Provider Autopilot
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-08
 
 Provider Autopilot offers an external controller the models of a Mac whose
 operator saved Autopilot consent: the saved selection plus every verified
@@ -20,7 +20,10 @@ rechecks actual work, pins, inventory and memory before changing residency.
 selector by running `darkbloom start --autopilot` inside themselves
 (`Autopilot/AutopilotEnrollmentCommands.swift`), with a plain look
 (`DarkbloomCommandLook.runNested`): in a terminal, that inner `start` draws no
-Darkbloom mark of its own.
+Darkbloom mark of its own. A plain interactive `darkbloom start` asks for
+consent only when it serves the Darkbloom network alone: Both, me first and Only
+me never ask, and keep the saved answer (`Start.resolveAutopilotChoice`,
+`provider-swift/Sources/darkbloom/Start/StartCommand+Autopilot.swift`).
 
 | Responsibility | Provider source |
 |---|---|

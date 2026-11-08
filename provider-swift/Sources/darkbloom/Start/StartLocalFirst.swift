@@ -320,9 +320,9 @@ enum StartServingResolver {
             port = choice.port
             if choice.saves { change.port = choice.port }
             portNote = choice.note
-            // `--local` keeps its banner, which shows the key and no route, and a local API without a key
-            // (`--no-auth`) passes nothing on, so neither asks the Keychain.
-            if accountKeySaved == nil, source != .flag(.local), !options.noAuth { accountKeySaved = env.accountKeySaved() }
+            // Where your requests go needs whether an account key is saved (never the key); a local API without a
+            // key (`--no-auth`) passes nothing on, so it doesn't ask the Keychain.
+            if accountKeySaved == nil, !options.noAuth { accountKeySaved = env.accountKeySaved() }
         }
         // What serves: the saved settings with this start's change.
         var settings = saved

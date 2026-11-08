@@ -11,6 +11,9 @@ extension Start {
         return answer.isEmpty ? defaultEnabled : ["y", "yes"].contains(answer)
     }
 
+    /// Whether this start enrolls the experimental Autopilot: `--autopilot` / `--no-autopilot` as given, else the saved
+    /// answer. Only a start that serves the Darkbloom network alone asks, in a terminal: Autopilot chooses models for
+    /// the network, so Both, me first and Only me never ask (`darkbloom autopilot enable` enrolls them).
     func resolveAutopilotChoice(
         _ config: ProviderConfig,
         mode: LocalSettings.Mode = .network,
@@ -25,7 +28,7 @@ extension Start {
             return autopilot
         }
         let settings = config.backend.modelAutopilot
-        guard interactive, !foreground, model.isEmpty, !all else { return settings.hasConsent }
+        guard interactive, !foreground, model.isEmpty, !all, mode == .network else { return settings.hasConsent }
         return ask(settings.hasConsent)
     }
 

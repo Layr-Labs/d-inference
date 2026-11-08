@@ -16,6 +16,10 @@ import MLXLMServer
 ///   field and the seven names, never the value sent
 ///   (`ReasoningEffortField.refusalMessage`); the coordinator shows its own
 ///   closed text.
+/// - Nemotron 3.5 Super reads both fields and refuses two that differ, even
+///   two names, with `.conflictingReasoningEfforts`, which the local API
+///   answers in the same shape, naming both fields
+///   (`ReasoningEffortField.conflictMessage`).
 /// - A model that doesn't reason ignores the effort, whatever it is
 ///   (`ReasoningEffortPolicy.reasons`).
 enum ReasoningEffort: String, CaseIterable, Sendable {
@@ -119,6 +123,14 @@ public enum ReasoningEffortField: String, Sendable {
     /// The refusal of an effort that is none of the names: the field and the
     /// seven names, fixed text, never the value sent.
     var refusalMessage: String { "\(rawValue) must be one of: \(ReasoningEffort.acceptedNames)." }
+
+    /// The refusal of `reasoning_effort` and `reasoning.effort` that differ,
+    /// where a model reads both rather than letting one win (Nemotron 3.5
+    /// Super): its `param` names both fields, and its message names both and
+    /// the seven names, fixed text, never the values sent.
+    static let conflictParam = "\(Self.reasoningEffort.rawValue), \(Self.reasoningObject.rawValue)"
+    static let conflictMessage = "\(Self.reasoningEffort.rawValue) and \(Self.reasoningObject.rawValue) must be "
+        + "the same when both are sent, one of: \(ReasoningEffort.acceptedNames)."
 }
 
 /// Which models reason, and the `reasoning_effort` the template context

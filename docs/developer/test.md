@@ -1302,7 +1302,11 @@ Qwen 3.8 Flash-Next's `high`, `max`, `minimal` and ` low ` render a level and
 against the rounding rule and sends every effort to every family through the
 production prompt pipeline, and
 `ReasoningEffortLocalAPITests` sends them to one Mac's local API and a pair
-leader's over the `ClusterAPIParityTests` harness.
+leader's over the `ClusterAPIParityTests` harness. It also renders Nemotron 3.5
+Super's refusal of two efforts that differ through `SuperHTTPErrors` and
+`CORSResponder`; `NemotronSuperLocalHTTPTests`' live text route sends it, and
+an unknown `reasoning.effort`, through the real application (it needs Metal,
+so it runs in CI).
 
 darkbloom-platform keeps byte-identical copies of the provider's
 `paged_footprint_wire.json` and `process_memory_wire.json` for its own

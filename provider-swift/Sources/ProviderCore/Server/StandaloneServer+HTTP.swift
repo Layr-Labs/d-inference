@@ -180,6 +180,10 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
             // The field and the names a model that reasons takes (fixed text, never the value sent).
             return Self.openAIErrorResponse(status: .badRequest, message: field.refusalMessage,
                 code: "invalid_reasoning_effort", param: field.rawValue)
+        } catch MultiModelBatchSchedulerEngineError.conflictingReasoningEfforts {
+            // Both fields and the names, as for an unknown name (fixed text, never the values sent).
+            return Self.openAIErrorResponse(status: .badRequest, message: ReasoningEffortField.conflictMessage,
+                code: "invalid_reasoning_effort", param: ReasoningEffortField.conflictParam)
         } catch MultiModelBatchSchedulerEngineError.distributedRequestRefused(let refusal, let message) {
             // A cluster pair's refusal names its rule and the model's limits
             // (a closed template, never request content): the client sees why.

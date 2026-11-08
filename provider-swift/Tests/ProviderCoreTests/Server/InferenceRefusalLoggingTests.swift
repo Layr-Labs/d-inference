@@ -113,6 +113,7 @@ struct InferenceRefusalLoggingTests {
             (.invalidRole("critic"), .unsupportedMessageRole),
             (.unsupportedReasoningEffort(.reasoningEffort), .unsupportedReasoningControl),
             (.unsupportedReasoningEffort(.reasoningObject), .unsupportedReasoningControl),
+            (.conflictingReasoningEfforts, .contradictoryReasoningControls),
             (.invalidToolPayload("GLM5: history is missing a tool result", refusal: .unansweredToolCall),
              .unansweredToolCall),
             (.invalidToolPayload("tool message has no preceding assistant tool_calls"), nil),

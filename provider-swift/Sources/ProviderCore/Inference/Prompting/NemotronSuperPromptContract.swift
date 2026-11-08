@@ -21,6 +21,8 @@ enum NemotronSuperPromptContract {
         case invalidToolArguments, toolDeclarationMismatch, invalidTokens, contextExceeded
         /// An effort that is none of the names, in this field.
         case unknownReasoningEffort(ReasoningEffortField)
+        /// `reasoning_effort` and `reasoning.effort` differ.
+        case conflictingReasoningEfforts
     }
 
     /// Effective template and parser controls. Absent values take the pinned
@@ -124,7 +126,9 @@ enum NemotronSuperPromptContract {
     /// The official template defaults thinking on even for images. Medium effort
     /// is a separate template boolean, not the generic reasoning_effort key: an
     /// effort sets it by its row of `ReasoningEffort.nemotronSuperMediumEffort`.
-    /// Contradictory spellings of one control are refused, never reconciled.
+    /// Contradictory spellings of one control are refused, never reconciled:
+    /// `reasoning_effort` and `reasoning.effort` that differ, even two names,
+    /// with the typed `conflictingReasoningEfforts`.
     static func controls(body: Data) throws -> Controls {
         let raw = try JSONDecoder().decode(RawControls.self, from: body)
         func normalized(_ value: String?) -> String? {
@@ -137,7 +141,7 @@ enum NemotronSuperPromptContract {
             return effort
         }
         if let top = normalized(raw.effort), let nested = normalized(raw.nestedEffort), top != nested {
-            throw Failure.conflictingControls
+            throw Failure.conflictingReasoningEfforts
         }
         if let top = raw.enabled, let nested = raw.nestedEnabled, top != nested {
             throw Failure.conflictingControls

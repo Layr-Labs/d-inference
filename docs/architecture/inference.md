@@ -2956,12 +2956,13 @@ wrapping them as a retryable 503 construction refusal.
 Every model that reasons takes each effort a client names (`none`,
 `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) as `reasoning_effort` or
 `reasoning.effort`; Responses' `reasoning.effort` arrives as the latter, which
-wins over the top-level spelling. Its template receives one of the model's own
-levels: its own where the model has it, else the next one up (an effort
-between two levels rounds up, toward more reasoning), and the highest past
-them all. So `minimal` selects the lowest level and `max` the highest. `none`
-(also `off` or `0`) switches thinking off where the model can, and selects the
-lowest level where it can't. Spellings are trimmed and read in any case,
+wins over the top-level spelling (Nemotron 3.5 Super reads both, below). Its
+template receives one of the model's own levels: its own where the model has
+it, else the next one up (an effort between two levels rounds up, toward more
+reasoning), and the highest past them all. So `minimal` selects the lowest
+level and `max` the highest. `none` (also `off` or `0`) switches thinking off
+where the model can, and selects the lowest level where it can't. Spellings
+are trimmed and read in any case,
 except by GLM-5.3-Flash and Flint, which read the names exactly as written.
 Each family's table of the seven efforts is in one place,
 `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningEffort.swift`,
@@ -2988,6 +2989,16 @@ the names ([direct mode](../provider/direct-mode.md#reasoning-effort)); the
 coordinator receives the closed `invalid_request` failure, which it shows as
 "invalid inference request". A model of no family above ignores any effort
 (`ReasoningEffortPolicy.validate`).
+
+Nemotron 3.5 Super reads both fields rather than letting `reasoning.effort`
+win, and refuses two that differ, even two names such as `high` and `max`,
+with `conflictingReasoningEfforts` (HTTP 400) at the same point
+(`NemotronSuperPromptContract.controls(body:)`). The local API answers it in
+the same shape: code `invalid_reasoning_effort`, `param` naming both fields
+(`"reasoning_effort, reasoning.effort"`), and a message naming both fields and
+the names, never the values sent. Through the coordinator it is the same
+closed `invalid_request`. The same effort in both fields, in any spelling, is
+served.
 
 Gemma 4 and GPT-OSS keep the prompts they rendered before: the coordinator's
 prompt sidecar plans those prompts for cache-aware routing, so changing one
@@ -3831,6 +3842,7 @@ evidence, not a change to the normal final-row contract or the near-tie rule
 | `promptExceedsContext` (400) | The prompt alone fills the slot's window (its advertised context, else its model's); a larger output is cut, never refused | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`) |
 | `advertisedContextExceeded` (400) | Candidate output reservation is negative or overflows; with the output cut to the window, nothing larger reaches it on one Mac | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`); `provider-swift/Sources/ProviderCore/ProviderLoop+ErrorMapping.swift` (`sanitizedInferenceFailure`) |
 | `unsupportedReasoningEffort` (400; on the local API `invalid_reasoning_effort`) | A model that reasons received an effort that is none of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` ([reasoning effort](#reasoning-effort)) | `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningEffort.swift` (`ReasoningEffortPolicy.validate`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
+| `conflictingReasoningEfforts` (400; on the local API `invalid_reasoning_effort`, `param` naming both fields) | Nemotron 3.5 Super received `reasoning_effort` and `reasoning.effort` that differ ([reasoning effort](#reasoning-effort)) | `provider-swift/Sources/ProviderCore/Inference/Prompting/NemotronSuperPromptContract.swift` (`controls(body:)`); `provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
 | Model dropped from advertised set | Unsupported `model_type` | `EngineV2SupportedModels.swift` |
 | Model advertised, capacity quotes rejected with reason `template` | Scan-time render check failed (`template_render_ok = false`) | `TemplateRenderCheck.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift` (`reject(.template)`) |
 | Image rejected | Over `MediaIngest` caps or over the N² tower budget | `MediaIngest.swift`, `VisionTowerBudget.swift` |

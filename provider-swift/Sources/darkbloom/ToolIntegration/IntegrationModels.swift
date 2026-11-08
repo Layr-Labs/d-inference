@@ -22,6 +22,15 @@ struct IntegrationModel: Equatable, Sendable {
             case .network: "Darkbloom network, billed"
             }
         }
+
+        /// The endpoint's own process serves the model, on this Mac or on the pair whose API it is, so what its engine
+        /// lists for the model (`input_modalities`) holds. Said by name, not by the tools' order.
+        var servedHere: Bool {
+            switch self {
+            case .thisMac, .yourPair: true
+            case .yourMacs, .network: false
+            }
+        }
     }
 
     let id: String
@@ -223,8 +232,8 @@ enum IntegrationModels {
             let cap = positive(entry.maxOutputLength) ?? positive(details.model?.maxOutputLength) ?? defaultOutputCap
             let capabilities = Set((details.model?.capabilities ?? []).map { $0.lowercased() })
             let display = details.name.flatMap { $0.isEmpty ? nil : $0 } ?? entry.id
-            // The engine's word, for a model served here: on this Mac, or on the pair whose API it is.
-            let engineImageInput = location <= .yourPair
+            // The engine's word, for a model served here.
+            let engineImageInput = location.servedHere
                 ? entry.inputModalities.map { LocalInputModalities.takesImages($0) } : nil
             return IntegrationModel(
                 id: entry.id, name: IntegrationModel.name(display, at: location), location: location,

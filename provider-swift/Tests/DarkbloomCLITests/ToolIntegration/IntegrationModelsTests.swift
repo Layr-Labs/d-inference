@@ -197,6 +197,11 @@ struct IntegrationModelsTests {
         }
     }
 
+    @Test("the endpoint's own process serves this Mac's models and its pair's, not your Macs' or the network's")
+    func whereAModelIsServedHere() {
+        #expect(IntegrationModel.Location.allCases.filter(\.servedHere) == [.thisMac, .yourPair])
+    }
+
     @Test("non-chat catalog models are left out; an alias ID takes the alias's name and its build's limits")
     func catalogKindsAndAliases() {
         let snapshot = catalog([

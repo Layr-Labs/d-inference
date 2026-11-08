@@ -1,4 +1,5 @@
 import CryptoKit
+import DarkbloomClusterRemote
 import Darwin
 import Foundation
 import Testing
@@ -64,7 +65,7 @@ struct ClusterServiceRestartingStopTests {
               adopt: { _ in .success([]) }, serve: { .success([]) }, restoreStart: { service.restoreStart() })
     }
 
-    /// The control command lock both steps take: beside the service's own files.
+    /// The control command lock the steps and the memory re-plan take: beside the service's own files.
     private static func commandLock(_ service: ClusterService) -> URL {
         service.store.paths.directory.appendingPathComponent("control.lock")
     }
@@ -308,12 +309,14 @@ struct ClusterServiceRestartingStopTests {
     /// `darkbloom stop` while the pair doesn't run here and the other Mac doesn't answer, `darkbloom start --solo`) lands
     /// while a step's own stop waits for the other Mac, which never answers. The step then puts its start back: the
     /// owner's stop must hold all the same.
-    @Test(arguments: ["re-plan", "approval change"])
+    @Test(arguments: ["re-plan", "approval change", "memory re-plan"])
     func anOwnersStopWithoutTheCommandLockDuringAStepsFailingStopHolds(_ step: String) throws {
         let (macs, service) = try leader()
         try withExtendedLifetime(macs) {
-            // The step holds the command lock, as `checkForUpdate` and `checkApproval` do around it.
-            let held = try #require(ClusterControlCommandLock.acquire(seconds: 0, file: Self.commandLock(service)))
+            // The step holds the command lock, as `checkForUpdate` and `checkApproval` do around it; the memory re-plan
+            // takes it itself.
+            var held: ClusterControlCommandLock?
+            if step != "memory re-plan" { held = try #require(ClusterControlCommandLock.acquire(seconds: 0, file: Self.commandLock(service))) }
             let paths = macs.leader.paths, owner = DispatchSemaphore(value: 0)
             let released = ClusterApprovalRecorder<ClusterService.SingleMacRelease>()
             Thread.detachNewThread {
@@ -330,11 +333,19 @@ struct ClusterServiceRestartingStopTests {
                 var steps = Self.steps(service, stop: stop)
                 Self.notAfterAFailedStop(&steps)
                 _ = ClusterService.replanAfterUpdate(model: ClusterApprovalMacs.model, steps)
-            } else {
+            } else if step == "approval change" {
                 _ = ClusterService.stopForApprovalChange(serving: true, stop: stop, drained: { true },
                                                          restoreStart: { service.restoreStart() })
+            } else {
+                try Self.confirmedLeader(service, macs)
+                let offered = ClusterOnboardingModelChoice(title: ClusterApprovalMacs.model, lines: ["fixture plan"], blocker: nil,
+                                                           modelID: ClusterApprovalMacs.model)
+                // `adopt` stands in for `OnboardingLive.localAdopt` on a serving pair, which stops both parts first.
+                service.memoryReplan = .init(reachMembers: { .success([]) }, planModels: { .success([offered]) }, adopt: { _ in stop() },
+                    serve: { Issue.record("served after a failed stop"); return .success([]) }, restoreStart: { service.restoreStart() })
+                service.replanForMemory(model: ClusterApprovalMacs.model) { _ in }
             }
-            held.release()
+            held?.release()
             #expect(Self.waitUntil(seconds: 10) { !released.values.isEmpty }, "the owner's stop did not finish")
             #expect(released.values == [.released])
             let serving = try service.store.readRecord().leadership?.serving
@@ -450,6 +461,134 @@ struct ClusterServiceRestartingStopTests {
             #expect(!lines.contains { $0.hasPrefix("Darkbloom changed on both Macs: setting the cluster up again") }, "\(lines)")
             let serving = try service.store.readRecord().leadership?.serving
             #expect(serving == (meanwhile != "the owner stopped the pair"), "\(meanwhile): the start is \(String(describing: serving))")
+        }
+    }
+
+    /// The memory re-plan (`noteMemoryRefusal`: this Mac's part refused at load twice) comes due when a part ends, so
+    /// also right after the owner stops the pair with `darkbloom stop`, and it waits for the command lock that stop
+    /// holds. Once it holds the lock it acts only on a start still saved and a claim still confirmed: its `localServe`
+    /// would save the start again, starting the pair the owner stopped.
+    @Test(arguments: ["the owner stopped the pair", "control moved to the other Mac"])
+    func aMemoryReplanRightAfterAStopOrAHandOverDoesNothing(_ meanwhile: String) throws {
+        let (macs, service) = try leader()
+        try withExtendedLifetime(macs) {
+            try Self.confirmedLeader(service, macs)
+            let replanned = ClusterApprovalRecorder<Bool>(), lines = ClusterApprovalRecorder<String>()
+            let offered = ClusterOnboardingModelChoice(title: ClusterApprovalMacs.model, lines: ["fixture plan"], blocker: nil,
+                                                       modelID: ClusterApprovalMacs.model)
+            // `serve` stands in for `OnboardingLive.localServe`'s first write.
+            service.memoryReplan = .init(reachMembers: { replanned.append(true); return .success([]) },
+                planModels: { .success([offered]) }, adopt: { _ in .success([]) },
+                serve: { _ = try? service.store.updateRecord { $0.leadership?.serving = true }; return .success([]) },
+                restoreStart: { service.restoreStart() })
+            // The owner's command holds the command lock as the re-plan comes due.
+            let held = try #require(ClusterControlCommandLock.acquire(seconds: 0, file: Self.commandLock(service)))
+            let done = DispatchSemaphore(value: 0)
+            Thread.detachNewThread {
+                service.replanForMemory(model: ClusterApprovalMacs.model) { lines.append($0) }
+                done.signal()
+            }
+            if meanwhile == "the owner stopped the pair" {
+                guard case .success = Self.stop(service, otherMac: {})() else { Issue.record("the owner's stop failed"); return }
+            } else {
+                service.lock.withLock { service.control = Self.node(macs, leader: macs.follower.memberID, term: 2) }
+            }
+            held.release()
+            #expect(done.wait(timeout: .now() + 20) == .success, "the re-plan did not end")
+            #expect(replanned.values.isEmpty, "the memory re-plan went on after \(meanwhile): \(lines.values)")
+            let serving = try service.store.readRecord().leadership?.serving
+            #expect(serving == (meanwhile != "the owner stopped the pair"), "\(meanwhile): the start is \(String(describing: serving))")
+        }
+    }
+
+    /// The memory re-plan adopts its new split through `OnboardingLive.localAdopt`, which stops a serving pair first
+    /// (`localStop` clears the saved start before it stops anything). When that stop fails, or the parts then don't
+    /// start again, the start is put back and the stop request a half-done stop keeps is dropped, as the two steps do:
+    /// the pair serves as before, and the next memory re-plan can come due. Left cleared, the pair would stay stopped,
+    /// and no re-plan acts on a stopped pair (B6). The start is put back while the re-plan still holds the command lock,
+    /// which every stop of the pair takes: let go first, an owner's stop could land just before it and be undone.
+    @Test(arguments: ["the other Mac does not answer", "this Mac's part does not release", "the parts do not start again"])
+    func aMemoryReplanWhoseStopFailsLeavesThePairStartedAndTriesAgain(_ failing: String) throws {
+        let (macs, service) = try leader()
+        try withExtendedLifetime(macs) {
+            try Self.confirmedLeader(service, macs)
+            if failing == "this Mac's part does not release" {
+                // A status that cannot be read: the stop cannot tell that this Mac's part released.
+                try Data("not a status".utf8).write(to: service.store.paths.directory.appendingPathComponent(ClusterServiceStatus.fileName))
+            }
+            let restartFails = failing == "the parts do not start again"
+            let replanned = ClusterApprovalRecorder<Bool>(), lines = ClusterApprovalRecorder<String>()
+            let offered = ClusterOnboardingModelChoice(title: ClusterApprovalMacs.model, lines: ["fixture plan"], blocker: nil,
+                                                       modelID: ClusterApprovalMacs.model)
+            // `adopt` stands in for `localAdopt` on a serving pair: the real stop first. `serve` fails before it saves the
+            // start, as `localServe` does on a stop request left over.
+            service.memoryReplan = .init(reachMembers: { replanned.append(true); return .success([]) },
+                planModels: { .success([offered]) },
+                adopt: { _ in Self.stop(service) { if !restartFails { throw ClusterSetupFailure("the other Mac did not answer within 30 s") } }() },
+                serve: {
+                    if restartFails { return .failure(.init("the other Mac's part was not started yet: fixture")) }
+                    Issue.record("served after a failed stop")
+                    return .success([])
+                },
+                restoreStart: {
+                    #expect(ClusterControlCommandLock.acquire(seconds: 0, file: Self.commandLock(service)) == nil,
+                            "\(failing): the start was put back outside the command lock")
+                    service.restoreStart()
+                })
+            service.replanForMemory(model: ClusterApprovalMacs.model) { lines.append($0) }
+            let record = try service.store.readRecord()
+            #expect(record.leadership?.serving == true, "\(failing): the failed stop left the pair stopped: \(lines.values)")
+            #expect(record.stopDrain == nil, "\(failing): the failed stop's request stayed")
+            // The pair's next refusals bring the next memory re-plan: it runs.
+            service.replanForMemory(model: ClusterApprovalMacs.model) { lines.append($0) }
+            #expect(replanned.values.count == 2, "\(failing): the next memory re-plan did not run: \(lines.values)")
+        }
+    }
+
+    /// An owner's `darkbloom stop` ends a part whose load keeps being refused, so the memory re-plan comes due on that
+    /// end, and does nothing: the pair is stopped. It must not use up its 10-minute slot. When the owner starts the pair
+    /// again within those minutes and the split still doesn't fit, the next two refusals re-plan it, so the pair loads,
+    /// instead of being refused until the slot passes. A re-plan put off by another command that holds the lock keeps
+    /// its slot: the pair still runs, and re-plans stay at most one per 10 minutes. The trigger as the service calls it
+    /// at each part's end.
+    @Test(arguments: ["the owner stopped the pair", "another command held the lock"])
+    func aSkippedMemoryReplanGivesItsSlotBackOnlyForAnOwnersStop(_ skipped: String) throws {
+        let (macs, service) = try leader()
+        try withExtendedLifetime(macs) {
+            try Self.confirmedLeader(service, macs)
+            let model = ClusterApprovalMacs.model, began = Date().addingTimeInterval(-5)
+            // The load gate's refusal of this Mac's share, as the part records it.
+            try ClusterIncidentLog.forThisInstall(homeDirectory: macs.leader.home).record(.init(severity: .error, source: "leader",
+                stateCode: "activation_launch_failed", reasonCode: nil, guidanceCode: "memory_gate_refused", message: "fixture refusal"))
+            let served = ClusterApprovalRecorder<Bool>(), lines = ClusterApprovalRecorder<String>()
+            let offered = ClusterOnboardingModelChoice(title: model, lines: ["fixture plan"], blocker: nil, modelID: model)
+            service.memoryReplan = .init(reachMembers: { .success([]) }, planModels: { .success([offered]) }, adopt: { _ in .success([]) },
+                serve: { served.append(true); return .success([]) }, restoreStart: { service.restoreStart() })
+            func partEnded() {
+                service.noteMemoryRefusal(key: "cluster:fixture", since: began, model: model) { lines.append($0) }
+                #expect(Self.waitUntil(seconds: 10) { !service.lock.withLock { service.memoryReplanInFlight } }, "\(lines.values)")
+            }
+            partEnded()
+            let held = try #require(ClusterControlCommandLock.acquire(seconds: 0, file: Self.commandLock(service)))
+            if skipped == "the owner stopped the pair" {
+                // The owner stops the pair, holding the command lock as `darkbloom stop` does; the stopped part's end
+                // follows.
+                guard case .success = Self.stop(service, otherMac: {})() else { Issue.record("the owner's stop failed"); return }
+                held.release()
+                partEnded()
+            } else {
+                // The next refusal comes while another command holds the lock: the re-plan waits 5 s for it, then gives up.
+                partEnded()
+                held.release()
+            }
+            #expect(served.values.isEmpty, "\(skipped): re-planned and served: \(lines.values)")
+            // Within the 10 minutes the pair runs again (after an owner's stop, their start: `localServe` saves it); the
+            // split still doesn't fit.
+            _ = try service.store.updateRecord { $0.leadership?.serving = true }
+            partEnded()
+            partEnded()
+            #expect(served.values == (skipped == "the owner stopped the pair" ? [true] : []),
+                    "\(skipped): the next refusals within the 10 minutes: \(lines.values)")
         }
     }
 

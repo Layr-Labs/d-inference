@@ -95,7 +95,10 @@ struct CachePromptParityTests {
     /// The coordinator maps every reasoning effort from a copy of the tables in
     /// `ReasoningEffort.swift`: its ingress refusal, its first-party pool and its
     /// prompt sidecar. `reasoning_effort_vectors.json` is their agreement test.
-    /// Each case runs here through the production prompt pipeline
+    /// Each set the table keeps equals the file's list, and every type that
+    /// reasons has cases, so a type added or dropped on one side only fails
+    /// here or in the platform's copies. Each case runs here through the
+    /// production prompt pipeline
     /// (`ProviderPromptContractPipeline.tokenizeProviderBody`, or Nemotron 3.5
     /// Super's `NemotronSuperPromptContract.controls(body:)`). It must render
     /// the template-context keys the case decides (null: absent), be refused
@@ -111,14 +114,25 @@ struct CachePromptParityTests {
             let message = (refusal["message"] as? String)?.replacingOccurrences(of: "{param}", with: field.rawValue)
             #expect(message == field.refusalMessage)
         }
-        for type in try #require(vectors["reasoning_model_types"] as? [String]) {
+        let reasoningTypes = try #require(vectors["reasoning_model_types"] as? [String])
+        let qwenTemplateTypes = try #require(vectors["qwen35_template_model_types"] as? [String])
+        let switchTypes = try #require(vectors["thinking_switch_model_types"] as? [String])
+        let qwen38IDs = try #require(vectors["qwen38_model_ids"] as? [String])
+        #expect(Set(reasoningTypes) == ReasoningEffortPolicy.reasoningModelTypes)
+        #expect(Set(qwenTemplateTypes) == ReasoningEffortPolicy.qwen35TemplateTypes)
+        #expect(Set(switchTypes) == ReasoningEffortPolicy.effortSwitchTypes)
+        #expect(Set(qwen38IDs) == ModelRuntimeRequirements.qwen38ConcreteModelIDs)
+        for type in reasoningTypes {
             #expect(ReasoningEffortPolicy.reasons(modelID: "any/model", modelType: type), "\(type)")
         }
         for type in ["qwen3_vl_moe", "llama", "gemma3"] {
             #expect(!ReasoningEffortPolicy.reasons(modelID: "any/model", modelType: type), "\(type)")
         }
         let cases = try #require(vectors["cases"] as? [[String: Any]])
-        #expect(cases.count == 354)
+        #expect(cases.count == 446)
+        let asked = Set(cases.compactMap { $0["model_type"] as? String })
+        #expect(ReasoningEffortPolicy.reasoningModelTypes.isSubset(of: asked),
+                "types that reason without cases: \(ReasoningEffortPolicy.reasoningModelTypes.subtracting(asked))")
         for fixture in cases {
             let name = try #require(fixture["name"] as? String)
             let type = try #require(fixture["model_type"] as? String)

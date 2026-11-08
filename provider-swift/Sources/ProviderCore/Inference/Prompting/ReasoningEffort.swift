@@ -144,22 +144,27 @@ public enum ReasoningEffortField: String, Sendable {
 /// GLM-5.3, Flint and Nemotron 3.5 Super read the effort in their own prompt
 /// policies, through their tables above.
 enum ReasoningEffortPolicy {
+    // The sets below are listed in `reasoning_effort_vectors.json`, and each
+    // copy that keeps one checks it for equality
+    // (`CachePromptParityTests.reasoningEffortVectors`), so a type added or
+    // dropped on one side only fails a test on the other.
+
     /// Model types whose templates reason: an effort none of the seven names
     /// is refused for them. Any other model ignores the effort.
     /// `qwen3_vl_moe` is left out: it holds instruct-only Qwen3-VL builds.
-    private static let reasoningModelTypes: Set<String> = [
+    static let reasoningModelTypes: Set<String> = [
         "qwen3_5", "qwen3_5_moe", "prism_hadamard_qwen35", "qwen4_exp", "qwen4_exp_text",
         "gemma4", "gemma4_text", "gemma4_vision", "diffusion_gemma", "gpt_oss",
         "nemotron_h", "nemotron_h_omni", "mimo_v2", "glm5_next", "glm5_next_text", "glm5_next_mtp", "flint",
     ]
 
     /// The Qwen 3.5 template family's model types.
-    private static let qwen35TemplateTypes: Set<String> = ["qwen3_5", "qwen3_5_moe", "prism_hadamard_qwen35"]
+    static let qwen35TemplateTypes: Set<String> = ["qwen3_5", "qwen3_5_moe", "prism_hadamard_qwen35"]
 
     /// Model types whose template has a thinking switch and no effort level,
     /// so an effort sets the switch (`ReasoningEffort.oneDepthThinking`): Gemma
     /// 4 and DiffusionGemma.
-    private static let effortSwitchTypes: Set<String> = ["gemma4", "gemma4_text", "gemma4_vision", "diffusion_gemma"]
+    static let effortSwitchTypes: Set<String> = ["gemma4", "gemma4_text", "gemma4_vision", "diffusion_gemma"]
 
     /// Whether an effort sets a model's thinking switch, Gemma 4's and
     /// DiffusionGemma's, in the template context `templateAdditionalContext`

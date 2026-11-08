@@ -793,6 +793,9 @@ private let resultFooter = ["", "  darkbloom stop     Stop both Macs", "  darkbl
 /// A paired start's first line: one that starts the pair; one on a pair that already serves (J2-b) and one in a terminal
 /// that opens the pair's screen (J2-d), neither of which says "starting".
 private let startingThePair = "This Mac is in a two-Mac cluster with \(otherMac): starting the pair."
+/// A pair with no model yet: where its model is chosen, on the leading Mac and on the Mac that follows (#1905's review).
+private let noModelHere = "No model was chosen for the pair yet: choose one with `darkbloom cluster` in a terminal on this Mac."
+private let noModelThere = "No model was chosen for the pair yet: choose one with `darkbloom cluster` in a terminal on \(otherMac)."
 private let alreadyServes = "This Mac is in a two-Mac cluster with \(otherMac): the pair already serves."
 private let openingScreen = "This Mac is in a two-Mac cluster with \(otherMac): opening the pair's screen."
 
@@ -1117,9 +1120,17 @@ struct ClusterPairControlTests {
                 try await runCLICommand(Start.self, ["start"])
             }
         }
-        #expect(lines(result?.standardOutputContent) == [startingThePair, ClusterPairSummary.noModelLine, ""])
+        #expect(lines(result?.standardOutputContent) == [startingThePair, noModelHere, ""])
         let calls = pairActionCalls(text(result?.standardErrorContent))
         #expect(calls.isEmpty, "\(calls)")
+        // #1905's review: the Mac that follows has no model list (`darkbloom start` in a terminal there opens a screen that
+        // can't choose one), so the line names the leading Mac.
+        let member = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            try await exitWithPair(memberPair(pair(started: false, model: false)), actions: pairActions(role: .member, serving: false)) { _ in
+                try await runCLICommand(Start.self, ["start"])
+            }
+        }
+        #expect(lines(member?.standardOutputContent) == [startingThePair, noModelThere, ""])
     }
 
     @Test("`darkbloom start` without a terminal that doesn't serve says why and exits with cluster status's code")
@@ -2599,7 +2610,9 @@ struct ClusterStatusModeTests {
 /// Start's own lines say what happened.
 @Suite("the desktop app on a paired Mac")
 struct DesktopAppOnAPairedMacTests {
-    private static let autopilotRefusal = "This Mac serves in a pair; Autopilot isn't available for pairs yet. Use Start serving."
+    /// The refusal on `stoppedPair()`, the pair `autopilotIsRefusedFirst` reads: its real state, never "serves".
+    private static let autopilotRefusal = "This Mac is in a pair, which is stopped; Autopilot isn't available for pairs yet. "
+        + "Use Start serving."
 
     @Test("the app's Autopilot enroll and its model refresh on a paired Mac are refused in its words, before any download; its Start is not")
     func autopilotIsRefusedFirst() async {
@@ -2635,11 +2648,76 @@ struct DesktopAppOnAPairedMacTests {
         let paired = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
             try await exitWithPair(stoppedPair(), actions: nil) { sandbox in try await printSnapshotAutopilotAndPair(sandbox) }
         }
-        #expect(lines(paired?.standardOutputContent) == ["autopilot: false", #"pair: {"model":"Qwen 3.8 27B"}"#, ""])
+        #expect(lines(paired?.standardOutputContent)
+            == ["autopilot: false", #"pair: {"leads":true,"model":"Qwen 3.8 27B","state":"stopped"}"#, ""])
         let single = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
             try await exitWithPair(.notPaired, actions: nil) { sandbox in try await printSnapshotAutopilotAndPair(sandbox) }
         }
         #expect(lines(single?.standardOutputContent) == ["autopilot: true", "pair: null", ""])
+    }
+
+    /// #1905's review, nit 3: the app said "This Mac serves in a pair" whatever the pair's state. The snapshot says the
+    /// state, from this Mac's own view (nothing is asked over the cable): serving only where that view knows it (the
+    /// leading Mac's rank-0 part says so), started where it can't tell (the Mac that follows never can), not running
+    /// here, stopped, or a pairing record that can't be read. And which Mac chooses the pair's model (`leads`).
+    @Test("the app's snapshot says the pair's real state, and whether this Mac leads it")
+    func snapshotSaysThePairsState() async {
+        let serving = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await exitWithPair(servingPair(), actions: nil) { sandbox in try await printSnapshotAutopilotAndPair(sandbox) }
+        }
+        let member = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await exitWithPair(memberPair(pair()), actions: nil) { sandbox in try await printSnapshotAutopilotAndPair(sandbox) }
+        }
+        let away = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await exitWithPair(stalePair(), actions: nil) { sandbox in try await printSnapshotAutopilotAndPair(sandbox) }
+        }
+        let noModel = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await exitWithPair(memberPair(stoppedPair(model: false)), actions: nil) { sandbox in
+                try await printSnapshotAutopilotAndPair(sandbox)
+            }
+        }
+        let unsure = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await exitWithPair(unreadable(), actions: nil) { sandbox in try await printSnapshotAutopilotAndPair(sandbox) }
+        }
+        #expect(lines(serving?.standardOutputContent).dropFirst().first
+            == #"pair: {"leads":true,"model":"Qwen 3.8 27B","state":"serving"}"#)
+        // The Mac that follows reads no pair line of its own (rank 0's part writes it): its view says the pair started.
+        #expect(lines(member?.standardOutputContent).dropFirst().first
+            == #"pair: {"leads":false,"model":"Qwen 3.8 27B","state":"started"}"#)
+        #expect(lines(away?.standardOutputContent).dropFirst().first
+            == #"pair: {"leads":true,"model":"Qwen 3.8 27B","state":"not_running"}"#)
+        #expect(lines(noModel?.standardOutputContent).dropFirst().first == #"pair: {"leads":false,"model":null,"state":"stopped"}"#)
+        #expect(lines(unsure?.standardOutputContent).dropFirst().first == #"pair: {"leads":null,"model":null,"state":"unreadable"}"#)
+    }
+
+    /// The Autopilot refusal says the pair as it is, and what works there instead: Start serving, or, with no model yet or
+    /// a record that can't be read, the terminal step first (#1905's review, nits 3 and 4).
+    @Test("the app's Autopilot refusal says the pair's real state, and what works there instead")
+    func autopilotRefusalSaysThePairsState() async {
+        let serving = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await exitWithPair(servingPair(), actions: nil) { sandbox in try await printAutopilotRefusal(sandbox) }
+        }
+        let started = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await exitWithPair(memberPair(pair()), actions: nil) { sandbox in try await printAutopilotRefusal(sandbox) }
+        }
+        let away = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await exitWithPair(stalePair(), actions: nil) { sandbox in try await printAutopilotRefusal(sandbox) }
+        }
+        let noModel = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await exitWithPair(stoppedPair(model: false), actions: nil) { sandbox in try await printAutopilotRefusal(sandbox) }
+        }
+        let unsure = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await exitWithPair(unreadable(), actions: nil) { sandbox in try await printAutopilotRefusal(sandbox) }
+        }
+        let tail = "Autopilot isn't available for pairs yet."
+        #expect(lines(serving?.standardOutputContent) == ["refused: This Mac serves in a pair; \(tail) Use Start serving.", ""])
+        #expect(lines(started?.standardOutputContent) == ["refused: This Mac is in a pair; \(tail) Use Start serving.", ""])
+        #expect(lines(away?.standardOutputContent)
+            == ["refused: This Mac is in a pair that isn't running here; \(tail) Use Start serving.", ""])
+        #expect(lines(noModel?.standardOutputContent)
+            == ["refused: This Mac is in a pair, which is stopped; \(tail) \(noModelHere)", ""])
+        #expect(lines(unsure?.standardOutputContent) == ["refused: This Mac's pairing record couldn't be read, so it may be in "
+            + "a pair; \(tail) Run `darkbloom cluster` on this Mac to check it.", ""])
     }
 
     /// The app's Start on a paired Mac names no model (`startPlan.startAction`). As its main process posts it, through the
@@ -2674,8 +2752,7 @@ struct DesktopAppOnAPairedMacTests {
                 print("posted: \(try await postAppStart(sandbox))")
             }
         }
-        #expect(lines(noModel?.standardOutputContent) == ["posted: refused (400 Bad Request), nothing ran: "
-            + "No model was chosen for the pair yet: run `darkbloom start` in a terminal to choose one.", ""])
+        #expect(lines(noModel?.standardOutputContent) == ["posted: refused (400 Bad Request), nothing ran: " + noModelHere, ""])
     }
 
     @Test("only a plain start may name no models, and only where it starts the pair: `start`'s own test of a paired Mac")
@@ -2685,7 +2762,7 @@ struct DesktopAppOnAPairedMacTests {
         // An unreadable pairing record counts as paired, as in `start`, which then refuses without --solo.
         #expect(try DesktopBackend.startsThePair(unreadable()))
         let noModel = #expect(throws: ValidationError.self) { try DesktopBackend.startsThePair(pair(started: false, model: false)) }
-        #expect(noModel?.message == ClusterPairSummary.noModelLine)
+        #expect(noModel?.message == noModelHere)
         // Local mode and a switch still name their models, paired or not.
         for request in [DesktopAction(id: UUID().uuidString, action: "start", models: [], local: true),
                         DesktopAction(id: UUID().uuidString, action: "switch", models: [])] {
@@ -2764,7 +2841,19 @@ private func printSnapshotAutopilotAndPair(_ sandbox: CLICommandSandbox) async t
     let state = try await DesktopBackend(configPath: sandbox.config.path).state()
     guard case .array(let capabilities) = state.field("capabilities") else { throw ExitCode(97) }
     print("autopilot: \(capabilities.contains(.string("autopilot")))")
-    print("pair: \(String(decoding: try JSONEncoder().encode(state.field("pair")), as: UTF8.self))")
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    print("pair: \(String(decoding: try encoder.encode(state.field("pair")), as: UTF8.self))")
+}
+
+/// What the app's Autopilot enroll gets on this pair, before anything runs (`DesktopBackend.arguments(for:)`).
+private func printAutopilotRefusal(_ sandbox: CLICommandSandbox) async throws {
+    let request = DesktopAction(id: "x", action: "autopilot", models: ["acme/Alpha-4bit"], downloads: ["acme/Alpha-4bit"],
+                                endpoint: true)
+    do {
+        let argv = try await DesktopBackend(configPath: sandbox.config.path).arguments(for: request)
+        print("ran: \(argv.prefix(2).joined(separator: " "))")
+    } catch { print("refused: \(error)") }
 }
 
 /// The app's Start as its main process posts it on a paired Mac: `startPlan.startAction`'s action with an id

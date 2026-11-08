@@ -94,11 +94,12 @@ struct CachePromptParityTests {
 
     /// The coordinator maps every reasoning effort from a copy of the tables in
     /// `ReasoningEffort.swift`: its ingress refusal, its first-party pool and its
-    /// prompt sidecar. `reasoning_effort_vectors.json` is their agreement test.
+    /// prompt sidecar. `reasoning_effort_vectors.json` is the contract between
+    /// them and this provider, and this test is the provider's side of it.
     /// Each set the table keeps equals the file's list, and every type that
     /// reasons has cases, so a type added or dropped on one side only fails
-    /// here or in the platform's copies. Each case runs here through the
-    /// production prompt pipeline
+    /// here or in the platform's copies. The refusal is the local API's. Each
+    /// case runs here through the production prompt pipeline
     /// (`ProviderPromptContractPipeline.tokenizeProviderBody`, or Nemotron 3.5
     /// Super's `NemotronSuperPromptContract.controls(body:)`). It must render
     /// the template-context keys the case decides (null: absent), be refused
@@ -110,6 +111,7 @@ struct CachePromptParityTests {
         #expect(vectors["efforts"] as? [String] == ReasoningEffort.allCases.map(\.rawValue))
         let refusal = try #require(vectors["refusal"] as? [String: Any])
         #expect(refusal["code"] as? String == "invalid_reasoning_effort")
+        #expect(refusal["type"] as? String == "invalid_request_error")
         for field in [ReasoningEffortField.reasoningEffort, .reasoningObject, .templateKwargs] {
             let message = (refusal["message"] as? String)?.replacingOccurrences(of: "{param}", with: field.rawValue)
             #expect(message == field.refusalMessage)

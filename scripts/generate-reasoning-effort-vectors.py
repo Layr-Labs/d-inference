@@ -6,10 +6,13 @@ for each model family the provider serves, each effort a client names (as
 reasoning_effort, reasoning.effort and, for GLM-5.3-Flash,
 chat_template_kwargs.reasoning_effort) and what the model's template receives,
 or the field refused as an effort that is none of the names.
-CachePromptParityTests.reasoningEffortVectors checks every case against the
-production prompt pipeline. The platform's ingress refusal, first-party pool
-and prompt sidecar (darkbloom-platform) check theirs against the same file,
-which both repositories hold byte for byte.
+
+The file is the contract with the coordinator, and it is generated, never
+edited by hand: this script restates the Swift tables, and running it again
+must leave the file unchanged. CachePromptParityTests.reasoningEffortVectors
+checks every case against the production prompt pipeline. darkbloom-platform
+copies the file byte for byte from a reviewed commit, and checks its ingress
+refusal, first-party pool and prompt sidecar against it.
 
 `context` lists the template-context keys a case decides: a value must be
 equal, null must be absent; other keys are not compared. `refused` names the
@@ -22,6 +25,11 @@ Qwen 3.5 template family's types, the types whose effort sets a thinking
 switch, and the concrete Qwen 3.8 builds. Every copy that keeps a set checks it
 for equality, and every type that reasons has cases, so a type or a build added
 or dropped on one side only fails a test on the other.
+
+A new family that reasons adds its model types to these sets, here and in
+ReasoningEffort.swift, a Family below (and a variant for each other type it
+serves), and the regenerated file, with the case count CachePromptParityTests
+pins.
 
 Usage: scripts/generate-reasoning-effort-vectors.py [OUTPUT]
 (default: the fixture above, in this repository).
@@ -60,6 +68,16 @@ QWEN38_LEVELS = ["low", "medium", "xhigh"]
 HARMONY_LEVELS = ["low", "medium", "high"]
 GLM_LEVELS = ["low", "high", "max"]
 SUPER_LEVELS = ["medium", "high"]
+
+# The field whose effort a template reads when a request names several: the
+# typed reasoning.effort, then reasoning_effort, then GLM-5.3-Flash's own.
+PRECEDENCE = ["reasoning.effort", "reasoning_effort", "chat_template_kwargs.reasoning_effort"]
+
+# The spellings each family is asked: every name in both fields, other
+# spellings of a name, an effort that is none of the names, and both fields.
+# "HİGH" (U+0130) is no name: full Unicode lower-casing gives "hi̇gh".
+SINGLE_VALUES = NAMES + [" High ", "OFF", "0", "off", "HİGH", "turbo"]
+PAIRS = [("turbo", "low"), ("low", "turbo"), ("high", "HIGH")]
 
 
 def client_value(value: str) -> str | None:
@@ -105,10 +123,12 @@ class Family:
     name: str
     model: str
     model_type: str
+    # The spellings it is asked (a variant is asked fewer, and no pairs).
+    values = SINGLE_VALUES
+    pairs = PAIRS
     exact = False
     # Which fields are checked for an effort that is none of the names: the
-    # winning one only (generic and Super: reasoning.effort over
-    # reasoning_effort), or each supplied one in this order.
+    # winning one only (generic and Super), or each supplied one in this order.
     checks_every_field = False
     field_order = ["reasoning_effort", "reasoning.effort"]
 
@@ -116,19 +136,13 @@ class Family:
         return exact_value(value) if self.exact else client_value(value)
 
     def outcome(self, fields: dict[str, str]) -> dict:
-        if self.checks_every_field:
-            for field in self.field_order:
-                if field in fields and self.read(fields[field]) is None:
-                    return {"refused": field}
-            winner = next(field for field in ["reasoning.effort", "reasoning_effort",
-                                              "chat_template_kwargs.reasoning_effort"] if field in fields)
-        else:
-            winner = "reasoning.effort" if "reasoning.effort" in fields else "reasoning_effort"
-            if self.read(fields[winner]) is None:
-                return {"refused": winner}
-            conflict = self.conflict(fields)
-            if conflict:
-                return {"error": True}
+        winner = next(field for field in PRECEDENCE if field in fields)
+        checked = [field for field in self.field_order if field in fields] if self.checks_every_field else [winner]
+        for field in checked:
+            if self.read(fields[field]) is None:
+                return {"refused": field}
+        if self.conflict(fields):
+            return {"error": True}
         return {"context": self.context(winner, fields[winner], self.read(fields[winner]))}
 
     def conflict(self, fields: dict[str, str]) -> bool:
@@ -269,12 +283,6 @@ FAMILIES: list[Family] = [
     Gemma4(), DiffusionGemma(), Lightning(), Harmony(), MiMo(), Super(), GLM(), Flint(), NoReasoning(),
 ]
 
-# The spellings each family is asked: every name in both fields, other
-# spellings of a name, an effort that is none of the names, and both fields.
-# "HİGH" (U+0130) is no name: full Unicode lower-casing gives "hi̇gh".
-SINGLE_VALUES = NAMES + [" High ", "OFF", "0", "off", "HİGH", "turbo"]
-PAIRS = [("turbo", "low"), ("low", "turbo"), ("high", "HIGH")]
-
 # Each other type that reasons is asked fewer spellings, enough to tell its
 # family's reading from another's: none, a name, a padded and a capitalised
 # spelling, a non-ASCII one and one that is none of the names.
@@ -300,10 +308,10 @@ VARIANTS: list[Family] = [
 
 def cases_for(family: Family) -> list[dict]:
     asked: list[dict[str, str]] = []
-    for value in getattr(family, "values", SINGLE_VALUES):
+    for value in family.values:
         asked.append({"reasoning_effort": value})
         asked.append({"reasoning.effort": value})
-    for top, nested in getattr(family, "pairs", PAIRS):
+    for top, nested in family.pairs:
         asked.append({"reasoning_effort": top, "reasoning.effort": nested})
     if isinstance(family, GLM):
         asked += [{"chat_template_kwargs.reasoning_effort": value} for value in ["xhigh", "Low", "turbo"]]

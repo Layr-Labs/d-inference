@@ -2998,10 +2998,12 @@ that is none of the names, and both fields together. It also lists the sets
 these tables keep (the types that reason, the Qwen 3.5 template family's, the
 types whose effort sets a thinking switch, the concrete Qwen 3.8 builds), which
 each copy checks for equality, so a type added on one side only fails a test.
-`scripts/generate-reasoning-effort-vectors.py` writes it,
-`CachePromptParityTests.reasoningEffortVectors` runs every case through the
-production prompt pipeline, and the platform checks its readers against the
-same bytes. Gemma 4's thinking switch and GPT-OSS's Harmony levels
+`scripts/generate-reasoning-effort-vectors.py` restates these tables and writes
+it, `CachePromptParityTests.reasoningEffortVectors` runs every case through the
+production prompt pipeline, and the platform copies the file byte for byte and
+checks its readers against it
+([how it is kept in step](../developer/test.md#public-fixtures-and-private-qualification)).
+Gemma 4's thinking switch and GPT-OSS's Harmony levels
 change the prompt of the requests that name such an effort, which the platform's
 production prompt vectors carry (`ProductionPromptParityTests`). The platform
 keeps its normalization version, so while a provider and the sidecar render

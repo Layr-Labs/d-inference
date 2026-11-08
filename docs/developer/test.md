@@ -1305,20 +1305,28 @@ production prompt pipeline, and
 leader's over the `ClusterAPIParityTests` harness.
 
 `fixtures/prompt-contract/v1/reasoning_effort_vectors.json` (446 cases) is
-also this repository's: every family's reading of every effort, in both fields
-and other spellings (a non-ASCII `HİGH` among them), with the field an unknown
-effort is refused in, and cases for every type that reasons. It also lists the
-sets the table keeps: the types that reason, the Qwen 3.5 template family's,
-the types whose effort sets a thinking switch, and the concrete Qwen 3.8
-builds. `scripts/generate-reasoning-effort-vectors.py` writes it from the
-tables in `ReasoningEffort.swift`; regenerate it with them, and check the
-result with `CachePromptParityTests.reasoningEffortVectors`, which requires
+also this repository's, and it is the contract with the coordinator: every
+family's reading of every effort, in both fields and other spellings (a
+non-ASCII `HİGH` among them), with the field an unknown effort is refused in,
+and cases for every type that reasons. It also lists the sets the table keeps:
+the types that reason, the Qwen 3.5 template family's, the types whose effort
+sets a thinking switch, and the concrete Qwen 3.8 builds. It is generated,
+never edited by hand: `scripts/generate-reasoning-effort-vectors.py` restates
+the tables in `ReasoningEffort.swift` and writes it, and running the script
+again must leave the file unchanged. Regenerate it with the tables, and check
+the result with `CachePromptParityTests.reasoningEffortVectors`, which requires
 each set to equal the table's and every type that reasons to have cases, and
 runs every case through the production prompt pipeline. darkbloom-platform
-holds the same bytes and checks its ingress refusal, first-party pool and
-prompt sidecar against them, sets included, so a type added or dropped on one
-side only fails a test on the other, and a change to a table changes the file
-in both repositories together.
+copies the file byte for byte from a reviewed commit of this repository (its
+provider contract snapshot, which `make contracts-check` verifies there) and
+checks its ingress refusal, first-party pool and prompt sidecar against it,
+sets included, so a type added or dropped on one side only fails a test on the
+other, and a change to a table changes the file in both repositories together.
+A new family that reasons adds its model types to the sets, its table (if it
+has levels) with a row in
+`ReasoningEffortValuesTests.everyFamilyTableCoversEveryEffort`, a `Family` to
+the script, and the regenerated file with its new case count; the coordinator
+learns the family when the platform takes that commit's file.
 
 darkbloom-platform keeps byte-identical copies of the provider's
 `paged_footprint_wire.json` and `process_memory_wire.json` for its own

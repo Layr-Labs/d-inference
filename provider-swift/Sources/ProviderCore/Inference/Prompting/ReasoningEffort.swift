@@ -61,10 +61,14 @@ enum ReasoningEffort: String, CaseIterable, Sendable {
 /// The coordinator maps every effort from a copy of these tables, in its
 /// ingress refusal, its first-party pool and its prompt sidecar, which plans
 /// these prompts for cache-aware routing.
-/// `fixtures/prompt-contract/v1/reasoning_effort_vectors.json`, which both
-/// repositories hold, is the agreement test
-/// (`CachePromptParityTests.reasoningEffortVectors`): a change to a table
-/// changes it, and the platform's copies, together.
+/// `fixtures/prompt-contract/v1/reasoning_effort_vectors.json` is the
+/// contract between the two. `scripts/generate-reasoning-effort-vectors.py`
+/// restates these tables and writes it, and
+/// `CachePromptParityTests.reasoningEffortVectors` runs every case through
+/// the production prompt pipeline; darkbloom-platform copies the file byte
+/// for byte and tests its copies against it. So a change to a table, or a
+/// model type that starts or stops reasoning, changes the script and the file
+/// in the same commit, and the platform takes that commit's file.
 extension ReasoningEffort {
     /// Qwen 3.8's template renders `low`, `medium` and `xhigh` (its default)
     /// and raises for any other effort while thinking. The Qwen 3.5 template

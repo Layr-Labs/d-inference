@@ -115,7 +115,7 @@ before the next read.
 | `TMPDIR` | When absent, Foundation's temporary directory. When present, an absolute path without NUL bytes to an existing writable directory; invalid or inaccessible values fail snapshot creation without fallback. Read when creating the snapshot. | `provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift` (`makeRuntimeMetallibSnapshot`) |
 
 Set `TMPDIR` in the environment of the process that serves inference. A shell
-export applies to `darkbloom start --foreground` and `darkbloom start --local`.
+export applies to `darkbloom start --foreground` and `darkbloom start --local --here`.
 For background `darkbloom start`, it applies to the invoking CLI's startup
 snapshot, but is not copied into the installed provider's launchd environment:
 `TMPDIR` is not in `LaunchAgent.passthroughEnvKeys`

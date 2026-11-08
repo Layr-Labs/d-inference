@@ -36,7 +36,9 @@ extension Start {
         let updatesItself = foreground && launchdJob
         if updatesItself { confirmRelease(coordinator) }
         await server.startLifecycleControl(stateFile: stateFile)
-        guard await runLocalStartupPreload(server: server, config: config, termination: termination) else { return false }
+        guard await runLocalStartupPreload(server: server, config: config, termination: termination) else {
+            return false
+        }
         try await server.start()
         await termination.install {
             await server.drainAndStop(timeoutSeconds: ProviderTermination.timeoutSeconds)

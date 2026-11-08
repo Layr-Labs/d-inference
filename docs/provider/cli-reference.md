@@ -17,9 +17,11 @@ adds it to the set before control can resume. Waiting and shadow Autopilot prese
 
 ## Local GLM qualification
 
-`darkbloom start --local --model EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`
+`darkbloom start --local --here --model EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`
 can include the experimental GLM root only when
 `DARKBLOOM_EXPERIMENTAL_GLM5_NEXT` names an absolute qualification JSON file.
+Use `--here`: the variable isn't passed to Only me's background service, which
+then serves no GLM.
 Unset, empty, `1`, malformed selections and mismatched identities refuse GLM.
 The file pins the exact catalog record, manifest and expected aggregate; see
 [configuration](../reference/configuration.md#local-glm-qualification) for its schema.
@@ -101,9 +103,10 @@ refuses there and says why instead of reporting a start (`Desktop.StartLocal.pai
 `desktop start-local --model <id>`, `stop-local`, and `restart-local` commands
 (each accepting `--config`) retain the native provider owner and termination handler. `start-local` serves on
 this Mac's one local API port (`Desktop.StartLocal.localAPI`, `LocalAPIPort.choose`): `[local] port`, else the one
-its local API already uses, else one chosen, all before anything stops (no free port starts nothing). A port not
-saved yet is saved only once the service started (`Desktop.StartLocal.serve`): a refused drain or a failed install
-saves nothing. Its LaunchAgent runs `start --foreground --local --port <n> --bind
+its local API already uses, else one chosen, all before anything stops (no free port starts nothing). Only once the
+service started does it save the app's choice, Only me (`[local] mode = "local"`), as `start --local` does, and a
+port not saved yet (`Desktop.StartLocal.serve`): a refused drain or a failed install saves nothing. The app's Start,
+Restart and Update then serve Only me, as login and the watchdog do. Its LaunchAgent runs `start --foreground --local --port <n> --bind
 <address>` (`LaunchAgent.localProgramArguments`), which never asks or saves and prints no key. Cooling uses
 `desktop configure-cooling --enabled <bool> --speed <percent> --temperature <celsius>`
 to request macOS administrator authorization for the existing signed helper.
@@ -787,7 +790,7 @@ Use the [stop flags](#darkbloom-stop) and [restart flags](#darkbloom-restart) be
 for deadline recovery. Commands do not initiate graceful shutdown by killing the
 serve task. `SIGTERM`, `SIGINT` and AppKit termination enter the same drain;
 Only me (`--local`) also waits for active HTTP response bodies. `SIGHUP`
-enters it too for a provider started by hand (`start --local`, or
+enters it too for a provider started by hand (`start --local --here`, or
 `start --foreground` typed into a terminal), so closing its terminal window
 drains it instead of ending the process at once. `SIGHUP` is not a stop signal
 in two cases: the provider's launchd job does not take it, so it has whatever
@@ -845,6 +848,7 @@ this Mac serves, read from its state and `local.json` (`Status.servingLines`,
 | Both, me first, paused | `Serving: you first — Darkbloom paused since 14:02 (your last request 1 minute ago; back at about 14:13 if you stay idle)`; while your requests run, `(your request is running; back 2 minutes after it ends)`; then, only while some finish, `         2 Darkbloom requests are finishing` |
 | Both, me first off | `Serving: Darkbloom and you, shared — Darkbloom keeps serving while you use this Mac (me first is off)` |
 | Only me (`--local`) | `Serving: only you, on this Mac — Darkbloom never contacts this Mac` |
+| Only me while it loads its models, before its local API listens | `Serving: only you, on this Mac — starting: its local API opens once its models are loaded` |
 
 With a local API it adds where your requests go and whether an account key is
 saved, never the key: `Your requests: this Mac first, then your other Macs
@@ -2327,7 +2331,7 @@ darkbloom restart [--timeout <seconds>] [--force] [--startup-timeout <seconds>] 
 |---|---|---|---|
 | `--timeout <seconds>` | integer, 0–3600 | `600` | Wait for accepted work and the coordinator acknowledgement before restarting |
 | `--force` | flag | `false` | Explicitly permit interruption of unfinished work before restarting |
-| `--startup-timeout <seconds>` | integer, 1–3600 | `180` | Wait for a new process identity and fresh App Attest, legacy, or owner self-route authorization |
+| `--startup-timeout <seconds>` | integer, 1–3600 | `180` | Wait for a new process identity and fresh App Attest, legacy, or owner self-route authorization; for Only me, for its local API to answer, once its models are loaded |
 | `--config <path>` | path | unset | Override the config used to re-arm the watchdog; the provider keeps its recorded config arguments |
 | `--solo` | flag | `false` | On a Mac in a two-Mac cluster: restart single-Mac serving on this Mac only |
 

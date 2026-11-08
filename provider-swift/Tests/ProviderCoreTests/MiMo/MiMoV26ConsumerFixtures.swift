@@ -101,8 +101,29 @@ enum MiMoConsumerFixture {
 final class MiMoConsumerCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0
-    func increment() { lock.withLock { count += 1 } }
+    private var waiters: [(target: Int, expectation: XCTestExpectation)] = []
+    func increment() {
+        let reached = lock.withLock {
+            count += 1
+            let reached = waiters.filter { $0.target <= count }
+            waiters.removeAll { $0.target <= count }
+            return reached
+        }
+        for waiter in reached { waiter.expectation.fulfill() }
+    }
     var value: Int { lock.withLock { count } }
+    /// Fulfilled by the increment that reaches `target`, or at once if the
+    /// count already has. A test awaits the event itself, not a clock.
+    func expectation(reaching target: Int, _ description: String) -> XCTestExpectation {
+        let expectation = XCTestExpectation(description: description)
+        let reached = lock.withLock {
+            if count >= target { return true }
+            waiters.append((target, expectation))
+            return false
+        }
+        if reached { expectation.fulfill() }
+        return expectation
+    }
 }
 
 final class MiMoConsumerResponseID: @unchecked Sendable {
@@ -116,9 +137,12 @@ final class MiMoConsumerEngine: CBv2Engine, @unchecked Sendable {
     private let lock = NSLock()
     private var submitted: [[Int]] = []
     private var pending: [CBv2RequestID: AsyncStream<CBv2Event>.Continuation] = [:]
-    private var cancelled = 0
     let chunks: [String]
     let holdOpen: Bool
+    /// Held rows registered, and held rows cancelled. Each counts after the
+    /// pending map has changed, so `outstanding` already agrees with it.
+    let holds = MiMoConsumerCounter()
+    let cancellations = MiMoConsumerCounter()
     init(output: String = "Ready", width: Int = 1, holdOpen: Bool = false) {
         let scalars = Array(output.unicodeScalars)
         self.chunks = stride(from: 0, to: scalars.count, by: width).map {
@@ -127,12 +151,16 @@ final class MiMoConsumerEngine: CBv2Engine, @unchecked Sendable {
         self.holdOpen = holdOpen
     }
     var prompts: [[Int]] { lock.withLock { submitted } }
-    var cancelCount: Int { lock.withLock { cancelled } }
+    var cancelCount: Int { cancellations.value }
     var outstanding: Int { lock.withLock { pending.count } }
     func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
         lock.withLock { submitted.append(request.promptTokens) }
         return AsyncStream { continuation in
-            if holdOpen { lock.withLock { pending[request.id] = continuation }; return }
+            if holdOpen {
+                lock.withLock { pending[request.id] = continuation }
+                holds.increment()
+                return
+            }
             for chunk in chunks { continuation.yield(.delta(text: chunk, tokens: [9], logprobs: nil)) }
             continuation.yield(.finished(reason: .stop,
                 usage: .init(promptTokens: request.promptTokens.count, completionTokens: chunks.count)))
@@ -140,11 +168,8 @@ final class MiMoConsumerEngine: CBv2Engine, @unchecked Sendable {
         }
     }
     func cancel(_ id: CBv2RequestID) {
-        let stream = lock.withLock {
-            let stream = pending.removeValue(forKey: id)
-            if stream != nil { cancelled += 1 }
-            return stream
-        }
+        let stream = lock.withLock { pending.removeValue(forKey: id) }
+        if stream != nil { cancellations.increment() }
         stream?.yield(.finished(reason: .cancelled, usage: .init(promptTokens: 0, completionTokens: 0)))
         stream?.finish()
     }

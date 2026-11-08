@@ -270,10 +270,11 @@ struct StartLocalFirstTests {
     }
 
     /// The desktop app's network Start is `start --model <id> --config <path>` (`DesktopBackend.arguments`), run
-    /// without a terminal, and it waits for the command to end. "Only me" serves in the terminal that starts it, so
-    /// without one it must not become a server that never returns, after stopping the running provider (review RV1).
-    @Test("without a terminal, a saved Only me is refused in one line, before anything stops or starts")
-    func nonTerminalSavedOnlyMeIsRefused() throws {
+    /// without a terminal, and it waits for the command to end. A saved Only me serves in the background, as the other
+    /// two choices do, so that start installs or restarts its service and returns: nothing is refused, and nothing
+    /// waits on a terminal.
+    @Test("without a terminal, a saved Only me serves in the background: no refusal, nothing asked")
+    func nonTerminalSavedOnlyMeServes() throws {
         let config = try TempConfig(plainConfig + "\n\n[local]\nmode = \"local\"\nport = 8001\n")
         defer { config.remove() }
         let before = config.bytes
@@ -282,16 +283,15 @@ struct StartLocalFirstTests {
         let argv = try DesktopBackend.arguments(for: action, configPath: config.path.path, localActive: false)
         #expect(argv == ["start", "--model", "fixture/model", "--config", config.path.path], "the app names no mode")
         let script = ScriptedTerminal(["1"])
-        do {
-            _ = try script.resolve(try Start.parse(Array(argv.dropFirst())), terminal: false)
-            Issue.record("a saved Only me without a terminal must be refused")
-        } catch let error as ValidationError {
-            #expect(error.message == "This Mac is set to Only me, which serves in a terminal. Run `darkbloom start` in "
-                + "one, or name how to serve: --local, --network or --me-first.")
-        }
-        #expect(script.reads == 0 && script.keyLookups == 0 && script.livePortLookups == 0 && script.probed.isEmpty)
+        let start = try Start.parse(Array(argv.dropFirst()))
+        let serving = try #require(try script.resolve(start, terminal: false))
+        #expect(serving.mode == .local && serving.source == .saved && serving.port == 8001 && serving.change.isEmpty)
+        #expect(Start.singleMacServing(mode: serving.mode, here: start.here, foreground: start.foreground) == .onlyMeService,
+                "the background service")
+        #expect(script.reads == 0 && script.livePortLookups == 0 && script.probed.isEmpty)
+        #expect(script.keyLookups == 1, "whether an account key is saved, for the requests line; never the key")
         #expect(config.bytes == before)
-        // In a terminal the saved choice serves Only me, and without one a mode flag decides as before.
+        // In a terminal the saved choice serves Only me too, and a mode flag decides, with or without one.
         #expect(try script.resolve(try config.start([]), terminal: true)?.mode == .local)
         #expect(try script.resolve(try config.start(["--network"]), terminal: false)?.mode == .network)
         #expect(try script.resolve(try config.start(["--local"]), terminal: false)?.mode == .local)
@@ -364,7 +364,7 @@ struct StartLocalFirstTests {
 
     // MARK: - Old flags keep their old meaning
 
-    @Test("--local and --local-endpoint keep their modes and LaunchAgent argv and ask nothing; they save only this Mac's port")
+    @Test("--local and --local-endpoint keep their modes and LaunchAgent argv and ask nothing; they save their mode and this Mac's port")
     func oldFlagsKeepTheirModes() throws {
         for terminal in [false, true] {
             let config = try TempConfig(plainConfig)
@@ -373,11 +373,12 @@ struct StartLocalFirstTests {
             let local = try #require(try script.resolve(try config.start(["--local"]), terminal: terminal))
             #expect(local.mode == .local && local.source == .flag(.local) && local.port == firstNewPort)
             #expect(local.bind == "127.0.0.1" && local.accountKeySaved == nil)
-            #expect(local.change == LocalSettingsChange(port: firstNewPort), "the port, chosen once, and no mode")
+            #expect(local.change == LocalSettingsChange(mode: .local, port: firstNewPort), "the mode and the port")
             #expect(local.portNote == LocalAPIPort.note(chosen: firstNewPort, start: defaultPort))
 
             let unified = try #require(try script.resolve(try config.start(["--local-endpoint"]), terminal: terminal))
-            #expect(unified.mode == .both && unified.meFirst && unified.port == firstNewPort && unified.change.isEmpty)
+            #expect(unified.mode == .both && unified.meFirst && unified.port == firstNewPort)
+            #expect(unified.change == LocalSettingsChange(mode: .both), "the new mode; the port is saved already")
             #expect(launchAgentArguments(unified.launchAgentEndpoint)
                 == launchAgentArguments(.init(enabled: true, port: firstNewPort, bind: "127.0.0.1", noAuth: false)))
             #expect(script.reads == 0 && script.probed == [firstNewPort], "probed once, for the one choice")
@@ -387,7 +388,7 @@ struct StartLocalFirstTests {
                 terminal: terminal))
             #expect(launchAgentArguments(custom.launchAgentEndpoint)
                 == launchAgentArguments(.init(enabled: true, port: 9001, bind: "0.0.0.0", noAuth: true)))
-            #expect(config.local == LocalSettings(port: 9001), "a named port is saved; a flag's mode never is")
+            #expect(config.local == LocalSettings(mode: .both, port: 9001), "a named port is saved, as is the mode")
         }
     }
 
@@ -400,11 +401,11 @@ struct StartLocalFirstTests {
         #expect(serving.mode == .both && !serving.meFirst && serving.port == firstNewPort)
         #expect(launchAgentArguments(serving.launchAgentEndpoint)
             == launchAgentArguments(.init(enabled: true, port: firstNewPort, bind: "127.0.0.1", noAuth: false)))
-        #expect(config.local == LocalSettings(meFirst: false, port: firstNewPort))
-        // Me first again: --me-first undoes it, without saving a mode.
+        #expect(config.local == LocalSettings(mode: .both, meFirst: false, port: firstNewPort))
+        // Me first again: --me-first undoes it; Both is saved already.
         let again = try #require(try ScriptedTerminal().resolve(try config.start(["--me-first"]), terminal: false))
         #expect(again.meFirst && again.change.meFirst == true && again.change.mode == nil)
-        #expect(config.local == LocalSettings(meFirst: true, port: firstNewPort))
+        #expect(config.local == LocalSettings(mode: .both, meFirst: true, port: firstNewPort))
     }
 
     @Test("--local-endpoint --no-auth with a saved route keeps your requests on this Mac, and start, status and local say so")
@@ -442,7 +443,7 @@ struct StartLocalFirstTests {
             == ["  serving:  Both, me first — Darkbloom pauses while you use this Mac, back after 2 idle minutes"])
     }
 
-    @Test("the settings flags are saved as --idle-timeout is; a flag's mode is not")
+    @Test("the settings flags are saved as --idle-timeout is, and so is a flag's mode")
     func settingsFlagsAreSaved() throws {
         let config = try TempConfig(plainConfig)
         defer { config.remove() }
@@ -450,10 +451,11 @@ struct StartLocalFirstTests {
             try config.start(["--local-endpoint", "--me-first-idle", "5", "--route", "my-macs-first"]),
             terminal: false, keySaved: true))
         #expect(serving.meFirstIdleMinutes == 5 && serving.route == .myMacsFirst && serving.accountKeySaved == true)
-        #expect(config.local == LocalSettings(meFirstIdleMinutes: 5, route: .myMacsFirst, port: firstNewPort))
+        #expect(config.local == LocalSettings(mode: .both, meFirstIdleMinutes: 5, route: .myMacsFirst,
+                                              port: firstNewPort))
     }
 
-    @Test("--me-first without a terminal serves Both on a new port it saves, and saves no mode")
+    @Test("--me-first without a terminal serves Both on a new port, and saves both")
     func meFirstFlagWithoutATerminal() throws {
         let config = try TempConfig(plainConfig)
         defer { config.remove() }
@@ -461,7 +463,7 @@ struct StartLocalFirstTests {
         let serving = try #require(try script.resolve(try config.start(["--me-first"]), terminal: false))
         #expect(serving.mode == .both && serving.source == .flag(.meFirst) && serving.meFirst)
         #expect(serving.port == firstNewPort && !script.probed.contains(8000))
-        #expect(config.local == LocalSettings(port: firstNewPort))
+        #expect(config.local == LocalSettings(mode: .both, port: firstNewPort))
         #expect(serving.portNote == LocalAPIPort.note(chosen: firstNewPort, start: defaultPort))
     }
 

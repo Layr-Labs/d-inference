@@ -96,14 +96,14 @@ struct LocalAPIOnePortTests {
         defer { fresh.remove() }
         let named = try #require(try ScriptedTerminal().resolve(try fresh.start(["--local", "--port", "8007"]),
                                                                 terminal: false))
-        #expect(named.port == 8007 && fresh.local == LocalSettings(port: 8007))
+        #expect(named.port == 8007 && fresh.local == LocalSettings(mode: .local, port: 8007))
         #expect(named.portNote == "Local API port: 8007 (saved).")
 
         let saved = try TempConfig(Self.plain + "\n[local]\nport = 8005\n")
         defer { saved.remove() }
         let moved = try #require(try ScriptedTerminal().resolve(try saved.start(["--me-first", "--port", "8007"]),
                                                                 terminal: false))
-        #expect(moved.port == 8007 && saved.local == LocalSettings(port: 8007))
+        #expect(moved.port == 8007 && saved.local == LocalSettings(mode: .both, port: 8007))
         #expect(moved.portNote == "Local API port: 8007 (saved, instead of 8005: tools set up for 8005 need "
             + "`darkbloom --opencode` or `--hermes` again).")
 

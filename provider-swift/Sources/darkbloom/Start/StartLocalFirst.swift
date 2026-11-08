@@ -3,14 +3,16 @@ import Foundation
 import ProviderCore
 
 // How a single-Mac `darkbloom start` serves (`[local]`): only its owner, the Darkbloom network, or both with the
-// owner first. A flag decides it for one start; otherwise the saved choice; otherwise, in a terminal, one question,
-// whose answer is saved. Without a terminal and without a saved choice (the LaunchAgent after an upgrade, the desktop
-// app, scripts), a start keeps today's behaviour exactly: the Darkbloom network, with no local API, no Keychain
-// look-up, no port probe and nothing written, so an upgraded Mac never opens a local port by itself.
+// owner first. A mode flag decides it, and is saved; otherwise the saved choice; otherwise, in a terminal, one
+// question, whose answer is saved. So the background service always serves the saved choice, and `restart` and
+// `update` bring that back (`SavedChoiceService`). Only `--local --here`, one terminal session, and a service's own
+// child save nothing. Without a terminal and without a saved choice or a mode flag (the LaunchAgent after an upgrade,
+// the desktop app, scripts), a start keeps today's behaviour exactly: the Darkbloom network, with no local API, no
+// Keychain look-up, no port probe and nothing written, so an upgraded Mac never opens a local port by itself.
 // Every local API this Mac serves takes its one port (`LocalAPIPort`), so the address tools were given never moves.
 // No line here names a speed (`StartLocalFirstTests.noSpeedAnywhere` reads them all) or prints a key.
 
-/// A flag that names how this Mac serves, for one start. `--me-first` and `--local-endpoint` both name Both.
+/// A flag that names how this Mac serves. `--me-first` and `--local-endpoint` both name Both.
 enum ServingModeFlag: String, CaseIterable, Sendable {
     case local = "--local"
     case network = "--network"
@@ -41,6 +43,8 @@ struct LocalFirstOptions: Equatable, Sendable {
     var noAuth = false
     /// launchd's child: its flags say how it serves; it never asks and never saves.
     var foreground = false
+    /// `--local --here`: Only me in this terminal, for this session only; nothing is saved but this Mac's port.
+    var here = false
 
     /// The mode flags given, in `ServingModeFlag` order.
     var modeFlags: [ServingModeFlag] {
@@ -78,6 +82,13 @@ struct LocalFirstOptions: Equatable, Sendable {
         if choose, foreground {
             return "`--choose` asks in a terminal; the --foreground service never asks."
         }
+        if here, !local {
+            return "`--here` serves Only me in this terminal: use it with --local (`\(BuildEnvironment.current.cliName) "
+                + "start --local --here`)."
+        }
+        if here, foreground {
+            return "`--here` serves in a terminal; the --foreground service is launchd's."
+        }
         if meFirst == false, meFirstIdleMinutes != nil {
             return "`--me-first-idle` sets when Darkbloom comes back after you; `--no-me-first` turns that pause off. "
                 + "Use one."
@@ -99,10 +110,10 @@ struct LocalFirstOptions: Equatable, Sendable {
         return nil
     }
 
-    /// How this start's mode is decided, in order: a mode flag; `--choose`, the question again; the saved choice;
-    /// the question, in a terminal. Without a terminal and without a saved choice: `.today`, the Darkbloom network
-    /// with no local API; a saved "Only me" without a terminal is refused. The --foreground service never asks: its
-    /// flags say how it serves.
+    /// How this start's mode is decided, in order: a mode flag; `--choose`, the question again; the saved choice,
+    /// with or without a terminal (every choice serves in the background); the question, in a terminal. Without a
+    /// terminal and without a saved choice: `.today`, the Darkbloom network with no local API. The --foreground
+    /// service never asks: its flags say how it serves.
     func modeStep(saved: LocalSettings?, terminal: Bool) throws -> ServingStep {
         if let flag = modeFlag { return .decided(flag.mode, .flag(flag)) }
         // Today's plain start, as `LocalSettings.launchMode` reads it without --local or --local-endpoint.
@@ -115,23 +126,18 @@ struct LocalFirstOptions: Equatable, Sendable {
             }
             return .ask(preselected: saved?.mode ?? .both)
         }
-        if let mode = saved?.mode {
-            // "Only me" serves in the terminal that starts it. Without one (the desktop app's Start, a script) it would
-            // be a server its caller waits on forever, after stopping the running provider: refuse before anything.
-            guard mode != .local || terminal else {
-                throw ValidationError("This Mac is set to Only me, which serves in a terminal. Run "
-                    + "`\(BuildEnvironment.current.cliName) start` in one, or name how to serve: --local, --network or "
-                    + "--me-first.")
-            }
-            return .decided(mode, .saved)
-        }
+        if let mode = saved?.mode { return .decided(mode, .saved) }
         return terminal ? .ask(preselected: .both) : .decided(today, .today)
     }
+
+    /// Whether this start's mode flag is saved: always, so the background service, `restart` and `update` serve it
+    /// from now on; never for `--local --here` (one terminal session) or a service's child.
+    var savesModeFlag: Bool { modeFlag != nil && !foreground && !here }
 }
 
 /// Where a start's mode came from.
 enum ServingModeSource: Equatable, Sendable {
-    /// A mode flag, for this start only.
+    /// A mode flag: saved (`LocalFirstOptions.savesModeFlag`).
     case flag(ServingModeFlag)
     /// `[local] mode`.
     case saved
@@ -257,11 +263,12 @@ struct ServingEnvironment {
 }
 
 enum StartServingResolver {
-    /// How this start serves, and what it saves; nil when the person cancelled at the question. Only the question
-    /// saves a mode. The settings flags (`--no-me-first`, `--me-first-idle`, `--route`) are saved as `--idle-timeout`
-    /// is. Every local API takes this Mac's one port (`LocalAPIPort.choose`): a named `--port`, else `[local] port`,
-    /// else one chosen now; a new or named port is saved so that tools keep finding it. The --foreground service saves
-    /// nothing, probes no port and never asks the Keychain: launchd's arguments say how it serves.
+    /// How this start serves, and what it saves; nil when the person cancelled at the question. The question's answer
+    /// and a mode flag are saved (`LocalFirstOptions.savesModeFlag`). The settings flags (`--no-me-first`,
+    /// `--me-first-idle`, `--route`) are saved as `--idle-timeout` is. Every local API takes this Mac's one port
+    /// (`LocalAPIPort.choose`): a named `--port`, else `[local] port`, else one chosen now; a new or named port is saved
+    /// so that tools keep finding it. The --foreground service saves nothing, probes no port and never asks the
+    /// Keychain: launchd's arguments say how it serves.
     static func resolve(_ options: LocalFirstOptions, saved section: LocalSettings?,
                         environment env: ServingEnvironment) throws -> StartServing? {
         let saved = section ?? LocalSettings()
@@ -271,6 +278,7 @@ enum StartServingResolver {
         switch try options.modeStep(saved: section, terminal: env.terminal) {
         case .decided(let decided, let from):
             (mode, source) = (decided, from)
+            if options.savesModeFlag, decided != saved.mode { change.mode = decided }
         case .ask(let preselected):
             let idle = options.meFirstIdleMinutes ?? saved.resolvedMeFirstIdleMinutes
             guard let answer = ServingQuestion.askMode(preselected: preselected, idleMinutes: idle,
@@ -420,6 +428,15 @@ enum LocalFirstWords {
         case .thisMac: return "this Mac only"
         case .myMacs: return "this Mac first, then your other Macs (free)"
         case .myMacsFirst: return "this Mac first, then your other Macs (free), then the Darkbloom network (billed)"
+        }
+    }
+
+    /// A choice's name, as the start question says it; with `article`, "the Darkbloom network".
+    static func choice(_ mode: LocalSettings.Mode, article: Bool = false) -> String {
+        switch mode {
+        case .local: "Only me"
+        case .network: article ? "the Darkbloom network" : "Darkbloom network"
+        case .both: "Both, me first"
         }
     }
 

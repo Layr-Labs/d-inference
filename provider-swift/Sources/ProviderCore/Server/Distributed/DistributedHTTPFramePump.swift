@@ -55,16 +55,23 @@ final class DistributedHTTPFramePump: @unchecked Sendable {
         }
     }
 
+    /// The next item, or a probe at `deadline` on the continuous clock.
+    func next(until deadline: ContinuousClock.Instant) async -> Read {
+        await next(until: deadline, clock: ContinuousClock())
+    }
+
     /// The writer is the only consumer. Keeping its active bit through timer
     /// join prevents a second waiter/timer while an old timer is still exiting.
-    func next(until deadline: ContinuousClock.Instant) async -> Read {
+    /// `clock` times the probe (the writer's own: the continuous clock, unless
+    /// a test drives its own).
+    func next<C: Clock<Duration>>(until deadline: C.Instant, clock: C) async -> Read {
         let accepted = lock.withLock { () -> Bool in
             guard !consumerActive else { return false }; consumerActive = true; return true
         }
         guard accepted else { return .closed }
         defer { lock.withLock { consumerActive = false } }
         let resolution = await withTaskCancellationHandler {
-            let result = await wait(until: deadline)
+            let result = await wait(until: deadline, clock: clock)
             result.timer?.cancel()
             await result.timer?.value
             return result
@@ -76,7 +83,7 @@ final class DistributedHTTPFramePump: @unchecked Sendable {
         return resolution.read
     }
 
-    private func wait(until deadline: ContinuousClock.Instant) async -> Resolution {
+    private func wait<C: Clock<Duration>>(until deadline: C.Instant, clock: C) async -> Resolution {
         await withCheckedContinuation { continuation in
             let immediate = lock.withLock { () -> (Read?, CheckedContinuation<Bool, Never>?) in
                 guard !closed else { return (.closed, nil) }
@@ -84,11 +91,11 @@ final class DistributedHTTPFramePump: @unchecked Sendable {
                     let producer = taken; slot = nil; taken = nil
                     return (.item(item), producer)
                 }
-                guard ContinuousClock.now < deadline else { return (.probe, nil) }
+                guard clock.now < deadline else { return (.probe, nil) }
                 let id = UUID()
                 consumer = .init(id: id, continuation: continuation)
                 wakeTimer = Task { [weak self] in
-                    do { try await ContinuousClock().sleep(until: deadline) }
+                    do { try await clock.sleep(until: deadline, tolerance: nil) }
                     catch { return }
                     self?.timeout(id)
                 }

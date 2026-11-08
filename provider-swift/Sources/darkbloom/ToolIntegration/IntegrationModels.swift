@@ -176,7 +176,8 @@ enum IntegrationModels {
     }
 
     /// The tools' list: every chat model the endpoint lists, named and limited from the catalog when it is
-    /// reachable (`catalog` nil offline), ordered this Mac, your Macs, the network, then by name.
+    /// reachable (`catalog` nil offline), ordered this Mac (or your pair), your Macs, the network, then by name. The
+    /// endpoint's own models run `here`: on this Mac, or on the pair whose API it is.
     ///
     /// - Context: the endpoint's (what this engine admits now), else the catalog's maximum, else unknown.
     /// - Output cap: `min(max output, context / 4)`, the max output being the endpoint's, else the catalog's, else
@@ -189,7 +190,8 @@ enum IntegrationModels {
                         here: IntegrationModel.Location = .thisMac) -> [IntegrationModel] {
         var nearest: [String: (entry: EndpointModel, location: IntegrationModel.Location)] = [:]
         for entry in listed {
-            let location = location(ownedBy: entry.ownedBy)
+            let owner = location(ownedBy: entry.ownedBy)
+            let location = owner == .thisMac ? here : owner
             if let kept = nearest[entry.id], kept.location <= location { continue }
             nearest[entry.id] = (entry, location)
         }
@@ -212,7 +214,7 @@ enum IntegrationModels {
         return ordered(models)
     }
 
-    /// The tools' order: this Mac, your Macs, the network, then by name.
+    /// The tools' order: this Mac, your pair, your Macs, the network, then by name.
     static func ordered(_ models: [IntegrationModel]) -> [IntegrationModel] {
         models.sorted { ($0.location, $0.name.lowercased(), $0.id) < ($1.location, $1.name.lowercased(), $1.id) }
     }

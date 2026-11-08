@@ -43,15 +43,16 @@ enum HermesConfigPlan {
             var edit = try HermesEdit(text: original, provider: provider)
             guard let main = edit.mainModel(among: usable) else {
                 return .refused(.models("""
-                    Hermes needs a main model with at least 64K context on this Mac or your other Macs; Darkbloom \
-                    lists such models only on the network here.
+                    Hermes needs a main model with at least 64K context on this Mac, its pair or your other Macs; \
+                    Darkbloom lists such models only on the network here.
                     """))
             }
+            let replaced = edit.replacedMain()
             let change = try edit.setProvider(endpoint: endpoint, models: usable, main: main)
             try edit.setMainModel(main)
             let text = edit.result()
             let summary = ToolConfigSummary(
-                provider: change, models: usable.map(\.id), defaultModel: main,
+                provider: change, models: usable.map(\.id), defaultModel: main, replacedDefault: replaced,
                 leftOut: models.filter { ($0.contextLength ?? 0) < minimumContext }.map(\.id),
                 droppedComments: text.map { edit.droppedComments(in: $0) } ?? 0,
                 undescribed: usable.filter { $0.fallback != nil && entries[$0.id] == nil }.map(\.id))
@@ -137,17 +138,38 @@ private struct HermesEdit {
     // MARK: - The two sections
 
     /// The model `model.default` names when the main provider is already Darkbloom's and Hermes can still use it;
-    /// else this Mac's first usable model, else the first on the owner's other Macs. Never a network model by choice.
+    /// else this Mac's first usable model (or its pair's), else the first on the owner's other Macs. Never a network
+    /// model by choice.
     func mainModel(among usable: [IntegrationModel]) -> String? {
-        if let model, let children = try? children(of: model),
-           let selected = children.first(where: { $0.key == "provider" }).flatMap({ Self.scalar($0.value) }),
-           ["custom:\(provider.id)", provider.id].contains(selected),
-           let current = children.first(where: { $0.key == "default" || $0.key == "model" })
-               .flatMap({ Self.scalar($0.value) }),
-           usable.contains(where: { $0.id == current }) {
-            return current
+        if let current = currentMain(), current.isDarkbloom, usable.contains(where: { $0.id == current.model }) {
+            return current.model
         }
-        return (usable.first { $0.location == .thisMac } ?? usable.first { $0.location == .yourMacs })?.id
+        return usable.filter { $0.location != .network }.min { $0.location < $1.location }?.id
+    }
+
+    /// The main model before this edit, as `model` names it (`default`, or its alias key `model`, or a bare model ID),
+    /// with its provider; nil without one.
+    func currentMain() -> (model: String, provider: String?, isDarkbloom: Bool)? {
+        guard let model else { return nil }
+        // A name, not YAML's null or an empty string.
+        func named(_ value: String) -> String? {
+            Self.scalar(value).flatMap { ["", "~", "null", "Null", "NULL"].contains($0) ? nil : $0 }
+        }
+        guard model.value.isEmpty else { return named(model.value).map { ($0, nil, false) } }
+        let children = (try? children(of: model)) ?? []
+        func value(_ keys: Set<String>) -> String? { children.first { keys.contains($0.key) }.flatMap { named($0.value) } }
+        guard let name = value(["default", "model"]) else { return nil }
+        let selected = value(["provider"])
+        return (name, selected, selected.map { ["custom:\(provider.id)", provider.id].contains($0) } ?? false)
+    }
+
+    /// The main model before this edit in plain words, `gpt-6-astra via opencodex`; nil without one, or when it was
+    /// Darkbloom's already.
+    func replacedMain() -> String? {
+        guard let current = currentMain(), !current.isDarkbloom else { return nil }
+        guard let selected = current.provider else { return current.model }
+        let named = selected.hasPrefix("custom:") ? String(selected.dropFirst("custom:".count)) : selected
+        return "\(current.model) via \(named)"
     }
 
     mutating func setProvider(

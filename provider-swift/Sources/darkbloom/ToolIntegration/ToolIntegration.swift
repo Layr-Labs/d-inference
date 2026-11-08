@@ -61,12 +61,13 @@ struct IntegrationEndpoint: Equatable, Sendable {
     var servesThePair = false
 
     /// The live local server `info`, by default the one in `local.json` (its own port, never an assumed one), with the
-    /// key file for that port; nil when no server runs, it serves without a key, or no key file holds its key.
+    /// key file for that port; nil when no server runs, it serves without a key, or no key file holds its key. It
+    /// serves the pair when its process is this Mac's running part of one (`pairPart`: that part's pid).
     static func live(_ info: LocalEndpoint.Info? = LocalEndpoint.readLiveInfo(),
                      keyFile: (UInt16) -> URL? = { LocalEndpoint.keyFile(forPort: Int($0)) },
-                     pairPart: () -> Int32? = { nil }) -> IntegrationEndpoint? {
+                     pairPart: () -> Int32? = { ClusterPairSummary.runningPartPID() }) -> IntegrationEndpoint? {
         guard let info, !info.apiKey.isEmpty, let file = keyFile(info.port) else { return nil }
-        return IntegrationEndpoint(baseURL: info.baseURL, keyFile: file)
+        return IntegrationEndpoint(baseURL: info.baseURL, keyFile: file, servesThePair: pairPart() == info.pid)
     }
 }
 

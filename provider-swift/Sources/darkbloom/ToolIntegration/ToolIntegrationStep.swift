@@ -152,7 +152,8 @@ struct ToolIntegrationStep {
                                                    catalog: catalog, wait: modelLoadWait) else { return false }
             listed = loaded
         }
-        let models = IntegrationModels.resolve(listed, catalog: catalog)
+        let models = IntegrationModels.resolve(listed, catalog: catalog,
+                                               here: endpoint.servesThePair ? .yourPair : .thisMac)
         var ok = true
         var summaries: [ToolConfigSummary] = []
         for (tool, executable) in ready {
@@ -236,26 +237,18 @@ struct ToolIntegrationStep {
         case .refused(let file, let refusal):
             return (["✗ " + refusal.message(file: ToolIntegration.displayPath(file, home: home))], false)
         case .written(let file, let backup, let undo, let summary):
-            let path = ToolIntegration.displayPath(file, home: home)
-            let what = summary.provider == .updated ? "updated" : "added"
-            var lines: [String]
+            var lines = ["✓ \(tool.displayName) can use Darkbloom: \(count(summary.models.count)).",
+                         "  Changed: \(ToolIntegration.displayPath(file, home: home)) "
+                            + "(\(changed(tool, summary, newFile: backup == nil, provider: provider)))"]
+            if let backup { lines.append("  Backup:  \(ToolIntegration.displayPath(backup, home: home))") }
             switch tool {
             case .opencode:
-                let changed = backup == nil ? "a new file with the \"\(provider.id)\" provider"
-                    : "\(what) the \"\(provider.id)\" provider; nothing else changed"
-                let useIt = summary.defaultModel.map { "in OpenCode, /models → \(provider.name); new sessions use \($0)." }
-                    ?? "in OpenCode, /models → \(provider.name). Your default model is unchanged."
-                lines = ["✓ OpenCode can use Darkbloom: \(count(summary.models.count)).",
-                         "  Changed: \(path) (\(changed))"]
-                if let backup { lines.append("  Backup:  \(ToolIntegration.displayPath(backup, home: home))") }
-                lines += ["  Use it:  \(useIt)", "  Undo:    \(undo)"]
+                lines += ["  " + openCodeDefault(summary, models: models, provider: provider), "  Undo:    \(undo)"]
             case .hermes:
-                let model = summary.defaultModel.flatMap { id in models.first { $0.id == id }?.name ?? id }
-                lines = ["✓ Hermes uses Darkbloom: new Hermes chats run \(model ?? "a Darkbloom model")."]
-                lines.append("  Changed: \(path) (\(backup == nil ? "a new file with" : what) the \"\(provider.id)\" "
-                    + "provider, made the main model)")
-                if let backup { lines.append("  Backup:  \(ToolIntegration.displayPath(backup, home: home))") }
-                lines.append("  Switch back: hermes model   ·   Undo: \(undo)   ·   Chats already open keep their model.")
+                let main = summary.defaultModel.map { "Darkbloom's \(name(of: $0, in: models))" } ?? "Darkbloom"
+                let before = summary.replacedDefault.map { " (before: \($0))" } ?? ""
+                lines += ["  New Hermes chats now use \(main)\(before). Switch back: hermes model",
+                          "  Undo:    \(undo)   ·   Chats already open keep their model."]
                 if !summary.leftOut.isEmpty {
                     lines.append("  Left out: \(summary.leftOut.joined(separator: ", ")) (Hermes needs 64K context)")
                 }
@@ -265,9 +258,54 @@ struct ToolIntegrationStep {
         }
     }
 
-    /// The line beside a local API that already serves as the start would.
+    /// What a written config now holds of Darkbloom's, for the `Changed:` line: the provider, and the default model
+    /// when the edit set it. Hermes always makes Darkbloom its main model.
+    static func changed(_ tool: IntegrationTool, _ summary: ToolConfigSummary, newFile: Bool,
+                        provider: IntegrationProvider) -> String {
+        let block = "the \"\(provider.id)\" provider"
+        switch tool {
+        case .opencode:
+            let andDefault = summary.defaultModel == nil ? "" : " and the default model"
+            if newFile { return "a new file with \(block)\(andDefault)" }
+            switch summary.provider {
+            case .added: return "added \(block)\(andDefault); nothing else changed"
+            case .updated: return "updated \(block)\(andDefault); nothing else changed"
+            case .unchanged: return "added the default model; nothing else changed"
+            }
+        case .hermes:
+            if newFile { return "a new file with \(block) as the main model" }
+            switch summary.provider {
+            case .added: return "added \(block) and made it the main model"
+            case .updated: return "updated \(block) and made it the main model"
+            case .unchanged: return "made \(block) the main model"
+            }
+        }
+    }
+
+    /// OpenCode's default model after a written edit, on its own line: Darkbloom's when no global config file set
+    /// one, else the one they set, which stays.
+    static func openCodeDefault(_ summary: ToolConfigSummary, models: [IntegrationModel],
+                                provider: IntegrationProvider) -> String {
+        let ours = provider.id + "/"
+        if let set = summary.defaultModel {
+            let id = set.hasPrefix(ours) ? String(set.dropFirst(ours.count)) : set
+            return "New OpenCode sessions now use Darkbloom's \(name(of: id, in: models)). Switch back with /models."
+        }
+        guard let kept = summary.keptDefault else {
+            return "Your default model stays as your config sets it; pick Darkbloom with /models."
+        }
+        return "Your default stays \(kept); " + (kept.hasPrefix(ours) ? "switch with /models." : "pick Darkbloom with /models.")
+    }
+
+    /// A model's name without where it runs (`Qwen 3.8 27B`), else its ID.
+    static func name(of id: String, in models: [IntegrationModel]) -> String {
+        models.first { $0.id == id }.map { IntegrationModel.displayName(in: $0.name) } ?? id
+    }
+
+    /// The line beside a local API that already serves as the start would: the address the tools reach it at, never
+    /// the address it listens on (`0.0.0.0` for a pair's).
     static func alreadyServes(_ live: LocalEndpoint.Info, tools: [IntegrationTool]) -> String {
-        "Darkbloom already serves on \(live.host):\(live.port); setting up \(names(tools)) for it."
+        "Darkbloom already serves at \(live.baseURL); setting up \(names(tools)) for it."
     }
 
     /// The line when this start has no local API for the tools.

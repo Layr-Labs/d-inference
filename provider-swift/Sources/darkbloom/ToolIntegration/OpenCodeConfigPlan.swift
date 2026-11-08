@@ -4,7 +4,7 @@ import Foundation
 ///
 /// The edit is a byte splice of the JSONC file, never a re-serialisation: the owner's comments, order, other
 /// providers (a V1 `provider` map too) and default model stay exactly as they are. Only the provider's own value is
-/// replaced, or the provider is appended; the top-level `model` is added only when the file has none.
+/// replaced, or the provider is appended; the top-level `model` is added only when no global file sets one.
 enum OpenCodeConfigPlan {
     static let schemaURL = "https://opencode.ai/config.json"
     /// OpenCode's package for an OpenAI-compatible endpoint.
@@ -32,7 +32,8 @@ enum OpenCodeConfigPlan {
     }
 
     /// The file's new bytes. A `.json` file stays strict JSON when it was: it gets no comment line. The top-level
-    /// `model` is added only when neither this file nor, by `defaultElsewhere`, another global file sets one.
+    /// `model` is added only when neither this file nor the global files it outranks (`defaultElsewhere`) set one;
+    /// otherwise the summary names the default that stays (`keptDefault`).
     static func plan(
         existing: Data?, fileName: String, endpoint: IntegrationEndpoint, models listed: [IntegrationModel],
         provider: IntegrationProvider, home: URL, defaultElsewhere: GlobalDefault = .none
@@ -60,9 +61,11 @@ enum OpenCodeConfigPlan {
                           withComment: fileName.hasSuffix(".jsonc"), unit: splice.unit)
 
         var rootMembers: [[String]] = fresh ? [["\"$schema\": \(jsonString(schemaURL))"]] : []
-        let modelKeys = root.members(named: "model")
-        guard modelKeys.count < 2 else { return .refused(.file("it has two \"model\" keys")) }
-        let defaultModel = modelKeys.isEmpty && defaultElsewhere == .none ? "\(provider.id)/\(models[0].id)" : nil
+        guard root.members(named: "model").count < 2 else { return .refused(.file("it has two \"model\" keys")) }
+        // The file Darkbloom edits is the last global one OpenCode loads (`configFile`), so its own model wins.
+        let own = globalDefault(in: document)
+        let effective = own == .none ? defaultElsewhere : own
+        let defaultModel = effective == .none ? "\(provider.id)/\(models[0].id)" : nil
         if let defaultModel { rootMembers.append(["\"model\": \(jsonString(defaultModel))"]) }
 
         let change: ToolConfigSummary.ProviderChange
@@ -89,9 +92,10 @@ enum OpenCodeConfigPlan {
         }
         if !rootMembers.isEmpty { splice.append(rootMembers, to: root) }
 
-        let summary = ToolConfigSummary(
+        var summary = ToolConfigSummary(
             provider: change, models: models.map(\.id), defaultModel: defaultModel,
             undescribed: models.filter { $0.fallback != nil && entries[$0.id] == nil }.map(\.id))
+        if case .model(let kept) = effective { summary.keptDefault = kept }
         guard splice.changesBytes else { return .unchanged(summary) }
         return verified(splice.result(), original: original, document: document, fileName: fileName,
                         provider: provider, summary: summary)
@@ -166,22 +170,40 @@ enum OpenCodeConfigPlan {
         })
     }
 
-    /// The global config files, in the order OpenCode loads them.
+    /// The global config files, in the order OpenCode 2 loads and merges them, the later one winning: its
+    /// `ConfigDiscovery.names`. OpenCode 2 doesn't load OpenCode 1's `config.json` any more (its test "does not load
+    /// legacy config.json files"), so a `model` there sets no default.
     static let globalFileNames = ["opencode.json", "opencode.jsonc"]
 
-    /// Whether another global config file beside `file` sets a top-level `model`, or can't be read (so Darkbloom can't
-    /// tell). OpenCode loads `opencode.json`, then `opencode.jsonc`, and Darkbloom edits the last that exists, so a
-    /// `model` it added would override the owner's in the other file. Project, system and managed configs load after
-    /// the global ones and win over them, so a global `model` never replaces theirs.
+    /// The default model the global config files beside `file` set, merged as OpenCode merges them
+    /// (`globalFileNames`). Darkbloom edits the last of them that exists, so a `model` it added would override theirs.
+    /// Project, system and managed configs load after the global ones and win over them, so a global `model` never
+    /// replaces theirs.
     static func otherGlobalDefault(besides file: URL) -> GlobalDefault {
         let directory = file.deletingLastPathComponent()
-        return globalFileNames.filter { $0 != file.lastPathComponent }.contains { name in
+        var merged = GlobalDefault.none
+        for name in globalFileNames where name != file.lastPathComponent {
             let other = directory.appendingPathComponent(name)
-            guard FileManager.default.fileExists(atPath: other.path) else { return false }
+            guard FileManager.default.fileExists(atPath: other.path) else { continue }
             guard let data = try? Data(contentsOf: other), let document = try? JSONCDocument([UInt8](data)),
-                  let root = document.root.object else { return true }
-            return !root.members(named: "model").isEmpty
-        } ? .unnamed : .none
+                  document.root.object != nil else {
+                merged = .unnamed
+                continue
+            }
+            let set = globalDefault(in: document)
+            if set != .none { merged = set }
+        }
+        return merged
+    }
+
+    /// The default model a config document's top-level `model` sets: a model name, or anything else (`""`, `null`,
+    /// two keys) as an unnamed default that stays.
+    static func globalDefault(in document: JSONCDocument) -> GlobalDefault {
+        guard let keys = document.root.object?.members(named: "model"), !keys.isEmpty else { return .none }
+        guard keys.count == 1, let name = try? JSONDecoder().decode(
+            String.self, from: Data(document.bytes[keys[0].value.start..<keys[0].value.end])), !name.isEmpty
+        else { return .unnamed }
+        return .model(name)
     }
 
     static func jsonString(_ value: String) -> String {

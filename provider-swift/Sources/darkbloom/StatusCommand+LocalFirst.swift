@@ -3,8 +3,9 @@ import ProviderCore
 
 extension DaemonState {
     /// Whether the provider that wrote this state serves only its owner: the coordinator-less server (`--local`,
-    /// "Only me") is the only one that writes no runtime capabilities.
-    var servesOnlyItsOwner: Bool { runtimeCapabilities == nil }
+    /// "Only me") is the only one that writes neither runtime capabilities nor a coordinator. A network provider
+    /// waiting for its schedule's window writes a coordinator alone (`Start.waitOutsideSchedule`).
+    var servesOnlyItsOwner: Bool { runtimeCapabilities == nil && coordinatorUrl == nil }
 }
 
 extension LocalFirstWords.LocalAPIServer {
@@ -26,8 +27,10 @@ extension Status {
                              accountKeySaved: () -> Bool,
                              nextFreePort: (UInt16) -> UInt16? = { LocalAPIPort.nextFree(besides: $0) },
                              server: LocalFirstWords.LocalAPIServer = .singleMac(paired: false),
-                             now: Date = Date(), timeZone: TimeZone = .current) -> [String] {
+                             now: Date = Date()) -> [String] {
         guard let liveEndpoint, liveEndpoint.pid == state.pid else {
+            // Only me's server reports itself from the start of its first load, before its local API listens.
+            if state.servesOnlyItsOwner { return [onlyMeStartingLine] }
             guard let failure = state.localAPIFailure else {
                 return ["Serving: Darkbloom network only — this Mac has no local API"]
             }
@@ -39,7 +42,7 @@ extension Status {
         if state.servesOnlyItsOwner {
             lines = ["Serving: only you, on this Mac — Darkbloom never contacts this Mac"]
         } else if let meFirst = state.meFirst {
-            lines = meFirstLines(meFirst, now: now, timeZone: timeZone)
+            lines = meFirstLines(meFirst, now: now)
         } else {
             lines = ["Serving: Darkbloom and you, shared — Darkbloom keeps serving while you use this Mac (me first is off)"]
         }
@@ -49,37 +52,13 @@ extension Status {
         return lines
     }
 
+    static let onlyMeStartingLine = "Serving: only you, on this Mac — starting: its local API opens once its models are loaded"
+
     static let noLocalKeyRequestsLine = "Your requests: this Mac only · no local key (--no-auth), so nothing is passed on"
 
-    /// Me first, open or paused, from the running provider's snapshot.
-    static func meFirstLines(_ snapshot: MeFirstSnapshot, now: Date = Date(), timeZone: TimeZone = .current) -> [String] {
-        let idle = LocalFirstWords.idleMinutes(milliseconds: snapshot.idleMs)
-        guard snapshot.paused, let since = snapshot.sinceMs else {
-            return ["Serving: Darkbloom and you, me first — open to Darkbloom (none of your requests in the last "
-                + (idle == 1 ? "minute" : "\(idle) minutes") + ")"]
-        }
-        let nowMs = Int64((now.timeIntervalSince1970 * 1_000).rounded(.down))
-        let detail: String
-        switch snapshot.localRequestsInFlight {
-        case 1:
-            detail = "your request is running; back \(LocalFirstWords.minutes(idle)) after it ends"
-        case let running where running > 1:
-            detail = "\(running) of your requests are running; back \(LocalFirstWords.minutes(idle)) after the last one ends"
-        default:
-            let last = snapshot.lastUseMs.map { "your last request \(ago(milliseconds: nowMs - $0))" }
-            let back = snapshot.resumesAtMs.map {
-                $0 <= nowMs ? "back any moment now" : "back at about \(clock($0, timeZone: timeZone)) if you stay idle"
-            }
-            detail = [last, back].compactMap { $0 }.joined(separator: "; ")
-        }
-        var lines = ["Serving: you first — Darkbloom paused since \(clock(since, timeZone: timeZone))"
-            + (detail.isEmpty ? "" : " (\(detail))")]
-        switch snapshot.darkbloomRequestsFinishing {
-        case 0: break
-        case 1: lines.append("         1 Darkbloom request is finishing")
-        case let finishing: lines.append("         \(finishing) Darkbloom requests are finishing")
-        }
-        return lines
+    /// Me first, open or paused, from the running provider's snapshot, in words said from now (`MeFirstWords`).
+    static func meFirstLines(_ snapshot: MeFirstSnapshot, now: Date = Date()) -> [String] {
+        MeFirstWords.lines(snapshot, prefix: "Serving: ", now: now)
     }
 
     /// Where your requests go when this Mac can't take them, and whether an account key is saved (never the key).
@@ -90,20 +69,5 @@ extension Status {
         }
         let pinned = route == .thisMac ? " ([local] route = \"this-mac\")" : ""
         return "Your requests: \(words)\(pinned) · account key saved"
-    }
-
-    /// "under a minute ago", "1 minute ago", "3 minutes ago".
-    static func ago(milliseconds: Int64) -> String {
-        let minutes = max(0, milliseconds) / 60_000
-        return minutes == 0 ? "under a minute ago" : minutes == 1 ? "1 minute ago" : "\(minutes) minutes ago"
-    }
-
-    /// A Unix-milliseconds time as the hour and minute on this Mac's clock.
-    static func clock(_ milliseconds: Int64, timeZone: TimeZone) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = timeZone
-        formatter.dateFormat = "HH:mm"
-        return formatter.string(from: Date(timeIntervalSince1970: Double(milliseconds) / 1_000))
     }
 }

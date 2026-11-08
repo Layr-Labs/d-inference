@@ -161,6 +161,27 @@ struct ReasoningEffortValuesTests {
         }
     }
 
+    /// Nemotron 3.5 Super reads both fields and refuses two that differ, even
+    /// two names at one depth, as such: not as an unknown name, which an
+    /// unknown `reasoning.effort` is first. The same effort in both, in any
+    /// spelling, renders.
+    @Test func nemotronSuperRefusesTwoDifferentEfforts() throws {
+        func controls(_ top: String, _ nested: String) throws -> NemotronSuperPromptContract.Controls {
+            try NemotronSuperPromptContract.controls(body: Data(
+                #"{"model":"m","messages":[],"reasoning_effort":"\#(top)","reasoning":{"effort":"\#(nested)"}}"#.utf8))
+        }
+        for (top, nested) in [("high", "max"), ("minimal", "medium"), ("turbo", "low")] {
+            #expect(throws: NemotronSuperPromptContract.Failure.conflictingReasoningEfforts, "\(top)/\(nested)") {
+                try controls(top, nested)
+            }
+        }
+        #expect(throws: NemotronSuperPromptContract.Failure.unknownReasoningEffort(.reasoningObject)) {
+            try controls("low", "turbo")
+        }
+        #expect(try controls("high", " HIGH ") == .init(enableThinking: true, mediumEffort: false))
+        #expect(try controls("Low", "low") == .init(enableThinking: true, mediumEffort: true))
+    }
+
     static let reasoningModels: [(String, String)] = [
         ("EigenLabs/Qwen3.8-27B-4bit-mtp", "qwen3_5"), (Qwen4SupportPolicy.ownedModelID, "qwen4_exp"),
         ("qwen3.5-35b-a3b", "qwen3_5_moe"), ("ternary-bonsai-2-27b", "prism_hadamard_qwen35"),

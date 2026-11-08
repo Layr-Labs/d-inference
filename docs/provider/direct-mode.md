@@ -27,17 +27,17 @@ See [inference and logprob admission](../architecture/inference.md).
 
 - Provider installed ([installation](./installation.md)); no account or
   `darkbloom login` is needed for **Only me**.
-- At least one model downloaded with an engine-v2 adapter (gpt-oss, gemma-4
-  families); `darkbloom models list`. **Only me** serves the models already
-  here; for **Both, me first**, `darkbloom start`'s model list also downloads.
+- A model with an engine-v2 adapter (gpt-oss, gemma-4 families);
+  `darkbloom models list`. For either choice, `darkbloom start`'s model list
+  also downloads the ones you pick; without a model it can serve, the start
+  ends with ``No model to serve yet. See them: `darkbloom models catalog`. Get
+  one: `darkbloom models download <id>`, then `darkbloom start`.``
 - A free port: this Mac's one local API port, `[local] port`. The first start
   that serves a local API, whichever way it starts, keeps the port this Mac's
   local API already uses (`8000` on a Mac updated from 0.10.10), or on a Mac
   with none chooses the first free port from 8001, and saves it; every later
   start uses it. `--port` picks another and
   saves it.
-
-<!-- pending LS-1: Only me also gets the model list with downloads. -->
 
 ## Steps
 
@@ -51,15 +51,27 @@ See [inference and logprob admission](../architecture/inference.md).
    | Only me | `darkbloom start --local` | not contacted | `StandaloneServer`'s own slot cache (`provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift`) | no |
    | Both, me first | `darkbloom start --me-first` (older flag: `--local-endpoint`) | connected as usual | the live `ProviderLoop` slots — weights load once and local + fleet requests share one continuous-batching engine and KV budget (`provider-swift/Sources/ProviderCore/ProviderLoop+LocalEndpoint.swift`) | yes, for fleet traffic while you are not using the Mac (step 3) |
 
-2. Start **Only me**. It runs in the current terminal (no LaunchAgent) and
-   installs no service; a background service that was running stops first
-   (`ServiceDrain.prepareForegroundReplacement`), so once this server ends,
-   nothing serves until the next `darkbloom start`:
+2. Start **Only me**. It asks for your models (the list downloads the ones you
+   pick) and the memory setting, as the other choices do, then serves in the
+   background: the provider LaunchAgent runs `darkbloom start --foreground
+   --local --port <n> --bind <address> --model <id>…` (`Start.launchOnlyMeService`,
+   `provider-swift/Sources/darkbloom/Start/StartCommand+OnlyMe.swift`), which
+   starts at login, has the crash-recovery watchdog, updates itself (a check 5
+   minutes after it starts, then every 30 minutes; `StandaloneServer+AutoUpdate`)
+   and unloads models idle past the memory setting
+   (`StandaloneServer+IdleUnload`). The provider that served before is drained
+   first; when it served Darkbloom, the start says
+   ``Darkbloom network serving stops: this Mac serves only you from now on
+   (`darkbloom start --me-first` serves Darkbloom and you).`` Without a
+   terminal nothing is asked: the models you last chose that are still on this
+   Mac, else every one it can serve. `--here` serves in the current terminal
+   instead (no LaunchAgent), until Ctrl-C:
 
    ```bash
-   darkbloom start --local                              # every downloaded model it can serve
+   darkbloom start --local                              # the model list, then the memory question
    darkbloom start --local --model <model-id>           # only this one (repeatable)
    darkbloom start --local --port 8080 --bind 0.0.0.0   # another port / every interface
+   darkbloom start --local --here                       # in this terminal, for this session
    ```
 
    The port is this Mac's one local API port (`LocalAPIPort`,
@@ -73,8 +85,8 @@ See [inference and logprob admission](../architecture/inference.md).
    `127.0.0.1`. Before serving,
    `Start.runLocalStandalone` (`provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift`)
    loads or creates the API token, filters the chosen models to those with an
-   engine-v2 adapter (exit 1 with `No engine-v2-capable models available to
-   serve.` if none remain), and preloads the selected models before listening
+   engine-v2 adapter (exit 1 with ``No model to serve yet. See them: `darkbloom
+   models catalog`. …`` if none remain), and preloads the selected models before listening
    when `[backend] startup_preload` is enabled (the default). When a load is
    short of headroom the server first releases retained paged KV segments and
    drops the MLX buffer cache once, then evicts the least recently used idle
@@ -100,13 +112,14 @@ See [inference and logprob admission](../architecture/inference.md).
    127.0.0.1:8001: another program may use port 8001. Free it, or run
    `darkbloom start --port 8002`.``, naming the next free port), writes the
    discovery file and holds a fan-control lease while running
-   ([fan control](./fan-control.md)). Ctrl-C stops it and removes the
-   discovery file, and so does `darkbloom stop`. Closing the terminal window
-   does the same ([stop signals](./cli-reference.md#graceful-stop-and-restart)),
+   ([fan control](./fan-control.md)). `darkbloom stop` stops it and removes
+   the discovery file. With `--here`, Ctrl-C does the same, and so does closing
+   the terminal window ([stop signals](./cli-reference.md#graceful-stop-and-restart)),
    unless the command was started with hangups ignored (for example under
-   `nohup`), in which case it keeps serving.
-
-   <!-- pending LS-1: Only me serves in the background, after the model list and the memory question; a here flag keeps this terminal server. -->
+   `nohup`), in which case it keeps serving. `--here` stops the background
+   service while it runs and says so (``Darkbloom network serving stops while
+   this runs; it starts again with `darkbloom start`.``); when it ends it says
+   that nothing serves now and how to serve again.
 
 3. Or start **Both, me first**. This goes through the normal LaunchAgent path,
    so the flags are recorded in the plist and survive reboots:
@@ -456,7 +469,9 @@ alike. Each family's levels are in
 [reasoning effort](../architecture/inference.md#reasoning-effort). A model
 that doesn't reason ignores the effort. `GET /v1/models` says which models
 reason: `"supported_features": ["reasoning"]` on exactly these, `[]` on the
-others ([the list](#when-this-mac-cant-take-a-request-the-local-router)).
+others ([the list](#when-this-mac-cant-take-a-request-the-local-router)). Send
+the effort in one field: `reasoning.effort` wins over `reasoning_effort`, and
+Nemotron 3.5 Super, which reads both, refuses two that differ.
 
 ```bash
 curl -s "$OPENAI_BASE_URL/chat/completions" \
@@ -474,7 +489,8 @@ envelope, the same on one Mac and on a [two-Mac cluster](./two-mac-cluster.md):
 | On one Mac, a prompt that fills the model's context window: the context it advertises (GLM-5.3-Flash and Nemotron Super: 262,144; MiMo V2.6, Qwen4, Flint, Bonsai 9B and Diffusion Gemma: their configs'), else its model's own (Gemma 4, Qwen 3.5, 3.6 and 3.8, GPT-OSS, Nemotron Lightning) | HTTP `400`, code `context_length_exceeded`, before the engine and before any SSE header: `The prompt fills this model's context window of <N> tokens, leaving no room for an answer. Shorten the prompt or start a new conversation.` A `max_tokens` beyond what a shorter prompt leaves is cut to it instead, on every model, and the answer ends with `finish_reason: length` if it gets there | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Translation.swift` (`outputTokens(requested:promptTokens:)`, `promptExceedsContextMessage`) |
 | On one Mac, a request its memory can't hold now: the shared KV reservation of a contiguous slot, the engine's own admission of a paged slot (the automatic backend; it refuses one that can never fit and queues the rest), or the whole Mac's request limit | HTTP `503` before any SSE header, streamed or not: `This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt (or send less media), or retry when this Mac's other requests finish.` The local router passes it on when a route dials out. A request a paged slot queued and then couldn't admit (the 120 s admission lease, or the pool full through its requeues) fails later: a streamed answer, whose head is already sent, ends with an error event, and a non-streamed one gets 503 (after the lease, with the older `Provider capacity is temporarily unavailable.`) | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
 | A content part whose `type` is none of `text`, `input_text`, `output_text`, `image_url`, `input_image`, `video_url`, `input_audio` (for example `input_file`, `input_video`, `refusal`) | HTTP `400` before model acquisition or SSE headers: `Content part type "<type>" is not supported. Send text, image_url, video_url or input_audio parts.` The type is shown with at most 64 of its letters, digits and `_.-:/`. Models without native audio still refuse `input_audio` | `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/OpenAIRequestValidation.swift` (`OpenAIRequestValidationError.unsupportedContentPart`) |
-| A reasoning effort that is none of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` (for example `turbo`), on a model that reasons | HTTP `400` before anything renders or is reserved, code `invalid_reasoning_effort`, `param` the field it came in (`reasoning_effort`, `reasoning.effort`, or GLM-5.3-Flash's `chat_template_kwargs.reasoning_effort`): `reasoning_effort must be one of: none, minimal, low, medium, high, xhigh, max.` Through the coordinator the same request gets HTTP `400` `invalid inference request` | `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningEffort.swift` (`ReasoningEffortPolicy.validate`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
+| A reasoning effort that is none of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` (for example `turbo`), on a model that reasons | HTTP `400` before the prompt renders or any KV is reserved, code `invalid_reasoning_effort`, `param` the field it came in (`reasoning_effort`, `reasoning.effort`, or GLM-5.3-Flash's `chat_template_kwargs.reasoning_effort`): `reasoning_effort must be one of: none, minimal, low, medium, high, xhigh, max.` The request may hold its model first: a cold model loads, and with Both, me first it counts as your use of the Mac. Through the coordinator the same request gets HTTP `400` `invalid inference request` | `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningEffort.swift` (`ReasoningEffortPolicy.validate`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
+| On Nemotron 3.5 Super, `reasoning_effort` and `reasoning.effort` that differ, even two names (`high` and `max`). The same effort in both, in any spelling, is served | HTTP `400` at the same point, code `invalid_reasoning_effort`, `param` `reasoning_effort, reasoning.effort`: `reasoning_effort and reasoning.effort must be the same when both are sent, one of: none, minimal, low, medium, high, xhigh, max.` Through the coordinator, HTTP `400` `invalid inference request` | `provider-swift/Sources/ProviderCore/Inference/Prompting/NemotronSuperPromptContract.swift` (`controls(body:)`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
 | `response_format` `json_object`/`json_schema` whose answer stopped at `max_tokens` before it was complete (a reasoning model can spend the whole budget thinking) | HTTP `422`: `The output was cut off by max_tokens before the structured (response_format) answer was complete. Raise max_tokens or lower the reasoning effort, and retry.` Invalid JSON at a natural stop keeps its `422` with the closed internal-failure message. GLM-5.3-Flash validates its withheld JSON answer itself (`GLM5NextResponseFormat`) and answers a truncated one with that closed `422` | `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXOpenAIService.swift` (`MLXOpenAIServiceError.responseFormatCutOffByMaxTokens`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`); `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`validatedContent`) |
 | GLM-5.3-Flash with images or video and `response_format` `json_object`/`json_schema` or a required or named `tool_choice` | HTTP `400` `Invalid inference request.` (failure code `invalid_request`) before any media decode: only the text path withholds and validates such an answer or call. Hidden reasoning (`reasoning.exclude: true`, `include_reasoning: false`, `thinking.display: "omitted"`) is served with media too, its reasoning withheld | `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` (`prepareCompletion`); `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextPromptPolicy.swift` (`withholdsOutput`, `withholdsReasoning`) |
 | An image or video the model's processor refuses: for Qwen 3.5 and 3.8 a side below `patch_size × merge_size` (32 pixels) or an aspect ratio above 200:1, which it does not upscale; a video without a decodable track; more images or videos than the processor takes | HTTP `400` `Invalid media input.` (failure code `invalid_media`), before the vision tower or any native reservation, never the retryable `503` | `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` (`clientFault(for:)`) |

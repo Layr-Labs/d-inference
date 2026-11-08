@@ -380,10 +380,27 @@ without a login is named before the Start step
 setup ends with the outcome block (`ClusterOnboardingConsole.result`,
 `ClusterOnboardingReady.outcome`). The other Mac's `darkbloom cluster` shows the
 same block from the status line (`ClusterOnboardingNotServing.statusLine`,
-`ClusterOnboardingDriver.showOutcome`). A member's missing App Attest names its
-local key-generation safeguard's end
+`ClusterOnboardingDriver.showOutcome`). A member without App Attest is what the
+pair waits for while its part is new: the coordinator's first trust status for
+a part carries none, and the authorization lands about a minute after the part
+registers. Until a Mac's part has run `ClusterOnboardingAppleCheck.slowSeconds`
+(2 minutes) without one, the status line's reason is the wait's own words,
+"checking both Macs with Apple" or the one Mac
+(`ClusterOnboardingAppleCheck.look`, `ClusterOnboardingPairWait.words`), which
+every reader takes as progress (`ClusterOnboardingPairWait.isProgress`): loading
+in `cluster status` on both Macs, and "Checking …" on the Mac that joined
+(`ClusterOnboardingDriver.offeredWaitingWords`). Only the leading Mac's look
+decides it. The warning `ClusterOnboardingNotServing.notVerified` names a Mac
+once that wait is over, at once when its local key-generation safeguard holds
+it back, with that safeguard's end
 (`ClusterServiceStatus.Child.appAttestRetryAt`, read from the daemon state's
-`AppAttestKeyState.generationBlockedUntil`).
+`AppAttestKeyState.generationBlockedUntil`), and for a part whose age isn't
+known (`ClusterOnboardingAppleCheck.Mac.warns`). While the pair serves Both, me
+first, the leading Mac's status adds the owner's pause under its serving line,
+read once per status from the state file of its part when that part runs rank 0
+(`OnboardingLive.pauseLines`, words from `MeFirstWords.pairLines`, said from now
+in that Mac's clock): the Mac that follows shows it from that status, with
+nothing more on the link or the heartbeat, and nothing per request.
 How the approval is fetched, matched,
 checked on each Mac and saved:
 [coordinator-paired member](../reference/configuration.md#coordinator-paired-member).
@@ -2956,12 +2973,13 @@ wrapping them as a retryable 503 construction refusal.
 Every model that reasons takes each effort a client names (`none`,
 `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) as `reasoning_effort` or
 `reasoning.effort`; Responses' `reasoning.effort` arrives as the latter, which
-wins over the top-level spelling. Its template receives one of the model's own
-levels: its own where the model has it, else the next one up (an effort
-between two levels rounds up, toward more reasoning), and the highest past
-them all. So `minimal` selects the lowest level and `max` the highest. `none`
-(also `off` or `0`) switches thinking off where the model can, and selects the
-lowest level where it can't. Spellings are trimmed and read in any case,
+wins over the top-level spelling (Nemotron 3.5 Super reads both, below). Its
+template receives one of the model's own levels: its own where the model has
+it, else the next one up (an effort between two levels rounds up, toward more
+reasoning), and the highest past them all. So `minimal` selects the lowest
+level and `max` the highest. `none` (also `off` or `0`) switches thinking off
+where the model can, and selects the lowest level where it can't. Spellings
+are trimmed and read in any case,
 except by GLM-5.3-Flash and Flint, which read the names exactly as written.
 Each family's table of the seven efforts is in one place,
 `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningEffort.swift`,
@@ -2980,19 +2998,38 @@ as it is, or passes the request's body on unchanged.
 | GPT-OSS | Harmony's `low`, `medium` and `high` | The effort as sent, except `high`, which renders `medium` | `GPTOSSHarmonyTemplateFix.effectiveReasoningEffort` |
 | Flint | none: Flint decides whether to reason | Every effort is taken, with no effect | `FlintRequestPolicy` |
 
-An effort that is none of the names is refused before anything renders or is
-reserved, on any model that reasons, with
-`MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(field)` (HTTP
-400): the local API answers `invalid_reasoning_effort` naming the field and
-the names ([direct mode](../provider/direct-mode.md#reasoning-effort)); the
-coordinator receives the closed `invalid_request` failure, which it shows as
-"invalid inference request". A model of no family above ignores any effort
+An effort that is none of the names is refused on any model that reasons,
+with `MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(field)`
+(HTTP 400), before the prompt renders or any KV is reserved. The engine
+checks the effort once the request holds its model
+(`MultiModelBatchSchedulerEngine.prepareCompletion`, after
+`acquireForCompletion`; Super's owner in `NemotronSuperRequestPlan`), so a
+cold model may load first, and on one Mac's unified endpoint the request
+counts as the owner's use for "me first". The refusal releases the model.
+MiMo's and Flint's efforts are checked before that when the model is
+resident, and through the coordinator MiMo's, Flint's and GLM-5.3-Flash's are
+refused before the request is accepted
+(`ProviderPromptContractPipeline.nativeControlsRefusal`). The local API
+answers `invalid_reasoning_effort` naming the field and the names ([direct
+mode](../provider/direct-mode.md#reasoning-effort)); the coordinator receives
+the closed `invalid_request` failure, which it shows as "invalid inference
+request". A model of no family above ignores any effort
 (`ReasoningEffortPolicy.validate`). The same table (`ReasoningEffortPolicy.reasons`)
 says which models the local `/v1/models` lists as reasoning
 (`"supported_features": ["reasoning"]`, `LocalModelFeatures` in
 `provider-swift/Sources/ProviderCore/Server/LocalModelFeatures.swift`), by the
 type a model registers or a pair installs, so the list and the API never
 disagree ([the list](../provider/direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
+
+Nemotron 3.5 Super reads both fields rather than letting `reasoning.effort`
+win, and refuses two that differ, even two names such as `high` and `max`,
+with `conflictingReasoningEfforts` (HTTP 400) at the same point
+(`NemotronSuperPromptContract.controls(body:)`). The local API answers it in
+the same shape: code `invalid_reasoning_effort`, `param` naming both fields
+(`"reasoning_effort, reasoning.effort"`), and a message naming both fields and
+the names, never the values sent. Through the coordinator it is the same
+closed `invalid_request`. The same effort in both fields, in any spelling, is
+served.
 
 Gemma 4 and GPT-OSS keep the prompts they rendered before: the coordinator's
 prompt sidecar plans those prompts for cache-aware routing, so changing one
@@ -3836,6 +3873,7 @@ evidence, not a change to the normal final-row contract or the near-tie rule
 | `promptExceedsContext` (400) | The prompt alone fills the slot's window (its advertised context, else its model's); a larger output is cut, never refused | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`) |
 | `advertisedContextExceeded` (400) | Candidate output reservation is negative or overflows; with the output cut to the window, nothing larger reaches it on one Mac | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`); `provider-swift/Sources/ProviderCore/ProviderLoop+ErrorMapping.swift` (`sanitizedInferenceFailure`) |
 | `unsupportedReasoningEffort` (400; on the local API `invalid_reasoning_effort`) | A model that reasons received an effort that is none of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` ([reasoning effort](#reasoning-effort)) | `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningEffort.swift` (`ReasoningEffortPolicy.validate`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
+| `conflictingReasoningEfforts` (400; on the local API `invalid_reasoning_effort`, `param` naming both fields) | Nemotron 3.5 Super received `reasoning_effort` and `reasoning.effort` that differ ([reasoning effort](#reasoning-effort)) | `provider-swift/Sources/ProviderCore/Inference/Prompting/NemotronSuperPromptContract.swift` (`controls(body:)`); `provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
 | Model dropped from advertised set | Unsupported `model_type` | `EngineV2SupportedModels.swift` |
 | Model advertised, capacity quotes rejected with reason `template` | Scan-time render check failed (`template_render_ok = false`) | `TemplateRenderCheck.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift` (`reject(.template)`) |
 | Image rejected | Over `MediaIngest` caps or over the N² tower budget | `MediaIngest.swift`, `VisionTowerBudget.swift` |

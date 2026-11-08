@@ -1,0 +1,38 @@
+name: CI (dev) hourly
+
+# Every hour, dispatches CI (dev) (.github/workflows/ci-dev.yml) on dev. A
+# dispatched run selects every component: every provider and cluster shard,
+# the focused and release build checks and the non-blocking GPU shards. When a
+# dispatched run is still queued or running, this hour dispatches nothing, so
+# the full runs never overlap. GitHub runs schedules only from the default
+# branch (master); on dev this file is a copy that does nothing.
+on:
+  schedule:
+    - cron: '7 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  dispatch:
+    name: Dispatch the full dev run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Dispatch CI (dev) on dev unless a dispatched run is unfinished
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          unfinished=$(gh api "repos/$REPOSITORY/actions/workflows/ci-dev.yml/runs?event=workflow_dispatch&branch=dev&per_page=20" \
+            --jq '[.workflow_runs[] | select(.status != "completed") | .html_url] | join(" ")')
+          if [ -n "$unfinished" ]; then
+            echo "::notice title=Hourly full run skipped::A dispatched CI (dev) run is unfinished: $unfinished"
+            exit 0
+          fi
+          gh workflow run ci-dev.yml --repo "$REPOSITORY" --ref dev
+          echo "Dispatched CI (dev) on dev."

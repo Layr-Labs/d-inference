@@ -1260,10 +1260,25 @@ weights. The downloader identifies itself as `darkbloom-prompt-fixtures/1` to
 the CDN and retains same-origin HTTPS, byte-budget and integrity checks.
 It retries only a cut or failed transfer (a TLS, socket or connection error, a
 timeout, a body that ends before its declared size, or HTTP 5xx), at most 3
-attempts per artifact with 1 s and 3 s backoff inside the 120 s deadline. A
-full-size body with the wrong SHA-256, an oversize body, a Content-Length
-mismatch, a cross-origin response, another non-200 status or the deadline fails
-at once. `scripts/prepare-mimo-prompt-fixtures.py` and
+attempts per artifact with 1 s and 3 s backoff inside the contract's deadline.
+The deadline is 120 s plus the time the contract's missing bytes take at
+128 KiB/s, at most 900 s: 256 s for the 17 MB Nemotron contract and 376 s for a
+32 MB Gemma 4 contract. A full-size body with the wrong SHA-256, an oversize
+body, a Content-Length mismatch, a cross-origin response, another non-200
+status or the deadline fails at once.
+
+With `PROMPT_PARITY_DOWNLOAD_CACHE` set (CI sets it for both parity scripts),
+`--download-cache` names a directory with one file per pinned SHA-256
+(`scripts/verified_download_cache.py`). An artifact is copied from it only if
+the entry is a regular file with the pinned size and digest; a missing, linked,
+special, short, long or changed entry, or one that cannot be read, is
+downloaded, and the verified download replaces it. A failure to store an entry
+is printed and ignored. The cache's bytes do not count toward the deadline, and
+the Gemma 4 and Qwen contracts that share a `tokenizer.json` download it once.
+For each contract the script prints how many artifacts came from the cache, how
+many it downloaded, their bytes and the seconds it took.
+
+`scripts/prepare-mimo-prompt-fixtures.py` and
 `scripts/prepare-mimo-image-http-fixtures.py` apply the same retry rule to each
 metadata file, with these differences. The MiMo prompt script refuses a
 redirect to plain HTTP but follows a redirect to a different HTTPS host: Hugging
@@ -1302,7 +1317,11 @@ Qwen 3.8 Flash-Next's `high`, `max`, `minimal` and ` low ` render a level and
 against the rounding rule and sends every effort to every family through the
 production prompt pipeline, and
 `ReasoningEffortLocalAPITests` sends them to one Mac's local API and a pair
-leader's over the `ClusterAPIParityTests` harness.
+leader's over the `ClusterAPIParityTests` harness. It also renders Nemotron 3.5
+Super's refusal of two efforts that differ through `SuperHTTPErrors` and
+`CORSResponder`; `NemotronSuperLocalHTTPTests`' live text route sends it, and
+an unknown `reasoning.effort`, through the real application (it needs Metal,
+so it runs in CI).
 
 darkbloom-platform keeps byte-identical copies of the provider's
 `paged_footprint_wire.json` and `process_memory_wire.json` for its own

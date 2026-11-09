@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { ArrowUpRight } from 'lucide-react';
 import type { Operation, Route } from '../../../shared/contracts';
 import type { SandboxStatus } from '../../../shared/sandbox';
@@ -6,6 +6,7 @@ import type { BackendState } from '../../useBackend';
 import { api } from '../../useBackend';
 import { supports } from '../../capabilities';
 import { Button, Header } from '../../components/UI';
+import { useDismissedOperation } from '../../components/operations/useOperationDismissal';
 import { useResource } from '../../data/useResource';
 import { WaitlistCard } from '../waitlists/WaitlistCard';
 import { NotInstalled } from './NotInstalled';
@@ -50,7 +51,8 @@ function SandboxPage({ backend }: { backend: BackendState }) {
   const state = backend.state!;
   const sandbox = useResource<SandboxStatus>('sandbox', { refreshKey: state.resource_revision });
   useRereadAfterActions(state.operations, sandbox.refresh);
-  const { dismissed, dismiss } = useDismissedSetup();
+  // An ended setup stays on the page until it is dismissed, also across launches.
+  const { dismissed, dismiss } = useDismissedOperation('darkbloom.sandbox.dismissed-setup');
   const setup = latestSetup(state.operations);
   const status = sandbox.data;
   const installed = isInstalled(status);
@@ -145,26 +147,4 @@ function justSetUp(operations: Operation[]) {
     latest.state === 'succeeded' &&
     Date.now() / 1000 - (latest.finished_at ?? 0) < 30
   );
-}
-
-const dismissedKey = 'darkbloom.sandbox.dismissed-setup';
-
-// An ended setup stays on the page until it is dismissed, also across launches.
-function useDismissedSetup() {
-  const [dismissed, setDismissed] = useState(() => {
-    try {
-      return localStorage.getItem(dismissedKey) ?? '';
-    } catch {
-      return '';
-    }
-  });
-  const dismiss = useCallback((id: string) => {
-    try {
-      localStorage.setItem(dismissedKey, id);
-    } catch {
-      // This window still remembers it when storage is unavailable.
-    }
-    setDismissed(id);
-  }, []);
-  return { dismissed, dismiss };
 }

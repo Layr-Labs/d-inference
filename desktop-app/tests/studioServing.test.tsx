@@ -114,6 +114,11 @@ it('marks nothing saved before the first choice and preselects Both, me first', 
   render(<Studio backend={backend} />);
   expect(screen.getByRole('radio', { name: 'Both, me first' })).toBeChecked();
   expect(screen.queryByText('Saved')).not.toBeInTheDocument();
+  expect(
+    screen.getByText(
+      'No choice is saved yet. Applying restarts serving with GPT-OSS 20B and Gemma 4 26B.',
+    ),
+  ).toBeVisible();
   expect(apply()).toBeEnabled();
   fireEvent.click(apply());
   expect(backend.act).toHaveBeenCalledWith({

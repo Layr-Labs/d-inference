@@ -100,6 +100,7 @@ export function ServingChoice({
               <Play size={14} /> Apply
             </Button>
             <small>
+              {saved ? '' : 'No choice is saved yet. '}
               {changed && models.length
                 ? `Applying ${verb} serving with ${names(models.map((id) => modelName(state.models, id)))}.`
                 : `Applying ${verb} serving.`}

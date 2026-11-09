@@ -39,15 +39,22 @@ export function SetupProgress({
   const outcome = setupOutcome(operation);
   const approval = pendingApproval(operation);
   const lines = outputLines(operation);
+  const current = steps.find((step) => step.state === 'active');
+  // After Cancel the runtime says so until the CLI has stopped its installer.
+  const cancelling = running && !operation.cancellable && /^Cancelling/.test(operation.message);
   return (
     <section
       className={styles.setup}
       aria-label="Darkbloom Sandbox setup"
-      aria-busy={running}
       data-state={operation.state}
     >
       <header className={styles.setupHead}>
         <h2>{running ? 'Setting up Darkbloom Sandbox' : outcome?.title}</h2>
+        {cancelling && (
+          <span className={styles.cancelling}>
+            <LoaderCircle className="spin" size={13} aria-hidden /> Cancelling…
+          </span>
+        )}
         {running && operation.cancellable && (
           <Button
             variant="quiet"
@@ -68,6 +75,10 @@ export function SetupProgress({
         )}
       </header>
       {!running && outcome?.detail && <p className={styles.outcome}>{outcome.detail}</p>}
+      {/* The stage and the approval are announced as they change, not each percent. */}
+      <p className={styles.srOnly} aria-live="polite">
+        {approval ? 'Approve this Mac in your browser.' : current?.title.replace(/ \d+%$/, '')}
+      </p>
       {(steps.length > 0 || approval || (running && progress.waitlisted)) && (
         <div className={styles.setupBody}>
           {steps.length > 0 && <Steps steps={steps} />}
@@ -82,7 +93,9 @@ export function SetupProgress({
       {lines.length > 0 && (
         <details className={styles.output}>
           <summary>Details</summary>
-          <pre tabIndex={0}>{lines.join('\n')}</pre>
+          <pre tabIndex={0} aria-label="Setup output">
+            {lines.join('\n')}
+          </pre>
         </details>
       )}
     </section>

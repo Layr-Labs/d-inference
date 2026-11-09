@@ -295,6 +295,9 @@ describe('a setup in progress', () => {
       state: running({ stage: 'downloading_images', progress: 0.5 }),
     });
     expect(screen.getByText('Downloading images 50%')).toBeVisible();
+    // The stage is announced once, not each percent.
+    const announced = document.querySelector('p[aria-live="polite"]');
+    expect(announced).toHaveTextContent(/^Downloading images$/);
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(backend.act).toHaveBeenCalledWith({ action: 'cancel', operation: 'setup-1' });
     cleanup();
@@ -302,6 +305,13 @@ describe('a setup in progress', () => {
       state: running({ stage: 'installing' }, { cancellable: false }),
     });
     expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
+    expect(screen.queryByText('Cancelling…')).toBeNull();
+    cleanup();
+    // The runtime takes Cancel away and says so until the installer has stopped.
+    show(statuses.notInstalled, {
+      state: running({ stage: 'installing' }, { cancellable: false, message: 'Cancelling…' }),
+    });
+    expect(screen.getByText('Cancelling…')).toBeVisible();
   });
 
   it('keeps the installed add-on’s status under a slot change', async () => {

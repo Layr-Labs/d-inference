@@ -345,6 +345,15 @@
   font-weight: 500;
 }
 
+.cancelling {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted);
+}
+
 .outcome {
   margin-top: 6px;
   font-size: 12px;

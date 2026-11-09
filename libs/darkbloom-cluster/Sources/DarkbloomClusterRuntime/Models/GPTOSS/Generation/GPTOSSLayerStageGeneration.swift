@@ -18,7 +18,7 @@ import MLX
 /// retires. Do not time a recording run as serving.
 func runGPTOSSLayerStageGenerationRequest(loaded: LoadedGPTOSSLayerStage, plan: GPTOSSLayerStagePlan,
     agreement: QwenLayerStageGenerationAgreement, collective: Collective,
-    recording: GPTOSSGenerationRecording? = nil,
+    recording: GPTOSSGenerationRecording? = nil, abort: QwenStageAbort? = nil,
     onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
 ) throws -> (result: QwenLayerStageGenerationResult, evidence: QwenGenerationDiagnosticEvidence?) {
     defer { recording?.discard() }
@@ -33,7 +33,7 @@ func runGPTOSSLayerStageGenerationRequest(loaded: LoadedGPTOSSLayerStage, plan: 
                 scope: .request(.requestAgreement, requestID: agreement.request.requestID,
                     agreementFingerprint: agreement.fingerprint, "generation-readiness"), check: checked)
             let control = QwenLayerStageGenerationControl(agreement: agreement)
-            let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective)
+            let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective, abort: abort)
             var session: GPTOSSLayerStageSession?
             var producer: GPTOSSGenerationLookaheadProducer?
             do {
@@ -47,6 +47,13 @@ func runGPTOSSLayerStageGenerationRequest(loaded: LoadedGPTOSSLayerStage, plan: 
                 while control.phase == .frame {
                     try autoreleasepool {
                         try checked()
+                        if collective.rank == 0 {
+                            // Rank 0 owes the next frame's boundary: a stop goes
+                            // there before its forward runs (D6).
+                            let next = try agreement.request.frame(sequence: control.completedFrames)
+                            try transport.stopIfLatched(owing: agreement.compactDecode && next.phase == .decode
+                                ? .compactBoundary : .boundaryHeader, check: checked)
+                        }
                         let expected = try control.beginFrame()
                         if agreement.compactDecode, expected.frame.phase == .decode {
                             guard producer == nil || producer!.isComplete else {
@@ -148,7 +155,23 @@ func runGPTOSSLayerStageGenerationRequest(loaded: LoadedGPTOSSLayerStage, plan: 
                 do { try nativeError.check() } catch { primary = error }
                 producer?.cancel()
                 recording?.discard()
-                control.cancel(); transport.retire()
+                control.cancel()
+                if let stopped = primary as? QwenStageAborted {
+                    // D6: both ranks stopped at the same message, so no record
+                    // is owed or in flight. Free this request's state, then
+                    // confirm both retirements; nothing of it is stored.
+                    do {
+                        try session?.cancel()
+                        Stream.gpu.synchronize(); Memory.clearCache()
+                        try nativeError.check()
+                        try transport.exchangeAbortRetirement(stopped, check: checked)
+                    } catch {
+                        transport.retire()
+                        throw ProbeError("Generation stop (\(stopped)) could not retire both ranks (\(error))")
+                    }
+                    throw stopped
+                }
+                transport.retire()
                 do { try session?.cancel() }
                 catch { throw ProbeError("Generation failed (\(primary)); local retirement also failed (\(error))") }
                 throw primary

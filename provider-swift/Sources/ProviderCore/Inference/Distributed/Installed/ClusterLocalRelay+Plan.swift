@@ -55,8 +55,16 @@ extension ClusterLocalRelay {
         status.sessionLeader && status.localAPI == true && status.pairAPIPort == nil && status.session?.ready == true
     }
 
-    /// Rank 0's status says the pair's API there is down for now. Red stub: today a relay stops then.
-    public static func rankZeroAPIDown(in status: ClusterServiceStatus) -> Bool { false }
+    /// Rank 0's status says the pair's API there is down for now: that Mac's saved setup serves and runs rank 0, but no
+    /// pair API listens there on every address (its part starts again after a stop, a restart or an update, or hasn't
+    /// bound yet), and it neither serves alone (its solo server) nor answers on its own Mac only
+    /// (`rankZeroAnswersOnItsMacOnly`). This Mac's relay then keeps its port and its last target
+    /// (`ClusterService.recordRankZeroAsk`): each request gets the 503 for an API that doesn't listen, never a port that
+    /// refuses connections, and once that API listens again (on that Mac's own port, as before) requests pass at once.
+    public static func rankZeroAPIDown(in status: ClusterServiceStatus) -> Bool {
+        status.serving && status.sessionLeader && rankZeroPort(in: status) == nil && status.child.solo != true
+            && !rankZeroAnswersOnItsMacOnly(in: status)
+    }
 
     /// Where the pair's API listens on every address of the Mac whose part runs rank 0, for the other Macs' relays
     /// (`ClusterServiceStatus.pairAPIPort`): the port of the discovery record (`record`) that this Mac's running part

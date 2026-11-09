@@ -78,8 +78,9 @@ struct Local: AsyncParsableCommand {
             print("  API key:  \(info.apiKey)")
         }
         print("  pid:      \(info.pid)")
-        // This record is this Mac's relay, which answers 503 while the pair's other Mac can't be reached.
-        if pair.relaying?.port == info.port, let down = pair.memberAPIDown { print("Local API: " + down) }
+        // This record is this Mac's relay, which answers 503 while the pair's other Mac can't be reached, or while the
+        // pair's API there doesn't listen.
+        if pair.relaying?.port == info.port, let down = pair.memberAPIDown ?? pair.memberAPIRestarting { print("Local API: " + down) }
         if let state = DaemonStateFile.read(), state.pid == info.pid {
             let route = (try? savedLocalSettings(configPath: nil))?.route
             for line in Self.servingLines(info: info, state: state, route: route,

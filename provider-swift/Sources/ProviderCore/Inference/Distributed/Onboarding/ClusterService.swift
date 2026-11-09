@@ -689,7 +689,8 @@ public final class ClusterService: @unchecked Sendable {
     /// address whichever Mac the plan made rank 0. Tools here use this Mac's own key, which the relay passes on as the
     /// pair's (`ClusterLocalRelay.Keys`). This Mac's port is read only when a relay starts: a port another program holds
     /// is said once and tried again every `relayRetrySeconds`. Stopped whenever this Mac's part is not running or is rank
-    /// 0, before rank 0 here takes the port.
+    /// 0, before rank 0 here takes the port; kept on its last target while rank 0's API is down for now
+    /// (`ClusterLocalRelay.rankZeroAPIDown`), so this Mac's port answers 503s meanwhile.
     private func relayTick(say: @escaping @Sendable (String) -> Void) {
         let leadership = (try? store.readRecord())?.leadership
         let saved = context.savedConfiguration().configuration
@@ -849,7 +850,8 @@ public final class ClusterService: @unchecked Sendable {
     /// What an ask of rank 0's Mac found (`askRankZeroPort`): its status, or nil when the ask failed (no answer within
     /// 5 s, behind another command on that Mac or a lost discovery, or this Mac's exchange lock busy). A failed ask backs
     /// the asks off, to 120 s, and is counted (`relayState.askFailures`, which `relayAway` reads); an answer gives rank
-    /// 0's port and resets both.
+    /// 0's port and resets both. While that answer says rank 0's API is down for now, the port the relay has is kept
+    /// (`ClusterLocalRelay.rankZeroAPIDown`, published as `relayState.rankZeroAPIDown`).
     func recordRankZeroAsk(_ status: ClusterServiceStatus?) {
         lock.withLock {
             guard let status else {
@@ -857,7 +859,9 @@ public final class ClusterService: @unchecked Sendable {
                 relayState.askFailures += 1
                 return
             }
-            relayTargetPort = ClusterLocalRelay.rankZeroPort(in: status)
+            let down = ClusterLocalRelay.rankZeroAPIDown(in: status)
+            relayTargetPort = ClusterLocalRelay.rankZeroPort(in: status) ?? (down ? relayTargetPort : nil)
+            relayState.rankZeroAPIDown = down && relayTargetPort != nil
             relayState.waitsForOffer = ClusterLocalRelay.rankZeroAnswersOnItsMacOnly(in: status)
             relayAskInterval = 10
             relayState.askFailures = 0

@@ -143,8 +143,9 @@ extension ClusterLocalRelay {
 
     /// Who sent the request whose head is `lines` (its request line first), as the local API's key check reads it
     /// (`LocalAuthPolicy.authorize`): `Authorization` is `Bearer` with this Mac's own key or the pair's, each compared in
-    /// constant time; else a CORS preflight or a liveness check, which the API takes without a key; else neither, as is
-    /// a head the relay couldn't read. A relay without keys knows no caller's.
+    /// constant time; else `Bearer` with another key in the local key format, which this Mac can't judge; else a CORS
+    /// preflight or a liveness check, which the API takes without a key; else neither, as is a head the relay couldn't
+    /// read. A relay without keys knows no caller's.
     static func caller(of lines: [ArraySlice<UInt8>], keys: Keys?) -> Caller {
         guard let keys else { return .open }
         let authorization = lines.dropFirst().lazy.compactMap { line -> ArraySlice<UInt8>? in
@@ -157,6 +158,9 @@ extension ClusterLocalRelay {
             let own = constantTimeEquals(authorization, Array("Bearer \(keys.own)".utf8)) && !keys.own.isEmpty
             let pair = constantTimeEquals(authorization, Array("Bearer \(keys.pair)".utf8)) && !keys.pair.isEmpty
             if own || pair { return .keyed }
+            let bearer = Array("Bearer ".utf8)
+            if authorization.starts(with: bearer),
+               LocalEndpoint.isToken(String(decoding: authorization.dropFirst(bearer.count), as: UTF8.self)) { return .otherKey }
         }
         guard let requestLine = lines.first, let method = method(of: requestLine) else { return .unknown }
         if method == "OPTIONS" { return .open }

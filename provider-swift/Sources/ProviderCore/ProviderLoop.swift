@@ -797,8 +797,11 @@ public actor ProviderLoop {
     /// here because the session control holds its serving host weakly.
     internal var clusterPairFollower: DistributedMemberLinkFollower?
     /// The pair slot whose admission opened, once its warmup canary passed:
-    /// the leader's local requests wait for it (`ProviderLoop+ClusterPairLocal`).
-    internal var clusterPairAdmissionOpenSlotID: UUID?
+    /// the leader's local requests wait for it (`ProviderLoop+ClusterPairLocal`),
+    /// and its API's gate opens and closes with it (`LocalPairGateResponder`).
+    internal var clusterPairAdmissionOpenSlotID: UUID? {
+        didSet { if isClusterMember { localResponseTracker.setPairServes(clusterPairAdmissionOpenSlotID != nil) } }
+    }
     /// The leader's local requests on its pair's lanes: waiting, or holding one.
     internal var clusterPairLocalLanes = ClusterPairLocalLanes(limits: .fromEnvironment())
 

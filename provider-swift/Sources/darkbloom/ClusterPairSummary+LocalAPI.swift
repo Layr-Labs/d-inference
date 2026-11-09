@@ -33,7 +33,7 @@ extension ClusterPairSummary {
     /// build is older, or its answer didn't come) leaves it to the Mac whose part runs rank 0, from its own part; the
     /// other Mac says where to look.
     func localAPILines(now: Date = Date()) -> [String] {
-        guard let localAPI else { return memberAPIDown.map { ["Local API: " + $0] } ?? [] }
+        guard let localAPI else { return (memberAPIDown ?? memberAPIRestarting).map { ["Local API: " + $0] } ?? [] }
         guard started, paired, !pairingUnreadable else { return [] }
         let statusSaysPause = lines.contains { $0.hasPrefix(MeFirstWords.pairPrefix) }
         guard localAPI.runsRankZero else {
@@ -43,7 +43,9 @@ extension ClusterPairSummary {
                         "Members: this Mac is part of the pair; it runs no local API"]
             }
             let passes = "Members: \(otherMac) runs the pair's API; this Mac passes your requests to it, and Darkbloom pauses for them too"
-            if let down = memberAPIDown { return ["Local API: " + down, "Members: \(otherMac) runs the pair's API; this Mac is part of the pair"] }
+            if let down = memberAPIDown ?? memberAPIRestarting {
+                return ["Local API: " + down, "Members: \(otherMac) runs the pair's API; this Mac is part of the pair"]
+            }
             guard let relaying else { return ["Local API: " + relayStartingWords, passes] }
             return [Self.addressLine(relaying), passes]
         }
@@ -84,8 +86,17 @@ extension ClusterPairSummary {
         return nil
     }
 
-    /// This Mac's relay runs while the pair's API on rank 0's Mac doesn't listen for now. Red stub: says nothing.
-    var memberAPIRestarting: String? { nil }
+    /// This Mac's relay runs while the pair's API on rank 0's Mac doesn't listen for now (its part starts again after a
+    /// stop, a restart or an update; `ClusterServiceStatus.relayRankZeroAPIDown`): it answers each request a 503 until
+    /// that API listens, in these words, after "Local API: ", as `status`, `darkbloom local` and `doctor` say it. Unlike
+    /// `memberAPIDown`, it ends by itself, so the app's Start and `start --opencode` still take the address as this
+    /// Mac's. Nil otherwise, and while `memberAPIDown` says why.
+    var memberAPIRestarting: String? {
+        guard relayRankZeroAPIDown, memberAPIDown == nil, let relaying, localAPI.map({ !$0.runsRankZero }) ?? localOnly,
+              answersOnEveryMac, started, paired, !pairingUnreadable else { return nil }
+        return "http://127.0.0.1:\(relaying.port)/v1 on this Mac answers 503 for now. "
+            + ClusterLocalRelay.Refusals.pair(otherMac: otherMacName, cli: Self.cli).notAnswering
+    }
 
     /// This Mac relays the pair's API on every address, and its port for it isn't up yet, with nothing against it
     /// (`memberAPIDown`): in `status`'s words, after "Local API: ". Nil otherwise. With Only me, whose `localAPI` (Both's)

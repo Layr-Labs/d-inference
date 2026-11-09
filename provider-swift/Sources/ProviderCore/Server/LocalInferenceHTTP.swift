@@ -46,16 +46,17 @@ public struct LocalInferenceHTTPConfig: Sendable {
 
 /// The concrete responder stack the local endpoint always uses:
 /// disconnect ownership → auth → the local router (this Mac first, then the
-/// route's upstream hops; a pass-through without a router) → CORS →
+/// route's upstream hops; a pass-through without a router) → a pair's gate
+/// (`LocalPairGateResponder`; a pass-through on every other API) → CORS →
 /// MTP-augmented /metrics → chat-upload interception (32 MiB body ceiling for
 /// the media-bearing chat routes, see `LocalChatUploadResponder`) → upstream
 /// MLXLMServer router.
 public typealias LocalInferenceApplication =
     Application<
         LocalDisconnectResponder<LocalRequestOriginResponder<LocalAuthResponder<LocalRouterResponder<
-            CORSResponder<
+            LocalPairGateResponder<CORSResponder<
                 LocalMetricsResponder<
-                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>>>>
+                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>>>>>
 
 /// Builds the local OpenAI-compatible Hummingbird application from a model
 /// registry expressed as three closures. Shared by `StandaloneServer` and the
@@ -217,7 +218,10 @@ func makeLocalInferenceApplication(
             return limits
         })
     }
-    let routedResponder = LocalRouterResponder(inner: corsResponder, router: localRouter)
+    // A pair's API refuses at once while its pair takes no requests: behind the key check, and inside the router, which
+    // passes the 503 on as any other of this Mac's.
+    let routedResponder = LocalRouterResponder(inner: LocalPairGateResponder(inner: corsResponder, tracker: responseTracker),
+                                               router: localRouter)
     // Auth rejects unauthenticated requests before body/model handling. The
     // outer disconnect layer only binds lifetime; it does not inspect content.
     let authedResponder = LocalAuthResponder(inner: routedResponder, token: config.authToken, pairToken: config.pairToken)
@@ -226,7 +230,8 @@ func makeLocalInferenceApplication(
         responder: LocalDisconnectResponder(
             inner: LocalRequestOriginResponder(inner: authedResponder),
             responseTracker: responseTracker,
-            observeConnection: distributedResponses != nil),
+            observeConnection: distributedResponses != nil,
+            refusal: config.pairToken.map { ClusterPairAPIRefusal.admissionRefusal(token: config.authToken, pairToken: $0) }),
         configuration: .init(
             address: .hostname(config.host, port: Int(config.port)),
             serverName: "darkbloom-provider"

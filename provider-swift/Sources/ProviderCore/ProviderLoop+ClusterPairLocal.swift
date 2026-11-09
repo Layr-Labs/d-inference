@@ -9,6 +9,10 @@ import Foundation
 // - Only the member that hosts the slot runs a local API, and only with a key
 //   (`admitsClusterPairLocalAPI`). Every other member refuses one before
 //   `run()` binds anything.
+// - While the pair takes no requests (no slot published yet, its warmup
+//   canary, retiring), its API refuses a request at its gate, at once, with
+//   the pair's typed 503 (`LocalPairGateResponder`), whatever the loop is
+//   doing; a stop or an update drain refuses waiting and new ones the same way.
 // - A local request that finds every lane busy waits in arrival order,
 //   bounded as `cluster local`'s queue is (`DistributedRequestQueue`): 429 when
 //   the queue is full, 503 past its ceiling. Nobody overtakes a waiter.
@@ -150,20 +154,22 @@ extension ProviderLoop {
         noteLocalUse(use == .began ? .start : .end)
     }
 
-    /// The pair's refusal while it does not serve (forming, re-forming,
-    /// retired): 503, as `cluster local` answers, so a client retries later
-    /// or goes elsewhere.
+    /// The pair's refusal while it does not serve (forming, stopping,
+    /// re-forming, retired): 503, as `cluster local` answers, so a client
+    /// retries later or goes elsewhere. Its API answers it typed
+    /// (`ClusterPairAPIRefusal`).
     static var clusterPairNotServing: MultiModelBatchSchedulerEngineError {
         .requestRejected(DistributedRequestQueue.unavailableMessage)
     }
 
     /// A local request on the leader: 404 for a model this member does not
-    /// serve, the drain's refusal as on a single Mac, 503 while the pair does
-    /// not serve, otherwise one of the pair's lanes (`takeClusterPairLane`).
-    /// The owner's use begins once the request is past those refusals.
+    /// serve, 503 while the pair does not serve or stops (a drain), a single
+    /// Mac's other refusals, otherwise one of the pair's lanes
+    /// (`takeClusterPairLane`). The owner's use begins once the request is past
+    /// those refusals.
     func acquireClusterPairForLocal(_ modelID: String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel {
         guard advertisedModels[modelID] != nil else { throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelID) }
-        try throwIfRefusingNewLocalWork(modelId: modelID)
+        try throwIfClusterPairRefusesLocalWork(modelID)
         guard let handle = clusterPairSlot, handle.modelID == modelID, clusterPairSlotServes(modelID) else {
             throw Self.clusterPairNotServing
         }
@@ -196,10 +202,17 @@ extension ProviderLoop {
         while true {
             try Task.checkCancellation()
             guard clusterPairSlotStillServes(handle) else { throw Self.clusterPairNotServing }
-            try throwIfRefusingNewLocalWork(modelId: handle.modelID)
+            try throwIfClusterPairRefusesLocalWork(handle.modelID)
             if let acquired = try await grantClusterPairLaneIfFree(handle, ticket: ticket) { return acquired }
             try await parkClusterPairWaiter(ticket)
         }
+    }
+
+    /// A stop or an update drain is the pair stopping: its own refusal
+    /// (`clusterPairNotServing`), then a single Mac's other refusals.
+    private func throwIfClusterPairRefusesLocalWork(_ modelID: String) throws {
+        guard !isDraining, !isShuttingDown else { throw Self.clusterPairNotServing }
+        try throwIfRefusingNewLocalWork(modelId: modelID)
     }
 
     /// Parks a waiter until it is woken (it then checks again) or refused (its
@@ -230,7 +243,7 @@ extension ProviderLoop {
         guard engine.activeRequests + engine.waitingRequests < handle.lanes,
               clusterPairLocalLanes.isNext(ticket), clusterPairLaneFreeHere(handle),
               let slot = modelSlots[handle.modelID] else { return nil }
-        try throwIfRefusingNewLocalWork(modelId: handle.modelID)
+        try throwIfClusterPairRefusesLocalWork(handle.modelID)
         let grant = clusterPairLocalLanes.grant(on: handle.id)
         localReservations.reserve(handle.modelID)
         modelSlots[handle.modelID]?.lastInferenceAt = .now

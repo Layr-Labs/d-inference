@@ -396,9 +396,10 @@ struct ClusterPairLocalTests {
         await next.releaseToken.fire()
     }
 
-    /// Nothing slips in during the warmup canary: a local request made while
-    /// it runs waits until admission opens, and a pair that retires during
-    /// the canary refuses it with 503. Two lanes: the canary holds one and
+    /// Nothing slips in during the warmup canary: the API's gate refuses a
+    /// request made while it runs (`LocalPairGateResponder`), and one that
+    /// reaches the lanes anyway waits until admission opens; a pair that
+    /// retires during the canary refuses it with 503. Two lanes: the canary holds one and
     /// leaves the other free, so only the admission gate keeps the request out
     /// (with one lane, the engine's own count would keep it out anyway).
     @Test func aLocalRequestDuringTheWarmupCanaryWaitsForAdmission() async throws {

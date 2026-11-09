@@ -28,7 +28,8 @@ public enum LocalEndpoint {
         return BuildEnvironment.current.installDirectory()
     }
 
-    static func tokenPath() -> URL { directory().appendingPathComponent("local_token") }
+    /// This Mac's own key file: every local API it serves alone takes its key, and tools set up for it read it.
+    public static func tokenPath() -> URL { directory().appendingPathComponent("local_token") }
     static func infoPath() -> URL { directory().appendingPathComponent("local.json") }
 
     // MARK: - Token

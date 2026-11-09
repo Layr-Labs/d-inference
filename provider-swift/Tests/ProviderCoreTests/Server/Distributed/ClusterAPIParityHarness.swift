@@ -308,8 +308,10 @@ struct ParitySoloServer {
     let task: Task<Void, Never>
     let port: UInt16
 
-    static func start(family: ParityFamily, directory: URL, script: ParityScript) async throws -> Self {
-        let tokenizer = family.tokenizer
+    /// `tokenizer`: the family's own when nil.
+    static func start(family: ParityFamily, directory: URL, script: ParityScript,
+                      tokenizer: (any MLXLMCommon.Tokenizer)? = nil) async throws -> Self {
+        let tokenizer = tokenizer ?? family.tokenizer
         // `ProviderModelContainer.tokenizerHandle`: the Gemma contract check.
         let handle = TokenizerHandle(tokenizer, toolConstraintContractVerified:
             Gemma4ToolConstraintContract.isVerified(modelType: family.modelType, modelDirectory: directory))
@@ -364,9 +366,11 @@ struct ParityClusterServer {
     let host: DistributedLocalServer
     let port: UInt16
 
-    static func start(family: ParityFamily, directory: URL, supportsLogprobs: Bool = true) async throws -> Self {
+    /// `tokenizer`: the family's own when nil.
+    static func start(family: ParityFamily, directory: URL, supportsLogprobs: Bool = true,
+                      tokenizer: (any MLXLMCommon.Tokenizer)? = nil) async throws -> Self {
         let session = try ParityClusterSession(family: family, directory: directory, supportsLogprobs: supportsLogprobs)
-        let tokenizer = family.tokenizer
+        let tokenizer = tokenizer ?? family.tokenizer
         // As `StartCommand+Distributed`: the plan's first-token budget is bound.
         let host = DistributedLocalServer(session: session,
             config: .init(host: "127.0.0.1", port: 0, authToken: parityToken),

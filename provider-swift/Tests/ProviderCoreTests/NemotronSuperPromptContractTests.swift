@@ -115,7 +115,7 @@ final class NemotronSuperPromptContractTests: XCTestCase {
                      #"{"reasoning_effort":"medium","medium_effort":false}"#,
                      #"{"reasoning_effort":"high","reasoning":{"effort":"medium"}}"#,
                      #"{"enable_thinking":true,"reasoning":{"enabled":false}}"#,#"{"enable_thinking":"false"}"#,
-                     #"{"reasoning_effort":"low"}"#,
+                     #"{"reasoning_effort":"turbo"}"#, #"{"reasoning_effort":"low","medium_effort":false}"#,
                      #"{"preserve_thinking":true}"#,
                      #"{"enable_thinking":false,"medium_effort":true}"#,
                      #"{"enable_thinking":false,"chat_template_kwargs":{"enable_thinking":true}}"#,

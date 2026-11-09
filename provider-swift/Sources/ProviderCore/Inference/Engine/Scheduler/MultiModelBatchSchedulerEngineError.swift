@@ -40,12 +40,16 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// 500s. `refusal` names the closed reason `darkbloom logs` shows; the
     /// message never reaches a log or the wire.
     case invalidToolPayload(String, refusal: InferenceRefusalReason? = nil)
-    /// The owned native Flash-Next or Qwen3.8-27B template does not support
-    /// the resolved thinking effort. Deterministic request error, before
-    /// template rendering.
-    case unsupportedReasoningEffort
-    /// Native binary-thinking model received an unknown effort alias.
-    case unsupportedNativeReasoningEffort
+    /// A model that reasons received an effort that is none of the seven
+    /// names (`ReasoningEffort`), in `field`. Deterministic request error,
+    /// before template rendering; the message names only the field and the
+    /// accepted names, so a client may be shown it.
+    case unsupportedReasoningEffort(ReasoningEffortField)
+    /// Nemotron 3.5 Super received `reasoning_effort` and `reasoning.effort`
+    /// that differ: it reads both and doesn't choose one. Deterministic
+    /// request error, before template rendering; the message names only the
+    /// two fields and the accepted names, so a client may be shown it.
+    case conflictingReasoningEfforts
     /// The MODEL failed to satisfy the request's forced `tool_choice`
     /// contract, or the inference-time grammar reached an impossible state.
     /// This depends on what the model GENERATED —
@@ -133,10 +137,10 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
             return "Unsupported chat message role: '\(role)'"
         case .invalidToolPayload(let message, _):
             return message
-        case .unsupportedReasoningEffort:
-            return "This model supports reasoning effort low, medium, or xhigh when thinking is enabled"
-        case .unsupportedNativeReasoningEffort:
-            return "DiffusionGemma supports binary reasoning: none/off/0 or minimal/low/medium/high/xhigh"
+        case .unsupportedReasoningEffort(let field):
+            return field.refusalMessage
+        case .conflictingReasoningEfforts:
+            return ReasoningEffortField.conflictMessage
         case .toolChoiceViolation(let message):
             return message
         case .tokenBudgetExhausted(let message):

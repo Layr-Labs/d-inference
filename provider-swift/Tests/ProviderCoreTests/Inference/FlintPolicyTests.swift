@@ -53,7 +53,7 @@ struct FlintPolicyTests {
         #""reasoning":{"exclude":true}"#, #""reasoning":{"exclude":false}"#,
         #""reasoning":{"effort":"high","enabled":true,"exclude":false}"#,
         #""include_reasoning":true"#, #""include_reasoning":false"#, #""reasoning":null"#,
-    ] + FlintRequestPolicy.acceptedEfforts.sorted().flatMap {
+    ] + ReasoningEffort.allCases.map(\.rawValue).flatMap {
         [#""reasoning_effort":"\#($0)""#, #""reasoning":{"effort":"\#($0)"}"#]
     }
 
@@ -65,19 +65,20 @@ struct FlintPolicyTests {
         }
         for controls in [
             ChatTemplateControls(enableThinking: false), .init(enableThinking: true),
-            .init(reasoningEffort: "none"), .init(reasoningEffort: "xhigh"),
+            .init(reasoningEffort: "none"), .init(reasoningEffort: "xhigh"), .init(reasoningEffort: "max"),
         ] {
             try FlintRequestPolicy.validateControls(controls, modelType: "flint")
         }
         // Typed values outside the accepted set, without raw evidence.
-        for controls in [ChatTemplateControls(reasoningEffort: "max"), .init(preserveThinking: false)] {
-            #expect(throws: MultiModelBatchSchedulerEngineError.self) {
-                try FlintRequestPolicy.validateControls(controls, modelType: "flint")
-            }
+        #expect(throws: MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(.reasoningEffort)) {
+            try FlintRequestPolicy.validateControls(.init(reasoningEffort: "turbo"), modelType: "flint")
         }
-        for fields in [#""reasoning":{"effort":"max"}"#] {
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            try FlintRequestPolicy.validateControls(.init(preserveThinking: false), modelType: "flint")
+        }
+        for fields in [#""reasoning":{"effort":"turbo"}"#] {
             let request = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: chatBody(fields))
-            #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            #expect(throws: MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(.reasoningObject)) {
                 try FlintRequestPolicy.validate(request, controls: .init(), modelType: "flint")
             }
         }
@@ -180,7 +181,7 @@ struct FlintPolicyTests {
         for fields in [
             #""enable_thinking":"false""#, #""enable_thinking":null"#,
             #""reasoning_effort":"   ""#, #""reasoning_effort":false"#,
-            #""reasoning_effort":"max""#, #""reasoning_effort":"HIGH""#, #""reasoning_effort":" high""#,
+            #""reasoning_effort":"turbo""#, #""reasoning_effort":"HIGH""#, #""reasoning_effort":" high""#,
             #""preserve_thinking":false"#, #""preserve_thinking":null"#,
             #""chat_template_kwargs":{"enable_thinking":0}"#,
             #""chat_template_kwargs":{"thinking":"true"}"#,

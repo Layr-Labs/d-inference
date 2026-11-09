@@ -161,6 +161,7 @@ extension DesktopBackend {
         ])
       } ?? .null,
       "link": link, "catalog_error": catalogError.map(DV.string) ?? .null,
+      "local": localServingSnapshot(loaded.config.local, daemon: daemon, fresh: fresh, now: now),
     ])
   }
 

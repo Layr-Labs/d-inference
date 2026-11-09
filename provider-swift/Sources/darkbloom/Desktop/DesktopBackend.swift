@@ -47,6 +47,10 @@ actor DesktopBackend {
   var coolingReadAt: Date?
   /// Profile of the child-operation runtime, keyed by its executable stamp.
   var runtimeProfileCache: (stamp: String, profile: DesktopRuntimeProfile)?
+  /// On-demand reads of other commands (`cluster status`, `sandbox status`, waitlists), shared while fresh (`sharedRead`).
+  var sharedReads: [String: DesktopSharedRead] = [:]
+  /// Whether an account key is saved for the local router (`Snapshot.local.route_key`; `accountKeySaved`).
+  var accountKeyRead: (at: Date, saved: Bool)?
 
   init(configPath: String?, executable: URL? = nil) {
     self.configPath = configPath
@@ -112,6 +116,7 @@ actor DesktopBackend {
       cancellationRequested.remove(request.id)
       localAt = .distantPast
       operationFinished(request.action)
+      forgetSharedReads(after: request.action)
     }
     do {
       try Task.checkCancellation()

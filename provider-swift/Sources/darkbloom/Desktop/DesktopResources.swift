@@ -19,6 +19,10 @@ extension DesktopBackend {
     }
     if name == "request-history" { return try await requestHistory() }
     if name == "cooling" { return await cooling() }
+    if name == "cluster" { return await clusterStatus() }
+    if name == "sandbox" { return await sandboxStatus() }
+    if name == "sandbox-logs" { return await sandboxLogs() }
+    if name == "waitlists" { return await waitlists() }
     let base = coordinatorHTTPBase(try configuration().config.coordinator.url)
     let token = (name == "cloud" || name.hasPrefix("insights-")) ? accountReadToken() : nil
     if name == "cloud", token == nil {

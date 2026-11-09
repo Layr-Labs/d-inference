@@ -7,11 +7,17 @@ import Testing
 struct DistributedInstalledLanesTests {
     typealias Plan = DistributedInstalledPlan
 
-    @Test func glmTensorParallelServesEightLanes() {
-        #expect(Plan.defaultBatchLanes(adapter: .glm5NextLayerStage, mode: .tensorParallel, hasPrivateImages: false) == 8)
+    /// GLM tensor parallel serves the width its placement saved for both Macs' memory (`ClusterPlacementTensorWidth`),
+    /// and one request at a time without one, as every other tensor-parallel family does.
+    @Test func glmTensorParallelServesItsSavedWidth() {
+        #expect(Plan.defaultBatchLanes(adapter: .glm5NextLayerStage, mode: .tensorParallel, hasPrivateImages: false) == 1)
         // Its image candidate is not served in this mode; the lanes are text.
-        #expect(Plan.defaultBatchLanes(adapter: .glm5NextLayerStage, mode: .tensorParallel, hasPrivateImages: true) == 8)
-        #expect(Plan.tensorParallelBatchLanes == 8)
+        #expect(Plan.defaultBatchLanes(adapter: .glm5NextLayerStage, mode: .tensorParallel, hasPrivateImages: true) == 1)
+        #expect(Plan.tensorParallelLaneAdapters[.glm5NextLayerStage] == Plan.defaultBatchLanes)
+        for lanes in 2...8 {
+            #expect(Plan.lanesRetireAlone(adapter: .glm5NextLayerStage, mode: .tensorParallel, hasPrivateImages: false, lanes: lanes))
+        }
+        #expect(ClusterRuntimeAdapter.glm5NextLayerStage.savesTensorParallelWidth(runtimeModelID: ClusterGLMImageCandidate.runtimeModelID))
     }
 
     @Test func gemmaTensorParallelServesExplicitLanesWithSingletonDefault() {

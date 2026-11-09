@@ -160,7 +160,8 @@ extension EngineV2Bridge {
                 httpResponse?.recordTerminal(.init(
                     promptTokens: usage.promptTokens,
                     completionTokens: usage.completionTokens,
-                    cause: Self.httpTerminalCause(reason)))
+                    cause: Self.httpTerminalCause(reason),
+                    memoryRefused: Self.isPairMemoryAbort(reason)))
                 if reason == .stop || reason == .length {
                     usageSignal?.record(matchedStopSequence: matchedStopSequence(
                         candidates: stopSequences,
@@ -239,6 +240,9 @@ extension EngineV2Bridge {
         continuation: AsyncStream<GenerationEvent>.Continuation,
         lastDeltaAt: SuspendingClock.Instant? = nil
     ) {
+        // A held streamed request that ends here for memory before admission is
+        // answered with the memory 503, not this stream (`holdHeadUntilAdmitted`).
+        recordHeadHoldRefusal(id: id, reason: reason)
         let final = recordFinish(
             id: id, usage: usage,
             lastDeltaAt: lastDeltaAt, finishReason: reason)
@@ -316,6 +320,12 @@ extension EngineV2Bridge {
         case .terminal(let cause, _): return wireTerminalCause(cause) ?? .engineError
         case .error: return .engineError
         }
+    }
+
+    /// A pair's request both Macs ended alone for one Mac's memory (D6).
+    private static func isPairMemoryAbort(_ reason: CBv2FinishReason) -> Bool {
+        if case .error(let message) = reason { return DistributedMemoryAbort.matches(message) }
+        return false
     }
 
     /// Map an engine terminal cause to its wire vocabulary, or nil when there

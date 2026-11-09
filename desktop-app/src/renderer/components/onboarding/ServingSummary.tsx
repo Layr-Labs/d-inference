@@ -2,7 +2,7 @@ import { Layers, Laptop, Power, RefreshCw, Sparkles } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { Snapshot } from '../../../shared/contracts';
 import { gigabytes } from '../../models/facts';
-import { startModels, type StartMethod } from './startPlan';
+import { pairModel, startModels, type StartMethod } from './startPlan';
 import styles from './servingSummary.module.css';
 
 function machineLine({ machine, eligibility }: Snapshot) {
@@ -17,6 +17,10 @@ function machineLine({ machine, eligibility }: Snapshot) {
 }
 
 function startingLine(snapshot: Snapshot, method: StartMethod, pinned: string[]) {
+  if (snapshot.pair)
+    return snapshot.pair.state === 'serving'
+      ? `Keeps the pair serving ${pairModel(snapshot.pair)}, on both Macs.`
+      : `Starts the pair with ${pairModel(snapshot.pair)}, on both Macs.`;
   const ids = startModels(snapshot, method, pinned);
   const chosen = snapshot.models.filter((model) => ids.includes(model.id));
   if (!chosen.length) return 'Choose a model in Advanced to start.';
@@ -49,7 +53,12 @@ export function ServingSummary({
             ? 'Keeps the models you choose in memory and manages the rest as demand changes.'
             : 'Chooses which downloaded models stay in memory as demand changes.',
         }
-      : { icon: <Layers size={15} />, text: 'Keeps these models loaded until you change them.' },
+      : {
+          icon: <Layers size={15} />,
+          text: snapshot.pair
+            ? 'The pair keeps its model loaded until you change it.'
+            : 'Keeps these models loaded until you change them.',
+        },
     {
       icon: <RefreshCw size={15} />,
       text: snapshot.settings.auto_update

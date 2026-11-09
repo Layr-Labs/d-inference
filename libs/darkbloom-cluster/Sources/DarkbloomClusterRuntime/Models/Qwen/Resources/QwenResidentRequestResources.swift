@@ -117,6 +117,7 @@ struct QwenResidentRequestAllowance {
         let allocator = try QwenLongPrefillCheckedBytes.sum([Memory.activeMemory, Memory.cacheMemory,
             reservedBytes, additionalNativeBytes, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
         do {
+            try ClusterMemoryFault.current.refuseIfDue()
             guard try watch.admits(os, bytes: free, floor: onLoadedStage ? QwenDenseStageLoadPolicy.loadingHeadroomBytes : nil),
                   Memory.memoryLimit >= allocator else {
                 throw ProbeError("Resident request exceeds the allocator limit")
@@ -124,8 +125,9 @@ struct QwenResidentRequestAllowance {
         } catch {
             // Name the context the refusal was for: the gate's own sentence
             // names the bytes; the operator needs the tokens to act on it.
-            guard contextTokens > 0 else { throw error }
-            throw ProbeError("A request of \(contextTokens) context tokens (prompt plus output) on this rank: \(error)")
+            guard contextTokens > 0 else { throw QwenResidentMemoryRefusal(message: String(describing: error)) }
+            throw QwenResidentMemoryRefusal(message:
+                "A request of \(contextTokens) context tokens (prompt plus output) on this rank: \(error)")
         }
     }
 }

@@ -41,6 +41,37 @@ struct MiMoBatchDriverTests {
         #expect(pair.books.allSatisfy { $0.isEmpty })
     }
 
+    /// D6: a rank's live memory check refuses while lanes run (MiMo's pipeline
+    /// batch). The newest running lane alone leaves, on both ranks, published
+    /// as aborted with the refusing rank (rank 1's lane rides its reply's
+    /// memory mask); its session is cancelled and nothing more of it is
+    /// published. The older lane runs to its length.
+    @Test func aMemoryRefusalOnEitherRankEndsTheNewestLaneAloneOnBothRanks() throws {
+        for refusing in 0...1 {
+            let pair = try BatchPair(width: 3)
+            let older = try pair.request(length: 6, chunk: 3, output: 24), newer = try pair.request(length: 5, chunk: 3, output: 24)
+            try pair.reserve(older); try pair.reserve(newer)
+            pair.memoryRefused[refusing] = {
+                let sessions = pair.executors[refusing].sessions
+                let both = sessions.count == 2 && sessions.values.allSatisfy { $0.committedTokens > $0.request.promptCount + 2 }
+                guard both, !pair.flag("refused") else { return false }
+                pair.set("refused"); return true
+            }
+            try pair.run()
+            for rank in 0...1 {
+                #expect(pair.hosts[rank].aborted[newer.requestID] == .init(reason: .memory, rank: refusing),
+                        "rank \(refusing) refusing")
+                #expect(pair.hosts[rank].finished[newer.requestID] == nil && !pair.hosts[rank].left.contains(newer.requestID))
+                #expect(pair.executors[rank].sessions[newer.requestID]?.isClosed == true)
+                #expect(pair.hosts[rank].finished[older.requestID] == .length)
+            }
+            #expect(pair.hosts[0].tokens[older.requestID] == BatchSession.oracle(older))
+            let stopped = pair.hosts[0].tokens[newer.requestID] ?? []
+            #expect(stopped.count < 24 && stopped == Array(BatchSession.oracle(newer).prefix(stopped.count)))
+            #expect(pair.books.allSatisfy { $0.isEmpty })
+        }
+    }
+
     @Test func deadlineRetiresOnlyExpiredLaneEvenWithoutTokenCredit() throws {
         let pair = try BatchPair(width: 2)
         let expired = try pair.request(length: 1, chunk: 1, output: 5)

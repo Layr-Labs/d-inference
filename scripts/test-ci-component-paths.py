@@ -25,13 +25,19 @@ class ComponentPathsTests(unittest.TestCase):
     def test_only_same_workflow_pr_revisions_share_cancellation_group(self):
         # Pull request revisions cancel each other; every push has a group of
         # its own (a push of a tested tree runs no test job, so none is skipped).
-        for filename in ("ci-dev.yml", "ci-master.yml"):
-            key = "github.event.pull_request.number || github.run_id"
+        # CI (dev)'s dispatches (the hourly full run) share one group and
+        # cancel nothing.
+        key = "github.event.pull_request.number || github.run_id"
+        groups = {
+            "ci-master.yml": "${{ github.workflow }}-${{ github.event_name }}-${{ %s }}" % key,
+            "ci-dev.yml": "${{ github.event_name == 'workflow_dispatch' && 'ci-dev-hourly' || "
+                          "format('{0}-{1}-{2}', github.workflow, github.event_name, %s) }}" % key,
+        }
+        for filename, group in groups.items():
             with self.subTest(workflow=filename):
                 source = (ROOT / ".github/workflows" / filename).read_text()
                 concurrency = source.split("\nconcurrency:\n", 1)[1].split("\njobs:\n", 1)[0]
-                self.assertIn("  group: ${{ github.workflow }}-${{ github.event_name }}-${{ %s }}\n" % key,
-                              concurrency)
+                self.assertIn(f"  group: {group}\n", concurrency)
                 self.assertIn("  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n", concurrency)
         # The shared test workflow takes its callers' concurrency.
         self.assertNotIn("\nconcurrency:", (ROOT / ".github/workflows/provider-tests.yml").read_text())
@@ -70,6 +76,10 @@ class ComponentPathsTests(unittest.TestCase):
             "libs/darkbloom-cluster/Package.swift": {"provider", "cluster"},
             "libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh": {"provider", "cluster"},
             "provider-swift/Tests/ClusterConsoleChecks/run.sh": {"provider", "cluster"},
+            "provider-swift/Tests/ClusterDiagnosticsChecks/run.sh": {"provider", "cluster"},
+            "provider-swift/Tests/ClusterPlacementChecks/run-flow.sh": {"provider", "cluster"},
+            # A provider file outside the cluster names that those runners compile.
+            "provider-swift/Sources/ProviderCore/Diagnostics/GLM5NextGPULimitEligibility.swift": {"provider", "cluster"},
             "provider-swift/Tests/ClusterPairingChecks/PairingTerminalChecks.swift": {"provider", "cluster"},
             "provider-swift/Sources/ProviderBuildEnvironment/BuildEnvironment.swift": {"provider", "cluster"},
             "handoff/TUI-wiring.md": {"provider", "cluster"},
@@ -87,6 +97,7 @@ class ComponentPathsTests(unittest.TestCase):
             "scripts/run-provider-tests.sh": {"provider"},
             "scripts/provider-ci-cold-retry.sh": {"provider", "cluster"},
             "scripts/verified_download_cache.py": {"provider"},
+            "scripts/fixture_redirects.py": {"provider"},
             "scripts/provider-test-shards.py": {"provider"},
             "scripts/cluster-test-plan.py": {"provider", "cluster"},
             "scripts/swift_test_lock_retry.py": {"provider", "cluster"},
@@ -313,7 +324,8 @@ class WorkflowRoutingTests(unittest.TestCase):
 
         dev, master = triggers("ci-dev.yml"), triggers("ci-master.yml")
         self.assertEqual(dev, {"push": {"branches": "[dev]"},
-                               "pull_request": {"branches-ignore": "[master, main]"}})
+                               "pull_request": {"branches-ignore": "[master, main]"},
+                               "workflow_dispatch": {}})
         self.assertEqual(master, {"push": {"branches": "[master, main]"},
                                   "pull_request": {"branches": "[master, main]"}})
         # Both run the same plan and tests, whatever the base (Release
@@ -402,7 +414,7 @@ class WorkflowRoutingTests(unittest.TestCase):
             self.assertIn("    needs: plan\n    if: ${{ !cancelled() }}\n", master[policy])
         self.assertIn("python3 scripts/test-ci-component-paths.py", master["release-integrity"])
         dev = (ROOT / ".github/workflows/ci-dev.yml").read_text()
-        self.assertEqual(set(workflow.job_blocks(dev.split("\njobs:\n", 1)[1])), {"plan", "tests"})
+        self.assertEqual(set(workflow.job_blocks(dev.split("\njobs:\n", 1)[1])), {"plan", "tests", "hourly-failures"})
         self.assertIn("    uses: ./.github/workflows/provider-tests.yml\n", dev)
 
     def test_detector_has_full_history_no_credentials_or_api_truncation(self):

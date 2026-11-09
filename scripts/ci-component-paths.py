@@ -33,7 +33,7 @@ PROVIDER = (
     "scripts/provider-test-shard-weights.json",
     "scripts/cluster-test-plan.py", "scripts/cluster-stage-content-inventory.py",
     "scripts/swift_test_lock_retry.py",
-    "scripts/prepare-mimo-*-fixtures.py", "scripts/verified_download_cache.py",
+    "scripts/prepare-mimo-*-fixtures.py", "scripts/verified_download_cache.py", "scripts/fixture_redirects.py",
     "scripts/verify-*-prompt-parity.sh",
     "scripts/prepare-prompt-fixtures.py", "scripts/test-prepare-prompt-fixtures.py",
     "scripts/verify-prompt-parity.sh", "scripts/test-qwen4-packaged-resources.py",
@@ -58,11 +58,14 @@ CLUSTER = (
     "provider-swift/Sources/ProviderCore/Config/ProviderConfigFile.swift",
     "provider-swift/Sources/ProviderCore/Models/StreamingFileDownloadDelegate.swift",
     "provider-swift/Sources/ProviderCoreFoundation/Manifest.swift",
+    # The console, diagnostics and placement flow runners compile it beside the placement sources.
+    "provider-swift/Sources/ProviderCore/Diagnostics/GLM5NextGPULimitEligibility.swift",
     # The provider-side cluster runners and the fixture one of them reads; the
     # provider unit tests of cluster code run in the provider lane.
     "provider-swift/Tests/Cluster*Checks/**",
     "provider-swift/Tests/ProviderCoreTests/Fixtures/coordinator-wire/cluster_registration_vector.json",
-    # The console runner compiles the build environment and reads the wiring table.
+    # The console, diagnostics and placement flow runners compile the build
+    # environment; the console runner reads the wiring table.
     "provider-swift/Sources/ProviderBuildEnvironment/**", "handoff/TUI-wiring.md",
     ".github/workflows/provider-tests.yml", ".github/actions/provider-ci-build/**",
     ".github/actions/provider-ci-products/**", "scripts/ci-test-products.py", "scripts/ci-resource-sampler.py",

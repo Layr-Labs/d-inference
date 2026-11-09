@@ -1,6 +1,6 @@
 # MiMo prompt fixture reproduction
 
-> Last updated: 2026-10-18
+> Last updated: 2026-11-08
 
 Public MiMo golden-vector checks require pinned metadata and an independent
 20-case corpus. Missing inputs are failures, not silently skipped checks. No
@@ -22,6 +22,11 @@ weights or executable model code. The unchanged synthetic corpus is checked in
 at `fixtures/prompt-contract/mimo-v26-additional20.json`; its attribution is in
 `fixtures/prompt-contract/README-mimo-v26.md`. An existing output directory,
 changed input, oversized file or checksum mismatch is a failure, not a skip.
+The script follows a same-origin redirect and, from `https://huggingface.co`
+only, an HTTPS redirect to a Hugging Face CDN host (`hf.co` or a name that ends
+in `.hf.co`), where the Hub serves `tokenizer.json`. Any other redirect fails at
+once and its target is never requested; the
+[test guide](test.md#public-fixtures-and-private-qualification) states the rule.
 
 Alternatively, set `MIMO_PROMPT_ARTIFACT_DIRECTORY` to a metadata-only directory and
 `MIMO_PROMPT_REFERENCE_VECTORS` to the unchanged20-case JSON file. Both must

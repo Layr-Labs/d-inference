@@ -44,7 +44,8 @@ extension Start {
         let capabilities = DistributedServingEligibility.memberCapabilities(chipFamily: hardware.chipFamily)
         let coordinator = coordinatorURL ?? config.coordinator.url
         let endpoint = Self.clusterMemberLocalEndpoint(requested: localEndpoint, hostsPairSlot: prepared.hostsPairSlot,
-                                                       bind: bind, port: port, local: config.local, coordinatorURL: coordinator)
+                                                       bind: bind, port: port, local: config.local, settingsFile: path,
+                                                       coordinatorURL: coordinator)
         // A setup saved for coordinator pairing yields this Mac's member
         // installation; every other setup yields none and registers no claim.
         let installation = try current.withCurrentReference { _ in
@@ -84,24 +85,27 @@ extension Start {
     /// Only the slot's host runs it, checked three times: the service passes `--local-endpoint` to rank 0's part only
     /// (`ClusterLocalServing.memberArguments`); here, any other member runs none and says so in one line; and the loop
     /// refuses an endpoint on a member without the slot (`admitsClusterPairLocalAPI`), which would end the part.
-    /// Never without a key: always the pair's (`cluster local`'s); `validate` refuses `--no-auth`, the loop refuses a
+    /// Never without a key: this Mac's own (`local_token`, which its tools read), beside the pair's, which every other
+    /// Mac's relay passes requests on with (`ClusterLocalRelay`); `validate` refuses `--no-auth`, the loop refuses a
     /// keyless endpoint, and a key that can't be read here leaves the pair serving Darkbloom without the API, never
-    /// with an open one.
+    /// with an open one. Its router reads `[local] route` again from `settingsFile`, this Mac's provider.toml, when it
+    /// changes.
     static func clusterMemberLocalEndpoint(requested: Bool, hostsPairSlot: Bool, bind: String, port: UInt16,
-                                           local: LocalSettings?, coordinatorURL: String?,
-                                           loadToken: () throws -> String = { try LocalEndpoint.loadOrCreateClusterToken() },
+                                           local: LocalSettings?, settingsFile: URL, coordinatorURL: String?,
+                                           loadToken: () throws -> String = { try LocalEndpoint.loadOrCreateToken() },
+                                           loadPairToken: () throws -> String = { try LocalEndpoint.loadOrCreateClusterToken() },
                                            say: (String) -> Void = printError) -> LocalInferenceHTTPConfig? {
         guard requested else { return nil }
         guard hostsPairSlot else {
             say("This Mac's part runs no local API: the pair's API is on the Mac that runs rank 0.")
             return nil
         }
-        guard let token = try? loadToken(), !token.isEmpty else {
-            say("The pair's local API key could not be read or created, so this part serves Darkbloom without the local API.")
+        guard let token = try? loadToken(), !token.isEmpty, let pairToken = try? loadPairToken(), !pairToken.isEmpty else {
+            say("The pair's local API keys could not be read or created, so this part serves Darkbloom without the local API.")
             return nil
         }
-        return LocalInferenceHTTPConfig(host: bind, port: port, authToken: token,
-            router: .host(local: local, coordinatorURL: coordinatorURL, takesCoordinatorWork: true))
+        return LocalInferenceHTTPConfig(host: bind, port: port, authToken: token, pairToken: pairToken,
+            router: .host(local: local, settingsFile: settingsFile, coordinatorURL: coordinatorURL, takesCoordinatorWork: true))
     }
 
     /// What a member's start that failed with `error` ends with. Refused because another Darkbloom app holds this Mac's

@@ -155,9 +155,15 @@ struct GPTOSSResidentRequestAllowance {
                 QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
         let allocator = try QwenLongPrefillCheckedBytes.sum([native.activeBytes, native.cacheBytes,
             reservedBytes, additionalNativeBytes, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
-        guard try watch.admits(os, bytes: free) else { throw ProbeError("Resident GPT-OSS request was refused") }
-        guard native.allocatorLimitBytes >= allocator else {
-            throw ProbeError("Resident GPT-OSS request exceeds the allocator limit")
+        // A memory refusal is typed, so a running request's stop ends that request alone (D6).
+        do {
+            try ClusterMemoryFault.current.refuseIfDue()
+            guard try watch.admits(os, bytes: free) else { throw ProbeError("Resident GPT-OSS request was refused") }
+            guard native.allocatorLimitBytes >= allocator else {
+                throw ProbeError("Resident GPT-OSS request exceeds the allocator limit")
+            }
+        } catch {
+            throw QwenResidentMemoryRefusal(message: String(describing: error))
         }
     }
 }

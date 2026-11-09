@@ -8,9 +8,9 @@ from pathlib import Path
 import stat
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 
+from fixture_redirects import OriginRedirect
 from verified_download_cache import cached
 
 REPOSITORY = "XiaomiMiMo/MiMo-V2.6-Flash-RL"
@@ -25,6 +25,9 @@ CORPUS_SHA256 = "66e6a49a23509fbc99e5389fa4687f2b6175f96d05d7a8be0f323bf4986049b
 MAXIMUM = 128 * 1024 * 1024
 DOWNLOAD_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = (1, 3)
+# The Hub answers tokenizer.json at REVISION with a 302 to its CDN
+# (us.aws.cdn.hf.co); the others take a same-origin 307. See fixture_redirects.py.
+OPENER = urllib.request.build_opener(OriginRedirect(hugging_face_cdn=True))
 
 
 class TransientTransfer(ValueError):
@@ -40,7 +43,7 @@ def checked_bytes(data, expected, maximum):
 def retryable(error):
     # Retry only a failed or cut transfer: a TLS, socket or connection error,
     # a timeout, an incomplete body, a short body or an HTTP 5xx. A wrong
-    # digest, an oversize body, an insecure redirect or a 4xx stays final.
+    # digest, an oversize body, a refused redirect or a 4xx stays final.
     # HTTPError is an OSError subclass: test it first.
     if isinstance(error, urllib.error.HTTPError):
         return error.code >= 500
@@ -49,9 +52,7 @@ def retryable(error):
 
 def fetch_once(url):
     request = urllib.request.Request(url, headers={"User-Agent": "darkbloom-fixture-check/1"})
-    with urllib.request.urlopen(request, timeout=60) as response:
-        if urllib.parse.urlsplit(response.geturl()).scheme != "https":
-            raise ValueError("insecure fixture redirect")
+    with OPENER.open(request, timeout=60) as response:
         declared = response.headers.get("Content-Length")
         data = response.read(MAXIMUM + 1)
     # http.client returns a short body without error when the connection ends

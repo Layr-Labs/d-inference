@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-09
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -210,14 +210,18 @@ Routed requests that arrive during a hold get the typed draining rejection.
 An add-on hold outranks the owner pause: while both apply the fields describe
 the hold, and its release hands them back to the pause (`ProviderBusy.publishing`).
 Coordinators key the add-on hold on `addon` only, so they treat `owner` as a
-plain drain: the Mac leaves routing and keeps its uptime. Because a coordinator
+plain drain for routing: the Mac leaves routing and keeps its uptime. Because a coordinator
 does not act on `owner` in `register`, the first event heartbeat of a fresh
 connection repeats the draining status. Routed requests that race the owner
 pause's heartbeat get the same typed draining rejection. On a pair, only the
 leader member (the slot's host) sends `owner`; every other member keeps its
 control-only `draining` heartbeat with no busy fields. The whole pair then
-leaves routing, and unlike a single Mac its Macs lose their base reward while
-it is paused ([owner pause](../architecture/owner-pause.md#pairs)).
+leaves routing. Its base reward depends on the coordinator: on the coordinator
+that ships with 0.10.11
+([darkbloom-platform#709](https://github.com/Layr-Labs/darkbloom-platform/pull/709)
+onwards) the pair keeps it while paused, as a single Mac does; on coordinators
+before #709 both Macs lose it for the pause plus the idle minutes
+([owner pause](../architecture/owner-pause.md#pairs)).
 
 
 ## Close codes and the reconnect wait
@@ -544,18 +548,20 @@ Every value is a token count.
 | JSON key | Presence | Meaning |
 |---|---|---|
 | `max_prompt_tokens` | req | The cluster refuses a longer prompt (`prompt_too_long`) |
-| `max_output_tokens` | req | The cluster refuses a larger `max_tokens` (`output_too_long`) |
-| `max_context_tokens` | req | The cluster refuses a larger prompt plus `max_tokens` (`context_too_long`) |
+| `max_output_tokens` | req | The cluster cuts a larger `max_tokens` to it, as one Mac cuts to its window |
+| `max_context_tokens` | req | The cluster cuts `max_tokens` to what the prompt leaves of it, and refuses a prompt that fills it (`context_length_exceeded`) |
 | `serving_context_tokens` | opt | The longest prompt plus `max_tokens` that every member's memory admits now: the minimum over the ranks (`ClusterWorkerPair.servingContextTokens`), at most `max_context_tokens`. Each rank works its own out again while idle. A longer request is refused for capacity (`request_exceeds_node_budget`). Omitted, never `0`, when the owner states none; a ready cluster always states one |
 
 The first three are what the cluster serves in its generation mode
 (`DistributedResidentExecutionProfile.served`,
 `ClusterModelFeaturePolicy.servedProfile`). In tensor parallel, that is the
 worker's whole profile: for Qwen3.8 27B, 262,143 prompt tokens, 65,536 output
-tokens and a 262,144-token context. In any other mode, it is the memory plan's
-request: 32,768 prompt and 32,768 output tokens in a 65,536-token context. A
-pipeline's ranks refuse any reservation beyond that request. The leader refuses
-any request outside these limits before it asks any rank.
+tokens and a 262,144-token context; for Gemma 4 26B, 262,143 prompt tokens,
+32,768 output tokens and a 262,144-token context. In any other mode, a pipeline
+included, it is the memory plan's request: 32,768 prompt and
+32,768 output tokens in a 65,536-token context, and the pipeline's ranks refuse
+any reservation beyond it. The leader refuses a prompt outside these limits
+before it asks any rank, and cuts a larger `max_tokens` to fit.
 
 A change of `request_limits` is a material capacity change
 (`CapacityHeartbeatMateriality`): the next capacity rebuild, when a request

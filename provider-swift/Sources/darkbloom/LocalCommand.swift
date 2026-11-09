@@ -27,9 +27,20 @@ struct Local: AsyncParsableCommand {
         // readLiveInfo() returns nil when the recorded server process is gone,
         // so a stale local.json from a Ctrl-C/crash is treated as "not running"
         // rather than advertising a dead endpoint.
+        // On a Mac that relays a pair's API: why it has no working address now, in `status`'s words.
+        let pair = ClusterPairSummary.local()
         guard let info = LocalEndpoint.readLiveInfo() else {
             if json {
                 print("{}")
+            } else if pair.relaying == nil, let down = pair.memberAPIDown {
+                printError("Local API: " + down)
+            } else if let starting = pair.memberAPIStarting {
+                // This Mac's port for the pair's API starts once that API answers; meanwhile the pair's key, as ever.
+                printError("Local API: \(starting).")
+                if let key = LocalEndpoint.existingClusterToken() {
+                    printError("The pair's API key (the same on both Macs, and taken on this Mac's port once it listens):")
+                    printError("  \(key)")
+                }
             } else if let notUp = Self.runningProviderLocalAPIFailure() {
                 printError(Self.notUpLine(notUp.failure, nextFree: LocalAPIPort.nextFree(besides: notUp.failure.port),
                                           server: notUp.server))
@@ -67,6 +78,8 @@ struct Local: AsyncParsableCommand {
             print("  API key:  \(info.apiKey)")
         }
         print("  pid:      \(info.pid)")
+        // This record is this Mac's relay, which answers 503 while the pair's other Mac can't be reached.
+        if pair.relaying?.port == info.port, let down = pair.memberAPIDown { print("Local API: " + down) }
         if let state = DaemonStateFile.read(), state.pid == info.pid {
             let route = (try? savedLocalSettings(configPath: nil))?.route
             for line in Self.servingLines(info: info, state: state, route: route,
@@ -140,8 +153,12 @@ struct Local: AsyncParsableCommand {
     /// For a server listening on every interface: this Mac's Bonjour (`.local`) URL, which other computers on the
     /// same network can dial; nil for a loopback or specific-address server, or when the Mac has no local host name.
     static func networkURL(host: String, port: UInt16) -> String? {
-        guard host == "0.0.0.0" || host == "::",
-              let name = SCDynamicStoreCopyLocalHostName(nil) as String?, !name.isEmpty else { return nil }
+        guard host == "0.0.0.0" || host == "::", let name = localHostName() else { return nil }
         return "http://\(name).local:\(port)/v1"
+    }
+
+    /// This Mac's Bonjour host name, without `.local`; nil when it has none.
+    static func localHostName() -> String? {
+        (SCDynamicStoreCopyLocalHostName(nil) as String?).flatMap { $0.isEmpty ? nil : $0 }
     }
 }

@@ -9,7 +9,12 @@ struct Gemma4ResidentAdmission {
     let configBytes: Data, manifestBytes: Data
     let specification: Gemma4RegisteredSpecification
     let plan: QwenLayerStagePlan
+    /// The model's native context (`Gemma4ResidentAdapterDefinition.contextLimits`):
+    /// what the pair advertises and a reservation is held to.
     let profile: QwenLayerStageGenerationProfile
+    /// The standard request every LOAD gate charges
+    /// (`Gemma4ResidentAdapterDefinition.memoryProfile`).
+    let memoryProfile: QwenLayerStageGenerationProfile
     let arithmetic: Gemma4ArithmeticEnvironment.Receipt
     let arithmeticSHA256: String
     let jaccl: QwenResidentJACCLConfiguration
@@ -43,5 +48,6 @@ struct Gemma4ResidentAdmission {
         plan = try Gemma4LayerStagePlanning.plan(specification: spec, configuration: configBytes,
                                                  cut: configuration.stageCut)
         profile = try Gemma4ResidentAdapterDefinition.profile(specification: spec)
+        memoryProfile = try Gemma4ResidentAdapterDefinition.memoryProfile(specification: spec)
     }
 }

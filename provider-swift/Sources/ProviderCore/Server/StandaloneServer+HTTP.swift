@@ -176,6 +176,14 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
         } catch MultiModelBatchSchedulerEngineError.promptExceedsContext(let message) {
             // The model window this Mac holds requests to, in plain words.
             return Self.openAIErrorResponse(status: .badRequest, message: message, code: "context_length_exceeded")
+        } catch MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(let field) {
+            // The field and the names a model that reasons takes (fixed text, never the value sent).
+            return Self.openAIErrorResponse(status: .badRequest, message: field.refusalMessage,
+                code: "invalid_reasoning_effort", param: field.rawValue)
+        } catch MultiModelBatchSchedulerEngineError.conflictingReasoningEfforts {
+            // Both fields and the names, as for an unknown name (fixed text, never the values sent).
+            return Self.openAIErrorResponse(status: .badRequest, message: ReasoningEffortField.conflictMessage,
+                code: "invalid_reasoning_effort", param: ReasoningEffortField.conflictParam)
         } catch MultiModelBatchSchedulerEngineError.distributedRequestRefused(let refusal, let message) {
             // A cluster pair's refusal names its rule and the model's limits
             // (a closed template, never request content): the client sees why.
@@ -205,7 +213,11 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
             case .advertisedContextExceeded?:
                 return Self.openAIErrorResponse(status: status, message: Self.advertisedContextExceededMessage,
                     code: "context_length_exceeded")
-            case .tokenBudgetExhausted?:
+            case .tokenBudgetExhausted?, .platformTerminal(cause: .admissionTimeout, _, _)?:
+                // Both are this Mac's memory: a memory refusal, or a request
+                // the engine queued and couldn't admit within its admission
+                // lease (not streamed: a streamed one is refused at its head,
+                // `EngineV2Bridge.holdHeadUntilAdmitted`).
                 return Self.openAIErrorResponse(status: status, message: Self.memoryRefusalMessage)
             default:
                 return Self.openAIErrorResponse(status: status, message: failure.message)
@@ -222,10 +234,7 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
 
     /// This Mac's answer to a request its memory can't hold now: each request
     /// reserves its prompt and its output when it starts.
-    static var memoryRefusalMessage: String {
-        "This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt "
-            + "(or send less media), or retry when this Mac's other requests finish."
-    }
+    static var memoryRefusalMessage: String { LocalMemoryRefusal.message }
 
     /// Headers returned on a `OPTIONS` preflight. Matches the
     /// `defaultHeaders()` helper from the deleted
@@ -243,14 +252,16 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
     /// `/v1/embeddings` route emits when the engine is missing). Sets
     /// the CORS allow-origin header so browser clients can read the
     /// body even on a cross-origin request. `code` is the optional OpenAI
-    /// error code; it is omitted from the body when nil.
+    /// error code and `param` the request field it names; each is omitted
+    /// from the body when nil.
     static func openAIErrorResponse(
         status: HTTPResponse.Status,
         message: String,
-        code: String? = nil
+        code: String? = nil,
+        param: String? = nil
     ) -> Response {
         let body = OpenAIErrorEnvelope(
-            error: .init(message: message, type: "invalid_request_error", code: code)
+            error: .init(message: message, type: "invalid_request_error", param: param, code: code)
         )
         let data: Data
         do {
@@ -269,6 +280,14 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
     }
 }
 
+/// The local API's words for a request this Mac's memory, or a pair's, can't
+/// hold now: the memory 503's message, and a pair's typed stream error's
+/// (`DistributedHTTPEventStream.memoryFailureFrame`).
+enum LocalMemoryRefusal {
+    static let message = "This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt "
+        + "(or send less media), or retry when this Mac's other requests finish."
+}
+
 /// OpenAI-style `{"error": {...}}` envelope used by ``CORSResponder``
 /// when it has to render an engine error directly. Pulled out of the
 /// generic method body because Swift does not allow nesting a struct
@@ -277,7 +296,8 @@ private struct OpenAIErrorEnvelope: Encodable {
     struct ErrorObject: Encodable {
         let message: String
         let type: String
-        /// Omitted when nil, so every existing envelope is unchanged.
+        /// Both omitted when nil, so every existing envelope is unchanged.
+        var param: String? = nil
         var code: String? = nil
     }
     let error: ErrorObject

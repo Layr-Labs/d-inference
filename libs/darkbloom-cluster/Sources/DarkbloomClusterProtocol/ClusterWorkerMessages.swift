@@ -411,7 +411,25 @@ public enum ClusterWorkerCancellationReason: String, Sendable {
 }
 public enum ClusterWorkerRefusal: String, Sendable { case capacity, deadline, profile, unavailable, busy, unsupported }
 public enum ClusterWorkerFinishReason: String, Sendable { case eos, length, clientStop }
-public enum ClusterWorkerRetirement: String, Sendable { case clean, cancelled, failed }
+/// `aborted`: the request ended on both ranks alone (`ClusterWorkerAbort`), and
+/// the worker stays available.
+public enum ClusterWorkerRetirement: String, Sendable { case clean, cancelled, failed, aborted }
+
+/// Why both ranks ended a started request alone. A closed set.
+public enum ClusterWorkerAbortReason: String, Sendable {
+    /// A rank's live memory gate refused the request while it ran.
+    case memory
+}
+
+/// A started request both ranks ended alone, on the stages' own agreement:
+/// the refusing rank stopped in the message it owed its peer, the peer
+/// confirmed, and both retired the request (D6). `rank` is the rank whose
+/// gate refused; both ranks report the same value.
+public struct ClusterWorkerAbort: Equatable, Sendable {
+    public let reason: ClusterWorkerAbortReason
+    public let rank: Int
+    public init(reason: ClusterWorkerAbortReason, rank: Int) { self.reason = reason; self.rank = rank }
+}
 
 public enum ClusterWorkerCommand: Equatable, Sendable {
     case reserve(ClusterWorkerReservation)
@@ -483,6 +501,9 @@ public enum ClusterWorkerEvent: Equatable, Sendable {
     /// after `promptCache` and just before `finished`, only when not empty.
     case requestTelemetry(ClusterWorkerRequestTelemetry)
     case finished(ClusterWorkerFinishReason)
+    /// The started request ended on both ranks alone (`ClusterWorkerAbort`);
+    /// `retired(aborted)` follows, and the worker stays available.
+    case aborted(ClusterWorkerAbort)
     case failed(ClusterWorkerCancellationReason)
     /// Local state retirement only. No claim of peer retirement or process fencing.
     case retired(ClusterWorkerRetirement)

@@ -24,14 +24,14 @@ private let gptOssModelID = "mlx-community/gpt-oss-20b-MXFP4-Q8"
 @Suite("reasoning_effort + reasoning_tokens (live gpt-oss)", .serialized)
 struct ReasoningEffortLiveTests {
 
-    /// Decisive: the REAL gpt-oss Harmony template receives the effective
-    /// effort selected by the production prompt policy. A requested `high`
-    /// must render exactly like `medium`; lower efforts remain distinct.
+    /// Decisive: the REAL gpt-oss Harmony template receives the level the
+    /// production prompt policy selects. `high` renders `Reasoning: high`, and
+    /// `xhigh` and `max` render exactly like it; `minimal` renders like `low`.
     @Test(
-        "harmony template renders high reasoning effort as medium",
+        "harmony template renders each reasoning effort at its Harmony level",
         .enabled(if: LiveInferenceFixtures.liveTestsEnabled)
     )
-    func templateDowngradesHighReasoningEffort() async throws {
+    func templateRendersHarmonyLevels() async throws {
         let loaded: LiveInferenceFixtures.LoadedBridge
         do {
             loaded = try await LiveInferenceFixtures.loadBridge(
@@ -77,9 +77,11 @@ struct ReasoningEffortLiveTests {
         let low = try renderedPrompt(effort: "low")
         let defaulted = try renderedPrompt(effort: nil)
 
-        #expect(high.contains("Reasoning: medium"))
-        #expect(!high.contains("Reasoning: high"))
-        #expect(high == medium)
+        #expect(high.contains("Reasoning: high"))
+        #expect(high != medium)
+        #expect(try renderedPrompt(effort: "xhigh") == high)
+        #expect(try renderedPrompt(effort: "max") == high)
+        #expect(try renderedPrompt(effort: "minimal") == low)
         #expect(low.contains("Reasoning: low"))
         // No reasoning_effort supplied → template's built-in default.
         #expect(defaulted.contains("Reasoning: medium"))

@@ -191,6 +191,19 @@ func keepCommandsOffThisMacsCluster() {
     ClusterPairSummary.processReaderForTesting = { _ in .notPaired }
 }
 
+/// Ends this exit test's child after `seconds`, with exit code 124 and a line on standard error. A time limit doesn't
+/// end an exit test: the test waits for its child to exit, and a child whose command never returns kept a review's
+/// whole run waiting for 1 h 50 min. Its own thread, so a child spinning on every other thread still ends.
+/// Process-wide, so only inside an exit test's body.
+func endChildAfter(seconds: Double) {
+    Thread.detachNewThread {
+        Thread.sleep(forTimeInterval: seconds)
+        let line = "the exit test's child didn't end within \(Int(seconds)) s, so it was ended\n"
+        line.withCString { _ = write(STDERR_FILENO, $0, strlen($0)) }
+        _exit(124)
+    }
+}
+
 /// Parses `arguments` from the root command and checks the command type.
 private func parseCLICommand<Command: AsyncParsableCommand>(
     _ type: Command.Type, _ arguments: [String]
@@ -256,15 +269,22 @@ func printedValue(_ output: String, label: String) -> String? {
 }
 
 /// Answers every request on the shared URL session from a fixed table keyed
-/// by URL path. A path without an entry gets HTTP 404. Requests are kept so
-/// a test can check what the command sent.
+/// by URL path, or fails it on the way (`Reply.failure`). A path without an
+/// entry gets HTTP 404. Requests are kept so a test can check what the command
+/// sent.
 final class CoordinatorStub: URLProtocol, @unchecked Sendable {
     struct Reply: Sendable {
         let status: Int
         let body: Data
+        /// No answer: the request fails on the way with this error.
+        var failure: URLError.Code? = nil
 
         static func json(_ status: Int, _ text: String) -> Reply {
             Reply(status: status, body: Data(text.utf8))
+        }
+
+        static func failure(_ code: URLError.Code) -> Reply {
+            Reply(status: 0, body: Data(), failure: code)
         }
     }
 
@@ -297,6 +317,10 @@ final class CoordinatorStub: URLProtocol, @unchecked Sendable {
         let reply = Self.lock.withLock { () -> Reply in
             Self.recorded.append(request)
             return Self.replies[request.url?.path ?? ""] ?? Reply(status: 404, body: Data())
+        }
+        if let failure = reply.failure {
+            client?.urlProtocol(self, didFailWithError: URLError(failure))
+            return
         }
         guard let url = request.url,
               let response = HTTPURLResponse(

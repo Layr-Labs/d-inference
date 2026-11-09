@@ -142,9 +142,15 @@ public actor EngineV2Bridge {
     /// context, else its model's own (from its config), the smaller when it has
     /// both. A `max_tokens` past what the prompt leaves is cut to fit
     /// (`outputTokens(requested:promptTokens:)`), and only a prompt that leaves
-    /// no room is refused, naming the window. Nil on a pair, whose engine
-    /// refuses by its own limits, and on a slot that knows no window.
+    /// no room is refused, naming the window. Nil on a pair, which cuts to the
+    /// limits its mode serves (`pairServedLimits`), and on a slot that knows
+    /// no window.
     nonisolated let modelWindowTokens: Int?
+    /// A cluster pair's output limit and context, as its mode serves them
+    /// (`DistributedResidentExecutionProfile.served`): a `max_tokens` past
+    /// either is cut to fit, as on one Mac; only a prompt that leaves no room
+    /// is refused, by the pair's engine, naming the context. Nil on one Mac.
+    nonisolated let pairServedLimits: (outputTokens: Int, contextTokens: Int)?
     let maxConcurrentRequests: Int
     nonisolated let performanceProfile: ServingPerformanceProfile?
     nonisolated let deadlineProfile: DeadlinePerformanceProfile?
@@ -255,6 +261,8 @@ public actor EngineV2Bridge {
         /// first token, cancel, and finish — never per token.
         var profile: RequestProfileBuilder? = nil
         var prefillReceipt: EnginePrefillReceipt? = nil
+        /// A Darkbloom request's coordinator id (`MeFirstDarkbloomRequest`); nil for every other request.
+        var darkbloomRequestId: String? = nil
     }
 
     var active: [String: ActiveRequestState] = [:]
@@ -324,6 +332,14 @@ public actor EngineV2Bridge {
     /// bridge-side limit would just shadow the engine's admission with a
     /// second constant to keep in sync.
     var pumpTasks: [String: Task<Void, Never>] = [:]
+    /// How often a request watched while it has no first token looks whether it still waits in the engine's queue
+    /// (`EngineV2Bridge+QueueState.swift`): the owner's request under me first (`EngineV2Bridge+OwnerWait.swift`), and
+    /// a streamed local request whose head is held (`EngineV2Bridge+HeadHold.swift`), whose looks start 1 ms apart and
+    /// grow to this.
+    var queuePollInterval: Duration = .milliseconds(250)
+    /// Streamed local requests whose response head waits for the engine to admit them, each still waiting or refused
+    /// for this Mac's memory (`EngineV2Bridge+HeadHold.swift`).
+    var heldHeads: [String: HeldHead] = [:]
 
     /// Upper bound on a caller-supplied request-id we will use verbatim.
     /// Coordinator/provider ids are short (`req-<uuid-prefix>` or a
@@ -478,6 +494,9 @@ public actor EngineV2Bridge {
             ?? defaultMaxTokensContextLimit
         self.modelWindowTokens = engine is DistributedCBv2Engine
             ? nil : defaultOutputContextLimit.flatMap { $0 > 0 ? $0 : nil }
+        self.pairServedLimits = (engine as? DistributedCBv2Engine).map {
+            ($0.profile.served.outputTokens, $0.profile.served.contextTokens)
+        }
         self.clampedKVBackendFallbackReason =
             Self.heartbeatFallbackReason(kvBackendFallbackReason)
         self.stopTokenIds = EngineV2Translation.stopTokenIds(

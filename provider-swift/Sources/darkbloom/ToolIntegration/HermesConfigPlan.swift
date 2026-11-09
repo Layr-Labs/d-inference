@@ -26,6 +26,10 @@ enum HermesConfigPlan {
 
     /// The file's new bytes: Darkbloom's provider with the models Hermes can use (at least 64K context) and their
     /// context and vision, and Darkbloom as the main model, as `ollama launch` and `omlx launch` make theirs.
+    ///
+    /// Unlike OpenCode's default, which Darkbloom never sets over the owner's, Hermes' main model is always
+    /// Darkbloom's; the summary names the one it replaced (`replacedDefault`), so the start can say how to switch back.
+    /// A run again keeps Darkbloom's main model while Hermes can still use it, and names none as replaced.
     static func plan(
         existing: Data?, endpoint: IntegrationEndpoint, models listed: [IntegrationModel], provider: IntegrationProvider
     ) -> ToolConfigPlan {
@@ -43,15 +47,16 @@ enum HermesConfigPlan {
             var edit = try HermesEdit(text: original, provider: provider)
             guard let main = edit.mainModel(among: usable) else {
                 return .refused(.models("""
-                    Hermes needs a main model with at least 64K context on this Mac or your other Macs; Darkbloom \
-                    lists such models only on the network here.
+                    Hermes needs a main model with at least 64K context on this Mac, its pair or your other Macs; \
+                    Darkbloom lists such models only on the network here.
                     """))
             }
+            let replaced = edit.replacedMain()
             let change = try edit.setProvider(endpoint: endpoint, models: usable, main: main)
             try edit.setMainModel(main)
             let text = edit.result()
             let summary = ToolConfigSummary(
-                provider: change, models: usable.map(\.id), defaultModel: main,
+                provider: change, models: usable.map(\.id), defaultModel: main, replacedDefault: replaced,
                 leftOut: models.filter { ($0.contextLength ?? 0) < minimumContext }.map(\.id),
                 droppedComments: text.map { edit.droppedComments(in: $0) } ?? 0,
                 undescribed: usable.filter { $0.fallback != nil && entries[$0.id] == nil }.map(\.id))
@@ -59,6 +64,23 @@ enum HermesConfigPlan {
             return .change(Data(text.utf8), summary)
         } catch {
             return .refused(.file(error.reason))
+        }
+    }
+
+    /// Where the provider's block in a config's `bytes` points: its `api`, and the file its `key_cmd` reads
+    /// (`/bin/cat <file>`, as `plan` writes it); nil when the file has no such block or can't be read.
+    static func pointer(in bytes: Data, provider: IntegrationProvider) -> ToolPointer? {
+        try? readPointer(in: bytes, provider: provider)
+    }
+
+    /// `pointer(in:provider:)`, saying why a file can't be read. Only `api` and `key_cmd` are read, so a key written
+    /// into the block is never kept.
+    static func readPointer(in bytes: Data,
+                            provider: IntegrationProvider) throws(ToolAddress.Unreadable) -> ToolPointer? {
+        do {
+            return try HermesEdit(text: String(decoding: bytes, as: UTF8.self), provider: provider).pointer()
+        } catch {
+            throw ToolAddress.Unreadable(reason: error.reason)
         }
     }
 
@@ -131,17 +153,38 @@ private struct HermesEdit {
     // MARK: - The two sections
 
     /// The model `model.default` names when the main provider is already Darkbloom's and Hermes can still use it;
-    /// else this Mac's first usable model, else the first on the owner's other Macs. Never a network model by choice.
+    /// else this Mac's first usable model (or its pair's), else the first on the owner's other Macs. Never a network
+    /// model by choice.
     func mainModel(among usable: [IntegrationModel]) -> String? {
-        if let model, let children = try? children(of: model),
-           let selected = children.first(where: { $0.key == "provider" }).flatMap({ Self.scalar($0.value) }),
-           ["custom:\(provider.id)", provider.id].contains(selected),
-           let current = children.first(where: { $0.key == "default" || $0.key == "model" })
-               .flatMap({ Self.scalar($0.value) }),
-           usable.contains(where: { $0.id == current }) {
-            return current
+        if let current = currentMain(), current.isDarkbloom, usable.contains(where: { $0.id == current.model }) {
+            return current.model
         }
-        return (usable.first { $0.location == .thisMac } ?? usable.first { $0.location == .yourMacs })?.id
+        return usable.filter { $0.location != .network }.min { $0.location < $1.location }?.id
+    }
+
+    /// The main model before this edit, as `model` names it (`default`, or its alias key `model`, or a bare model ID),
+    /// with its provider; nil without one.
+    func currentMain() -> (model: String, provider: String?, isDarkbloom: Bool)? {
+        guard let model else { return nil }
+        // A name, not YAML's null or an empty string.
+        func named(_ value: String) -> String? {
+            Self.scalar(value).flatMap { ["", "~", "null", "Null", "NULL"].contains($0) ? nil : $0 }
+        }
+        guard model.value.isEmpty else { return named(model.value).map { ($0, nil, false) } }
+        let children = (try? children(of: model)) ?? []
+        func value(_ keys: Set<String>) -> String? { children.first { keys.contains($0.key) }.flatMap { named($0.value) } }
+        guard let name = value(["default", "model"]) else { return nil }
+        let selected = value(["provider"])
+        return (name, selected, selected.map { ["custom:\(provider.id)", provider.id].contains($0) } ?? false)
+    }
+
+    /// The main model before this edit in plain words, `gpt-6-astra via opencodex`; nil without one, or when it was
+    /// Darkbloom's already.
+    func replacedMain() -> String? {
+        guard let current = currentMain(), !current.isDarkbloom else { return nil }
+        guard let selected = current.provider else { return current.model }
+        let named = selected.hasPrefix("custom:") ? String(selected.dropFirst("custom:".count)) : selected
+        return "\(current.model) via \(named)"
     }
 
     mutating func setProvider(
@@ -229,7 +272,6 @@ private struct HermesEdit {
         indent: String, endpoint: IntegrationEndpoint, models: [IntegrationModel], main: String
     ) -> [String] {
         let (one, two, three) = (indent + unit, indent + unit + unit, indent + unit + unit + unit)
-        let keyCommand = "/bin/cat " + ToolIntegration.shellQuoted(endpoint.keyFile.path, onlyIfNeeded: true)
         // Hermes sends no output cap to a custom endpoint, and Darkbloom's default is 4096 tokens; the cap must suit
         // every model Hermes can switch to on this provider.
         let maxTokens = models.map { $0.outputLimit ?? min(IntegrationModels.defaultOutputCap, ($0.contextLength ?? 0) / 4) }
@@ -239,7 +281,7 @@ private struct HermesEdit {
             one + "name: " + Self.quoted(provider.name),
             one + "api: " + Self.quoted(endpoint.baseURL),
             one + "transport: " + Self.quoted("chat_completions"),
-            one + "key_cmd: " + Self.quoted(keyCommand),
+            one + "key_cmd: " + Self.quoted(Self.keyCommand(reading: endpoint.keyFile)),
             one + "default_model: " + Self.quoted(main),
             one + "extra_body:",
             two + "max_tokens: \(maxTokens)",
@@ -256,14 +298,9 @@ private struct HermesEdit {
     /// What Darkbloom's provider block says of each model now, by model ID: its context and vision, with the block's
     /// output cap. A block it can't read holds nothing.
     func modelEntries() -> [String: IntegrationModel.Entry] {
-        guard let providers, providers.value.isEmpty,
-              let mine = (try? children(of: providers))?.first(where: { $0.key == provider.id }),
-              let fields = try? children(of: mine) else { return [:] }
-        func value(_ key: String, in entries: [YAMLEntry]) -> String? {
-            entries.first { $0.key == key }.flatMap { Self.scalar($0.value) }
-        }
+        guard let fields = providerFields() else { return [:] }
         let cap = fields.first { $0.key == "extra_body" }.flatMap { try? children(of: $0) }
-            .flatMap { value("max_tokens", in: $0) }.flatMap { Int($0) }
+            .flatMap { Self.value("max_tokens", in: $0) }.flatMap { Int($0) }
         guard let models = fields.first(where: { $0.key == "models" }), let listed = try? children(of: models) else {
             return [:]
         }
@@ -271,11 +308,51 @@ private struct HermesEdit {
         for model in listed {
             let values = (try? children(of: model)) ?? []
             entries[model.key] = IntegrationModel.Entry(
-                contextLength: value("context_length", in: values).flatMap { Int($0) }, outputLimit: cap,
-                imageInput: value("supports_vision", in: values)?.lowercased() == "true")
+                contextLength: Self.value("context_length", in: values).flatMap { Int($0) }, outputLimit: cap,
+                imageInput: Self.value("supports_vision", in: values)?.lowercased() == "true")
         }
         return entries
     }
+
+    /// Where Darkbloom's provider block points (`HermesConfigPlan.pointer`); nil without one it can read.
+    func pointer() -> ToolPointer? {
+        guard let fields = providerFields() else { return nil }
+        return ToolPointer(baseURL: Self.value("api", in: fields),
+                           keyFile: Self.value("key_cmd", in: fields).flatMap(Self.keyFile(readBy:)))
+    }
+
+    /// The fields of Darkbloom's provider block; nil without one it can read.
+    private func providerFields() -> [YAMLEntry]? {
+        guard let providers, providers.value.isEmpty,
+              let mine = (try? children(of: providers))?.first(where: { $0.key == provider.id }) else { return nil }
+        return try? children(of: mine)
+    }
+
+    /// `key`'s scalar value among `entries`.
+    private static func value(_ key: String, in entries: [YAMLEntry]) -> String? {
+        entries.first { $0.key == key }.flatMap { scalar($0.value) }
+    }
+
+    // MARK: - The key command
+
+    /// The `key_cmd` Hermes runs for Darkbloom's key: `/bin/cat` and the key file's path as one shell word.
+    static func keyCommand(reading keyFile: URL) -> String {
+        keyReader + ToolIntegration.shellQuoted(keyFile.path, onlyIfNeeded: true)
+    }
+
+    /// The key file a `keyCommand` reads; nil for any other command, or a path that isn't absolute.
+    static func keyFile(readBy command: String) -> URL? {
+        guard command.hasPrefix(keyReader) else { return nil }
+        var path = String(command.dropFirst(keyReader.count))
+        // `ToolIntegration.shellQuoted`'s single quotes, each quote inside as '\''.
+        if path.hasPrefix("'") {
+            guard path.count >= 2, path.hasSuffix("'") else { return nil }
+            path = String(path.dropFirst().dropLast()).replacingOccurrences(of: "'\\''", with: "'")
+        }
+        return path.hasPrefix("/") ? URL(fileURLWithPath: path) : nil
+    }
+
+    private static let keyReader = "/bin/cat "
 
     // MARK: - Result
 

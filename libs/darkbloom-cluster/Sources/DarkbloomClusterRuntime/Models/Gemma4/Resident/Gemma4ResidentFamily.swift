@@ -19,7 +19,8 @@ extension Gemma4ResidentAdmission: LayerStageResidentAdmission {
             plan.fingerprint, profile.fingerprint, arithmeticSHA256, jaccl.fingerprint,
             configuration.allocatorPolicy.rawValue,
         ] + identity.peers.flatMap { [$0.id, $0.buildSHA256] }
-            + QwenResidentPrefillSelection.loadAgreementFields(configuration.prefillSchedule)))
+            + QwenResidentPrefillSelection.loadAgreementFields(configuration.prefillSchedule)
+            + (memoryProfile == profile ? [] : ["memory=" + memoryProfile.fingerprint])))
     }
 
     func request(_ value: ClusterWorkerReservation, id: UUID, now: UInt64) throws -> QwenLayerStageGenerationRequest {
@@ -46,6 +47,12 @@ extension Gemma4ResidentLoadedStage: LayerStageResidentStage {
         try Gemma4ResidentResourceCeilings(specification: specification).namedStateByteCeiling
     }
 
+    /// One request charged at its own context (`maximumTokens`, its prompt and
+    /// output): the whole model's state ledger, not only this stage's layers,
+    /// and one prefill frame's attention transient over this stage's layers.
+    /// The pipeline serves the memory plan's request
+    /// (`ClusterRuntimeAdapter.pipelineServesWholeProfile`), so that is the
+    /// longest a stage is charged; a longer one goes to tensor parallel.
     func requestAllowance(plan: QwenLayerStagePlan, rank: Int, maximumTokens: Int, chunkSize: Int,
                           decode: LayerStageDecodeShape,
                           bound: (Int) throws -> Int) throws -> QwenResidentRequestAllowance {

@@ -97,10 +97,34 @@ enum DistributedHTTPEventStream {
         return frame
     }
 
+    /// A pair request both Macs ended alone because one Mac's memory refused it
+    /// while it ran (`Terminal.memoryRefused`): the product's failure-frame
+    /// shape with the memory refusal's code and words, the attempt's usage and
+    /// the completion's identity. Nil for any other terminal.
+    static func memoryFailureFrame(for response: DistributedHTTPResponse, identity: ChunkIdentity? = nil) throws -> String? {
+        guard let terminal = response.terminal, terminal.memoryRefused else { return nil }
+        guard terminal.promptTokens >= 0, terminal.completionTokens >= 0 else { throw Failure.malformedFrame }
+        var object: [String: Any] = [
+            "error": ["type": "server_error", "code": InferenceErrorReason.requestExceedsNodeBudget.rawValue,
+                      "message": LocalMemoryRefusal.message],
+            "object": "chat.completion.chunk",
+            "choices": [["index": 0, "delta": ["content": ""], "finish_reason": "error"] as [String: Any]],
+            "attempt_usage": ["prompt_tokens": terminal.promptTokens, "completion_tokens": terminal.completionTokens]]
+        if let identity { object["id"] = identity.id; object["created"] = identity.created; object["model"] = identity.model }
+        let bytes = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
+        let frame = "data: \(String(decoding: bytes, as: UTF8.self))\n\n"
+        guard frame.utf8.count + ServerSentEventEncoder.done.utf8.count <= maximumTerminalBytes else { throw Failure.outputLimit }
+        return frame
+    }
+
     /// `prefillProgress`: the request's prompt progress, said in place of a probe every `ticker.interval` until the
     /// first token, on the probes' own timer (`LocalPrefillProgress.startComments` is not used here).
-    static func response(_ frames: AsyncThrowingStream<String, Error>, control: DistributedHTTPResponse,
-                         prefillProgress: LocalPrefillProgress? = nil) -> Response {
+    /// `clockForTesting` exists for tests: it times the probes and those comments, so a test can step through them
+    /// without waiting. Production passes none and gets the continuous clock.
+    static func response<C: Clock<Duration>>(_ frames: AsyncThrowingStream<String, Error>,
+                                             control: DistributedHTTPResponse,
+                                             prefillProgress: LocalPrefillProgress? = nil,
+                                             clockForTesting clock: C = ContinuousClock()) -> Response {
         let lifetime = DistributedHTTPBodyLifetime(control)
         // The product's event-stream headers (`LocalChatUploadResponder.sseResponse`).
         return Response(status: .ok, headers: [.contentType: "text/event-stream; charset=utf-8", .cacheControl: "no-cache"],
@@ -110,7 +134,8 @@ enum DistributedHTTPEventStream {
                     // The caller's isolation, named: SDKs with the `nonisolated(nonsending)` overload would otherwise
                     // pick it and send the non-Sendable writer into this helper.
                     try await withTaskCancellationHandler(operation: {
-                        try await write(frames, control: control, prefillProgress: prefillProgress, writer: &writer)
+                        try await write(frames, control: control, prefillProgress: prefillProgress, clock: clock,
+                                        writer: &writer)
                     }, onCancel: { control.disconnect() }, isolation: #isolation)
                 } catch {
                     control.disconnect(); throw error
@@ -118,13 +143,15 @@ enum DistributedHTTPEventStream {
             })
     }
 
-    private static func write(_ frames: AsyncThrowingStream<String, Error>, control: DistributedHTTPResponse,
-                              prefillProgress: LocalPrefillProgress?,
-                              writer: inout any ResponseBodyWriter) async throws {
+    private static func write<C: Clock<Duration>>(_ frames: AsyncThrowingStream<String, Error>,
+                                                  control: DistributedHTTPResponse,
+                                                  prefillProgress: LocalPrefillProgress?, clock: C,
+                                                  writer: inout any ResponseBodyWriter) async throws {
         let pump = DistributedHTTPFramePump(frames, maximumFrameBytes: maximumFrameBytes)
         do {
             try await withTaskCancellationHandler(operation: {
-                try await consume(pump, control: control, prefillProgress: prefillProgress, writer: &writer)
+                try await consume(pump, control: control, prefillProgress: prefillProgress, clock: clock,
+                                  writer: &writer)
             }, onCancel: { _ = pump.cancel() }, isolation: #isolation)
         } catch {
             let producer = pump.cancel(); await producer?.value
@@ -133,13 +160,13 @@ enum DistributedHTTPEventStream {
         let producer = pump.cancel(); await producer?.value
     }
 
-    private static func consume(_ pump: DistributedHTTPFramePump, control: DistributedHTTPResponse,
-                                prefillProgress: LocalPrefillProgress?,
-                                writer: inout any ResponseBodyWriter) async throws {
+    private static func consume<C: Clock<Duration>>(_ pump: DistributedHTTPFramePump, control: DistributedHTTPResponse,
+                                                    prefillProgress: LocalPrefillProgress?, clock: C,
+                                                    writer: inout any ResponseBodyWriter) async throws {
         let probe = ": keep-alive\n\n"
-        var nextProbe = ContinuousClock.now.advanced(by: .milliseconds(500))
+        var nextProbe = clock.now.advanced(by: .milliseconds(500))
         // When a probe next says the prompt's progress instead; nil without one, and once it has nothing more to say.
-        var nextProgressComment = prefillProgress.map { ContinuousClock.now.advanced(by: $0.ticker.interval) }
+        var nextProgressComment = prefillProgress.map { clock.now.advanced(by: $0.ticker.interval) }
         var total = 0
         var writerFailed = false
         var upstreamFailed = false
@@ -149,16 +176,16 @@ enum DistributedHTTPEventStream {
             readLoop: while true {
                 try Task.checkCancellation()
                 let item: DistributedHTTPFramePump.Item
-                switch await pump.next(until: nextProbe) {
+                switch await pump.next(until: nextProbe, clock: clock) {
                 case .item(let value): item = value
                 case .closed: throw CancellationError()
                 case .probe:
                     try Task.checkCancellation()
                     var line = probe
-                    if let due = nextProgressComment, let prefillProgress, ContinuousClock.now >= due {
+                    if let due = nextProgressComment, let prefillProgress, clock.now >= due {
                         if let comment = prefillProgress.comment {
                             line = comment
-                            nextProgressComment = ContinuousClock.now.advanced(by: prefillProgress.ticker.interval)
+                            nextProgressComment = clock.now.advanced(by: prefillProgress.ticker.interval)
                         } else {
                             nextProgressComment = nil
                         }
@@ -167,7 +194,7 @@ enum DistributedHTTPEventStream {
                     total += line.utf8.count
                     do { try await writer.write(ByteBuffer(string: line)) }
                     catch { writerFailed = true; throw error }
-                    nextProbe = ContinuousClock.now.advanced(by: .milliseconds(500))
+                    nextProbe = clock.now.advanced(by: .milliseconds(500))
                     continue
                 }
                 try Task.checkCancellation()
@@ -184,6 +211,7 @@ enum DistributedHTTPEventStream {
                 total += size
                 let visible = try isVisibleContent(frame)
                 if identity == nil { identity = ChunkIdentity(frame: frame) }
+                // The request's deadline is on the continuous clock, whatever times the probes.
                 control.expire(at: ContinuousClock.now)
                 // Defer final usage/finish/DONE until error disposition
                 // is known. At most the existing finish frame + DONE.
@@ -195,7 +223,7 @@ enum DistributedHTTPEventStream {
                 do { try await writer.write(ByteBuffer(string: frame)) }
                 catch { writerFailed = true; throw error }
                 if visible { control.contentAccepted() }
-                nextProbe = ContinuousClock.now.advanced(by: .milliseconds(500))
+                nextProbe = clock.now.advanced(by: .milliseconds(500))
             }
         } catch {
             if writerFailed || Task.isCancelled {
@@ -205,7 +233,11 @@ enum DistributedHTTPEventStream {
             upstreamFailed = true
         }
         control.expire(at: ContinuousClock.now)
-        if let productFailure = trailing.first(where: isProductFailureFrame) {
+        if let memory = try memoryFailureFrame(for: control, identity: identity) {
+            // The pair ended the request alone for a Mac's memory (D6): the
+            // typed memory error in place of the generic failure, nothing after it.
+            try await writer.write(ByteBuffer(string: memory))
+        } else if let productFailure = trailing.first(where: isProductFailureFrame) {
             // The shared pipeline framed the failure itself: the client gets
             // exactly the single-Mac endpoint's frame, and nothing follows it
             // (no [DONE]). It needs no native terminal, which a request the

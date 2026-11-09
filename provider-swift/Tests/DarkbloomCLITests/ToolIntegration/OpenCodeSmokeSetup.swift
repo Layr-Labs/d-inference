@@ -27,7 +27,9 @@ struct OpenCodeSmokeSetup {
         let localDirectory = try #require(ProcessInfo.processInfo.environment["DARKBLOOM_LOCAL_DIR"])
         try #require(isInside(URL(fileURLWithPath: localDirectory)))
 
-        let endpoint = try #require(IntegrationEndpoint.live(), "no live endpoint in \(localDirectory)/local.json")
+        // The script's fake server is no pair's part: this Mac's own cluster service isn't read.
+        let endpoint = try #require(IntegrationEndpoint.live(pairProcesses: { [] }),
+                                    "no live endpoint in \(localDirectory)/local.json")
         try #require(isInside(endpoint.keyFile))
         let models = IntegrationModels.resolve(try await IntegrationModels.fetch(endpoint), catalog: nil)
         let environment = ToolIntegrationEnvironment(

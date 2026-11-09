@@ -133,6 +133,8 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .glm5Next(let runtime): result = try runtime.start(requestID: id, onCommittedToken: token)
         }
         guard result.bothRequestStatesRetired else { throw WorkerFailure.invalid("Native generation did not retire both request states") }
+        // Both ranks ended it alone for a rank's memory (D6), in any mode.
+        try result.requireNotAborted()
         lastPromptCache = (result.reusedPromptTokens, result.storedPromptFrontiers)
         lastRequestTelemetry = result.telemetry.flatMap { $0.isEmpty ? nil : $0 }
         return result.finishReason
@@ -165,17 +167,21 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .glm5NextTensorParallel(let runtime): runtime.refreshServingContext()
         // Nil for a row whose profile is its memory plan.
         case .qwenTensorParallel(let runtime): runtime.refreshServingContext()
+        case .gemma4TensorParallel(let runtime): runtime.refreshServingContext()
         // A GLM pipeline rank admits each request on arrival: its context fits live memory.
         case .glm5Next(let runtime): runtime.refreshServingContext()
-        case .mimoV26, .mimoV26TensorParallel, .gemma4TensorParallel: nil
+        case .mimoV26, .mimoV26TensorParallel: nil
         }
     }
-    /// Qwen tensor parallel's lanes re-derive their serving context on a
-    /// keep-warm answer too (a row that serves its native context); every
-    /// other lane owner keeps the one its readiness reported.
+    /// Qwen and Gemma 4 tensor parallel's lanes re-derive their serving
+    /// context on a keep-warm answer too (a row that serves its native
+    /// context); every other lane owner keeps the one its readiness reported.
     func refreshLaneServingContext() -> Int? {
-        guard case .qwenTensorParallel(let runtime) = owner else { return nil }
-        return runtime.refreshServingContext()
+        switch owner {
+        case .qwenTensorParallel(let runtime): runtime.refreshServingContext()
+        case .gemma4TensorParallel(let runtime): runtime.refreshServingContext()
+        case .qwenDense, .mimoV26, .mimoV26TensorParallel, .glm5Next, .glm5NextTensorParallel: nil
+        }
     }
     // Batch lanes are supplied by each admitted native owner.
     var batchLanes: Int {

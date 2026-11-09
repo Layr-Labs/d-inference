@@ -8,9 +8,9 @@ import struct
 import subprocess
 import tempfile
 import time
-import urllib.parse
 import zlib
 
+from fixture_redirects import redirect_allowed
 from verified_download_cache import cached
 
 SPEC = importlib.util.spec_from_file_location(
@@ -27,12 +27,11 @@ ATTEMPT_SECONDS = 60
 # (35), empty reply (52), send (55) and receive (56). Plain `--retry` skips 18
 # and 56; `--retry-all-errors` would also retry 4xx and an oversize body (63).
 TRANSIENT_CURL_EXITS = {6, 7, 16, 18, 28, 35, 52, 55, 56, 92}
-# curl itself never follows a redirect: each hop is checked against the
-# requested origin before it is requested, so a fixture download never leaves
-# its host. The cap is urllib's, as in prepare-prompt-fixtures.py.
+# curl itself never follows a redirect: each hop is checked with
+# fixture_redirects.py before it is requested, so a fixture download never
+# leaves its host. The cap is urllib's, as in prepare-prompt-fixtures.py.
 REDIRECT_STATUSES = {"301", "302", "303", "307", "308"}
 MAX_REDIRECTS = 10
-DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
 class TransientTransfer(ValueError):
@@ -51,14 +50,9 @@ def png(rgb):
             + chunk(b"IDAT", compressed) + chunk(b"IEND", b""))
 
 
-def origin(url):
-    parts = urllib.parse.urlsplit(url)
-    return parts.scheme, parts.hostname, parts.port or DEFAULT_PORTS.get(parts.scheme)
-
-
 def fetch_once(name, size, seconds):
     url = PINS.BASE_URL + "/" + name
-    requested, stop = origin(url), time.monotonic() + seconds
+    stop = time.monotonic() + seconds
     with tempfile.TemporaryDirectory() as directory:
         body = Path(directory) / "body"
         for _ in range(MAX_REDIRECTS + 1):
@@ -78,7 +72,7 @@ def fetch_once(name, size, seconds):
             if status not in REDIRECT_STATUSES or not location:
                 break
             # A plain-HTTP downgrade is a different origin too.
-            if origin(location) != requested:
+            if not redirect_allowed(url, location):
                 raise ValueError("MiMo HTTP fixture redirected to another origin: " + name)
             url = location
         else:

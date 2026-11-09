@@ -1285,16 +1285,24 @@ many it downloaded, their bytes and the seconds it took.
 
 `scripts/prepare-mimo-prompt-fixtures.py` and
 `scripts/prepare-mimo-image-http-fixtures.py` apply the same retry rule to each
-metadata file, with these differences. The MiMo prompt script refuses a
-redirect to plain HTTP but follows a redirect to a different HTTPS host: Hugging
-Face serves `tokenizer.json` from its CDN host. It has no total deadline: each
-connect and read has a 60 s socket timeout. The image script has a 120 s
-deadline for each file, and it classifies curl's exit code: a cut transfer (for
-example exit 18 or 56) retries, and an oversize body (63) or a certificate
-failure does not. curl does not follow redirects for the image script. The
-script follows a redirect only when its scheme, host and port are those of the
-requested URL, for at most 10 redirects. A redirect to another origin, plain
-HTTP included, fails at once and is not requested. Provisioning failures fail
+metadata file, with these differences. The MiMo prompt script has no total
+deadline: each connect and read has a 60 s socket timeout. The image script has
+a 120 s deadline for each file, and it classifies curl's exit code: a cut
+transfer (for example exit 18 or 56) retries, and an oversize body (63) or a
+certificate failure does not. curl does not follow redirects for the image
+script.
+
+The three downloaders share one redirect rule (`scripts/fixture_redirects.py`),
+for at most 10 redirects. A download follows a redirect only when the target
+has the scheme, host and port of the URL that answered with it, and the target
+has no credentials. The MiMo prompt script also follows an HTTPS redirect from
+`https://huggingface.co` to a Hugging Face CDN host on port 443: `hf.co` or a
+name that ends in `.hf.co`. Hugging Face answers `tokenizer.json` at the pinned
+revision with a 302 to `us.aws.cdn.hf.co`; the other three metadata files take a
+same-origin 307. The pinned SHA-256 values still protect the bytes. Any other
+redirect (another host, another port or plain HTTP) fails at once, is not
+retried, and its target is never requested. The prompt-asset downloader also
+refuses a redirect target with a query or fragment. Provisioning failures fail
 qualification; they must not silently skip vectors.
 
 Public validation means **this implementation matches those fixed expectations**.

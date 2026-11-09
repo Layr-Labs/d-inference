@@ -160,17 +160,19 @@ enum NemotronSuperLocalBridgeBuilder {
             }
         }
 
-        /// Uses this loaded owner's tokenizer and the pinned literal template.
-        /// Input counts come from the admitted image processor, in message order.
-        func localImagePrompt(body: Data, templateBytes: Data, featureCounts: [Int]) throws -> [Int] {
+        /// The plan's prompt, as the text route renders it (messages with the
+        /// tool-choice and response-format instructions, declared tools and
+        /// controls), with this loaded owner's tokenizer and the pinned literal
+        /// template. Input counts come from the admitted image processor, in
+        /// message order.
+        func localImagePrompt(plan: NemotronSuperRequestPlan, body: Data, templateBytes: Data,
+                              featureCounts: [Int]) throws -> [Int] {
             _ = try mediaInstallation()
-            let request = try ProviderLoop.decodeOpenAIRequest(body)
-            guard request.model == modelID,
-                request.tools == nil, request.toolChoice == nil, request.responseFormat == nil,
-                !featureCounts.isEmpty, featureCounts.allSatisfy({ $0 > 0 && $0 <= contextLength })
+            guard plan.request.model == modelID, !featureCounts.isEmpty,
+                featureCounts.allSatisfy({ $0 > 0 && $0 <= contextLength })
             else { throw NemotronSuperLocalImageBinding.Failure.invalidInput }
             var imageCount = 0
-            for message in request.messages {
+            for message in plan.request.messages {
                 if case .parts(let parts) = message.content {
                     for part in parts {
                         if case .imageURL = part { imageCount += 1 }
@@ -180,14 +182,22 @@ enum NemotronSuperLocalBridgeBuilder {
             guard imageCount == featureCounts.count else {
                 throw NemotronSuperLocalImageBinding.Failure.invalidInput
             }
-            // Overflowing the context is the request's own fault, not capacity.
+            return try Self.mediaPromptRefusals {
+                try plan.imagePromptTokens(body: body, templateBytes: templateBytes, tokenizer: tokenizer.inner,
+                                           featureCounts: featureCounts, contextLength: contextLength)
+            }
+        }
+
+        /// A prompt beyond the context is the request's own fault, not
+        /// capacity; text that names a media placeholder leaves the slots
+        /// ambiguous. Both are named refusals of the media route.
+        private static func mediaPromptRefusals<Prompt>(_ render: () throws -> Prompt) throws -> Prompt {
             do {
-                return try NemotronSuperPromptContract.imagePrompt(messages: request.messages,
-                    body: body, templateBytes: templateBytes, tokenizer: tokenizer.inner,
-                    featureCounts: featureCounts, contextLength: contextLength)
-            } catch NemotronSuperPromptContract.Failure.contextExceeded,
-                NemotronSuperPromptContract.Failure.unsupportedMedia {
-                throw NemotronSuperLocalImageBinding.Failure.invalidInput
+                return try render()
+            } catch NemotronSuperPromptContract.Failure.contextExceeded {
+                throw NemotronSuperLocalImageBinding.Failure.contextExceeded
+            } catch NemotronSuperPromptContract.Failure.unsupportedMedia {
+                throw NemotronSuperLocalImageBinding.Failure.placeholderText
             }
         }
 
@@ -222,23 +232,19 @@ enum NemotronSuperLocalBridgeBuilder {
             return NemotronSuperVisionSubmission.make(prepared)
         }
 
-        /// The pinned template around the request's one video with this
-        /// owner's tokenizer, and the video's tubelet `labels` tokenized.
-        func localVideoPrompt(body: Data, templateBytes: Data,
+        /// The pinned template around the plan's one video, as the text
+        /// route renders its messages, tools and controls, with this owner's
+        /// tokenizer, and the video's tubelet `labels` tokenized.
+        func localVideoPrompt(plan: NemotronSuperRequestPlan, body: Data, templateBytes: Data,
                               labels: [String]) throws -> NemotronSuperPromptContract.VideoPrompt {
-            // The lock covers only the admission check; decoding the body and
-            // rendering read immutable state, so text admission never waits on them.
+            // The lock covers only the admission check; rendering reads
+            // immutable state, so text admission never waits on it.
             _ = try mediaInstallation()
-            let request = try ProviderLoop.decodeOpenAIRequest(body)
-            guard request.model == modelID,
-                request.tools == nil, request.toolChoice == nil, request.responseFormat == nil,
-                !labels.isEmpty, labels.count <= contextLength
+            guard plan.request.model == modelID, !labels.isEmpty, labels.count <= contextLength
             else { throw NemotronSuperLocalImageBinding.Failure.invalidInput }
-            do {
-                return try NemotronSuperPromptContract.videoPrompt(messages: request.messages, body: body,
-                    templateBytes: templateBytes, tokenizer: tokenizer.inner, labels: labels)
-            } catch NemotronSuperPromptContract.Failure.unsupportedMedia {
-                throw NemotronSuperLocalImageBinding.Failure.invalidInput
+            return try Self.mediaPromptRefusals {
+                try plan.videoPrompt(body: body, templateBytes: templateBytes, tokenizer: tokenizer.inner,
+                                     labels: labels)
             }
         }
 

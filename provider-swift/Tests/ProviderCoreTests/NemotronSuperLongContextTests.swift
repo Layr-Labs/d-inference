@@ -64,7 +64,7 @@ struct NemotronSuperLongContextTests {
         let images = Array(repeating: Self.jpeg(width: 2_048, height: 1_664), count: Policy.maximumImages)
         // 16 x 3,328 visual tokens: refused at the former 16,384-token window,
         // as the request's own fault rather than retryable capacity.
-        #expect(throws: Binding.Failure.invalidInput) {
+        #expect(throws: Binding.Failure.contextExceeded) {
             try Binding.encodedPlan(images, contextLength: 16_384)
         }
         let plan = try Binding.encodedPlan(images, contextLength: Policy.contextTokens)

@@ -252,15 +252,16 @@ extension NemotronSuperLocalOwnerTests {
             "messages": [["role": "user", "content": [
                 ["type": "text", "text": "fixture"],
                 ["type": "image_url", "image_url": ["url": "data:image/png;base64,AA=="]]]]]])
-        #expect(try owner.localImagePrompt(body: body, templateBytes: template, featureCounts: [3])
+        let plan = try NemotronSuperRequestPlan(body: body)
+        #expect(try owner.localImagePrompt(plan: plan, body: body, templateBytes: template, featureCounts: [3])
             == [1, 19, 18, 18, 18, 20, 2])
         // The framed span must fit the context: 62 features plus 2 markers do
         // not, which is the request's own fault (400), not capacity.
-        #expect(throws: NemotronSuperLocalImageBinding.Failure.invalidInput) {
-            try owner.localImagePrompt(body: body, templateBytes: template, featureCounts: [62])
+        #expect(throws: NemotronSuperLocalImageBinding.Failure.contextExceeded) {
+            try owner.localImagePrompt(plan: plan, body: body, templateBytes: template, featureCounts: [62])
         }
         #expect(throws: NemotronSuperLocalImageBinding.Failure.invalidInput) {
-            try owner.localImagePrompt(body: body, templateBytes: template, featureCounts: [2, 2])
+            try owner.localImagePrompt(plan: plan, body: body, templateBytes: template, featureCounts: [2, 2])
         }
         try await owner.closeAfterDrain()
         #expect(residency.snapshot.usedBytes == 0)
@@ -274,7 +275,8 @@ extension NemotronSuperLocalOwnerTests {
             media: ["type": "image_url", "image_url": ["url": "data:image/png;base64,AA=="]],
             expected: [1, 19, 18, 18, 18, 20, 2]
         ) { owner, body, template in
-            try owner.localImagePrompt(body: body, templateBytes: template, featureCounts: [3])
+            try owner.localImagePrompt(plan: NemotronSuperRequestPlan(body: body), body: body,
+                                       templateBytes: template, featureCounts: [3])
         }
     }
 
@@ -286,7 +288,8 @@ extension NemotronSuperLocalOwnerTests {
             media: ["type": "video_url", "video_url": ["url": "data:video/mp4;base64,AA=="]],
             expected: NemotronSuperPromptContract.VideoPrompt(prefix: [1], labels: [[3, 4]], suffix: [2])
         ) { owner, body, template in
-            try owner.localVideoPrompt(body: body, templateBytes: template, labels: labels)
+            try owner.localVideoPrompt(plan: NemotronSuperRequestPlan(body: body), body: body,
+                                       templateBytes: template, labels: labels)
         }
     }
 

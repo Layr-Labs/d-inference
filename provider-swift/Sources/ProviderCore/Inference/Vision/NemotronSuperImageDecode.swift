@@ -11,6 +11,9 @@ import MLXVLM
 /// No colour management is applied, as Pillow applies none by default.
 enum NemotronSuperImageDecode {
     enum Failure: Error, Equatable { case invalidHeader, unsupportedEncoding, sizeLimit, invalidRaster }
+    /// The refusal text of `unsupportedEncoding` (fixed, never request content).
+    static let unsupportedEncodingMessage =
+        "an image must be PNG or JPEG in an encoding this model's decoder serves (the Nemotron Super image formats)"
     enum Orientation: Equatable, Sendable { case preserveRaster, applyEXIF }
     enum Format: Equatable, Sendable { case png, jpeg }
     struct Raster {

@@ -75,6 +75,10 @@ public enum MediaIngest {
         case imageDecodeFailed
         case invalidURL(String)
         case mediaTooLarge(String)
+        /// Well-formed media of a kind, encoding or arrangement that this
+        /// route does not serve (fixed text naming the rule, never request
+        /// content). Failure code `unsupported_media`.
+        case unsupportedMedia(String)
 
         public var description: String {
             switch self {
@@ -94,6 +98,8 @@ public enum MediaIngest {
                 return "media must be sent as an inline base64 data: URI (e.g. \"data:image/jpeg;base64,…\") on this end-to-end-encrypted endpoint; remote http(s):// and file:// URLs are rejected. Got: \(shown)"
             case .mediaTooLarge(let detail):
                 return "inline media exceeds a decode limit (\(detail))"
+            case .unsupportedMedia(let detail):
+                return "inline media is not supported here (\(detail))"
             }
         }
 

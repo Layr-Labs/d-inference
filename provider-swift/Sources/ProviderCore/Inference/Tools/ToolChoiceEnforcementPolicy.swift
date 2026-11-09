@@ -17,9 +17,15 @@ enum ToolChoiceEnforcementPolicy {
 
     /// Per-model wire capability, never inferred from a caller's model label.
     /// Other families retain their existing media/grammar behavior until their
-    /// complete forced-choice and tool-result-media paths are qualified.
+    /// complete forced-choice and tool-result-media paths are qualified. The
+    /// managed Super owner renders media requests from the same plan as text
+    /// (`NemotronSuperRequestPlan`): forced calls are prompt-forced and
+    /// withheld until they validate, and the pinned template renders media in
+    /// tool results.
     static func advertisesNativeMediaTools(for model: ModelInfo) -> Bool {
-        model.modelType == "diffusion_gemma" && model.isVision == true
+        let family = model.modelType == "diffusion_gemma"
+            || NemotronSuperServingPolicy.isServingIdentity(modelID: model.id, modelType: model.modelType)
+        return family && model.isVision == true
             && model.templateRenderOK == true && advertisesCapability(for: model)
     }
 
@@ -76,8 +82,8 @@ enum ToolChoiceEnforcementPolicy {
             return true
         }
         // The managed Super owner prompt-forces required/named calls on text
-        // requests and withholds output until the call validates
-        // (`NemotronSuperLocalOutput`); its image requests refuse tools.
+        // and media requests and withholds output until the call validates
+        // (`NemotronSuperLocalOutput`).
         if NemotronSuperServingPolicy.isServingIdentity(modelID: model.id, modelType: model.modelType) {
             return true
         }

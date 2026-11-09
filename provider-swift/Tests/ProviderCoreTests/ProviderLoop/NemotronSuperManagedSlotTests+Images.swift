@@ -34,6 +34,54 @@ extension NemotronSuperManagedSlotTests {
         var value: Value? { lock.withLock { stored } }
     }
 
+    /// Coordinator image requests take the text route's plan through the
+    /// sealed path: JSON output, tools with a forced choice, and the text
+    /// route's settings are served; a refusal keeps its named failure code.
+    @Test(.timeLimit(.minutes(3)))
+    func coordinatorImagesServeJSONOutputAndTools() async throws {
+        let fixture = try await Self.fixture(mode: .auto)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let loop = fixture.loop, script = fixture.script
+        try await loop.ensureModelLoaded(modelId: Self.modelID, allowEviction: false,
+                                         revisionDirectory: fixture.directory)
+        let held = await fixture.budget.reservationBytesSnapshot()
+        let recorder = Recorder(), consumer = NodeKeyPair.generate()
+        func image(_ pieces: [String], _ extra: [String: Any], uri: String = Self.tinyPNG) throws -> Data {
+            let base = try Self.imageBody(pieces, script: script, maxTokens: pieces.count, image: uri)
+            var value = try #require(try JSONSerialization.jsonObject(with: base) as? [String: Any])
+            value.merge(extra) { _, new in new }
+            return try JSONSerialization.data(withJSONObject: value)
+        }
+        let json = try await Self.send(image(["{\"ok\"", ": true}"],
+            ["response_format": ["type": "json_object"], "min_p": 0]), to: loop, recorder: recorder, consumer: consumer)
+        #expect(SuperSSE(json.sse).content == #"{"ok": true}"#, "\(json.terminal)")
+        #expect(script.prompt.contains("<image>")
+            && script.prompt.contains("You must respond with a single valid JSON object."))
+        let invalid = try await Self.send(image(["not", " json"], ["response_format": ["type": "json_object"]]),
+                                          to: loop, recorder: recorder, consumer: consumer)
+        #expect(SuperSSE(invalid.sse).content.isEmpty, "\(invalid.terminal)")
+        let weather: [String: Any] = ["type": "function", "function": ["name": "get_weather",
+            "parameters": ["type": "object", "properties": ["city": ["type": "string"]], "required": ["city"]]]]
+        let call = ["<tool_call>", "\n<function=get_weather>", "\n<parameter=city>", "\nParis",
+                    "\n</parameter>", "\n</function>", "\n</tool_call>"]
+        let tool = try await Self.send(image(call, ["tools": [weather], "tool_choice": "required",
+            "parallel_tool_calls": false]), to: loop, recorder: recorder, consumer: consumer)
+        #expect(SuperSSE(tool.sse).toolCalls.map(\.name) == ["get_weather"], "\(tool.terminal)")
+        #expect(SuperSSE(tool.sse).toolCalls.map(\.arguments) == [#"{"city":"Paris"}"#])
+        #expect(script.prompt.contains("<name>get_weather</name>") && script.prompt.contains("<image>"))
+        // Refusals name their cause: media the route does not serve, and a
+        // control the text route refuses too.
+        let tiff = try await Self.send(image(["x"], [:], uri: "data:image/tiff;base64,AAAA"),
+                                       to: loop, recorder: recorder, consumer: consumer)
+        #expect(Self.failure(tiff.terminal)?.code == .unsupportedMedia, "\(tiff.terminal)")
+        let control = try await Self.send(image(["x"], ["min_p": 0.5]), to: loop, recorder: recorder,
+                                          consumer: consumer)
+        #expect(Self.failure(control.terminal)?.code == .invalidRequest, "\(control.terminal)")
+        #expect(await fixture.budget.reservationBytesSnapshot() == held)
+        #expect(await loop.unloadModel(Self.modelID))
+        #expect(await fixture.budget.outstandingReservedBytes() == 0)
+    }
+
     @Test(.timeLimit(.minutes(3)))
     func imagesRunTargetOnlyBesideSpeculatingText() async throws {
         let fixture = try await Self.fixture(mode: .auto)

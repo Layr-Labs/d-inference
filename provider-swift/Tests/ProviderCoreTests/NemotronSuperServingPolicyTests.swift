@@ -870,6 +870,21 @@ struct NemotronSuperServingPolicyTests {
         #expect(!ToolChoiceEnforcementPolicy.advertisesCapability(for: info(Self.superID, "qwen3")))
     }
 
+    /// Forced tool choice with media, and media in tool results, are
+    /// advertised (`native_media_tools`) for the registry id with vision and
+    /// a template that renders: the media route renders from the same plan
+    /// as text. Another id, or a build without either, is not.
+    @Test func nativeMediaToolsAreAdvertisedForTheServingIdentityOnly() {
+        func info(_ id: String, vision: Bool? = true, renders: Bool? = true) -> ModelInfo {
+            ModelInfo(id: id, modelType: "nemotron_h_omni", sizeBytes: 1, estimatedMemoryGb: 1,
+                      isVision: vision, templateRenderOK: renders)
+        }
+        #expect(ToolChoiceEnforcementPolicy.advertisesNativeMediaTools(for: info(Self.superID)))
+        #expect(!ToolChoiceEnforcementPolicy.advertisesNativeMediaTools(for: info(Self.hfID)))
+        #expect(!ToolChoiceEnforcementPolicy.advertisesNativeMediaTools(for: info(Self.superID, vision: nil)))
+        #expect(!ToolChoiceEnforcementPolicy.advertisesNativeMediaTools(for: info(Self.superID, renders: false)))
+    }
+
     /// The scanner's Super branch with the pinned `config.json` and index and
     /// a stand-in shard. Gated on the directory holding those reference files.
     @Test(.enabled(if: ProcessInfo.processInfo.environment["NEMOTRON_SUPER_REFERENCE_DIR"] != nil))
@@ -887,7 +902,7 @@ struct NemotronSuperServingPolicyTests {
         let info = try #require(ModelScanner.parseModelInfo(snapshotDir: directory, modelName: Self.superID))
         let footprint = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: info.sizeBytes)
         #expect(info.modelType == "nemotron_h_omni" && info.quantization == "nvfp4")
-        #expect(info.isVision == true && info.templateRenderOK == true && info.nativeMediaTools == nil)
+        #expect(info.isVision == true && info.templateRenderOK == true && info.nativeMediaTools == true)
         #expect(info.estimatedMemoryGb == footprint.estimatedMemoryGb)
         #expect(EngineV2SupportedModels.isSupported(model: info))
         // Any other id of the same bytes keeps the ordinary text-only scan.

@@ -764,8 +764,8 @@ image's charge. As for images, a body over
 `NemotronSuperServingPolicy.maximumEncodedBodyBytes` (40 MiB, which holds one
 part at the shared 25 MiB inline-media cap as base64 and every body the
 provider's transports deliver) returns `media_too_large`, a video prompt over
-the context returns the invalid-media 400, and a charge the shared budget
-cannot hold returns the media-memory 503. The owner lock covers
+the context returns `invalid_request` (400, `promptExceedsContext`), and a
+charge the shared budget cannot hold returns the media-memory 503. The owner lock covers
 only the admission check while the video prompt is decoded and rendered.
 `NemotronSuperVideoDecode.Frames` decodes the movie in order as the batch needs
 frames: AVFoundation decodes every frame up to the last sampled one to BGRA,
@@ -799,11 +799,35 @@ batch's last tubelet, since a token scores only against the same position of
 the previous tubelet; the host scores then select the kept rows, the same rows
 EVS selects over the whole video. Each tubelet's kept rows are substituted
 at its `<image>` run as a causal span with `mediaKind` `video`. A tubelet whose
-rows were all pruned keeps its label and wrappers and has no span. Invalid,
-oversized or undecodable videos map to the invalid-media 400; a spent decode
-allowance maps to the retryable 503. AVFoundation's
+rows were all pruned keeps its label and wrappers and has no span. A codec or
+frame layout the route does not serve maps to `unsupported_media`, a video
+above a frame, frame-count or decoded-pixel limit to `media_too_large`, and an
+unreadable movie to `invalid_media`; a spent decode allowance maps to the
+retryable 503. AVFoundation's
 BGRA conversion differs from FFmpeg's at chroma edges, so frames are close to,
 not equal to, the reference loader's.
+
+Image and video requests take the same request plan as text
+(`NemotronSuperRequestPlan`): the prompt renders the plan's messages, with the
+tool-choice and response-format instructions, its declared tools and its
+controls (`imagePromptTokens`, `videoPrompt`), the bridge runs the plan's
+`bridgeRequest`, and `NemotronSuperLocalOutput` withholds and validates tool
+calls and JSON answers as for text. So `response_format` (`json_object`,
+`json_schema`), `tools`, `tool_choice` (auto, none, required, a named
+function), `parallel_tool_calls` and `min_p: 0` are served with media, and
+every control the text route refuses is refused with media in the same way
+(`invalid_request`). Super therefore advertises `native_media_tools`
+(`ToolChoiceEnforcementPolicy.advertisesNativeMediaTools`), and the coordinator
+routes forced tool choice with media, and media in tool results, to it.
+`NemotronSuperLocalImageBinding.encodedBody` keeps only the media rules. Each
+refusal names its cause by its failure code (`SuperHTTPErrors.map`):
+
+| Cause | Failure code |
+|---|---|
+| A request control, tool or prompt fault, or a prompt with its visual tokens beyond the context | `invalid_request` |
+| A media label or source the route does not take, audio, a content part that is not text, image or video, more than 16 images, images with a video, a second video, an image encoding or geometry the decoder does not serve, a video codec, frame layout or frame geometry it does not serve | `unsupported_media` (`MediaIngest.MediaError.unsupportedMedia`) |
+| An image above the byte, pixel or resize-workspace limit, a body above the owner's bound, a video above a frame, frame-count or decoded-pixel limit | `media_too_large` |
+| Corrupt or truncated media, or text that names `<image>` or `<video>` | `invalid_media` |
 
 SDK installation now holds resident plus bounded staging reservations across
 sequential exclusive construction epochs. Completed fences release temporary

@@ -65,7 +65,7 @@ struct VideoReaderFailureMappingTests {
 
         let superVideo = SuperHTTPErrors.map(media, media: true)
         #expect(superVideo as? MultiModelBatchSchedulerEngineError
-            == .multimodalRejected("unsupported or invalid inline video request"))
+            == .multimodalRejected("the inline video could not be read"))
         #expect(wire(superVideo) == (.invalidMedia, 400))
         #expect(isRetryable(SuperHTTPErrors.map(transient, media: true)))
     }

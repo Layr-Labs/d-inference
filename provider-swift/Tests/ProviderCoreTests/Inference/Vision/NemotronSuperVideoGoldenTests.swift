@@ -207,8 +207,8 @@ struct NemotronSuperVideoGoldenTests {
         for render in golden.chatTemplate.renders {
             let body = try NemotronSuperVideoFixtures.body(render)
             let prompt = try NemotronSuperPromptContract.videoPrompt(
-                messages: ProviderLoop.decodeOpenAIRequest(body).messages, body: body,
-                templateBytes: Self.template(), tokenizer: SuperVideoTextTokenizer(), labels: clip.tubeletLabels)
+                messages: ProviderLoop.decodeOpenAIRequest(body).messages, body: body, declared: nil,
+                controls: NemotronSuperPromptContract.controls(body: body), templateBytes: Self.template(), tokenizer: SuperVideoTextTokenizer(), labels: clip.tubeletLabels)
             let text = SuperVideoTextTokenizer.text(try prompt.tokens(keptCounts: kept, contextLength: 16_384))
             #expect(text == render.templateText.replacingOccurrences(of: "<video>", with: replacement), "\(render.name)")
         }
@@ -223,8 +223,8 @@ struct NemotronSuperVideoGoldenTests {
         for clip in golden.clips {
             let body = try NemotronSuperVideoFixtures.body(render)
             let prompt = try NemotronSuperPromptContract.videoPrompt(
-                messages: ProviderLoop.decodeOpenAIRequest(body).messages, body: body,
-                templateBytes: Self.template(), tokenizer: tokenizer, labels: clip.tubeletLabels)
+                messages: ProviderLoop.decodeOpenAIRequest(body).messages, body: body, declared: nil,
+                controls: NemotronSuperPromptContract.controls(body: body), templateBytes: Self.template(), tokenizer: tokenizer, labels: clip.tubeletLabels)
             #expect(prompt.labels == clip.labelTokenIds, "\(clip.file)")
         }
         let clip = try #require(golden.clips.first { $0.file == golden.chatTemplate.clip })
@@ -232,8 +232,8 @@ struct NemotronSuperVideoGoldenTests {
         for render in golden.chatTemplate.renders {
             let body = try NemotronSuperVideoFixtures.body(render)
             let prompt = try NemotronSuperPromptContract.videoPrompt(
-                messages: ProviderLoop.decodeOpenAIRequest(body).messages, body: body,
-                templateBytes: Self.template(), tokenizer: tokenizer, labels: clip.tubeletLabels)
+                messages: ProviderLoop.decodeOpenAIRequest(body).messages, body: body, declared: nil,
+                controls: NemotronSuperPromptContract.controls(body: body), templateBytes: Self.template(), tokenizer: tokenizer, labels: clip.tubeletLabels)
             let tokens = try prompt.tokens(keptCounts: kept, contextLength: 16_384)
             #expect(tokens == render.prefixTokenIds + clip.replacementTokens + render.suffixTokenIds, "\(render.name)")
             #expect(tokens.count == render.totalPromptTokens, "\(render.name)")

@@ -66,8 +66,9 @@ export type SandboxAction =
   | { action: 'sandbox_pause' | 'sandbox_resume' }
   // `darkbloom sandbox uninstall --yes`: running jobs end unpaid.
   | { action: 'sandbox_uninstall' }
-  // `darkbloom sandbox setup --yes --no-browser [--linux-slots n] [--macos-slots n] [--disk p]…`.
-  // Its operation reports `setup` (below) while it runs.
+  // `darkbloom sandbox setup --yes --no-browser [--linux-slots n] [--macos-slots n] [--disk p]…
+  // [--wait-ready]`. A disk is an absolute path, such as /Volumes/FastSSD. Its operation reports
+  // `sandbox_setup` (below) while it runs.
   | {
       action: 'sandbox_setup';
       linux_slots?: number;
@@ -96,4 +97,12 @@ export interface SandboxSetupProgress {
   background?: boolean;
   // Image download progress, 0 to 1, with `wait_ready`.
   progress?: number | null;
+  // The CLI's exit status once the setup ended without success: the installer's `2` (this Mac
+  // can't host Darkbloom Sandbox as it is), `3` (not enrolled) or `4` (a job is running, so
+  // nothing changed), `130` (stopped), else `1`. Absent while it runs; without it the app reads
+  // the CLI's own last line (docs/provider/cli-reference.md#installer-progress-events).
+  exit_status?: number | null;
 }
+
+// Jobs at a time the CLI takes (`--linux-slots`, `--macos-slots`); both 0 is refused.
+export const sandboxSlotLimits = { linux: 16, macos: 2 } as const;

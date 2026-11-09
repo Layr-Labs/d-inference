@@ -5522,23 +5522,26 @@ it alone:
   longest context the reservation gate admits now (`servingContextTokens`,
   `refreshServingContext`; kept prefix entries count as room). The paged
   host's bound is the profile's; pages grow with each request.
-- Pipeline: the memory plan's request, as for every family. The adapter says
-  whether its stages serve the whole profile
-  (`ClusterRuntimeAdapter.pipelineServesWholeProfile`, false for every
-  adapter), and the worker's stages (`LayerStageResidentAdmission.servedProfile`)
-  and the provider (`ClusterModelFeaturePolicy.servedProfile`) both read that
-  one rule, so a pair never advertises a context its ranks refuse. A Gemma
-  pipeline served its whole profile in `dev` before 0.10.11. On pair-2 a 128K
-  request then failed the M5 Max stage's running-request memory check
-  mid-prefill (594 MiB compressed, so no file cache counted). A pipeline stage
-  whose check refuses a running request ends its worker
-  (`QwenResidentRequestExecution.run`'s check, the worker coordinator's
-  failure path), so the client got a 500 and the pair stopped serving for
-  about a minute (journey 3, D6). Tensor parallel's ranks end such a request
-  alone, so a longer Gemma request goes there. Each stage charges the whole
-  model's ledger (`Gemma4StateBudget`) at the request's context: 2.0 GB, plus
-  one prompt frame's 2.2 GB on a stage with a full-attention layer, at the
-  standard request.
+- Pipeline: the memory plan's request, as for every family: 65,536 tokens of
+  context, with prompts up to 32,768. The adapter says whether its stages
+  serve the whole profile (`ClusterRuntimeAdapter.pipelineServesWholeProfile`,
+  false for every adapter), and the worker's stages
+  (`LayerStageResidentAdmission.servedProfile`) and the provider
+  (`ClusterModelFeaturePolicy.servedProfile`) both read that one rule, so a
+  pair never advertises a context its ranks refuse. The release facts carry
+  the same prompt limit in the pipeline's parity qualifications, so a
+  coordinator sends a longer Gemma prompt to tensor parallel or one Mac. Each
+  stage charges the whole model's ledger (`Gemma4StateBudget`) at the
+  request's context: 2.0 GB, plus one prompt frame's 2.2 GB on a stage with a
+  full-attention layer, at the standard request, which LOAD and READY have
+  already sized.
+- **Known limit of every pipeline, until a stage's refusal ends only its
+  request:** a stage whose running-request memory check refuses a request
+  mid-prompt (`QwenResidentRequestExecution.run`'s check, under memory
+  pressure on that stage's Mac) ends its worker through the worker
+  coordinator's failure path. The client then gets a 500 and the pair stops
+  serving for about a minute before it serves again by itself. Tensor
+  parallel's ranks end such a request alone.
 
 The provider holds a request to what its mode serves
 (`ClusterModelFeaturePolicy.servedProfile`: tensor parallel's whole profile, a

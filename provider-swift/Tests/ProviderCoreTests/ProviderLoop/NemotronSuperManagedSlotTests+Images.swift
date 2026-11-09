@@ -74,16 +74,19 @@ extension NemotronSuperManagedSlotTests {
         #expect(script.prompt.contains("<name>get_weather</name>") && script.prompt.contains("<image>"))
         // Media in a tool result, which `native_media_tools` advertises.
         script.set(["Sunny."])
-        let call: [String: Any] = ["id": "call-1", "type": "function",
-                                   "function": ["name": "get_weather", "arguments": #"{"city":"Paris"}"#]]
-        let result = try await Self.send(try JSONSerialization.data(withJSONObject: [
-            "model": Self.modelID, "stream": true, "temperature": 0, "max_tokens": 1,
-            "chat_template_kwargs": ["enable_thinking": false], "tools": [weather],
-            "messages": [["role": "user", "content": "What does the weather camera show?"],
-                         ["role": "assistant", "content": NSNull(), "tool_calls": [call]],
-                         ["role": "tool", "tool_call_id": "call-1",
-                          "content": [["type": "image_url", "image_url": ["url": Self.tinyPNG]]]]]]),
-            to: loop, recorder: recorder, consumer: consumer)
+        let earlierCall: [String: Any] = ["id": "call-1", "type": "function",
+                                          "function": ["name": "get_weather", "arguments": #"{"city":"Paris"}"#]]
+        let toolImage: [String: Any] = ["type": "image_url", "image_url": ["url": Self.tinyPNG]]
+        let history: [[String: Any]] = [
+            ["role": "user", "content": "What does the weather camera show?"],
+            ["role": "assistant", "content": NSNull(), "tool_calls": [earlierCall]],
+            ["role": "tool", "tool_call_id": "call-1", "content": [toolImage]],
+        ]
+        let resultBody: [String: Any] = ["model": Self.modelID, "stream": true, "temperature": 0,
+            "max_tokens": 1, "chat_template_kwargs": ["enable_thinking": false], "tools": [weather],
+            "messages": history]
+        let result = try await Self.send(try JSONSerialization.data(withJSONObject: resultBody),
+                                         to: loop, recorder: recorder, consumer: consumer)
         #expect(SuperSSE(result.sse).content == "Sunny.", "\(result.terminal)")
         #expect(script.prompt.contains("<tool_response>\n<image>"))
         // Refusals name their cause: media the route does not serve, and a

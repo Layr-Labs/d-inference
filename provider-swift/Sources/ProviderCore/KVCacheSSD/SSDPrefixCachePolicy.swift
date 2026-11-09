@@ -234,17 +234,20 @@ enum SSDPrefixCachePolicy {
     static func terminalBeforePublication(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
-        let v = environment[terminalBeforePublicationFlag]?
-            .trimmingCharacters(in: .whitespaces).lowercased()
-        return v == "1" || v == "true" || v == "yes" || v == "on"
+        isOptedIn(terminalBeforePublicationFlag, environment: environment)
     }
 
     static func strictFsync(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
-        let v = environment[strictFsyncFlag]?
-            .trimmingCharacters(in: .whitespaces).lowercased()
-        return v == "1" || v == "true" || v == "yes" || v == "on"
+        isOptedIn(strictFsyncFlag, environment: environment)
+    }
+
+    /// An off-by-default flag is on only for 1, true, yes or on, in any case
+    /// and with surrounding spaces or tabs.
+    private static func isOptedIn(_ flag: String, environment: [String: String]) -> Bool {
+        let value = environment[flag]?.trimmingCharacters(in: .whitespaces).lowercased()
+        return ["1", "true", "yes", "on"].contains(value)
     }
 
     // MARK: - Write-behind bounds

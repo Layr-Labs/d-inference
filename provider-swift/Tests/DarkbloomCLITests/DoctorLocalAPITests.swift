@@ -518,6 +518,33 @@ struct DoctorLocalAPITests {
         #expect(openCode.message == "points at http://127.0.0.1:8001/v1 (~/.config/opencode/opencode.jsonc)")
     }
 
+    /// A pair's Mac that passes the pair's API on through its own port (#1894) and can't answer for it now says why, in
+    /// `status`'s words (`memberAPIDown`): with the other Mac away, its relay answers 503, which no restart mends; with
+    /// another program holding its port, no relay runs.
+    @Test func aRelayThatCantAnswerForThePairSaysWhyAsStatusDoes() throws {
+        var away = Self.pair(role: .member, both: true, started: true)
+        away.localAPIBind = "0.0.0.0"
+        away.relaying = ClusterPairLocalAPI.Address(host: "0.0.0.0", port: 8002)
+        away.relayRankZeroAway = true
+        let awayWords = try #require(away.memberAPIDown)
+        #expect(awayWords.hasPrefix("http://127.0.0.1:8002/v1 on this Mac answers 503 for now."))
+        let relay = section(.init(saved: nil, live: Self.endpoint(pid: 777, port: 8002, host: "0.0.0.0"), answers: false,
+                                  keyFile: Self.keyFile, pair: away))
+        let address = try #require(find("address", in: relay.diagnostics))
+        #expect(address.level == .warn)
+        #expect(address.message == awayWords)
+        #expect(address.fix == nil)
+
+        var held = away
+        held.relaying = nil
+        held.relayRankZeroAway = false
+        held.relayPortHeld = 8002
+        let heldWords = try #require(held.memberAPIDown)
+        let heldAddress = try #require(find("address", in: section(.init(saved: nil, pair: held)).diagnostics))
+        #expect(heldAddress.level == .warn)
+        #expect(heldAddress.message == heldWords)
+    }
+
     @Test func noLineEverHoldsTheKeyOrASpeed() {
         var terminal = DoctorLocalAPI.Facts(saved: LocalSettings(mode: .network), running: Self.state(connected: false),
                                             live: Self.endpoint(), answers: false, keyFile: nil)

@@ -5,6 +5,13 @@ import MLXLLM
 import Testing
 @_spi(Benchmark) @testable import DarkbloomClusterRuntime
 
+/// A latch's live-check count, from the rank that polls it.
+private final class AbortPolls: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    func next() -> Int { lock.withLock { value += 1; return value } }
+}
+
 @Suite("GLM regular pipeline over actual two-rank local sockets", .serialized)
 struct GLM5NextPipelineGenerationTests {
     private enum Failure: Error { case cancelled, tokenACK, fence, wrongRank, retirement }
@@ -222,6 +229,65 @@ struct GLM5NextPipelineGenerationTests {
         #expect(pair.first.control.finishReason == nil && pair.last.control.finishReason == nil)
         #expect(!pair.first.session.isClosed && !pair.last.session.isClosed)
         try pair.closeFailed()
+    }
+
+    /// D6 on a real two-stage pipeline: rank 1's memory gate refuses at its
+    /// third poll, mid-prompt. Both ranks stop at the slot rank 1 owes, close
+    /// their sessions, confirm each other's retirement and report rank 1's
+    /// abort; nothing is published and neither transport or data plane is
+    /// given up. The next request then runs on the same two collectives and
+    /// selects the full target's tokens. Rank 0's own refusal stops it at the
+    /// header it owes, before its forward.
+    @Test func aMemoryRefusalMidPromptEndsOnlyThatRequestAndTheWireServesTheNext() throws {
+        let fixture = try Fixture()
+        for stopping in 0...1 {
+            let request = try fixture.request(chunk: 1, outputs: 3), agreement = try fixture.agreement(request)
+            let wire = try ResidualStreamCollectiveFixture()
+            let polls = AbortPolls()
+            let latch = QwenStageAbort(rank: stopping, intervalNanoseconds: 0) {
+                if polls.next() == 3 { throw QwenResidentMemoryRefusal(message: "fixture: the memory gate refused") }
+            }
+            let first = try GLM5NextPipelineGeneration(session: .init(stage: fixture.first, agreement: agreement),
+                collective: wire.first, abort: stopping == 0 ? latch : nil)
+            let last = try GLM5NextPipelineGeneration(session: .init(stage: fixture.last, agreement: agreement),
+                collective: wire.last, abort: stopping == 1 ? latch : nil)
+            var published: [Int] = []
+            var producer: Result<QwenLayerStageGenerationResult, Error>?
+            let consumer = try wire.exchange(send: {
+                producer = Result { try first.run(onCommittedToken: { published.append($0); return true }, check: {}) }
+            }, receive: { _ in
+                Result { try last.run(onCommittedToken: { _ in throw Failure.wrongRank }, check: {}) }
+            })
+            for (rank, result) in [(0, try #require(producer)), (1, consumer)] {
+                do { _ = try result.get(); Issue.record("rank \(rank) finished a request its peer aborted") }
+                catch let aborted as QwenStageAborted {
+                    #expect(aborted.abort == .init(reason: .memory, rank: stopping) && aborted.local == (rank == stopping))
+                } catch { Issue.record("rank \(rank) failed instead of aborting: \(error)") }
+            }
+            #expect(published.isEmpty)
+            #expect(first.session.isClosed && last.session.isClosed)
+            #expect(!first.session.isFailed && !last.session.isFailed)
+            #expect(!first.transport.isFailed && !last.transport.isFailed)
+            #expect(first.transport.isAborted && last.transport.isAborted)
+            #expect(first.session.committedTokens < request.promptCount)
+
+            let next = try fixture.request(chunk: 2, outputs: 3), expected = try fixture.greedyOracle(next)
+            let nextAgreement = try fixture.agreement(next)
+            let a = try GLM5NextPipelineGeneration(session: .init(stage: fixture.first, agreement: nextAgreement),
+                collective: wire.first)
+            let b = try GLM5NextPipelineGeneration(session: .init(stage: fixture.last, agreement: nextAgreement),
+                collective: wire.last)
+            var served: [Int] = []
+            var nextProducer: Result<QwenLayerStageGenerationResult, Error>?
+            let nextConsumer = try wire.exchange(send: {
+                nextProducer = Result { try a.run(onCommittedToken: { served.append($0); return true }, check: {}) }
+            }, receive: { _ in
+                Result { try b.run(onCommittedToken: { _ in throw Failure.wrongRank }, check: {}) }
+            })
+            #expect(try #require(nextProducer).get().selectedTokenIDs == expected)
+            #expect(try nextConsumer.get().selectedTokenIDs == expected)
+            #expect(served == expected)
+        }
     }
 
     @Test func mismatchedReadinessFailsBeforeFirstNativeFrameOrToken() throws {

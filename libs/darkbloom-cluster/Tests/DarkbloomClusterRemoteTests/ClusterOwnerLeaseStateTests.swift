@@ -185,6 +185,42 @@ final class ClusterOwnerLeaseStateTests: XCTestCase {
         XCTAssertThrowsError(try send(.reserve(requestID: requestID, capacityLimitBytes: 80, remainingNanoseconds: 500), to: &again))
     }
 
+    /// D6: a started request both ranks ended for one rank's memory retires
+    /// as `aborted`. That is the request's alone: no quarantine, no fence, and
+    /// once its resources are released the lease takes the next reservation.
+    /// Only a started request aborts.
+    func testAnAbortedRunningRequestRetiresWithoutQuarantine() throws {
+        var state = try reserved()
+        _ = try send(.start(requestID: requestID), to: &state, now: 120)
+        try state.observeRetired(requestID: requestID, retirement: .aborted)
+        XCTAssertFalse(state.status.quarantined)
+        XCTAssertFalse(state.requiresNativeFence)
+        XCTAssertEqual(try send(.release(requestID: requestID), to: &state, now: 130), .releaseRequestResources(requestID))
+        try state.observeRequestResourcesReleased(requestID: requestID)
+        XCTAssertTrue(state.status.ready)
+        XCTAssertEqual(state.status.chargedRequestBytes, 0)
+        let next = UUID()
+        XCTAssertEqual(try send(.reserve(requestID: next, capacityLimitBytes: 80, remainingNanoseconds: 500), to: &state, now: 140),
+                       .forwardReserve(next, localDeadlineUptimeNanoseconds: 640))
+        var unstarted = try reserved()
+        XCTAssertThrowsError(try unstarted.observeRetired(requestID: requestID, retirement: .aborted))
+        // A lane aborts alone; the other lane runs on.
+        var lanes = try laneState()
+        let first = UUID(), second = UUID()
+        for (index, id) in [first, second].enumerated() {
+            let now = UInt64(105 + 2 * index)
+            _ = try send(.reserve(requestID: id, capacityLimitBytes: 40, remainingNanoseconds: 500), to: &lanes, now: now)
+            try lanes.observeAdmitted(requestID: id, reservedBytes: 30)
+            _ = try send(.start(requestID: id), to: &lanes, now: now + 1)
+        }
+        try lanes.observeRetired(requestID: first, retirement: .aborted)
+        XCTAssertFalse(lanes.status.quarantined)
+        _ = try send(.release(requestID: first), to: &lanes, now: 113)
+        try lanes.observeRequestResourcesReleased(requestID: first)
+        XCTAssertTrue(lanes.status.ready)
+        XCTAssertEqual(lanes.activeRequestIDs, [second])
+    }
+
     /// A reservation cancelled after it started is still a poisoned session.
     func testCancelAfterStartStillQuarantines() throws {
         var state = try reserved()

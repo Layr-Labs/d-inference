@@ -127,6 +127,21 @@ extension NemotronSuperLocalHTTPTests {
                 let text = try await send(body(["x"], stream: true, invalid), status: .badRequest)
                 #expect(text.contains("error"))
             }
+            // An effort refusal names its fields, never the values sent: an
+            // unknown name, and two spellings that differ.
+            for (controls, param) in [
+                (["reasoning": ["effort": "turbo"]], "reasoning.effort"),
+                (["reasoning_effort": "high", "reasoning": ["effort": "max"]], "reasoning_effort, reasoning.effort"),
+            ] as [([String: Any], String)] {
+                for stream in [true, false] {
+                    let text = try await send(body(["x"], stream: stream, controls), status: .badRequest)
+                    let object = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]
+                    let error = try #require(object?["error"] as? [String: Any], "\(param): \(text)")
+                    #expect(error["code"] as? String == "invalid_reasoning_effort", "\(param): \(text)")
+                    #expect(error["param"] as? String == param, "\(param): \(text)")
+                    #expect(!text.contains("turbo"), "\(text)")
+                }
+            }
             // Logprobs: one entry per generated token in generation order,
             // reasoning tokens included, with the requested alternatives,
             // greedy first; the visible output is unchanged. A stream's

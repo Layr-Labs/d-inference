@@ -20,7 +20,7 @@ struct LocalRouterPairLeaderTests {
                 : .json(200, #"{"id":"chatcmpl-up","object":"chat.completion","choices":[]}"#)
         }
         let factory = RouterTransportFactory(upstream)
-        var router = LocalRouterConfig.pairLeaderOutsideDarkbloom(local: LocalSettings(route: .myMacs),
+        var router = LocalRouterConfig.pairLeaderOutsideDarkbloom(local: LocalSettings(route: .myMacs), settingsFile: nil,
                                                                   coordinatorURL: "ws://127.0.0.1:1/ws/provider")
         #expect(!router.takesCoordinatorWork)
         router.accountKeys = InMemoryLocalRouterAccountKeyStore(RouterFixture.accountKey)
@@ -43,8 +43,12 @@ struct LocalRouterPairLeaderTests {
     /// The router's coordinator and `[local]` are the ones any host's has.
     @Test func itReadsLocalAndTheCoordinatorAsAnyHostsRouter() {
         let local = LocalSettings(route: .myMacsFirst)
-        let router = LocalRouterConfig.pairLeaderOutsideDarkbloom(local: local, coordinatorURL: "wss://coordinator.example/ws/provider")
-        let host = LocalRouterConfig.host(local: local, coordinatorURL: "wss://coordinator.example/ws/provider", takesCoordinatorWork: false)
+        let file = URL(fileURLWithPath: "/tmp/leader/provider.toml")
+        let router = LocalRouterConfig.pairLeaderOutsideDarkbloom(local: local, settingsFile: file,
+                                                                  coordinatorURL: "wss://coordinator.example/ws/provider")
+        let host = LocalRouterConfig.host(local: local, settingsFile: file, coordinatorURL: "wss://coordinator.example/ws/provider",
+                                          takesCoordinatorWork: false)
         #expect(router.settings == host.settings && router.upstreamBaseURL == host.upstreamBaseURL)
+        #expect(router.settingsFile == file && host.settingsFile == file)
     }
 }

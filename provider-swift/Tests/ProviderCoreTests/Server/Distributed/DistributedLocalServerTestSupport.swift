@@ -126,8 +126,8 @@ final class LocalHostDiscovery: @unchecked Sendable {
 }
 
 func localHost(_ session: LocalHostTestSession, port: UInt16 = 0,
-               discovery: LocalHostDiscovery? = nil) -> DistributedLocalServer {
-    .init(session: session, config: .init(host: "127.0.0.1", port: port),
+               discovery: LocalHostDiscovery? = nil, router: LocalRouterConfig? = nil) -> DistributedLocalServer {
+    .init(session: session, config: .init(host: "127.0.0.1", port: port, router: router),
           tokenizerLoader: { _ in TokenizerHandle(DistributedTestTokenizer()) }, discovery: discovery?.client)
 }
 

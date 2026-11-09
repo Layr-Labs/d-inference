@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -989,7 +989,7 @@ config.
 
 ```bash
 swift test --skip-build --no-parallel \
-  --filter 'OpenCodeConfigPlanTests|HermesConfigPlanTests|HermesVersionTests|ToolConfigWriterTests|IntegrationModelsTests|ToolIntegrationTests|AtomicFileTests|keyFileIsTheFileHoldingThePortsKey'
+  --filter 'OpenCodeConfigPlanTests|HermesConfigPlanTests|HermesVersionTests|ToolConfigWriterTests|IntegrationModelsTests|ToolIntegrationTests|ModelLoadWaitTests|ToolAddressTests|AtomicFileTests|keyFileIsTheFileHoldingThePortsKey'
 ```
 
 | Coverage | Suites |
@@ -998,6 +998,7 @@ swift test --skip-build --no-parallel \
 | New file, Hermes' fresh-install `model: ""`, a file as oMLX writes it (PyYAML's column-0 lists too), the `model:` alias key, the kept default, the 64,000-token floor, quoting, refusals, every written key against Hermes' documented keys; the `key_cmd` version warning | `HermesConfigPlanTests`, `HermesVersionTests` |
 | Backups (exact bytes, 0600, five kept), unchanged writes nothing, atomic replace, symlinks, a concurrent edit, dry run, the undo command run through `/bin/sh` | `ToolConfigWriterTests`, `AtomicFileTests` |
 | Catalog names, limits and capability aliases; the fetch with the key file's key; `local.json`'s endpoint and key file; the modes of new files; the owner's default in the other global OpenCode file; no written file holds the key | `IntegrationModelsTests`, `ToolIntegrationTests`, `keyFileIsTheFileHoldingThePortsKey` |
+| The wait for this Mac's models (a scripted process and a clock that moves only between looks; every fake ends a wait at its bound, so a regression fails instead of hanging, and each suite has a one-minute limit), Ctrl-C (SIGUSR2 stands in for SIGINT), the run-again line; a plain start's notice, the address rule and the start's two hooks | `ModelLoadWaitTests`, `ToolAddressTests` |
 
 `scripts/integrations/opencode-smoke.sh` then runs the real OpenCode 2 on the
 written config. It runs the writer through the opt-in `OpenCodeSmokeSetup`
@@ -1305,6 +1306,47 @@ repository copies the file byte-for-byte and records the source revision and
 SHA-256 in the commit. A provider change to the rendered prompt, such as the
 Qwen JSON `response_format` thinking default, lands with the regenerated
 vectors and must pass `scripts/verify-prompt-parity.sh` before review.
+
+`fixtures/prompt-contract/v1/native_reasoning_vectors.json` (28 cases) is this
+repository's: the template context the provider gives each reasoning control,
+or its refusal. `CachePromptParityTests` checks the provider against it, and
+the platform's prompt sidecar and first-party pool read the same cases, so a
+change lands here first and the platform follows. Since the reasoning-effort
+levels ([reasoning effort](../architecture/inference.md#reasoning-effort)),
+Qwen 3.8 Flash-Next's `high`, `max`, `minimal` and ` low ` render a level and
+`turbo` is refused. `ReasoningEffortValuesTests` checks every family's table
+against the rounding rule and sends every effort to every family through the
+production prompt pipeline, and
+`ReasoningEffortLocalAPITests` sends them to one Mac's local API and a pair
+leader's over the `ClusterAPIParityTests` harness. It also renders Nemotron 3.5
+Super's refusal of two efforts that differ through `SuperHTTPErrors` and
+`CORSResponder`; `NemotronSuperLocalHTTPTests`' live text route sends it, and
+an unknown `reasoning.effort`, through the real application (it needs Metal,
+so it runs in CI).
+
+`fixtures/prompt-contract/v1/reasoning_effort_vectors.json` (446 cases) is
+also this repository's, and it is the contract with the coordinator: every
+family's reading of every effort, in both fields and other spellings (a
+non-ASCII `HİGH` among them), with the field an unknown effort is refused in,
+and cases for every type that reasons. It also lists the sets the table keeps:
+the types that reason, the Qwen 3.5 template family's, the types whose effort
+sets a thinking switch, and the concrete Qwen 3.8 builds. It is generated,
+never edited by hand: `scripts/generate-reasoning-effort-vectors.py` restates
+the tables in `ReasoningEffort.swift` and writes it, and running the script
+again must leave the file unchanged. Regenerate it with the tables, and check
+the result with `CachePromptParityTests.reasoningEffortVectors`, which requires
+each set to equal the table's and every type that reasons to have cases, and
+runs every case through the production prompt pipeline. darkbloom-platform
+copies the file byte for byte from a reviewed commit of this repository (its
+provider contract snapshot, which `make contracts-check` verifies there) and
+checks its ingress refusal, first-party pool and prompt sidecar against it,
+sets included, so a type added or dropped on one side only fails a test on the
+other, and a change to a table changes the file in both repositories together.
+A new family that reasons adds its model types to the sets, its table (if it
+has levels) with a row in
+`ReasoningEffortValuesTests.everyFamilyTableCoversEveryEffort`, a `Family` to
+the script, and the regenerated file with its new case count; the coordinator
+learns the family when the platform takes that commit's file.
 
 darkbloom-platform keeps byte-identical copies of the provider's
 `paged_footprint_wire.json` and `process_memory_wire.json` for its own

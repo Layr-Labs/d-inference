@@ -8,7 +8,9 @@ import { ServingSummary } from './ServingSummary';
 import { pinnedMemory, startingModel } from '../../models/selection';
 import {
   methodFor,
-  pairModel,
+  pairBlocked,
+  pairLead,
+  pairStartable,
   startAction,
   startModels,
   usablePins,
@@ -33,10 +35,11 @@ const copy: Record<StartMethod, { lead: string; start: string; empty: string }> 
 };
 
 // A paired Mac starts its pair (`startAction`), never Autopilot, which serves one Mac: the plain
-// start's page, with the pair's words.
+// start's page, with the pair's words, and why there is no Start where the pair needs Terminal.
 const pairCopy = (pair: NonNullable<Snapshot['pair']>) => ({
   ...copy.manual,
-  lead: `This Mac serves in a pair. Start serving starts the pair with ${pairModel(pair)}.`,
+  lead: pairLead(pair),
+  empty: pairBlocked(pair),
 });
 
 function accountLine(snapshot: Snapshot) {
@@ -75,7 +78,7 @@ export function StartServing({
   const recommended =
     method === 'autopilot' && !pins.length ? recommendedModels(snapshot.models, network) : [];
   const showRecommendations = recommended.length > 0;
-  const empty = !pair && !startModels(snapshot, method, pinned).length;
+  const empty = pair ? !pairStartable(pair) : !startModels(snapshot, method, pinned).length;
   const tooLarge = pinnedMemory(snapshot, pins).exceeds;
   const running = snapshot.operations.find((operation) => operation.state === 'running');
   // Serving needs a linked account: an unlinked Mac goes back to link it first.
@@ -86,7 +89,7 @@ export function StartServing({
       {!showRecommendations && (
         <>
           <p>{text.lead}</p>
-          <ServingSummary snapshot={snapshot} method={method} pinned={pins} />
+          {!(pair && empty) && <ServingSummary snapshot={snapshot} method={method} pinned={pins} />}
         </>
       )}
       {serving.rejected && method === 'manual' && (

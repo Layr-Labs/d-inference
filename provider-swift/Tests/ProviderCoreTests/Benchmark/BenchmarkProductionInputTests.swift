@@ -60,7 +60,7 @@ struct BenchmarkProductionInputTests {
         #expect(prompt.renderDate == "2024-02-29")
         let rendered = tokenizer.decode(tokenIds: prompt.tokens, skipSpecialTokens: false)
         #expect(rendered.contains("first policy\\n\\nlate policy"))
-        #expect(rendered.contains("\"reasoning_effort\":\"medium\""))
+        #expect(rendered.contains("\"reasoning_effort\":\"high\""))
         #expect(rendered.contains("\"request_clock_present\":true"))
     }
 

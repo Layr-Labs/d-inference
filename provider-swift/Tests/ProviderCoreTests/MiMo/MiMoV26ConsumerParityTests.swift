@@ -41,10 +41,10 @@ final class MiMoV26ConsumerParityTests: XCTestCase {
         }
     }
 
-    func testRawControlCapsuleRejectsTypesUnknownKeysAndGranularEffort() throws {
+    func testRawControlCapsuleRejectsTypesUnknownKeysAndUnknownEffort() throws {
         let bad = [
             #""enable_thinking":"false""#, #""enable_thinking":0"#, #""enable_thinking":1"#,
-            #""enable_thinking":null"#, #""reasoning_effort":"high""#, #""reasoning_effort":7"#,
+            #""enable_thinking":null"#, #""reasoning_effort":"turbo""#, #""reasoning_effort":7"#,
             #""chat_template_kwargs":{"unknown":"sensitive_fixture_detail"}"#,
             #""chat_template_kwargs":false"#, #""chat_template_kwargs":{"enable_thinking":0}"#,
             #""preserve_thinking":false"#, #""reasoning":{"summary":"sensitive_fixture_detail"}"#,
@@ -234,7 +234,7 @@ final class MiMoV26ConsumerParityTests: XCTestCase {
                 controls: ProviderLoop.extractChatTemplateControls(from: data)), expected)
         }
         for bad in [#""enable_thinking":"false""#, #""enable_thinking":0"#,
-                    #""reasoning_effort":"high""#, #""preserve_thinking":false"#] {
+                    #""reasoning_effort":"turbo""#, #""preserve_thinking":false"#] {
             let body = MiMoConsumerFixture.body(bad)
             XCTAssertThrowsError(try MiMoV26TemplateFix.effectiveThinkingEnabled(
                 request: ProviderLoop.decodeOpenAIRequest(body),

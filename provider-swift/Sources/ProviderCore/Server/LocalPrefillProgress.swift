@@ -1,6 +1,6 @@
 import Foundation
 
-/// A streamed local request's prompt, from the moment this Mac's engine accepts the request until its first token:
+/// A streamed local request's prompt, from the moment this Mac's engine admits the request until its first token:
 /// what the local API says while a long prompt is processed, an SSE comment every `ticker.interval`, which OpenAI
 /// clients ignore. Until the engine reports how much of the prompt it has computed, the comment gives only the
 /// prompt's size (`: prefill in progress, <total> prompt tokens`); once it has, the count
@@ -12,7 +12,8 @@ import Foundation
 ///   starts the engine work, where `EngineV2Bridge.submitTokenized` reads it. A request that isn't streamed, and every
 ///   coordinator request, has none.
 /// - Nothing runs per token: one timer per request, from its first frame to its first token. The bridge reports the
-///   prompt when the engine accepts it and when the engine says it is done, and ends it at the first token.
+///   prompt when the engine admits it (on a pair's API, whose queue comes first, when its engine accepts it) and when
+///   the engine says it is done, and ends it at the first token.
 /// - The comments are ordinary bytes of the response body: the local router returns this Mac's answer as it is, and a
 ///   pair member's relay (`ClusterLocalRelay`) passes every byte, so both pass them on unchanged.
 final class LocalPrefillProgress: @unchecked Sendable {
@@ -21,7 +22,7 @@ final class LocalPrefillProgress: @unchecked Sendable {
 
     let ticker: LocalPrefillTicker
     private let lock = NSLock()
-    /// The prompt's tokens as the engine counts them; nil until it accepts the request.
+    /// The prompt's tokens as the engine counts them; nil until it admits the request.
     private var promptTokens: Int?
     /// The prompt tokens the engine reports computed; nil until it reports any.
     private var computedTokens: Int?
@@ -30,7 +31,7 @@ final class LocalPrefillProgress: @unchecked Sendable {
 
     init(ticker: LocalPrefillTicker = .standard) { self.ticker = ticker }
 
-    /// The engine accepted the request; its prompt has `promptTokens` tokens.
+    /// The engine admitted the request; its prompt has `promptTokens` tokens.
     func accept(promptTokens: Int) {
         lock.withLock { if !ended { self.promptTokens = max(0, promptTokens) } }
     }

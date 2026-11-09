@@ -1109,9 +1109,12 @@ extension EngineV2Bridge {
             maxTokens: cbv2Request.maxTokens,
             submittedAt: engineAdmittedAt,
             profile: profile,
-            prefillReceipt: prefillReceipt
+            prefillReceipt: prefillReceipt,
+            darkbloomRequestId: MeFirstDarkbloomRequest.id
         )
         consumePrefillReceipt(id: id, receipt: prefillReceipt)
+        // Me first: while the owner's request waits in the queue, Darkbloom work still queued gives way.
+        if let makeRoom = MeFirstOwnerRequest.makeRoom { watchOwnerWait(id: id, makeRoom: makeRoom) }
         // Wedge instrumentation: the request is now in the engine's hands.
         wedgeMonitor.recordAdmit(
             now: .now, id: id, firstTokenDeadline: distributedFirstTokenAllowance ?? firstContentDeadline?.instant)
@@ -1121,8 +1124,16 @@ extension EngineV2Bridge {
             emitVisionSubmitTelemetry(requestId: id, mediaKind: mediaKind)
         }
 
-        // The engine has the prompt: a streamed local request says so until its first token.
-        prefillProgress?.accept(promptTokens: promptTokens.count)
+        // A streamed request on this Mac's API sends its response head only once the engine admits it, so an end
+        // before admission for this Mac's memory is answered with the memory 503 (`holdHeadUntilAdmitted`). Its
+        // prompt progress starts there too. A pair's API, whose queue is before its engine, says its prompt now.
+        // Held before the pump starts, so the pump's terminal finds it (`recordHeadHoldRefusal`).
+        let holdsHead = prefillProgress != nil && distributed == nil && LocalHeadHold.enabled
+        if holdsHead {
+            heldHeads[id] = .waiting
+        } else {
+            prefillProgress?.accept(promptTokens: promptTokens.count)
+        }
 
         // The pump owns these resources through engine terminal; each cache
         // manages pending durable publication and receipt retention.
@@ -1147,6 +1158,11 @@ extension EngineV2Bridge {
             if case .cancelled = termination {
                 Task { await bridge.cancel(requestId: id) }
             }
+        }
+        if holdsHead {
+            try await holdHeadUntilAdmitted(id: id)
+            // The engine has admitted the prompt: it says so until its first token.
+            prefillProgress?.accept(promptTokens: promptTokens.count)
         }
         return stream
     }

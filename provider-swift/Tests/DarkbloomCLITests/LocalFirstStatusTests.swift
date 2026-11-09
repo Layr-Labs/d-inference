@@ -6,8 +6,6 @@ import Testing
 
 /// Fixtures for `status` and `local`: the running provider's state, as each serving mode writes it.
 enum LocalFirstStatusFixtures {
-    static let utc = TimeZone(identifier: "UTC")!
-
     /// 2026-11-06 14:12:00 UTC.
     static let now = Date(timeIntervalSince1970: 1_793_974_320)
     static func ms(_ hour: Int, _ minute: Int, _ second: Int = 0) -> Int64 {
@@ -47,15 +45,15 @@ enum LocalFirstStatusFixtures {
         }
         snapshots.append(MeFirstSnapshot(idleMs: 120_000, paused: true, sinceMs: ms(14, 2), lastUseMs: ms(14, 11, 50),
                                          resumesAtMs: ms(14, 10)))
-        var lines = snapshots.flatMap { Status.meFirstLines($0, now: now, timeZone: utc) }
+        var lines = snapshots.flatMap { Status.meFirstLines($0, now: now) }
         for state in [state(connected: false), state(meFirst: paused), state()] {
             for key in [true, false] {
                 lines += Status.servingLines(state: state, liveEndpoint: endpoint(), route: .myMacsFirst,
-                                             accountKeySaved: { key }, now: now, timeZone: utc)
+                                             accountKeySaved: { key }, now: now)
                 lines += Local.servingLines(info: endpoint(), state: state, route: nil, accountKeySaved: { key })
             }
             lines += Status.servingLines(state: state, liveEndpoint: endpoint(apiKey: ""), route: .myMacsFirst,
-                                         accountKeySaved: { true }, now: now, timeZone: utc)
+                                         accountKeySaved: { true }, now: now)
             lines += Local.servingLines(info: endpoint(apiKey: ""), state: state, route: .myMacsFirst,
                                         accountKeySaved: { true })
         }
@@ -84,39 +82,57 @@ struct LocalFirstStatusTests {
 
     @Test("me first, open to Darkbloom")
     func open() {
-        #expect(Status.meFirstLines(F.open, now: F.now, timeZone: F.utc) == [
+        #expect(Status.meFirstLines(F.open, now: F.now) == [
             "Serving: Darkbloom and you, me first — open to Darkbloom (none of your requests in the last 2 minutes)",
         ])
-        #expect(Status.meFirstLines(MeFirstSnapshot(idleMs: 60_000, paused: false), now: F.now, timeZone: F.utc) == [
+        #expect(Status.meFirstLines(MeFirstSnapshot(idleMs: 60_000, paused: false), now: F.now) == [
             "Serving: Darkbloom and you, me first — open to Darkbloom (none of your requests in the last minute)",
         ])
     }
 
-    @Test("you first: paused since, your last request, and when Darkbloom comes back")
+    /// Journey 2a (J2-i): the pause said "since 21:41" in the Mac's own time, without a zone, read over SSH at 05:41 UTC.
+    /// How long it has lasted and when it ends are said from now, which reads the same in any zone and on another Mac.
+    @Test("you first: how long Darkbloom has been paused, your last request, and when it comes back, all from now")
     func paused() {
-        #expect(Status.meFirstLines(F.paused, now: F.now, timeZone: F.utc) == [
-            "Serving: you first — Darkbloom paused since 14:02 (your last request 1 minute ago; back at about 14:13 "
+        #expect(Status.meFirstLines(F.paused, now: F.now) == [
+            "Serving: you first — Darkbloom paused for 10 minutes (your last request 1 minute ago; back in about 1 minute "
                 + "if you stay idle)",
         ])
         let late = MeFirstSnapshot(idleMs: 120_000, paused: true, sinceMs: F.ms(14, 2), lastUseMs: F.ms(14, 11, 50),
                                    resumesAtMs: F.ms(14, 10))
-        #expect(Status.meFirstLines(late, now: F.now, timeZone: F.utc) == [
-            "Serving: you first — Darkbloom paused since 14:02 (your last request under a minute ago; back any moment now)",
+        #expect(Status.meFirstLines(late, now: F.now) == [
+            "Serving: you first — Darkbloom paused for 10 minutes (your last request under a minute ago; back any moment now)",
         ])
+        // The journey's own: a request ended 5 s ago, after a pause of 23 s.
+        let justEnded = MeFirstSnapshot(idleMs: 120_000, paused: true, sinceMs: F.ms(14, 11, 37), lastUseMs: F.ms(14, 11, 55),
+                                        resumesAtMs: F.ms(14, 13, 55))
+        #expect(Status.meFirstLines(justEnded, now: F.now) == [
+            "Serving: you first — Darkbloom paused for under a minute (your last request under a minute ago; back in about "
+                + "2 minutes if you stay idle)",
+        ])
+        let almost = MeFirstSnapshot(idleMs: 120_000, paused: true, sinceMs: F.ms(13, 7), lastUseMs: F.ms(14, 10, 30),
+                                     resumesAtMs: F.ms(14, 12, 30))
+        #expect(Status.meFirstLines(almost, now: F.now) == [
+            "Serving: you first — Darkbloom paused for 1 hour 5 minutes (your last request 1 minute ago; back in under a "
+                + "minute if you stay idle)",
+        ])
+        // No clock time in any line: nothing to read in a zone.
+        let text = F.everyLine().joined(separator: "\n")
+        #expect(text.range(of: #"\b[0-9]{1,2}:[0-9]{2}\b"#, options: .regularExpression) == nil, "\(text)")
     }
 
     @Test("you first while your requests run, and the Darkbloom requests still finishing")
     func pausedWithRequestsRunning() {
         let one = MeFirstSnapshot(idleMs: 120_000, paused: true, sinceMs: F.ms(14, 2), lastUseMs: F.ms(14, 11),
                                   localRequestsInFlight: 1, darkbloomRequestsFinishing: 2)
-        #expect(Status.meFirstLines(one, now: F.now, timeZone: F.utc) == [
-            "Serving: you first — Darkbloom paused since 14:02 (your request is running; back 2 minutes after it ends)",
+        #expect(Status.meFirstLines(one, now: F.now) == [
+            "Serving: you first — Darkbloom paused for 10 minutes (your request is running; back 2 minutes after it ends)",
             "         2 Darkbloom requests are finishing",
         ])
         let three = MeFirstSnapshot(idleMs: 60_000, paused: true, sinceMs: F.ms(14, 2), lastUseMs: F.ms(14, 11),
                                     localRequestsInFlight: 3, darkbloomRequestsFinishing: 1)
-        #expect(Status.meFirstLines(three, now: F.now, timeZone: F.utc) == [
-            "Serving: you first — Darkbloom paused since 14:02 (3 of your requests are running; back 1 minute after "
+        #expect(Status.meFirstLines(three, now: F.now) == [
+            "Serving: you first — Darkbloom paused for 10 minutes (3 of your requests are running; back 1 minute after "
                 + "the last one ends)",
             "         1 Darkbloom request is finishing",
         ])
@@ -127,17 +143,17 @@ struct LocalFirstStatusTests {
         var keyLookups = 0
         let keySaved: () -> Bool = { keyLookups += 1; return true }
         #expect(Status.servingLines(state: F.state(connected: false), liveEndpoint: F.endpoint(), route: nil,
-                                    accountKeySaved: keySaved, now: F.now, timeZone: F.utc) == [
+                                    accountKeySaved: keySaved, now: F.now) == [
             "Serving: only you, on this Mac — Darkbloom never contacts this Mac",
             "Your requests: this Mac first, then your other Macs (free) · account key saved",
         ])
         #expect(Status.servingLines(state: F.state(meFirst: F.open), liveEndpoint: F.endpoint(), route: .myMacsFirst,
-                                    accountKeySaved: keySaved, now: F.now, timeZone: F.utc) == [
+                                    accountKeySaved: keySaved, now: F.now) == [
             "Serving: Darkbloom and you, me first — open to Darkbloom (none of your requests in the last 2 minutes)",
             "Your requests: this Mac first, then your other Macs (free), then the Darkbloom network (billed) · account key saved",
         ])
         #expect(Status.servingLines(state: F.state(), liveEndpoint: F.endpoint(), route: nil,
-                                    accountKeySaved: { false }, now: F.now, timeZone: F.utc) == [
+                                    accountKeySaved: { false }, now: F.now) == [
             "Serving: Darkbloom and you, shared — Darkbloom keeps serving while you use this Mac (me first is off)",
             "Your requests: this Mac only · no account key (`darkbloom route key` saves one)",
         ])
@@ -250,9 +266,6 @@ struct LocalFirstStatusTests {
             == "Your requests: this Mac only ([local] route = \"this-mac\") · account key saved")
         #expect(Status.requestsLine(route: .myMacs, accountKeySaved: false)
             == "Your requests: this Mac only · no account key (`darkbloom route key` saves one)")
-        #expect(Status.ago(milliseconds: 59_999) == "under a minute ago")
-        #expect(Status.ago(milliseconds: 60_000) == "1 minute ago")
-        #expect(Status.ago(milliseconds: 600_000) == "10 minutes ago")
     }
 
     @Test("local adds how its server serves and where your requests go, and names --me-first beside --local")

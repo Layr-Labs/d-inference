@@ -327,18 +327,20 @@ final class MiMoV26LocalContractTests: XCTestCase {
         let (tokenizer, _) = try await MiMoConsumerFixture.load()
         let serving = MiMoConsumerServing(tokenizer: tokenizer, holdOpen: true)
         let request = try MiMoConsumerFixture.request()
+        // The forwarding task and the stream's termination task release the
+        // model and cancel the engine row, and nothing joins them. Wait for
+        // those events themselves: a clock budget fails whenever the runner
+        // stalls past it.
+        let held = serving.backend.holds.expectation(reaching: 1, "engine holds the request")
+        let released = serving.releases.expectation(reaching: 1, "model released")
+        let cancelled = serving.backend.cancellations.expectation(reaching: 1, "engine row cancelled")
         let stream = try await serving.engine().streamChatCompletion(request: request)
         let task = Task { for try await _ in stream {} }
-        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-        while serving.backend.outstanding == 0 && ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(1))
-        }
+        await fulfillment(of: [held], timeout: 10)
         XCTAssertEqual(serving.backend.outstanding, 1)
         task.cancel()
         _ = try? await task.value
-        while serving.releases.value == 0 && ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(1))
-        }
+        await fulfillment(of: [released, cancelled], timeout: 10)
         XCTAssertEqual(serving.releases.value, 1)
         XCTAssertEqual(serving.backend.cancelCount, 1)
         XCTAssertEqual(serving.backend.outstanding, 0)

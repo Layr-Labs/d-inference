@@ -123,8 +123,16 @@ With **Both, me first**, Darkbloom pauses while you use this Mac:
   answer, through its local API. Listing models doesn't count, and neither does
   a request this Mac passes on to your other Macs.
 - **While you use it:** Darkbloom sends no new requests here. Requests it sent
-  before you started finish normally; nothing is cut off. Your models stay
-  loaded.
+  before you started that have begun answering finish normally; none of them
+  is cut off. Your models stay loaded.
+- **When your request has to wait:** if this Mac's memory, or its room for
+  requests, is taken when you send one, Darkbloom requests still waiting in
+  this Mac's queue go back to the network. Each is served by another Mac, or
+  gets a retryable "busy" error if the whole network is full, and it doesn't
+  count against this Mac. Darkbloom requests this Mac has started, in their
+  prompt or answering, finish. Your request then waits only for requests this
+  Mac has started, Darkbloom's or your own. If they don't make room within 2
+  minutes, it fails, as before.
 - **When you stop:** Darkbloom traffic comes back by itself once none of your
   requests has run for 2 minutes.
 
@@ -148,11 +156,21 @@ busy, they can go on, like the Darkbloom iPhone app:
 Requests from other machines never use the paid network; they can use this Mac
 and your other Macs.
 
-This needs your account API key, from the Darkbloom console, saved with
-`darkbloom route key`. It goes into this Mac's Keychain and is never printed.
-With a key saved, the question asks this too; you can also start with
-`--route this-mac`, `--route my-macs` or `--route my-macs-first`. The details
-are in [the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router).
+Choose with one command; it saves your choice and says what it means:
+
+```bash
+darkbloom route this-mac        # Only this Mac
+darkbloom route my-macs         # Only my Macs (free)
+darkbloom route my-macs-first   # My Macs first, then the network (billed)
+```
+
+The last two need your account API key, from the Darkbloom console, saved
+with `darkbloom route key`; without it they save nothing and say so. The key
+goes into this Mac's Keychain and is never printed. With a key saved, the
+start question asks this too. A running local API uses a new choice, and a key
+saved or removed, from its next request: no restart, and no model reload. The
+details are in
+[the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router).
 
 ## Your local API
 
@@ -231,13 +249,19 @@ model.
   When your OpenCode config sets no default model, Darkbloom's first model
   becomes the default for new sessions, and the `Use it:` line names it
   instead (`new sessions use darkbloom/<model>`).
-- **Run it again** when your models change, or when the port or the key
-  changes; with nothing new, it changes nothing. Run it again too once a model
-  you just started is loaded: until then this Mac doesn't know its limits, the
-  tools get the catalog's, and the start says so.
-  <!-- pending LS-4: the start waits for the model to load before it writes the limits, and the tools follow the address and the key by themselves. -->
-  Once a model is loaded, the tools get its whole context window from this
-  Mac, and a quarter of it as their output limit (65,536 tokens for a
+- **It waits for your model.** While this Mac still loads the models it started
+  with, the start waits before it writes anything, on one live line
+  (`⠙ Loading Gemma 4 26B before setting up OpenCode… 42s`; without a terminal,
+  one line as it starts and one as it ends). So the tools get the limits this
+  Mac gives each model, not the catalog's. It waits at most 10 minutes: a model
+  still loading then, or one that doesn't load, sets nothing up, and the line
+  names the next step. Ctrl-C stops the wait; nothing is written, and the start
+  says so, also when the model finishes loading just then. Darkbloom keeps
+  serving either way. On one Mac only for now: a pair's local API isn't waited
+  for (a pair started without a terminal already waits up to 10 minutes for the
+  pair to serve).
+- **What the tools get:** once a model is loaded, its whole context window from
+  this Mac, and a quarter of it as their output limit (65,536 tokens for a
   262,144-token window), not the catalog's smaller one. On a pair, they get
   the pair's own limits, which it serves. For a model this Mac or its pair
   serves, they get image input exactly when it serves images, whatever
@@ -246,6 +270,19 @@ model.
   alone, gets none. Your other Macs' models get the catalog's. Which models
   reason still comes from the catalog.
   <!-- pending R-FULL: the tools get each model's full output length. -->
+- **Run it again** when your models change; with nothing new, it changes
+  nothing. A model that isn't loading as it runs (one unloaded when idle, or
+  one that loads on a request) gets the catalog's limits, and one line says to
+  run it again once `darkbloom status` shows it loaded.
+- **If the address or the key changes** (another port, another `--bind`, or
+  another key file), the next `darkbloom start` says so in one line and names
+  the command that points the tools there again:
+  ``OpenCode points at http://127.0.0.1:8001/v1, not this Mac's local API
+  (http://127.0.0.1:8002/v1): `darkbloom --opencode` points it there.`` A
+  start without `--opencode` or `--hermes` never changes a tool's file.
+  `localhost`, `127.0.0.1` and `::1` are all this Mac, and so is its `.local`
+  name when the API listens on every address. On one Mac only for now: a
+  paired Mac's start doesn't say it.
 - **Offline** (Darkbloom's catalog unreachable), a run again keeps the names,
   image support and limits already set up, but image input for a model served
   here follows this Mac. A model set up for the first time then gets its ID,
@@ -275,10 +312,14 @@ model.
 `darkbloom status` says it in one line, for example:
 
 ```text
-Serving: you first — Darkbloom paused since 14:02 (your last request 1 minute ago; back at about 14:13 if you stay idle)
+Serving: you first — Darkbloom paused for 10 minutes (your last request 1 minute ago; back in about 1 minute if you stay idle)
          2 Darkbloom requests are finishing
 Your requests: this Mac first, then your other Macs (free) · account key saved
 ```
+
+Times are said from now ("paused for under a minute", "back in about 2
+minutes", "back any moment now"), never as a clock time, which an SSH session
+or another Mac would read in a zone it doesn't see.
 
 Other lines you may see:
 
@@ -315,7 +356,10 @@ list's **Change how the pair serves** asks again. Then run
   ([a pair's leader beside Darkbloom](./direct-mode.md#a-pairs-leader-beside-darkbloom)).
   The pair's API answers on your local network (LAN or tailnet), always with
   the key. The other Mac has no API of its own: tools there use the leading
-  Mac's LAN or tailnet address.
+  Mac's LAN or tailnet address. `darkbloom status` on either Mac says whether
+  the pair is paused for you, for how long and when it comes back (``Pair: you
+  first — Darkbloom paused for 1 minute (…; back in about 2 minutes if you stay
+  idle)``): the leading Mac's status carries it to the other Mac.
   <!-- pending LS-3: the other Mac relays its own port in Both, me first too, so start with opencode works on either Mac. -->
 - Your answer is saved in `[local] mode` too. Without a terminal nothing is
   asked, and a pair keeps serving as it did

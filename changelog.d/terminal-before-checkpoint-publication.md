@@ -11,6 +11,9 @@
   rest. Seeded requests keep the old order.
 - For an installed provider, set it in the shell for `darkbloom start`,
   which writes it into the provider's launchd job; an ordinary `darkbloom
-  restart` keeps the saved value. Each request answered at least 1 ms before
-  its write settled is logged with how long the write then held its capacity
-  (`Early terminal: request … retired N ms after its answer`).
+  restart` keeps the saved value. Each such request that retires at least
+  1 ms after its answer is logged with that time, which for a donor is how
+  long its write held its capacity after the answer (`Early terminal: request
+  … retired N ms after its answer`). The 1 ms floor is a timing heuristic: on
+  a busy provider a request that wrote no checkpoint can be logged too. The
+  line is only in the provider log.

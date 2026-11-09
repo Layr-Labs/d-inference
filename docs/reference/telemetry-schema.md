@@ -206,14 +206,19 @@ rows' release). One that retires at least 1 ms after its answer
 (`retirementAfterTerminalMarkFloor`) gets an INFO `engine_health` event with
 `operation = ssd_terminal_before_publication`, its `request_id`, and one
 provider-log line (`darkbloom.EarlyTerminal`: `Early terminal: request … retired
-N ms after its answer`). A request that retires with its terminal had nothing
-left to publish and is not marked. The `TelemetryClient` facade discards the
-event; the log line is what a measurement on a provider reads, joined with the
-request's `inference_complete` profile by request ID.
+N ms after its answer`). The floor is a timing heuristic, not the engine's
+decision: a request with nothing to publish retires before its terminal and
+normally stays below it, but on a busy bridge the pump's resume after that
+retirement can take longer than 1 ms, so such a request can be marked too, and
+its line still says its checkpoint publication settled. The `TelemetryClient`
+facade discards the event, so the mark exists only in the provider log, joined
+with the request's `inference_complete` profile by request ID. Fleet-wide data
+has neither: an A/B of the flag must read provider logs, or add a telemetry
+field first.
 
 | Key | Values | Presence and meaning | Code |
 |---|---|---|---|
-| `retired_after_terminal_ms` | integer ≥ 1 | Present on this operation: milliseconds from the client's terminal to the request's retirement, i.e. how long its complete-checkpoint publication held its rows, KV reservation and service allowance after the answer. | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+PrefixCacheTelemetry.swift`, `noteRetirementAfterTerminal` |
+| `retired_after_terminal_ms` | integer ≥ 1 | Present on this operation: milliseconds from the client's terminal to the request's retirement, as the pump observed it. For a request that published a complete checkpoint, how long that publication held its rows, KV reservation and service allowance after the answer; for one that published nothing, the pump's own delay. | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+PrefixCacheTelemetry.swift`, `noteRetirementAfterTerminal` |
 
 ## External Emitter
 

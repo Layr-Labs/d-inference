@@ -332,10 +332,20 @@ on that list; the test-root and persistent-key benchmark controls are not.
 | `DARKBLOOM_PREFIX_CACHE_SSD_WINDOW_SIDECAR` | Enables writing window sidecar files (format only) | `SSDPrefixCachePolicy.swift` (`windowSidecarEnabled`) |
 | `DARKBLOOM_PREFIX_CACHE_SSD_STRICT_FSYNC` | fsync every block write (GCM auth otherwise catches torn writes) | `SSDPrefixCachePolicy.swift` (`strictFsync`) |
 | `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS` | A negative value writes complete checkpoints whole instead of as [deltas](#delta-complete-checkpoints) | `SSDPrefixCachePolicy.swift` (`incrementalCheckpoints`) |
-| `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION` | Affirmative: an unseeded donor's response ends before its complete checkpoint is durable; capacity is still released at retirement. Forwarded to the launchd provider job. Each request that retires at least 1 ms after its answer is [marked](telemetry-schema.md#provider-early-terminal) with that time | `SSDPrefixCachePolicy.swift` (`terminalBeforePublication`), `EngineV2Bridge+Submission.swift`, `EngineV2Bridge+PrefixCacheTelemetry.swift` (`noteRetirementAfterTerminal`) |
+| `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION` | Affirmative: an unseeded donor's response ends before its complete checkpoint is durable; capacity is still released at retirement. Forwarded to the launchd provider job. Each request that retires at least 1 ms after its answer is [marked](telemetry-schema.md#provider-early-terminal) with that time, in the provider log only; the 1 ms floor is a timing heuristic (below the table) | `SSDPrefixCachePolicy.swift` (`terminalBeforePublication`), `EngineV2Bridge+Submission.swift`, `EngineV2Bridge+PrefixCacheTelemetry.swift` (`noteRetirementAfterTerminal`) |
 | `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL`, `DARKBLOOM_PREFIX_CACHE_TEST_ROOT` | Permit an in-memory KEK fallback and an isolated payload root; an accepted test root normally forces an ephemeral key | `SSDPrefixCacheFactory.swift` |
 | `DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY` | Exactly `1` requests the normal persistent KEK within an accepted test root; benchmark-only, not forwarded to LaunchAgents | `SSDPrefixCacheFactory.swift` (`forceEphemeralKey`) |
 | `DARKBLOOM_DEBUG_CACHE_KEY_FILE` | DEBUG builds only: the persistent KEK source for qualification of an ad hoc signed build without a keychain access group; ignored by release builds, not forwarded to LaunchAgents | `SSDDebugCacheKeyFile.swift` (`load`), `SSDCacheKeyMaterial.swift` (`defaultPersistentLoader`) |
+
+The early-terminal marker of `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION`
+([event and log line](telemetry-schema.md#provider-early-terminal)) marks a
+request that retires at least 1 ms after its answer. That floor is a timing
+heuristic, not the engine's decision: a request that wrote no checkpoint retires
+before its terminal, but on a busy provider the event pump can take longer than
+1 ms to resume after that retirement, so such a request can be marked too, and
+its log line still mentions a checkpoint publication. The mark exists only in
+the provider log (the `engine_health` event never leaves the provider), so an
+A/B of the flag must read provider logs, or add a telemetry field first.
 
 An isolated restart benchmark sets `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL=1`
 to enable `DARKBLOOM_PREFIX_CACHE_TEST_ROOT`, then sets

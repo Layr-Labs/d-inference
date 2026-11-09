@@ -2412,9 +2412,15 @@ final class OnboardingLive: @unchecked Sendable {
         return MeFirstWords.pairLines(state.meFirst, now: now)
     }
 
+    /// The status while this Mac's service waits for the other Mac, or serves without it (control mode "waiting",
+    /// "alone" or "cannotServe"): a started pair's control line, with serving alone's readiness (`soloNote`, asked only
+    /// then); a stopped pair never serves alone, so it says it is stopped and that the other Mac doesn't answer, as
+    /// `cluster status` reads it (journey 3, D3: after the leading Mac left, the Mac left behind said "degraded: serving
+    /// on this Mac alone … (its solo server is still loading)" while the leave had stopped the pair and nothing ran).
     static func awayLines(_ control: ClusterServiceStatus.Control, started: Bool, stopped: String, there: String, prefix: String,
                           soloNote: () -> String?) -> [String] {
-        [prefix + control.line + (control.mode == "alone" ? soloNote() ?? "" : "") + "."]
+        guard started else { return [stopped, ClusterOnboardingMacName.sentence(there) + " isn't answering over the cable."] }
+        return [prefix + control.line + (control.mode == "alone" ? soloNote() ?? "" : "") + "."]
     }
 
     func localStatus() -> [String] {
@@ -2423,18 +2429,17 @@ final class OnboardingLive: @unchecked Sendable {
         if let updating = ClusterService.publishedLive()?.updating { lines.append(updating) }
         let answering = self.answering
         if let control = ClusterService.published()?.control, ["alone", "cannotServe", "waiting"].contains(control.mode) {
+            let stopped = "Stopped\(leadership?.modelName.map { "; last model " + modelTitle($0) } ?? "")."
             // Serving alone is said only once this service's own solo server answers, as the setup's wait counts it.
-            var line = control.line
-            if control.mode == "alone" {
+            return lines + Self.awayLines(control, started: leadership?.serving == true, stopped: stopped, there: there,
+                                          prefix: answering ? Self.sentence(hereShort) + ": " : "") {
                 let published = ClusterService.published()
                 switch ClusterService.soloReadiness(published) {
-                case .ready: break
-                case .loading: line += " (its solo server is still loading)"
-                case .foreign: line += " (another program answers on port \(ClusterService.soloPort(of: published)), so its solo server cannot serve there)"
+                case .ready: return nil
+                case .loading: return " (its solo server is still loading)"
+                case .foreign: return " (another program answers on port \(ClusterService.soloPort(of: published)), so its solo server cannot serve there)"
                 }
             }
-            lines.append((answering ? Self.sentence(hereShort) + ": " : "") + line + ".")
-            return lines
         }
         // One line for the screen (the banner above says which Mac leads): what serves and where, or why it does not.
         let model = (leadership?.modelName).map(modelTitle) ?? "the chosen model"

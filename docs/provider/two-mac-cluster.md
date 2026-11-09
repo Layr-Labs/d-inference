@@ -1922,11 +1922,16 @@ Until it leaves too, the other Mac still holds its pairing, and it can't tell
 this Mac having left from this Mac being off:
 - its `status`, `cluster status` and a `start`'s result say ``If the other Mac
   left the pair, `darkbloom cluster leave` here unpairs this Mac too.``, and no
-  longer that `start` on either Mac starts the pair;
+  longer that `start` on either Mac starts the pair. They name no roles while
+  this Mac doesn't answer: ``Cluster: this Mac (…) is paired with the other Mac
+  (…), which isn't answering``, then ``■ Stopped; last model …`` with ``The
+  other Mac (…) isn't answering over the cable.``;
 - its `darkbloom cluster`, which a `start` in a terminal opens, no longer
-  reaches this Mac. It says ``If it left the pair, choose Start over to pair
-  again, or Quit and run `darkbloom cluster leave` here.`` and offers
-  **Start over**.
+  reaches this Mac. Its opening line names no roles either (``This Mac (…) ·
+  the other Mac (…) isn't answering``), its status says the pair is stopped,
+  as `cluster status` does, never that it serves alone, and it says ``If it
+  left the pair, choose Start over to pair again, or Quit and run `darkbloom
+  cluster leave` here.`` and offers **Start over**.
 
 The models, single-Mac serving and the cable port setup stay on both Macs
 (`darkbloom cluster link --remove` undoes the cable setup). Every line:

@@ -1806,7 +1806,7 @@ public enum ClusterOnboardingDriver {
         // (2026-11-04, the owner: "much clearer of what is what"). A cable on a port that is not set up is said below.
         let answered = resume.unsetCablePort == nil ? otherMacAnswers(operations, console) : nil
         let peer = role == .leader ? resume.peerName : resume.leaderName ?? resume.peerName
-        console.banner(title(role), pairLine(role, named: named, other: peer, cableReady: answered == true))
+        console.banner(title(role), pairLine(role, named: named, other: peer, cableReady: answered == true, silent: answered == false))
         switch role {
         case .member: return member(resume, operations, console, request: request, answered: answered)
         case .leader: return leader(resume, operations, console, justPaired: false, request: request, answered: answered)
@@ -1814,9 +1814,12 @@ public enum ClusterOnboardingDriver {
     }
 
     /// The opening of a paired Mac: "This Mac (Studio A) leads · the other Mac (Apple M3 Ultra, 256 GB) follows · cable
-    /// ready" (the other Mac by the name pairing showed; no computer name crosses the cable).
-    static func pairLine(_ role: ClusterOnboardingRole, named: String?, other: String?, cableReady: Bool) -> String {
+    /// ready" (the other Mac by the name pairing showed; no computer name crosses the cable). `silent`: the other Mac
+    /// didn't answer, so no roles are named (journey 3, D3: after the leading Mac left, the Mac left behind said it led
+    /// and the other Mac followed).
+    static func pairLine(_ role: ClusterOnboardingRole, named: String?, other: String?, cableReady: Bool, silent: Bool = false) -> String {
         let peer = ClusterOnboardingMacName.other(named: other)
+        if silent { return thisMac(named: named) + " \u{00B7} " + peer + " isn't answering" }
         let parts = role == .leader ? [thisMac(named: named) + " leads", peer + " follows"] : [thisMac(named: named) + " follows", peer + " leads"]
         return (parts + (cableReady ? ["cable ready"] : [])).joined(separator: " \u{00B7} ")
     }

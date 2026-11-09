@@ -117,5 +117,11 @@ struct ClusterSetupRealMacWordsTests {
         let alone = OnboardingLive.awayLines(control, started: true, stopped: "Stopped.", there: "the other Mac (Apple M3 Ultra, 256 GB)",
                                              prefix: "", soloNote: { " (its solo server is still loading)" })
         #expect(alone == [control.line + " (its solo server is still loading)."])
+        // The screen's opening names no roles while the other Mac doesn't answer.
+        #expect(ClusterOnboardingDriver.pairLine(.leader, named: "Jonathan's MacBook Pro", other: "Apple M3 Ultra, 256 GB", cableReady: false,
+                                                 silent: true)
+            == "This Mac (Jonathan's MacBook Pro) · the other Mac (Apple M3 Ultra, 256 GB) isn't answering")
+        #expect(ClusterOnboardingDriver.pairLine(.leader, named: "Jonathan's MacBook Pro", other: "Apple M3 Ultra, 256 GB", cableReady: true)
+            == "This Mac (Jonathan's MacBook Pro) leads · the other Mac (Apple M3 Ultra, 256 GB) follows · cable ready")
     }
 }

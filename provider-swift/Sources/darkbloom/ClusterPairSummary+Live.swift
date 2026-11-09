@@ -128,6 +128,9 @@ extension ClusterPairSummary {
         summary.pairRunning = summary.started && ClusterService.pairRuns(own)
         summary.pairNotRunning = own?.pairNotRunning
         summary.otherMacReachable = own?.control.map { !ClusterService.otherMacAbsentModes.contains($0.mode) } ?? false
+        // This Mac's service asks the other Mac all the time: its control waiting for it, or serving without it, is an
+        // answer that didn't come.
+        if let mode = own?.control?.mode, otherMacAwayModes.contains(mode) { summary.otherMacAnswers = false }
         return summary
     }
 

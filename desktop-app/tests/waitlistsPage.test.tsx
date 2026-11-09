@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
-import type { Operation, Snapshot } from '../src/shared/contracts';
+import type { Operation } from '../src/shared/contracts';
 import type { BackendState } from '../src/renderer/useBackend';
 import { Waitlists } from '../src/renderer/features/waitlists/Waitlists';
 import { resetWaitlists } from '../src/renderer/features/waitlists/waitlistStore';
@@ -223,7 +223,7 @@ describe('when the list is unavailable', () => {
   });
 
   it('asks for a newer CLI on a runtime without waitlists, and reads nothing', () => {
-    const backend = waitlistBackend({ capabilities: ['autopilot'] } as Partial<Snapshot>);
+    const backend = waitlistBackend({ capabilities: ['autopilot'] });
     const { navigate } = page(backend);
     expect(screen.getByText('Early access needs a newer Darkbloom CLI.')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Open Updates' }));

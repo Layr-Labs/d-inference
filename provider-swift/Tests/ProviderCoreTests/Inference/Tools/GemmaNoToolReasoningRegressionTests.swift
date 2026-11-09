@@ -7,7 +7,7 @@ import Testing
 /// tool-call marker and a role marker, each a single special token.
 private struct ChannelConstraintTokenizer: MLXLMCommon.Tokenizer {
     private static let specials = [
-        128: "<eos>", 1000: "<|channel>", 1001: "<channel|>", 1002: "<|tool_call>", 1003: "<start_of_turn>",
+        128: "<eos>", 1000: "<|channel>", 1001: "<channel|>", 1002: "<|tool_call>", 1003: "<|turn>",
     ]
 
     func encode(text: String, addSpecialTokens: Bool) -> [Int] { text.utf8.map(Int.init) }
@@ -74,6 +74,17 @@ struct GemmaNoToolReasoningRegressionTests {
         // The delimiters never enter the structured-tool JSON vocabulary.
         #expect(vocabulary.pieces[1000] == nil && vocabulary.pieces[1001] == nil)
         #expect(allowed.contains(128))
+    }
+
+    @Test func aThoughtCannotCarryAToolCall() throws {
+        let vocabulary = try GemmaTokenVocabulary(tokenizer: ChannelConstraintTokenizer(), stopTokenIDs: [128])
+        let constraint = GemmaNoToolTokenConstraint(maxTokens: 128, vocabulary: vocabulary)
+        var state = try #require(constraint.nextState(state: constraint.initialState, tokenID: 1000))
+        #expect(!constraint.allowedTokenIDs(state: state, remainingTokens: 128).contains(1002))
+        for byte in "thought\n<|tool_call".utf8 {
+            state = try #require(constraint.nextState(state: state, tokenID: Int(byte)))
+        }
+        #expect(constraint.nextState(state: state, tokenID: Int(Character(">").asciiValue!)) == nil)
     }
 
     @Test func partialForbiddenMarkersCannotBeSplicedAcrossChannelBoundaries() throws {

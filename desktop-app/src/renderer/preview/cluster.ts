@@ -275,6 +275,9 @@ function publish(store: PreviewStore, patch: Partial<Snapshot> = {}) {
   store.set({ ...withPair(store.get()), ...patch, resource_revision: `cluster-${revision}` });
 }
 
+// The preview's snapshot follows the pair at once, as when a guided setup ends.
+export const publishPair = (store: PreviewStore) => publish(store);
+
 // A start or restart loads for a while, then serves.
 function load(store: PreviewStore) {
   setPreviewPair({ state: 'loading' });

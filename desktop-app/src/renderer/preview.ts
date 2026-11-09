@@ -138,7 +138,7 @@ export const previewAPI: DesktopAPI = {
   },
   ...previewChatAPI,
   clusterSession: () => previewClusterSession.current(),
-  startClusterSession: (start) => previewClusterSession.start(start),
+  startClusterSession: (start) => previewClusterSession.start(start, store),
   answerClusterSession: (answer) => previewClusterSession.answer(answer),
   onClusterSession: (callback) => previewClusterSession.watch(callback),
   async openApproval(url) {

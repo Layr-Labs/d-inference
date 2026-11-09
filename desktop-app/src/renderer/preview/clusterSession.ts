@@ -8,10 +8,12 @@ import type {
 import {
   previewModels,
   previewPair,
+  publishPair,
   setPreviewPair,
   unsupported,
   type PreviewPair,
 } from './cluster';
+import type { PreviewStore } from './types';
 
 // Development preview of the guided cluster setup: `darkbloom cluster`'s screen as a script, in the
 // CLI's own words, that answers advance and Cancel ends. A setup that ends serving leaves the
@@ -654,8 +656,12 @@ class Player {
     };
   }
 
-  start(start: ClusterSessionStart) {
+  // The preview's snapshot, so a setup that ends updates `Snapshot.pair` at once.
+  private store?: PreviewStore;
+
+  start(start: ClusterSessionStart, store?: PreviewStore) {
     if (unsupported()) throw new Error('Unknown route');
+    this.store = store;
     if (this.session?.state === 'running')
       throw new Error('A cluster setup is already running. Finish or cancel it first.');
     clearTimeout(this.timer);
@@ -737,6 +743,7 @@ class Player {
     this.session.question = null;
     this.queue = [];
     this.publish();
+    if (this.store) publishPair(this.store);
   }
 
   private advance() {
@@ -780,8 +787,8 @@ export const previewClusterSession = {
   async current(): Promise<ClusterSession | null> {
     return player.session ? clone(player.session) : null;
   },
-  async start(start: ClusterSessionStart): Promise<ClusterSession> {
-    return player.start(start);
+  async start(start: ClusterSessionStart, store?: PreviewStore): Promise<ClusterSession> {
+    return player.start(start, store);
   },
   async answer(answer: ClusterSessionAnswer): Promise<ClusterSession> {
     return player.answer(answer);

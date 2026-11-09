@@ -159,6 +159,67 @@ struct IntegrationModelsTests {
         ])
     }
 
+    @Test("a pair's API: its own models are named (your pair); the others keep where they run")
+    func aPairsOwnModels() {
+        let models = IntegrationModels.resolve([
+            EndpointModel(id: "z-net", ownedBy: "darkbloom"),
+            EndpointModel(id: "b-mine", ownedBy: "my-macs"),
+            EndpointModel(id: "q-pair", ownedBy: "this-mac"),
+        ], catalog: nil, here: .yourPair)
+        #expect(models.map(\.name) == ["q-pair (your pair)", "b-mine (your Macs)", "z-net (Darkbloom network, billed)"])
+        #expect(models.first?.location == .yourPair)
+        // Read back from a tool's file without where it runs, so a run without the catalog keeps the name.
+        #expect(IntegrationModel.displayName(in: "Qwen 3.8 27B (your pair)") == "Qwen 3.8 27B")
+        #expect(IntegrationModel.Location.allCases.map(\.label)
+            == ["this Mac", "your pair", "your Macs", "Darkbloom network, billed"])
+    }
+
+    @Test("a pair's API serves its models here: the same limits and capabilities as this Mac's, online and offline")
+    func aPairsModelsAreServedHere() throws {
+        // Decoded as the endpoint lists them, so whatever the list says of a model served here (its engine's input
+        // modalities too) counts for the pair's as for this Mac's.
+        let listed = try JSONDecoder().decode([EndpointModel].self, from: Data("""
+            [{"id": "q", "owned_by": "this-mac", "context_length": 262144, "max_output_length": 65536,
+              "input_modalities": ["text"]},
+             {"id": "u", "owned_by": "this-mac", "input_modalities": ["text", "image"]},
+             {"id": "m", "owned_by": "my-macs", "input_modalities": ["text", "image"]}]
+            """.utf8))
+        func served(_ model: IntegrationModel) -> String {
+            "\(model.id) \(String(describing: model.contextLength)) \(String(describing: model.outputLimit)) "
+                + "\(model.tools) \(model.imageInput) \(model.reasoning) \(String(describing: model.fallback))"
+        }
+        let online = catalog([catalogModel("q", display: "Q", context: 131_072, capabilities: ["tools", "vision"])])
+        for snapshot in [online, nil] as [CatalogSnapshot?] {
+            let here = IntegrationModels.resolve(listed, catalog: snapshot)
+            let pair = IntegrationModels.resolve(listed, catalog: snapshot, here: .yourPair)
+            #expect(pair.map(served) == here.map(served))
+            #expect(pair.map(\.location) == [.yourPair, .yourPair, .yourMacs])
+        }
+    }
+
+    @Test("a pair's model keeps its engine's word on reasoning, a \"no\" too, online and offline, as this Mac's would")
+    func aPairsReasoningIsServedHere() throws {
+        // `supported_features: []` is the engine's "no": the catalog's reasoning can't add it, nor a tool's old entry.
+        let listed = try JSONDecoder().decode([EndpointModel].self, from: Data("""
+            [{"id": "q", "owned_by": "this-mac", "context_length": 262144, "supported_features": []},
+             {"id": "r", "owned_by": "this-mac", "context_length": 262144, "supported_features": ["reasoning"]}]
+            """.utf8))
+        let online = catalog([catalogModel("q", display: "Q", context: 262_144, capabilities: ["tools", "reasoning"])])
+        for snapshot in [online, nil] as [CatalogSnapshot?] {
+            let here = IntegrationModels.resolve(listed, catalog: snapshot)
+            let pair = IntegrationModels.resolve(listed, catalog: snapshot, here: .yourPair)
+            let mode = snapshot == nil ? "offline" : "online"
+            #expect(here.map(\.reasoning) == [false, true], "\(mode)")
+            #expect(pair.map(\.reasoning) == here.map(\.reasoning), "\(mode)")
+            #expect(pair.map(\.fallback) == here.map(\.fallback), "\(mode)")
+        }
+    }
+
+    @Test("the endpoint's own process serves this Mac's models and its pair's, not your Macs' or the network's")
+    func whereAModelIsServedHere() {
+        #expect(IntegrationModel.Location.allCases.filter(\.servedHere) == [.thisMac, .yourPair])
+    }
+
     @Test("non-chat catalog models are left out; an alias ID takes the alias's name and its build's limits")
     func catalogKindsAndAliases() {
         let snapshot = catalog([

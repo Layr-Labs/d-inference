@@ -98,9 +98,14 @@ public final class LocalRouter: Sendable {
         var local = try await inner.respond(to: request, context: context)
         local.headers[LocalRouterPolicy.servedByHeader] = LocalRouterPolicy.thisMac
         guard LocalRouterPolicy.passesOn(localStatus: local.status) else { return local }
-        // Only a request this Mac can't take reads the account key; without one, this Mac's answer stands.
-        let (saved, key) = config.effectiveRoute()
-        guard let key else { return local }
+        // Only a request this Mac can't take reads the saved route (one `stat` of the config file) and the account key;
+        // without a key, this Mac's answer stands, saying why when a route asked for your other Macs.
+        let effective = config.effectiveRoute()
+        guard let key = effective.accountKey else {
+            guard let wanted = effective.routeNeedingKey else { return local }
+            return needsAccountKey(local, model: Self.model(in: body), route: wanted)
+        }
+        let saved = effective.route
         if local.status == .notFound,
            let answer = try await answerAliasHere(request, body: body, context: context, inner: inner) {
             local = answer
@@ -340,6 +345,31 @@ public final class LocalRouter: Sendable {
         return response
     }
 
+    /// This Mac's refusal, said plainly, when `wanted` would pass the request on but no account key is saved: the
+    /// saved `my-macs` or `my-macs-first`, or the route a key gave until `route key --remove`. It keeps this Mac's
+    /// status and `Retry-After`. The log says it once, until a key is read again; neither names the key.
+    private func needsAccountKey(_ local: Response, model: String?, route wanted: LocalSettings.Route) -> Response {
+        let cli = BuildEnvironment.current.cliName
+        if config.keyCache.missingKeyNoted() {
+            log("a request this Mac can't take stays on this Mac: reaching \(Self.reach(wanted)) needs an account key, "
+                + "and none is saved (`\(cli) route key` saves one)")
+        }
+        // A client on another machine never uses the paid network, so it is told of your other Macs only.
+        let route = LocalRouterPolicy.route(wanted, fromAnotherMachine: LocalHTTPClient.fromAnotherMachine)
+        let refusal = local.status == .notFound ? "This Mac doesn't serve \(model ?? "the requested model")"
+            : "This Mac can't take this request right now"
+        var response = Self.errorResponse(local.status, message: "\(refusal), and reaching \(Self.reach(route)) needs an "
+            + "account key: run `\(cli) route key`.", code: "account_key_needed")
+        if let retryAfter = local.headers[.retryAfter] { response.headers[.retryAfter] = retryAfter }
+        response.headers[LocalRouterPolicy.servedByHeader] = LocalRouterPolicy.thisMac
+        return response
+    }
+
+    /// Where `route` passes a request on, in plain words.
+    private static func reach(_ route: LocalSettings.Route) -> String {
+        route == .myMacsFirst ? "your other Macs or the Darkbloom network" : "your other Macs"
+    }
+
     // MARK: - Models
 
     func models<Inner: HTTPResponder>(_ request: Request, context: Inner.Context, inner: Inner) async throws -> Response {
@@ -351,10 +381,10 @@ public final class LocalRouter: Sendable {
         for entry in list.data { localLimits[entry.id] = await self.localLimits(entry.id) }
         var upstream: [(ownedBy: String, entries: [LocalRouterModelEntry])] = []
         var catalog: LocalRouterCatalog?
-        let (saved, key) = config.effectiveRoute()
+        let effective = config.effectiveRoute()
         // Only what this client can reach: no network model for one on another machine.
-        let route = LocalRouterPolicy.route(saved, fromAnotherMachine: LocalHTTPClient.fromAnotherMachine)
-        if let key {
+        let route = LocalRouterPolicy.route(effective.route, fromAnotherMachine: LocalHTTPClient.fromAnotherMachine)
+        if let key = effective.accountKey {
             async let catalogRead = self.catalog()
             async let mine = upstreamModels(view: .mine, key: key)
             async let network = route == .myMacsFirst ? upstreamModels(view: .network, key: key) : []

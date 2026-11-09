@@ -334,7 +334,8 @@ cluster service's login job carries `clusterServiceLabelPrefix`, its per-user
 cluster locks are named after `cliName`, and the ports its pair uses on the
 cable add `clusterPortOffset` (`ClusterCablePorts`). Shared on purpose: the
 models, the cable port setup, the sweep of cluster processes whose parent is
-gone, and the range the pair's local API port is chosen from (8000 to 8020). The
+gone, and the range a pair's local API port falls back to when a Mac's own
+`[local] port` can't be read (8000 to 8020). The
 table is a generated copy of
 `provider-swift/identity/provider-identity.json`, the only declaration of these
 values:

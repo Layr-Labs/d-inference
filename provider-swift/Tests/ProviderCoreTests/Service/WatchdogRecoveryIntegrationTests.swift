@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import ProviderCore
 
-@Suite("Watchdog update and rollback integration", .serialized)
+@Suite("Watchdog update and rollback integration", .serialized, .timeLimit(.minutes(2)))
 struct WatchdogRecoveryIntegrationTests {
     @Test("down provider installs signed release before restart")
     func forwardUpdateWhileDown() async throws {
@@ -251,6 +251,30 @@ struct WatchdogRecoveryIntegrationTests {
         #expect(state.candidate == nil)
     }
 
+    @Test("a release check that gets no answer still restarts the current install")
+    func failedCheckStillRestarts() async throws {
+        let fixture = try UpdateRecoveryFixture()
+        defer { fixture.cleanup() }
+        let restarts = RecoveryRestartCounter()
+        let lines = WatchdogLogLines()
+        let updater = SelfUpdater(
+            coordinatorBaseURL: "http://127.0.0.1:1",
+            installRoot: fixture.installRoot,
+            verifyCodeSignatures: false,
+            currentVersion: fixture.oldVersion,
+            releaseCheck: .withoutPauses
+        )
+        let service = makeService(updater: updater, restarts: restarts, log: { lines.append($0) })
+
+        let outcome = await service.recoverDownProvider(autoUpdateEnabled: true, now: 100)
+
+        #expect(outcome == .restartIssued(updatedTo: nil, rolledBackTo: nil))
+        #expect(restarts.value == 1)
+        #expect(try fixture.liveBinaryContents() == "1.0.0-darkbloom")
+        #expect(lines.all.contains { $0.hasPrefix("update check failed; restarting current install: couldn't reach 127.0.0.1:1 (3 tries): ") },
+                "\(lines.all)")
+    }
+
     @Test("enrolled candidate promotes through persisted state with current and pre-update readers", arguments: [false, true])
     func enrolledCandidatePromotes(legacyReader: Bool) async throws {
         let context = try await installedCandidate(stabilizationSeconds: 60)
@@ -324,6 +348,37 @@ struct WatchdogRecoveryIntegrationTests {
             .loadState().candidate?.failureCount == 1)
     }
 
+    /// Only me's background service after an update: its preload waits for every model it serves, with no time limit,
+    /// and its server writes the daemon state from before that preload, refreshed every 250 ms
+    /// (`StandaloneServer.startLifecycleControl`, which `Start.startOnlyMeServer` starts first). At every watchdog tick
+    /// of a 10-minute first load the new release has a fresh heartbeat: it is promoted, and never charged a failed
+    /// start, killed or rolled back. Without the heartbeat the same load is a failed start at 5 minutes
+    /// (`hungCandidateCountsAsFailedStart`), and three are a rollback (`threeFailureRollback`).
+    @Test("a 10-minute Only me preload after an update, with its heartbeat: promoted, never killed or rolled back")
+    func onlyMeLongPreloadAfterAnUpdate() async throws {
+        // The new release launched at 100 s; its startup window is 5 minutes.
+        let context = try await installedCandidate()
+        defer { context.fixture.cleanup() }
+        defer { Task { await context.mock.shutdown() } }
+        let restartsBefore = context.restarts.value
+
+        var outcomes: [WatchdogRecoveryService.HealthOutcome] = []
+        for now in stride(from: 160.0, through: 760, by: 60) {
+            // Only me's state as its server writes it while the preload runs: this release, a quarter second old.
+            let heartbeat = DaemonState(pid: 4242, processIdentity: ProcessIdentity(pid: 4242, startTimeMicros: 100_000_000),
+                                        version: "2.0.0", writtenAt: now - 0.25, startedAt: 100,
+                                        inferenceActive: false, lifecycle: ProviderDrainStatus())
+            outcomes.append(context.service.observeHealthyProvider(providerRunning: true, daemonState: heartbeat,
+                                                                   now: now))
+        }
+        #expect(!outcomes.contains { if case .inactiveCandidate = $0 { true } else { false } }, "\(outcomes)")
+        #expect(outcomes.contains(.promoted(version: "2.0.0")), "\(outcomes)")
+        #expect(context.restarts.value == restartsBefore, "never killed")
+        let state = try recoveryStore(context.fixture).loadState()
+        #expect(state.current?.version == "2.0.0" && state.quarantine == nil, "never rolled back")
+        #expect(try context.fixture.liveBinaryContents() == "2.0.0-darkbloom")
+    }
+
     @Test("process death after atomic app exchange is recovered")
     func crashBetweenRenameAndMetadata() throws {
         enum InjectedCrash: Error { case afterExchange }
@@ -334,7 +389,8 @@ struct WatchdogRecoveryIntegrationTests {
             coordinatorBaseURL: "http://127.0.0.1:1",
             installRoot: fixture.installRoot,
             verifyCodeSignatures: false,
-            currentVersion: fixture.oldVersion
+            currentVersion: fixture.oldVersion,
+            releaseCheck: .withoutPauses
         )
         guard case .success(let staged) = updater.stageBundleForTesting(
             from: fixture.tarball,
@@ -394,7 +450,8 @@ struct WatchdogRecoveryIntegrationTests {
                 coordinatorBaseURL: "http://127.0.0.1:1",
                 installRoot: fixture.installRoot,
                 verifyCodeSignatures: false,
-                currentVersion: fixture.oldVersion
+                currentVersion: fixture.oldVersion,
+                releaseCheck: .withoutPauses
             )
             guard case .success(let staged) = updater.stageBundleForTesting(
                 from: fixture.tarball,
@@ -899,7 +956,8 @@ struct WatchdogRecoveryIntegrationTests {
                 if point == .liveLayoutReplaced, fault.claim() {
                     throw InjectedFault.midRollback
                 }
-            }
+            },
+            releaseCheck: .withoutPauses
         )
         let service = makeService(updater: faultingUpdater, restarts: restarts)
         _ = await service.recoverDownProvider(autoUpdateEnabled: false, now: 200)
@@ -987,7 +1045,8 @@ struct WatchdogRecoveryIntegrationTests {
             coordinatorBaseURL: "http://127.0.0.1:1",
             installRoot: fixture.installRoot,
             verifyCodeSignatures: false,
-            currentVersion: fixture.oldVersion
+            currentVersion: fixture.oldVersion,
+            releaseCheck: .withoutPauses
         )
         let service = makeService(updater: updater, restarts: restarts)
         let outcome = await service.recoverDownProvider(
@@ -1105,7 +1164,8 @@ struct WatchdogRecoveryIntegrationTests {
             coordinatorBaseURL: "http://127.0.0.1:1",
             installRoot: fixture.installRoot,
             verifyCodeSignatures: false,
-            currentVersion: fixture.oldVersion
+            currentVersion: fixture.oldVersion,
+            releaseCheck: .withoutPauses
         )
         let service = makeService(updater: updater, restarts: restarts)
         let outcome = await service.recoverDownProvider(
@@ -1154,7 +1214,8 @@ struct WatchdogRecoveryIntegrationTests {
             coordinatorBaseURL: "http://127.0.0.1:1",
             installRoot: fixture.installRoot,
             verifyCodeSignatures: false,
-            currentVersion: fixture.oldVersion
+            currentVersion: fixture.oldVersion,
+            releaseCheck: .withoutPauses
         )
         let service = makeService(updater: updater, restarts: restarts)
         let outcome = await service.recoverDownProvider(
@@ -1186,7 +1247,8 @@ struct WatchdogRecoveryIntegrationTests {
             coordinatorBaseURL: "http://127.0.0.1:1",
             installRoot: fixture.installRoot,
             verifyCodeSignatures: false,
-            currentVersion: fixture.oldVersion
+            currentVersion: fixture.oldVersion,
+            releaseCheck: .withoutPauses
         )
         let service = makeService(updater: updater, restarts: restarts)
         let outcome = await service.recoverDownProvider(
@@ -1359,7 +1421,8 @@ struct WatchdogRecoveryIntegrationTests {
             coordinatorBaseURL: "http://127.0.0.1:1",
             installRoot: context.fixture.installRoot,
             verifyCodeSignatures: false,
-            currentVersion: "1.0.0"
+            currentVersion: "1.0.0",
+            releaseCheck: .withoutPauses
         )
         guard case .restartRequired(let current, let installed)
                 = await offline.checkForUpdate()
@@ -1430,7 +1493,8 @@ struct WatchdogRecoveryIntegrationTests {
             coordinatorBaseURL: "http://127.0.0.1:1",
             installRoot: fixture.installRoot,
             verifyCodeSignatures: false,
-            currentVersion: fixture.oldVersion
+            currentVersion: fixture.oldVersion,
+            releaseCheck: .withoutPauses
         )
         let restarts = RecoveryRestartCounter()
         let service = makeService(updater: updater, restarts: restarts)
@@ -1461,7 +1525,8 @@ struct WatchdogRecoveryIntegrationTests {
             coordinatorBaseURL: "http://127.0.0.1:1",
             installRoot: fixture.installRoot,
             verifyCodeSignatures: false,
-            currentVersion: fixture.oldVersion
+            currentVersion: fixture.oldVersion,
+            releaseCheck: .withoutPauses
         )
         let service = makeService(updater: updater, restarts: restarts)
         let outcome = await service.recoverDownProvider(
@@ -1603,7 +1668,8 @@ struct WatchdogRecoveryIntegrationTests {
         stabilizationSeconds: Double = 180,
         candidateStartupTimeoutSeconds: Double = 300,
         isPastTickDeadline: @escaping @Sendable () -> Bool = { false },
-        launchSnapshot: @escaping @Sendable () -> ProviderLaunchSnapshot? = { nil }
+        launchSnapshot: @escaping @Sendable () -> ProviderLaunchSnapshot? = { nil },
+        log: @escaping @Sendable (String) -> Void = { _ in }
     ) -> WatchdogRecoveryService {
         WatchdogRecoveryService(
             updater: updater,
@@ -1617,7 +1683,7 @@ struct WatchdogRecoveryIntegrationTests {
                 launchSnapshot: launchSnapshot,
                 processAlive: { _ in true },
                 isPastTickDeadline: isPastTickDeadline,
-                log: { _ in }
+                log: log
             ),
             stabilizationSeconds: stabilizationSeconds,
             candidateStartupTimeoutSeconds: candidateStartupTimeoutSeconds
@@ -1654,4 +1720,12 @@ private extension UpdateResult {
         }
         return false
     }
+}
+
+/// The lines a watchdog recovery logged.
+private final class WatchdogLogLines: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+    func append(_ line: String) { lock.withLock { lines.append(line) } }
+    var all: [String] { lock.withLock { lines } }
 }

@@ -216,8 +216,10 @@ struct UnpairedMacServesNormallyTests {
     func status() {
         let stale = pair(running: false)
         #expect(stale.statusLine == "Cluster: " + notRunning)
+        // The other Mac isn't taking part: it may have left the pair (`darkbloom cluster leave`), so the way to leave too.
         #expect(stale.clusterStatusLines.suffix(2) == [notRunning,
-            "Next: `\(cli) start --solo` serves this Mac alone; `\(cli) start` starts the pair again."])
+            "Next: `\(cli) start --solo` serves this Mac alone; `\(cli) start` starts the pair again. If the other Mac left "
+                + "the pair, `\(cli) cluster leave` here unpairs this Mac too."])
         #expect(pair(running: true).startedButNotRunningLine == nil)
         #expect(pair(running: false, started: false).startedButNotRunningLine == nil)
     }
@@ -269,7 +271,7 @@ struct PairedMacStartTests {
         #expect(stoppedPair().idleRestartRefusal == [stoppedSentence,
             "Nothing serves on this Mac, so nothing was restarted: \(startsThePair); `\(cli) start --solo` serves this Mac alone."])
         #expect(pair(running: false).clusterStatusLines.last
-            == "Next: `\(cli) start --solo` serves this Mac alone; \(startsThePair).")
+            == "Next: `\(cli) start --solo` serves this Mac alone; \(startsThePair). " + ClusterPairSummary.leftBehindLine)
         #expect(stoppedPair().servingAloneLine == "This Mac is in a two-Mac cluster with \(otherMac), which is stopped: serving "
             + "this Mac alone (\(startsThePair)).")
         // Never "cleared": where a leftover part runs here, `releaseLeftoverPartToServeAlone` says its own lines instead,

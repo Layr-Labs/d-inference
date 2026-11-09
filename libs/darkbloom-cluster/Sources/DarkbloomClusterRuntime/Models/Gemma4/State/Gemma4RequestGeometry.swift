@@ -38,8 +38,10 @@ extension CBv2RequestGeometry {
     private init(gemma4Kinds kinds: [CBv2LayerKind], layerLimit: Int, kvDType: DType, maximumTokens: Int,
                  slidingWindow: Int, queryHeads: Int, full: (kvHeads: Int, headDim: Int),
                  sliding: (kvHeads: Int, headDim: Int)) throws {
+        // Any context the wire carries: the profile holds a request to the
+        // model's own, and its host's bound to the longest the rank serves.
         guard !kinds.isEmpty, kinds.count <= layerLimit,
-              (1...ClusterWorkerLimits.contextTokens).contains(maximumTokens), [.float16, .bfloat16, .float32].contains(kvDType),
+              (1...ClusterWorkerLimits.wireContextTokens).contains(maximumTokens), [.float16, .bfloat16, .float32].contains(kvDType),
               kinds.enumerated().allSatisfy({ $0.element.modelLayerIndex == $0.offset }) else {
             throw ProbeError("Gemma stage state requires bounded tokens, a native dtype and local layer indices")
         }

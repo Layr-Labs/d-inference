@@ -14,7 +14,7 @@ import Foundation
 /// the collective carries), three float32 rows of the whole vocabulary (the
 /// row a sampled step gathers, the split head's half, the top-k) and its
 /// prompt-prefix capture at its deepest boundary (`prefixCaptureBytes`: its
-/// own heads' full rows for its prompt, the profile's longest in the LOAD
+/// own heads' full rows for its prompt, the memory plan's longest in the LOAD
 /// quote, and one sliding window of every sliding layer).
 ///
 /// The transient and the partials are priced at one prompt chunk, or at one
@@ -83,7 +83,7 @@ struct Gemma4TensorParallelRequestBudget: Equatable {
     }
 
     /// `promptTokens`: the prompt whose capture is charged (a request's own,
-    /// or the profile's longest in the LOAD quote), at most `contextTokens - 1`;
+    /// or the memory plan's longest in the LOAD quote), at most `contextTokens - 1`;
     /// nil: `contextTokens - 1`. `keepsPrefixes` false charges no prefix
     /// capture (the load's cache off, or the request's).
     static func derive(contextTokens: Int, chunkTokens: Int, promptTokens: Int? = nil, keepsPrefixes: Bool = true,

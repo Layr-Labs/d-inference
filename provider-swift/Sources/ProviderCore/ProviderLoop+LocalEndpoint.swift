@@ -143,13 +143,12 @@ extension ProviderLoop {
     /// What the router's `/v1/models` says of a model this Mac serves: the input it takes, and once it is loaded its
     /// limits as its engine admits them. A single Mac lists its window as the context and the output: a prompt and
     /// its output together may fill it. A pair lists its own limits, the context and the output its mode serves (what
-    /// its slot reports to the coordinator): it refuses a `max_tokens` past its output (`output_too_long`).
+    /// its slot reports to the coordinator): a `max_tokens` past its output is cut to it.
     func localModelLimits(_ modelId: String) -> LocalModelLimits? {
         let input = localInputModalities(modelId)
         guard let slot = modelSlots[modelId] else { return input.map { LocalModelLimits(inputModalities: $0) } }
         if let pair = slot.modelContainer.clusterPair {
-            return LocalModelLimits(contextLength: pair.served.contextTokens, maxOutputLength: pair.served.outputTokens,
-                                    inputModalities: input)
+            return LocalModelLimits(served: pair.served, inputModalities: input)
         }
         return LocalModelLimits(window: slot.engineV2.advertisedContextTokens ?? slot.sizing.maxContextLength,
                                 inputModalities: input)
@@ -246,6 +245,13 @@ extension ProviderLoop {
         let release: @Sendable (String) async -> Void = { [weak self] mid in
             await self?.releaseLocalReservation(mid)
         }
+        // Me first: while this request waits in the engine's queue, Darkbloom
+        // work on the model that is still queued gives way. In shared mode
+        // there is no closure, so the request isn't watched at all.
+        var makeRoomForOwner: (@Sendable () async -> Void)?
+        if meFirst != nil {
+            makeRoomForOwner = { [weak self] in await self?.giveWayToOwner(modelId: modelId) }
+        }
         return MultiModelBatchSchedulerEngine.AcquiredModel(
             tokenizer: slot.tokenizer,
             releaseToken: OneShotRelease(release: release, modelId: modelId, nativeConsumerLease: nativeLease),
@@ -259,7 +265,8 @@ extension ProviderLoop {
             // bridge as coordinator requests; the vision gate covers the
             // legacy VLM media path's memory reservations.
             engineV2Bridge: slot.engineV2,
-            visionGate: slot.visionGate(kvBudget: kvBudget)
+            visionGate: slot.visionGate(kvBudget: kvBudget),
+            makeRoomForOwner: makeRoomForOwner
         )
     }
 
@@ -273,7 +280,7 @@ extension ProviderLoop {
             throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
         }
         let release = acquired.releaseToken
-        return .init(owner: owner, release: { await release.fire() })
+        return .init(owner: owner, release: { await release.fire() }, makeRoomForOwner: acquired.makeRoomForOwner)
     }
 
     /// Drop one local in-flight reservation for a model, which ends that

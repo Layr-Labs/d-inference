@@ -249,6 +249,12 @@ enum SuperHTTPErrors {
             || error is NemotronSuperVideoPreprocessing.Failure {
             return MultiModelBatchSchedulerEngineError.multimodalRejected("unsupported or invalid inline video request")
         }
+        if case .unknownReasoningEffort(let field)? = error as? NemotronSuperPromptContract.Failure {
+            return MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(field)
+        }
+        if error as? NemotronSuperPromptContract.Failure == .conflictingReasoningEfforts {
+            return MultiModelBatchSchedulerEngineError.conflictingReasoningEfforts
+        }
         if error is DecodingError || error is NemotronSuperImageDecode.Failure
             || error is NemotronSuperImagePreprocessing.Failure || error is MediaIngest.MediaError
             || error is NemotronSuperPromptContract.Failure || error is NemotronSuperRequestPlan.Failure

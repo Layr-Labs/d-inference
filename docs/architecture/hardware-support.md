@@ -650,8 +650,9 @@ answers it with 503, before any SSE header, streamed or not, and words that name
 this Mac's memory and what to change
 (`provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift`). A
 request that queued and then wasn't admitted (the 120 s admission lease, or a
-paged pool full through its requeues) fails after the response head instead: a
-streamed answer ends with an error event.
+paged pool full through its requeues) gets the same 503: a streamed request's
+head waits until the engine admits it
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+HeadHold.swift`).
 
 Loads and serving-set reserve raises must preserve each resident bridge's total
 `minimumServiceableGrantBytes`
@@ -1257,15 +1258,17 @@ A Gemma 4 tensor-parallel rank is charged its own share, not the whole model
 | Its own KV heads of every layer (4 sliding, 1 full), residual rows | per request | about 364 MB (the whole model's: 719,380,600) |
 | One prompt chunk's attention transient over its 8 query heads, or a decode step's one row on every layer where that is more (requests of 17 tokens or fewer) | per request | about 145 MB |
 | FP32 partials (attention row, dense row, 8 expert rows and their packed copy) of a chunk, or of a decode step's row on all 30 layers where that is more, and 3 vocabulary rows | per request | about 113 MB |
-| Prompt-prefix capture at its deepest boundary: its own full-attention rows for its prompt and one window of every sliding layer (`prefixCaptureBytes`); none when its cache is off | per request | 191,027,200 for an 8,319-token prompt (the LOAD quote's, for the profile's 32,768-token prompt: 441,384,960) |
+| Prompt-prefix capture at its deepest boundary: its own full-attention rows for its prompt and one window of every sliding layer (`prefixCaptureBytes`); none when its cache is off | per request | 191,027,200 for an 8,319-token prompt (the LOAD quote's, for the memory plan's 32,768-token prompt: 441,384,960) |
 | Activation floor: `UnifiedMemoryCap`'s conservative default, 5.5 GiB, until a pair measures one | per rank | 5,905,580,032 |
 | Freed-buffer cache (half the allocator headroom) | per rank | 1,073,741,824 |
 | Eight sealed frames of the packed collective (512 x 101,376 bytes and the seal) | per rank | about 415 MB |
 
-The layout's `requestAllowance` quotes one request at the profile's longest
+The layout's `requestAllowance` quotes one request at the memory plan's longest
 context (65,536 tokens) and prompt plus the per-rank charges, and the worker's
 LOAD gate reserves exactly that beside the shard. A reservation or lane asks
-the live gate for every held request, the new one and the per-rank charges. The
+the live gate for every held request, the new one and the per-rank charges. A
+request past the memory plan, up to the profile's 262,144 tokens, is charged at
+its own context ([Gemma 4 native context](inference.md#gemma-4-native-context-on-a-pair)). The
 planner still charges at least the pipeline's whole-model
 `requestChargeEveryRankBytes`. The prompt-prefix memory tier is charged
 nowhere: its budget is half the room the load measures beside the shard and

@@ -5,6 +5,10 @@ public enum ClusterWorkerRequestEvent: Sendable {
     /// A committed token, with rank 0's logprobs for it when the request asks for them.
     case token(Int, ClusterWorkerTokenLogprobs? = nil)
     case finished(ClusterWorkerFinishReason), failed(String)
+    /// Both ranks ended the started request alone (`ClusterWorkerAbort`: a
+    /// rank's memory refused it while it ran) and retired it. Only this
+    /// request ended: the pair stays ready. Delivered instead of `finished`.
+    case aborted(ClusterWorkerAbort)
     /// Both ranks restored `reused` prompt tokens from their prefix caches and
     /// both now hold `stored` frontiers of this prompt. Delivered once, just
     /// before `finished`, only when either is not empty.
@@ -136,6 +140,7 @@ public final class ClusterWorkerPair: @unchecked Sendable {
     private var rankServingContext: [Int?] = [nil, nil]
     /// Requests refused before they started (request-scoped), for diagnostics.
     private var refusedCount = 0
+    private var abortedCount = 0
     /// The last request that failed on this pair, for the incident the owner
     /// records when the pair stops (S24): the request's public prefix and the
     /// bounded fixed text the owner side derived (never prompt or token text).
@@ -186,6 +191,9 @@ public final class ClusterWorkerPair: @unchecked Sendable {
     }
     /// Requests refused before they started since the pair became ready.
     public var requestsRefused: Int { lock.withLock { refusedCount } }
+    /// Started requests both ranks ended alone (`ClusterWorkerRequestEvent.aborted`).
+    public var requestsAborted: Int { lock.withLock { abortedCount } }
+    func noteRequestAborted() { lock.withLock { abortedCount += 1 } }
 
     /// `keepWarm` is explicit at every serving call site: the installed
     /// session and the pair driver pass `.standard` (keep-warm is on by

@@ -452,15 +452,17 @@ public final class GLM5NextResidentRuntime {
         guard let reserved = reservation, reserved.request.requestID == requestID else {
             throw ProbeError("GLM start requires its exact reservation")
         }
+        let completion: QwenResidentGenerationCompletion
         do {
-            let completion = try QwenResidentRequestPublication.run(control: control, lifecycle: lifecycle,
+            completion = try QwenResidentRequestPublication.run(control: control, lifecycle: lifecycle,
                 identity: .init(requestID: requestID, epoch: requestID,
                     recordedRequestFingerprint: reserved.request.fingerprint), deadline: reserved.deadline, body: {
                 try autoreleasepool { try run(reserved, onCommittedToken: onCommittedToken) }
             }, prepare: { $0 })
             reservation = nil
-            return completion
         } catch { poison(); throw error }
+        // Both ranks ended it alone for memory (D6): this owner serves on.
+        return try completion.requireNotAborted()
     }
 
     private func run(_ reserved: Reservation, onCommittedToken: (Int, Int, Int) throws -> Bool) throws
@@ -473,7 +475,12 @@ public final class GLM5NextResidentRuntime {
             rankBuildSHA256: admission.configuration.identity.peers.map(\.buildSHA256),
             numericalPolicySHA256: contract.numericalPolicySHA256)
         try GLM5NextPipelineGeneration.requireSupported(unplanned)
-        try check(deadline: reserved.deadline); try requireResources(reserved.charge)
+        // No memory check before the first frame: the reservation's gate
+        // admitted it, and the stop latch asks at the first frame, where a
+        // refusal ends the request on both ranks alone (D6). Here it could only
+        // end this rank's worker while its peer waits in the readiness exchange.
+        try check(deadline: reserved.deadline)
+        try admission.resources.requireExecutionEnvironment(admission.resources.executionEnvironmentSHA256)
         guard try charge(for: reserved.request) == reserved.charge else {
             throw ProbeError("GLM request resource bounds changed after reservation")
         }
@@ -489,7 +496,17 @@ public final class GLM5NextResidentRuntime {
         let agreement = planned.agreement, session = planned.session
         let captureLimit = beginClusterStagePrefixCapture(cache: prefixCache, capture: session.prefixCapture)
         defer { prefixCache.endCapture() }
-        let driver = try GLM5NextPipelineGeneration(session: session, collective: collective)
+        var captureCharge = reserved.prefixCaptureBytes
+        // D6: the running memory check is this rank's stop latch, polled where
+        // it owes its peer the next message or is about to run a forward; a
+        // refusal ends the request on both ranks alone.
+        let latch = QwenStageAbort(rank: collective.rank) {
+            // Kept prefixes give way first, then this request's own capture.
+            captureCharge = try QwenResidentRequestExecution.checkRunning(captureBytes: captureCharge,
+                prefixCache: self.prefixCache, rank: collective.rank,
+                live: { try self.requireResources(reserved.charge, additionalNativeBytes: $0) })
+        }
+        let driver = try GLM5NextPipelineGeneration(session: session, collective: collective, abort: latch)
         activeDriver = driver
         // The driver's generation agreement binds pixels/spans/config on both
         // ranks before rank 0 can prepare native media in the first frame.
@@ -497,28 +514,24 @@ public final class GLM5NextResidentRuntime {
             guard let vision else { throw ProbeError("GLM image request lacks its resident tower") }
             session.imageFeatures = GLM5NextStageImageFeatures(media: media, owner: vision.value)
         }
-        var ordinal = 0, lastCheck: UInt64 = 0
-        var captureCharge = reserved.prefixCaptureBytes
-        let result = try driver.run(onCommittedToken: { token in
-            let current = ordinal; ordinal += 1
-            return try onCommittedToken(current, token, reserved.request.promptCount + current)
-        }, onSelectedRow: recordsSteps ? { index, boundary, row in
-            // Rank 1's row as qualification evidence, in MiMo's step format.
-            let bytes = row.asData().data, dtype = String(describing: row.dtype)
-            log(MiMoStepEvidence(ordinal: index, boundarySHA256: boundary, rowSHA256: sha256(bytes), rowDType: dtype,
-                top: try MiMoStepEvidence.candidates(rowBytes: bytes, dtype: dtype)).line(rank: collective.rank))
-        } : nil, check: {
-            try self.check(deadline: reserved.deadline)
-            let now = DispatchTime.now().uptimeNanoseconds
-            if lastCheck == 0 || now - lastCheck >= 250_000_000 {
-                // Kept prefixes give way first, then this request's own capture.
-                captureCharge = try QwenResidentRequestExecution.checkRunning(captureBytes: captureCharge,
-                    prefixCache: self.prefixCache, rank: collective.rank,
-                    live: { try self.requireResources(reserved.charge, additionalNativeBytes: $0) })
-                lastCheck = now
-            }
-            try self.check(deadline: reserved.deadline)
-        })
+        var ordinal = 0
+        let result: QwenLayerStageGenerationResult
+        do {
+            result = try driver.run(onCommittedToken: { token in
+                let current = ordinal; ordinal += 1
+                return try onCommittedToken(current, token, reserved.request.promptCount + current)
+            }, onSelectedRow: recordsSteps ? { index, boundary, row in
+                // Rank 1's row as qualification evidence, in MiMo's step format.
+                let bytes = row.asData().data, dtype = String(describing: row.dtype)
+                log(MiMoStepEvidence(ordinal: index, boundarySHA256: boundary, rowSHA256: sha256(bytes), rowDType: dtype,
+                    top: try MiMoStepEvidence.candidates(rowBytes: bytes, dtype: dtype)).line(rank: collective.rank))
+            } : nil, check: { try self.check(deadline: reserved.deadline) })
+        } catch let stopped as QwenStageAborted {
+            // Both ranks retired it; nothing of it is stored.
+            activeDriver = nil; requestActiveBaseline = nil
+            return .aborted(requestID: reserved.request.requestID, abort: stopped.abort,
+                message: latch.reason ?? stopped.description, rank: collective.rank)
+        }
         guard result.bothRequestStatesRetired,
               let reason = ClusterWorkerFinishReason(rawValue: result.finishReason.rawValue) else {
             throw ProbeError("GLM request lacks bilateral retirement")
@@ -692,26 +705,31 @@ public final class GLM5NextResidentRuntime {
         // storage keeps its full separate allowance throughout the operation.
         let grown = activeBaseline.map { max(0, native.activeBytes - $0) } ?? 0
         let remaining = max(0, nativeBytes - grown)
+        // Each refusal below is memory's, typed so a running request's stop
+        // latch ends that request alone (D6).
         do {
+            try ClusterMemoryFault.current.refuseIfDue()
             _ = try memoryWatch.admits(os, bytes: GLM5NextStageLoadResources.sum([remaining, hostBytes,
                     QwenDenseStageLoadPolicy.loadingHeadroomBytes(physicalMemoryBytes: os.physicalMemoryBytes)]),
                 now: DispatchTime.now().uptimeNanoseconds)
         } catch {
             // Numeric reservation context explains a refusal without exposing model input.
-            throw ProbeError("\(error); GLM memory context bytes: nativeReservation=\(nativeBytes) "
+            throw QwenResidentMemoryRefusal(message: "\(error); GLM memory context bytes: nativeReservation=\(nativeBytes) "
                 + "hostReservation=\(hostBytes) activeBaseline=\(activeBaseline ?? 0) "
                 + "active=\(native.activeBytes) cache=\(native.cacheBytes) "
                 + "nativeGrowth=\(grown) remainingNative=\(remaining)")
         }
         let needed = try GLM5NextStageLoadResources.sum([native.activeBytes, native.cacheBytes, remaining,
             QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
-        guard needed <= native.allocatorLimitBytes else { throw ProbeError("GLM request exceeds live allocator capacity") }
+        guard needed <= native.allocatorLimitBytes else {
+            throw QwenResidentMemoryRefusal(message: "GLM request exceeds live allocator capacity")
+        }
         if let gpuLimitBytes {
             let resident = try GLM5NextStageLoadResources.sum([native.activeBytes, native.cacheBytes, remaining])
             guard resident <= gpuLimitBytes else {
                 let gib = QwenDenseStageLoadPolicy.gibText
-                throw ProbeError("GLM request needs \(gib(resident)) on the GPU beside the loaded stage, more than the "
-                    + "\(gib(gpuLimitBytes)) its GPU keeps resident")
+                throw QwenResidentMemoryRefusal(message: "GLM request needs \(gib(resident)) on the GPU beside the loaded "
+                    + "stage, more than the \(gib(gpuLimitBytes)) its GPU keeps resident")
             }
         }
     }

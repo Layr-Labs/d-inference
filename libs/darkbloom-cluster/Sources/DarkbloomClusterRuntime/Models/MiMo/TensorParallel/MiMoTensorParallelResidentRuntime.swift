@@ -349,16 +349,10 @@ public final class MiMoTensorParallelResidentRuntime {
                 try budget.allowance(speculativeRequestBytes: bytes, allocationBound: allocationBound))
     }
 
-    /// The host memory gate's decision for `bytes` more, as the resident families take it.
+    /// The host memory gate's decision for `bytes` more, as the resident
+    /// families take it; a memory refusal is typed (`ClusterLiveMemory`).
     static func requireLiveMemory(bytes: Int) throws {
-        try QwenResidentResourceEnvironment.require()
-        let watch = QwenDenseStageLoadWatch("MiMo tensor-parallel")
-        let os = try QwenDenseStageLoadResources.observeOS()
-        let free = max(QwenDenseStageLoadPolicy.minimumAdmissibleBytes,
-            try QwenLongPrefillCheckedBytes.sum([bytes, QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
-        guard try watch.admits(os, bytes: free) else {
-            throw ProbeError("MiMo tensor parallel needs \(bytes) bytes the memory gate does not admit now")
-        }
+        try ClusterLiveMemory.requireTensorParallel(bytes: bytes, family: "MiMo")
     }
 
     private init(admission: MiMoResidentAdmission, control: QwenResidentControl, collective: Collective,
@@ -506,12 +500,17 @@ public final class MiMoTensorParallelResidentRuntime {
             throw ProbeError("MiMo tensor-parallel ranks were given different requests")
         }
         var lastCheck: UInt64 = 0
+        // This rank's stop was its live memory check's refusal (D6).
+        var stoppedForMemory = false
         func localStop() -> Bool {
             if (try? control.check(deadline: reserved.deadline)) == nil { return true }
             let now = DispatchTime.now().uptimeNanoseconds
             if now - lastCheck >= 250_000_000 {
                 lastCheck = now
-                if (try? Self.requireLiveMemory(bytes: 0)) == nil { return true }
+                do { try Self.requireLiveMemory(bytes: 0) } catch {
+                    stoppedForMemory = error is QwenResidentMemoryRefusal
+                    return true
+                }
             }
             return false
         }
@@ -528,6 +527,21 @@ public final class MiMoTensorParallelResidentRuntime {
                 try channel.publishToken(ordinal, token, request.promptCount + ordinal, logprobs)
                 return try channel.answer()
             })
+        // D6: each rank's memory stop and rank 0's owner stop, agreed once at
+        // the request's end (both ranks left after the same step, with the
+        // same finish). A local stop with a memory stop ends it alone.
+        let memory = outcome.stoppedHere && stoppedForMemory ? Int32(1) : 0
+        let agreed = try group.exchangeIntegers(rank == 0 ? [memory, 0, outcome.ownerStopped ? 1 : 0] : [0, memory, 0])
+        guard agreed.count == 3, agreed.allSatisfy({ $0 == 0 || $0 == 1 }) else {
+            throw ProbeError("MiMo tensor-parallel ranks did not agree how the request ended")
+        }
+        if outcome.finish == .clientStop, agreed[2] == 0, let stopped = agreed[0] == 1 ? 0 : agreed[1] == 1 ? 1 : nil {
+            log("darkbloom-tensor-parallel-request-v1 rank=\(rank) request=\(request.requestID.uuidString.lowercased())"
+                + " family=mimo prompt=\(request.promptCount) output=\(outcome.tokens.count) finish=aborted stopped_rank=\(stopped) reason=memory")
+            Memory.clearCache()
+            return .aborted(requestID: request.requestID, abort: .init(reason: .memory, rank: stopped),
+                message: "MiMo tensor parallel: rank \(stopped)'s memory refused the request while it ran", rank: rank)
+        }
         try control.check(deadline: reserved.deadline)
         let finish: ClusterWorkerFinishReason
         switch outcome.finish {

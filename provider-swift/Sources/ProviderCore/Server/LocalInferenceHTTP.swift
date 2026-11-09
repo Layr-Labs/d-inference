@@ -26,15 +26,20 @@ public struct LocalInferenceHTTPConfig: Sendable {
     public let port: UInt16
     /// Bearer token required on every inference route (nil = open / `--no-auth`).
     public let authToken: String?
+    /// A pair's API only: the pair's key (`LocalEndpoint.loadOrCreateClusterToken`), taken beside `authToken`, which is
+    /// this Mac's own. Every other Mac of the pair passes its requests on with it (`ClusterLocalRelay`), and tools set
+    /// up with it before keep working. Nil everywhere else.
+    public let pairToken: String?
     /// Where a request goes when this Mac can't take it (`LocalRouter`); nil serves this Mac's engine only, with
     /// the endpoint's behaviour before the router.
     public let router: LocalRouterConfig?
 
     public init(host: String = "127.0.0.1", port: UInt16 = BuildEnvironment.current.defaultLocalPort, authToken: String? = nil,
-                router: LocalRouterConfig? = nil) {
+                pairToken: String? = nil, router: LocalRouterConfig? = nil) {
         self.host = host
         self.port = port
         self.authToken = authToken
+        self.pairToken = pairToken
         self.router = router
     }
 }
@@ -74,7 +79,8 @@ public typealias LocalInferenceApplication =
 ///   fails, `runService` throws instead and this never fires.
 /// - Parameter modelLimits: this Mac's engine limits for a model (context and
 ///   output tokens, input modalities), which the router's `/v1/models` carries;
-///   nil knows none.
+///   nil knows none. The list says whether a model reasons from its type
+///   (`modelTypeProvider`, `LocalModelFeatures`).
 /// - Parameter prefillTicker: how often a streamed request's prompt is
 ///   commented on until its first token (`LocalPrefillProgress`); nil, never.
 func makeLocalInferenceApplication(
@@ -203,12 +209,18 @@ func makeLocalInferenceApplication(
             router.localKeyRequired = false
             router.log("no local key (--no-auth): requests stay on this Mac, and the account key is never used")
         }
-        return LocalRouter(config: router, localModels: availableModels, localLimits: modelLimits ?? { _ in nil })
+        // Each model's limits and input come from the server; whether it reasons comes from its type alone, here, for
+        // every server (one Mac, a pair's leader, the pair's own API).
+        return LocalRouter(config: router, localModels: availableModels, localLimits: { model in
+            var limits = await modelLimits?(model) ?? LocalModelLimits()
+            limits.reasoning = LocalModelFeatures.reasons(modelID: model, modelType: await modelTypeProvider?(model))
+            return limits
+        })
     }
     let routedResponder = LocalRouterResponder(inner: corsResponder, router: localRouter)
     // Auth rejects unauthenticated requests before body/model handling. The
     // outer disconnect layer only binds lifetime; it does not inspect content.
-    let authedResponder = LocalAuthResponder(inner: routedResponder, token: config.authToken)
+    let authedResponder = LocalAuthResponder(inner: routedResponder, token: config.authToken, pairToken: config.pairToken)
 
     return Application(
         responder: LocalDisconnectResponder(

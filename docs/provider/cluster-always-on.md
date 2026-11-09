@@ -1,6 +1,6 @@
 # Keep a cluster member always on
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 `darkbloom cluster` on each Mac does all of this. Nothing below is needed: it
 explains what the onboarding sets up and how to check it.
@@ -91,7 +91,14 @@ the cluster comes back by itself, with no command run on either Mac (see
 3. Within a few minutes of both being logged in: `darkbloom status` on each Mac
    shows the service running with `runs 1`; on the leader,
    `darkbloom cluster` shows the cluster serving the same model, and its
-   test request answers.
+   test request answers. Each part is new after the restart, so for about a
+   minute both Macs may say `… is not serving yet: checking both Macs with
+   Apple.` (App Attest, as at every start; read as loading). It is not a fault:
+   ``… isn't verified by Apple yet; … Don't restart either Mac until then.``
+   comes only once a Mac's part has run 2 minutes without App Attest, or its
+   key-generation safeguard holds it back. A pair that serves Both, me first
+   says on both Macs whether it is paused for you (`Pair: …`, with how long and
+   when it comes back, said from now).
 4. Note any macOS prompt or notice that appeared after the restart (expected:
    none; the "Background item added" notice appears only at install).
 5. To leave it off: `darkbloom cluster stop --service` on each Mac; after a further
@@ -130,7 +137,7 @@ supervisor starts (`Watchdog.settings`,
 | Step | Single Mac | Pair (both Macs) |
 |---|---|---|
 | When | 5 min after start, then every 30 min | Every 30 min at the update slot of the pairing's cluster ID (`ClusterMemberUpdateSlot`), the same moment on both Macs; or at once for `darkbloom update` |
-| Check, download, verify, stage | While serving (`SelfUpdater`) | The same, on each Mac, while the pair serves |
+| Check, download, verify, stage | While serving (`SelfUpdater`). The check makes up to 3 tries of 15 s | The same, on each Mac, while the pair serves. At the slot or catching up with the other Mac, a check without an answer makes a second round 60–120 s later (`ReleaseCheck.pairCycle`, `ClusterPairUpdateCycle.Environment.live(automatic:)`); the other Mac waits for its fresh `checking` |
 | Stop taking requests | Once staged | Once staged on both Macs (each reads the other's progress, `ClusterPairUpdateProgress`, from the other cluster service's status over the link) |
 | Drain | Accepted requests finish, at most 120 s; never cancelled | The part that serves the pair (rank 0) finishes its accepted requests, at most 120 s (`ClusterUpdateDrainRequest`, through its lifecycle mailbox); the other part serves none. A request still running reopens the pair on both Macs and defers to the next slot |
 | Install | Commit the staged bundle | Each Mac commits once both drained |
@@ -417,6 +424,7 @@ system setting:
 |---|---|---|
 | Supervisor `parked` (`exhausted`) | The last three `member ended` lines in the provider log | Fix the cause, then `darkbloom restart` (a new supervisor starts with a fresh budget) |
 | Supervisor `waitingForLink` | `darkbloom cluster link` | Connect the cable, or follow the printed fix |
+| `… is not serving yet: checking both Macs with Apple.` after a restart or a start | Each new part's App Attest authorization lands about a minute after it registers | Nothing: wait. Past 2 minutes, or when a key-generation safeguard holds a Mac back, the status says ``… isn't verified by Apple yet …`` instead: leave both Macs running ([troubleshooting](troubleshooting.md)) |
 | Follower never connects; log shows `Local network prohibited` | **Privacy & Security → Local Network** | Turn on Darkbloom; an ad-hoc build needs this per build |
 | A firewall alert after an update | `codesign -dv` on the listening binary | The binary is not Developer-ID signed; install the release build |
 | Install or provider log says `permissions: not asked once` | The listed reasons | Install the signed release (a locally built binary is ad-hoc signed and outside `Darkbloom.app`) |

@@ -19,10 +19,13 @@ public struct LocalAuthResponder<Inner: HTTPResponder>: HTTPResponder {
 
     public let inner: Inner
     public let token: String?
+    /// A pair's API: the pair's key, taken beside `token` (`LocalInferenceHTTPConfig.pairToken`).
+    public let pairToken: String?
 
-    public init(inner: Inner, token: String?) {
+    public init(inner: Inner, token: String?, pairToken: String? = nil) {
         self.inner = inner
         self.token = token
+        self.pairToken = pairToken
     }
 
     public func respond(to request: Request, context: Context) async throws -> Response {
@@ -30,7 +33,8 @@ public struct LocalAuthResponder<Inner: HTTPResponder>: HTTPResponder {
             method: request.method,
             path: request.uri.path,
             authorizationHeader: request.headers[.authorization],
-            token: token
+            token: token,
+            pairToken: pairToken
         ) {
             return try await inner.respond(to: request, context: context)
         }
@@ -45,12 +49,14 @@ public enum LocalAuthPolicy {
     ///   * nil/empty token              → open (no auth configured)
     ///   * OPTIONS                      → allowed (CORS preflight)
     ///   * GET/HEAD /health, /v1/health, / → allowed (liveness)
-    ///   * else                         → requires `Bearer <token>` (constant-time)
+    ///   * else                         → requires `Bearer <token>`, or on a pair's API `Bearer <pairToken>`
+    ///                                    (constant-time)
     static func authorize(
         method: HTTPRequest.Method,
         path: String,
         authorizationHeader: String?,
-        token: String?
+        token: String?,
+        pairToken: String? = nil
     ) -> Bool {
         guard let token, !token.isEmpty else { return true }
         if method == .options { return true }
@@ -60,7 +66,11 @@ public enum LocalAuthPolicy {
         let prefix = "Bearer "
         guard header.hasPrefix(prefix) else { return false }
         let provided = String(header.dropFirst(prefix.count))
-        return constantTimeEquals(provided, token)
+        // Both keys are always compared: the time taken says nothing of which one came close.
+        let pairToken = pairToken ?? ""
+        let matchesOwn = constantTimeEquals(provided, token)
+        let matchesPair = constantTimeEquals(provided, pairToken) && !pairToken.isEmpty
+        return matchesOwn || matchesPair
     }
 
     /// Length-checked constant-time comparison. Tokens are fixed-length, so the
@@ -74,12 +84,17 @@ public enum LocalAuthPolicy {
         return diff == 0
     }
 
+    /// The 401's body. A pair's relay answers it too, word for word, to a caller without a key while it can't pass the
+    /// request on (`ClusterLocalRelay.Refusals.unauthorized`).
+    static var unauthorizedBody: Data {
+        Data(#"{"error":{"message":"missing or invalid local API key — get it from `\#(BuildEnvironment.current.cliName) local`","type":"authentication_error"}}"#.utf8)
+    }
+
     static func unauthorizedResponse() -> Response {
-        let body = Data(#"{"error":{"message":"missing or invalid local API key — get it from `\#(BuildEnvironment.current.cliName) local`","type":"authentication_error"}}"#.utf8)
         var headers = HTTPFields()
         headers[.contentType] = "application/json"
         headers[.wwwAuthenticate] = "Bearer"
         headers[.accessControlAllowOrigin] = "*"
-        return Response(status: .unauthorized, headers: headers, body: .init(byteBuffer: ByteBuffer(bytes: body)))
+        return Response(status: .unauthorized, headers: headers, body: .init(byteBuffer: ByteBuffer(bytes: unauthorizedBody)))
     }
 }

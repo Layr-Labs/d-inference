@@ -138,9 +138,12 @@ struct StartToolIntegrationTests {
         let keyFile = URL(fileURLWithPath: "/tmp/fixture/local_token")
         let live = LocalEndpoint.Info(host: "127.0.0.1", port: 8123, apiKey: "dk-local-fixture", version: "test",
                                       pid: 1, updatedAt: "")
+        // A test's pair, so `IntegrationEndpoint.live` never reads this Mac's own cluster service.
         func shortcut(_ arguments: [String], _ info: LocalEndpoint.Info? = live,
                       keyFile file: URL? = keyFile) throws -> IntegrationEndpoint? {
-            try Start.parse(arguments).runningLocalAPI(info, keyFile: { _ in file })
+            try ClusterPairSummary.$readerForTesting.withValue({ _ in .notPaired }) {
+                try Start.parse(arguments).runningLocalAPI(info, keyFile: { _ in file })
+            }
         }
         let expected = IntegrationEndpoint(baseURL: "http://127.0.0.1:8123/v1", keyFile: keyFile)
         for arguments in [["--opencode"], ["--hermes", "--local"], ["--opencode", "--me-first"],
@@ -168,9 +171,12 @@ struct StartToolIntegrationTests {
                                                                       version: "", pid: 1, updatedAt: ""),
                                               LocalEndpoint.Info(host: "0.0.0.0", port: 8123, apiKey: "k",
                                                                  version: "", pid: 1, updatedAt: "")]
-        let found = await Start.waitForLocalAPI(port: 8123, seconds: 30,
-                                                live: { answers.isEmpty ? nil : answers.removeFirst() },
-                                                keyFile: { _ in keyFile }, pause: {})
+        // A test's pair, so `IntegrationEndpoint.live` never reads this Mac's own cluster service.
+        let found = await ClusterPairSummary.$readerForTesting.withValue({ _ in .notPaired }) {
+            await Start.waitForLocalAPI(port: 8123, seconds: 30,
+                                        live: { answers.isEmpty ? nil : answers.removeFirst() },
+                                        keyFile: { _ in keyFile }, pause: {})
+        }
         #expect(found == .ready(IntegrationEndpoint(baseURL: "http://127.0.0.1:8123/v1", keyFile: keyFile)))
         let none = await Start.waitForLocalAPI(port: 8123, seconds: 0, live: { nil }, keyFile: { _ in keyFile },
                                                pause: {})
@@ -211,7 +217,10 @@ struct StartToolIntegrationTests {
         let coordinator = "wss://coordinator.invalid/ws/provider"
         let sandbox = try StepSandbox()
         try await start.setUpToolsBesideDaemon(serving: serving, coordinatorURL: coordinator,
-                                               waitForAPI: { _ in .ready(sandbox.endpoint) },
+                                               waitForAPI: { port, seconds in
+                                                   #expect(port == 8123 && seconds == Start.toolWaitSeconds)
+                                                   return .ready(sandbox.endpoint)
+                                               },
                                                step: sandbox.step([.opencode]))
         #expect(FileManager.default.fileExists(atPath: sandbox.openCodeFile.path), "the step ran")
         // The tool block says where requests go from the key this start read, without reading it again.
@@ -220,15 +229,19 @@ struct StartToolIntegrationTests {
         let missing = try StepSandbox()
         await #expect(throws: ExitCode.failure) {
             try await start.setUpToolsBesideDaemon(serving: serving, coordinatorURL: coordinator,
-                                                   waitForAPI: { _ in .ready(missing.endpoint) },
+                                                   waitForAPI: { _, _ in .ready(missing.endpoint) },
                                                    step: missing.step([.opencode], installed: []))
         }
         #expect(missing.said.last == "Darkbloom keeps serving.")
         for wait in [Start.LocalAPIWait.noKeyFile, .notUp] {
             let untouched = try StepSandbox()
+            // A longer wait (Only me's, which listens once its models are loaded) reaches the wait as given.
             await #expect(throws: ExitCode.failure) {
-                try await start.setUpToolsBesideDaemon(serving: serving, coordinatorURL: coordinator,
-                                                       waitForAPI: { _ in wait }, step: untouched.step([.opencode]))
+                try await start.setUpToolsBesideDaemon(serving: serving, coordinatorURL: coordinator, waitSeconds: 150,
+                                                       waitForAPI: { _, seconds in
+                                                           #expect(seconds == 150)
+                                                           return wait
+                                                       }, step: untouched.step([.opencode]))
             }
             #expect(untouched.said.isEmpty && untouched.filesOtherThanTheKey().isEmpty, "\(wait)")
         }
@@ -236,7 +249,7 @@ struct StartToolIntegrationTests {
             + "but no key file holds its key, so OpenCode wasn't set up.")
     }
 
-    @Test("start --local --opencode reads the account key once, for the banner and the tool block; no key shown")
+    @Test("start --local reads the account key once, with or without a tool flag; no start screen shows the key")
     func localWithAToolReadsTheAccountKeyOnce() throws {
         let directory = try TemporaryDirectory("start-tools-local")
         let config = try directory.write("[provider]\nname = \"d2b\"\n\n[local]\nroute = \"my-macs-first\"\n",
@@ -251,11 +264,13 @@ struct StartToolIntegrationTests {
         // The banner's words come from that one read: requests can leave this Mac, so it doesn't say "this Mac only".
         #expect(LocalFirstWords.requests(route: serving.route, accountKeySaved: serving.accountKeySaved ?? false)
             == "this Mac first, then your other Macs (free), then the Darkbloom network (billed)")
-        #expect(!start.bannerShowsKey(serving), "no key in the banner with a tool flag")
-        // `--local` alone keeps its banner, key included, and still never asks the Keychain.
+        let key = "dk-local-fixture"
+        #expect(!start.localServerBanner(serving: serving, models: [], token: key).contains { $0.contains(key) })
+        // `--local` alone says where requests go too, from one read of the Keychain, and shows no key either.
         let plain = try Start.parse(["--local", "--config", config.path])
         let plainServing = try #require(try plain.resolveServing(environment: environment))
-        #expect(plain.bannerShowsKey(plainServing) && plainServing.accountKeySaved == nil && lookups == 1)
+        #expect(plainServing.accountKeySaved == true && lookups == 2)
+        #expect(!plain.localServerBanner(serving: plainServing, models: [], token: key).contains { $0.contains(key) })
     }
 
     /// The local API's `/v1/models` waits for the coordinator's lists up to the router's own deadline
@@ -286,7 +301,8 @@ struct StartToolIntegrationTests {
 
     @Test("a model this Mac hasn't loaded yet gets one line: run the start again once it is loaded")
     func unloadedModelsSayRunAgain() async throws {
-        let line = "  Run `darkbloom --opencode` again once the model is loaded, to pick up its limits."
+        let line = "  Run `darkbloom --opencode` again once `darkbloom status` shows gpt-oss-120b loaded, to pick up "
+            + "its limits."
         let sandbox = try StepSandbox()
         let unloaded = StepSandbox.listed + [EndpointModel(id: "gpt-oss-120b", ownedBy: "this-mac")]
         #expect(await sandbox.step([.opencode], listed: unloaded).run(endpoint: sandbox.endpoint, requests: "x"))
@@ -297,6 +313,9 @@ struct StartToolIntegrationTests {
             _ = await quiet.step([.opencode], listed: listed).run(endpoint: quiet.endpoint, requests: "x")
             #expect(!quiet.said.contains { $0.hasPrefix("  Run `") })
         }
+        #expect(ToolIntegrationStep.runAgainOnceLoaded(["Gemma 4 26B", "Qwen 3.8 27B"], tools: [.opencode, .hermes])
+            == "  Run `darkbloom --opencode --hermes` again once `darkbloom status` shows Gemma 4 26B and Qwen 3.8 27B "
+            + "loaded, to pick up their limits.")
     }
 
     // MARK: - Finding the tools
@@ -337,13 +356,16 @@ struct StartToolIntegrationTests {
         #expect(ok)
         #expect(sandbox.said == [
             "✓ OpenCode can use Darkbloom: 2 models.",
-            "  Changed: ~/.config/opencode/opencode.jsonc (a new file with the \"darkbloom\" provider)",
-            "  Use it:  in OpenCode, /models → Darkbloom; new sessions use darkbloom/gemma-4-26b-qat-4bit.",
+            "  Changed: ~/.config/opencode/opencode.jsonc (a new file with the \"darkbloom\" provider and the default "
+                + "model)",
+            "  New OpenCode sessions now use Darkbloom's gemma-4-26b-qat-4bit. To go back, remove \"model\" from "
+                + "~/.config/opencode/opencode.jsonc or run the Undo below.",
             "  Undo:    rm \(ToolIntegration.shellQuoted(sandbox.openCodeFile.path))",
-            "✓ Hermes uses Darkbloom: new Hermes chats run qwen3.8-27b (this Mac).",
-            "  Changed: ~/.hermes/config.yaml (a new file with the \"darkbloom\" provider, made the main model)",
-            "  Switch back: hermes model   ·   Undo: rm \(ToolIntegration.shellQuoted(sandbox.hermesFile.path))   ·   "
-                + "Chats already open keep their model.",
+            "✓ Hermes can use Darkbloom: 1 model.",
+            "  Changed: ~/.hermes/config.yaml (a new file with the \"darkbloom\" provider as the main model)",
+            "  New Hermes chats now use Darkbloom's qwen3.8-27b. Switch back: hermes model",
+            "  Undo:    rm \(ToolIntegration.shellQuoted(sandbox.hermesFile.path))   ·   Chats already open keep their "
+                + "model.",
             "  Left out: gemma-4-26b-qat-4bit (Hermes needs 64K context)",
             "  Darkbloom's catalog wasn't reachable: run `darkbloom --opencode --hermes` again online for the "
                 + "models' names and image support.",
@@ -370,7 +392,7 @@ struct StartToolIntegrationTests {
             "✓ OpenCode can use Darkbloom: 1 model.",
             "  Changed: ~/.config/opencode/opencode.jsonc (updated the \"darkbloom\" provider; nothing else changed)",
             "  Backup:  ~/.darkbloom/integrations/backups/opencode/\(backup.lastPathComponent)",
-            "  Use it:  in OpenCode, /models → Darkbloom. Your default model is unchanged.",
+            "  Your default stays darkbloom/gemma-4-26b-qat-4bit (the \"model\" in your OpenCode config).",
             "  Undo:    cp \(ToolIntegration.shellQuoted(backup.path)) \(ToolIntegration.shellQuoted(sandbox.openCodeFile.path))",
         ])
 

@@ -4,13 +4,16 @@ name: CI (dev)
 # branches) and pushes to dev run the provider and cluster tests
 # (.github/workflows/provider-tests.yml) and nothing else: Release Integrity,
 # Docs Lint and the contribution gates run only for master
-# (.github/workflows/ci-master.yml, docs-impact.yml).
+# (.github/workflows/ci-master.yml, docs-impact.yml). A dispatch is the hourly
+# full run of dev (.github/workflows/ci-dev-hourly.yml): it selects every
+# component and never skips a tested tree.
 on:
   push:
     # Pushes to dev save the caches that pull requests into dev restore.
     branches: [dev]
   pull_request:
     branches-ignore: [master, main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -18,8 +21,11 @@ permissions:
 # Only revisions of the same PR supersede each other; pushes stay independent.
 # A push whose tree a pull request run already tested runs no test job
 # (provider-plan.yml), so most push runs are a few GitHub-hosted steps.
+# Dispatches share one group and never cancel a running dispatch: a new
+# dispatch waits for it. GitHub keeps one waiting run per group, so a newer
+# dispatch replaces one that already waits.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  group: ${{ github.event_name == 'workflow_dispatch' && 'ci-dev-hourly' || format('{0}-{1}-{2}', github.workflow, github.event_name, github.event.pull_request.number || github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -50,3 +56,44 @@ jobs:
       head: ${{ needs.plan.outputs.head }}
       routes: ${{ needs.plan.outputs.routes }}
       strict_cache: false
+
+  # A dispatched run's actor is the bot, so a failure notifies nobody. When a
+  # job of a dispatched run fails, this job comments on the open issue titled
+  # "Hourly full dev CI failures" (and opens it when there is none): the run,
+  # the tested commit and the failed jobs. It never fails the run further.
+  # The non-blocking Cluster GPU Tests never fail their jobs, so they never
+  # report here.
+  hourly-failures:
+    name: Report hourly failures
+    needs: [plan, tests]
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && contains(needs.*.result, 'failure') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      issues: write
+    steps:
+      - name: Comment on the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          title="Hourly full dev CI failures"
+          failed=$(gh api --paginate "repos/$REPOSITORY/actions/runs/$RUN_ID/jobs?filter=latest&per_page=100" \
+            --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | "- " + .name')
+          [ -n "$failed" ] || failed="- (the run lists no failed job; see the run)"
+          body=$(printf 'The hourly full run of `%s` failed: %s\n\nCommit: %s\n\nFailed jobs:\n%s\n' \
+            "$REF_NAME" "$RUN_URL" "$SHA" "$failed")
+          issue=$(gh issue list --repo "$REPOSITORY" --state open --limit 1000 --json number,title \
+            --jq '[.[] | select(.title == "Hourly full dev CI failures")][0].number // empty')
+          if [ -z "$issue" ]; then
+            issue=$(gh issue create --repo "$REPOSITORY" --title "$title" \
+              --body "CI (dev) runs every hour on \`dev\` with every component selected (.github/workflows/ci-dev-hourly.yml). Each failed run adds a comment here. Close this issue when \`dev\` is green; the next failure opens a new one.")
+          fi
+          gh issue comment "$issue" --repo "$REPOSITORY" --body "$body"
+          echo "Commented on $issue"

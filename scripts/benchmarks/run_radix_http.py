@@ -104,7 +104,7 @@ name = "isolated-radix-benchmark"
         with (root / "server.log").open("w") as server_log, (root / "telemetry.jsonl").open("w") as telemetry_log, (root / "client.log").open("w") as client_log:
             telemetry = subprocess.Popen([str(macmon), "pipe", "-i", "100"], stdout=telemetry_log,
                                          stderr=subprocess.DEVNULL, start_new_session=True)
-            server = subprocess.Popen([args.binary, "start", "--local", "--config", str(config),
+            server = subprocess.Popen([args.binary, "start", "--local", "--here", "--config", str(config),
                                        "--model", args.model, "--port", str(args.port), "--no-auth"],
                                       env=env, stdout=server_log, stderr=subprocess.STDOUT, start_new_session=True)
             base = f"http://127.0.0.1:{args.port}"

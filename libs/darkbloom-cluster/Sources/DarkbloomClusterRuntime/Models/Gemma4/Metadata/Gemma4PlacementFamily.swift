@@ -11,6 +11,10 @@ import Foundation
 /// payload and no GPU.
 struct Gemma4PlacementFamily: ClusterPlacementFamily {
     let specification: Gemma4RegisteredSpecification
+    /// The memory plan's request (`Gemma4ResidentAdapterDefinition.memoryProfile`),
+    /// which the planner, every quote and every LOAD gate size the pair for;
+    /// the capability advertises the native context, and a longer request is
+    /// charged at its own context when a rank reserves it.
     let profile: QwenLayerStageGenerationProfile
     /// The tensor-parallel plan (`Gemma4TensorParallelPlan`, two ranks by
     /// heads and expert channels) when the resident row lists the mode.
@@ -41,7 +45,7 @@ struct Gemma4PlacementFamily: ClusterPlacementFamily {
     /// The row's family over a configuration already held to its geometry.
     init(specification: Gemma4RegisteredSpecification, decoded: Gemma4StageGeometry.Decoded) throws {
         self.specification = specification
-        profile = try Gemma4ResidentAdapterDefinition.profile(specification: specification)
+        profile = try Gemma4ResidentAdapterDefinition.memoryProfile(specification: specification)
         tensorParallel = Gemma4ResidentAdapterDefinition.supportedGenerationModes.contains(.tensorParallel)
             ? try Gemma4TensorParallelPlan(configuration: decoded.root) : nil
     }

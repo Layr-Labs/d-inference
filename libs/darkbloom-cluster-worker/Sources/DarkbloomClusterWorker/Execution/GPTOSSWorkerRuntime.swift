@@ -49,6 +49,8 @@ final class GPTOSSWorkerRuntime: WorkerRuntime, @unchecked Sendable {
             guard result.bothRequestStatesRetired else {
                 throw WorkerFailure.invalid("Native generation did not retire both request states")
             }
+            // Both ranks ended it alone for a rank's memory (D6).
+            try result.requireNotAborted()
             return result.finishReason
         }
         guard let reservation = active, reservation.id == id else {

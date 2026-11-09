@@ -19,6 +19,13 @@ struct DesktopClusterSandboxResourcesTests {
     return (directory, script, runs)
   }
 
+  /// A document's content, whatever order its keys were decoded in (`JSONDecoder` keeps no order).
+  static func canonical(_ value: DV) throws -> String {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    return String(decoding: try encoder.encode(value), as: UTF8.self)
+  }
+
   static func runs(_ file: URL, _ command: String) -> Int {
     ((try? String(contentsOf: file, encoding: .utf8)) ?? "").split(separator: "\n").filter { $0 == command }.count
   }
@@ -46,8 +53,8 @@ struct DesktopClusterSandboxResourcesTests {
       for _ in 0..<5 { group.addTask { try await backend.resource("cluster") } }
       return try await group.reduce(into: []) { $0.append($1) }
     }
-    let expected = try JSONDecoder().decode(DV.self, from: Data(Self.notServing.utf8))
-    for value in reads { #expect(value == expected) }
+    let expected = try Self.canonical(JSONDecoder().decode(DV.self, from: Data(Self.notServing.utf8)))
+    for value in reads { #expect(try Self.canonical(value) == expected) }
     #expect(Self.runs(runs, "cluster status") == 1)
     _ = try await backend.resource("cluster")
     #expect(Self.runs(runs, "cluster status") == 1)

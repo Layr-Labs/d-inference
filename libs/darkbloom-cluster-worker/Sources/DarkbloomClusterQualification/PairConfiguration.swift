@@ -161,6 +161,14 @@ public struct PairConfiguration: Sendable {
     /// In every wave of two or more, the last request is cancelled once it
     /// has this many tokens: it must retire alone while the others finish.
     public var batchCancelAfterTokens: Int?
+    /// Every batch request, alone and in its waves, asks for each committed
+    /// token's logprob and this many alternatives (`ClusterWorkerSampling.topLogprobs`,
+    /// 1...20), and each wave's are compared with the requests' alone, bit for
+    /// bit. Tensor parallel only: its runtimes send them, and a pipeline
+    /// worker refuses such a request. As in the product, a request that asks
+    /// for them decodes one token per step, without speculative rounds, so a
+    /// run with them and one without cover both decode paths.
+    public var batchLogprobs: Int?
     /// The prompt-prefix SSD tier of each side's worker: that Mac's own root
     /// directory and key file (a file only its user can read). Nil: no tier.
     /// The driver reads the key on that side (`prefixSSDKeyScript`) and sends
@@ -350,6 +358,9 @@ public struct PairConfiguration: Sendable {
             "at most 8 batch requests; each wave is 1...lanes and at most the request count")
         try require(batchRequests.allSatisfy { $0.modelID == request.modelID && $0.profileID == request.profileID },
             "batch requests must name the same model and profile")
+        try require(batchLogprobs.map { (1...ClusterWorkerSampling.maximumTopLogprobs).contains($0)
+                && generationMode == Self.tensorParallelMode && !batchRequests.isEmpty } ?? true,
+            "batch logprobs are 1...\(ClusterWorkerSampling.maximumTopLogprobs) alternatives of tensor-parallel batch requests")
         try require([Self.jacclTransport, Self.localSocketTransport].contains(workerTransport), "unknown worker transport")
         try require(workerTransport == Self.jacclTransport || coordinator.hasPrefix("127.0.0.1:"),
             "local-socket-test runs both ranks on this Mac and needs a 127.0.0.1 coordinator")
@@ -412,6 +423,17 @@ public struct PairConfiguration: Sendable {
     }
 
     /// Everything below is by rank; only these two say which side a rank is on.
+    /// A batch request's reservation sampling: its own (`QualificationSampling.wire`, none for greedy text), asking
+    /// for `batchLogprobs` alternatives when the run compares them. A greedy request then carries greedy sampling
+    /// that asks for them alone.
+    func batchSampling(_ request: QualificationRequest) -> ClusterWorkerSampling? {
+        guard let count = batchLogprobs else { return request.sampling?.wire }
+        let own = request.sampling?.wire
+        return ClusterWorkerSampling(temperature: own?.temperature ?? 0, topP: own?.topP ?? 1, topK: own?.topK ?? 0,
+            minP: own?.minP ?? 0, repetitionPenalty: 1, repetitionContextSize: 0, frequencyPenalty: 0, presencePenalty: 0,
+            seed: own?.seed ?? 0, stream: own?.stream ?? 0, logitBias: [], topLogprobs: count)
+    }
+
     func side(_ rank: Int) -> PairSide { rank == localRank ? local : remote }
     func transport(_ rank: Int) -> [String] { rank == localRank ? ["/bin/sh", "-c"] : remoteTransport }
 

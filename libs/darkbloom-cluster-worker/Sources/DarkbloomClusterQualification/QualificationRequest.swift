@@ -17,6 +17,12 @@ public enum QualificationHash {
         sha256(Data(ids.map(String.init).joined(separator: ",").utf8))
     }
 
+    /// Committed tokens' logprobs as a report keeps them (`PairBatchRequestTiming.logprobBits`): each token's
+    /// decimal values joined by commas, the tokens by semicolons.
+    public static func logprobBits(_ tokens: [[Int]]) -> String {
+        sha256(Data(tokens.map { $0.map(String.init).joined(separator: ",") }.joined(separator: ";").utf8))
+    }
+
     public static func isSHA256(_ value: String) -> Bool {
         value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }

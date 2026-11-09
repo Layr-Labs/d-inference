@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-09
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -3655,6 +3655,35 @@ qualification or performance. Sources:
 `libs/darkbloom-cluster-worker/Sources/PairCheck/PairCheck.swift` (`PairCheck.run`),
 `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterQualification/PairConfiguration.swift`
 (`validate`, `launchScript`), and [test boundaries](../developer/test.md#two-mac-cluster-checks).
+
+## Pair batch lane parity
+
+`darkbloom-cluster-pair-check run --batch-lanes N --batch-request REQUEST.json ...`
+runs each batch request alone in the loaded session, then each `--batch-wave N`
+starts the first N together (`--batch-stagger-ms` apart; `--batch-cancel-after T`
+cancels a wave's last request after T tokens). A tensor-parallel run fails when a
+lane's tokens differ from its request alone.
+
+`--batch-logprobs K` (1...20, tensor parallel with batch requests only) makes
+every batch request, alone and in its waves, ask for each committed token's
+logprob and its K most likely alternatives, which tensor-parallel workers send
+(a pipeline worker refuses such a request). The report keeps them per request as
+IEEE-754 bit patterns (`logprobBits`, `[logprob, token 1, logprob 1, ...]` per
+token, and their `logprobsSHA256`). Each wave's are compared with the requests'
+alone bit for bit (`logprobsMatchSolo`, `firstLogprobDifferenceIndex`,
+`allLogprobsMatchSolo`); a cancelled lane is compared as far as it got. A lane
+whose logprobs differ fails the run even when its tokens match.
+
+A request that asks for logprobs decodes one token per step, without speculative
+rounds, as in the product. To qualify both decode paths, run once without the
+option (rounds, token parity) and once with it (one token per step, token and
+logprob parity).
+
+Sources: `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterQualification/PairDriver.swift`
+(`runBatchWave`, `compareLogprobs`), `PairConfiguration.swift` (`batchLogprobs`,
+`batchSampling`) and `QualificationReports.swift` (`PairBatchRequestTiming`).
+`bash libs/darkbloom-cluster-worker/Tests/QualificationChecks/run.sh` drives
+these waves through two fake workers that serve batch lanes.
 
 ## Exit codes
 

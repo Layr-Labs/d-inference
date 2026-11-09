@@ -73,6 +73,13 @@ import Foundation
               [--stage-residency yes|no|off (qualification: yes = both workers hold a standing MLX wired limit for
                                              the loaded stage; off = MiMo runs without its standing residency)]
               [--mimo-step-evidence on (qualification, MiMo: rank 1 reports each selected row's digests and top logits)]
+              [--batch-lanes 1...8 --batch-request REQUEST.json (repeatable, at most 8) [--batch-wave N]...
+               [--batch-solo yes|no] [--batch-stagger-ms MS] [--batch-cancel-after N] (with --evidence none: each
+               request alone, then each wave starts the first N together; tensor parallel fails on a token that
+               differs from the request alone)]
+              [--batch-logprobs 1...20 (tensor parallel: every batch request asks for each token's logprob and this
+               many alternatives, and a wave's must equal the requests' alone bit for bit; such a request decodes one
+               token per step, without speculative rounds)]
               [--batch-trace yes|no (qualification: content-free decode-width and credit counts)]
               [--batch-logit-directory /ABS (qualification: bounded private rows on rank 1's Mac;
                   plain Qwen pipeline lanes 2...8 and --evidence none; off unless explicitly named)]
@@ -244,7 +251,7 @@ import Foundation
             "--memory-gate", "--stage-residency", "--mimo-step-evidence", "--local-rank", "--follow-request", "--prefix-cache",
             "--data-plane", "--data-plane-fault", "--data-plane-rekey-records", "--serving-context-check",
             "--batch-lanes", "--batch-request", "--batch-wave", "--batch-solo", "--batch-stagger-ms", "--batch-cancel-after",
-            "--kv-backend", "--batch-trace", "--batch-logit-directory",
+            "--batch-logprobs", "--kv-backend", "--batch-trace", "--batch-logit-directory",
             "--prefix-ssd", "--local-prefix-ssd-dir", "--local-prefix-ssd-key-file", "--remote-prefix-ssd-dir",
             "--remote-prefix-ssd-key-file", "--worker-environment", "--prefix-ssd-quantization"]
         let fields = try parse(arguments, allowed: names, repeated: ["--ssh-option", "--remote-command-prefix", "--follow-request",
@@ -359,7 +366,10 @@ import Foundation
             configuration.batchSolo = fields["--batch-solo"]?.first != "no"
             configuration.batchStaggerMilliseconds = try integer(fields, "--batch-stagger-ms") ?? 0
             configuration.batchCancelAfterTokens = try integer(fields, "--batch-cancel-after")
+            configuration.batchLogprobs = try integer(fields, "--batch-logprobs")
             try configuration.validate()
+        } else if fields["--batch-logprobs"] != nil {
+            throw Failure("--batch-logprobs needs --batch-request")
         }
         for (side, keyPath) in [("local", \PairConfiguration.localPrefixSSD), ("remote", \PairConfiguration.remotePrefixSSD)] {
             let directory = fields["--\(side)-prefix-ssd-dir"]?.first, key = fields["--\(side)-prefix-ssd-key-file"]?.first

@@ -6842,6 +6842,25 @@ no-cut tensor-parallel failures without indexing an absent layer cut. A passing
 run does not override a divergent record of the same shape. Comparator thresholds,
 artifact scoping and the grant rules are unchanged.
 
+### Tensor-parallel lane parity in pair qualification
+
+A tensor-parallel lane keeps its request's own arithmetic, so the pair
+qualification driver (`PairDriver`) holds every lane of a wave to the same
+request run alone in the loaded session. Its tokens must match, and with
+`--batch-logprobs K` its committed tokens' logprobs too. Every batch request
+then asks for each token's logprob and its K alternatives
+(`ClusterWorkerSampling.topLogprobs`; greedy requests ask with greedy sampling),
+which rank 0 sends on the committed-token channel. The driver records them as
+IEEE-754 bit patterns and compares them bit for bit (`compareLogprobs`); a
+cancelled or deadline-ended lane is compared as far as it got. A lane whose
+logprobs differ fails a tensor-parallel run even when every token matches.
+Pipeline workers send no logprobs and refuse such a request, so the option is
+tensor-parallel only. As in the product, a request that captures logprobs
+decodes one token per step (`ClusterWorkerSampling.admitsSpeculativeVerification`),
+so a qualification pairs a run without the option (rounds) with one with it.
+Sources: `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterQualification/PairDriver.swift`
+and `PairConfiguration.swift`; [lane parity](../provider/cli-reference.md#pair-batch-lane-parity).
+
 
 ### Pending requests during a batch mode replacement
 

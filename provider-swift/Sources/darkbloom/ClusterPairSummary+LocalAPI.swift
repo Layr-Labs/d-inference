@@ -84,6 +84,9 @@ extension ClusterPairSummary {
         return nil
     }
 
+    /// This Mac's relay runs while the pair's API on rank 0's Mac doesn't listen for now. Red stub: says nothing.
+    var memberAPIRestarting: String? { nil }
+
     /// This Mac relays the pair's API on every address, and its port for it isn't up yet, with nothing against it
     /// (`memberAPIDown`): in `status`'s words, after "Local API: ". Nil otherwise. With Only me, whose `localAPI` (Both's)
     /// doesn't say which Mac runs rank 0, the Mac that follows stands for the one that relays, as in

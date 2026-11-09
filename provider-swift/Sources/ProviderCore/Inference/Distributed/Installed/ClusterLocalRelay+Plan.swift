@@ -55,6 +55,9 @@ extension ClusterLocalRelay {
         status.sessionLeader && status.localAPI == true && status.pairAPIPort == nil && status.session?.ready == true
     }
 
+    /// Rank 0's status says the pair's API there is down for now. Red stub: today a relay stops then.
+    public static func rankZeroAPIDown(in status: ClusterServiceStatus) -> Bool { false }
+
     /// Where the pair's API listens on every address of the Mac whose part runs rank 0, for the other Macs' relays
     /// (`ClusterServiceStatus.pairAPIPort`): the port of the discovery record (`record`) that this Mac's running part
     /// (`part`, its pid) wrote once its API was bound. Nil without a running part, for a record another process wrote,

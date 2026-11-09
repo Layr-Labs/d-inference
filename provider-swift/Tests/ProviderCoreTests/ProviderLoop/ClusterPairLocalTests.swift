@@ -440,7 +440,8 @@ struct ClusterPairLocalTests {
     }
 
     /// A drain (a stop or an update) refuses the waiting local requests at
-    /// once, as it refuses new ones, while the request holding the lane
+    /// once, as it refuses new ones: the pair's 503 (`clusterPairNotServing`,
+    /// which its API answers typed), while the request holding the lane
     /// finishes. The capacity refresh is off here: the drain alone wakes them.
     @Test func aDrainRefusesWaitingLocalRequestsAtOnce() async throws {
         let loop = try await pairLeaderLoop()
@@ -456,7 +457,9 @@ struct ClusterPairLocalTests {
         #expect(refused && ContinuousClock.now - started < .seconds(1), "the drain refuses the waiter itself")
         if !refused { waiter.task.cancel() }
         do { _ = try await waiter.task.value; Issue.record("a drain admitted a waiting request") }
-        catch { #expect(localStatus(error) == 429, "\(error)") }
+        catch { #expect(error as? MultiModelBatchSchedulerEngineError == ProviderLoop.clusterPairNotServing, "\(error)") }
+        do { _ = try await loop.acquireModelForLocal(clusterPairFixtureModel); Issue.record("a drain admitted a new request") }
+        catch { #expect(error as? MultiModelBatchSchedulerEngineError == ProviderLoop.clusterPairNotServing, "\(error)") }
         #expect(await loop.clusterPairLocalCounts == (0, 1, 1))
         await holder.releaseToken.fire()
         #expect(await loop.clusterPairLocalCounts == (0, 0, 0))

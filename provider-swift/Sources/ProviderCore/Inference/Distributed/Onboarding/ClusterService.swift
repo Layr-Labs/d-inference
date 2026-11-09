@@ -190,8 +190,8 @@ public final class ClusterService: @unchecked Sendable {
     /// The pair's API on every address (local only, or Both), on a Mac that is not rank 0: its own port passed to rank
     /// 0's API (`ClusterLocalRelay`). Tests set it.
     var relay: ClusterLocalRelay?
-    /// Rank 0's API port as the other Mac's status last said it, and when it was asked (a thread of its own).
-    private var relayTargetPort: Int?
+    /// Rank 0's API port as the other Mac's status last said it, and when it was asked (a thread of its own). Tests read it.
+    var relayTargetPort: Int?
     /// What this Mac's relay waits on, as `status()` publishes it (`relayStatus`); tests set it.
     var relayState = RelayState()
     /// The last reason this Mac's own port couldn't be read (`thisMacPort`), said once.
@@ -218,6 +218,9 @@ public final class ClusterService: @unchecked Sendable {
         var askFailures = 0
         /// Rank 0's Mac is away (`relayAway`): the relay answers each request a 503 that says so.
         var away = false
+        /// Rank 0's last status said its pair's API doesn't listen for now (`ClusterLocalRelay.rankZeroAPIDown`), while
+        /// the relay keeps its last target: it answers each request a 503 that says so.
+        var rankZeroAPIDown = false
 
         struct Held: Equatable {
             var target: ClusterLocalRelay.Target
@@ -227,10 +230,10 @@ public final class ClusterService: @unchecked Sendable {
     }
 
     /// What `status()` says of this Mac's relay, only while this Mac would relay: the port another program holds, rank
-    /// 0 answering on its own Mac only, and rank 0's Mac away.
-    static func relayStatus(_ state: RelayState) -> (portHeld: Int?, waitsForOffer: Bool?, away: Bool?) {
-        guard state.host != nil else { return (nil, nil, nil) }
-        return (state.held?.port, state.waitsForOffer ? true : nil, state.away ? true : nil)
+    /// 0 answering on its own Mac only, rank 0's Mac away, and rank 0's API down for now.
+    static func relayStatus(_ state: RelayState) -> (portHeld: Int?, waitsForOffer: Bool?, away: Bool?, apiDown: Bool?) {
+        guard state.host != nil else { return (nil, nil, nil, nil) }
+        return (state.held?.port, state.waitsForOffer ? true : nil, state.away ? true : nil, state.rankZeroAPIDown ? true : nil)
     }
 
     /// Whether rank 0's Mac is away for this Mac's relay: it hasn't answered over the cable (`otherAnsweredAt`, its
@@ -1306,7 +1309,8 @@ public final class ClusterService: @unchecked Sendable {
             value.pairRunning = value.serving && pairVerdict.running
             value.pairNotRunning = value.serving ? ClusterPairWatch.line(pairVerdict, otherMac: otherMacNameLocked(),
                                                                          cli: BuildEnvironment.current.cliName) : nil
-            (value.relayPortHeld, value.relayWaitsForOffer, value.relayRankZeroAway) = Self.relayStatus(relayState)
+            (value.relayPortHeld, value.relayWaitsForOffer, value.relayRankZeroAway, value.relayRankZeroAPIDown)
+                = Self.relayStatus(relayState)
             value.memberQuickEnds = memberQuickEnds
             value.approvalID = configuration?.nativeMember?.clusterApproval?.id ?? ""
             value.pairUpdate = ClusterPairUpdate.readProgress(from: ClusterServiceAgent.updateProgressPath(serviceDirectory: store.paths.directory))

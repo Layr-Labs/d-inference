@@ -105,9 +105,9 @@ final class MiMoConsumerCounter: @unchecked Sendable {
     func increment() {
         let reached = lock.withLock {
             count += 1
-            let reached = waiters.filter { $0.target <= count }
+            let due = waiters.filter { $0.target <= count }
             waiters.removeAll { $0.target <= count }
-            return reached
+            return due
         }
         for waiter in reached { waiter.expectation.fulfill() }
     }

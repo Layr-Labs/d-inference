@@ -327,9 +327,10 @@ final class MiMoV26LocalContractTests: XCTestCase {
         let (tokenizer, _) = try await MiMoConsumerFixture.load()
         let serving = MiMoConsumerServing(tokenizer: tokenizer, holdOpen: true)
         let request = try MiMoConsumerFixture.request()
-        // The stream's termination releases the model and cancels the engine
-        // row on tasks it starts and does not join. Wait for those events
-        // themselves: a clock budget fails whenever the runner stalls past it.
+        // The forwarding task and the stream's termination task release the
+        // model and cancel the engine row, and nothing joins them. Wait for
+        // those events themselves: a clock budget fails whenever the runner
+        // stalls past it.
         let held = serving.backend.holds.expectation(reaching: 1, "engine holds the request")
         let released = serving.releases.expectation(reaching: 1, "model released")
         let cancelled = serving.backend.cancellations.expectation(reaching: 1, "engine row cancelled")

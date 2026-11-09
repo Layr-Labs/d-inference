@@ -156,10 +156,11 @@ See [inference and logprob admission](../architecture/inference.md).
    the engine's 120 s admission lease. Model lists, health checks,
    `/metrics`, the tokenizer utilities and requests refused before they hold
    a model do not count. This is on for every Mac that serves Both, me first,
-   including the desktop app's "Alongside the network". To share the Mac
-   between your requests and Darkbloom's, as before, start once with
-   `--no-me-first`, which saves `me_first = false` under `[local]` in
-   `provider.toml`; `--me-first` turns it back on
+   including the desktop app's (Studio's Both, me first, or "Alongside the
+   network" with an older CLI). To share the Mac between your requests and
+   Darkbloom's, as before, start once with `--no-me-first`, which saves
+   `me_first = false` under `[local]` in `provider.toml` (Studio's me first
+   switch saves it too); `--me-first` turns it back on
    ([configuration](../reference/configuration.md#local-first-use-local),
    [owner pause](../architecture/owner-pause.md)).
 

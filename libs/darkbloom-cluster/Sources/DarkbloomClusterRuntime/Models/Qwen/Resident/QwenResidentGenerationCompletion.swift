@@ -37,7 +37,8 @@ public struct QwenResidentGenerationCompletion: Sendable {
     }
 
     /// Throws the request's abort, if both ranks ended it alone.
-    func requireNotAborted() throws -> Self {
+    @discardableResult
+    public func requireNotAborted() throws -> Self {
         guard let abort else { return self }
         throw ClusterResidentRequestAbort(abort: abort, message: abortMessage
             ?? "The pair ended this request alone: rank \(abort.rank)'s memory refused it while it ran")

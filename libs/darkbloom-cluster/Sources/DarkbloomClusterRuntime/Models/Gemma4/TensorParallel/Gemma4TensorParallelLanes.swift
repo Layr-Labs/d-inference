@@ -337,15 +337,19 @@ extension Gemma4TensorParallelResidentRuntime {
                 recordedRequestFingerprint: sha256(Data("gemma4-tp-batch|\(loadAgreement)|\(batchOrdinal)".utf8)))) {
                 try MLX.withError { error in
                     var lastResourceCheck: UInt64 = 0
-                    try driver.serve(host: servingHost, check: {
-                        try error.check(); try self.control.check()
+                    try driver.serve(host: servingHost, memoryRefused: {
+                        // Kept prefixes give way first; a memory refusal then stops
+                        // one lane alone (D6), any other refusal fails the batch.
                         let now = DispatchTime.now().uptimeNanoseconds
-                        if lastResourceCheck == 0 || now - lastResourceCheck >= 250_000_000 {
-                            // Kept prefixes give way before the batch fails for memory.
-                            try prefix.cache.yieldingMemory { try Self.requireLiveMemory(bytes: 0) }
-                            lastResourceCheck = now
+                        guard lastResourceCheck == 0 || now - lastResourceCheck >= 250_000_000 else { return false }
+                        lastResourceCheck = now
+                        do { try self.prefix.cache.yieldingMemory { try Self.requireLiveMemory(bytes: 0) }; return false }
+                        catch let refusal as QwenResidentMemoryRefusal {
+                            log("darkbloom-tp-batch-v1 rank=\(self.collective.rank) family=gemma4 memory-refused: \(refusal.message)")
+                            return true
                         }
-                        try error.check()
+                    }, check: {
+                        try error.check(); try self.control.check(); try error.check()
                     })
                 }
             }

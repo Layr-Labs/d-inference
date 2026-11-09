@@ -234,6 +234,8 @@ final class WorkerCoordinator: @unchecked Sendable {
                 case .start:
                     let id = command.requestID!
                     admittedNotStarted = nil
+                    // Dev and DevNet only: a one-shot memory fault armed for this request (D6 proofs).
+                    ClusterMemoryFault.shared.arm(requestID: id)
                     // Publication and the owner's answer apart: a runtime may read
                     // the answer after submitting its next step (the token credit
                     // still holds: the session refuses a token before the answer).
@@ -393,6 +395,7 @@ final class WorkerCoordinator: @unchecked Sendable {
                     case .retired, .refused:
                         unstartedLanes.remove(requestID); withdrawnLanes.remove(requestID); leftLanes.remove(requestID)
                         laneDecisions[requestID] = nil
+                        ClusterMemoryFault.shared.disarm(requestID: requestID)
                     default: break
                     }
                 }
@@ -403,7 +406,9 @@ final class WorkerCoordinator: @unchecked Sendable {
             try pipes.write(ClusterWorkerCodec.encode(frame), requestDeadline: requestDeadline)
             session = proposed; eventSequence += 1
             switch event {
-            case .refused, .retired: requestDeadline = nil
+            case .refused, .retired:
+                requestDeadline = nil
+                if let requestID { ClusterMemoryFault.shared.disarm(requestID: requestID) }
             default: break
             }
         } catch { failure = error; condition.broadcast(); throw error }
@@ -596,6 +601,8 @@ final class WorkerCoordinator: @unchecked Sendable {
                 if !available { throw error }
             }
         case .start:
+            // Dev and DevNet only: a one-shot memory fault armed for this request (D6 proofs).
+            ClusterMemoryFault.shared.arm(requestID: command.requestID!)
             try runtime.startLane(command.requestID!)
         case .keepWarm(let ordinal):
             // The pair asks only while no lane is held: a runtime that

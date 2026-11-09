@@ -475,7 +475,12 @@ public final class GLM5NextResidentRuntime {
             rankBuildSHA256: admission.configuration.identity.peers.map(\.buildSHA256),
             numericalPolicySHA256: contract.numericalPolicySHA256)
         try GLM5NextPipelineGeneration.requireSupported(unplanned)
-        try check(deadline: reserved.deadline); try requireResources(reserved.charge)
+        // No memory check before the first frame: the reservation's gate
+        // admitted it, and the stop latch asks at the first frame, where a
+        // refusal ends the request on both ranks alone (D6). Here it could only
+        // end this rank's worker while its peer waits in the readiness exchange.
+        try check(deadline: reserved.deadline)
+        try admission.resources.requireExecutionEnvironment(admission.resources.executionEnvironmentSHA256)
         guard try charge(for: reserved.request) == reserved.charge else {
             throw ProbeError("GLM request resource bounds changed after reservation")
         }
@@ -703,6 +708,7 @@ public final class GLM5NextResidentRuntime {
         // Each refusal below is memory's, typed so a running request's stop
         // latch ends that request alone (D6).
         do {
+            try ClusterMemoryFault.current.refuseIfDue()
             _ = try memoryWatch.admits(os, bytes: GLM5NextStageLoadResources.sum([remaining, hostBytes,
                     QwenDenseStageLoadPolicy.loadingHeadroomBytes(physicalMemoryBytes: os.physicalMemoryBytes)]),
                 now: DispatchTime.now().uptimeNanoseconds)

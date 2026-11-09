@@ -306,16 +306,10 @@ public final class Gemma4TensorParallelResidentRuntime {
         return (budget.requestBytes, limit, max(0, limit - budget.prefixCaptureBytes))
     }
 
-    /// The host memory gate's decision for `bytes` more, as the resident families take it.
+    /// The host memory gate's decision for `bytes` more, as the resident
+    /// families take it; a memory refusal is typed (`ClusterLiveMemory`).
     static func requireLiveMemory(bytes: Int) throws {
-        try QwenResidentResourceEnvironment.require()
-        let watch = QwenDenseStageLoadWatch("Gemma tensor-parallel")
-        let os = try QwenDenseStageLoadResources.observeOS()
-        let free = max(QwenDenseStageLoadPolicy.minimumAdmissibleBytes,
-            try QwenLongPrefillCheckedBytes.sum([bytes, QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
-        guard try watch.admits(os, bytes: free) else {
-            throw ProbeError("Gemma tensor parallel needs \(bytes) bytes the memory gate does not admit now")
-        }
+        try ClusterLiveMemory.requireTensorParallel(bytes: bytes, family: "Gemma")
     }
 
     private init(admission: Gemma4ResidentAdmission, control: QwenResidentControl, collective: Collective,
@@ -539,6 +533,14 @@ public final class Gemma4TensorParallelResidentRuntime {
                 try serve(request, session: session, deadline: reserved.deadline, channel: channel,
                     checked: { try error.check() })
             }
+            if completion.abort != nil {
+                // Both ranks ended it alone for a rank's memory (D6): nothing
+                // of it is kept, its pages go back, and the pair serves on.
+                session.prefixCapture?.withdraw()
+                try session.retire()
+                Memory.clearCache()
+                return completion
+            }
             try session.retire()
             // Both ranks ended after the same step and agreed how: the prompt's
             // capture becomes reusable now, in memory and behind serving on SSD.
@@ -562,22 +564,35 @@ public final class Gemma4TensorParallelResidentRuntime {
         let rank = collective.rank, prompt = request.promptTokenIDs
         let choice = Gemma4TensorParallelChoice(selection: session.model.selection, sampler: request.sampler, rank: rank)
         var lastCheck: UInt64 = 0
-        let loop = Gemma4TensorParallelRequestLoop(session: session, request: request, choice: choice,
+        // This rank's stop was its live memory check's refusal (D6).
+        var stoppedForMemory = false
+        var loop = Gemma4TensorParallelRequestLoop(session: session, request: request, choice: choice,
             exchange: { [group] in try group.exchangeIntegers($0) }, localStop: { [control, prefix] in
                 if (try? control.check(deadline: deadline)) == nil { return true }
                 let now = DispatchTime.now().uptimeNanoseconds
                 if now - lastCheck >= 250_000_000 {
                     lastCheck = now
                     // Kept prefixes give way first, then the request's own capture.
-                    if (try? prefix.cache.yieldingMemory({ try Self.requireLiveMemory(bytes: 0) })) == nil {
-                        guard let capture = session.prefixCapture, !capture.withdrawn else { return true }
+                    do { try prefix.cache.yieldingMemory({ try Self.requireLiveMemory(bytes: 0) }) } catch {
+                        guard let capture = session.prefixCapture, !capture.withdrawn else {
+                            stoppedForMemory = error is QwenResidentMemoryRefusal
+                            return true
+                        }
                         capture.withdraw(); Memory.clearCache()
-                        return (try? Self.requireLiveMemory(bytes: 0)) == nil
+                        do { try Self.requireLiveMemory(bytes: 0) } catch {
+                            stoppedForMemory = error is QwenResidentMemoryRefusal
+                            return true
+                        }
                     }
                 }
                 return false
             })
+        loop.stoppedForMemory = { stoppedForMemory }
         let ended = try loop.run(channel: channel, check: checked)
+        if let abort = ended.abort {
+            return .aborted(requestID: request.requestID, abort: abort,
+                message: "Gemma tensor parallel: rank \(abort.rank)'s memory refused the request while it ran", rank: rank)
+        }
         let tokens = ended.tokens, finish = ended.finish
         try control.check(deadline: deadline)
         if finish == .clientStop && !ended.clientStopped && rank == 0 {

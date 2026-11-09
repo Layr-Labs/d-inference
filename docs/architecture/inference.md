@@ -5535,8 +5535,7 @@ it alone:
   worker exited, so the client got a 500 and the pair stopped serving for
   about a minute (journey 3, D6). Such a refusal now ends that request alone
   ([a pipeline stage's memory refusal](#a-pipeline-stages-memory-refusal-ends-that-request-alone)).
-  Tensor parallel's ranks stop such a request after the same step, but rank 0
-  then fails its worker too ("The peer rank stopped …"). Each stage charges the whole
+  Tensor parallel's ranks end such a request alone too. Each stage charges the whole
   model's ledger (`Gemma4StateBudget`) at the request's context: 2.0 GB, plus
   one prompt frame's 2.2 GB on a stage with a full-attention layer, at the
   standard request.
@@ -5659,13 +5658,43 @@ and a streamed one its tokens, then an error chunk with `code`
 `capacity` (503) with `request_exceeds_node_budget`, as for the pair's refusal
 at reservation.
 
-**Not covered yet.** MiMo's pipeline keeps the running check in `check`, so a
-refusal there still ends its worker. Tensor parallel already stops both ranks
-after the same step, but rank 0 then throws "The peer rank stopped …"
-(`Gemma4TensorParallelResidentRuntime`, and GLM's and MiMo's alike), which
-ends its worker too. Native errors, protocol violations, a peer that doesn't
-confirm within the progress limit, the deadline and power or thermal refusals
-fail the worker as before.
+**Tensor parallel.** The ranks already stop a request after the same step
+when either rank's own check asks (the stop slot each step's agreement
+carries). Rank 0 then threw "The peer rank stopped …", and the Qwen and Gemma
+batches failed whole on a refusal, so the worker exited either way. Now:
+
+- **One request** (Gemma 4, GLM, MiMo): each rank records whether its stop was
+  its memory gate's (`QwenResidentMemoryRefusal`, from
+  `ClusterLiveMemory.requireTensorParallel`). The end-of-request agreement,
+  which both ranks always reach, carries rank 0's count, finish and owner stop,
+  and each rank's memory stop (`QwenTensorParallelStopRule.endWords`,
+  `readEnd`; MiMo's one extra exchange). A local stop with a memory stop is an
+  abort naming that rank on both ranks; a stop token, the length or the owner's
+  stop end the request as before. The request's state retires normally, its
+  prompt capture is withdrawn, and nothing goes to the SSD tier. The check runs
+  after each committed token, as before; a prompt's chunks run on the
+  reservation's charge.
+- **Batches** (Qwen 3.8 27B in every width, its one-request singleton and its
+  assistant lanes, and Gemma 4's lanes: `QwenTensorParallelBatchDriver`): the
+  memory check leaves `check` for `memoryRefused`, polled at a step boundary
+  (rank 0's plan, rank 1's report, and each build-ahead decision, which then
+  asks for a barrier). A refusal stops the newest running lane alone, as the
+  pipeline's batch does: rank 1 names it in its report's `memoryMask`, rank 0
+  plans it to leave with disposition 5 once it owes no answer, both retire it
+  as a cancelled lane, and it is published as aborted. The singleton host
+  returns the abort as its completion.
+
+**Not covered yet.** MiMo's pipeline keeps the running check in `check`, and
+GLM tensor parallel's lanes (`GLM5NextTensorParallelLaneLoop`) fail their batch
+on a refusal, so either still ends its worker. Native errors, protocol
+violations, a peer that doesn't confirm within the progress limit, the deadline
+and power or thermal refusals fail the worker as before.
+
+**The dev memory fault.** Dev and DevNet builds can make a rank's live gate
+refuse the next request from its Nth check on (`ClusterMemoryFault`, the file
+`~/.darkbloom-dev/cluster-setup/memory-fault`, read and deleted when a request
+starts, never in a production install), through each gate's own throw; see
+[the test guide](../developer/test.md#a-memory-refusal-on-a-real-pair-dev-memory-fault).
 
 **Builds.** A pair forms only between Macs on the same build
 (`ClusterConfiguration.peerBuildDiffers`), and each request's agreement binds

@@ -117,6 +117,7 @@ struct QwenResidentRequestAllowance {
         let allocator = try QwenLongPrefillCheckedBytes.sum([Memory.activeMemory, Memory.cacheMemory,
             reservedBytes, additionalNativeBytes, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
         do {
+            try ClusterMemoryFault.current.refuseIfDue()
             guard try watch.admits(os, bytes: free, floor: onLoadedStage ? QwenDenseStageLoadPolicy.loadingHeadroomBytes : nil),
                   Memory.memoryLimit >= allocator else {
                 throw ProbeError("Resident request exceeds the allocator limit")

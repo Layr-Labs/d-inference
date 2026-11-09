@@ -4073,8 +4073,11 @@ Qwen3.8 27B automatic cluster capacity changes keep the current tensor split and
 
 ## Image feature cache qualification control
 
-Set `DARKBLOOM_VISION_FEATURE_CACHE=1` in the provider process environment before
-loading a model to opt into [Gemma feature-cache qualification](../architecture/image-feature-cache.md).
-Use `0` and reload/restart to disable. Existing local requests without trusted
-vision scope remain uncached. See [configuration](../reference/configuration.md#image-feature-cache)
-for the fixed bounds; this setting does not configure prefix caches.
+Set `DARKBLOOM_VISION_FEATURE_CACHE=1` in a foreground provider's environment
+(`darkbloom start --foreground`) before loading a model to opt into
+[Gemma feature-cache qualification](../architecture/image-feature-cache.md). It
+is not in the [LaunchAgent environment passthrough](#launchagent-environment-passthrough),
+so the installed background provider never reads it. Use `0` and reload/restart
+to disable. Existing local requests without trusted vision scope remain uncached.
+See [configuration](../reference/configuration.md#image-feature-cache) for the
+fixed bounds; this setting does not configure prefix caches.

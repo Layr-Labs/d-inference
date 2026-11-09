@@ -325,6 +325,8 @@ public enum EngineV2VisionPrefill {
         try Task.checkCancellation()
         try MediaIngest.rejectUnsupportedAudio(request)
         if featureCache?.preparationOwner.isClosed == true { throw CancellationError() }
+        // Bind native tool/history templating to the actual loaded wrapper,
+        // not a caller-supplied model label. Other VLMs retain their path.
         let kind = await container.perform { ctx -> (glm: Bool, gemma: Bool, nativeTools: String?) in
             let nativeTools: String?
             if ctx.model is MLXVLM.Qwen4Exp { nativeTools = "qwen4_exp" }
@@ -342,8 +344,7 @@ public enum EngineV2VisionPrefill {
         // Eligible work is owned before decode/container suspension so shutdown
         // can signal cancellation before joining its actual completion.
         if let featureCache, featureCache.isEnabled, kind.gemma,
-            let scope = visionCacheScope, !scope.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-            scope.utf8.count <= 1024,
+            let scope = visionCacheScope, VisionFeatureCache.isEligible(scope: scope),
             let prepared = try await featureCache.preparationOwner.perform(operation: {
                 let transaction = try featureCache.begin(scope: scope)
                 defer { transaction.finish() }
@@ -383,6 +384,10 @@ public enum EngineV2VisionPrefill {
         let identityCharge = transaction?.scratch(byteCount: 4096)
         defer { withExtendedLifetime(identityCharge) {} }
         let imageIdentity = identityCharge == nil ? nil : VisionImageIdentityCapture()
+        // Same decode path as the legacy stream (same caps, same MediaError
+        // surface). Inline video bytes stay in the UserInput's owned
+        // memory-backed asset while processor preparation samples and
+        // rasterizes its frames; no plaintext file exists to clean up.
         let userInput = try await MediaIngest.buildUserInput(
             from: request, templateControls: templateControls,
             tools: nativeToolMessages ? request.tools?.map { $0.toolSpec() } : nil,

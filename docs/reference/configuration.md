@@ -1821,9 +1821,9 @@ The opt-in Gemma encoder cache has the following bounded policy. See
 
 | Setting or bound | Value | Source |
 |---|---|---|
-| `DARKBLOOM_VISION_FEATURE_CACHE` | Only exact `1` enables; unset, `0` or any other value disables. Read when the bridge is constructed; restart/reload to change it | `provider-swift/Sources/ProviderCore/Inference/Vision/VisionFeatureCache.swift` — `Policy.production` |
+| `DARKBLOOM_VISION_FEATURE_CACHE` | Only exact `1` enables; unset, `0` or any other value disables. Read when the bridge is constructed; restart/reload to change it. Foreground only: not forwarded to the LaunchAgent (`LaunchAgent.passthroughEnvKeys`) | `provider-swift/Sources/ProviderCore/Inference/Vision/VisionFeatureCache.swift` — `Policy.production` |
 | Process / slot / scope charged bytes | `64 * 1024 * 1024` / `32 * 1024 * 1024` / `16 * 1024 * 1024` | Same file — `VisionFeatureCacheBudget`, `Policy` |
-| Process / slot / scope outstanding charges | `128` / `64` / `16`; includes pending, scratch and pinned retired entries | Same file — `reserve` |
+| Process / slot / scope outstanding charges | `128` / `64` / `16`; includes pending, scratch and pinned retired entries | Same file — `VisionFeatureCacheBudget` (`maxEntries`), `Policy`, enforced in `reserve` |
 | Feature payload limit / per-charge metadata allowance | `8 * 1024 * 1024` / `1024` bytes | Same file — `Transaction.stage`, `charge` |
 | Absolute TTL / sweep period | `60` seconds / `5` seconds; expiry is not refreshed on hits | Same file — `Policy.ttl`, `publish` |
 

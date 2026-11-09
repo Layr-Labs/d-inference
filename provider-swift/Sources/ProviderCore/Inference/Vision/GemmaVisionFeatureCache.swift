@@ -46,8 +46,8 @@ extension EngineV2VisionPrefill {
         processorIdentity: String?, rawDigests: [Data], mlxErrors: MLX.ErrorBox,
         activity: VisionFeatureCacheActivity
     ) throws -> [MLXArray] {
-        guard !wrapper.training, let transaction, let scope, !scope.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-            scope.utf8.count <= 1024, let processorIdentity,
+        guard !wrapper.training, let transaction, let scope, VisionFeatureCache.isEligible(scope: scope),
+            let processorIdentity,
             image.pixels.ndim == 4, rawDigests.count == image.pixels.dim(0) else {
             activity.encode(image.pixels.dim(0))
             return wrapper.perImageVisionFeatures(pixels: image.pixels, frames: image.frames)

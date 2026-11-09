@@ -7,15 +7,17 @@ final class VisionFeatureCacheBudget: @unchecked Sendable {
     private let lock = NSLock()
     private let ledger: ProcessMemoryLedger
     private let maxBytes: UInt64
+    private let maxEntries: Int
     private var bytes: UInt64 = 0
     private var retirementFailures = 0
     private var scopes: [Data: (bytes: UInt64, count: Int)] = [:]
     private var trimmers: [UUID: @Sendable () -> Void] = [:]
     private var slots: [UUID: (bytes: UInt64, count: Int)] = [:]
 
-    init(ledger: ProcessMemoryLedger, maxBytes: UInt64 = 64 * 1024 * 1024) {
+    init(ledger: ProcessMemoryLedger, maxBytes: UInt64 = 64 * 1024 * 1024, maxEntries: Int = 128) {
         self.ledger = ledger
         self.maxBytes = maxBytes
+        self.maxEntries = maxEntries
     }
 
     func register(_ id: UUID, trim: @escaping @Sendable () -> Void) {
@@ -66,7 +68,7 @@ final class VisionFeatureCacheBudget: @unchecked Sendable {
             guard current.bytes <= policy.maxBytes - requested,
                 current.count < policy.maxEntries else { return .failure(.slotCapacity) }
             guard bytes <= maxBytes - requested,
-                slots.values.reduce(0, { $0 + $1.count }) < 128 else { return .failure(.processCapacity) }
+                slots.values.reduce(0, { $0 + $1.count }) < maxEntries else { return .failure(.processCapacity) }
             let owner = ledger.createOwner()
             do {
                 let state = try ledger.replaceCharge(owner: owner.owner,
@@ -122,6 +124,13 @@ final class VisionFeatureCache: @unchecked Sendable {
         }
     }
 
+    /// A coordinator scope a request may cache under: not blank, at most 1 KiB.
+    /// Without one, a request takes the cold path and acquires no cache lease.
+    static func isEligible(scope: String?) -> Bool {
+        guard let scope else { return false }
+        return !scope.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && scope.utf8.count <= 1024
+    }
+
     /// Digests never leave this memory-only cache. Length-delimited encoding
     /// avoids delimiter ambiguity and bounds retained key size, including scope.
     struct Key: Hashable, Sendable {
@@ -131,7 +140,7 @@ final class VisionFeatureCache: @unchecked Sendable {
         init(scope: String, model: String, processor: String, dtype: String,
              shape: [Int], frame: [Int], pixelBytes: Data, rawDigest: Data = Data()) {
             scopeDigest = Self.digestScope(scope)
-            eligible = !scope.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && scope.utf8.count <= 1024
+            eligible = VisionFeatureCache.isEligible(scope: scope)
             var hash = SHA256()
             for part in [Data("gemma-image-features-v1".utf8), Data(scope.utf8), Data(model.utf8),
                          Data(processor.utf8), Data(dtype.utf8),

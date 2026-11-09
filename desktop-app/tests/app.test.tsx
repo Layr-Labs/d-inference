@@ -35,7 +35,16 @@ describe('desktop operator journeys', () => {
       within(nav)
         .getAllByRole('button')
         .map((button) => button.textContent),
-    ).toEqual(['Home', 'My Macs2', 'Leaderboard', 'Updates']);
+    ).toEqual([
+      'Home',
+      'Chat',
+      'My Macs2',
+      'Clusters',
+      'Sandboxes',
+      'Leaderboard',
+      'Updates',
+      'Early access',
+    ]);
     for (const name of ['Leaderboard', 'Updates']) {
       fireEvent.click(within(nav).getByRole('button', { name }));
       expect(await screen.findByRole('heading', { name, level: 1 })).toBeVisible();

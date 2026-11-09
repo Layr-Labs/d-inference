@@ -29,5 +29,21 @@ const api: DesktopAPI = {
       void ipcRenderer.invoke('hardware:unwatch');
     };
   },
+  chatModels: () => ipcRenderer.invoke('chat:models'),
+  chatSend: (request) => ipcRenderer.invoke('chat:send', request),
+  chatCancel: (stream) => ipcRenderer.invoke('chat:cancel', stream),
+  onChat: (callback) => subscribe('chat:event', callback),
+  clusterSession: () => ipcRenderer.invoke('cluster:session'),
+  startClusterSession: (start) => ipcRenderer.invoke('cluster:session-start', start),
+  answerClusterSession: (answer) => ipcRenderer.invoke('cluster:session-answer', answer),
+  onClusterSession: (callback) => {
+    const unsubscribe = subscribe('cluster:session', callback);
+    void ipcRenderer.invoke('cluster:session-watch');
+    return () => {
+      unsubscribe();
+      void ipcRenderer.invoke('cluster:session-unwatch');
+    };
+  },
+  openApproval: (url) => ipcRenderer.invoke('app:approval', url),
 };
 contextBridge.exposeInMainWorld('darkbloom', api);

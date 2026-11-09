@@ -35,6 +35,10 @@ const resources = new Set<Resource>([
   'insights-month',
   'request-history',
   'hardware',
+  'cluster',
+  'sandbox',
+  'sandbox-logs',
+  'waitlists',
 ]);
 export function validateDiscovery(value: unknown): {
   port: number;

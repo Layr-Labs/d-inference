@@ -25,6 +25,17 @@ const actions: Record<Action['action'], { name: string; running: string }> = {
   autopilot_resume: { name: 'Autopilot resume', running: 'Resuming Autopilot' },
   autopilot_disable: { name: 'Manual mode', running: 'Switching to manual' },
   autopilot_models: { name: 'Model refresh', running: 'Refreshing available models' },
+  cluster_leave: { name: 'Leaving the pair', running: 'Leaving the pair' },
+  waitlist_join: { name: 'Waitlist', running: 'Joining the waitlist' },
+  sandbox_setup: { name: 'Sandbox setup', running: 'Setting up Darkbloom Sandbox' },
+  sandbox_pause: { name: 'Sandbox pause', running: 'Pausing sandbox jobs' },
+  sandbox_resume: { name: 'Sandbox resume', running: 'Resuming sandbox jobs' },
+  sandbox_uninstall: { name: 'Sandbox removal', running: 'Removing Darkbloom Sandbox' },
+  route: { name: 'Request route', running: 'Saving where requests go' },
+  route_key: { name: 'Account API key', running: 'Saving the account API key' },
+  local_settings: { name: 'Me first', running: 'Saving me first' },
+  tool_setup: { name: 'Tool setup', running: 'Setting up the tool' },
+  update_rollback: { name: 'Rollback', running: 'Returning to the previous release' },
 };
 const states: Record<Exclude<Operation['state'], 'running'>, string> = {
   succeeded: 'Complete',

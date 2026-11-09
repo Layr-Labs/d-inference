@@ -1,5 +1,15 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from 'react';
-import { Box, Home as HomeIcon, Monitor, Trophy, Zap } from 'lucide-react';
+import {
+  Box,
+  Boxes,
+  Home as HomeIcon,
+  MessageCircle,
+  Monitor,
+  Network,
+  Ticket,
+  Trophy,
+  Zap,
+} from 'lucide-react';
 import type { Route } from '../shared/contracts';
 import { api, isPreview, useBackend } from './useBackend';
 import { Home } from './features/Home';
@@ -17,11 +27,19 @@ import { GetHelp, HelpControl } from './components/Help';
 import { AccountControl } from './components/AccountControl';
 import { SocialLinks } from './components/SocialLinks';
 import { useFocusRecovery } from './useFocusRecovery';
+import { Chat } from './features/chat/Chat';
+import { Cluster } from './features/cluster/Cluster';
+import { Sandboxes } from './features/sandboxes/Sandboxes';
+import { Waitlists } from './features/waitlists/Waitlists';
 const navigation = [
   { id: 'home', label: 'Home', icon: HomeIcon },
+  { id: 'chat', label: 'Chat', icon: MessageCircle },
   { id: 'machines', label: 'My Macs', icon: Monitor },
+  { id: 'cluster', label: 'Clusters', icon: Network },
+  { id: 'sandboxes', label: 'Sandboxes', icon: Boxes },
   { id: 'leaderboard', label: 'Leaderboard', icon: Trophy },
   { id: 'updates', label: 'Updates', icon: Box },
+  { id: 'waitlists', label: 'Early access', icon: Ticket },
 ] as const;
 export default function App() {
   const [{ route, machine }, setView] = useState<{ route: Route; machine: MachineSelection }>({
@@ -109,7 +127,7 @@ export default function App() {
         </header>
         <main
           key={machineRoute ? 'machines' : route}
-          className={`page-content ${machineRoute ? 'machine-page' : route === 'home' ? 'home-page' : ''}`}
+          className={`page-content ${machineRoute ? 'machine-page' : route === 'home' ? 'home-page' : route === 'chat' ? 'chat-page' : ''}`}
         >
           {backend.status.state !== 'ready' && (
             <Notice>
@@ -135,6 +153,10 @@ export default function App() {
           {route === 'earnings' && <Earnings backend={backend} />}
           {route === 'updates' && <Updates backend={backend} />}
           {route === 'leaderboard' && <Leaderboard backend={backend} />}
+          {route === 'chat' && <Chat backend={backend} navigate={navigate} />}
+          {route === 'cluster' && <Cluster backend={backend} navigate={navigate} />}
+          {route === 'sandboxes' && <Sandboxes backend={backend} navigate={navigate} />}
+          {route === 'waitlists' && <Waitlists backend={backend} navigate={navigate} />}
           <footer className="page-footer">
             <span>
               <Zap size={12} /> Darkbloom {backend.state.version}

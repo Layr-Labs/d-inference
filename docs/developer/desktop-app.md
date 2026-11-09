@@ -161,7 +161,8 @@ The local build is for desktop review, not a qualified provider release.
 
 ## Verify
 
-The primary sidebar contains Home, My Macs, Leaderboard, and Updates. The current
+The primary sidebar contains Home, Chat, My Macs, Clusters, Sandboxes,
+Leaderboard, Updates and Early access. The current
 Mac's detail workspace uses Overview, Models, Cooling, Stats, and Settings
 panels, with Studio and Earnings shortcuts;
 Home retains the Earnings entry. These pages remain implemented, not deleted.
@@ -555,6 +556,26 @@ Preview links (`?preview` plus):
 | `&autopilot=shadow` | Shadow mode: Autopilot is observing demand and changes nothing |
 | `&autopilot=off` | Manual selection with the turn-on card |
 | `&autopilot=unsupported` | Runtime without Autopilot: manual selection with the note |
+
+## Chat
+
+Chat is documented with its implementation.
+
+## Clusters
+
+Clusters are documented with their implementation.
+
+## Sandboxes
+
+Sandboxes are documented with their implementation.
+
+## Early access
+
+Early access is documented with its implementation.
+
+## Local API and serving modes
+
+The local API page is documented with its implementation.
 
 ## Updates presentation
 

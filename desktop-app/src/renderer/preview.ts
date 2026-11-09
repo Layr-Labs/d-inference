@@ -9,12 +9,17 @@ import { previewRequestHistory, previewSamples } from './previewActivity';
 import { previewHardwareLoad, previewHardwareStream } from './previewHardware';
 import { previewResources } from './previewResources';
 import { previewCloud, previewSnapshot } from './previewSnapshot';
+import { featureAction, featureResources, withFeatureSnapshots } from './preview/features';
+import { previewChatAPI } from './preview/chat';
+import { previewClusterSession } from './preview/clusterSession';
 
 // Explicit development-only fixture. Never used as a fallback for failed live data.
 const now = Date.now() / 1000;
 const requestHistory = previewRequestHistory(now);
-let snapshot: Snapshot = withPreviewAutopilot(
-  withPreviewAccount(withOnboardingScenario(previewSnapshot(now, previewSamples(now)))),
+let snapshot: Snapshot = withFeatureSnapshots(
+  withPreviewAutopilot(
+    withPreviewAccount(withOnboardingScenario(previewSnapshot(now, previewSamples(now)))),
+  ),
 );
 const listeners = new Set<(state: Snapshot) => void>();
 const store = {
@@ -33,6 +38,7 @@ export const previewAPI: DesktopAPI = {
     cloud.machines[0].observed_at = snapshot.observed_at - 25;
     const data: Partial<Record<Resource, unknown>> = {
       ...previewResources(),
+      ...featureResources(),
       'insights-week': previewInsights('7d'),
       'insights-month': previewInsights('30d'),
       state: structuredClone(snapshot),
@@ -44,7 +50,8 @@ export const previewAPI: DesktopAPI = {
   },
   async act(action: Action) {
     if (action.action === 'waitlist') await previewWaitlist();
-    const handled = await previewModelAction(store, action);
+    const handled =
+      (await featureAction(store, action)) ?? (await previewModelAction(store, action));
     if (handled) return handled;
     if (action.action === 'link')
       snapshot = previewLink(snapshot, (update) => {
@@ -128,5 +135,13 @@ export const previewAPI: DesktopAPI = {
   },
   onHardware(callback) {
     return previewHardwareStream(callback, () => snapshot.state === 'running');
+  },
+  ...previewChatAPI,
+  clusterSession: () => previewClusterSession.current(),
+  startClusterSession: (start) => previewClusterSession.start(start),
+  answerClusterSession: (answer) => previewClusterSession.answer(answer),
+  onClusterSession: (callback) => previewClusterSession.watch(callback),
+  async openApproval(url) {
+    window.open(url, '_blank', 'noopener');
   },
 };

@@ -1,0 +1,4 @@
+### The desktop app shows Early access: where your account stands on each waitlist
+
+- A new **Early access** page lists every waitlist the coordinator offers, such as Clusters and Darkbloom Sandbox, and where your account stands, as `darkbloom waitlist` says it: not joined, with **Join the waitlist**; your place in line and the day you joined; approved since a day, with **Open** for a feature that has a page in the app or else the command that starts it, to copy; or revoked, which joining again doesn't restore.
+- When the list can't be shown, the page says why: a Mac that isn't linked links from the page with the app's own code, a coordinator without waitlists has nothing to join, and anything else shows the reason with **Try again**. A Darkbloom CLI without waitlists gets a one-line note to update it.

@@ -355,25 +355,6 @@ jobs:
             --output-dir "$RUNNER_TEMP/provider-test-diagnostics" \
             --diagnostic-after-seconds 900 --timeout-seconds 1800 \
             -- ../scripts/run-provider-tests.sh
-      - name: TEMPORARY loop the MiMo cancellation release test
-        if: ${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' }}
-        working-directory: provider-swift
-        env:
-          LLVM_PROFILE_FILE: ${{ runner.temp }}/loop-profiles/%p-%m.profraw
-        run: |
-          filter='MiMoV26LocalContractTests/testRequestCancellationAndDeadlineReleaseExactlyOnce'
-          pass=0
-          for i in $(seq 1 30); do
-            if swift test --skip-build --no-parallel --filter "$filter" > "$RUNNER_TEMP/loop-$i.log" 2>&1 &&
-                [ "$(grep -c "' passed (" "$RUNNER_TEMP/loop-$i.log")" -eq 1 ]; then
-              pass=$((pass + 1))
-              grep -h "' passed (" "$RUNNER_TEMP/loop-$i.log"
-            else
-              echo "iteration $i failed"; grep -E "error:|' (passed|failed|skipped) \(" "$RUNNER_TEMP/loop-$i.log" | tail -20
-            fi
-          done
-          echo "LOOP: $pass/30 iterations passed"
-          [ "$pass" -eq 30 ]
       - name: Upload provider test diagnostics
         if: ${{ !cancelled() && steps.provider-unit-tests.outcome != 'skipped' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

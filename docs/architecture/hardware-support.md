@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-09
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -529,7 +529,8 @@ request or its hold's expiry, for the longer of two minutes
 rechecks each victim against the plan's instant right before its unload. It
 never evicts a selected model, so it cannot churn against the operator's own
 models. It waits while a live Autopilot lease or a pause manages residency,
-and during any load, unload, operation, switch, startup preload or drain. A
+while the owner uses the Mac under me first (`ownerPausesPublic`), and during
+any load, unload, operation, switch, startup preload or drain. A
 refusal for memory, a slot or a transient state keeps the model waiting; any
 other load failure ends its recovery and leaves the model to the request path.
 Victims are evicted before the load's own checks run, so a load that then fails

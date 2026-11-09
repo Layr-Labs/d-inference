@@ -147,11 +147,14 @@ extension ProviderLoop {
         }
     }
 
-    /// Residency is changing for another reason, or Autopilot owns it.
+    /// Residency is changing for another reason, Autopilot owns it, or the
+    /// owner is using this Mac under me first: Darkbloom's background work
+    /// waits for them, as the desired models deferred during that pause do.
     private func selectedModelRecoveryPauseReason() -> String? {
         if servingDrain.refusing || updatePhase != .idle || isReconnectingAfterRetirement {
             return "the provider is draining"
         }
+        if ownerPausesPublic { return "Darkbloom is paused while you use this Mac" }
         if autopilotManagesResidency { return "Autopilot manages residency under its live lease" }
         if autopilotCommand != nil { return "an Autopilot operation is in progress" }
         if modelSwitchTask != nil { return "a model switch is in progress" }

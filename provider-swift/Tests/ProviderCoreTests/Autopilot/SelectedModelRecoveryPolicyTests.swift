@@ -159,6 +159,26 @@ struct SelectedModelRecoveryPolicyTests {
         #expect(fixture.shutdownCalls(Fixture.glmID) == 0)
     }
 
+    /// While the owner uses this Mac under me first, Darkbloom requests pause
+    /// and the models stay loaded; recovery evicts and loads nothing until the
+    /// pause ends, as the desired models deferred during it wait.
+    @Test(.timeLimit(.minutes(1)))
+    func theOwnersMeFirstPausePausesTheCheck() async throws {
+        let fixture = try await Fixture.superWaitingBehindAdoptedGLM()
+        defer { Task { await fixture.remove() } }
+        let loop = fixture.loop
+        let now = ContinuousClock.now
+        await loop.enableMeFirst(idle: .seconds(60))
+        await loop.noteLocalUse(.start)
+        #expect(await loop.ownerPausesPublic)
+        await checkSelectedModelRecovery(loop, at: now)
+        let paused = try await superRecoveryEntry(loop)
+        #expect(paused.checks == 0)
+        #expect(paused.blocker == "Darkbloom is paused while you use this Mac")
+        #expect(paused.nextCheckAt == now.advanced(by: SelectedModelRecovery.pauseRecheck))
+        #expect(fixture.shutdownCalls(Fixture.glmID) == 0)
+    }
+
     /// A live Autopilot lease manages residency: recovery waits for it.
     @Test(.timeLimit(.minutes(1)))
     func aLiveAutopilotLeasePausesTheCheck() async throws {

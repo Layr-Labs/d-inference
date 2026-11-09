@@ -1,6 +1,6 @@
 # Provider Autopilot
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-09
 
 Provider Autopilot offers an external controller the models of a Mac whose
 operator saved Autopilot consent: the saved selection plus every verified
@@ -205,7 +205,7 @@ model cannot reload over the selected one. It never evicts the ordinary
 selection, including a stale start selection, an Autopilot pin or an advertised
 model a request could load straight back (`isProtectedFromRecoveryEviction`),
 never touches a held slot, and waits while a live lease or a pause manages
-residency. A recovery attempt is busy as `preload`, so an operation is refused
+residency, or while the owner uses the Mac under me first. A recovery attempt is busy as `preload`, so an operation is refused
 while it evicts or loads. An [add-on hold](addon-hold.md) pauses recovery like
 any drain and cancels an attempt in progress, as it cancels coordinator
 preloads (`enterAddonHold`). The policy refresh also re-reads `enabled_models`,

@@ -601,6 +601,21 @@ struct ClusterPairMemberRelayTests {
         }
     }
 
+    /// The relay reads a local key's shape on the head's bytes as `LocalEndpoint.isToken` reads it (the cluster's focused
+    /// checks build the relay without the server's files): every key a Mac makes, and nothing else.
+    @Test func theRelayReadsALocalKeysShapeAsTheAPIDoes() {
+        let samples = [ownKey, pairKey, leaderKey, LocalEndpoint.generateToken(), LocalEndpoint.generateToken(),
+                       String(ownKey.dropLast()), ownKey + "x", "dk-locaL-" + ownKey.dropFirst(9), "Dk-local-" + ownKey.dropFirst(9),
+                       LocalEndpoint.tokenPrefix + String(repeating: "+", count: 43),
+                       LocalEndpoint.tokenPrefix + String(repeating: "é", count: 43),
+                       LocalEndpoint.tokenPrefix + String(repeating: "a", count: 42) + " ",
+                       LocalEndpoint.tokenPrefix, "", "sk-not-a-local-key"]
+        for sample in samples {
+            #expect(ClusterLocalRelay.isLocalKey(Array(sample.utf8)[...]) == LocalEndpoint.isToken(sample), "\(sample)")
+        }
+        #expect(samples.filter { LocalEndpoint.isToken($0) }.count == 5)
+    }
+
     /// A caller without a key gets the local API's own 401 word for word (`LocalAuthPolicy.unauthorizedBody`).
     @Test func theRelays401IsTheLocalAPIs() throws {
         let words = ClusterLocalRelay.Refusals.pair(otherMac: "Apple M3 Ultra, 256 GB", cli: BuildEnvironment.current.cliName)

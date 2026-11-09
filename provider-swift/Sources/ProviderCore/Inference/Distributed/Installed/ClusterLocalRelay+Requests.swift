@@ -159,8 +159,7 @@ extension ClusterLocalRelay {
             let pair = constantTimeEquals(authorization, Array("Bearer \(keys.pair)".utf8)) && !keys.pair.isEmpty
             if own || pair { return .keyed }
             let bearer = Array("Bearer ".utf8)
-            if authorization.starts(with: bearer),
-               LocalEndpoint.isToken(String(decoding: authorization.dropFirst(bearer.count), as: UTF8.self)) { return .otherKey }
+            if authorization.starts(with: bearer), isLocalKey(authorization.dropFirst(bearer.count)) { return .otherKey }
         }
         guard let requestLine = lines.first, let method = method(of: requestLine) else { return .unknown }
         if method == "OPTIONS" { return .open }
@@ -168,6 +167,17 @@ extension ClusterLocalRelay {
         let path = String(decoding: target.prefix { $0 != UInt8(ascii: "?") }, as: UTF8.self)
         if method == "GET" || method == "HEAD", ["/", "/health", "/v1/health"].contains(path) { return .open }
         return .unknown
+    }
+
+    /// A local API key's shape on a head's bytes, as `LocalEndpoint.isToken` reads it: `dk-local-` and 43 base64url
+    /// characters. Read here, as the API's key check is (`caller`): the relay is also built without the server's files.
+    static func isLocalKey(_ bytes: ArraySlice<UInt8>) -> Bool {
+        let prefix = Array("dk-local-".utf8)
+        guard bytes.count == prefix.count + 43, bytes.starts(with: prefix) else { return false }
+        return bytes.dropFirst(prefix.count).allSatisfy { byte in
+            (0x41...0x5A).contains(byte) || (0x61...0x7A).contains(byte) || (0x30...0x39).contains(byte)
+                || byte == UInt8(ascii: "-") || byte == UInt8(ascii: "_")
+        }
     }
 
     /// Where the blank line that ends a head ends in `bytes`, searching from `start`; nil before it came.

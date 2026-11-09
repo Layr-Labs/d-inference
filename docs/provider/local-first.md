@@ -9,19 +9,21 @@ use your Mac's models.
 
 | Choice | What runs | Where your requests go | Costs and earnings | What stops it |
 |---|---|---|---|---|
-| **Only me** | The models already on this Mac, on its local API (`http://127.0.0.1:<port>/v1`), in the Terminal window that started it | To this Mac. Darkbloom never contacts it | Free. Earns nothing; needs no account | Ctrl-C, closing that window, or `darkbloom stop` |
+| **Only me** | Your models, on this Mac's local API (`http://127.0.0.1:<port>/v1`), in the background | To this Mac. Darkbloom never contacts it | Free. Earns nothing; needs no account | `darkbloom stop` |
 | **Darkbloom network** | Darkbloom's requests, in the background. No local API | Nowhere here: your tools have no address on this Mac | Earns while it serves; needs your account (`darkbloom login`) | `darkbloom stop` |
 | **Both, me first** | Darkbloom's requests, and a local API for you on `http://127.0.0.1:<port>/v1`, in the background | To this Mac first: Darkbloom pauses while you use it and comes back after 2 idle minutes | Yours are free; Darkbloom's earn while you aren't using the Mac | `darkbloom stop` |
 
 In the background means it starts at login, starts again after a crash and
-updates itself. Every choice keeps the Mac awake while it serves (the display
-can still sleep). **Only me** first stops a background service that was
-running, so once its window closes, nothing serves until the next
-`darkbloom start`. With an account key saved, a request this Mac can't take can
-go on to your other Macs, free, or to the network, billed, if you choose
+updates itself; closing the Terminal window changes nothing. Like the others,
+**Only me** reports itself alive from the start, while it loads its models, so
+a long first load (after an update, say) is never taken for a failed start, and
+`darkbloom status` says it is starting. Every choice keeps the Mac awake while
+it serves (the display can still sleep). Starting **Only
+me** where Darkbloom served says so: ``Darkbloom network serving stops: this Mac
+serves only you from now on (`darkbloom start --me-first` serves Darkbloom and
+you).`` With an account key saved, a request this Mac can't take can go on to
+your other Macs, free, or to the network, billed, if you choose
 ([below](#when-this-mac-cant-take-your-request)).
-
-<!-- pending LS-1: Only me serves in the background too, with the model list and the memory question, and stops only with darkbloom stop. -->
 
 ## Choose once
 
@@ -38,14 +40,13 @@ Choose 1, 2 or 3 [3]:
 
 Press Enter for **Both, me first**, or type 1, 2 or 3. Then:
 
-- **Darkbloom network** and **Both, me first** ask which models to serve (the
-  list downloads the ones you pick) and what to do with memory when idle, then
-  serve in the background.
-- **Only me** asks neither: it serves every model already on this Mac that it
-  can, in this Terminal window. On a Mac with no model yet it stops with
-  `No engine-v2-capable models available to serve.`: download one first
-  (`darkbloom models catalog`, then `darkbloom models download <id>`), or
-  choose **Both, me first**, whose list downloads it.
+- **Every choice asks which models to serve** (the list downloads the ones you
+  pick) and what to do with memory when idle, then serves in the background.
+  When Darkbloom's catalog can't be reached, **Only me** serves the models
+  already on this Mac.
+- **A Mac with no model it can serve** says what to do:
+  ``No model to serve yet. See them: `darkbloom models catalog`. Get one:
+  `darkbloom models download <id>`, then `darkbloom start`.``
 - **Your answer is saved** in the `[local]` section of `provider.toml`, and later
   starts don't ask again.
 - **Nothing is saved until the start goes ahead.** If you cancel the model
@@ -58,8 +59,7 @@ darkbloom start --choose
 ```
 
 It asks the question again, in a terminal, and goes on as a first start does:
-the model list and the memory question again for **Darkbloom network** and
-**Both, me first**. It saves the new answer.
+the model list and the memory question again. It saves the new answer.
 
 <!-- pending LS-2: a one-step switch that saves the choice and keeps the models, the address and the key, so the tools keep working. -->
 
@@ -68,25 +68,31 @@ the model list and the memory question again for **Darkbloom network** and
 Starts without a terminal never ask:
 
 - **At login, and after a crash or an update,** the background service serves
-  the way the last `darkbloom start` set it up.
-- **Scripts, and the Darkbloom app's Start buttons,** serve your saved choice.
-  With none saved, they serve the Darkbloom network, as before, with no local
-  API and no new port.
-- **A saved Only me** serves in a terminal, so a start without one says so and
-  stops before it changes anything.
+  your saved choice. So do `darkbloom restart` and `darkbloom update`: a
+  service an earlier start left serving another way restarts as saved, and
+  says so: `Restarting as saved: Darkbloom network (the service was set up for
+  Both, me first).` None of them changes your saved choice: only a choice
+  does (the question, `--choose`, a mode flag, or one of the app's below).
+- **Scripts, and the Darkbloom app's Start buttons,** serve your saved choice,
+  **Only me** included, which asks nothing, not even the models: the ones you
+  last chose that are still on this Mac, else every one it can serve. With none
+  saved, they serve the Darkbloom network, as before, with no local API and no
+  new port.
 - **The models:** a start for **Darkbloom network** or **Both, me first** that
   names none (`--model <id>`, `--all`) can't pick them without a terminal, so it
   says in one line to add them and stops, instead of waiting for an answer.
 - **On a Mac in a pair,** a start without a terminal starts the pair, with or
   without `--opencode` or `--hermes`, and so does the app's Start: the pair
   serves its own model, and a line says so when the app named another
-  ([Two Macs](#two-macs)).
-- **Some app buttons choose for you:** the app's onboarding, its Autopilot and
+  ([Two Macs](#two-macs)). Your saved choice is for this Mac alone: it applies
+  with `--solo`.
+- **The app's choices are saved too:** its onboarding, its Autopilot and
   Studio's "Alongside the network" start **Both, me first** (`--local-endpoint`)
-  whatever you saved; Studio's "Local only" starts **Only me** in the
-  background.
+  and save it, whatever you saved before; Studio's "Local only" starts **Only
+  me** in the background and saves it. The app's Start, Restart and Update then
+  serve that choice, as login and the watchdog do.
 
-<!-- pending LS-2: the app passes no mode flag, so its buttons keep your saved choice. -->
+<!-- pending LS-7: a Darkbloom network choice in the app, saved as its other two are. -->
 
 You can also name the choice in the command, in a terminal or not:
 
@@ -97,11 +103,17 @@ You can also name the choice in the command, in a terminal or not:
 | `--me-first` | Both, me first |
 | `--local-endpoint` | Both, me first (the older flag; a saved `--no-me-first` stays) |
 
-A flag doesn't change your saved choice, but the background service it starts
-keeps it: at login, after `darkbloom restart` and after an update it serves
-that way again, until the next `darkbloom start` without a flag goes back to
-your saved choice. `--local` serves in the Terminal window, so it ends with
-it. Two flags that disagree are refused, for example `--local --me-first`.
+**A flag saves your choice**, as the question does, so the background service,
+`darkbloom restart` and `darkbloom update` serve it from now on. Two flags that
+disagree are refused, for example `--local --me-first`.
+
+**Only me in this Terminal window, for now:** `darkbloom start --local --here`
+serves **Only me** until you close the window or press Ctrl-C, and saves no
+choice. While it runs, the background service stops, and it says so:
+``Darkbloom network serving stops while this runs; it starts again with
+`darkbloom start`.`` When it ends, it says what serves now:
+``Only me in this terminal stopped; nothing serves on this Mac now. `darkbloom
+start` serves it again as saved: Darkbloom network.``
 
 ## Me first
 
@@ -136,11 +148,21 @@ busy, they can go on, like the Darkbloom iPhone app:
 Requests from other machines never use the paid network; they can use this Mac
 and your other Macs.
 
-This needs your account API key, from the Darkbloom console, saved with
-`darkbloom route key`. It goes into this Mac's Keychain and is never printed.
-With a key saved, the question asks this too; you can also start with
-`--route this-mac`, `--route my-macs` or `--route my-macs-first`. The details
-are in [the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router).
+Choose with one command; it saves your choice and says what it means:
+
+```bash
+darkbloom route this-mac        # Only this Mac
+darkbloom route my-macs         # Only my Macs (free)
+darkbloom route my-macs-first   # My Macs first, then the network (billed)
+```
+
+The last two need your account API key, from the Darkbloom console, saved
+with `darkbloom route key`; without it they save nothing and say so. The key
+goes into this Mac's Keychain and is never printed. With a key saved, the
+start question asks this too. A running local API uses a new choice, and a key
+saved or removed, from its next request: no restart, and no model reload. The
+details are in
+[the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router).
 
 ## Your local API
 
@@ -163,12 +185,13 @@ this Mac, for example `http://127.0.0.1:8001/v1`:
   first** keeps serving Darkbloom, and `darkbloom status` and `darkbloom local`
   say why and name a free port, for example ``Serving: Darkbloom and you, me
   first — the local API isn't up: port 8001 is in use (`darkbloom start --port
-  8002`)``. **Only me** stops with the same advice. On a Mac in a pair they
+  8002`)``. **Only me** stops with the same advice (in its log, when it serves
+  in the background: `darkbloom logs`). On a Mac in a pair they
   name `darkbloom start --solo --port <n>` instead, or `darkbloom restart` for
   the pair's own API.
-- **The key:** `darkbloom local` shows the address and the key. Of the start
-  screens, only `darkbloom start --local`'s prints the key. A pair's API has a
-  key of its own, the same on both Macs.
+- **The key:** `darkbloom local` shows the address and the key. No start
+  screen prints the key. A pair's API has a key of its own, the same on both
+  Macs.
 - **On your local network (LAN or tailnet):** the local API listens on this Mac
   only, unless you start with `--bind <address>`; it always needs the key
   unless you add `--no-auth`. Without a key your requests stay on this Mac:
@@ -195,7 +218,9 @@ model.
 - **Starts Darkbloom only if needed.** If this Mac's local API already runs,
   nothing restarts: `Darkbloom already serves on 127.0.0.1:8001; setting up
   OpenCode for it.` Otherwise `start` runs as usual, and the tools are set up
-  once the local API answers: a background start waits up to 30 seconds for it.
+  once the local API answers: a background start waits up to 30 seconds for it,
+  and **Only me**, which listens once its models are loaded, up to
+  `[backend] startup_preload_timeout_secs` (120) more.
 - **What it changes:** one `darkbloom` provider in OpenCode's
   `~/.config/opencode/opencode.jsonc` (or your existing `opencode.json`), and
   in Hermes' `~/.hermes/config.yaml`, where it also becomes the main model, as
@@ -260,15 +285,20 @@ model.
 `darkbloom status` says it in one line, for example:
 
 ```text
-Serving: you first — Darkbloom paused since 14:02 (your last request 1 minute ago; back at about 14:13 if you stay idle)
+Serving: you first — Darkbloom paused for 10 minutes (your last request 1 minute ago; back in about 1 minute if you stay idle)
          2 Darkbloom requests are finishing
 Your requests: this Mac first, then your other Macs (free) · account key saved
 ```
+
+Times are said from now ("paused for under a minute", "back in about 2
+minutes", "back any moment now"), never as a clock time, which an SSH session
+or another Mac would read in a zone it doesn't see.
 
 Other lines you may see:
 
 - `Serving: Darkbloom and you, me first — open to Darkbloom (none of your requests in the last 2 minutes)`
 - `Serving: only you, on this Mac — Darkbloom never contacts this Mac`
+- `Serving: only you, on this Mac — starting: its local API opens once its models are loaded`
 - `Serving: Darkbloom network only — this Mac has no local API`
 - ``Serving: Darkbloom and you, me first — the local API isn't up: port 8001 is in use (`darkbloom start --port 8002`)``
 
@@ -299,7 +329,10 @@ list's **Change how the pair serves** asks again. Then run
   ([a pair's leader beside Darkbloom](./direct-mode.md#a-pairs-leader-beside-darkbloom)).
   The pair's API answers on your local network (LAN or tailnet), always with
   the key. The other Mac has no API of its own: tools there use the leading
-  Mac's LAN or tailnet address.
+  Mac's LAN or tailnet address. `darkbloom status` on either Mac says whether
+  the pair is paused for you, for how long and when it comes back (``Pair: you
+  first — Darkbloom paused for 1 minute (…; back in about 2 minutes if you stay
+  idle)``): the leading Mac's status carries it to the other Mac.
   <!-- pending LS-3: the other Mac relays its own port in Both, me first too, so start with opencode works on either Mac. -->
 - Your answer is saved in `[local] mode` too. Without a terminal nothing is
   asked, and a pair keeps serving as it did

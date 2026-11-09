@@ -118,8 +118,9 @@ struct Qwen4ReasoningEffortValidationTests {
         }
     }
 
-    @Test func typedErrorUsesClient400ClassificationOnBothServingPaths() throws {
-        let error = MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(.reasoningEffort)
+    @Test(arguments: [MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(.reasoningEffort),
+                      .conflictingReasoningEfforts])
+    func typedErrorUsesClient400ClassificationOnBothServingPaths(error: MultiModelBatchSchedulerEngineError) throws {
         #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 400)
         let failure = ProviderLoop.sanitizedInferenceFailure(from: error, phase: .streamStart)
         #expect(failure.statusCode == 400)

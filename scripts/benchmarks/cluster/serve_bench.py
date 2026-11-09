@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Start an isolated ``darkbloom start --local`` server, run load against it, stop it.
+"""Start an isolated ``darkbloom start --local --here`` server, run load against it, stop it.
 
 Python standard library only; runs on the Mac that serves. One invocation is
 one or more *sessions*. A session starts the provider with a task-owned home,
@@ -143,7 +143,7 @@ class Server:
         }
 
     def start(self):
-        command = [str(self.arguments.binary), "start", "--local", "--model", self.arguments.model,
+        command = [str(self.arguments.binary), "start", "--local", "--here", "--model", self.arguments.model,
                    "--port", str(self.arguments.port), "--bind", "127.0.0.1",
                    "--config", str(self.arguments.config)]
         self.started = time.perf_counter()

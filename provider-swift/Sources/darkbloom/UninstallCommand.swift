@@ -132,22 +132,8 @@ struct Uninstall: AsyncParsableCommand {
                 try await ServiceDrain.stopDrainedProvider(daemonState: ServiceDrain.soloProviderState())
                 return wasLoaded ? .done() : .skipped("the provider service was not running")
             },
-            stopClusterPart: {
-                let current = ClusterServiceAgentPlan.label(executablePath: ClusterService.resolvedExecutable(executable))
-                guard !ClusterServiceAgent.installedLabels().isEmpty || ClusterServiceAgent.isLoaded(label: current)
-                        || ClusterService.running() else { return .skipped("no cluster service on this Mac") }
-                do {
-                    var stop = try Cluster.Stop.parse(["--service"])
-                    try await stop.run()
-                    return .done()
-                } catch {
-                    // The pair could not stop together (the other Mac did not answer): this Mac is leaving, so stop
-                    // only its own part, as `cluster stop --local-only` does when the other Mac is gone.
-                    var stop = try Cluster.Stop.parse(["--local-only"])
-                    try await stop.run()
-                    return .done("the other Mac was not asked to stop (\(error))")
-                }
-            },
+            // As `darkbloom cluster leave` stops it: the summary's last line says what to do on the other Mac.
+            stopClusterPart: { try await Cluster.Stop.beforeUnpairing(executable: executable, say: { print($0) }).outcome },
             removeServices: [
                 ("Remove the provider service", {
                     try ProviderUninstall.removeAgent(plist: LaunchAgent.plistPath(), loaded: LaunchAgent.isLoaded(),
@@ -170,7 +156,7 @@ struct Uninstall: AsyncParsableCommand {
                 return await Logout.revokeSavedToken(token) ? .done()
                     : .skipped("the coordinator did not confirm it (offline, or the token's issuer is unknown)")
             },
-            forget: { pin in try Cluster.Pair.parse(["--forget", pin]).run() },
+            forget: Cluster.Pair.forget(pin:),
             removeCableSetup: {
                 let result = ClusterLinkRepair.remove(device: nil)
                 if result.outcome == .approvalUnavailable, ClusterLinkApprovalSession.cannotPrompt() {

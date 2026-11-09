@@ -31,7 +31,7 @@ env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(work / "home"), "CFF
        "DARKBLOOM_AUTH_TOKEN_PATH": str(run / "auth_token"),
        "DARKBLOOM_KV_BACKEND_GUARD": str(run / "kv-backend-guard.json"), "DARKBLOOM_NO_UPDATE_CHECK": "1",
        "DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL": "1", "DARKBLOOM_PREFIX_CACHE_TEST_ROOT": str(work / "prefix-cache")}
-command = [a.binary, "start", "--local", "--model", a.model, "--port", str(a.port), "--bind", "127.0.0.1",
+command = [a.binary, "start", "--local", "--here", "--model", a.model, "--port", str(a.port), "--bind", "127.0.0.1",
            "--config", a.config]
 with open(str(Path(a.out).with_suffix(".server.log")), "w") as log:
     server = subprocess.Popen(command, env=env, cwd=str(work), stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)

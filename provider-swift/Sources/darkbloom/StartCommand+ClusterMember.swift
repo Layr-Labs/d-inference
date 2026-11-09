@@ -44,7 +44,8 @@ extension Start {
         let capabilities = DistributedServingEligibility.memberCapabilities(chipFamily: hardware.chipFamily)
         let coordinator = coordinatorURL ?? config.coordinator.url
         let endpoint = Self.clusterMemberLocalEndpoint(requested: localEndpoint, hostsPairSlot: prepared.hostsPairSlot,
-                                                       bind: bind, port: port, local: config.local, coordinatorURL: coordinator)
+                                                       bind: bind, port: port, local: config.local, settingsFile: path,
+                                                       coordinatorURL: coordinator)
         // A setup saved for coordinator pairing yields this Mac's member
         // installation; every other setup yields none and registers no claim.
         let installation = try current.withCurrentReference { _ in
@@ -86,9 +87,10 @@ extension Start {
     /// refuses an endpoint on a member without the slot (`admitsClusterPairLocalAPI`), which would end the part.
     /// Never without a key: always the pair's (`cluster local`'s); `validate` refuses `--no-auth`, the loop refuses a
     /// keyless endpoint, and a key that can't be read here leaves the pair serving Darkbloom without the API, never
-    /// with an open one.
+    /// with an open one. Its router reads `[local] route` again from `settingsFile`, this Mac's provider.toml, when it
+    /// changes.
     static func clusterMemberLocalEndpoint(requested: Bool, hostsPairSlot: Bool, bind: String, port: UInt16,
-                                           local: LocalSettings?, coordinatorURL: String?,
+                                           local: LocalSettings?, settingsFile: URL, coordinatorURL: String?,
                                            loadToken: () throws -> String = { try LocalEndpoint.loadOrCreateClusterToken() },
                                            say: (String) -> Void = printError) -> LocalInferenceHTTPConfig? {
         guard requested else { return nil }
@@ -101,7 +103,7 @@ extension Start {
             return nil
         }
         return LocalInferenceHTTPConfig(host: bind, port: port, authToken: token,
-            router: .host(local: local, coordinatorURL: coordinatorURL, takesCoordinatorWork: true))
+            router: .host(local: local, settingsFile: settingsFile, coordinatorURL: coordinatorURL, takesCoordinatorWork: true))
     }
 
     /// What a member's start that failed with `error` ends with. Refused because another Darkbloom app holds this Mac's

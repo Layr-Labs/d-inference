@@ -318,6 +318,14 @@ model**, **Serve locally only** and **Diagnostics** (a redacted file in the home
 folder). q leaves with "Not serving yet. Both Macs keep trying by themselves;
 run `darkbloom cluster` to check." and exit status 1, never Done.
 
+Apple's check is part of every start: each Mac's new part needs a current App
+Attest authorization, which lands about a minute after it registers. While it
+does, the wait and `darkbloom status` on both Macs say `checking both Macs with
+Apple` (or name the one Mac), as progress (`… is not serving yet: checking
+both Macs with Apple.`, read as loading). The warning above comes only once a
+Mac's part has run 2 minutes without one, or its key-generation safeguard holds
+it back (`ClusterOnboardingAppleCheck`).
+
 On a color terminal with a UTF-8 locale and at least 40 columns, setup opens
 with the Darkbloom mark, which blooms in pixel by pixel. Each step's heading
 carries a step meter (`●●○○`). Long work (checking the cable, reading both Macs,
@@ -339,7 +347,11 @@ and shows the result.
 
 After setup, `darkbloom cluster` works like `darkbloom start`; on a paired Mac,
 `darkbloom start` opens the same screen, and `darkbloom stop`, `restart` and
-`status` act on both Macs. It opens with both Macs and the cable ("This Mac
+`status` act on both Macs. In a terminal, `darkbloom start`'s first line says
+what that screen does: on the leader of a stopped pair, ``This Mac is in a two-Mac cluster with the other Mac
+(…), which is stopped. Press Enter to start it with Qwen 3.8 27B (last used), or
+choose another model.``; otherwise ``…: opening the pair's screen.`` The screen
+opens with both Macs and the cable ("This Mac
 (Studio A) leads · the other Mac (Apple M3 Ultra, 256 GB) follows · cable
 ready"; the other Mac by its hardware name, since no computer name crosses the
 cable), then the pair's status: the outcome block (`✓ Serving …` or `✗ Not
@@ -767,9 +779,11 @@ leads.").
   goes ahead; q at the question or at the list saves nothing. `darkbloom start
   --solo` on this Mac then serves the same way
   ([no terminal, no question](./local-first.md#no-terminal-no-question)). A
-  saved **Only me** serves this Mac alone only in a terminal: while the pair
-  doesn't run here, `darkbloom start --solo` without one (a script) is refused
-  in one line before this Mac's part is stopped or its saved start cleared.
+  saved **Only me** is for this Mac alone: while the pair doesn't run here,
+  `darkbloom start --solo`, with or without a terminal (a script), serves this
+  Mac alone, Only me in the background, after this Mac's part is stopped, as a
+  network `--solo` start does. Without `--solo`, `darkbloom start` starts the
+  pair, the app's Start included.
 - **Only me** is `darkbloom cluster local`'s way of serving
   ([below](#serving-locally-only)). **Darkbloom network** is the pair as
   before, with no local API.
@@ -794,8 +808,13 @@ With **Both, me first**:
 - **Requests the pair can't take** (a model it doesn't serve, a full queue) go
   on as that Mac's `[local] route` says, with that Mac's account key
   ([the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
+  `darkbloom route this-mac`, `my-macs` or `my-macs-first` on that Mac sets it,
+  and the pair's API uses it from its next request, with no restart; on the
+  other Mac it says to run it on the leading Mac.
   Requests from other machines never use the paid network; they can use the
-  pair and your other Macs.
+  pair and your other Macs. That includes the pair's other Mac: its requests
+  reach the leading Mac from another machine, so with `my-macs-first` tools
+  there use the pair and your other Macs, never the paid network.
 - **Me first:** while one of your requests runs on it, or waits for a lane, the
   pair takes no new Darkbloom request, and Darkbloom's running requests finish.
   It takes Darkbloom requests again 2 minutes after your last request ends
@@ -814,24 +833,35 @@ With **Both, me first**:
   pair's (`darkbloom local` there shows it). Tools on other machines, or set up
   with the pair's key, reach the pair again once Darkbloom has it.
 
-`darkbloom status` and `darkbloom cluster status` say it, on the Mac that runs
+`darkbloom status` and `darkbloom cluster status` say it. On the Mac that runs
 the pair's API:
 
 ```text
 Serves: through Darkbloom, and on its local API with you first
-✓ Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel)
-Pair: you first — Darkbloom paused since 14:02 (your last request 1 minute ago; back at about 14:13 if you stay idle)
+✓ Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel).
+  Pair: you first — Darkbloom paused for 10 minutes (your last request 1 minute ago; back in about 1 minute if you stay idle)
 Local API: http://127.0.0.1:8001/v1 on this Mac, and port 8001 of its LAN or tailnet address (`darkbloom local` shows the key)
 Members: the other Mac (Apple M3 Ultra, 256 GB) is part of the pair; it runs no local API
 ```
 
 `Pair: Darkbloom and you, me first — open to Darkbloom (…)` while you aren't
-using it. On the other Mac:
+using it. Times are said from now ("paused for under a minute", "back in about
+2 minutes", "back any moment now"), never as a clock time: the other Mac, or an
+SSH session, may be in another time zone.
+
+The `Pair:` line comes with the leading Mac's status, which the other Mac asks
+for on every `status` anyway, so the other Mac says the same, under the pair's
+line (nothing more crosses the cable, and nothing per request):
 
 ```text
-Local API: on the other Mac (Apple M5 Ultra, 256 GB), which runs the pair's API; `darkbloom local` there shows its address and key, and `darkbloom status` there whether Darkbloom is paused for you
+✓ Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel).
+  Pair: you first — Darkbloom paused for 10 minutes (your last request 1 minute ago; back in about 1 minute if you stay idle)
+Local API: on the other Mac (Apple M5 Ultra, 256 GB), which runs the pair's API; `darkbloom local` there shows its address and key
 Members: this Mac is part of the pair; it runs no local API
 ```
+
+`darkbloom cluster` on either Mac shows the line under its `✓ Serving` block
+too.
 
 <!-- pending LS-3: in Both, me first the other Mac runs the same relay as darkbloom cluster local, so its own address answers with the pair's key, and its status and darkbloom local print that address. -->
 
@@ -1616,11 +1646,12 @@ they control single-Mac serving on one Mac
 | Command | On a Mac in the pair |
 |---|---|
 | `darkbloom stop` (or `darkbloom cluster stop`) | Stops serving on both Macs. They stay stopped after a restart, and both cluster services stay up, idle, so the next start needs no visit to the other Mac. It waits until both Macs' parts have ended and says so (`Memory freed on both Macs ✓`) |
-| `darkbloom start` | Starts the pair, whatever its state, also after `darkbloom stop`: in a terminal, the same screen as `darkbloom cluster`; in a script, starts the saved model on both Macs and waits until it serves. `darkbloom start --solo` serves this Mac alone instead: see [going back to serving on one Mac](#going-back-to-serving-on-one-mac) |
+| `darkbloom start` | Starts the pair, whatever its state, also after `darkbloom stop`: in a terminal, the same screen as `darkbloom cluster`; in a script, starts the saved model on both Macs and waits until it serves. A script's start on a pair that already serves keeps it (`…: the pair already serves.`, exit 0). `darkbloom start --solo` serves this Mac alone instead: see [going back to serving on one Mac](#going-back-to-serving-on-one-mac) |
 | `darkbloom restart` | Stops and starts the pair with its current model. While the pair doesn't run here, restarts single-Mac serving that runs here instead, and never starts the pair or single-Mac serving that was stopped |
 | `darkbloom status` | The pair first (who leads, the model, whether it serves now and what to do), then this Mac's fields. When this Mac serves alone instead (`start --solo`), a line under the pair says so, and single-Mac serving's own lines follow. `darkbloom cluster status` gives the pair alone, with `--json` and exit codes |
 
-Each says first that it acts on the pair. `--solo` on any of them acts on
+Each says first that it acts on the pair, in words for what it does (`start`
+in a terminal: what its screen does). `--solo` on any of them acts on
 single-Mac serving on this Mac only and never touches the pair.
 
 Single-Mac serving and the pair can't run on one Mac at once: both use the
@@ -1690,8 +1721,18 @@ on its own), `darkbloom start --solo` serves this Mac alone:
   terminal and `darkbloom autopilot enable` are refused by name (exit 64). The
   app's **Start serving** has no `--solo`, so it starts the pair, as a plain
   `darkbloom start` does, never this Mac alone. When it named another model
-  than the pair's, it ends with ``This Mac serves in a pair: started the pair
-  with <the pair's model>; `darkbloom cluster` changes its model.``
+  than the pair's, it ends with ``This Mac serves in a pair: the pair serves
+  <the pair's model>; `darkbloom cluster` changes its model.`` (``… the pair
+  was asked to start with …, and isn't serving (above); …`` when it doesn't
+  serve yet), and when it asked for a local API this Mac doesn't get from the
+  pair, ``No local API was added on this Mac: …``. The app's onboarding offers
+  **Start serving** there, never Autopilot, which serves one Mac and is refused
+  on a paired Mac before it downloads anything. It says the pair as this Mac's
+  own files tell it ("This Mac serves in a pair with …" only when it serves;
+  "… which is stopped", "… that isn't running here", or, on the Mac that
+  follows, "started with …"). A pair with no model yet gets no **Start
+  serving**: the page says to choose its model with `darkbloom cluster` in
+  Terminal on the leading Mac first, and so does the CLI (``No model was chosen for the pair yet: choose one with `darkbloom cluster` in a terminal on <the leading Mac>.``).
 - A pair that is merely stopped gives one line: ``This Mac is in a two-Mac
   cluster with the other Mac (…), which is stopped: serving this Mac alone
   (`darkbloom start` starts the pair again).``
@@ -1751,6 +1792,55 @@ darkbloom start                            # single-Mac serving, as on any Mac
 Plain `darkbloom stop` on 0.10.8 stops the pair, not single-Mac serving, so it
 isn't the way back.
 
+## Leaving the pair
+
+To stop clustering for good, leave the pair on each Mac, in either order:
+
+```bash
+darkbloom cluster leave   # on each Mac; asks first (--yes for scripts)
+darkbloom start           # then on each Mac: serves that Mac alone
+```
+
+`darkbloom cluster leave` says the pair in one sentence and what leaving does,
+then asks `Leave the pair? [y/N]` (No by default; without a terminal it needs
+`--yes`). It then takes the steps `darkbloom uninstall` takes for the pair:
+
+1. **This Mac's part stops:** the pair stops on both Macs and this Mac's
+   cluster service leaves login, as `darkbloom cluster stop --service`. When the
+   other Mac doesn't answer, only this Mac's part stops
+   (`cluster stop --local-only`), and the lines say so. They say only what
+   stopped, never how to serve the pair again. A part that doesn't stop leaves
+   the Mac paired, and the command says to try again.
+2. **This Mac forgets its pairing,** as `darkbloom cluster pair --forget` and
+   **Start over** do ([undo](#undo)). Run on the Mac that leads, it first
+   tells the other Mac over the cable, which reclaims its pair cache and stops
+   its part.
+3. **It says what's next:** ``✓ This Mac left the pair. Nothing serves on this
+   Mac now: `darkbloom start` serves it alone, or `darkbloom cluster` pairs it
+   again.``, then what the stop did to the other Mac and that it keeps its
+   pairing until you run `darkbloom cluster leave` there, then that to pair
+   these two Macs again you run `darkbloom cluster` on each Mac, choosing
+   **Start over** where it's offered.
+   - "Stopped serving the pair too" is said only when the other Mac stopped.
+     One that wasn't asked (the Mac that follows a pair that isn't serving, or
+     a pair that couldn't stop together) "wasn't asked to stop".
+   - One that didn't answer may have left the pair already, so the line says
+     that, and that `darkbloom cluster leave` there unpairs it if it hasn't.
+
+Until it leaves too, the other Mac still holds its pairing, and it can't tell
+this Mac having left from this Mac being off:
+- its `status`, `cluster status` and a `start`'s result say ``If the other Mac
+  left the pair, `darkbloom cluster leave` here unpairs this Mac too.``, and no
+  longer that `start` on either Mac starts the pair;
+- its `darkbloom cluster`, which a `start` in a terminal opens, no longer
+  reaches this Mac. It says ``If it left the pair, choose Start over to pair
+  again, or Quit and run `darkbloom cluster leave` here.`` and offers
+  **Start over**.
+
+The models, single-Mac serving and the cable port setup stay on both Macs
+(`darkbloom cluster link --remove` undoes the cable setup). Every line:
+[CLI reference](./cli-reference.md#darkbloom-cluster-leave).
+
 ## Pairing again
 
 Pair the Macs again after the official installer reinstalls Darkbloom ("Secure
@@ -1769,8 +1859,9 @@ with "This Mac's Secure Enclave key is not the one it paired with; pair again."
    - When the other Mac does not answer, it says "The other Mac (…) isn't
      answering over the cable. Its cluster service is off, or that Mac is asleep,
      off, or waiting for someone to log in. On that Mac, run `darkbloom start` or
-     `darkbloom cluster`." Do that first: a Mac that was only asleep, logged out
-     or stopped needs no new pairing. If it was reinstalled, unpaired or replaced, use **Start over** here; the Mac that follows lists it after **Try again**. A
+     `darkbloom cluster`. If it left the pair, choose Start over to pair again, or
+     Quit and run `darkbloom cluster leave` here." Do that first: a Mac that was
+     only asleep, logged out or stopped needs no new pairing. If it was reinstalled, unpaired, replaced or left the pair, use **Start over** here; the Mac that follows lists it after **Try again**. A
      model choice whose other Mac stops answering ends with **Try again**,
      **Start over** and **Quit**; while it waits, the screen says
      why ("Waiting for the other Mac's cluster service: …").
@@ -1795,11 +1886,14 @@ in [a saved pairing the onboarding cannot use](../architecture/inference.md#a-sa
 
 `darkbloom cluster link --remove` on each Mac restores the cable port's earlier
 network settings (one approval). `darkbloom cluster pair --forget <pin>` removes
-a pairing; **Pair again** and **Start over** in `darkbloom cluster`
-take the same steps (`ClusterUnpairing`). Run on the leader, it first tells the other Mac over the
+a pairing; **Pair again** and **Start over** in `darkbloom cluster`, and
+`darkbloom cluster leave` ([leaving the pair](#leaving-the-pair)), take the
+same steps (`ClusterUnpairing`). Run on the leader, it first tells the other Mac over the
 cable, which removes the pair's prompt-cache records (its own single-Mac cache
 stays) and stops its part; each Mac also removes its own pair records when it
-unpairs.
+unpairs. When the other Mac isn't reached, which it isn't once it left the pair,
+the leader says ``The other Mac was not reached (…). If that Mac is still paired,
+run `darkbloom cluster leave` there.``
 `darkbloom cluster stop --service` stops a Mac's cluster service and keeps it
 from starting at login. It stops the pair first, from either Mac. On the leader,
 when the other Mac's service is already off or does not answer, this Mac's

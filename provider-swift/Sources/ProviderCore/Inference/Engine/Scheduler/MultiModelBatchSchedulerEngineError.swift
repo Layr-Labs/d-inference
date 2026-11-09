@@ -45,6 +45,11 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// before template rendering; the message names only the field and the
     /// accepted names, so a client may be shown it.
     case unsupportedReasoningEffort(ReasoningEffortField)
+    /// Nemotron 3.5 Super received `reasoning_effort` and `reasoning.effort`
+    /// that differ: it reads both and doesn't choose one. Deterministic
+    /// request error, before template rendering; the message names only the
+    /// two fields and the accepted names, so a client may be shown it.
+    case conflictingReasoningEfforts
     /// The MODEL failed to satisfy the request's forced `tool_choice`
     /// contract, or the inference-time grammar reached an impossible state.
     /// This depends on what the model GENERATED —
@@ -134,6 +139,8 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
             return message
         case .unsupportedReasoningEffort(let field):
             return field.refusalMessage
+        case .conflictingReasoningEfforts:
+            return ReasoningEffortField.conflictMessage
         case .toolChoiceViolation(let message):
             return message
         case .tokenBudgetExhausted(let message):

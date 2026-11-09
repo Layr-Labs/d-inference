@@ -53,8 +53,7 @@ extension Cluster {
         var worker: String?
         @Flag(help: ArgumentHelp("Developer: open the earlier six-step setup wizard instead of the onboarding.", visibility: .hidden))
         var wizard = false
-        @Flag(name: .customLong("app-console"),
-              help: ArgumentHelp("Desktop app: run the onboarding without a terminal, its screens as JSON lines on standard output and its answers read as JSON lines from standard input.", visibility: .hidden))
+        @Flag(name: .customLong("app-console"), help: Cluster.Setup.appConsoleHelp)
         var appConsole = false
 
         func validate() throws {

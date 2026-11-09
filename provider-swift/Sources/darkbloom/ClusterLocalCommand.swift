@@ -37,8 +37,7 @@ extension Cluster {
               help: "Select the unqualified GLM PNG candidate on the paired local leader; exact GLM model id required.")
         var privateGLMImageQualification = false
 
-        @Flag(name: .customLong("app-console"),
-              help: ArgumentHelp("Desktop app: run the onboarding without a terminal, its screens as JSON lines on standard output and its answers read as JSON lines from standard input.", visibility: .hidden))
+        @Flag(name: .customLong("app-console"), help: Cluster.Setup.appConsoleHelp)
         var appConsole = false
 
         var onboardingRequest: ClusterOnboardingRequest {

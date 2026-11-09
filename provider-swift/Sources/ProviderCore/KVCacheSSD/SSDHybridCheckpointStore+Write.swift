@@ -170,15 +170,15 @@ extension SSDHybridCheckpointStore {
             if let refusal = demand.refusal {
                 return .refused(refusal)
             }
-            if speculative {
-                if let refusal = speculativeAdmissionRefusal(plaintextBytes: envelope.plaintextBytes) {
-                    return .refused(refusal)
-                }
-            // Novel writes use a 90% sub-budget, leaving capacity for known
-            // repeat demand. Durable duplicates consume no write budget. The
-            // writer rechecks after queueing, since this admission is advisory.
-            } else if let refusal = Self.writeRefusal(rateLimiter.admission(bytes: envelope.plaintextBytes, repeated: demand.repeated)) {
-                return .refused(refusal)
+            // Budget gate, advisory: the writer rechecks after queueing. A
+            // speculative write has its own allowance and disk test. Novel
+            // writes use a 90% sub-budget, leaving capacity for known repeat
+            // demand. Durable duplicates consume no write budget.
+            let budgetRefusal = speculative
+                ? speculativeAdmissionRefusal(plaintextBytes: envelope.plaintextBytes)
+                : Self.writeRefusal(rateLimiter.admission(bytes: envelope.plaintextBytes, repeated: demand.repeated))
+            if let budgetRefusal {
+                return .refused(budgetRefusal)
             }
         }
         let refusal: PrefixCacheDonationOutcome? = lock.withLock {

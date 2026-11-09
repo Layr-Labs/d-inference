@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-09
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -1681,6 +1681,20 @@ Only me's background service also updates itself, as the network provider
 does: a check 5 minutes after it starts, then every 30 minutes; it downloads
 while serving, lets your requests finish, then restarts into the release
 (`StandaloneServer+AutoUpdate`).
+
+Until an installed release is promoted (600 s of fresh heartbeats of it from one
+provider process), the watchdog counts a failed start for a crash (the job
+loaded and the provider gone through the restart grace) and for a provider that
+sends no heartbeat of the release within its startup window,
+`max(300, startup_preload_timeout_secs + 180)` s. The window runs from the later
+of the release's launch and the start of the process launchd runs
+(`WatchdogRecoveryService.startupWindowStart`), so a restart you ask for
+(`darkbloom restart`, `start`, `stop` then `start`), a login or a reboot gives
+the new process the whole window and is never a failed start. Three failed
+starts restore the kept release and quarantine the new one
+(`UpdateRecoveryState.rollbackThreshold`). On a `darkbloom cluster` Mac its
+cluster service supervisor counts them instead
+([a rollback on one Mac](./cluster-always-on.md#a-rollback-on-one-mac)).
 
 `--rollback` cannot be combined with `--check-only`, `--override-quarantine` or
 `--coordinator`, and `--yes` applies only to it. It prints the plan (installed

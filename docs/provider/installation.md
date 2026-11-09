@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-09
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -290,6 +290,12 @@ identity becoming available without other evidence of a launch. This also covers
 a candidate that remains running without a heartbeat
 (`provider-swift/Sources/ProviderCore/Service/WatchdogRecoveryService.swift`,
 `observeHealthyProvider`).
+
+A restart you ask for before the release is promoted (`darkbloom restart`,
+`start`, `stop` then `start`), a login or a reboot is never a failed start: the
+startup timeout runs from the start of the process launchd runs when that is
+later than the release's launch (`startupWindowStart`). A crash, or a restarted
+process that sends no heartbeat within its own window, still counts.
 
 The unprivileged updater never touches the root fan helper; after an update run
 `sudo darkbloom fan enable` again if you use [fan control](./fan-control.md).

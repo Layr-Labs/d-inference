@@ -1,6 +1,6 @@
 # Keep a cluster member always on
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-09
 
 `darkbloom cluster` on each Mac does all of this. Nothing below is needed: it
 explains what the onboarding sets up and how to check it.
@@ -142,7 +142,7 @@ supervisor starts (`Watchdog.settings`,
 | Drain | Accepted requests finish, at most 120 s; never cancelled | The part that serves the pair (rank 0) finishes its accepted requests, at most 120 s (`ClusterUpdateDrainRequest`, through its lifecycle mailbox); the other part serves none. A request still running reopens the pair on both Macs and defers to the next slot |
 | Install | Commit the staged bundle | Each Mac commits once both drained |
 | Restart | launchd restarts the provider | The supervisor stops its cluster service (the drained part stops with it), checks that the installed binary starts, and starts again from it |
-| Recovery | The watchdog promotes the candidate after 600 s of fresh heartbeats, rolls back after 3 failed starts | A binary that fails the start check is never restarted into: the supervisor restores the previous release and quarantines the new one at once, and starts its cluster service again. Otherwise the restarted supervisor does what the watchdog does, with its cluster service's heartbeat (`ClusterCandidateRecovery`), on an update record checked against the installed app ([an install outside the updater](#an-install-outside-the-updater)) |
+| Recovery | The watchdog promotes the candidate after 600 s of fresh heartbeats, rolls back after 3 failed starts: a crash, or no heartbeat within the startup window of the process that runs, timed from that process's own start, so a restart the owner asks for is never one ([`darkbloom update`](./cli-reference.md#darkbloom-update)) | A binary that fails the start check is never restarted into: the supervisor restores the previous release and quarantines the new one at once, and starts its cluster service again. Otherwise the restarted supervisor does what the watchdog does, with its cluster service's heartbeat (`ClusterCandidateRecovery`), on an update record checked against the installed app ([an install outside the updater](#an-install-outside-the-updater)). A failed start is an end of the service the supervisor didn't ask for: a crash, an exit with an error, or a stop its liveness guard asked for (no heartbeat). A clean stop asked for from outside the supervisor (exit 0) is not one ([a rollback on one Mac](#a-rollback-on-one-mac)) |
 
 The rules each Mac applies to the other's progress are in
 `provider-swift/Sources/ProviderCore/Service/ClusterSupervision/ClusterPairUpdate.swift`
@@ -250,7 +250,14 @@ newer release updated both Macs.
 
 A rollback is any of: three failed starts of the release's cluster service, a
 failed start check, or `darkbloom update --rollback` run while the Mac's
-cluster service was stopped. Each restores the verified predecessor and
+cluster service was stopped. A failed start is an end of the service that its
+supervisor didn't ask for: a crash, an exit with an error, or a stop the
+supervisor's liveness guard asked for because the service stopped beating.
+A clean stop asked for from outside the supervisor is not one: the service exits
+0 only once asked to stop (SIGTERM or SIGINT), as when `darkbloom cluster`
+replaces a service started from a terminal (`ClusterService.stopDetached`), on
+Ctrl-C there, or on a `kill`
+(`ClusterCandidateRecovery.endIsFailedStart`). Each rollback restores the verified predecessor and
 quarantines the release on that Mac. The Mac's progress then reports the
 quarantined release beside the version it runs
 (`ClusterPairUpdateProgress.quarantined`), and the other Mac reads it over the

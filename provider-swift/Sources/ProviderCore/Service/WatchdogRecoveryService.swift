@@ -97,7 +97,9 @@ public struct WatchdogRecoveryService: Sendable {
     public enum HealthOutcome: Sendable, Equatable {
         case noCandidate
         case stabilizing(since: Double?)
-        case inactiveCandidate(attemptStartedAt: Double)
+        /// The provider that runs has sent no fresh heartbeat of the candidate within its startup window, which began at
+        /// `launchedAt` (`startupWindowStart`).
+        case inactiveCandidate(launchedAt: Double)
         /// A candidate whose rollback was refused (blocked) has passed its
         /// retry backoff without producing a heartbeat; the caller must
         /// re-enter the recovery path to honor the retry.
@@ -126,6 +128,16 @@ public struct WatchdogRecoveryService: Sendable {
             candidateStartupTimeoutFloorSeconds,
             Double(preloadTimeoutSecs) + candidateStartupSafetyMarginSeconds
         )
+    }
+
+    /// When the startup window of the provider launchd runs began: the candidate's launch attempt, or the later start of
+    /// that process. A restart the owner asks for (`darkbloom restart`, `start`, `stop` then `start`), a login or a
+    /// reboot replaces the attempt's process, and the re-armed watchdog's first check still reads the replaced process's
+    /// daemon state: the new process gets the whole window from its own start, so only a crash, or a process that sends
+    /// no heartbeat within its own window, is a failed start.
+    static func startupWindowStart(attemptStartedAt: Double, runningProcess: ProcessIdentity?) -> Double {
+        guard let runningProcess else { return attemptStartedAt }
+        return max(attemptStartedAt, Double(runningProcess.startTimeMicros) / 1_000_000)
     }
 
     public init(
@@ -251,8 +263,9 @@ public struct WatchdogRecoveryService: Sendable {
         do {
             var state = try session.readState()
             let beforeReconcile = state
+            let snapshot = deps.launchSnapshot()
             _ = state.reconcileLaunchIntent(
-                snapshot: deps.launchSnapshot(),
+                snapshot: snapshot,
                 now: now
             )
 
@@ -263,13 +276,16 @@ public struct WatchdogRecoveryService: Sendable {
             // that window: do not charge a failed start and do not restart the
             // candidate. A DEAD candidate (providerProcessAlive == false) is
             // still charged and restarted so a real crash-loop rolls back.
+            let windowStart = state.candidate?.attemptStartedAt.map {
+                Self.startupWindowStart(attemptStartedAt: $0, runningProcess: snapshot?.process)
+            }
             if providerProcessAlive,
                let candidate = state.candidate,
-               let attemptStartedAt = candidate.attemptStartedAt,
-               now - attemptStartedAt < candidateStartupTimeoutSeconds
+               let windowStart,
+               now - windowStart < candidateStartupTimeoutSeconds
             {
                 if state != beforeReconcile { try session.writeState(state) }
-                let until = attemptStartedAt + candidateStartupTimeoutSeconds
+                let until = windowStart + candidateStartupTimeoutSeconds
                 deps.log(
                     "v\(candidate.release.version) is alive and within its "
                         + "\(Int(candidateStartupTimeoutSeconds))s startup window; deferring restart")
@@ -671,10 +687,13 @@ public struct WatchdogRecoveryService: Sendable {
             if !freshMatchingHeartbeat,
                providerRunning,
                candidate.pendingAttemptID != nil,
-               let attemptStartedAt = candidate.attemptStartedAt,
-               now - attemptStartedAt >= candidateStartupTimeoutSeconds
+               let attemptStartedAt = candidate.attemptStartedAt
             {
-                return .inactiveCandidate(attemptStartedAt: attemptStartedAt)
+                let launchedAt = Self.startupWindowStart(attemptStartedAt: attemptStartedAt,
+                                                         runningProcess: deps.launchSnapshot()?.process)
+                if now - launchedAt >= candidateStartupTimeoutSeconds {
+                    return .inactiveCandidate(launchedAt: launchedAt)
+                }
             }
             // A refused rollback clears `pendingAttemptID`, so the branch
             // above can never fire again for that candidate — and a hung-but-

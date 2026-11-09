@@ -1966,6 +1966,18 @@ threats:
           another holder refuses the rollback without signalling it.
         status: implemented
       - description: >
+          Only an unclean end counts toward the rollback threshold, so a restart
+          the owner asks for never rolls a working release back. The watchdog
+          times a candidate's startup window from the later of its launch and
+          the start of the process launchd runs: a `darkbloom restart`, `start`,
+          `stop` then `start`, login or reboot gives the new process the whole
+          window, never a shorter one, while a crash or a process that sends no
+          heartbeat within its own window still counts. A pair's supervisor does
+          not count a clean stop (exit 0) of the candidate's cluster service that
+          it did not ask for, and still counts a crash, an error exit, a stop by
+          its liveness guard and a failed start check.
+        status: implemented
+      - description: >
           Bounded watchdog network I/O (URLSession request/resource timeouts)
           plus a safe-point per-tick budget so a stalled download or wedged
           tick cannot hold the cross-process update lock forever; the budget

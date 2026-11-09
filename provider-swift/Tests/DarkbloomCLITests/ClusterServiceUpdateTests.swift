@@ -423,6 +423,16 @@ struct ClusterServiceUpdateTests {
         try UpdateRecoveryStore(installRoot: install.installRoot, verifyCodeSignatures: false).loadState()
     }
 
+    /// The ends of the candidate's cluster service that its supervisor did not ask for and that count as failed starts.
+    @Test func whichEndsOfTheCandidateServiceAreFailedStarts() {
+        typealias R = ClusterCandidateRecovery
+        #expect(!R.endIsFailedStart(.failure(exitCode: 0), recycled: false), "a clean stop asked for from outside")
+        #expect(R.endIsFailedStart(.failure(exitCode: 0), recycled: true), "a stop the liveness guard asked for")
+        #expect(R.endIsFailedStart(.failure(exitCode: 1), recycled: false), "an exit with an error")
+        #expect(R.endIsFailedStart(.failure(exitCode: 3), recycled: false), "stopped with its part still releasing")
+        #expect(R.endIsFailedStart(.signaled(9), recycled: false), "a crash or a kill")
+    }
+
     /// A clean stop of the candidate's cluster service that its supervisor did not ask for: `darkbloom cluster`
     /// replacing a service started from a terminal (`ClusterService.stopDetached`), Ctrl-C there, or a `kill`. The
     /// service stops in order and exits 0, and the supervisor starts it again. Each was counted as a failed start, and

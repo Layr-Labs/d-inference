@@ -333,11 +333,11 @@ struct WatchdogRecoveryIntegrationTests {
         )
         // The launch stamp includes the real ms elapsed inside the install
         // call (slow-download fix), so range-check rather than exact-match.
-        guard case .inactiveCandidate(let attemptStartedAt) = health else {
+        guard case .inactiveCandidate(let launchedAt) = health else {
             Issue.record("expected inactive candidate, got \(health)")
             return
         }
-        #expect(attemptStartedAt >= 100 && attemptStartedAt < 101)
+        #expect(launchedAt >= 100 && launchedAt < 101)
 
         let recovery = await context.service.recoverDownProvider(
             autoUpdateEnabled: false,
@@ -463,10 +463,8 @@ struct WatchdogRecoveryIntegrationTests {
         }
         #expect(try recoveryStore(context.fixture).loadState().candidate?.failureCount == 0)
         let health = watchdog.observeHealthyProvider(providerRunning: true, daemonState: Self.replacedProcessState, now: 821)
-        guard case .inactiveCandidate = health else {
-            Issue.record("expected an inactive candidate 301 s after the restart, got \(health)")
-            return
-        }
+        #expect(health == .inactiveCandidate(launchedAt: 520), "timed from the restarted process's start")
+        guard case .inactiveCandidate = health else { return }
         let outcome = await watchdog.recoverDownProvider(autoUpdateEnabled: false, providerProcessAlive: true, now: 821)
         #expect(outcome == .restartIssued(updatedTo: nil, rolledBackTo: nil))
         #expect(try recoveryStore(context.fixture).loadState().candidate?.failureCount == 1)
@@ -825,7 +823,7 @@ struct WatchdogRecoveryIntegrationTests {
         for now in [501.0, 1_000.0] {
             lastHealth = watchdog.observeHealthyProvider(
                 providerRunning: true, daemonState: nil, now: now)
-            #expect(lastHealth == .inactiveCandidate(attemptStartedAt: 200))
+            #expect(lastHealth == .inactiveCandidate(launchedAt: 200))
         }
         #expect(try store.loadState().candidate?.failureCount == 0)
         let restartsBefore = context.restarts.value
@@ -880,7 +878,7 @@ struct WatchdogRecoveryIntegrationTests {
         #expect(state.candidate?.attemptStartedAt == (launchProven ? 200 : nil))
         #expect(watchdog.observeHealthyProvider(
             providerRunning: true, daemonState: nil, now: 501)
-            == (launchProven ? .inactiveCandidate(attemptStartedAt: 200) : .stabilizing(since: nil)))
+            == (launchProven ? .inactiveCandidate(launchedAt: 200) : .stabilizing(since: nil)))
         #expect(try store.loadState().candidate?.failureCount == 0)
         #expect(context.restarts.value == 1)
         #expect(try context.fixture.persistentStateIsIntact())
@@ -934,7 +932,7 @@ struct WatchdogRecoveryIntegrationTests {
         ) == .stabilizing(since: nil))
         #expect(restartedWatchdog.observeHealthyProvider(
             providerRunning: true, daemonState: nil, now: 501
-        ) == .inactiveCandidate(attemptStartedAt: 200))
+        ) == .inactiveCandidate(launchedAt: 200))
         #expect(try store.loadState().candidate?.attemptStartedAt == 200)
 
         let restartsBefore = context.restarts.value

@@ -1516,8 +1516,9 @@ fails too do both Macs wait for the next slot. So a new release reaches the pair
 at its next slot, up to 30 minutes after it is published, and each failed try
 waits 30 minutes more; `darkbloom update` on both Macs updates at once. Until a new
 release's cluster service has stayed healthy for 10 minutes, three of its starts
-that end by themselves bring back the previous release and quarantine the new
-one, as the watchdog does for a single Mac. A Mac never restarts into a new
+that end by themselves (a crash, an error, or a service that stops beating) bring
+back the previous release and quarantine the new one, as the watchdog does for a
+single Mac. A clean stop someone asks for is not one of them. A Mac never restarts into a new
 release that does not start at all (it checks before the restart): it brings
 back the previous release at once and quarantines the new one. When one Mac
 brings back the previous release this way, or with `darkbloom update

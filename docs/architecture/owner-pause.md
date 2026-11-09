@@ -12,15 +12,18 @@ fields are in the [protocol reference](../reference/protocol-messages.md#add-on-
 A provider serving **Both, me first**, its local API beside Darkbloom, shares one engine and one KV
 budget between the owner's requests and Darkbloom's. The owner pause gives the
 owner the Mac: Darkbloom work stops arriving while the owner uses it, nothing
-already accepted is cut, and the Mac goes back to Darkbloom on its own.
+that has started answering is cut, and the Mac goes back to Darkbloom on its
+own.
 
 It uses only signals coordinators already honour, so it needs no coordinator
 change. A `draining` heartbeat takes the Mac out of routing and keeps its
 uptime. The typed refusal `capacity / 503 / error_reason draining` fails a
 racing request over without spending a retry or derating the Mac.
 
-The pause is not an [add-on hold](addon-hold.md). It keeps every model loaded,
-admits local requests, and never cancels work.
+The pause is not an [add-on hold](addon-hold.md). It keeps every model loaded
+and admits local requests. It cancels only Darkbloom work still queued for the
+engine, while one of the owner's requests waits behind it
+([when the owner's request waits](#when-the-owners-request-waits)).
 
 ## Mechanism
 
@@ -56,7 +59,7 @@ While paused:
 | Autopilot commands | Busy, with reason `draining` |
 | Capacity quotes | Refused with `slot_state` |
 | `desired_models` | Deferred; replayed when the pause ends |
-| Darkbloom work accepted before the pause | Finishes normally; never cancelled |
+| Darkbloom work accepted before the pause | Finishes once the engine has started it. While one of the owner's requests waits in the same engine's queue, work still queued gives way ([below](#when-the-owners-request-waits)) |
 | Local requests and models | Admitted and kept as usual |
 | A fresh registration | `register` carries the owner's busy fields, and the connection's first event heartbeat repeats the draining status. A pause whose idle time passed while the connection was down ends first, so that one heartbeat says `idle` or `serving` |
 
@@ -104,6 +107,77 @@ uses a model goes through that acquisition, so no route list is kept:
 | A request refused before it holds a model: a model this Mac does not serve (404), a load refused (429), a drain or shutdown, or cancelled while its model loads | No |
 | `/v1/models`, `/models`, `/health`, `/v1/health`, `/props`, `/metrics`, `/tokenize`, `/detokenize`, `/apply-template` | No: they hold no model |
 | The startup self-test decode | No: it reserves the model directly, without the hooks |
+
+### When the owner's request waits
+
+The owner's request shares the engine and its KV memory with Darkbloom work
+accepted before the pause. When the engine has no room for it, Darkbloom work
+on that model that is still queued gives way, and work the engine has started,
+in its prompt or answering, finishes:
+
+```mermaid
+sequenceDiagram
+  participant Owner as Owner's request
+  participant Bridge as EngineV2Bridge
+  participant Loop as ProviderLoop
+  participant Coord as Coordinator
+  Owner->>Bridge: submitted, waits in the engine's queue
+  Bridge->>Bridge: still waiting two engine steps later
+  Bridge->>Loop: giveWayToOwner(model)
+  Loop->>Coord: capacity / 503 / draining, for each request still queued
+  Note over Coord: served on another Mac, or a retryable 429 if none has room
+  Note over Bridge: the owner's request is next in the queue
+```
+
+| Step | Behaviour |
+|---|---|
+| Who asks | The owner's request on a Mac with me first on: `acquireModelForLocal` gives its `AcquiredModel` (and Nemotron Super's lease) a `makeRoomForOwner` closure, which the local engine binds (`MeFirstOwnerRequest.makeRoom`) around the call that submits it. Coordinator requests, shared mode and Only me have none |
+| When | `EngineV2Bridge.watchOwnerWait` (`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+OwnerWait.swift`) looks every 250 ms until the request's first token (`queueState(of:)`). No engine signal says that one request was admitted, so the bridge infers it. The engine admits waiting requests in arrival order (every request has the same priority), so a request waits while the engine's published waiting count is larger than the number of the bridge's live requests submitted after it. That count is published after each engine step and counts a request from its submission. The request asks only once it has stayed waiting across two steps, so one the engine admits at its next step never asks, and it asks again at every look while it still waits. A preempted request, requeued at the front, also reads as waiting: the inference errs toward giving way |
+| Who gives way | `giveWayToOwner(modelId:)` (`ProviderLoop+MeFirst.swift`): each Darkbloom request on that model that is still queued, not yet in the engine or waiting in its queue (`EngineV2Bridge.hasAdmitted(darkbloomRequest:)`, the same inference). The handler binds the request's coordinator id (`MeFirstDarkbloomRequest.id`) around the call that starts its stream, and the bridge records it with the request. One the engine put back in its queue (preempted) is queued again. It is cancelled as a coordinator cancel would be (`handleCancellation`) |
+| What it sends | One terminal: `capacity / 503 / error_reason draining`, the refusal a racing dispatch gets (`drainRefusal`). A request that gave way before its stream started sends it from the handler |
+| What never gives way | A request the engine has admitted, in its prompt or generating, keeps its work: re-routing it would throw that work away, and it could end in a 429. A request that has sent output never gives way either: its task claims the token before it sends its first content, reasoning or tool-call frame (`claimOutput`), and a request that gave way can't claim it, so it sends nothing after its refusal |
+
+What the deployed coordinator does with that refusal, read in its code at
+`d7de2162f2`:
+
+- It serves the request on another Mac, or answers its client with a
+  retryable 429 when no other Mac can take it. Until the first content frame, the dispatch waits in `FirstWait` or
+  `AcceptedWait`, where an error retries on another provider with this one
+  excluded and drops the held role preamble
+  ([first_wait.go](https://github.com/Layr-Labs/darkbloom-platform/blob/d7de2162f2097fc9f47ae469e7933db1121482b2/coordinator/internal/inference/attempt/first_wait.go#L121-L135),
+  [accepted_wait.go](https://github.com/Layr-Labs/darkbloom-platform/blob/d7de2162f2097fc9f47ae469e7933db1121482b2/coordinator/internal/inference/attempt/accepted_wait.go#L72-L79)).
+  The client's response is written only after first content commits
+  ([dispatch.go](https://github.com/Layr-Labs/darkbloom-platform/blob/d7de2162f2097fc9f47ae469e7933db1121482b2/coordinator/api/inference/dispatch.go#L878-L886)),
+  and `inference_accepted` changes nothing. A draining refusal doesn't use the
+  transient-capacity retry allowance
+  ([retry/controller.go](https://github.com/Layr-Labs/darkbloom-platform/blob/d7de2162f2097fc9f47ae469e7933db1121482b2/coordinator/internal/inference/retry/controller.go#L125-L129)).
+- A re-routed request doesn't wait for capacity: an attempt after the first
+  fails fast when no Mac can take it now
+  ([primary_run.go](https://github.com/Layr-Labs/darkbloom-platform/blob/d7de2162f2097fc9f47ae469e7933db1121482b2/coordinator/api/inference/primary_run.go#L174-L178)).
+  On a full network, or when its first-content budget can't cover its prompt
+  on another Mac, the client gets a retryable 429 `rate_limit_exceeded`, with
+  a `Retry-After` of 2 to 30 seconds
+  ([dispatch.go](https://github.com/Layr-Labs/darkbloom-platform/blob/d7de2162f2097fc9f47ae469e7933db1121482b2/coordinator/api/inference/dispatch.go#L688-L705)).
+  Work the engine has started never gives way, so this costs a re-routed
+  request only its time in this Mac's queue.
+- It doesn't count against this Mac. A capacity-coded error records no failed
+  job in the reputation
+  ([provider_inference.go](https://github.com/Layr-Labs/darkbloom-platform/blob/d7de2162f2097fc9f47ae469e7933db1121482b2/coordinator/api/inference/provider_inference.go#L970-L979)).
+  A draining reason returns before every health breaker, the stable-identity
+  ejection and the capacity cooldown
+  ([providerhealth/policy.go](https://github.com/Layr-Labs/darkbloom-platform/blob/d7de2162f2097fc9f47ae469e7933db1121482b2/coordinator/internal/inference/providerhealth/policy.go#L74-L83)),
+  and the inference-error breaker counts only 500, 502 and 504
+  ([error_cooldown.go](https://github.com/Layr-Labs/darkbloom-platform/blob/d7de2162f2097fc9f47ae469e7933db1121482b2/coordinator/internal/registry/identitygate/error_cooldown.go#L80-L85)).
+  Base rewards and the Autopilot floor come from session coverage and
+  earnings, not from request outcomes
+  ([rewardpolicy/uptime.go](https://github.com/Layr-Labs/darkbloom-platform/blob/d7de2162f2097fc9f47ae469e7933db1121482b2/coordinator/internal/payments/rewardpolicy/uptime.go#L10-L40)).
+  The attempt's route row reads `provider_error` with `admitted_but_failed`,
+  which only analytics read, and its metrics class is `capacity`.
+
+The owner's request then waits only for requests the engine has started,
+Darkbloom's or the owner's own, up to the engine's 120 s admission lease;
+after that it fails, as before. On a pair nothing gives way: a local request
+waits for one of the pair's lanes ([pairs](#pairs)).
 
 ## Pairs
 
@@ -190,6 +264,12 @@ The pause is event-driven:
 - The coordinator and quote paths read one more flag under the lock they
   already take. Nothing runs per token.
 - With me first off, `noteLocalUse` returns at once, and no timer or task exists.
+- An owner's request on a Mac with me first on has one more timer, from its
+  submission to its first token: every 250 ms it reads the engine's published
+  counts and the bridge's live requests, and only while it waits does it ask
+  Darkbloom work to give way. Each ask looks each Darkbloom request on that
+  model up among the bridge's live requests. Coordinator requests have no
+  timer; the bridge keeps each one's coordinator id with the request.
 - On a pair's leader, the member beat that already runs every 5 seconds adds
   one O(1) check, and the hook adds one call to each local request.
 - A `status` on either Mac of a pair reads the pause once, from the leader
@@ -210,8 +290,10 @@ The pause is event-driven:
    `ownerPausesPublic`.
 4. A clock that goes back restarts the countdown from the new time, so the
    pause outlasts the jump by one idle time at most.
-5. The pause cancels nothing. It has no drain bound: Darkbloom work accepted
-   before it runs to the end, unlike under an add-on hold.
+5. The pause itself cancels nothing, and has no drain bound: Darkbloom work
+   accepted before it that the engine has started runs to the end, unlike
+   under an add-on hold. Work still queued gives way only while an owner's
+   request waits in the same engine's queue, and then sends nothing more.
 6. The pause belongs to the serving process and isn't saved, unlike an add-on
    hold. A restart or update during a pause comes back open, and the owner's
    next request pauses again.
@@ -258,6 +340,21 @@ sends requests through the local API's own HTTP application
 the pause and the resume, refused requests and the routes that are not use,
 `me_first = false` with the heartbeat compared byte for byte, one start and
 one end per request however it ends, and nothing per token.
+
+`MeFirstGiveWayTests` runs encrypted coordinator requests and an owner's
+request through the local engine on a scripted engine. Two network requests
+run, one streaming and one in its prompt, and a third waits behind them; then
+the owner's request waits too. Only the queued one gets the one
+`capacity / 503 / draining` terminal and sends no output; the other two finish
+untouched, and the owner's request runs when the one in its prompt ends. A
+request the engine puts back in its queue gives way at the owner's next look.
+A request that gives way in its handler, right after its token is registered
+(`afterTokenRegisteredForTesting`) or as its stream would start, sends the one
+refusal and never reaches the engine. An owner's request the engine admits
+before two engine steps pass never asks; the test moves the engine's steps.
+With me first off, nothing is re-routed. The coordinator requests' terminals read MLX's memory
+counters, so the suite replaces that read (`terminalMemoryForTesting`) and runs
+without the GPU.
 
 `ClusterPairMeFirstTests` covers pairs with a scripted pair owner: the
 leader's heartbeat, the racing refusal, work in flight, the member beat's two

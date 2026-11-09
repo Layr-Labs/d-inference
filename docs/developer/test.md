@@ -1450,8 +1450,14 @@ CI (`.github/workflows/provider-tests.yml`) runs them in three places. The job
 [Job sizes](build.md#job-sizes)) runs
 `libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh` and
 `libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh`, which compile a
-release build of the cluster runtime. Shard 2 of `test-cluster-focused`
-(Cluster Focused Checks) runs
+release build of the cluster runtime, and
+`libs/darkbloom-cluster-worker/Tests/LifecycleChecks/run.sh`: the worker
+package's own request lifecycle tests (`WorkerTests` and `WorkerLaneTests`, the
+worker coordinator over its real pipes with a fake runtime, in a debug build
+with `DARKBLOOM_WORKER_TEST_JOBS` jobs, 4 by default and 12 in CI), among them
+a running request that a rank's memory refused ending alone while the worker
+serves the next. No other job runs that package's tests. Shard 2 of
+`test-cluster-focused` (Cluster Focused Checks) runs
 `libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py`,
 `libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh`,
 `libs/darkbloom-cluster/Tests/NemotronStageChecks/run.sh`,

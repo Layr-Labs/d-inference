@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-09
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -394,7 +394,7 @@ fallback is `blacksmith-12vcpu-macos-27`. While job sizes are off, a
 |---|---|---|---|
 | `build-cluster` (Build cluster test products) | routed, `required` | - | Builds the cluster lane (`.github/actions/provider-ci-build`), uploads `cluster-test-products` |
 | `build-provider` (Build provider test products) | routed, `required` | - | Builds the provider lane, uploads `provider-test-products` |
-| `cluster-release-checks` (Cluster Release Build Checks) | routed, `required` | - | Compiles the release build of the worker capability and prefill schedule checks, and runs them |
+| `cluster-release-checks` (Cluster Release Build Checks) | routed, `required` | - | Compiles the release build of the worker capability and prefill schedule checks, and runs them; then the worker package's request lifecycle tests, in a debug build of their own |
 | `test-provider`, shards 1 and 2 | routed | `build-provider` | The provider selections, Prompt Parity, the native gates, the audit and coverage |
 | `test-cluster`, shards 1 to 5 | routed | `build-cluster` | The blocking cluster selections |
 | `test-cluster-gpu`, shards 1 to 3 | `blacksmith-12vcpu-macos-27`, not routed | `build-cluster` | The non-blocking cluster GPU selections |

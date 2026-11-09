@@ -395,17 +395,18 @@ struct ResidentAdmissionGemma4Tests {
     }
 
     /// Each stage of a Gemma pipeline holds and covers the longest request it
-    /// serves: the memory plan's, 65,536 tokens in 512-token chunks (#1930:
-    /// 32,768 + 32,768, as every family's pipeline). Its KV host is bounded by
-    /// it (`QwenResidentRuntime.stageKVHostBound`, which `load` installs the
-    /// host with). READY's request capacity (`stageRequestCapacity`, which
-    /// `load` returns) is the memory plan's planned bytes, with no longer
-    /// request asked of the stage, and it is at least what any reservation
-    /// within the plan charges: its allowance at its own length and chunk, and
-    /// its prompt's prefill. Every registered row, a sliding-only and a
+    /// serves: the memory plan's, 65,536 tokens in 512-token chunks (32,768 +
+    /// 32,768, as every family's pipeline). Its KV host is bounded by it
+    /// (`QwenResidentRuntime.stageKVHostBound`, which `load` installs the host
+    /// with). READY's request capacity (`stageRequestCapacity`, which `load`
+    /// returns) is the memory plan's planned bytes, with no longer request
+    /// asked of the stage, and it is at least what any reservation within the
+    /// plan charges: its allowance at its own length and chunk, and its
+    /// prompt's prefill. Every registered row, a sliding-only and a
     /// full-attention stage on each rank, both prefill schedules. (Once a Gemma
-    /// pipeline serves its whole profile again, #1932, these are 262,144 and
-    /// READY covers that request.)
+    /// pipeline serves its whole profile,
+    /// `ClusterRuntimeAdapter.pipelineServesWholeProfile`, the host is bounded
+    /// by 262,144 tokens and READY covers that request too.)
     @Test func eachStageHoldsAndCoversTheLongestRequestItServes() throws {
         func bound(_ bytes: Int) -> Int { ((bytes + 16_383) / 16_384) * 16_384 }
         for model in Gemma4RegisteredModel.allCases {

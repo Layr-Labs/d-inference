@@ -5541,8 +5541,9 @@ it alone:
   standard request. READY's capacity is the memory plan's planned bytes
   (`QwenResidentRuntime.stageRequestCapacity` charges no longer request), and
   each stage's KV host is bounded by the memory plan's request, 65,536 tokens
-  in 512-token chunks (`stageKVHostBound`). `load` takes READY's capacity and
-  both hosts' bounds from these functions, so the tests pin them per stage and
+  in 512-token chunks (`stageKVHostBound`). `load` takes a stage's READY
+  capacity and host bound from these functions, and a tensor-parallel rank's
+  from `capacityBytes` and `hostBound`, so the tests pin them per stage and
   per rank (`ResidentAdmissionGemma4Tests.eachStageHoldsAndCoversTheLongestRequestItServes`,
   `Gemma4NativeContextTests.aRankHoldsAndCoversTheLongestRequestItServes`).
 

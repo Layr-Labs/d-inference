@@ -98,6 +98,14 @@ struct DesktopRouteKeyTests {
     }
   }
 
+  @Test func aRouteKeyThatTimesOutKeepsTheKeyOutOfItsMessage() {
+    let request = DesktopAction(id: UUID().uuidString, action: "route_key", key: Self.key)
+    let error = DesktopWorker.RunError.timedOut("checking \(Self.key) with Darkbloom")
+    let message = DesktopBackend.withoutKey(String(describing: error), request: request)
+    #expect(!message.contains(Self.key))
+    #expect(message.contains("checking [key] with Darkbloom"))
+  }
+
   @Test func aRefusedKeyStartsNothingAndRecordsNothing() async throws {
     let fixture = try Self.fixture()
     defer { try? FileManager.default.removeItem(at: fixture.directory) }

@@ -207,7 +207,7 @@ actor DesktopBackend {
       }
     } catch {
       if ["link", "account-signin"].contains(request.action) { link = .null }
-      complete(request.id, code: 1, message: String(describing: error))
+      complete(request.id, code: 1, message: Self.withoutKey(String(describing: error), request: request))
     }
   }
 

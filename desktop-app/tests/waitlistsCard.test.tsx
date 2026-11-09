@@ -48,7 +48,9 @@ describe('the card', () => {
     expect(within(article).getByRole('heading', { level: 2, name: 'Clusters' })).toBeVisible();
     expect(article).toHaveTextContent('Serve one model with two to four of your Macs.');
     expect(article).toHaveTextContent('Not joined');
-    expect(within(article).getByRole('button', { name: 'Join the waitlist' })).toBeEnabled();
+    const join = within(article).getByRole('button', { name: 'Join the waitlist' });
+    expect(join).toBeEnabled();
+    expect(join).toHaveAccessibleDescription('Clusters');
   });
 
   it('shows the place in line, the day it joined and how Darkbloom reviews', async () => {

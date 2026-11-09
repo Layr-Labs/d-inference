@@ -51,7 +51,9 @@ describe('Early access', () => {
     api.read.mockResolvedValue(list(entry));
     const { navigate } = page();
     const card = await screen.findByRole('article', { name: title });
-    fireEvent.click(within(card).getByRole('button', { name: 'Open' }));
+    const open = within(card).getByRole('button', { name: 'Open' });
+    expect(open).toHaveAccessibleDescription(title);
+    fireEvent.click(open);
     expect(navigate).toHaveBeenCalledExactlyOnceWith(route);
   });
 

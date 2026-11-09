@@ -137,9 +137,11 @@ function FullCard({
               <strong>#{entry.position}</strong> <span>in line</span>
             </p>
           )}
-          {entry.status === 'none' && <JoinButton waitlist={waitlist} backend={backend} />}
+          {entry.status === 'none' && (
+            <JoinButton waitlist={waitlist} backend={backend} describedBy={titleID} />
+          )}
           {entry.status === 'approved' && onOpen && (
-            <Button variant="primary" onClick={onOpen}>
+            <Button variant="primary" aria-describedby={titleID} onClick={onOpen}>
               Open <ArrowRight size={15} />
             </Button>
           )}
@@ -193,11 +195,21 @@ function CompactCard({ entry, waitlist, backend, standingRef }: CardProps) {
   );
 }
 
-// The runtime runs one operation at a time, so Join waits while another one runs.
-function JoinButton({ waitlist, backend }: { waitlist: Waitlist; backend: BackendState }) {
+// The runtime runs one operation at a time, so Join waits while another one runs. On a page of
+// cards, `describedBy` names the waitlist the button joins.
+function JoinButton({
+  waitlist,
+  backend,
+  describedBy,
+}: {
+  waitlist: Waitlist;
+  backend: BackendState;
+  describedBy?: string;
+}) {
   return (
     <Button
       variant="primary"
+      aria-describedby={describedBy}
       disabled={backend.busy || waitlist.joining}
       onClick={() => void waitlist.join()}
     >

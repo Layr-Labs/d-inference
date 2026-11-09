@@ -479,44 +479,21 @@ extension DesktopHTTP {
   func clusterSessionRoute(_ request: Request, path: String) async throws -> Response? {
     let sessions = backend.clusterSessions
     if request.method == .get, path == "/control/v1/cluster/session" {
-      return try Self.clusterJSON(sessions.json())
+      return try Self.json(sessions.json())
     }
     if request.method == .get, path == "/control/v1/cluster/session/events" {
       return sessions.events(lease: try streams.acquire())
     }
     if request.method == .post, path == "/control/v1/cluster/session" {
-      guard let data = try await Self.clusterBody(request) else { return try Self.jsonRequired() }
-      let start: DesktopClusterSessionStart
-      do { start = try JSONDecoder().decode(DesktopClusterSessionStart.self, from: data) } catch {
-        throw ValidationError("Invalid request body")
-      }
-      return try Self.clusterJSON(try await backend.startClusterSession(start), status: .accepted)
+      guard let body = try await Self.jsonBody(request) else { return try Self.jsonRequired() }
+      let start = try Self.decodeBody(DesktopClusterSessionStart.self, from: body)
+      return try Self.json(try await backend.startClusterSession(start), status: .accepted)
     }
     if request.method == .post, path == "/control/v1/cluster/session/answer" {
-      guard let data = try await Self.clusterBody(request) else { return try Self.jsonRequired() }
-      let answer: DesktopClusterSessionAnswer
-      do { answer = try JSONDecoder().decode(DesktopClusterSessionAnswer.self, from: data) } catch {
-        throw ValidationError("Invalid request body")
-      }
-      return try Self.clusterJSON(try sessions.answer(answer))
+      guard let body = try await Self.jsonBody(request) else { return try Self.jsonRequired() }
+      let answer = try Self.decodeBody(DesktopClusterSessionAnswer.self, from: body)
+      return try Self.json(try sessions.answer(answer))
     }
     return nil
-  }
-
-  /// A JSON body of at most 16 KiB, as actions take; nil without `Content-Type: application/json`.
-  static func clusterBody(_ request: Request) async throws -> Data? {
-    guard request.headers[.contentType]?.split(separator: ";").first == "application/json" else { return nil }
-    let bytes = try await request.body.collect(upTo: 16_384)
-    return Data(bytes.readableBytesView)
-  }
-
-  static func jsonRequired() throws -> Response {
-    try clusterJSON(.dict(["error": .string("JSON required")]), status: .unsupportedMediaType)
-  }
-
-  static func clusterJSON(_ value: JSONValue, status: HTTPResponse.Status = .ok) throws -> Response {
-    Response(
-      status: status, headers: [.contentType: "application/json", .cacheControl: "no-store"],
-      body: .init(byteBuffer: ByteBuffer(bytes: try JSONEncoder().encode(value))))
   }
 }

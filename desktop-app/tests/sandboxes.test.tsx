@@ -18,15 +18,18 @@ import {
 
 const { bridge, read, resources } = fakeBridge();
 let Sandboxes: typeof import('../src/renderer/features/sandboxes/Sandboxes').Sandboxes;
+let resetWaitlists: () => void;
 
 beforeAll(async () => {
   window.history.replaceState({}, '', '/');
   window.darkbloom = bridge;
   ({ Sandboxes } = await import('../src/renderer/features/sandboxes/Sandboxes'));
+  ({ resetWaitlists } = await import('../src/renderer/features/waitlists/waitlistStore'));
 });
 beforeEach(() => {
   for (const key of Object.keys(resources)) delete resources[key as keyof typeof resources];
   resources.waitlists = waitlists('approved');
+  resetWaitlists();
 });
 afterEach(() => {
   cleanup();
@@ -136,8 +139,14 @@ describe('a Mac without the add-on', () => {
   it('shows the waitlist instead of setup until the account is approved', async () => {
     resources.waitlists = waitlists('waitlisted');
     show(statuses.notInstalled);
-    expect(await screen.findByText('#3 in line.')).toBeVisible();
-    expect(screen.getByRole('heading', { name: 'Darkbloom Sandbox' })).toBeVisible();
+    const notice = await screen.findByRole('region', { name: 'Darkbloom Sandbox waitlist' });
+    expect(notice).toHaveTextContent('You’re on the Darkbloom Sandbox waitlist: #3 in line.');
+    expect(screen.queryByRole('button', { name: 'Set up' })).toBeNull();
+    cleanup();
+    resetWaitlists();
+    resources.waitlists = waitlists('none');
+    show(statuses.notInstalled);
+    expect(await screen.findByRole('button', { name: 'Join the waitlist' })).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Set up' })).toBeNull();
   });
 
@@ -149,7 +158,9 @@ describe('a Mac without the add-on', () => {
 
   it('asks to link this Mac when the waitlist needs the account', async () => {
     resources.waitlists = { data: [], error: 'Link this Mac first.', code: 'login' };
-    const { backend } = show(statuses.notInstalled);
+    const { backend } = show(statuses.notInstalled, {
+      state: sandboxSnapshot({ linked: false }),
+    });
     expect(await screen.findByText('Link this Mac to your Darkbloom account first.')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Link account' }));
     expect(backend.act).toHaveBeenCalledWith({ action: 'link' });
@@ -158,16 +169,23 @@ describe('a Mac without the add-on', () => {
   it('says why the waitlist is unavailable, unless the runtime predates waitlists', async () => {
     resources.waitlists = new Error('Could not reach the Darkbloom Sandbox waitlist.');
     show(statuses.notInstalled);
-    const failure = await screen.findByRole('alert');
+    const failure = await screen.findByRole('region', { name: 'Waitlist' });
     expect(failure).toHaveTextContent('Could not reach the Darkbloom Sandbox waitlist.');
+    expect(screen.queryByRole('button', { name: 'Set up' })).toBeNull();
     read.mockClear();
+    resources.waitlists = waitlists('approved');
     fireEvent.click(within(failure).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(read).toHaveBeenCalledWith('waitlists'));
+    expect(await screen.findByRole('button', { name: 'Set up' })).toBeEnabled();
     cleanup();
+    resetWaitlists();
+    read.mockClear();
     show(statuses.notInstalled, {
       state: sandboxSnapshot({ capabilities: ['sandbox'] }),
     });
     expect(await screen.findByRole('button', { name: 'Set up' })).toBeEnabled();
+    // That runtime can't answer, so nothing asks it.
+    expect(read).not.toHaveBeenCalledWith('waitlists');
   });
 
   it('stops before setup below macOS 27', async () => {
@@ -527,7 +545,17 @@ describe('the installed add-on', () => {
     resources.waitlists = waitlists('waitlisted');
     show({ ...statuses.waiting, state: 'waitlisted', detail: null });
     expect(await screen.findByRole('heading', { level: 2, name: 'On the waitlist' })).toBeVisible();
-    expect(await screen.findByText('#3 in line.')).toBeVisible();
+    expect(
+      await screen.findByText('You’re on the Darkbloom Sandbox waitlist: #3 in line.'),
+    ).toBeVisible();
+    cleanup();
+    // A runtime that can't say where the account stands leaves it to the add-on's own line.
+    show(
+      { ...statuses.waiting, state: 'waitlisted', detail: null },
+      { state: sandboxSnapshot({ capabilities: ['sandbox'] }) },
+    );
+    expect(await screen.findByRole('heading', { level: 2, name: 'On the waitlist' })).toBeVisible();
+    expect(screen.queryByText(/newer Darkbloom CLI/)).toBeNull();
   });
 
   it('shows an add-on download, and a newer state as its words', async () => {

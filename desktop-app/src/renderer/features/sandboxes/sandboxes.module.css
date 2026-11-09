@@ -45,7 +45,8 @@
   color: var(--negative);
 }
 
-.blocked {
+.blocked,
+.gate {
   margin-top: 30px;
 }
 

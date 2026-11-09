@@ -585,9 +585,11 @@ their words (`desktop-app/src/renderer/features/sandboxes/`, contract in
   what loses jobs (Wi-Fi, battery, sleep on the power adapter). Below macOS 27
   it offers **Open Software Update** instead of setup. Setup is offered when
   `useWaitlist(backend, 'sandbox')` is open (approved, or a coordinator without
-  that waitlist); otherwise `WaitlistCard`, **Link account** for `login`, or the
-  reason with **Try again**. A runtime without the `waitlists` capability leaves
-  the waitlist to the CLI's own check (`NotInstalled.tsx`, `SetupGate`).
+  that waitlist); otherwise the compact `WaitlistCard` says where the account
+  stands, with **Join the waitlist**, **Link account** or **Try again**. A
+  runtime without the `waitlists` capability (`unsupported`) leaves the
+  waitlist to the CLI's own check (`NotInstalled.tsx`, `SetupGate`). An
+  installed add-on that is `waitlisted` shows the same card under its status.
 - **Setup form** (`SetupForm.tsx`, `setup.ts`, `setupRequest`). Jobs at a time
   Automatic (no slot options) or chosen (Linux 0–16, macOS 0–2, never both 0),
   one optional work disk as an absolute path, and **Wait until images are

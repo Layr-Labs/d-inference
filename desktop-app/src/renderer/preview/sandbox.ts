@@ -578,9 +578,7 @@ export const sandboxPreview: FeaturePreview = {
   },
   snapshot(snapshot) {
     if (previewParam('sandbox') === 'unsupported') return snapshot;
-    // A snapshot without a list reads as a runtime from before capabilities, which offers
-    // Autopilot and the eligibility waitlist: keep both when naming sandbox.
-    const capabilities = snapshot.capabilities ?? ['autopilot', 'waitlist'];
+    const capabilities = snapshot.capabilities ?? [];
     return capabilities.includes('sandbox')
       ? snapshot
       : { ...snapshot, capabilities: [...capabilities, 'sandbox'] };

@@ -7,6 +7,7 @@ import { api } from '../../useBackend';
 import { Button, Header } from '../../components/UI';
 import { useResource } from '../../data/useResource';
 import { WaitlistCard } from '../waitlists/WaitlistCard';
+import { supportsWaitlists } from '../waitlists/useWaitlist';
 import { NotInstalled } from './NotInstalled';
 import { SandboxStatusCard } from './SandboxStatusCard';
 import { SetupProgress } from './SetupProgress';
@@ -74,7 +75,9 @@ function SandboxPage({ backend }: { backend: BackendState }) {
       running && enrolling.includes(status.state) ? null : (
         <>
           <SandboxStatusCard status={status} backend={backend} refresh={sandbox.refresh} />
-          {status.state === 'waitlisted' && <WaitlistCard feature="sandbox" backend={backend} />}
+          {status.state === 'waitlisted' && supportsWaitlists(backend) && (
+            <WaitlistCard feature="sandbox" backend={backend} compact />
+          )}
         </>
       );
   else if (running) content = null;

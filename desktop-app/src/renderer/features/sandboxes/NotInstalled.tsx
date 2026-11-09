@@ -13,7 +13,6 @@ import { macosMajor, minimumMacOS } from '../../../shared/macos';
 import type { BackendState } from '../../useBackend';
 import { Button } from '../../components/UI';
 import { openSoftwareUpdate } from '../../softwareUpdate';
-import { LinkDialog } from '../models/LinkDialog';
 import { useWaitlist } from '../waitlists/useWaitlist';
 import { WaitlistCard } from '../waitlists/WaitlistCard';
 import { SetupForm } from './SetupForm';
@@ -124,46 +123,20 @@ function Warning({ icon: Icon, children }: { icon: LucideIcon; children: ReactNo
 
 // Setup needs an account Darkbloom approved from the `sandbox` waitlist, or a coordinator
 // without that waitlist. A runtime without the `waitlists` capability can't say, so the CLI's
-// own check decides.
+// own check decides. Otherwise the waitlist's own notice says where the account stands and what
+// to do: join, link this Mac, or try again.
 function SetupGate({ backend }: { backend: BackendState }) {
   const waitlist = useWaitlist(backend, 'sandbox');
-  const state = backend.state!;
-  const standing =
-    waitlist.standing === 'unavailable' && !state.capabilities?.includes('waitlists')
-      ? 'no_waitlist'
-      : waitlist.standing;
-  switch (standing) {
-    case 'approved':
-    case 'no_waitlist':
-      return <SetupForm backend={backend} />;
-    case 'loading':
-      return (
-        <p className={styles.note} role="status">
-          Checking the waitlist…
-        </p>
-      );
-    case 'login':
-      return (
-        <div className={styles.blocked}>
-          <p>Link this Mac to your Darkbloom account first.</p>
-          <Button
-            variant="primary"
-            disabled={backend.busy}
-            onClick={() => void backend.act({ action: 'link' })}
-          >
-            Link account
-          </Button>
-          <LinkDialog backend={backend} />
-        </div>
-      );
-    case 'unavailable':
-      return (
-        <div className={styles.blocked} role="alert">
-          <p>{waitlist.error || 'The Darkbloom Sandbox waitlist is unavailable.'}</p>
-          <Button onClick={() => void waitlist.refresh()}>Try again</Button>
-        </div>
-      );
-    default:
-      return <WaitlistCard feature="sandbox" backend={backend} />;
-  }
+  if (waitlist.open || waitlist.standing === 'unsupported') return <SetupForm backend={backend} />;
+  if (waitlist.standing === 'loading')
+    return (
+      <p className={`${styles.note} ${styles.gate}`} role="status">
+        Checking the waitlist…
+      </p>
+    );
+  return (
+    <div className={styles.gate}>
+      <WaitlistCard feature="sandbox" backend={backend} compact />
+    </div>
+  );
 }

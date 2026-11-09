@@ -442,7 +442,9 @@ The modes:
 
 Each mode also says how many requests it serves at once: "serves one request
 at a time" or "serves up to 8 requests at once"
-(`DistributedInstalledPlan.defaultBatchLanes`). **On a GLM-5.3-Flash pair,
+(`DistributedInstalledPlan.batchLanes`: the width the setup saved for both
+Macs' memory, or the family's default). It is the same number the pair reports
+to Darkbloom. **On a GLM-5.3-Flash pair,
 choose Tensor parallel.** Its pipeline serves one request at a time: through
 Darkbloom, every other request waits about 6 s and is then refused as "at
 capacity". On two M5 Ultras (2026-11-04, DevNet), its tensor parallel served 8
@@ -1064,7 +1066,7 @@ Models that run tensor parallel, and when:
 |---|---|---|
 | Qwen3.5 9B, Qwen3.8 27B, Qwen3.5/3.6 35B A3B | wherever it fits | Qwen3.8 27B keeps images, video and logprobs only in tensor parallel |
 | GLM-5.3-Flash | wherever it fits | Eight concurrent requests by default |
-| Gemma 4 26B (QAT 4-bit, 8-bit) | only where the plan predicts it faster from its own measured speed on both Macs (it keeps every feature of the pipeline, prompt-prefix and SSD reuse included) | Text only; logprobs in tensor parallel only; one request at a time unless you set `DARKBLOOM_CLUSTER_BATCH_LANES` (its tensor-parallel batch width is not priced yet); a request cancelled during its prompt keeps the pair's one lane until that prompt is read (about a minute for a 16K-token prompt) |
+| Gemma 4 26B (QAT 4-bit, 8-bit) | only where the plan predicts it faster from its own measured speed on both Macs (it keeps every feature of the pipeline, prompt-prefix and SSD reuse included) | Text only; logprobs in tensor parallel only; as many requests at once as both Macs' memory holds beside the model, up to 8 (sized when the pair is set up and reserved when it loads); where only one fits, one at a time, and a request cancelled during its prompt keeps that one lane until the prompt is read (about a minute for a 16K-token prompt) |
 | MiMo V2.6 Flash | only where it keeps every feature of the mode it would replace (it keeps the speculative pipeline's rounds, not the plain pipeline's batch lanes) and the plan predicts it faster from its own measured speed on both Macs | Text only; speculative decoding; logprobs in tensor parallel only; one request at a time; see [MiMo V2.6 Flash on the pair](#mimo-v26-flash-on-the-pair) |
 
 For Gemma 4 and MiMo V2.6 Flash, tensor parallel must first keep every feature

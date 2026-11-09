@@ -5160,11 +5160,12 @@ driver and checks each against itself alone.
 ### Resident runtime
 
 `Gemma4TensorParallelResidentRuntime` serves over a keyed, authenticated data
-plane, and every collective is the sealed all-sum. By default it serves one
-request at a time. With batch lanes (`DARKBLOOM_CLUSTER_BATCH_LANES`, bound
-into the load agreement) it serves several through the shared batch driver
-(`QwenTensorParallelBatchDriver`, with a Gemma executor), which carries joins,
-stops, cancellations and retirements.
+plane, and every collective is the sealed all-sum. It serves the width its
+setup saved ([tensor-parallel lane widths](#tensor-parallel-lane-widths)) as
+batch lanes (`DARKBLOOM_CLUSTER_BATCH_LANES`, bound into the load agreement),
+through the shared batch driver (`QwenTensorParallelBatchDriver`, with a Gemma
+executor), which carries joins, stops, cancellations and retirements. A setup
+saved without a width serves one request at a time.
 
 - Load. `Gemma4TensorParallelVerifiedLoad` first verifies the whole artifact,
   as a pipeline load does (`prepareGemma4ResidentSource`). It then checks both
@@ -5259,9 +5260,13 @@ layer where that is more: a step is submitted layer by layer in 100-operation
 buffers, so several layers' temporaries are alive at once. Only requests
 shorter than 30 tokens, prompt and output together, pay more (at most about
 6.2 MB a rank); the LOAD quote is unchanged. The prefix memory tier lives in
-measured free room and is not charged. A lane is gated with every held lane's
-charge, the new one and the rank's reserve. Speculative decoding, media and a
-measured activation floor are not built yet.
+measured free room, measured beside every lane's charge, and is not charged. A
+lane is gated with every held lane's charge, the new one and the rank's
+reserve. LOAD reserves the saved width: the allowance (one request and the
+rank's reserve) and one more request's whole charge for each lane after the
+first (`Gemma4TensorParallelRequestBudget.reservedBytes(lanes:)`), the figure
+the planner priced the width at. Speculative decoding, media and a measured
+activation floor are not built yet.
 
 ### Gemma tensor-parallel placement
 
@@ -7613,13 +7618,61 @@ and the shared 367,001,600-byte prompt wavefront term
 ([prompt wavefront](#qwen-tensor-parallel-prompt-wavefront)) included; with its
 weights and loading headroom it needs 54,441,306,624 and 77,998,565,888 bytes.
 Every
-registered Qwen TP row is sized the same way from its own quotes. GLM keeps its
-eight lanes and other families keep their defaults.
+registered Qwen TP row is sized the same way from its own quotes. Gemma 4 is
+sized by its lane charge ([tensor-parallel lane widths](#tensor-parallel-lane-widths)).
+GLM keeps its eight lanes and other families keep their defaults.
 
 Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorWidth.swift`
 (`ClusterPlacementTensorWidth`),
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementFlow.swift` (`decide`) and
 `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementTensorBatchQuote.swift` (`applyWidth`).
+
+### Tensor-parallel lane widths
+
+A tensor-parallel owner that serves request-owned lanes saves a width at
+placement, the widest both Macs admit now, so the pair serves several requests
+at once from its first load
+(`ClusterRuntimeAdapter.savesTensorParallelWidth`: the Qwen TP rows and Gemma 4).
+Two pricing sources size it:
+
+| Family | How a width is priced | Source |
+|---|---|---|
+| Qwen TP rows | The owner's complete native quote at 2, 4, 6 and 8 lanes ([saved width](#qwen-tensor-parallel-saved-width)) | `tensor-batch-scope` |
+| Gemma 4 | The family's allowance (one request and the rank's reserve), plus its lane charge for every lane after the first | The layout's `ClusterTensorParallelFamilyPlan.laneBytes` |
+
+- **The lane charge.** A lane after the first costs one request's whole
+  charge at the memory plan's request
+  (`Gemma4TensorParallelRequestBudget.laneBytes`): its own KV heads, attention
+  transient, FP32 partials, vocabulary rows and prompt-prefix capture. That is
+  what `reserveLane` admits each lane with. The native plan tool writes it into
+  the layout beside the allowance, so a metadata-only layout carries neither.
+- **The planner.** With `ClusterPlacementPolicy.tensorParallelLanes`, each
+  rank's native reservation grows by the lane charge for every lane after the
+  first. The placement is the one chosen for one request, its leader and split
+  unchanged. `ClusterPlacementTensorWidth` tries 8, 6, 4 and 2 and saves the
+  first that both Macs admit now (`ClusterPlacementCandidate.admitted`). When
+  none fits, the setup saves no width and serves one request at a time.
+- **The cap.** A saved width is never wider than the family has qualified on
+  real Macs (`ClusterPlacementTensorWidth.qualifiedLanes`). The Qwen TP rows
+  keep the eight they saved before. Gemma 4 takes eight, to be confirmed on the
+  M5 Ultra pair before it ships.
+- **LOAD.** Both ranks reserve what the planner priced:
+  `Gemma4TensorParallelRequestBudget.reservedBytes(lanes:)`, the allowance and
+  one more request's charge for each lane after the first. Each lane is still
+  admitted against live memory, and a lane the host cannot hold is refused
+  alone.
+- **One number.** The setup screen (`ClusterSetupPlanning.loads`), both owners'
+  lanes, the slot's `max_concurrency` and the leader's local API all read
+  `DistributedInstalledPlan.batchLanes`, which returns the saved width.
+  `ClusterConfiguration.validate` accepts a Gemma tensor-parallel width of 2,
+  4, 6 or 8 with serial prefill, as it does a Qwen TP row's.
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorWidth.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterTensorParallel.swift` (`laneBytes`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementPlanner.swift` (`tensorRequirement`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/Resources/Gemma4TensorParallelRequestBudget.swift`
+and `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/TensorParallel/Gemma4TensorParallelResidentRuntime.swift`
+(`load`).
 
 ### Qwen tensor-parallel prompt wavefront
 

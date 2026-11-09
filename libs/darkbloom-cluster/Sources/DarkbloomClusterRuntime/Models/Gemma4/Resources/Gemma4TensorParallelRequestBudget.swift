@@ -62,6 +62,24 @@ struct Gemma4TensorParallelRequestBudget: Equatable {
     var requestBytes: Int { stateBytes + transientBytes + partialBytes + logitsBytes + prefixCaptureBytes }
     /// What a rank holds once beside every request it serves.
     var rankBytes: Int { Self.activationFloorBytes + Self.freedBufferCacheBytes + allowance.collectiveScratchBytes }
+    /// What each lane after the first adds: its whole request charge, as `reserveLane` admits every lane. The layout
+    /// states it (`ClusterTensorParallelFamilyPlan.laneBytes`), so the planner prices a saved width as LOAD reserves it.
+    var laneBytes: Int { requestBytes }
+
+    /// What a rank's LOAD gate reserves beside its shard for `lanes` requests at once: the allowance (one request and
+    /// the rank's reserve) and `laneBytes` for each lane after the first.
+    func reservedBytes(lanes: Int) throws -> Int {
+        guard (1...QwenBatchWire.maximumLanes).contains(lanes) else {
+            throw ProbeError("Gemma tensor-parallel lanes are 1...\(QwenBatchWire.maximumLanes)")
+        }
+        return try QwenLongPrefillCheckedBytes.sum([allowance.reservedBytes,
+            QwenLongPrefillCheckedBytes.product([laneBytes, lanes - 1])])
+    }
+
+    /// The room the prompt-prefix memory tier is measured beside: `lanes` requests and the rank's reserve.
+    func chargeBytes(lanes: Int) throws -> Int {
+        try QwenLongPrefillCheckedBytes.sum([QwenLongPrefillCheckedBytes.product([requestBytes, lanes]), rankBytes])
+    }
 
     /// One prefix capture of a prompt of `promptTokens` at the allocator's
     /// bound: this rank's full-attention rows (keys and values, every token)

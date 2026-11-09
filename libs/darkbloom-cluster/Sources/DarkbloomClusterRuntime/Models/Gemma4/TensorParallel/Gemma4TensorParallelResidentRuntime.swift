@@ -179,13 +179,14 @@ public final class Gemma4TensorParallelResidentRuntime {
                 probe = measured
                 log(QwenTensorParallelLinkProbe.line(measured, rank: collective.rank))
                 // The load gate admits the shard with the memory plan's longest request (its prompt-prefix
-                // capture included) and the rank's own reserve (activation floor, freed-buffer cache,
-                // sealed frames) beside it: the planner's quote. A longer request is charged at its own
-                // context when it is reserved.
+                // capture included) for every lane and the rank's own reserve (activation floor, freed-buffer
+                // cache, sealed frames) once beside it: the planner's quote of this width. A longer request is
+                // charged at its own context when it is reserved.
                 let budget = try charge.memoryPlan
+                let reserved = try budget.reservedBytes(lanes: lanes)
                 let value = try autoreleasepool {
                     try Gemma4TensorParallelVerifiedLoad.load(admission, rank: collective.rank, reduction: reduction,
-                        additionalResidentBytes: budget.allowance.reservedBytes, check: checked)
+                        additionalResidentBytes: reserved, check: checked)
                 }
                 loadedModel = value.model; retired = value.model; receipt = value.receipt
                 value.model.model.freeze()
@@ -215,17 +216,16 @@ public final class Gemma4TensorParallelResidentRuntime {
                 }
                 // The prefix memory tier, charged nowhere: the pipeline's budget,
                 // half the admissible room measured beside the longest request
-                // and this rank's reserve (at most `maximumBudgetBytes`).
+                // of every lane and this rank's reserve (at most `maximumBudgetBytes`).
                 if keepsPrefixes {
-                    let room = try ClusterStagePrefixBudget.roomBytes(chargeBytes: try QwenLongPrefillCheckedBytes.sum([
-                        budget.requestBytes, budget.rankBytes]))
+                    let room = try ClusterStagePrefixBudget.roomBytes(chargeBytes: budget.chargeBytes(lanes: lanes))
                     prefixCache.setBudget(QwenStagePrefixCache.budget(roomBytes: room))
                     prefixCharges = (budget.prefixCaptureBytes, room)
                 }
                 log("darkbloom-tensor-parallel-load-v1 rank=\(collective.rank) plan=\(planName) shares=1-1"
                     + " shard_bytes=\(value.receipt.shardBytes) source_bytes=\(value.receipt.sourceBytes)"
                     + " tensors=\(value.receipt.sourceTensors) load_ns=\(value.receipt.loadNanoseconds) sealed=1"
-                    + " buffer_cache=\(bufferCacheBytes) lanes=\(lanes) paged_kv=\(CBv2PagedDefaults.pageSize)"
+                    + " buffer_cache=\(bufferCacheBytes) lanes=\(lanes) reserved=\(reserved) paged_kv=\(CBv2PagedDefaults.pageSize)"
                     + " kv_heads=\(value.model.plan.kvHeadsPerRank.map(String.init).joined(separator: "-"))")
                 // A ceiling on additional owner bytes, never a memory grant: LOAD's quote, or one
                 // request at the profile's longest context when that is more.

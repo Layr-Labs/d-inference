@@ -52,13 +52,19 @@ flowchart LR
    is text only, gets image input, offline too, and a Gemma 4 pair, which serves text alone though the catalog lists
    vision, gets none (an image would be refused with 400). For a model served elsewhere (your Macs, the network), or
    one this Mac lists without `input_modalities` (a pair whose slot isn't up), the catalog's names decide, with the
-   `image` the list adds (`EndpointModel.takesImages`). Reasoning stays the catalog's: the engine doesn't say which
-   models reason. A model the catalog doesn't describe (offline, or one it doesn't list) carries
-   `IntegrationModel.fallback`, and each planner first reads its own entry for the model back from the file
-   (`OpenCodeConfigPlan.modelEntries`, `HermesEdit.modelEntries`): `IntegrationModel.keeping` takes the entry's name,
-   capabilities and vision (unless the endpoint settles image input, `Fallback.endpointSettlesImageInput`), its
-   context when the endpoint gives none, and its output while the context is the one it was set for. A model with no
-   entry keeps the fallbacks and is named in `ToolConfigSummary.undescribed`.
+   `image` the list adds (`EndpointModel.takesImages`). Reasoning follows the same rule from `supported_features`:
+   for a model served here, its `this-mac` entry decides, catalog or not, and lists `reasoning` exactly when the
+   model's type reasons (`LocalModelFeatures`, `provider-swift/Sources/ProviderCore/Server/LocalModelFeatures.swift`,
+   which asks `ReasoningEffortPolicy.reasons`: the models that take every reasoning effort). So Qwen 3.8 27B, whose
+   catalog row lacks `reasoning`, reasons in OpenCode, offline too, and a model whose effort would be ignored
+   doesn't, whatever the catalog says. For a model served elsewhere, or one listed without `supported_features`, the
+   catalog's names decide, with the `reasoning` the list adds (`EndpointModel.reasons`). A model the catalog doesn't
+   describe (offline, or one it doesn't list) carries `IntegrationModel.fallback`, and each planner first reads its
+   own entry for the model back from the file (`OpenCodeConfigPlan.modelEntries`, `HermesEdit.modelEntries`):
+   `IntegrationModel.keeping` takes the entry's name, capabilities, vision and reasoning (each unless the endpoint
+   settles it, `Fallback.endpointSettlesImageInput`, `Fallback.endpointSettlesReasoning`), its context when the
+   endpoint gives none, and its output while the context is the one it was set for. A model with no entry keeps the
+   fallbacks and is named in `ToolConfigSummary.undescribed`.
    For a model this Mac has loaded, the endpoint lists its whole context window as both the context and the max
    output (`LocalModelLimits(window:)`, `provider-swift/Sources/ProviderCore/Server/LocalRouterModels.swift`), so
    the writers give it its full context window and a quarter of it as output, not the catalog's smaller output cap
@@ -102,7 +108,8 @@ flowchart LR
    them (so oMLX's `omlx launch hermes`, and Hermes up to v0.17), are part of that key. The main model is the one
    already set when it is Darkbloom's and still usable, else the nearest usable one that isn't on the network (this
    Mac or its pair, then your Macs); the one it replaces is named with its provider
-   (`ToolConfigSummary.replacedDefault`, `gpt-6-astra via opencodex`).
+   (`ToolConfigSummary.replacedDefault`, `gpt-6-astra via opencodex`). The block says nothing of reasoning, which
+   Hermes doesn't read there ([Hermes versions and limits](#hermes-versions-and-limits)).
 5. **Write.** `ToolConfigWriter.apply` makes the planned edit (invariants below) and returns the file, the backup
    and the exact undo command. `ToolIntegrationStep.lines` says them, with the default model on a line of its own
    (`openCodeDefault`; Hermes' names the main model before).
@@ -181,6 +188,7 @@ keeps it in one place too: `OpenCodeConfigPlan.globalFileNames`.
 | Config v12 (`providers:` as a mapping, with `transport` and `default_model`) | Hermes' current format; `hermes update` migrates an older `custom_providers:` list |
 | `max_tokens` after a model switch | Open Hermes bug #124289 (fix #124290 not merged): a named provider's `extra_body` is dropped on `/model <model> --provider <bare name>` and on bare-named fallbacks, so those turns get the engine's 4,096-token default. New chats, and switches that name `custom:<id>`, keep it |
 | The profile Hermes reads | After `hermes profile use <name>`, Hermes reads `~/.hermes/profiles/<name>/config.yaml`; the writer edits `$HERMES_HOME/config.yaml`, else `~/.hermes/config.yaml`, and the result names the file it edited |
+| Reasoning per model | Hermes takes it from its catalog (models.dev) or its top-level `model_overrides` (`supports_reasoning`), not from a named provider's `models` entries, whose only capability it reads is `supports_vision`. A model neither knows keeps Hermes' reasoning-effort levels and gets `reasoning_effort` (`medium` when none is set). The writer edits only `providers` and `model`, so it writes no reasoning; every model that reasons here takes all seven efforts, and the others ignore them |
 
 ## Code map
 

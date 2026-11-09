@@ -136,8 +136,9 @@ struct GPTOSSHarmonyTemplateFixesTests {
             "<|start|>assistant<|channel|>final<|message|>Hi, how can I help you?<|end|>"))
         #expect(renderedPrompt.contains(
             "<|start|>user<|message|>What is the secret word?<|end|>"))
-        #expect(renderedPrompt.contains("Reasoning: medium"))
-        #expect(!renderedPrompt.contains("Reasoning: high"))
+        // The effort renders its Harmony level: a direct caller's high is high.
+        #expect(renderedPrompt.contains("Reasoning: high"))
+        #expect(!renderedPrompt.contains("Reasoning: medium"))
     }
 
     @Test("interleaved system messages are merged into the leading instruction")

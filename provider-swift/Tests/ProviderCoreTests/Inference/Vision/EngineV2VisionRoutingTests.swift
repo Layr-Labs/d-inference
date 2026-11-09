@@ -1135,11 +1135,11 @@ struct EngineV2VisionRoutingTests {
     func typedClientErrorKeepsItsMapping() async throws {
         let engine = VisionScriptedEngine(script: .stream([]))
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, _ in throw MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort },
+            prepare: { _, _, _ in throw MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(.reasoningEffort) },
             emitTelemetry: VisionTelemetrySink().callback())
         let router = makeRoutingEngine(
             container: makeStubContainer(), bridge: makeBridge(engine: engine), plumbing: plumbing)
-        await #expect(throws: MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort) {
+        await #expect(throws: MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(.reasoningEffort)) {
             _ = try await collectContent(try await router.streamChatCompletion(request: imageRequest()))
         }
         #expect(engine.submitted.isEmpty)

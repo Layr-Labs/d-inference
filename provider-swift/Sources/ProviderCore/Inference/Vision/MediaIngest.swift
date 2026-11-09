@@ -278,10 +278,9 @@ public enum MediaIngest {
         try rejectUnsupportedAudio(request)
         let tools = ChatTemplateFixes.normalizeToolMetadata(
             tools, context: .init(modelId: request.model, modelType: modelType))
+        try ReasoningEffortPolicy.validate(request, controls: templateControls, modelType: modelType)
         let additionalContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
             for: request, controls: templateControls, modelType: modelType, hasMedia: true)
-        try Qwen4SupportPolicy.validateReasoningContext(
-            modelID: request.model, modelType: modelType, additionalContext: additionalContext)
         var chatMessages: [Chat.Message] = []
         let retainToolMedia = preserveTemplateFields && modelType == "diffusion_gemma"
         var totalPixels = 0

@@ -5586,7 +5586,7 @@ its typed block, so every memory refusal is a `QwenResidentMemoryRefusal`.
 None asks the load's entry check (`QwenDenseStageLoadResources.requireInitial`)
 first: its floor is one the gate asks on its own sample anyway, and its refusal
 is untyped, so it would end the worker before the typed check ran.
-Before 0.10.11 a refusal that remained was thrown from the request's `check`,
+Before 0.10.12 a refusal that remained was thrown from the request's `check`,
 which also runs inside every transfer. The refusing rank left the data plane
 mid-exchange and its worker exited (the worker coordinator's failure path), the
 other rank lost its input, the client got an untyped 500 and the pair stopped

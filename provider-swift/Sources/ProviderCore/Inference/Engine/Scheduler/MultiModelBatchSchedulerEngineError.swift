@@ -58,8 +58,13 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// headroom. Surfaces as 503 so clients back off and retry once
     /// capacity frees up.
     case tokenBudgetExhausted(String)
-    /// This request's media preparation could not reserve memory. Text/KV
-    /// capacity is not disproven; another provider may admit the same media.
+    /// This request's media preparation could not finish on this machine now:
+    /// it could not reserve memory, its video or audio reader failed twice
+    /// with a transient decoder fault (`VideoReaderFailure.isTransient`), or
+    /// Nemotron Super's decode allowance ran out. Text/KV capacity is not
+    /// disproven; another provider may prepare the same media. Error reason
+    /// `media_memory_unavailable`, which the coordinator re-routes without a
+    /// capacity strike or a budget clamp.
     case mediaMemoryUnavailable
     /// Pending request queue is full. Surfaces as 429 so clients can
     /// honour a retry-after.
@@ -142,7 +147,7 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
         case .tokenBudgetExhausted(let message):
             return message
         case .mediaMemoryUnavailable:
-            return "Media preparation memory is temporarily unavailable"
+            return "Media preparation is temporarily unavailable on this provider"
         case .queueFull(let message):
             return message
         case .requestRejected(let message):

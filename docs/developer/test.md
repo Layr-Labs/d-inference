@@ -1391,7 +1391,11 @@ in every mode (D6). Both workers keep running, the client gets the memory 503
   pair's first token), and `40` about 10 s into the request.
 - **When.** The worker reads the file when the next request starts on that Mac
   and deletes it, so it fires once; a running pair needs no restart. The
-  request's end disarms it.
+  request's end disarms it. With lanes (GLM tensor parallel's default eight,
+  for example), every live check of that rank counts while it is armed: the
+  lanes' step checks, and another lane's reservation, which is then refused at
+  reservation (the pair's 503) as any memory refusal there is. A step check's
+  refusal ends the newest running lane, normally the armed one.
 - **How.** The fault throws inside each live gate, where a real refusal is
   thrown (`ClusterMemoryFault.refuseIfDue`), so everything after it is a real
   refusal's path. The worker logs `darkbloom-memory-fault-v1 … armed_check=N`,

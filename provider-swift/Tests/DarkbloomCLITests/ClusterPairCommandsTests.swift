@@ -1132,7 +1132,8 @@ struct ClusterPairControlTests {
                 try await runCLICommand(Start.self, ["start"])
             }
         }
-        #expect(lines(result?.standardOutputContent) == [startingThePair, noModelHere, ""])
+        // #1908's review, nit 8: no "starting the pair" first, which nothing does.
+        #expect(lines(result?.standardOutputContent) == [noModelHere, ""])
         let calls = pairActionCalls(text(result?.standardErrorContent))
         #expect(calls.isEmpty, "\(calls)")
         // #1905's review: the Mac that follows has no model list (`darkbloom start` in a terminal there opens a screen that
@@ -1142,7 +1143,21 @@ struct ClusterPairControlTests {
                 try await runCLICommand(Start.self, ["start"])
             }
         }
-        #expect(lines(member?.standardOutputContent) == [startingThePair, noModelThere, ""])
+        #expect(lines(member?.standardOutputContent) == [noModelThere, ""])
+    }
+
+    /// #1908's review, nit 3: before J2-b's look, a script's start on a serving pair whose cluster service ran from a
+    /// terminal session moved it to its login agent, so the pair came back after a restart. The look keeps a pair as
+    /// it is only when its service starts at login; otherwise the start goes on, as before.
+    @Test("`darkbloom start` without a terminal on a serving pair whose cluster service doesn't start at login sets that up")
+    func startOnAServingPairWhoseServiceDoesNotStartAtLogin() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent, \.standardErrorContent]) {
+            var session = servingPair()
+            session.startsAtLogin = false
+            try await exitWithPair(session, actions: pairActions()) { _ in try await runCLICommand(Start.self, ["start"]) }
+        }
+        #expect(lines(result?.standardOutputContent).first == startingThePair)
+        #expect(pairActionCalls(text(result?.standardErrorContent)) == ["ensureService", "serve"])
     }
 
     @Test("`darkbloom start` without a terminal that doesn't serve says why and exits with cluster status's code")

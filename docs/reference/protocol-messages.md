@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-09
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -544,18 +544,20 @@ Every value is a token count.
 | JSON key | Presence | Meaning |
 |---|---|---|
 | `max_prompt_tokens` | req | The cluster refuses a longer prompt (`prompt_too_long`) |
-| `max_output_tokens` | req | The cluster refuses a larger `max_tokens` (`output_too_long`) |
-| `max_context_tokens` | req | The cluster refuses a larger prompt plus `max_tokens` (`context_too_long`) |
+| `max_output_tokens` | req | The cluster cuts a larger `max_tokens` to it, as one Mac cuts to its window |
+| `max_context_tokens` | req | The cluster cuts `max_tokens` to what the prompt leaves of it, and refuses a prompt that fills it (`context_length_exceeded`) |
 | `serving_context_tokens` | opt | The longest prompt plus `max_tokens` that every member's memory admits now: the minimum over the ranks (`ClusterWorkerPair.servingContextTokens`), at most `max_context_tokens`. Each rank works its own out again while idle. A longer request is refused for capacity (`request_exceeds_node_budget`). Omitted, never `0`, when the owner states none; a ready cluster always states one |
 
 The first three are what the cluster serves in its generation mode
 (`DistributedResidentExecutionProfile.served`,
 `ClusterModelFeaturePolicy.servedProfile`). In tensor parallel, that is the
 worker's whole profile: for Qwen3.8 27B, 262,143 prompt tokens, 65,536 output
-tokens and a 262,144-token context. In any other mode, it is the memory plan's
-request: 32,768 prompt and 32,768 output tokens in a 65,536-token context. A
-pipeline's ranks refuse any reservation beyond that request. The leader refuses
-any request outside these limits before it asks any rank.
+tokens and a 262,144-token context. Gemma 4 26B serves its whole profile in the
+pipeline too: 262,143 prompt tokens, 32,768 output tokens and a 262,144-token
+context. In any other mode, it is the memory plan's request: 32,768 prompt and
+32,768 output tokens in a 65,536-token context, and the pipeline's ranks refuse
+any reservation beyond it. The leader refuses a prompt outside these limits
+before it asks any rank, and cuts a larger `max_tokens` to fit.
 
 A change of `request_limits` is a material capacity change
 (`CapacityHeartbeatMateriality`): the next capacity rebuild, when a request

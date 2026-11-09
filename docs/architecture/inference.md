@@ -5268,7 +5268,7 @@ measured activation floor are not built yet.
 | `reductionsPerLayer`, `reductionsPerStep` | 2 (attention, packed feed-forward), 1 (vocabulary-split selection): 61 a decode step | `Gemma4TensorParallelPlan.reductionsPerLayer` |
 | `partialBytesPerToken`, `layerPartialBytesPerToken` | 101,376 (the dense and 8 expert FP32 rows), 112,640 (with the attention row) | `feedForwardPartialBytesPerToken`, `layerPartialBytesPerToken` |
 | `stateDividesByHeads` | true: each rank keeps its own KV heads | `Gemma4TensorParallelPlan.kvHeadsPerRank` |
-| `requestAllowance` | the rank's reserve at the profile's longest request, where the allocator's bound is known | `Gemma4TensorParallelRequestBudget` |
+| `requestAllowance` | the rank's reserve at the memory plan's longest request (32,768 + 32,768), where the allocator's bound is known | `Gemma4TensorParallelRequestBudget` |
 | `choice` | `fastest_v1` | `ClusterTensorParallelChoice` |
 
 Each stored tensor's cut is the plan's (`tensorParallelCut(ofStoredTensor:)`).
@@ -5485,6 +5485,75 @@ Code map:
 - `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/Execution/NativeWorkerRuntime.swift` (routes Gemma `tensor_parallel_v1` loads)
 
 See [focused Gemma 4 tensor-parallel checks](../developer/test.md#focused-gemma-4-tensor-parallel-checks).
+
+### Gemma 4 native context on a pair
+
+A Gemma 4 26B pair serves the model's declared context, as one Mac serving it
+does, in tensor parallel and in the pipeline: prompts up to 262,143 tokens and
+up to 32,768 output tokens (the catalog's `max_output_length`) within 262,144
+(`Gemma4ResidentAdapterDefinition.contextLimits`,
+`QwenResidentContextLimits.Ceiling.native`). Before, the pair advertised
+65,536. On pair-2 (2026-11-08) a streamed prompt longer than 32,768 tokens to
+the leader's local API got a 200 and then "Response generation failed", and a
+`max_tokens` above 32,768 got a 400 `output_too_long`.
+
+LOAD, every quote and the planner still size the pair for the standard
+request, 32,768 prompt plus 32,768 output tokens (`memoryProfile`). The
+placement family plans it, and both ranks bind it into their load agreement,
+so placement and LOAD are unchanged. A longer request is charged at its own
+context when it is reserved, and each rank's live gate admits it or refuses
+it alone:
+
+- Tensor parallel: `Gemma4TensorParallelRequestCharge` takes LOAD's terms
+  (`Gemma4TensorParallelRequestBudget`) at the request's context: this rank's
+  own KV heads (10 KiB a token on the five full layers), the attention
+  transient over its 8 query heads, the partials, the vocabulary rows and the
+  prompt's prefix capture. At 262,144 tokens that is 10.4 GB a rank (3.2 GB of
+  state, a 4.3 GB transient, a 2.8 GB capture), against LOAD's 2.6 GB at the
+  standard request, beside the rank's 7.4 GB reserve and its 8.0 GB of QAT
+  4-bit weights. READY's request capacity is the larger of LOAD's quote and
+  one request at 262,144 tokens, a ceiling and never a grant. READY,
+  and every keep-warm answer while no request or lane is held, carry the
+  longest context the reservation gate admits now (`servingContextTokens`,
+  `refreshServingContext`; kept prefix entries count as room). The paged
+  host's bound is the profile's; pages grow with each request.
+- Pipeline: a layer-stage family names the requests its stages serve
+  (`LayerStageResidentAdmission.servedProfile`, the memory plan for every
+  other family). Gemma's is its whole profile. Each stage charges the whole
+  model's ledger (`Gemma4StateBudget`) at the request's context and, on a
+  stage with a full-attention layer, one prompt frame's FP32 scores over the
+  whole context: 6.4 GB and 8.6 GB at 262,144 tokens, against 2.0 GB and
+  2.2 GB at the standard request. Its lookahead frame does not grow with the
+  prompt. READY's capacity covers the longest request, and each stage's
+  serving context is searched up to 262,144; the pair serves the smaller of
+  the two. A pipeline with lanes keeps its READY figure, as every lane owner
+  of the stage modes does.
+
+The provider holds a request to what its mode serves
+(`ClusterModelFeaturePolicy.servedProfile`: a Gemma pipeline's whole profile)
+as one Mac holds a request to its window. A `max_tokens` past the output limit,
+or past what the prompt leaves of the context, is cut to fit
+(`EngineV2Bridge.pairServedLimits`). A prompt that fills the context is refused
+with one Mac's 400, `context_length_exceeded`, in one Mac's words
+(`DistributedRequestRefusal.contextLengthExceeded`). A request longer than the
+context both Macs admit now gets one Mac's memory 503. Each refusal is thrown
+before a stream exists, so a streamed request gets its status on the leader's
+local endpoint as on the pair's own API.
+
+Fingerprints: Gemma's profile fingerprint changes, and with it the capability
+record's `profileFingerprint`, both modes' load agreements, the installed
+start's `profileSHA256` and request fingerprints. Bundled pair qualification
+records do not bind it. Gemma setups re-plan after the update, as for any
+worker change.
+
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/Resources/Gemma4TensorParallelRequestCharge.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/TensorParallel/Gemma4TensorParallelResidentRuntime.swift`
+(`refreshServingContext`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/Resident/Gemma4ResidentAdapterDefinition.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/LayerStageResident.swift`
+(`servedProfile`, `requireWithinServedProfile`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resident/QwenResidentRuntime+Load.swift`
+and `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`.
 
 ## MiMo V2.6 tensor parallel
 
@@ -7547,7 +7616,9 @@ before either rank is asked. With the registered inventory on an M5 Ultra
 (`QwenTensorParallelNativeContextTests`).
 
 The pipeline and hand-off modes stay at the memory plan. Their LOAD gates size
-it, and they refuse a longer reservation (`requireWithinMemoryProfile`). Provider
+it, and they refuse a longer reservation (`requireWithinServedProfile`; only
+Gemma 4's stages serve their whole profile,
+[Gemma 4 native context](#gemma-4-native-context-on-a-pair)). Provider
 quotes, placement comparisons and installed-plan checks compare memory scopes,
 so a profile's longer native limits never re-price or re-plan a pair.
 
@@ -7580,7 +7651,7 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Ten
 (`servingContext`, `refreshServingContext`),
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resources/QwenResidentContextLimits+Registered.swift`,
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/LayerStageResident.swift`
-(`requireWithinMemoryProfile`) and
+(`requireWithinServedProfile`) and
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/State/CBv2OwnedRequestState.swift`
 (`growReservation`).
 

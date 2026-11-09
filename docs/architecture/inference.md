@@ -5578,7 +5578,8 @@ most every 250 ms:
 kept prompt prefixes give way first, then the request's own prefix capture
 (`QwenResidentRequestExecution.checkRunning`; the gate is
 `QwenResidentRequestAllowance.requireContinuing`, GLM's `requireResources`,
-MiMo's and GPT-OSS's `requireLive`).
+MiMo's and GPT-OSS's `requireLive`, which share one gate,
+`ClusterLiveMemory.requireStageRequest`).
 Every running gate, in every mode, asks power and thermal state first (a
 refusal there is untyped and fails the worker), then judges memory only inside
 its typed block, so every memory refusal is a `QwenResidentMemoryRefusal`.

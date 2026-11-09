@@ -1,6 +1,6 @@
 # Owner pause ("me first")
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-09
 
 How a provider that serves Darkbloom and its owner from one Mac stops taking
 Darkbloom work while the owner uses the Mac through its local API, and returns
@@ -216,17 +216,35 @@ sequenceDiagram
 | Ranks | Nothing counts them: the leader is the slot's host, a role, not a rank |
 | `darkbloom cluster local` | Unchanged: no member loop and no coordinator, so nothing to pause |
 
-What the deployed coordinator does with a draining leader:
+What a coordinator does with a draining leader:
 
 - It stops routing to the whole pair, the owner's own `self` and `prefer`
   requests included.
 - It keeps the pair's session: membership is an identity and trust decision,
   not an admission one, so a draining heartbeat never ends it.
-- On the deployed coordinator, while a pair is paused for its owner, both Macs
-  lose their base reward for the pause plus the 2 idle minutes, counted in
-  5-minute periods, whereas a single Mac keeps it. `[local] me_first = false`,
-  or choosing *Darkbloom network*, avoids that. In the coordinator at
-  `90ee29fc0d`:
+
+The pair's base reward while it is paused depends on the coordinator. A single
+Mac paused for its owner keeps its own on every coordinator, and
+`[local] me_first = false`, or choosing *Darkbloom network*, avoids the pause
+altogether.
+
+- **The coordinator that ships with 0.10.11**
+  ([darkbloom-platform#709](https://github.com/Layr-Labs/darkbloom-platform/pull/709)
+  onwards): a pair paused for its owner keeps its base reward, as a single Mac
+  does, and stays unroutable. Its members' reward intervals count a leader
+  whose only drain is the owner pause as not draining (the pair must still
+  admit, have its model loaded and serve the public), while routing and the
+  owner's listing still treat the pause as a drain
+  ([coordinator/registry/cluster_public_routing.go](https://github.com/Layr-Labs/darkbloom-platform/blob/a5e0b4c9730d25b1a62efe685f349ec1291e581b/coordinator/registry/cluster_public_routing.go#L229-L261),
+  [coordinator/internal/registry/providerdrain/authority.go](https://github.com/Layr-Labs/darkbloom-platform/blob/a5e0b4c9730d25b1a62efe685f349ec1291e581b/coordinator/internal/registry/providerdrain/authority.go#L57-L75)).
+  Any other drain of the leader, such as an update, a shutdown or an add-on
+  hold, still ends them, as does a committed `provider_drain` barrier on any
+  member. An update that starts during a pause ends them once its barrier
+  commits or the pause ends, whichever is first, because the leader reports
+  `owner` until then.
+- **Coordinators before #709**, such as `90ee29fc0d`, which production ran
+  with 0.10.10: both Macs lose their base reward for the pause plus the 2 idle
+  minutes, counted in 5-minute periods. In the coordinator at `90ee29fc0d`:
   - A member's base reward counts only the intervals in which its pair is
     publicly serving-ready
     ([coordinator/internal/payments/rewardpolicy/uptime.go](https://github.com/Layr-Labs/darkbloom-platform/blob/90ee29fc0d158dadbc0d87146526be1b3e4e9775/coordinator/internal/payments/rewardpolicy/uptime.go#L52-L84)).

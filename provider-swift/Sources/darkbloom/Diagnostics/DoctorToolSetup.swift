@@ -5,14 +5,14 @@ import ProviderCore
 /// (as `darkbloom --opencode` / `--hermes` choose it) and the address and key file of Darkbloom's provider there. Read
 /// only. Of the key only the path of its file is kept (OpenCode's `{file:…}`, Hermes' `key_cmd`), never a key written
 /// into the config, so no line can show it.
+///
+/// RED SEAM: still doctor's own reader, its result in the shape `ToolAddress` reads (`ToolPointer`).
 struct DoctorToolSetup: Equatable, Sendable {
     enum Found: Equatable, Sendable {
-        /// The tool's config file doesn't exist.
-        case noFile
-        /// The file has no Darkbloom provider.
-        case noEntry
-        /// Darkbloom's provider: where it sends requests, and the file it reads the key from.
-        case entry(address: String, keyFile: String?)
+        /// No config, or no Darkbloom provider block in it.
+        case notSetUp
+        /// Darkbloom's provider block: where it sends requests, and the file it reads the key from.
+        case entry(ToolPointer)
         /// The file can't be read as the tool's config, and why.
         case unreadable(String)
     }
@@ -26,35 +26,40 @@ struct DoctorToolSetup: Equatable, Sendable {
                      provider: IntegrationProvider = .current) -> [DoctorToolSetup] {
         IntegrationTool.allCases.map { tool in
             let file = tool.configFile(in: environment)
-            guard FileManager.default.fileExists(atPath: file.path) else { return .init(tool: tool, file: file, found: .noFile) }
+            guard FileManager.default.fileExists(atPath: file.path) else { return .init(tool: tool, file: file, found: .notSetUp) }
             guard let data = try? Data(contentsOf: file) else {
                 return .init(tool: tool, file: file, found: .unreadable("it can't be read"))
             }
-            return .init(tool: tool, file: file, found: found(tool, in: data, provider: provider))
+            return .init(tool: tool, file: file, found: found(tool, in: data, provider: provider, home: environment.home))
         }
     }
 
     /// Darkbloom's provider in a config file's bytes.
-    static func found(_ tool: IntegrationTool, in data: Data, provider: IntegrationProvider) -> Found {
+    static func found(_ tool: IntegrationTool, in data: Data, provider: IntegrationProvider, home: URL) -> Found {
         switch tool {
-        case .opencode: return openCode(data, provider: provider)
+        case .opencode: return openCode(data, provider: provider, home: home)
         case .hermes:
             do {
                 guard let endpoint = try HermesConfigPlan.providerEndpoint(in: String(decoding: data, as: UTF8.self),
                                                                            provider: provider)
-                else { return .noEntry }
+                else { return .notSetUp }
                 guard let address = endpoint.address else {
                     return .unreadable("its \(provider.id) provider has no api address")
                 }
-                return .entry(address: address, keyFile: endpoint.keyFile)
+                return entry(address, keyFile: endpoint.keyFile, home: home)
             } catch {
                 return .unreadable(error.reason)
             }
         }
     }
 
+    /// The entry for `address` and the key file's path as written (`~` is `home`).
+    private static func entry(_ address: String, keyFile: String?, home: URL) -> Found {
+        .entry(ToolPointer(baseURL: address, keyFile: keyFile.map { URL(fileURLWithPath: expanded($0, home: home)) }))
+    }
+
     /// `providers.<id>.settings` in OpenCode's JSONC: `baseURL`, and the file `apiKey`'s `{file:…}` names.
-    private static func openCode(_ data: Data, provider: IntegrationProvider) -> Found {
+    private static func openCode(_ data: Data, provider: IntegrationProvider, home: URL) -> Found {
         let document: JSONCDocument
         do {
             document = try JSONCDocument([UInt8](data))
@@ -62,7 +67,7 @@ struct DoctorToolSetup: Equatable, Sendable {
             return .unreadable("it isn't valid JSON (line \(error.line))")
         }
         guard let mine = document.root.object?.members(named: "providers").first?.value.object?
-            .members(named: provider.id).first?.value.object else { return .noEntry }
+            .members(named: provider.id).first?.value.object else { return .notSetUp }
         guard let settings = mine.members(named: "settings").first?.value else {
             return .unreadable("its \(provider.id) provider has no settings")
         }
@@ -79,7 +84,7 @@ struct DoctorToolSetup: Equatable, Sendable {
             guard key.hasPrefix("{file:"), key.hasSuffix("}") else { return nil }
             return String(key.dropFirst("{file:".count).dropLast())
         }
-        return .entry(address: address, keyFile: keyFile)
+        return entry(address, keyFile: keyFile, home: home)
     }
 
     /// `path` as a file on this Mac: `~` is `home`.

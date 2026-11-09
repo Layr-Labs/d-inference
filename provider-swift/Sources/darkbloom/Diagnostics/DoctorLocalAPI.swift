@@ -23,8 +23,16 @@ struct DoctorLocalAPI {
         var keyFile: URL?
         /// This Mac's pair, as it knows it by itself (`ClusterPairSummary.local`).
         var pair: ClusterPairSummary = .notPaired
+        /// RED SEAM: not read yet. On a paired Mac, the running provider is single-Mac serving (`start --solo`).
+        var servingAlone = false
+        /// RED SEAM: not read yet. The running provider is Only me in a terminal (`start --local --here`).
+        var terminalOnlyMe = false
+        /// RED SEAM: not read yet. The provider's background service is installed.
+        var serviceInstalled = false
         /// What OpenCode's and Hermes' configs say of Darkbloom.
         var tools: [DoctorToolSetup] = []
+        /// RED SEAM: not read yet. The names this Mac's local API answers to.
+        var thisMac: Set<String> = ToolAddress.loopbackNames
         var home: URL = FileManager.default.homeDirectoryForCurrentUser
         /// The port `start --port` would take instead of one in use (`LocalAPIPort.nextFree`).
         var nextFreePort: (UInt16) -> UInt16? = { _ in nil }
@@ -196,13 +204,18 @@ struct DoctorLocalAPI {
         let setUpCommand = "`\(ToolIntegrationStep.command([setup.tool]))`"
         let file = ToolIntegration.displayPath(setup.file, home: facts.home)
         switch setup.found {
-        case .noFile, .noEntry:
+        case .notSetUp:
             guard hasLocalAPI else { return nil }
             return line(name, .info, "not set up (\(setUpCommand) sets it up)")
         case .unreadable(let why):
             guard hasLocalAPI else { return nil }
             return line(name, .warn, "can't read \(file): \(why)")
-        case .entry(let pointsAt, let keyFile):
+        case .entry(let pointer):
+            // RED SEAM: doctor's own comparison, on `ToolAddress`'s shape.
+            guard let pointsAt = pointer.baseURL else {
+                guard hasLocalAPI else { return nil }
+                return line(name, .warn, "can't read \(file): its provider has no address")
+            }
             guard let here = address else {
                 guard !hasLocalAPI else { return line(name, .info, "points at \(pointsAt) (\(file))") }
                 return line(name, .warn, "points at \(pointsAt), but this Mac serves no local API (\(file))",
@@ -212,9 +225,9 @@ struct DoctorLocalAPI {
                 return line(name, .warn, "points at \(pointsAt), not this Mac's local API (\(here)) (\(file))",
                             fix: setUpCommand)
             }
-            if let keyFile, let ours = facts.keyFile,
-               DoctorToolSetup.expanded(keyFile, home: facts.home) != ours.path {
-                return line(name, .warn, "points here, but reads its key from \(keyFile), not "
+            if let keyFile = pointer.keyFile, let ours = facts.keyFile, keyFile.path != ours.path {
+                return line(name, .warn, "points here, but reads its key from "
+                    + ToolIntegration.displayPath(keyFile, home: facts.home) + ", not "
                     + ToolIntegration.displayPath(ours, home: facts.home) + " (\(file))", fix: setUpCommand)
             }
             return line(name, .pass, "points here (\(file))")
@@ -232,17 +245,32 @@ struct DoctorLocalAPI {
 }
 
 extension DoctorLocalAPI {
+    /// What `live` reads on this Mac, each a stand-in for tests.
+    struct Reads {
+        var liveInfo: () -> LocalEndpoint.Info? = { LocalEndpoint.readLiveInfo() }
+        var keyFile: (Int) -> URL? = { LocalEndpoint.keyFile(forPort: $0) }
+        /// The running provider's state when it is single-Mac serving, not a pair's part.
+        var soloState: (DaemonState) -> DaemonState? = { ServiceDrain.soloProviderState($0) }
+        var terminalOnlyMe: (DaemonState) -> Bool = { Restart.terminalOnlyMe($0) }
+        var serviceInstalled: () -> Bool = { LaunchAgent.isInstalled() }
+        var tools: () -> [DoctorToolSetup] = { DoctorToolSetup.read() }
+        var localHostName: () -> String? = { Local.localHostName() }
+        var nextFreePort: (UInt16) -> UInt16? = { LocalAPIPort.nextFree(besides: $0) }
+        var answers: (LocalEndpoint.Info) async -> Bool = { await DoctorLocalAPI.answers($0) }
+    }
+
     /// This Mac's: `[local]` from the config `doctor` loaded, the running provider (`running`: its process matches the
     /// state), `local.json`, the key file, the pair, and the tools' configs. The live API is asked `GET /health`.
     static func live(config: ProviderConfig, daemonState: DaemonState?, daemonRunning: Bool,
-                     pair: ClusterPairSummary) async -> DoctorLocalAPI {
-        let live = LocalEndpoint.readLiveInfo()
+                     pair: ClusterPairSummary, reads: Reads = Reads()) async -> DoctorLocalAPI {
+        let live = reads.liveInfo()
         var facts = Facts(saved: config.local, running: daemonRunning ? daemonState : nil, live: live)
-        facts.keyFile = (live?.port ?? config.local?.port).flatMap { LocalEndpoint.keyFile(forPort: Int($0)) }
+        facts.keyFile = (live?.port ?? config.local?.port).flatMap { reads.keyFile(Int($0)) }
         facts.pair = pair
-        facts.tools = DoctorToolSetup.read()
-        facts.nextFreePort = { LocalAPIPort.nextFree(besides: $0) }
-        if let live { facts.answers = await answers(live) }
+        facts.tools = reads.tools()
+        facts.nextFreePort = reads.nextFreePort
+        if let live { facts.answers = await reads.answers(live) }
+        // RED SEAM: whether this Mac serves alone, Only me in a terminal, the service, and this Mac's names: not read.
         return DoctorLocalAPI(facts: facts)
     }
 

@@ -337,7 +337,7 @@ extension QwenResidentRuntime {
                     // figure its placement priced (`ClusterPlacementPolicy.pipelineLanes`). Each lane is still gated
                     // live when it is reserved.
                     if batch.batching {
-                        let reserved = try QwenBatchLaneBook.chargeBytes(lanes: batch.lanes, allowance: maximum)
+                        let reserved = try QwenBatchLaneBook.reservedBytes(lanes: batch.lanes, allowance: maximum)
                         let context = admission.memoryProfile.maximumContextTokens
                         do {
                             try maximum.requireLive(additionalNativeBytes: QwenLongPrefillCheckedBytes.sum([

@@ -83,7 +83,7 @@ extension ClusterBatchLaneBook where Reservation == QwenResidentReservation {
 
     /// What `lanes` lanes of `allowance`'s request charge here when all are held at once: the newest lane's whole
     /// allowance and each other lane its state (`stateBytes`). A saved width is admitted at LOAD with it.
-    static func chargeBytes(lanes: Int, allowance: QwenResidentRequestAllowance) throws -> Int {
+    static func reservedBytes(lanes: Int, allowance: QwenResidentRequestAllowance) throws -> Int {
         guard (1...QwenBatchWire.maximumLanes).contains(lanes) else {
             throw ProbeError("Batch lanes are 1...\(QwenBatchWire.maximumLanes)")
         }

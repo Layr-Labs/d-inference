@@ -6674,13 +6674,17 @@ prefill, so every guided Gemma pipeline served one request at a time.
 4. LOAD admits the saved width whole (`QwenResidentRuntime`'s load). Every lane
    at the memory plan's request is charged as the lane book charges lanes held
    at once: the newest lane's whole allowance, and each other lane its state
-   (`QwenBatchLaneBook.chargeBytes`).
+   (`QwenBatchLaneBook.reservedBytes`).
    - A Mac that cannot hold that now refuses the load: "Resident load
      refused: N requests at once, each of C context tokens, do not fit on
      rank R now".
    - Each lane is still admitted against live memory when it is reserved.
    - Each rank logs `darkbloom-resident-lanes-v1 rank=… lanes=… context=…
      reserved=…`.
+   - The check is the runtime's, not Gemma's alone: every pipeline stage the
+     Qwen resident runtime serves with lanes is admitted this way, a Qwen 3.5
+     row's width saved by an automatic replacement included. That width was
+     priced at the same request (`ClusterPlacementBatchScope`).
 
 The width never exceeds what the family has qualified on real Macs
 (`ClusterPlacementPipelineWidth.qualifiedLanes`). That is eight for Gemma 4,

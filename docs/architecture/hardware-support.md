@@ -1164,7 +1164,7 @@ without one; [Gemma pipeline lanes](inference.md#gemma-pipeline-lanes)) adds no
 load-time allocation: the paged pool's capacity is a ceiling, and pages are
 reserved per request (`CBv2StageKVHost`). LOAD admits the width whole against
 live memory: every lane at the memory plan's request, as the lane book charges
-lanes held at once (`QwenBatchLaneBook.chargeBytes`). That is the figure the
+lanes held at once (`QwenBatchLaneBook.reservedBytes`). That is the figure the
 placement priced, and a Mac that cannot hold it now refuses the load. Each lane
 is then charged its whole request state on every rank and admitted against
 live memory again when it is reserved (`QwenResidentRuntime.reserveLane`); a

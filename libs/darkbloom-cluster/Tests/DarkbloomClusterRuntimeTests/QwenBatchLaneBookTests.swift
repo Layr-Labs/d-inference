@@ -95,12 +95,12 @@ final class QwenBatchLaneBookTests: XCTestCase {
             let book = QwenBatchLaneBook(), ids = (0..<lanes).map { _ in UUID() }
             for id in ids { try book.reserve(id, reservation(id, stateBytes: 1_000), lanes: lanes) }
             let allowance = try XCTUnwrap(book.allowances().first)
-            XCTAssertEqual(try QwenBatchLaneBook.chargeBytes(lanes: lanes, allowance: allowance),
+            XCTAssertEqual(try QwenBatchLaneBook.reservedBytes(lanes: lanes, allowance: allowance),
                 allowance.reservedBytes + (try book.stateBytes(excluding: ids.last)), "\(lanes) lanes")
         }
         let one = QwenResidentRequestAllowance(stateBytes: 1_000, fusionBytes: 0, reservedBytes: 1_032)
         for lanes in [0, QwenBatchWire.maximumLanes + 1] {
-            XCTAssertThrowsError(try QwenBatchLaneBook.chargeBytes(lanes: lanes, allowance: one), "\(lanes) lanes")
+            XCTAssertThrowsError(try QwenBatchLaneBook.reservedBytes(lanes: lanes, allowance: one), "\(lanes) lanes")
         }
     }
 }

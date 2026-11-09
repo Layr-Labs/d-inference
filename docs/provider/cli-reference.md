@@ -259,7 +259,9 @@ A single-Mac `start` decides how this Mac serves (`StartServingResolver`,
    It is saved in `[local] mode`, as the question's answer is
    (`LocalFirstOptions.savesModeFlag`), so the background service, `restart`
    and `update` serve it from now on; `--local --here` (one terminal session)
-   and the `--foreground` service save no mode.
+   and the `--foreground` service save no mode, and neither does a flag beside
+   `--solo` on a Mac in a pair, whose `[local] mode` holds the pair's answer:
+   there the flag is for that start only.
 2. `--choose` (a terminal only): the question again.
 3. The saved choice, `[local] mode`, with or without a terminal, Only me
    included: every choice serves in the background.

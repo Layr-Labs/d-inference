@@ -5,8 +5,8 @@ import ProviderCore
 // How a single-Mac `darkbloom start` serves (`[local]`): only its owner, the Darkbloom network, or both with the
 // owner first. A mode flag decides it, and is saved; otherwise the saved choice; otherwise, in a terminal, one
 // question, whose answer is saved. So the background service always serves the saved choice, and `restart` and
-// `update` bring that back (`SavedChoiceService`). Only `--local --here`, one terminal session, and a service's own
-// child save nothing. Without a terminal and without a saved choice or a mode flag (the LaunchAgent after an upgrade,
+// `update` bring that back (`SavedChoiceService`). Only `--local --here`, one terminal session, a service's own
+// child, and a flag beside `--solo` (on a Mac in a pair `[local] mode` holds the pair's answer) save nothing. Without a terminal and without a saved choice or a mode flag (the LaunchAgent after an upgrade,
 // the desktop app, scripts), a start keeps today's behaviour exactly: the Darkbloom network, with no local API, no
 // Keychain look-up, no port probe and nothing written, so an upgraded Mac never opens a local port by itself.
 // Every local API this Mac serves takes its one port (`LocalAPIPort`), so the address tools were given never moves.
@@ -45,6 +45,8 @@ struct LocalFirstOptions: Equatable, Sendable {
     var foreground = false
     /// `--local --here`: Only me in this terminal, for this session only; nothing is saved but this Mac's port.
     var here = false
+    /// `--solo`: this Mac alone instead of its pair. There `[local] mode` holds the pair's answer (`darkbloom cluster`
+    /// saves it), so a mode flag serves this start only.
     var solo = false
 
     /// The mode flags given, in `ServingModeFlag` order.
@@ -132,8 +134,9 @@ struct LocalFirstOptions: Equatable, Sendable {
     }
 
     /// Whether this start's mode flag is saved: always, so the background service, `restart` and `update` serve it
-    /// from now on; never for `--local --here` (one terminal session) or a service's child.
-    var savesModeFlag: Bool { modeFlag != nil && !foreground && !here }
+    /// from now on; never for `--local --here` (one terminal session), a service's child, or `--solo`, whose flag is
+    /// for that start only (journey 3: `start --solo --local` replaced the pair's saved Both).
+    var savesModeFlag: Bool { modeFlag != nil && !foreground && !here && !solo }
 }
 
 /// Where a start's mode came from.

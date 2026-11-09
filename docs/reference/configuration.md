@@ -373,7 +373,7 @@ cancelled picker or a refused start writes nothing):
 | Writer | Keys |
 |---|---|
 | The start question, in a terminal (no saved `mode`, or `--choose`) | `mode`; `route` from its follow-up, asked only with an account key saved |
-| A mode flag: `--local`, `--network`, `--me-first`, `--local-endpoint` (`LocalFirstOptions.savesModeFlag`) | `mode`, so the background service, `restart` and `update` serve it from now on; never with `--local --here` (one terminal session) or for a service's child |
+| A mode flag: `--local`, `--network`, `--me-first`, `--local-endpoint` (`LocalFirstOptions.savesModeFlag`) | `mode`, so the background service, `restart` and `update` serve it from now on; never with `--local --here` (one terminal session), for a service's child, or beside `--solo` on a Mac in a pair, where `mode` holds the pair's answer and the flag is for that start only |
 | The desktop app's "Local only" (`desktop start-local`), once its service started (`Desktop.StartLocal.serve`) | `mode = "local"`, as `--local` writes it; the app's other choices pass `--local-endpoint`, a mode flag |
 | `--no-me-first`, `--me-first` (only to undo a saved `me_first = false`), `--me-first-idle <min>`, `--route <route>` | `me_first`, `me_first_idle_minutes`, `route`, as `--idle-timeout` writes `idle_timeout_mins` |
 | `darkbloom route this-mac`, `my-macs`, `my-macs-first` (`RouteChoiceFlow`) | `route` only, at once and without a start, and a running local API uses it from its next request; `my-macs` and `my-macs-first` write nothing while no account key is saved |

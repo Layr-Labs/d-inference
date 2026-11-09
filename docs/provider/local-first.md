@@ -105,7 +105,9 @@ You can also name the choice in the command, in a terminal or not:
 
 **A flag saves your choice**, as the question does, so the background service,
 `darkbloom restart` and `darkbloom update` serve it from now on. Two flags that
-disagree are refused, for example `--local --me-first`.
+disagree are refused, for example `--local --me-first`. On a Mac in a pair, a
+flag beside `--solo` is for that start only: `[local] mode` there keeps the
+pair's answer.
 
 **Only me in this Terminal window, for now:** `darkbloom start --local --here`
 serves **Only me** until you close the window or press Ctrl-C, and saves no

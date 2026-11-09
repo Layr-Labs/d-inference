@@ -114,7 +114,7 @@ struct Start: AsyncParsableCommand {
     var localFirstOptions: LocalFirstOptions {
         LocalFirstOptions(local: local, localEndpoint: localEndpoint, network: network, meFirst: meFirst,
                           meFirstIdleMinutes: meFirstIdle, route: route, choose: choose, port: portOption,
-                          bind: bindOption, noAuth: noAuth, foreground: foreground, here: here)
+                          bind: bindOption, noAuth: noAuth, foreground: foreground, here: here, solo: solo)
     }
 
     /// How this start serves from its flags alone, as before `[local]`: for callers that resolved nothing (tests that

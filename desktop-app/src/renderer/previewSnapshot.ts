@@ -15,6 +15,9 @@ export function previewSnapshot(now: number, samples: ActivitySample[]): Snapsho
     installation_id: 'preview',
     linked: true,
     account_revision: 'preview-account',
+    // What an absent list meant to the app before features listed themselves: Autopilot and
+    // the eligibility sign-up. Each feature's preview module adds its own capability to this.
+    capabilities: ['autopilot', 'waitlist'],
     state: 'running',
     readiness: 'Connected and ready for requests',
     machine: {

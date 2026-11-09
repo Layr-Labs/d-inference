@@ -3,7 +3,9 @@
 Run `bash provider-swift/Tests/ClusterDiagnosticsChecks/run.sh` from the checkout.
 The runner compiles the actual Foundation-only Protocol, Bootstrap, Process,
 Remote and Installed sources with Swift 6 warnings as errors. It reuses the
-existing installed-session contract values and fabricated metadata child.
+existing installed-session contract values and fabricated metadata child. CI
+runs it in shard 1 of the `Cluster Focused Checks` job (step `Run cluster
+diagnostics checks`).
 
 Checks cover:
 

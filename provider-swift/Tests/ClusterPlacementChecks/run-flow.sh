@@ -74,6 +74,7 @@ build_module InstalledContract "$task_all" \
   "$task_sources/Inference/Distributed/Onboarding/ClusterModelProvisioning.swift" \
   "$task_provider/Tests/ClusterPlacementChecks/FlowRunProviderStandIn.swift" \
   "$task_sources"/Inference/Distributed/Placement/*.swift \
+  "$task_sources/Diagnostics/GLM5NextGPULimitEligibility.swift" \
   "$task_sources"/Inference/Distributed/LinkControl/*.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusValues.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusCodec.swift

@@ -1401,8 +1401,10 @@ release build of the cluster runtime. Shard 2 of `test-cluster-focused`
 `libs/darkbloom-cluster/Tests/NemotronStageChecks/run.sh`,
 `provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning`,
 the onboarding checks and `provider-swift/Tests/ClusterConsoleChecks/run.sh`.
-Shard 1 runs every other runner under `libs/darkbloom-cluster/Tests` and
-`provider-swift/Tests/ClusterPairingChecks/run.sh`. Each runner compiles only its own small source
+Shard 1 runs every other runner under `libs/darkbloom-cluster/Tests`,
+`provider-swift/Tests/ClusterPairingChecks/run.sh`,
+`provider-swift/Tests/ClusterDiagnosticsChecks/run.sh` and
+`provider-swift/Tests/ClusterPlacementChecks/run-flow.sh`. Each runner compiles only its own small source
 closure. The provisioning runner runs the
 provisioning checks only. Its download cache-policy check
 reads how many written pages stay in the file cache, which the host's kernel

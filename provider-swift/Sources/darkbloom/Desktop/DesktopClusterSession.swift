@@ -85,7 +85,7 @@ final class DesktopClusterSessions: @unchecked Sendable {
   /// Grows on every change, across sessions, so a stream sends a frame only when something changed.
   private var revision = 0
 
-  deinit { if answers >= 0 { Darwin.close(answers) } }
+  deinit { closeAnswers() }
 
   /// A session runs: its child hasn't been seen to end.
   var running: Bool { lock.withLock { session?.state == "running" } }
@@ -103,18 +103,19 @@ final class DesktopClusterSessions: @unchecked Sendable {
   func start(_ start: DesktopClusterSessionStart, executable: URL, configPath: String?) throws -> JSONValue {
     try lock.withLock {
       guard session?.state != "running" else { throw HTTPError(.conflict, message: Self.busyMessage) }
-      if answers >= 0 { Darwin.close(answers); answers = -1 }
-      let id = UUID().uuidString
-      session = Session(id: id, kind: start.kind, startedAt: Date().timeIntervalSince1970)
-      revision += 1
+      closeAnswers()
+      // The child's callbacks wait for the lock, so they find this session once it is set below.
+      var started = Session(id: UUID().uuidString, kind: start.kind, startedAt: Date().timeIntervalSince1970)
       do {
-        try launch(id: id, executable: executable, arguments: start.arguments(configPath: configPath))
+        try launch(id: started.id, executable: executable, arguments: start.arguments(configPath: configPath))
       } catch {
-        session?.state = "failed"
-        session?.finishedAt = Date().timeIntervalSince1970
-        session?.error = "Couldn't start the cluster setup: \(error.localizedDescription)"
+        started.state = "failed"
+        started.finishedAt = Date().timeIntervalSince1970
+        started.error = "Couldn't start the cluster setup: \(error.localizedDescription)"
       }
-      return Self.json(session!)
+      session = started
+      revision += 1
+      return Self.json(started)
     }
   }
 
@@ -383,14 +384,7 @@ final class DesktopClusterSessions: @unchecked Sendable {
       finishIfEnded()
     }
     // A child that left its output to another process (one it started) has no more to say once it exited.
-    DispatchQueue.global().asyncAfter(deadline: .now() + Self.drainSeconds) { [weak self] in
-      guard let self else { return }
-      self.lock.withLock {
-        guard self.session?.id == id else { return }
-        self.session?.outputEnded = true
-        self.finishIfEnded()
-      }
-    }
+    DispatchQueue.global().asyncAfter(deadline: .now() + Self.drainSeconds) { [weak self] in self?.outputEnded(id) }
   }
 
   /// The session's end, once its child exited and its output was read (lock held).
@@ -404,8 +398,15 @@ final class DesktopClusterSessions: @unchecked Sendable {
     current.state = current.cancelRequested ? "cancelled" : code == 0 ? "succeeded" : "failed"
     if !current.exited { current.error = Self.endedEarly(current.errorLines, code: code, signal: status.signal) }
     session = current
-    if answers >= 0 { Darwin.close(answers); answers = -1 }
+    closeAnswers()
     revision += 1
+  }
+
+  /// Closes the child's answers if they are open (lock held, or in `deinit`).
+  private func closeAnswers() {
+    guard answers >= 0 else { return }
+    Darwin.close(answers)
+    answers = -1
   }
 
   /// Why a child ended without its `exit` event: a runtime without the app's console says so in the API's words for an

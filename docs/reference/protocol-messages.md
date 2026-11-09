@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-09
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -216,8 +216,12 @@ connection repeats the draining status. Routed requests that race the owner
 pause's heartbeat get the same typed draining rejection. On a pair, only the
 leader member (the slot's host) sends `owner`; every other member keeps its
 control-only `draining` heartbeat with no busy fields. The whole pair then
-leaves routing, and unlike a single Mac its Macs lose their base reward while
-it is paused ([owner pause](../architecture/owner-pause.md#pairs)).
+leaves routing. Its base reward depends on the coordinator: on the coordinator
+that ships with 0.10.11
+([darkbloom-platform#709](https://github.com/Layr-Labs/darkbloom-platform/pull/709)
+onwards) the pair keeps it while paused, as a single Mac does; on coordinators
+before #709 both Macs lose it for the pause plus the idle minutes
+([owner pause](../architecture/owner-pause.md#pairs)).
 
 
 ## Close codes and the reconnect wait

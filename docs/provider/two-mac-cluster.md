@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-09
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -842,8 +842,11 @@ With **Both, me first**:
   It takes Darkbloom requests again 2 minutes after your last request ends
   (`[local] me_first_idle_minutes` on that Mac, 1 to 120); `[local] me_first =
   false` there keeps Darkbloom serving while you use it
-  ([owner pause](../architecture/owner-pause.md#pairs)). As for any pair drain,
-  the pair's reward uptime stops while it is paused.
+  ([owner pause](../architecture/owner-pause.md#pairs)). While it is paused,
+  the pair keeps its base reward on the coordinator that ships with 0.10.11
+  ([darkbloom-platform#709](https://github.com/Layr-Labs/darkbloom-platform/pull/709)
+  onwards), as a single Mac does. On coordinators before #709, its reward
+  uptime stops, as for any pair drain.
 - **Switching:** between **Darkbloom network** and **Both, me first** the plan
   stays: only the leading part starts again, and the screen waits until the pair
   serves again. From **Only me**, the model is planned again for Darkbloom

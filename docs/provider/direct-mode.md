@@ -1,6 +1,6 @@
 # The local API: an OpenAI-compatible server on your Mac
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-09
 
 Your Mac's models as an OpenAI-compatible HTTP server for your own tools,
 served two ways: **Only me** (`darkbloom start --local`: no coordinator, no
@@ -756,10 +756,19 @@ requests again. `[local] me_first = false` keeps the shared serving above. The
 other members don't change, and the pair keeps its session and its loaded
 model ([owner pause](../architecture/owner-pause.md#pairs)).
 
-On the deployed coordinator, while a pair is paused for you, both Macs lose
-their base reward for the pause plus the 2 idle minutes, counted in 5-minute
-periods, whereas a single Mac keeps it. `[local] me_first = false`, or choosing
-*Darkbloom network*, avoids that.
+While the pair is paused for you, the coordinator routes nothing to it, your
+own `self` and `prefer` requests included. Its base reward depends on the
+coordinator ([owner pause](../architecture/owner-pause.md#pairs)):
+
+- On the coordinator that ships with 0.10.11
+  ([darkbloom-platform#709](https://github.com/Layr-Labs/darkbloom-platform/pull/709)
+  onwards), the pair keeps its base reward, as a single Mac does.
+- On coordinators before #709, such as `90ee29fc0d`, which production ran with
+  0.10.10, both Macs lose it for the pause plus the 2 idle minutes, counted in
+  5-minute periods, whereas a single Mac keeps it.
+
+`[local] me_first = false`, or choosing *Darkbloom network*, avoids the pause
+altogether.
 
 ### Speed records of cluster requests
 

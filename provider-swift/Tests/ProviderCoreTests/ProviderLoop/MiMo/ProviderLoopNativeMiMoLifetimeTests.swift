@@ -120,6 +120,18 @@ private extension ProviderLoop {
     func nativeLifetimeBoundary(_ body: (@Sendable (String) async throws -> Void)?) {
         nativeMiMoBoundaryForTesting = body
     }
+    /// `id` waits in the selected-model recovery and stopped after
+    /// `postLoadRefusalLimit` memory refusals after loading.
+    func nativeLifetimeStopRecovery(of id: String) {
+        selectedModelRecovery.enqueue(id, now: .now, nowEpoch: 0)
+        for _ in 0..<SelectedModelRecovery.postLoadRefusalLimit {
+            selectedModelRecovery.deferAfterPostLoadRefusal(id, blocker: "refused after loading", now: .now)
+        }
+    }
+    func nativeLifetimeRecoveryEntry(_ id: String) -> SelectedModelRecovery.Entry? {
+        selectedModelRecovery.entries[id]
+    }
+    func nativeLifetimeRecoveryDue() -> String? { selectedModelRecovery.nextDue(now: .now) }
     func nativeLifetimeSlotCount() -> Int { modelSlots.count }
     func nativeLifetimeSlotIDs() -> [String] { modelSlots.keys.sorted() }
     func nativeLifetimeInstallRoutingPeer(_ id: String, runtime: EngineV2Runtime) async
@@ -440,6 +452,31 @@ final class ProviderLoopNativeMiMoLifetimeTests: XCTestCase {
         XCTAssertEqual(actualBudget.processLedger.state(for: before.owner), before)
         let retired = await owner.retireNativeMiMoOwner(modelID: modelID)
         XCTAssertTrue(retired)
+    }
+
+    /// Unloading a native MiMo owner frees memory like any other unload: every
+    /// model waiting in the selected-model recovery is due again, and one that
+    /// stopped after repeated memory refusals after loading counts afresh.
+    func testUnloadingANativeOwnerMakesWaitingSelectedModelsDue() async throws {
+        try metadataLane()
+        let registry = MiMoV26NativeLoadRegistry()
+        let owner = try loop(registry: registry, budget: budget())
+        await owner.setLoadedModelsPersistenceEnabledForTesting(false)
+        let load = try XCTUnwrap(MiMoV26ServingLoad.inspect(directory: fixture()))
+        let transaction = try await owner.claimNativeMiMoLoad(load, modelID: modelID)
+        let waiting = "waiting-selected-model"
+        await owner.nativeLifetimeStopRecovery(of: waiting)
+        let stopped = await owner.nativeLifetimeRecoveryEntry(waiting)
+        XCTAssertEqual(stopped?.waitsForChange, true)
+
+        let unloaded = await owner.unloadModel(modelID)
+        XCTAssertTrue(unloaded)
+        XCTAssertEqual(transaction.snapshot().phase, .retired)
+        let entry = await owner.nativeLifetimeRecoveryEntry(waiting)
+        XCTAssertEqual(entry?.waitsForChange, false)
+        XCTAssertEqual(entry?.postLoadRefusals, 0)
+        let due = await owner.nativeLifetimeRecoveryDue()
+        XCTAssertEqual(due, waiting)
     }
 
     func testNativePublicationReleasesConstructionActivityForCalibration() async throws {

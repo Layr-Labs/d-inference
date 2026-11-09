@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-09
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -2018,6 +2018,7 @@ darkbloom sandbox uninstall [--yes]
 | `setup --disk <volume>` | none: the internal disk | Repeatable. A work disk for the VM images and jobs, such as `/Volumes/FastSSD`; `~` keeps the internal disk as well. Setup makes each path absolute, checks it (see [Setup](#setup)) and passes it on in order. Needs an add-on release with work disks (1.2.0 or later). The add-on, its settings and logs stay in `~/DarkbloomSandbox` |
 | `setup --wait-ready` | `false` | The installer waits until the images are downloaded and the Mac takes jobs |
 | `setup --server <url>` | `https://api-sandbox.darkbloom.dev` | Where `install.sh` comes from: an `https` URL without credentials, query or fragment |
+| `setup --json-events` (hidden) | `false` | The desktop app's setup: no terminal, so no question (it needs `--yes`) and no colour. Standard output is one JSON object per line: `{"type":"line","text":…}` for each line setup says (`"stream":"error"` for one it says on standard error at a terminal), and `{"type":"installer","event":{…}}` for each event of the installer's `--json-progress`, as the installer wrote it, before the lines setup renders from it. SIGTERM ends setup, also where this process inherited it ignored; while the installer runs it reaches the installer as SIGINT (Ctrl-C), so an enrollment waiting for approval goes on (`SandboxSetupEvents`, `Sandbox.Setup.takeTheAppsCancel`) |
 | `pause` | — | `darkbloom-sandbox pause`: running jobs finish, no new jobs; then prints how many still run |
 | `resume` | — | `darkbloom-sandbox resume` |
 | `logs` | `-n 50` | `tail` of `~/DarkbloomSandbox/agent/agent.log`; `-f`/`--follow` runs `tail -F`; `-l` is the same as `-n`/`--lines` |

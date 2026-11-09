@@ -15,10 +15,9 @@ const modes: Record<string, ServingMode> = {
   both: 'both',
   paused: 'both',
 };
+// Added to the preview snapshot's own list (Autopilot and the eligibility sign-up), never in
+// place of it.
 const capabilities = ['local_serving', 'tool_setup', 'update_rollback'];
-// A snapshot with no capability list is a runtime from before the list, which the app reads as
-// offering Autopilot and the waitlist: they stay offered once the list exists.
-const listless = ['autopilot', 'waitlist'];
 const port = 8001;
 
 const endpointFor = (mode: ServingMode, models: string[]): Snapshot['endpoint'] =>
@@ -50,7 +49,7 @@ export const localServingPreview: FeaturePreview = {
     return {
       ...snapshot,
       capabilities: [
-        ...(snapshot.capabilities ?? listless),
+        ...(snapshot.capabilities ?? []),
         ...capabilities.filter((name) => !snapshot.capabilities?.includes(name)),
       ],
       local,

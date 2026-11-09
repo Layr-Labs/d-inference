@@ -18,8 +18,10 @@ async function previewWith(query: string) {
   return (await import('../src/renderer/preview/localServing')).localServingPreview;
 }
 
+// As the preview snapshot starts: its own capability list, Autopilot and the eligibility sign-up.
 const base = () =>
   snapshot({
+    capabilities: ['autopilot', 'waitlist'],
     state: 'running',
     endpoint: {
       base_url: 'http://127.0.0.1:8000/v1',
@@ -44,7 +46,7 @@ async function act(
   return pending;
 }
 
-it('shows the whole feature by default and keeps what a listless runtime offered', async () => {
+it('shows the whole feature by default, added to the snapshot’s own capabilities', async () => {
   const preview = await previewWith('');
   const next = preview.snapshot!(base());
   expect(next.capabilities).toEqual([
@@ -69,9 +71,11 @@ it('shows the whole feature by default and keeps what a listless runtime offered
     authenticated: true,
     models: ['gpt-oss-20b'],
   });
-  // A runtime's own list is kept as it is.
-  expect(preview.snapshot!({ ...base(), capabilities: ['account-signin'] }).capabilities).toEqual([
-    'account-signin',
+  // Added to whatever list the snapshot has, once each, and never in place of it.
+  expect(
+    preview.snapshot!({ ...base(), capabilities: ['account-signin', 'tool_setup'] }).capabilities,
+  ).toEqual(['account-signin', 'tool_setup', 'local_serving', 'update_rollback']);
+  expect(preview.snapshot!({ ...base(), capabilities: undefined }).capabilities).toEqual([
     'local_serving',
     'tool_setup',
     'update_rollback',
@@ -95,7 +99,7 @@ it('pauses Darkbloom for you with &local=paused, and offers nothing with &local=
   const unsupported = await previewWith('&local=unsupported');
   const older = unsupported.snapshot!(state);
   expect(older.local).toBeUndefined();
-  expect(older.capabilities).toBeUndefined();
+  expect(older.capabilities).toEqual(['autopilot', 'waitlist']);
   expect(older.endpoint).toEqual(state.endpoint);
   // Drops them from a runtime that listed them too.
   expect(
@@ -156,6 +160,22 @@ it('falls through for a runtime without local-first serving', async () => {
   const preview = await previewWith('&local=unsupported');
   const store = storeOf(preview.snapshot!(base()));
   expect(await preview.act!(store, { action: 'route', route: 'this-mac' })).toBeUndefined();
+});
+
+it('keeps Autopilot and the eligibility sign-up beside local serving in the whole preview', async () => {
+  window.history.replaceState({}, '', '/?preview');
+  vi.resetModules();
+  const { previewAPI } = await import('../src/renderer/preview');
+  const state = await previewAPI.read<Snapshot>('state');
+  expect(state.capabilities).toEqual(
+    expect.arrayContaining([
+      'autopilot',
+      'waitlist',
+      'local_serving',
+      'tool_setup',
+      'update_rollback',
+    ]),
+  );
 });
 
 it('opens Studio from This Mac in the preview with the three ways to serve', async () => {

@@ -213,6 +213,20 @@ import Testing
     }
   }
 
+  @Test func aChildThatCannotStartIsASessionThatFailedAtOnce() throws {
+    let sessions = DesktopClusterSessions()
+    let missing = FileManager.default.temporaryDirectory.appendingPathComponent("missing-darkbloom-\(UUID().uuidString)")
+    let failed = try sessions.start(DesktopClusterSessionStart(kind: "setup"), executable: missing, configPath: nil)
+    #expect(failed.field("kind") == .string("setup") && failed.field("state") == .string("failed"))
+    #expect(failed.field("finished_at").number != nil && failed.field("exit_code") == .null)
+    #expect(failed.field("error").text?.hasPrefix("Couldn't start the cluster setup: ") == true)
+    #expect(!sessions.running && sessions.json() == failed)
+    // It holds nothing: another setup may start, and nothing is asked of the one that failed.
+    #expect(throws: HTTPError.self) { try sessions.answer(DesktopClusterSessionAnswer(cancel: true)) }
+    let again = try sessions.start(DesktopClusterSessionStart(kind: "setup"), executable: missing, configPath: nil)
+    #expect(again.field("id") != failed.field("id") && again.field("state") == .string("failed"))
+  }
+
   @Test func theEventStreamSendsTheWholeSessionOnEveryChange() async throws {
     let (directory, script) = try Self.fixture(Self.interactive)
     defer { try? FileManager.default.removeItem(at: directory) }

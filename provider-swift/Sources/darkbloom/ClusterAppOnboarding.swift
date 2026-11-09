@@ -3,8 +3,13 @@ import ArgumentParser
 import ProviderCore
 
 extension Cluster.Setup {
+    /// `--app-console` on `darkbloom cluster` and `darkbloom cluster local` (hidden).
+    static let appConsoleHelp = ArgumentHelp(
+        "Desktop app: run the onboarding without a terminal, its screens as JSON lines on standard output and its answers "
+            + "read as JSON lines from standard input.", visibility: .hidden)
+
     /// `darkbloom cluster --app-console` and `darkbloom cluster local --app-console`: the onboarding for the desktop app's
-    /// guided setup (`DesktopClusterSession`), with no terminal. Its screens are JSON lines on standard output and its
+    /// guided setup (`DesktopClusterSessions`), with no terminal. Its screens are JSON lines on standard output and its
     /// answers JSON lines on standard input (`ClusterOnboardingAppConsole`); the flow, its operations, the waitlist gate
     /// and the console lock are the terminal's. The last line is `{"event":"exit","code":N}`, N the exit status.
     static func runAppOnboarding(config: String?, modelDir: String?, worker: String?, request: ClusterOnboardingRequest,
@@ -36,7 +41,7 @@ extension Cluster.Setup {
     }
 
     /// The clusters waitlist gate on the app's console: its lines are said, and its question ("Join the Clusters waitlist
-    /// now?") is said and answered from a list, No first, as the terminal's `[y/N]`.
+    /// now?") is said and answered from a list, Yes or No with No selected, as the terminal's `[y/N]`.
     static func appWaitlistGate(console: ClusterOnboardingConsole, access: @escaping @autoclosure () -> FeatureWaitlistAccess)
         -> () -> FeatureWaitlistGate {
         {

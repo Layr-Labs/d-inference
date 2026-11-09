@@ -33,7 +33,7 @@ struct DesktopHTTP: HTTPResponder {
         header: request.headers[.authorization], token: token, origin: request.headers[.origin],
         host: request.head.authority)
     else {
-      return try json(.dict(["error": .string("Unauthorized local client")]), status: .unauthorized)
+      return try Self.json(.dict(["error": .string("Unauthorized local client")]), status: .unauthorized)
     }
     do {
       let path = request.uri.path
@@ -59,7 +59,7 @@ struct DesktopHTTP: HTTPResponder {
         return hardware.events(lease: try streams.acquire())
       }
       if request.method == .get, path == "/control/v1/hardware" {
-        return try json(
+        return try Self.json(
           await hardware.resource(peakBandwidthGbps: await backend.peakMemoryBandwidthGbps()))
       }
       if path.hasPrefix("/control/v1/cluster/session"),
@@ -68,30 +68,42 @@ struct DesktopHTTP: HTTPResponder {
         return response
       }
       if request.method == .get, path.hasPrefix("/control/v1/") {
-        return try json(try await backend.resource(String(path.dropFirst("/control/v1/".count))))
+        return try Self.json(try await backend.resource(String(path.dropFirst("/control/v1/".count))))
       }
       if request.method == .post, path == "/control/v1/actions" {
-        guard request.headers[.contentType]?.split(separator: ";").first == "application/json"
-        else {
-          return try json(.dict(["error": .string("JSON required")]), status: .unsupportedMediaType)
-        }
-        let bytes = try await request.body.collect(upTo: 16_384)
-        let action = try Self.decodeAction(Data(bytes.readableBytesView))
-        return try json(try .encoded(await backend.submit(action)), status: .accepted)
+        guard let body = try await Self.jsonBody(request) else { return try Self.jsonRequired() }
+        let action = try Self.decodeAction(body)
+        return try Self.json(try .encoded(await backend.submit(action)), status: .accepted)
       }
-      return try json(.dict(["error": .string("Unknown route")]), status: .notFound)
+      return try Self.json(.dict(["error": .string("Unknown route")]), status: .notFound)
     } catch {
       let failure = Self.errorResponse(for: error)
-      return try json(.dict(["error": .string(failure.message)]), status: failure.status)
+      return try Self.json(.dict(["error": .string(failure.message)]), status: failure.status)
     }
+  }
+
+  /// A POST's JSON body, at most 16 KiB (a larger one is the body limit's 413); nil without
+  /// `Content-Type: application/json`, which `jsonRequired` answers.
+  static func jsonBody(_ request: Request) async throws -> Data? {
+    guard request.headers[.contentType]?.split(separator: ";").first == "application/json" else { return nil }
+    let bytes = try await request.body.collect(upTo: 16_384)
+    return Data(bytes.readableBytesView)
+  }
+
+  static func jsonRequired() throws -> Response {
+    try json(.dict(["error": .string("JSON required")]), status: .unsupportedMediaType)
   }
 
   /// Only the client's own body is a client error (400); the renderer shows the
   /// message, so it is fixed rather than Swift's coding-path text.
-  static func decodeAction(_ data: Data) throws -> DesktopAction {
-    do { return try JSONDecoder().decode(DesktopAction.self, from: data) } catch {
+  static func decodeBody<Body: Decodable>(_ type: Body.Type, from data: Data) throws -> Body {
+    do { return try JSONDecoder().decode(type, from: data) } catch {
       throw ValidationError("Invalid request body")
     }
+  }
+
+  static func decodeAction(_ data: Data) throws -> DesktopAction {
+    try decodeBody(DesktopAction.self, from: data)
   }
 
   /// Validation messages are user-facing and pass through verbatim; HTTP errors
@@ -110,7 +122,7 @@ struct DesktopHTTP: HTTPResponder {
     }
   }
 
-  private func json(_ value: JSONValue, status: HTTPResponse.Status = .ok) throws -> Response {
+  static func json(_ value: JSONValue, status: HTTPResponse.Status = .ok) throws -> Response {
     let data = try JSONEncoder().encode(value)
     return Response(
       status: status, headers: [.contentType: "application/json", .cacheControl: "no-store"],

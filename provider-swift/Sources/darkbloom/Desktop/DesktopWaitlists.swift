@@ -46,10 +46,12 @@ extension DesktopBackend {
     case .unavailable: code = "unavailable"
     }
     let view = FeatureWaitlistView(cli: BuildEnvironment.current.cliName, coordinator: access.coordinator)
-    // One sentence after another: the problem, then what to do when the CLI says it on a line of its own.
+    // One sentence after another: the problem, then what to do when the CLI says it on a line of its own. A line that
+    // doesn't end its sentence gets a period before the next.
     let lines = view.problem(problem).map { $0.trimmingCharacters(in: .whitespaces) }
     let error = lines.enumerated().map { index, line in
-      index < lines.count - 1 && !(line.last.map { ".:!?".contains($0) } ?? true) ? line + "." : line
+      guard index < lines.count - 1, let end = line.last, !".:!?".contains(end) else { return line }
+      return line + "."
     }.joined(separator: " ")
     return .dict(["data": .array([]), "error": .string(error), "code": .string(code)])
   }

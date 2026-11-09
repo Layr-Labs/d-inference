@@ -85,7 +85,7 @@ final class DesktopClusterSessions: @unchecked Sendable {
   /// Grows on every change, across sessions, so a stream sends a frame only when something changed.
   private var revision = 0
 
-  deinit { if answers >= 0 { Darwin.close(answers) } }
+  deinit { closeAnswers() }
 
   /// A session runs: its child hasn't been seen to end.
   var running: Bool { lock.withLock { session?.state == "running" } }
@@ -103,18 +103,19 @@ final class DesktopClusterSessions: @unchecked Sendable {
   func start(_ start: DesktopClusterSessionStart, executable: URL, configPath: String?) throws -> JSONValue {
     try lock.withLock {
       guard session?.state != "running" else { throw HTTPError(.conflict, message: Self.busyMessage) }
-      if answers >= 0 { Darwin.close(answers); answers = -1 }
-      let id = UUID().uuidString
-      session = Session(id: id, kind: start.kind, startedAt: Date().timeIntervalSince1970)
-      revision += 1
+      closeAnswers()
+      // The child's callbacks wait for the lock, so they find this session once it is set below.
+      var started = Session(id: UUID().uuidString, kind: start.kind, startedAt: Date().timeIntervalSince1970)
       do {
-        try launch(id: id, executable: executable, arguments: start.arguments(configPath: configPath))
+        try launch(id: started.id, executable: executable, arguments: start.arguments(configPath: configPath))
       } catch {
-        session?.state = "failed"
-        session?.finishedAt = Date().timeIntervalSince1970
-        session?.error = "Couldn't start the cluster setup: \(error.localizedDescription)"
+        started.state = "failed"
+        started.finishedAt = Date().timeIntervalSince1970
+        started.error = "Couldn't start the cluster setup: \(error.localizedDescription)"
       }
-      return Self.json(session!)
+      session = started
+      revision += 1
+      return Self.json(started)
     }
   }
 
@@ -179,10 +180,7 @@ final class DesktopClusterSessions: @unchecked Sendable {
     child.standardInput = input
     child.standardOutput = output
     child.standardError = errors
-    var environment = ProcessInfo.processInfo.environment
-    environment["DARKBLOOM_NO_UPDATE_CHECK"] = "1"
-    environment["NO_COLOR"] = "1"
-    child.environment = environment
+    child.environment = DesktopWorker.childEnvironment
     child.terminationHandler = { [weak self] process in
       let signal = process.terminationReason == .uncaughtSignal
       self?.ended(id, status: (process.terminationStatus, signal))
@@ -218,28 +216,14 @@ final class DesktopClusterSessions: @unchecked Sendable {
     }
   }
 
-  /// Each line of `handle` as it arrives, until it ends (a line longer than `maximumLine` is dropped), then closes it.
+  /// Each line of `handle` as it arrives, framed as the console frames them (a line longer than `maximumLine` is
+  /// dropped), then its unterminated last line, if any; then closes it.
   private static func lines(of handle: FileHandle, _ line: (String) -> Void) {
     defer { try? handle.close() }
-    var pending = [UInt8]()
-    var skipping = false
-    var buffer = [UInt8](repeating: 0, count: 65_536)
-    while true {
-      let count = Darwin.read(handle.fileDescriptor, &buffer, buffer.count)
-      if count < 0, errno == EINTR { continue }
-      guard count > 0 else { break }
-      pending.append(contentsOf: buffer[0..<count])
-      while let newline = pending.firstIndex(of: 0x0A) {
-        let text = String(decoding: pending[..<newline], as: UTF8.self)
-        pending.removeSubrange(...newline)
-        if skipping { skipping = false } else { line(text) }
-      }
-      if pending.count > maximumLine {
-        pending.removeAll()
-        skipping = true
-      }
-    }
-    if !pending.isEmpty, !skipping { line(String(decoding: pending, as: UTF8.self)) }
+    let rest = ClusterOnboardingAppConsole.readLines(
+      handle.fileDescriptor, maximumBytes: maximumLine, readBytes: 65_536
+    ) { line(String(decoding: $0, as: UTF8.self)) }
+    if let rest { line(String(decoding: rest, as: UTF8.self)) }
   }
 
   private static func write(_ line: String, to descriptor: Int32) -> Bool {
@@ -386,14 +370,7 @@ final class DesktopClusterSessions: @unchecked Sendable {
       finishIfEnded()
     }
     // A child that left its output to another process (one it started) has no more to say once it exited.
-    DispatchQueue.global().asyncAfter(deadline: .now() + Self.drainSeconds) { [weak self] in
-      guard let self else { return }
-      self.lock.withLock {
-        guard self.session?.id == id else { return }
-        self.session?.outputEnded = true
-        self.finishIfEnded()
-      }
-    }
+    DispatchQueue.global().asyncAfter(deadline: .now() + Self.drainSeconds) { [weak self] in self?.outputEnded(id) }
   }
 
   /// The session's end, once its child exited and its output was read (lock held).
@@ -407,8 +384,15 @@ final class DesktopClusterSessions: @unchecked Sendable {
     current.state = current.cancelRequested ? "cancelled" : code == 0 ? "succeeded" : "failed"
     if !current.exited { current.error = Self.endedEarly(current.errorLines, code: code, signal: status.signal) }
     session = current
-    if answers >= 0 { Darwin.close(answers); answers = -1 }
+    closeAnswers()
     revision += 1
+  }
+
+  /// Closes the child's answers if they are open (lock held, or in `deinit`).
+  private func closeAnswers() {
+    guard answers >= 0 else { return }
+    Darwin.close(answers)
+    answers = -1
   }
 
   /// Why a child ended without its `exit` event: a runtime without the app's console says so in the API's words for an
@@ -469,8 +453,7 @@ extension DesktopBackend {
     guard !operations.contains(where: { $0.state == "running" }) else {
       throw HTTPError(.conflict, message: "An operation is already running. Wait for it to finish.")
     }
-    let cli = try executable ?? FanServiceManager().currentExecutableURL()
-    return try clusterSessions.start(start, executable: cli, configPath: configPath)
+    return try clusterSessions.start(start, executable: DesktopWorker.childExecutable(executable), configPath: configPath)
   }
 }
 
@@ -479,44 +462,21 @@ extension DesktopHTTP {
   func clusterSessionRoute(_ request: Request, path: String) async throws -> Response? {
     let sessions = backend.clusterSessions
     if request.method == .get, path == "/control/v1/cluster/session" {
-      return try Self.clusterJSON(sessions.json())
+      return try Self.json(sessions.json())
     }
     if request.method == .get, path == "/control/v1/cluster/session/events" {
       return sessions.events(lease: try streams.acquire())
     }
     if request.method == .post, path == "/control/v1/cluster/session" {
-      guard let data = try await Self.clusterBody(request) else { return try Self.jsonRequired() }
-      let start: DesktopClusterSessionStart
-      do { start = try JSONDecoder().decode(DesktopClusterSessionStart.self, from: data) } catch {
-        throw ValidationError("Invalid request body")
-      }
-      return try Self.clusterJSON(try await backend.startClusterSession(start), status: .accepted)
+      guard let body = try await Self.jsonBody(request) else { return try Self.jsonRequired() }
+      let start = try Self.decodeBody(DesktopClusterSessionStart.self, from: body)
+      return try Self.json(try await backend.startClusterSession(start), status: .accepted)
     }
     if request.method == .post, path == "/control/v1/cluster/session/answer" {
-      guard let data = try await Self.clusterBody(request) else { return try Self.jsonRequired() }
-      let answer: DesktopClusterSessionAnswer
-      do { answer = try JSONDecoder().decode(DesktopClusterSessionAnswer.self, from: data) } catch {
-        throw ValidationError("Invalid request body")
-      }
-      return try Self.clusterJSON(try sessions.answer(answer))
+      guard let body = try await Self.jsonBody(request) else { return try Self.jsonRequired() }
+      let answer = try Self.decodeBody(DesktopClusterSessionAnswer.self, from: body)
+      return try Self.json(try sessions.answer(answer))
     }
     return nil
-  }
-
-  /// A JSON body of at most 16 KiB, as actions take; nil without `Content-Type: application/json`.
-  static func clusterBody(_ request: Request) async throws -> Data? {
-    guard request.headers[.contentType]?.split(separator: ";").first == "application/json" else { return nil }
-    let bytes = try await request.body.collect(upTo: 16_384)
-    return Data(bytes.readableBytesView)
-  }
-
-  static func jsonRequired() throws -> Response {
-    try clusterJSON(.dict(["error": .string("JSON required")]), status: .unsupportedMediaType)
-  }
-
-  static func clusterJSON(_ value: JSONValue, status: HTTPResponse.Status = .ok) throws -> Response {
-    Response(
-      status: status, headers: [.contentType: "application/json", .cacheControl: "no-store"],
-      body: .init(byteBuffer: ByteBuffer(bytes: try JSONEncoder().encode(value))))
   }
 }

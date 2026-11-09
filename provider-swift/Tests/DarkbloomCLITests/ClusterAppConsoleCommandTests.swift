@@ -134,4 +134,28 @@ struct ClusterAppConsoleCommandTests {
         #expect(!Cluster.Setup.helpMessage().contains("--app-console"))
         #expect(!Cluster.Local.helpMessage().contains("--app-console"))
     }
+
+    /// `bytes` through a pipe that then ends, read four bytes at a time with at most eight waiting for a line break.
+    static func framed(_ bytes: String) throws -> (lines: [String], rest: String?) {
+        var ends: [Int32] = [-1, -1]
+        guard pipe(&ends) == 0 else { throw CocoaError(.fileWriteUnknown) }
+        defer { Darwin.close(ends[0]) }
+        _ = bytes.withCString { Darwin.write(ends[1], $0, strlen($0)) }
+        Darwin.close(ends[1])
+        var lines: [String] = []
+        let rest = ClusterOnboardingAppConsole.readLines(ends[0], maximumBytes: 8, readBytes: 4) {
+            lines.append(String(decoding: $0, as: UTF8.self))
+        }
+        return (lines, rest.map { String(decoding: $0, as: UTF8.self) })
+    }
+
+    @Test("the console's framing, as both ends read it: whole lines, an overlong one dropped through its line break")
+    func linesAreFramedAsBothEndsReadThem() throws {
+        #expect(try Self.framed("one\ntwo\n") == (["one", "two"], nil))
+        #expect(try Self.framed("") == ([], nil))
+        // Over eight bytes wait for the break: that line is dropped, its continuation too, and the next one read.
+        #expect(try Self.framed("0123456789abcdef\nafter\nrest") == (["after"], "rest"))
+        // An overlong last line is no rest.
+        #expect(try Self.framed("ok\n0123456789ab") == (["ok"], nil))
+    }
 }

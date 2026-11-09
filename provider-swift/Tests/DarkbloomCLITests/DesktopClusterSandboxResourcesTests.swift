@@ -14,8 +14,7 @@ struct DesktopClusterSandboxResourcesTests {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let runs = directory.appendingPathComponent("runs")
     let script = directory.appendingPathComponent("fake-darkbloom")
-    try "#!/bin/sh\necho \"$1 $2\" >> '\(runs.path)'\n\(body)\n".write(to: script, atomically: true, encoding: .utf8)
-    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+    try DesktopWorkerTests.writeScript("echo \"$1 $2\" >> '\(runs.path)'\n\(body)", to: script)
     return (directory, script, runs)
   }
 
@@ -93,6 +92,14 @@ struct DesktopClusterSandboxResourcesTests {
     let value = await DesktopBackend.readClusterStatus(executable: missing, configPath: nil)
     #expect(value.field("state").text == "unknown")
     #expect(value.field("error").text?.contains("couldn't run") == true)
+    #expect(value.field("error").text?.hasPrefix("`\(BuildEnvironment.current.cliName) cluster status` couldn't run: ") == true)
+  }
+
+  @Test func sandboxStatusThatCannotRunIsUnknown() async throws {
+    let missing = FileManager.default.temporaryDirectory.appendingPathComponent("missing-\(UUID().uuidString)")
+    let value = await DesktopBackend.readSandboxStatus(executable: missing)
+    #expect(value.field("schema") == .int(1) && value.field("state").text == "unknown")
+    #expect(value.field("error").text?.hasPrefix("`\(BuildEnvironment.current.cliName) sandbox status` couldn't run: ") == true)
   }
 
   @Test func sandboxStatusIsTheAddOnDocumentWhateverItsExitWithSecondsForTheUpdateCheck() async throws {

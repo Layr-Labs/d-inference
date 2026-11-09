@@ -387,10 +387,11 @@ and keeps that screen as a session (`provider-swift/Sources/darkbloom/Desktop/De
 | `GET /control/v1/cluster/session/events` | SSE frames `event: cluster-session` whose `data` is the whole session (or `null`): one at once, then one per change, at most five a second; the stream renews after 300 frames or 60 s and shares the eight-stream limit | `429` (`DesktopClusterSessions.events`) |
 
 Bodies need `Content-Type: application/json` (`415` otherwise) and at most
-16 KiB. `setup` runs `darkbloom cluster --app-console`; `local` runs
+16 KiB, as actions take (`DesktopHTTP.jsonBody`). `setup` runs `darkbloom cluster --app-console`; `local` runs
 `darkbloom cluster local --app-console [--bind <bind>] [<model>]`; both add
 `--config` as every child gets it, made absolute (`DesktopClusterSessionStart.arguments`).
-The child has no terminal and runs with `DARKBLOOM_NO_UPDATE_CHECK=1` and `NO_COLOR=1`.
+The child has no terminal and, as every child of the API, runs with `DARKBLOOM_NO_UPDATE_CHECK=1` and `NO_COLOR=1`
+(`DesktopWorker.childEnvironment`).
 
 A running session holds the mutation slot actions use, since the setup starts
 and stops this Mac's services itself: it starts only while no operation runs,

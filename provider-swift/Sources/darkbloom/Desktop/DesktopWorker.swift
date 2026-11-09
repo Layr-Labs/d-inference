@@ -89,6 +89,21 @@ final class DesktopWorker: @unchecked Sendable {
   /// The output a run keeps: its last 32 KiB.
   static let outputLimit = 32_768
 
+  /// The CLI every child of the API runs (this worker's, and the guided cluster setup's): `executable`, else this
+  /// process's own.
+  static func childExecutable(_ executable: URL?) throws -> URL {
+    try executable ?? FanServiceManager().currentExecutableURL()
+  }
+
+  /// Every child's environment: this process's, without the update check and without colour, as no terminal shows
+  /// what a child prints.
+  static var childEnvironment: [String: String] {
+    var environment = ProcessInfo.processInfo.environment
+    environment["DARKBLOOM_NO_UPDATE_CHECK"] = "1"
+    environment["NO_COLOR"] = "1"
+    return environment
+  }
+
   private func execute(
     _ arguments: [String], timeout: TimeInterval, capture: OutputCapture, errors: DesktopOutputBuffer?,
     input: Data?, lines: (@Sendable (String) -> Void)?, progress: @escaping @Sendable (String) -> Void
@@ -97,7 +112,7 @@ final class DesktopWorker: @unchecked Sendable {
     let errorPipe = errors == nil ? nil : Pipe()
     let standardInput = try input.map(Self.filledPipe)
     let child = Process()
-    child.executableURL = try executable ?? FanServiceManager().currentExecutableURL()
+    child.executableURL = try Self.childExecutable(executable)
     child.arguments = arguments
     if let standardInput { child.standardInput = standardInput } else { child.standardInput = FileHandle.nullDevice }
     child.standardOutput = output
@@ -110,10 +125,7 @@ final class DesktopWorker: @unchecked Sendable {
     } else {
       child.standardError = FileHandle.nullDevice
     }
-    var environment = ProcessInfo.processInfo.environment
-    environment["DARKBLOOM_NO_UPDATE_CHECK"] = "1"
-    environment["NO_COLOR"] = "1"
-    child.environment = environment
+    child.environment = Self.childEnvironment
     let buffer = DesktopOutputBuffer()
     let reader = DispatchGroup()
     let current = Invocation(child)

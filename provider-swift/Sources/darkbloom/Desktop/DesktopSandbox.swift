@@ -9,6 +9,7 @@ extension DesktopBackend {
   /// `sandbox status` waits up to 10 s for the add-on (`Sandbox.statusTimeout`); its child gets more.
   static let sandboxStatusTimeout: TimeInterval = 30
   static let sandboxLogLines = 200
+  static let sandboxLogsTimeout: TimeInterval = 15
   /// How long `sandbox setup --json-events` has, once cancelled, to pass SIGINT to its installer and say how it ended
   /// before it is killed (`DesktopWorker.terminationGrace`).
   static let sandboxSetupGrace: TimeInterval = 30
@@ -33,27 +34,19 @@ extension DesktopBackend {
   }
 
   static func readSandboxStatus(executable: URL?) async -> JSONValue {
-    do {
-      let run = try await DesktopWorker(executable: executable).runReportingErrors(
-        ["sandbox", "status", "--json"], timeout: sandboxStatusTimeout)
-      return sandboxStatus(output: run.output, errors: run.errors, exitCode: run.status)
-    } catch DesktopWorker.RunError.timedOut {
-      return sandboxStatusUnavailable(
-        "`\(BuildEnvironment.current.cliName) sandbox status` didn't answer within \(Int(sandboxStatusTimeout)) s.")
-    } catch {
-      return sandboxStatusUnavailable(
-        "`\(BuildEnvironment.current.cliName) sandbox status` couldn't run: \(DesktopText.line(String(describing: error)))")
-    }
+    await readStatus(
+      "sandbox status", arguments: ["sandbox", "status", "--json"], executable: executable,
+      timeout: sandboxStatusTimeout, parse: { sandboxStatus(output: $0.output, errors: $0.errors, exitCode: $0.status) },
+      unavailable: sandboxStatusUnavailable)
   }
 
   /// The add-on's document, decoded as leniently as the CLI decodes it (`SandboxAddonStatus`: an integer `schema` of 1
   /// or more and a string `state`), with `last_update_check` normalized as the CLI reads it
-  /// (`SandboxAddonStatus.timestamp`: seconds, milliseconds or ISO 8601). Otherwise the CLI's own reason from stderr.
+  /// (`SandboxAddonStatus.timestamp`: seconds, milliseconds or ISO 8601). Otherwise the CLI's own reason from stderr
+  /// (`noStatusReason`).
   static func sandboxStatus(output: String, errors: String, exitCode: Int32) -> JSONValue {
     guard SandboxAddonStatus(json: output) != nil, case .object(let pairs)? = jsonObject(output) else {
-      let reason = DesktopText.lastLines(errors, count: 1).first
-        ?? "`\(BuildEnvironment.current.cliName) sandbox status --json` printed no status (exit \(exitCode))."
-      return sandboxStatusUnavailable(reason)
+      return sandboxStatusUnavailable(noStatusReason("sandbox status", errors: errors, exitCode: exitCode))
     }
     let raw = (try? JSONSerialization.jsonObject(with: Data(output.utf8))) as? [String: Any]
     let checked = SandboxAddonStatus.timestamp(raw?["last_update_check"]).map { JSONValue.number($0.timeIntervalSince1970) }
@@ -70,26 +63,24 @@ extension DesktopBackend {
   /// cut in two is left out.
   static func readSandboxLogs(executable: URL?) async -> JSONValue {
     let observed = JSONValue.number(Date().timeIntervalSince1970)
+    func unavailable(_ reason: String) -> JSONValue {
+      .dict(["lines": .array([]), "observed_at": observed, "error": .string(reason)])
+    }
+    let command = "`\(BuildEnvironment.current.cliName) sandbox logs`"
     do {
       let (code, output) = try await DesktopWorker(executable: executable).run(
-        ["sandbox", "logs", "-n", String(sandboxLogLines)], timeout: 15)
-      guard code == 0 else {
-        return .dict([
-          "lines": .array([]), "observed_at": observed,
-          "error": .string("`\(BuildEnvironment.current.cliName) sandbox logs` exited \(code)."),
-        ])
-      }
+        ["sandbox", "logs", "-n", String(sandboxLogLines)], timeout: sandboxLogsTimeout)
+      guard code == 0 else { return unavailable("\(command) exited \(code).") }
       let whole = output.utf8.count < DesktopWorker.outputLimit
         ? output : String(output.drop(while: { $0 != "\n" }).dropFirst())
       let lines = DesktopText.lastLines(whole, count: sandboxLogLines)
       return .dict(["lines": .array(lines.map(DV.string)), "observed_at": observed])
+    } catch DesktopWorker.RunError.timedOut {
+      return unavailable("The agent log didn't answer within \(Int(sandboxLogsTimeout)) s.")
+    } catch let error as DesktopWorker.RunError {
+      return unavailable(error.description)
     } catch {
-      let reason =
-        (error as? DesktopWorker.RunError).map {
-          if case .timedOut = $0 { return "The agent log didn't answer within 15 s." }
-          return $0.description
-        } ?? "`\(BuildEnvironment.current.cliName) sandbox logs` couldn't run."
-      return .dict(["lines": .array([]), "observed_at": observed, "error": .string(reason)])
+      return unavailable("\(command) couldn't run.")
     }
   }
 

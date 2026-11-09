@@ -37,7 +37,8 @@ public final class ClusterOnboardingAppConsole: ClusterOnboardingConsole, @unche
 
     /// What the app shows live now (the flow's thread only): nothing, `working` rows or a `progress` line.
     private var live: Live = .none
-    /// A newer `progress` line than the one sent, held back while progress is sent at most four times a second.
+    /// When the last `progress` line was sent (uptime nanoseconds; the flow's thread only): a newer line within
+    /// `progressInterval` is skipped, and sent once the flow says it again after that.
     private var progressSent: UInt64 = 0
 
     /// One write at a time, whole lines.
@@ -320,31 +321,43 @@ public final class ClusterOnboardingAppConsole: ClusterOnboardingConsole, @unche
         condition.unlock()
     }
 
-    /// Reads answer lines until the input ends, then closes it; each line is taken as it arrives.
+    /// Reads answer lines until the input ends, then closes it; each line is taken as it arrives. An answer the input
+    /// ended in the middle of is no answer.
     private func read() {
         defer { Darwin.close(input) }
-        var pending = [UInt8]()
-        var skipping = false
-        var buffer = [UInt8](repeating: 0, count: 4_096)
-        while true {
-            let count = Darwin.read(input, &buffer, buffer.count)
-            if count < 0, errno == EINTR { continue }
-            guard count > 0 else { break }
-            pending.append(contentsOf: buffer[0..<count])
-            while let newline = pending.firstIndex(of: 0x0A) {
-                let line = Array(pending[..<newline])
-                pending.removeSubrange(...newline)
-                if skipping { skipping = false } else { take(line) }
-            }
-            if pending.count > Self.maximumLine {
-                pending.removeAll()
-                skipping = true
-            }
-        }
+        Self.readLines(input, maximumBytes: Self.maximumLine) { take($0) }
         condition.lock()
         inputEnded = true
         condition.broadcast()
         condition.unlock()
+    }
+
+    /// The console's framing, as both ends read it (this console its answers, the desktop API's session its events):
+    /// each line of `descriptor`, without its "\n", as soon as it arrives, until the descriptor ends or fails. Once more
+    /// than `maximumBytes` of a line wait for its "\n", that line is dropped whole, up to and with its "\n", so no reader
+    /// gets part of an object. Returns what followed the last "\n" at the end, nil when nothing did or it was dropped.
+    @discardableResult
+    public static func readLines(_ descriptor: Int32, maximumBytes: Int, readBytes: Int = 4_096,
+                                 _ line: ([UInt8]) -> Void) -> [UInt8]? {
+        var pending = [UInt8]()
+        var skipping = false
+        var buffer = [UInt8](repeating: 0, count: readBytes)
+        while true {
+            let count = Darwin.read(descriptor, &buffer, buffer.count)
+            if count < 0, errno == EINTR { continue }
+            guard count > 0 else { break }
+            pending.append(contentsOf: buffer[0..<count])
+            while let newline = pending.firstIndex(of: 0x0A) {
+                let complete = Array(pending[..<newline])
+                pending.removeSubrange(...newline)
+                if skipping { skipping = false } else { line(complete) }
+            }
+            if pending.count > maximumBytes {
+                pending.removeAll()
+                skipping = true
+            }
+        }
+        return pending.isEmpty || skipping ? nil : pending
     }
 
     private struct Incoming: Decodable {

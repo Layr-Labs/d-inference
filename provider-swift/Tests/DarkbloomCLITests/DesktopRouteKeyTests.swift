@@ -26,16 +26,14 @@ struct DesktopRouteKeyTests {
     let desktop = directory.appendingPathComponent("desktop")
     try FileManager.default.createDirectory(at: desktop, withIntermediateDirectories: true)
     let script = directory.appendingPathComponent("fake-darkbloom")
-    try """
-      #!/bin/sh
+    try DesktopWorkerTests.writeScript("""
       [ "$1 $2" = "route key" ] || exit 64
       printf '%s\\n' "$@" > '\(directory.path)/arguments'
       cat > '\(directory.path)/input'
       printf '✓ Account key saved in this Mac\\x27s Keychain. Darkbloom accepted it.\\n'
       printf 'echoed by a careless CLI: %s\\n' "$(cat '\(directory.path)/input')" >&2
       exit 0
-      """.write(to: script, atomically: true, encoding: .utf8)
-    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+      """, to: script)
     let config = directory.appendingPathComponent("provider.toml")
     try "[provider]\nname = \"Route key fixture\"\n".write(to: config, atomically: true, encoding: .utf8)
     return Fixture(directory: directory, script: script, desktop: desktop, config: config)

@@ -20,31 +20,22 @@ extension DesktopBackend {
   }
 
   static func readClusterStatus(executable: URL?, configPath: String?) async -> JSONValue {
-    let arguments = ["cluster", "status", "--json"] + (configPath.map { ["--config", $0] } ?? [])
-    do {
-      let run = try await DesktopWorker(executable: executable).runReportingErrors(
-        arguments, timeout: clusterStatusTimeout)
-      return clusterStatus(exitCode: run.status, output: run.output, errors: run.errors)
-    } catch DesktopWorker.RunError.timedOut {
-      return clusterStatusUnavailable(
-        "`\(BuildEnvironment.current.cliName) cluster status` didn't answer within \(Int(clusterStatusTimeout)) s.")
-    } catch {
-      return clusterStatusUnavailable(
-        "`\(BuildEnvironment.current.cliName) cluster status` couldn't run: \(DesktopText.line(String(describing: error)))")
-    }
+    await readStatus(
+      "cluster status", arguments: ["cluster", "status", "--json"] + (configPath.map { ["--config", $0] } ?? []),
+      executable: executable, timeout: clusterStatusTimeout,
+      parse: { clusterStatus(exitCode: $0.status, output: $0.output, errors: $0.errors) },
+      unavailable: clusterStatusUnavailable)
   }
 
   /// The document `cluster status --json` printed, as it is, for an exit status that prints one. Anything else is the
-  /// same shape with nothing known (`clusterStatusUnavailable`), and why: the command's last line on stderr, if any.
+  /// same shape with nothing known (`clusterStatusUnavailable`), and why (`noStatusReason`).
   static func clusterStatus(exitCode: Int32, output: String, errors: String) -> JSONValue {
     if clusterStatusExitCodes.contains(exitCode), let document = jsonObject(output),
       document.field("schema").number.map({ $0 >= 1 }) == true, document.field("state").text != nil
     {
       return document
     }
-    let reason = DesktopText.lastLines(errors, count: 1).first
-      ?? "`\(BuildEnvironment.current.cliName) cluster status --json` printed no status (exit \(exitCode))."
-    return clusterStatusUnavailable(reason)
+    return clusterStatusUnavailable(noStatusReason("cluster status", errors: errors, exitCode: exitCode))
   }
 
   /// `ClusterStatus` with every key, nothing known, `state` `unknown` and `exit_code` -1, and `error` saying why.
@@ -54,13 +45,5 @@ extension DesktopBackend {
       "mode": .null, "split": .null, "serves": .null, "state": .string("unknown"), "reason": .null, "next": .null,
       "lines": .array([]), "service": .null, "exit_code": .int(-1), "error": .string(reason),
     ])
-  }
-
-  /// `text` as one JSON object; nil for anything else.
-  static func jsonObject(_ text: String) -> JSONValue? {
-    guard let data = text.data(using: .utf8), let value = try? JSONDecoder().decode(JSONValue.self, from: data),
-      case .object = value
-    else { return nil }
-    return value
   }
 }

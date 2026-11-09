@@ -179,26 +179,15 @@ actor DesktopBackend {
         let arguments = try arguments(for: request)
         try await requireRuntimeSupport(arguments)
         try Task.checkCancellation()
-        let worker = DesktopWorker(
-          executable: executable, terminationGrace: request.action == "sandbox_setup" ? Self.sandboxSetupGrace : 1)
+        let worker = request.action == "sandbox_setup"
+          ? DesktopWorker(executable: executable, terminationGrace: Self.sandboxSetupGrace)
+          : DesktopWorker(executable: executable)
         workers[request.id] = worker
         if request.action == "download" {
           setDownloadModel(request.id, model: request.model)
         }
         let before = Self.currentExecutableStamp()
-        let (code, output): (Int32, String)
-        if request.action == "autopilot" {
-          (code, output) = try await runAutopilot(request, arguments: arguments, worker: worker, beforeStart: { [configPath] in
-              if DesktopLocalLifecycle.isActive { try await DesktopLocalLifecycle.stop(configPath: configPath) }
-            })
-        } else if request.action == "sandbox_setup" {
-          (code, output) = try await runSandboxSetup(request, arguments: arguments, worker: worker)
-        } else {
-          // `route_key`'s key goes on standard input only (`routeKeyInput`); its output never holds it (`withoutKey`).
-          (code, output) = try await worker.run(arguments, input: Self.routeKeyInput(request), progress: { [weak self] output in
-              Task { await self?.setProgress(request.id, output: Self.withoutKey(output, request: request)) }
-            })
-        }
+        let (code, output) = try await runChild(request, arguments: arguments, worker: worker)
         complete(request.id, code: code, message: Self.withoutKey(output, request: request))
         if ["update", "update_rollback"].contains(request.action), code == 0,
           Self.shouldRestartForReplacedExecutable(
@@ -211,6 +200,26 @@ actor DesktopBackend {
     } catch {
       if ["link", "account-signin"].contains(request.action) { link = .null }
       complete(request.id, code: 1, message: Self.withoutKey(String(describing: error), request: request))
+    }
+  }
+
+  /// Runs a validated action's child on `worker`: Autopilot and Darkbloom Sandbox setup follow their child's output
+  /// themselves; any other action reports what its child prints as its progress.
+  private func runChild(_ request: DesktopAction, arguments: [String], worker: DesktopWorker) async throws
+    -> (Int32, String)
+  {
+    switch request.action {
+    case "autopilot":
+      return try await runAutopilot(request, arguments: arguments, worker: worker, beforeStart: { [configPath] in
+        if DesktopLocalLifecycle.isActive { try await DesktopLocalLifecycle.stop(configPath: configPath) }
+      })
+    case "sandbox_setup":
+      return try await runSandboxSetup(request, arguments: arguments, worker: worker)
+    default:
+      // `route_key`'s key goes on standard input only (`routeKeyInput`); its output never holds it (`withoutKey`).
+      return try await worker.run(arguments, input: Self.routeKeyInput(request), progress: { [weak self] output in
+        Task { await self?.setProgress(request.id, output: Self.withoutKey(output, request: request)) }
+      })
     }
   }
 

@@ -34,6 +34,7 @@ extension NemotronSuperManagedSlotTests {
         let modeControls: [(String, [String: Any], Bool)] = [
             ("omitted", [:], true), ("high", ["reasoning_effort": "high"], true),
             ("medium", ["reasoning_effort": "medium"], true), ("none", ["reasoning_effort": "none"], false),
+            ("low", ["reasoning_effort": "low"], true), ("max", ["reasoning_effort": "max"], true),
             ("off", ["reasoning_effort": "off"], false), ("zero", ["reasoning_effort": "0"], false),
             ("nested-medium", ["reasoning": ["effort": " MEDIUM\n"]], true),
             ("template-medium", ["chat_template_kwargs": ["enable_thinking": true, "medium_effort": true]], true),
@@ -54,7 +55,7 @@ extension NemotronSuperManagedSlotTests {
                  try body(["reasoning_effort": effort, "response_format": ["type": "json_object"]],
                      stream, "Return exactly one JSON object with key answer and integer value 4."))
             } }
-        let invalid: [Data] = try ([["reasoning_effort": "low"], ["reasoning_effort": "xhigh"],
+        let invalid: [Data] = try ([["reasoning_effort": "turbo"], ["reasoning_effort": "low", "medium_effort": false],
                                     ["reasoning_effort": "medium", "medium_effort": false],
                                     ["reasoning_effort": "high", "reasoning": ["effort": "medium"]]] as [[String: Any]])
             .map { try body($0, true, Self.arithmeticPrompt) }

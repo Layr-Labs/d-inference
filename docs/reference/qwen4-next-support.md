@@ -1,6 +1,6 @@
 # Qwen 3.8 Next (Flash-Next) native support reference
 
-> Last updated: 2026-10-20
+> Last updated: 2026-11-08
 
 Reference for the native Qwen4 support candidate and its remaining qualification gates. These source defaults do not publish a model, approve a catalog entry, qualify a hardware tier or establish a production release. The composed SDK's `libs/mlx-swift-lm/docs/qwen4/composition.md` records source selection and excluded experiments.
 
@@ -69,18 +69,23 @@ Boundary/policy unit tests do not certify a 262K workload on 128 GiB hardware.
 The SDK pin, weights, quantization, embedded MTP and native arithmetic are
 unchanged by this policy update.
 
-The owned artifact supports reasoning ON with its default `xhigh`, or explicit
-`low`, `medium`, `xhigh`. Chat supports `reasoning.enabled=false`; Chat and
-Responses both support `reasoning.effort=none`. The local Responses schema
-does not model `reasoning.enabled`; do not substitute that extension for its
-supported OFF form. Existing Chat Boolean precedence is preserved.
-Unsupported active efforts such as `high` or `minimal` are rejected before
-template rendering with a typed HTTP 400, not coerced to another effort.
-Disabled thinking retains its existing precedence. Every concrete
+The owned artifact's template renders reasoning ON at its default `xhigh`, or
+`low`, `medium`, `xhigh`, and raises for any other effort while thinking.
+Every effort a client sends reaches it as one of those: `minimal` renders
+`low`, and `high` and `max` render `xhigh`
+([reasoning effort](../architecture/inference.md#reasoning-effort)). Chat
+supports `reasoning.enabled=false`; Chat and Responses both support
+`reasoning.effort=none`. The local Responses schema does not model
+`reasoning.enabled`; do not substitute that extension for its supported OFF
+form. Existing Chat Boolean precedence is preserved, and disabled thinking
+retains its existing precedence. An effort that is none of the names is
+refused before template rendering with a typed HTTP 400. Every concrete
 Qwen3.8-27B build (`ModelRuntimeRequirements.qwen38ConcreteModelIDs`) ships a
-template with the same effort raise, so it shares this boundary; other
-artifact templates are unaffected. Source: `provider-swift/Sources/ProviderCore/Inference/Qwen4SupportPolicy.swift`
-(`validateReasoningContext`) and `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift`
+template with the same effort levels, and so does the Qwen 3.5 template family;
+another Qwen4 artifact's effort goes to its template as sent. Source:
+`provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningEffort.swift`
+(`ReasoningEffortPolicy`), `provider-swift/Sources/ProviderCore/Inference/Qwen4SupportPolicy.swift`
+(`ownsEffortTemplate`) and `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift`
 (`tokenize`). Hosted OpenRouter routing, adapter control mappings, exclusion,
 reasoning-token budgets and opaque reasoning-history extensions require
 separate qualification; localhost success does not establish them.

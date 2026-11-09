@@ -5572,12 +5572,13 @@ and `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+
 
 ## A pipeline stage's memory refusal ends that request alone
 
-A layer-stage pipeline (the Qwen and Gemma 4 stages, and GLM's) checks each
-running request against its rank's live memory gate, at most every 250 ms:
+A layer-stage pipeline (the Qwen and Gemma 4 stages, GLM's and MiMo V2.6's)
+checks each running request against its rank's live memory gate, at most
+every 250 ms:
 kept prompt prefixes give way first, then the request's own prefix capture
 (`QwenResidentRequestExecution.checkRunning`; the gate is
 `QwenResidentRequestAllowance.requireContinuing`, GLM's `requireResources`).
-Before 0.10.12 a refusal that remained was thrown from the request's `check`,
+Before 0.10.11 a refusal that remained was thrown from the request's `check`,
 which also runs inside every transfer. The refusing rank left the data plane
 mid-exchange and its worker exited (the worker coordinator's failure path), the
 other rank lost its input, the client got an untyped 500 and the pair stopped
@@ -5628,7 +5629,8 @@ on both ranks, and nothing else:
 | Phase split, alone route | Rank 0 at the hand-off header; rank 1 at `handoffReady` or `handoffAccepted`. After the hand-off, rank 1 at its next relay and rank 0 at a relay decision; on the alone route, rank 1's prompt digests too |
 | Before the first frame | No stop point: the reservation's own gate admitted the request just before, and a refusal is caught at the first frame |
 
-**Batch lanes** (`QwenResidentRuntime+Batch.swift`, wire v3). A refusal
+**Batch lanes** (`QwenResidentRuntime+Batch.swift`, wire v3; MiMo's
+`IndependentHistoryBatchDriver` on the same wire). A refusal
 stops one lane, the newest still running (`QwenBatchMemoryStop`), never the
 batch. Rank 0 polls before it builds a step's header, and rank 1 before its
 reply, which names its lane in `memoryMask` (word 6). Rank 0 lets the lane
@@ -5683,12 +5685,16 @@ batches failed whole on a refusal, so the worker exited either way. Now:
   plans it to leave with disposition 5 once it owes no answer, both retire it
   as a cancelled lane, and it is published as aborted. The singleton host
   returns the abort as its completion.
+- **GLM's lanes** (`GLM5NextTensorParallelLaneLoop.run(memoryRefused:check:)`):
+  the same at each step's start. Rank 1 names its lane with 2 in that slot's
+  leave word (`Report.memoryWanted`); rank 0 stops it running and publishing
+  and lets it leave, once it owes no answer, with `abortedRank0` or
+  `abortedRank1` (leave words 5 and 6).
 
-**Not covered yet.** MiMo's pipeline keeps the running check in `check`, and
-GLM tensor parallel's lanes (`GLM5NextTensorParallelLaneLoop`) fail their batch
-on a refusal, so either still ends its worker. Native errors, protocol
-violations, a peer that doesn't confirm within the progress limit, the deadline
-and power or thermal refusals fail the worker as before.
+Every pair mode is covered: pipeline and tensor parallel, one request or
+lanes, MTP and assistant lanes, for every family that serves in it. Native
+errors, protocol violations, a peer that doesn't confirm within the progress
+limit, the deadline and power or thermal refusals fail the worker as before.
 
 **The dev memory fault.** Dev and DevNet builds can make a rank's live gate
 refuse the next request from its Nth check on (`ClusterMemoryFault`, the file

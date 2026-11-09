@@ -128,6 +128,11 @@ private func checkGemmaRequestAllowance(_ priced: ClusterModelLayout, _ checks: 
     checks.require("Gemma TP allowance: eight sealed frames of the packed feed-forward collective (512 x 101,376 bytes and the seal)",
         budget.allowance.maximumCollectivePayloadBytes == 512 * 101_376
             && budget.allowance.collectiveScratchBytes == 8 * (budget.allowance.maximumCollectiveFrameBytes + 16_384))
+    // A lane after the first is one more request's whole charge (`reserveLane`): the layout states it, so the planner
+    // prices a saved width as the rank's LOAD reserves it. Read from the layout's own bytes, as the provider reads them.
+    let family = try JSONSerialization.jsonObject(with: JSONEncoder().encode(priced.tensorParallel?.family)) as? [String: Any]
+    checks.require("Gemma TP lane charge: the layout states each further lane's charge, the request's whole charge (\(budget.requestBytes) bytes)",
+        (family?["laneBytes"] as? Int) == budget.requestBytes)
     let whole = try Gemma4StateBudget.estimate(maximumTokens: 8_320, chunkSize: 512)
     let own = try Gemma4StateBudget.estimate(maximumTokens: 8_320, chunkSize: 512, ranks: 2)
     checks.require("Gemma TP state: a rank keeps its own KV heads (\(own.stateAndBoundaryBytes) of the whole model's \(whole.stateAndBoundaryBytes) bytes at 8,320 tokens)",

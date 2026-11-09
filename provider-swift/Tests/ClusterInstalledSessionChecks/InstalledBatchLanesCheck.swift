@@ -232,8 +232,8 @@ extension InstalledSessionCheck {
                 try require(owner[sync] == nil && native[sync] == nil, "Pipeline gained a TP synchronization override")
             }
         }
-        // Gemma tensor parallel: one lane by default (unqualified on a pair), 2...8 when named; a started lane retires
-        // alone; the adapter's arithmetic values reach the rank; committed-token logprobs are captured.
+        // Gemma tensor parallel: one lane without a saved width, 2...8 when named; a started lane retires alone; the
+        // adapter's arithmetic values reach the rank; committed-token logprobs are captured.
         let gemmaTensor = try InstalledFixture.make(root: f.root.appendingPathComponent("lane-gemma-tp"),
             probe: f.probe, owner: probe, worker: f.worker, generationMode: ClusterGenerationMode.tensorParallel.rawValue,
             advertisedModes: [.pipeline, .tensorParallel],
@@ -241,7 +241,22 @@ extension InstalledSessionCheck {
             adapter: .gemma4LayerStage)
         let gemmaTensorPrepared = try gemmaTensor.prepare(), gemmaTensorPlan = gemmaTensorPrepared.plan
         try require(gemmaTensorPlan.batchLanes([:]) == 1 && !gemmaTensorPlan.lanesRetireAlone([:]),
-            "Gemma tensor parallel enabled unqualified concurrency by default")
+            "Gemma tensor parallel served lanes without a saved width")
+        // Saved with the width its placement sized (both Macs' memory, `ClusterPlacementTensorWidth`), it serves that
+        // width: the owner's lease, its actual owner child and both ranks' launch.
+        for width in [2, 4, 6, 8] {
+            let sized = try InstalledFixture.make(root: f.root.appendingPathComponent("lane-gemma-tp-\(width)"),
+                probe: f.probe, owner: probe, worker: f.worker, generationMode: ClusterGenerationMode.tensorParallel.rawValue,
+                advertisedModes: [.pipeline, .tensorParallel],
+                registered: ("registered_gemma4_26b_qat_4bit", "registered_gemma4_26b_qat_4bit_greedy_generation_v1", "fixture/gemma"),
+                adapter: .gemma4LayerStage, batchLanes: width)
+            let sizedPrepared = try sized.prepare(), sizedPlan = sizedPrepared.plan
+            let child = try observed(sizedPlan.localOwnerConfiguration(ownerEnvironment: [:]))
+            let native = sizedPlan.nativeEnvironment(matrix: sizedPrepared.matrixURL, ownerEnvironment: child)
+            try require(sizedPlan.batchLanes([:]) == width && sizedPlan.batchLanes(child) == width
+                && native[key] == String(width) && sizedPlan.lanesRetireAlone([:]),
+                "Gemma tensor parallel did not serve its saved width \(width)")
+        }
         for lanes in [2, 4, 8] {
             let caller = [key: String(lanes)]
             let child = try observed(gemmaTensorPlan.localOwnerConfiguration(ownerEnvironment: caller))

@@ -69,8 +69,8 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
     /// The model cards' thinking-mode values (the template default), shared by
     /// these exact catalog builds and their `model_type`, without the cards'
     /// `presence_penalty` 1.5: these builds' MTP heads keep the prompt
-    /// history, so a default penalty turned off MTP and the resident and SSD
-    /// prefix cache for every request that omitted it. A request's own
+    /// history, so a default penalty would turn off MTP and the resident and
+    /// SSD prefix cache for every request that omits it. A request's own
     /// penalty still applies.
     static let qwen35CardDefaults = EngineV2SamplingDefaults(temperature: 1.0, topP: 0.95, topK: 20)
     static let qwen35CardModelTypes = [

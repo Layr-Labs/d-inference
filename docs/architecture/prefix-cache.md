@@ -958,10 +958,10 @@ rules applied to these signals.
    geometry; a matching longer token branch cannot supply an absent shorter
    checkpoint — `HybridPrefixCache.swift` (`lookup`),
    `HybridPrefixCacheContract.swift` (`CBv2RecurrentCheckpointGeometry`).
-9. On a slot whose MTP head keeps the prompt history (the Qwen inline heads
-   under `mtp_mode = "auto"`), only a row that can speculate stages a resident
-   or SSD checkpoint. A row with a token constraint, logprobs, `logit_bias`, a
-   repetition, frequency or presence penalty, or a `stop` string
+9. On a slot whose MTP head keeps the prompt history (for example the
+   embedded Qwen 3.5/3.6 heads), only a row that can speculate stages a
+   resident or SSD checkpoint. A row with a token constraint, logprobs,
+   `logit_bias`, a repetition, frequency or presence penalty, or a `stop` string
    (`EngineLoopV2.mtpBasicEligible`) observes no assistant history, so it
    donates nothing, though it can still restore. Provider sampling defaults
    therefore set no penalty on these builds —

@@ -4,7 +4,7 @@ import ProviderCore
 
 /// What the desktop API accepts beside its first actions: how a start serves, clusters, Darkbloom Sandbox, feature
 /// waitlists and local serving. Each check runs before anything starts (`DesktopAction.validate`), and its message is
-/// shown to the person as it is.
+/// shown to the person as it is, so none repeats a value it refuses (an account key above all).
 extension DesktopAction {
   static let knownActions: Set<String> = [
     "start", "switch", "stop", "restart", "download", "remove", "settings", "link", "unlink",
@@ -12,7 +12,7 @@ extension DesktopAction {
     "autopilot", "autopilot_pin", "autopilot_unpin", "autopilot_pause", "autopilot_resume",
     "autopilot_disable", "autopilot_models",
     "cluster_leave", "waitlist_join", "sandbox_pause", "sandbox_resume", "sandbox_uninstall", "sandbox_setup",
-    "route", "local_settings", "tool_setup", "update_rollback",
+    "route", "route_key", "local_settings", "tool_setup", "update_rollback",
   ]
 
   /// The app's waitlist ids (`^[a-z0-9][a-z0-9-]{0,63}$`): the coordinator's catalog names them (`cluster`, `sandbox`).
@@ -45,6 +45,11 @@ extension DesktopAction {
       try validateSandboxSetup()
     case "route":
       guard let route, LocalSettings.Route(rawValue: route) != nil else { throw ValidationError("Invalid route") }
+    case "route_key":
+      // `route key`'s own rules, in its words; none of them repeats the key.
+      if let refusal = LocalRouterAccountKeyFormat.refusal(key ?? "") {
+        throw ValidationError("Not saved: \(refusal).")
+      }
     case "local_settings":
       guard me_first != nil, let minutes = me_first_idle_minutes,
         LocalSettings.meFirstIdleMinutesRange.contains(minutes)
@@ -80,5 +85,13 @@ extension DesktopAction {
         })
       else { throw ValidationError("A work disk must be an absolute path, such as /Volumes/FastSSD.") }
     }
+  }
+
+  /// The request as the API keeps it to recognize a retry with the same ID: an account key becomes its digest under
+  /// this process's random key (`DesktopBackend.requestDigestKey`), so the key itself is never kept or compared.
+  func retained(digest: (String) -> String) -> DesktopAction {
+    var copy = self
+    if let key { copy.key = digest(key) }
+    return copy
   }
 }

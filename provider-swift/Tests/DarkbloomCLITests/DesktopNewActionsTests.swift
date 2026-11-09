@@ -53,6 +53,8 @@ struct DesktopNewActionsTests {
     }, argv: ["sandbox", "setup", "--yes", "--no-browser", "--json-events", "--linux-slots", "3", "--macos-slots", "0",
               "--disk", "/Volumes/FastSSD", "--disk", "/Volumes/Other Disk", "--wait-ready"], forwardsConfig: false),
     Case(action: action("route") { $0.route = "my-macs-first" }, argv: ["route", "my-macs-first"], forwardsConfig: true),
+    Case(action: action("route_key") { $0.key = "darkbloom-account-key-fixture-0123456789" },
+         argv: ["route", "key", "--stdin"], forwardsConfig: true),
     Case(action: action("tool_setup") { $0.tool = "opencode" }, argv: ["start", "--opencode"], forwardsConfig: true),
     Case(action: action("tool_setup") { $0.tool = "hermes" }, argv: ["start", "--hermes"], forwardsConfig: true),
     Case(action: action("update_rollback"), argv: ["update", "--rollback", "--yes"], forwardsConfig: true),
@@ -67,6 +69,15 @@ struct DesktopNewActionsTests {
     let withoutConfig = try DesktopBackend.arguments(for: item.action, configPath: nil, localActive: false)
     _ = try Darkbloom.parseAsRoot(withoutConfig)
     #expect(withoutConfig == item.argv)
+  }
+
+  @Test func theAccountKeyIsNeverAnArgument() throws {
+    let key = "darkbloom-account-key-fixture-0123456789"
+    let request = Self.action("route_key") { $0.key = key }
+    let argv = try DesktopBackend.arguments(for: request, configPath: Self.config, localActive: false)
+    #expect(!argv.joined(separator: " ").contains(key))
+    #expect(DesktopBackend.routeKeyInput(request) == Data((key + "\n").utf8))
+    #expect(DesktopBackend.routeKeyInput(Self.action("route") { $0.route = "this-mac" }) == nil)
   }
 
   struct Refusal: Sendable, CustomTestStringConvertible {
@@ -113,6 +124,13 @@ struct DesktopNewActionsTests {
     Refusal(action: action("sandbox_setup") { $0.disks = ["/Volumes/Fast\nSSD"] },
             message: "A work disk must be an absolute path, such as /Volumes/FastSSD."),
     Refusal(action: action("route") { $0.route = "everywhere" }, message: "Invalid route"),
+    Refusal(action: action("route_key"), message: "Not saved: no key was given."),
+    Refusal(action: action("route_key") { $0.key = "with space" },
+            message: "Not saved: an API key has no spaces, line breaks or non-ASCII characters."),
+    Refusal(action: action("route_key") { $0.key = String(repeating: "k", count: 513) },
+            message: "Not saved: that is longer than any Darkbloom API key."),
+    Refusal(action: action("route_key") { $0.key = "dk-local-0123456789" },
+            message: "Not saved: that is this Mac's local API key; use an account API key from the Darkbloom console."),
     Refusal(action: action("local_settings") { $0.me_first = true; $0.me_first_idle_minutes = 0 },
             message: "Me first needs on or off, and 1 to 120 idle minutes."),
     Refusal(action: action("local_settings") { $0.me_first = true; $0.me_first_idle_minutes = 121 },
@@ -126,6 +144,17 @@ struct DesktopNewActionsTests {
   func refusesBeforeAnythingRuns(_ item: Refusal) {
     let error = #expect(throws: ValidationError.self) { try item.action.validate(paired: { item.paired }) }
     #expect(error?.message == item.message)
+  }
+
+  @Test func aRefusedKeyIsNeverRepeated() {
+    for key in ["with space", "dk-local-0123456789", String(repeating: "k", count: 513), "tab\there"] {
+      do {
+        try Self.action("route_key") { $0.key = key }.validate()
+        Issue.record("accepted \(key.count) characters")
+      } catch {
+        #expect(!String(describing: error).contains(key))
+      }
+    }
   }
 
   @Test func waitlistNamesAreTheCatalogsIds() throws {
@@ -149,6 +178,30 @@ struct DesktopNewActionsTests {
   @Test func localSettingsAcceptTheCLIRange() throws {
     for minutes: UInt64 in [1, 2, 120] {
       try Self.action("local_settings") { $0.me_first = false; $0.me_first_idle_minutes = minutes }.validate()
+    }
+  }
+
+  @Test func retainedRequestsKeepADigestInsteadOfTheKey() {
+    let key = "darkbloom-account-key-fixture-0123456789"
+    let request = Self.action("route_key") { $0.key = key }
+    let retained = request.retained(digest: DesktopBackend.requestDigest)
+    #expect(retained.key != key)
+    #expect(retained.key?.contains(key) == false)
+    #expect(retained == request.retained(digest: DesktopBackend.requestDigest))
+    var other = request
+    other.key = key + "x"
+    #expect(other.retained(digest: DesktopBackend.requestDigest) != retained)
+    let plain = Self.action("route") { $0.route = "this-mac" }
+    #expect(plain.retained(digest: DesktopBackend.requestDigest) == plain)
+  }
+
+  @Test func capabilitiesNameEveryNewFeatureButTheGuidedClusterSession() {
+    for paired in [false, true] {
+      let capabilities = DesktopBackend.snapshotCapabilities(paired: paired)
+      for name in ["cluster", "sandbox", "waitlists", "local_serving", "tool_setup", "update_rollback"] {
+        #expect(capabilities.contains(name))
+      }
+      #expect(!capabilities.contains("cluster_session"))
     }
   }
 }

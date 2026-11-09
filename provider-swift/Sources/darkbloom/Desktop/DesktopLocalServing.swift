@@ -67,4 +67,25 @@ extension DesktopBackend {
       request.id, code: 0,
       message: running ? "\(head) Restart serving to use it now." : head)
   }
+
+  /// `route_key`'s key for `route key --stdin`: one line on standard input, never an argument.
+  static func routeKeyInput(_ request: DesktopAction) -> Data? {
+    guard request.action == "route_key", let key = request.key else { return nil }
+    return Data((key + "\n").utf8)
+  }
+
+  /// `route key`'s output says nothing that contains the key (`RouteKeyFlow`); an echo of it would still never reach the
+  /// operation or its journal.
+  static func withoutKey(_ output: String, request: DesktopAction) -> String {
+    guard request.action == "route_key", let key = request.key, !key.isEmpty else { return output }
+    return output.replacingOccurrences(of: key, with: "[key]")
+  }
+
+  /// A per-process key for the digest that stands in for an account key in `requests` (`DesktopAction.retained`).
+  static let requestDigestKey = SymmetricKey(size: .bits256)
+
+  static func requestDigest(_ value: String) -> String {
+    "hmac-sha256:" + HMAC<SHA256>.authenticationCode(for: Data(value.utf8), using: requestDigestKey)
+      .map { String(format: "%02x", $0) }.joined()
+  }
 }

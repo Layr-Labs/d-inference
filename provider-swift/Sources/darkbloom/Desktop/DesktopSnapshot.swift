@@ -169,6 +169,7 @@ extension DesktopBackend {
   /// Start, which starts the pair (`Start.appStartOptions`), as it does for a runtime without Autopilot.
   static func snapshotCapabilities(paired: Bool) -> [String] {
     ["account-signin", "account-signout", "request-history"] + (paired ? [] : ["autopilot"])
+      + ["cluster", "sandbox", "waitlists", "local_serving", "tool_setup", "update_rollback"]
   }
 
   /// The pair this Mac is in, for the app's words: its model (the name, else the ID; null before one was chosen), its

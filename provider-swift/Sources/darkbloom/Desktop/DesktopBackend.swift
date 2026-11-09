@@ -69,8 +69,10 @@ actor DesktopBackend {
       ? ClusterPairSummary.local() : nil
     try request.validate(
       startsThePair: { try pair.map(Self.startsThePair) ?? false }, paired: { pair?.paired ?? false })
+    // An account key is kept only as a digest, to recognize a retry with the same ID.
+    let retained = request.retained(digest: Self.requestDigest)
     if let original = requests[request.id] {
-      guard original == request, let operation = operations.first(where: { $0.id == request.id })
+      guard original == retained, let operation = operations.first(where: { $0.id == request.id })
       else { throw ValidationError("Request ID was already used") }
       return operation
     }
@@ -94,7 +96,7 @@ actor DesktopBackend {
       id: request.id, action: request.action, started_at: Date().timeIntervalSince1970,
       cancellable: ["download", "diagnose", "link", "account-signin", "autopilot", "sandbox_setup"]
         .contains(request.action))
-    requests[request.id] = request
+    requests[request.id] = retained
     operations.insert(operation, at: 0)
     operations = Array(operations.prefix(32))
     requests = requests.filter { key, _ in operations.contains { $0.id == key } }
@@ -189,11 +191,12 @@ actor DesktopBackend {
         } else if request.action == "sandbox_setup" {
           (code, output) = try await runSandboxSetup(request, arguments: arguments, worker: worker)
         } else {
-          (code, output) = try await worker.run(arguments, progress: { [weak self] output in
-              Task { await self?.setProgress(request.id, output: output) }
+          // `route_key`'s key goes on standard input only (`routeKeyInput`); its output never holds it (`withoutKey`).
+          (code, output) = try await worker.run(arguments, input: Self.routeKeyInput(request), progress: { [weak self] output in
+              Task { await self?.setProgress(request.id, output: Self.withoutKey(output, request: request)) }
             })
         }
-        complete(request.id, code: code, message: output)
+        complete(request.id, code: code, message: Self.withoutKey(output, request: request))
         if ["update", "update_rollback"].contains(request.action), code == 0,
           Self.shouldRestartForReplacedExecutable(
             startup: before, current: Self.currentExecutableStamp(), hasRunningOperation: false)
@@ -268,6 +271,7 @@ actor DesktopBackend {
     case "sandbox_uninstall": return ["sandbox", "uninstall", "--yes"]
     case "sandbox_setup": return sandboxSetupArguments(request)
     case "route": return ["route", request.route!] + config
+    case "route_key": return ["route", "key", "--stdin"] + config
     case "tool_setup": return ["start", "--\(request.tool!)"] + config
     case "update_rollback": return ["update", "--rollback", "--yes"] + config
     default: throw ValidationError("Unsupported action")

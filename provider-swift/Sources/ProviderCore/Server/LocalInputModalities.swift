@@ -2,8 +2,7 @@ import Foundation
 
 /// `input_modalities` in this Mac's `/v1/models`: what a request may carry, as this Mac's engine serves a model. The
 /// one place the provider turns what an engine takes into these names (one Mac, a pair's slot), and where the
-/// integrations read them back. Reasoning isn't among them: the engine doesn't say which models reason, so that stays
-/// the catalog's.
+/// integrations read them back. Which models reason is `supported_features` (`LocalModelFeatures`).
 public enum LocalInputModalities {
     /// `text`, then `image` for an engine that takes images, and `video` for one that takes video as well.
     static func list(image: Bool, video: Bool) -> [String] {

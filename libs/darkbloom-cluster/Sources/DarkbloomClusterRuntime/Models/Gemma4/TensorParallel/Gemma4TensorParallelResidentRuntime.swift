@@ -192,8 +192,8 @@ public final class Gemma4TensorParallelResidentRuntime {
                 // Every request's keys and values live in this rank's paged
                 // host, bounded by the profile's longest request (a ceiling,
                 // not an allocation: each request's pages grow with it).
-                loadedHost = try value.model.pagedHost(lanes: lanes, maximumTokens: profile.maximumContextTokens,
-                    chunkTokens: profile.maximumChunkTokens, quantization: kvQuantization)
+                loadedHost = try value.model.pagedHost(lanes: lanes, maximumTokens: charge.hostBound.maximumTokens,
+                    chunkTokens: charge.hostBound.chunkTokens, quantization: kvQuantization)
                 loadedHost?.report("gemma4_tensor_parallel")
                 let loadedIdentity = sha256(try canonicalJSONData([loadAgreement, value.receipt.verifiedAggregateSHA256,
                     value.receipt.storageCommitmentSHA256, planName]))

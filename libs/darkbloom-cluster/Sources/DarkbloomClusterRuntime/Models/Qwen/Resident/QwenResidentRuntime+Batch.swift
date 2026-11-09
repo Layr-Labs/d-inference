@@ -549,9 +549,9 @@ extension QwenResidentRuntime {
                 if value.leaveCancelled {
                     try cancelLane(lane, host: host)
                 } else if let abort = value.leaveAborted {
-                    // Both ranks end it alone; an owner's cancel that crossed it wins.
-                    if cancellationRequested(lane) { try cancelLane(lane, host: host) }
-                    else { try abortLane(lane, abort: abort, host: host) }
+                    // Both ranks end it alone, as rank 0 did; an owner's cancel
+                    // that crossed it retires it as cancelled (the lane host's call).
+                    try abortLane(lane, abort: abort, host: host)
                 } else {
                     guard let reason = value.leaveReason,
                           lane.finish(continueRequested: reason != .clientStop) == reason else {

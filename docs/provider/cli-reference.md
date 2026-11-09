@@ -1237,14 +1237,15 @@ darkbloom cluster local [<model>] [--bind <address>]
 | `--bind <address>` | `String?` | `0.0.0.0` (`ClusterServingScope.localOnlyDefaultBind`) | Where the leader's API listens: `localhost` or a numeric IPv4/IPv6 address (`ClusterServingScope.isValidBind`) |
 | `--model-dir`, `--worker` | `String?`, **hidden** | none | As for `darkbloom cluster` (developer) |
 | `--private-glm-image-qualification` | flag, **hidden** | `false` | Select the bounded GLM image candidate on the current paired leader for local qualification; requires the exact cached GLM artifact, uses automatic placement, and does not grant coordinator or solo serving |
+| `--app-console` | flag, **hidden** | `false` | The desktop app's setup: the same onboarding without a terminal, its screen as JSON lines ([below](#darkbloom-cluster---app-console-the-desktop-apps-setup)) |
 
 Runs the onboarding asking for Only me (`ClusterOnboardingRequest`),
 saved in the leader's setup record (`ClusterOnboardingLeadership.localOnly`,
 `localBind`) until **Change how the pair serves** in `darkbloom cluster`'s list (or
 **Switch to serving through Darkbloom** in this command's own list) serves through Darkbloom again. It asks
 nothing and saves nothing in `[local]`.
-The leader part then starts with `--no-coordinator`. Needs a terminal; exit 1
-otherwise. On the Mac that joins a waiting leader it pairs, says to continue on
+The leader part then starts with `--no-coordinator`. Needs a terminal (unless
+`--app-console`); exit 1 otherwise. On the Mac that joins a waiting leader it pairs, says to continue on
 the leader with `darkbloom cluster local` (`ClusterOnboardingDriver.joinedLocalLine`) and, like
 `darkbloom cluster`, follows the start there to its ✓ (exit 0) or ✗ (exit 1); q leaves (exit 0). Steps: [Only me: the pair for you alone](./two-mac-cluster.md#serving-locally-only)
 (`provider-swift/Sources/darkbloom/ClusterLocalCommand.swift`).
@@ -2394,6 +2395,54 @@ across updates and restarts, and `darkbloom start`, `stop`, `restart`,
 `status`, the cluster service, **Start over** and **Pair again** are unchanged
 (`provider-swift/Sources/darkbloom/ClusterSetupWizardCommand.swift`,
 `Cluster.Setup.requireNewPairApproval`).
+
+### `darkbloom cluster --app-console` (the desktop app's setup)
+
+`darkbloom cluster --app-console` and `darkbloom cluster local --app-console`
+(hidden) run the onboarding for the desktop app's guided setup: the same flow,
+operations, waitlist gate and console lock as in Terminal, with no terminal. The
+local API runs them for its [cluster setup session](../reference/desktop-control.md#cluster-setup-session)
+(`provider-swift/Sources/darkbloom/ClusterAppOnboarding.swift`, `Cluster.Setup.runAppOnboarding`;
+the console is `ClusterOnboardingAppConsole`).
+
+```bash
+darkbloom cluster --app-console [--config <path>]
+darkbloom cluster local --app-console [<model>] [--bind <address>] [--config <path>]
+```
+
+Each thing the screen shows is one JSON object on its own line of standard
+output, keys sorted; the last is `exit`:
+
+```text
+{"event":"banner","subtitle":"","title":"Darkbloom cluster"}
+{"event":"heading","text":"2/4 Pair"}
+{"event":"say","text":"  Code 123 456. Same on the other Mac?"}
+{"event":"say","stressed":{"lead":"  Recommended for these Macs: ","stressed":"tensor parallel","tail":"."},"text":"  Recommended for these Macs: tensor parallel."}
+{"event":"working","rows":["Loading Qwen3.8-27B-4bit-mtp on both Macs (1 of 2 parts ready) · 12 s","This Mac: ready (layers 0-31) · 9 s"]}
+{"event":"settle"}
+{"event":"progress","text":"Copying to the other Mac: 8.2 of 16.3 GB, 2.40 GB/s, about 1 s left"}
+{"event":"result","lines":["Test response in 0.61 s"],"ok":true,"title":"Serving Qwen3.8-27B-4bit-mtp through Darkbloom on both Macs (pipeline)"}
+{"event":"needs_terminal","text":"Run `darkbloom cluster` in a Terminal window on this Mac."}
+{"event":"question","question":{"id":"q2","options":[["Yes"],["No"]],"selected":0,"type":"choose"}}
+{"event":"question","question":{"id":"q1","keys":[{"key":"q","label":"Cancel"}],"type":"key"}}
+{"event":"question","question":null}
+{"code":0,"event":"exit"}
+```
+
+Each answer is one JSON object on its own line of standard input:
+`{"question":"q2","choice":0}` (an option's index), `{"question":"q1","key":"q"}`
+(one of the keys offered) or `{"cancel":true}`. An answer to a question no longer
+asked, or outside it, is dropped.
+
+| Rule | Behavior |
+|---|---|
+| Lines | A `say` is the line Terminal shows, its indent kept; blank lines are left out; an answered list adds `  ▸ <the option's first row>`. `working` and `progress` are sent when they change (progress at most four times a second, its whole line). `settle` only follows live work |
+| Questions | `choose` for every list (each option's rows, the default `selected`) and for the waitlist gate's ``Join the Clusters waitlist now?`` (`Yes`, `No`; `No` selected). `key` only while a wait acts on a key, labelled in the screen's words: `q` `Cancel` (the pairing's wait, the wait for Allow), `q` `Leave` (the start's wait, the start the joining Mac follows); none during a copy or while the pairing waits for the other Mac's confirmation (`ClusterOnboardingWaitKey`). `question: null` once nothing is asked |
+| Cancel | Answers as q and escape do in Terminal: every list then returns nothing and every wait that takes `q` gets it, so the setup ends at its next question or wait in its own words. Work that takes no key (planning, a copy) runs to its end, and a start then stops before its first change: ``Cancelled: nothing started.`` (`ClusterOnboardingAppConsole.guarding`). The end of standard input, or an output that can't be written, is a cancel too |
+| No terminal | Standard input reads `/dev/null` and standard output goes to standard error once the console holds its own copies, so sudo, `darkbloom login` or a stray line never reads an answer or writes into the events. The process leaves its terminal session where it can, and a closed pipe is an error, never a signal |
+| `needs_terminal` | Said for a step the app can't take (sudo where macOS shows no prompt, **Log in on this Mac**); the step then runs with nothing to read, so sudo fails at once. **Log in on this Mac** reads the login this Mac has (the app's own sign-in, or `darkbloom login` in Terminal) instead of starting `darkbloom login`, whose code no app screen shows |
+| Local Network | The prompt is named for Darkbloom (`ClusterOnboardingCommand.app`), not a terminal app |
+| Exit status | The onboarding's, as in Terminal (`130` for a cancelled pairing). `--app-console` with `--json`, `--yes`, `--temporary`, `--dry-run`, `--link-only`, `--plain` or `--wizard` is refused (exit 64) |
 
 ## `darkbloom stop`
 

@@ -62,6 +62,11 @@ struct DesktopHTTP: HTTPResponder {
         return try json(
           await hardware.resource(peakBandwidthGbps: await backend.peakMemoryBandwidthGbps()))
       }
+      if path.hasPrefix("/control/v1/cluster/session"),
+        let response = try await clusterSessionRoute(request, path: path)
+      {
+        return response
+      }
       if request.method == .get, path.hasPrefix("/control/v1/") {
         return try json(try await backend.resource(String(path.dropFirst("/control/v1/".count))))
       }

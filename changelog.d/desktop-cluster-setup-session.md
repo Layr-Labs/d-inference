@@ -1,0 +1,6 @@
+### The desktop app can run the two-Mac cluster setup with its own screens
+
+- The local API runs the cluster setup for the app: `POST /control/v1/cluster/session` starts `darkbloom cluster` (or `darkbloom cluster local` with a model and an address) without a terminal, and the app reads its screen, answers its questions and follows it as it pairs the Macs, chooses the pair's model and how it serves, and starts serving. One setup runs at a time, and other actions wait for it.
+- The setup's questions are the ones Terminal asks, in the same words: the pairing code, the model, how both Macs split it, how the pair serves, a copy, and the clusters waitlist. A wait offers its key only where Terminal acts on it (q cancels the pairing's wait; q leaves the start's wait), and the app's Cancel ends the setup at its next question or wait, as q does.
+- A step the app can't take, such as sudo where macOS shows no prompt, says to run `darkbloom cluster` in Terminal. A runtime without this support says it needs a newer runtime.
+- New hidden flag for the app: `darkbloom cluster --app-console` (and `darkbloom cluster local --app-console`) writes the setup's screen as JSON lines and reads its answers as JSON lines.

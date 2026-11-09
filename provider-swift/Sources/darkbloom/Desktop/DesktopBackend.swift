@@ -51,6 +51,8 @@ actor DesktopBackend {
   var sharedReads: [String: DesktopSharedRead] = [:]
   /// Whether an account key is saved for the local router (`Snapshot.local.route_key`; `accountKeySaved`).
   var accountKeyRead: (at: Date, saved: Bool)?
+  /// The guided cluster setup (`DesktopClusterSession.swift`); while it runs it holds the mutation slot.
+  nonisolated let clusterSessions = DesktopClusterSessions()
 
   init(configPath: String?, executable: URL? = nil) {
     self.configPath = configPath
@@ -92,6 +94,7 @@ actor DesktopBackend {
     guard !operations.contains(where: { $0.state == "running" }) else {
       throw ValidationError("An operation is already running. Wait for it to finish.")
     }
+    guard !clusterSessions.running else { throw ValidationError(DesktopClusterSessions.busyMessage) }
     let operation = DesktopOperation(
       id: request.id, action: request.action, started_at: Date().timeIntervalSince1970,
       cancellable: ["download", "diagnose", "link", "account-signin", "autopilot", "sandbox_setup"]

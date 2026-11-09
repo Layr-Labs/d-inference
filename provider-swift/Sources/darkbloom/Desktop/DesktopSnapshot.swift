@@ -170,6 +170,8 @@ extension DesktopBackend {
   static func snapshotCapabilities(paired: Bool) -> [String] {
     ["account-signin", "account-signout", "request-history"] + (paired ? [] : ["autopilot"])
       + ["cluster", "sandbox", "waitlists", "local_serving", "tool_setup", "update_rollback"]
+      // The guided cluster setup's routes (`DesktopClusterSessions`).
+      + ["cluster_session"]
   }
 
   /// The pair this Mac is in, for the app's words: its model (the name, else the ID; null before one was chosen), its

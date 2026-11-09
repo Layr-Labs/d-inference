@@ -50,10 +50,9 @@ extension Gemma4ResidentLoadedStage: LayerStageResidentStage {
     /// One request charged at its own context (`maximumTokens`, its prompt and
     /// output): the whole model's state ledger, not only this stage's layers,
     /// and one prefill frame's attention transient over this stage's layers.
-    /// That is why the pipeline serves the model's whole profile while LOAD
-    /// sizes the memory plan's request
-    /// (`ClusterRuntimeAdapter.pipelineServesWholeProfile`): a longer request
-    /// is admitted or refused by this rank's live gate when it is reserved.
+    /// The pipeline serves the memory plan's request
+    /// (`ClusterRuntimeAdapter.pipelineServesWholeProfile`), so that is the
+    /// longest a stage is charged; a longer one goes to tensor parallel.
     func requestAllowance(plan: QwenLayerStagePlan, rank: Int, maximumTokens: Int, chunkSize: Int,
                           decode: LayerStageDecodeShape,
                           bound: (Int) throws -> Int) throws -> QwenResidentRequestAllowance {

@@ -556,9 +556,9 @@ The first three are what the cluster serves in its generation mode
 (`DistributedResidentExecutionProfile.served`,
 `ClusterModelFeaturePolicy.servedProfile`). In tensor parallel, that is the
 worker's whole profile: for Qwen3.8 27B, 262,143 prompt tokens, 65,536 output
-tokens and a 262,144-token context. Gemma 4 26B serves its whole profile in the
-pipeline too: 262,143 prompt tokens, 32,768 output tokens and a 262,144-token
-context. In any other mode, it is the memory plan's request: 32,768 prompt and
+tokens and a 262,144-token context; for Gemma 4 26B, 262,143 prompt tokens,
+32,768 output tokens and a 262,144-token context. In any other mode, a pipeline
+included, it is the memory plan's request: 32,768 prompt and
 32,768 output tokens in a 65,536-token context, and the pipeline's ranks refuse
 any reservation beyond it. The leader refuses a prompt outside these limits
 before it asks any rank, and cuts a larger `max_tokens` to fit.

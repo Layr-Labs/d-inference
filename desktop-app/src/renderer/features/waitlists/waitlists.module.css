@@ -1,0 +1,322 @@
+.list {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-bg);
+  animation: rise 0.3s ease-out both;
+  transition: border-color var(--hover-duration);
+}
+
+.card[data-status='approved'] {
+  border-color: color-mix(in srgb, var(--positive) 30%, var(--line));
+}
+
+.head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 20px 22px 18px;
+}
+
+.icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: var(--blue-wash);
+  color: var(--accent-brand);
+}
+
+.icon[data-tone='positive'] {
+  background: color-mix(in srgb, var(--positive) 13%, transparent);
+  color: var(--positive);
+}
+
+.icon[data-tone='muted'] {
+  background: rgba(var(--contrast-rgb), 0.06);
+  color: var(--muted);
+}
+
+.icon[data-tone='warning'] {
+  background: var(--warning-wash);
+  color: var(--warning);
+}
+
+.copy {
+  flex: 1;
+  min-width: 0;
+  padding-top: 1px;
+}
+
+.copy h2,
+.copy strong {
+  display: block;
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: -0.2px;
+  overflow-wrap: anywhere;
+}
+
+.copy p,
+.copy small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+
+.side {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+/* The place in line, read as “#3 in line”. */
+.place {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+  margin: -2px 0 0;
+  white-space: nowrap;
+  animation: settle 0.4s ease-out both;
+}
+
+.place strong {
+  font-size: 26px;
+  font-weight: 500;
+  letter-spacing: -0.8px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent-brand);
+}
+
+.place span {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 20px;
+  padding: 13px 22px 14px 70px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.standing {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text-secondary);
+}
+
+.standing > svg {
+  margin-top: 2px;
+  color: var(--muted);
+}
+
+.card[data-status='approved'] .standing > svg {
+  color: var(--positive);
+}
+
+.card[data-status='waitlisted'] .standing > svg {
+  color: var(--accent-brand);
+}
+
+.standing small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.command {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 3px 3px 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(var(--contrast-rgb), 0.03);
+}
+
+.command code {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.command button {
+  padding: 5px;
+}
+
+.problem {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--negative);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+/* A one-row notice above a feature's own page. */
+.compact {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+  margin-bottom: 26px;
+  padding: 14px 18px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-bg);
+  animation: rise 0.3s ease-out both;
+}
+
+.compact .copy strong {
+  font-size: 13px;
+}
+
+.compact .copy small {
+  font-size: 11px;
+}
+
+.compact .problem {
+  padding-left: 48px;
+}
+
+.message {
+  white-space: pre-line;
+}
+
+/* The link flow takes the row's full width under its text. */
+.linkFlow {
+  flex-basis: 100%;
+  min-width: 0;
+}
+
+.linkFlow > section {
+  margin-top: 0;
+}
+
+/* Page-level states of Early access: link first, nothing to join, unavailable, or an older CLI. */
+.panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px 16px;
+  padding: 20px 22px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-bg);
+  animation: rise 0.3s ease-out both;
+}
+
+.panel .copy {
+  flex: 1 1 260px;
+}
+
+.panel > .linkFlow > section {
+  margin-top: 4px;
+}
+
+.note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.note > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.noteCompact {
+  margin-bottom: 26px;
+}
+
+.skeleton {
+  animation: none;
+}
+
+.skeleton .icon,
+.bar {
+  background: rgba(var(--contrast-rgb), 0.06);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.bar {
+  display: block;
+  height: 10px;
+  border-radius: 4px;
+}
+
+.bar + .bar {
+  margin-top: 10px;
+}
+
+.short {
+  width: 28%;
+}
+
+.long {
+  width: 62%;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@keyframes settle {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@media (max-width: 760px) {
+  .head {
+    padding: 16px 16px 14px;
+  }
+  .foot {
+    padding: 12px 16px;
+  }
+  .compact .problem {
+    padding-left: 0;
+  }
+}

@@ -30,43 +30,51 @@ enum ClusterPlacementTensorWidth {
     static func plan(devices: [ClusterPlacementDevice], layout: ClusterModelLayout, policy: ClusterPlacementPolicy,
                      link: ClusterLinkCosts, quotes: [ClusterPlacementTensorBatchQuote], maximumLanes: Int,
                      lanes: inout Int?) throws -> ClusterPlacementResult {
-        let quoted = quotes.filter { $0.lanes <= maximumLanes }
-        if !quoted.isEmpty {
-            // Only a placement priced by its owner's singleton quote is sized.
-            return try widest(devices: devices, layout: layout, policy: policy, link: link,
-                sizes: policy.tensorParallelBatchQuote?.lanes == 1,
-                widths: quoted.map { quote -> Width in
-                    (quote.lanes, { widened in try quote.applyWidth(to: &widened, layout: layout) })
-                }, lanes: &lanes)
-        }
-        guard quotes.isEmpty, lanes == nil, layout.tensorParallel?.family.laneBytes != nil else {
+        let widths = Self.widths(layout: layout, policy: policy, quotes: quotes, maximumLanes: maximumLanes, lanes: lanes)
+        guard !widths.isEmpty else {
             return try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy, link: link)
         }
-        // A family priced by its lane charge: its singleton is priced by the family's own allowance, never a quote.
-        return try widest(devices: devices, layout: layout, policy: policy, link: link,
-            sizes: policy.tensorParallelBatchQuote == nil && (policy.tensorParallelLanes ?? 1) == 1,
-            widths: ClusterPlacementBatchScope.tensorParallelWidths.filter { $0 <= maximumLanes }.map { width -> Width in
-                (width, { widened in widened.tensorParallelLanes = width })
-            }, lanes: &lanes)
+        return try widest(devices: devices, layout: layout, policy: policy, link: link, widths: widths, lanes: &lanes)
     }
 
     /// One width to try, and how it prices the policy.
     private typealias Width = (lanes: Int, price: (inout ClusterPlacementPolicy) throws -> Void)
 
+    /// The widths wider than one, up to `maximumLanes`, that extend the way the singleton was priced, each priced as
+    /// its owner's LOAD reserves it:
+    /// - a Qwen TP row's native quotes (`tensorWidthQuotes`), where its owner's singleton quote priced the singleton;
+    /// - a family's lane charge (`ClusterTensorParallelFamilyPlan.laneBytes`), where nothing else priced it: no quote
+    ///   of its owner, no width already set (`lanes`, a batch scope's) and no width in the policy.
+    ///
+    /// None otherwise (a batch scope's quote, or a family without either), and the plan is then left as it is.
+    private static func widths(layout: ClusterModelLayout, policy: ClusterPlacementPolicy,
+                               quotes: [ClusterPlacementTensorBatchQuote], maximumLanes: Int, lanes: Int?) -> [Width] {
+        func wider(_ width: Int) -> Bool { width > 1 && width <= maximumLanes }
+        if !quotes.isEmpty {
+            guard policy.tensorParallelBatchQuote?.lanes == 1 else { return [] }
+            return quotes.filter { wider($0.lanes) }.map { quote -> Width in
+                (quote.lanes, { widened in try quote.applyWidth(to: &widened, layout: layout) })
+            }
+        }
+        guard lanes == nil, layout.tensorParallel?.family.laneBytes != nil, policy.tensorParallelBatchQuote == nil,
+              (policy.tensorParallelLanes ?? 1) == 1 else { return [] }
+        return ClusterPlacementBatchScope.tensorParallelWidths.filter(wider).map { width -> Width in
+            (width, { widened in widened.tensorParallelLanes = width })
+        }
+    }
+
     /// The singleton plan or, when a wider width is admitted now, the widest one's plan, with `lanes` set to it. Each
-    /// of `widths` prices the policy at its width; `sizes` is false where the singleton was not priced the way those
-    /// widths extend (a batch scope's quote, or none), and the plan is then left as it is. The mode was chosen for one
-    /// request, so a sized plan keeps that choice's reasons and comparisons (`deploymentReason`); only its chosen
-    /// placement is priced at the width.
+    /// of `widths` prices the policy at its width. The mode was chosen for one request, so a sized plan keeps that
+    /// choice's reasons and comparisons (`deploymentReason`); only its chosen placement is priced at the width.
     @inline(never)
     private static func widest(devices: [ClusterPlacementDevice], layout: ClusterModelLayout, policy: ClusterPlacementPolicy,
-                               link: ClusterLinkCosts, sizes: Bool, widths: [Width], lanes: inout Int?) throws
+                               link: ClusterLinkCosts, widths: [Width], lanes: inout Int?) throws
         -> ClusterPlacementResult {
         let singleton = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy, link: link)
         // A split the setup can save: equal, or integer weights.
-        guard sizes, let chosen = singleton.chosen, chosen.mode == .tensorParallel,
+        guard let chosen = singleton.chosen, chosen.mode == .tensorParallel,
               chosen.shares == nil || chosen.tensorShares != nil, let leader = chosen.ranks.first?.device else { return singleton }
-        for width in widths.sorted(by: { $0.lanes > $1.lanes }) where width.lanes > 1 {
+        for width in widths.sorted(by: { $0.lanes > $1.lanes }) {
             var widened = policy
             try width.price(&widened)
             widened.modes = [.tensorParallel]; widened.schedules = [chosen.prefillSchedule]

@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-09
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -1158,24 +1158,33 @@ installed artifact, not from a per-model table:
 
 Cluster workers accept up to 32,768 output tokens and 32,768 prompt tokens,
 within a 65,536-token combined ceiling, except for a model served at its native
-context (Qwen3.8 27B in tensor parallel, below). Each model's declared context and both
-ranks' live memory admission may reduce that budget. Omitting `max_tokens` on the local API uses the full
-allowance, clamped to the model and remaining context; an explicit
-`max_tokens: 32768` requests the same allowance. A model can finish earlier
-at its stop token. Requests above the output ceiling receive HTTP 400 `output_too_long`;
-requests that exceed the admitted combined context are refused before generation.
+context (Qwen3.8 27B in tensor parallel, and Gemma 4 26B in both modes, below).
+Each model's declared context and both ranks' live memory admission may reduce
+that budget. Omitting `max_tokens` on the local API uses the full allowance,
+clamped to the model and remaining context; an explicit `max_tokens: 32768`
+requests the same allowance. A model can finish earlier at its stop token. A
+`max_tokens` above the output limit the pair serves, or above what the prompt
+leaves of its context, is cut to fit, as on one Mac. A prompt that fills that
+context receives HTTP 400 `context_length_exceeded`, in one Mac's words; a
+prompt longer than the mode's prompt limit receives HTTP 400 `prompt_too_long`.
+Either arrives before any streamed byte.
 Qwen3.8 27B on a tensor-parallel pair accepts its native context, as a single
 Mac serving it does: prompts up to 262,143 tokens and up to 65,536 output tokens
 (the catalog's output limit, which the coordinator also gives a request that
-omits `max_tokens`), within 262,144 combined. The pair is still loaded and
-planned for the 32,768 + 32,768-token request, at any number of lanes. A longer
-request is admitted on its own when both Macs' memory holds it at that moment.
-If it does not fit, it alone receives HTTP 503 with the context the pair serves
-now, and other requests keep running. The pipeline modes of a model with a
+omits `max_tokens`), within 262,144 combined. Gemma 4 26B accepts its native
+context on a pair in tensor parallel and in the pipeline: prompts up to 262,143
+tokens and up to 32,768 output tokens (its catalog's output limit), within
+262,144 combined. Each pair is still loaded and planned for the 32,768 +
+32,768-token request, at any number of lanes. A longer request is admitted on
+its own when both Macs' memory holds it at that moment. If it does not fit, it
+alone receives HTTP 503 before any streamed byte (on the local API, in one
+Mac's words: "This Mac's memory can't hold this request right now ..."), and
+other requests keep running. The pipeline modes of every other model with a
 native context (GLM-5.3-Flash, and the 27B where its policy allows them) keep
 the 32,768 + 32,768-token request. Their leader refuses a longer request itself,
 before either rank is asked. See
-[native context](../architecture/inference.md#qwen27-tensor-parallel-native-context).
+[the 27B's native context](../architecture/inference.md#qwen27-tensor-parallel-native-context)
+and [Gemma 4's](../architecture/inference.md#gemma-4-native-context-on-a-pair).
 
 The leader's heartbeat tells the coordinator these limits for its pair's slot
 (`request_limits`): the prompt, output and context limits of the mode it serves,

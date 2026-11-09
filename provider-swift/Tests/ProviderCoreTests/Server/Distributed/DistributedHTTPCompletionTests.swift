@@ -144,21 +144,23 @@ struct DistributedHTTPCompletionTests {
         }
     }
 
-    /// A request the pair can never serve as asked (here `max_tokens` over
-    /// the model's output limit) is refused with 400 and the reason, streamed
-    /// or not, before any event-stream header. A refusal has no native
-    /// terminal, so a stream must answer it as the non-streamed request does.
+    /// A request the pair can never serve as asked (here logprobs, which this
+    /// pair's mode does not capture) is refused with 400 and the reason,
+    /// streamed or not, before any event-stream header. A refusal has no
+    /// native terminal, so a stream must answer it as the non-streamed
+    /// request does.
     @Test func refusedStreamAdmissionAnswersBeforeEventStreamHeaders() async throws {
         try await withCompletionFixture { fixture in
             for stream in [false, true] {
                 let (data, reply) = try await URLSession.shared.data(
-                    for: try fixture.request(stream: stream, maxTokens: 129))
+                    for: try fixture.request(stream: stream, extra: ["logprobs": true, "top_logprobs": 2]))
                 let http = try #require(reply as? HTTPURLResponse)
                 #expect(http.statusCode == 400, "stream=\(stream) answered \(http.statusCode)")
                 #expect(http.value(forHTTPHeaderField: "Content-Type")?.hasPrefix("application/json") == true)
                 let error = try #require(try jsonObject(data)["error"] as? [String: Any])
-                #expect(error["code"] as? String == "output_too_long")
-                #expect((error["message"] as? String)?.contains("output limit of 128 tokens") == true)
+                #expect(error["code"] as? String == "logprob_capture_unsupported")
+                #expect(error["message"] as? String
+                    == DistributedRequestRefusal.logprobCaptureUnsupported.message(fixture.session.profile))
                 #expect(!String(decoding: data, as: UTF8.self).contains("data:"))
             }
             #expect(fixture.session.base.reserveCount == 0)
@@ -223,6 +225,21 @@ struct DistributedHTTPCompletionTests {
             #expect((try await client.value.1 as? HTTPURLResponse)?.statusCode == 200)
             let reserved = try #require(fixture.session.base.reservedRequests.last)
             #expect(reserved.cacheSalt == nil && reserved.prefixCacheEnabled)
+        }
+    }
+
+    /// A `max_tokens` past the pair's output limit is cut to it and served,
+    /// streamed or not, as one Mac cuts it (it was a 400 `output_too_long`).
+    @Test func anOversizedMaxTokensIsCutToTheOutputLimitAndServed() async throws {
+        try await withCompletionFixture { fixture in
+            for (index, stream) in [false, true].enumerated() {
+                let request = try fixture.request(stream: stream, maxTokens: 129)
+                let client = Task { try await URLSession.shared.data(for: request) }
+                let lease = try await fixture.startedLease(index + 1)
+                #expect(fixture.session.base.reservedRequests.last?.maxTokens == 128)
+                lease.send(.token(4)); lease.send(.token(99)); lease.acknowledge()
+                #expect((try await client.value.1 as? HTTPURLResponse)?.statusCode == 200, "stream=\(stream)")
+            }
         }
     }
 

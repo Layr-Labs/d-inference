@@ -20,10 +20,20 @@ public struct LocalModelLimits: Sendable, Equatable {
 
     /// A single Mac slot's limits: its window holds a request's prompt and output
     /// together, so either may be at most the window and both are listed as it.
-    /// (A `max_tokens` past what the prompt leaves is cut to fit, or refused
-    /// past an advertised context.)
+    /// (A `max_tokens` past what the prompt leaves is cut to fit, an advertised
+    /// context's included.)
     public init(window: Int?, inputModalities: [String]? = nil) {
         self.init(contextLength: window, maxOutputLength: window, inputModalities: inputModalities)
+    }
+
+    /// A pair's limits: the context and the output its mode serves
+    /// (`DistributedResidentExecutionProfile.served`), never its profile's when
+    /// the mode serves less. They are what its slot reports to the coordinator
+    /// and what its bridge cuts a `max_tokens` to, so a client that sizes a
+    /// request from the list is served.
+    init(served: (promptTokens: Int, outputTokens: Int, contextTokens: Int), inputModalities: [String]? = nil) {
+        self.init(contextLength: served.contextTokens, maxOutputLength: served.outputTokens,
+                  inputModalities: inputModalities)
     }
 }
 

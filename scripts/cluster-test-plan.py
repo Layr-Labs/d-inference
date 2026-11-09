@@ -116,9 +116,9 @@ QWEN_TP_MTP_GPU_TESTS = (
 # and that each runs whole in exactly one base selection of Gemma suites:
 # Gemma4TensorParallelTests (296 s) in one, the others (314 s) in the other.
 GEMMA_SUITES = (
-    "Gemma4BatchArithmeticAgreementTests", "Gemma4BatchDecodeTests", "Gemma4StagePagedSyntheticTests",
-    "Gemma4TensorParallelPrefixTests", "Gemma4TensorParallelRuntimeTests", "Gemma4TensorParallelTests",
-    "GemmaPrefillArithmeticTests", "GemmaPrefixChunkTests", "ResidentAdmissionGemma4Tests",
+    "Gemma4BatchArithmeticAgreementTests", "Gemma4BatchDecodeTests", "Gemma4NativeContextTests",
+    "Gemma4StagePagedSyntheticTests", "Gemma4TensorParallelPrefixTests", "Gemma4TensorParallelRuntimeTests",
+    "Gemma4TensorParallelTests", "GemmaPrefillArithmeticTests", "GemmaPrefixChunkTests", "ResidentAdmissionGemma4Tests",
 )
 GEMMA_TENSOR_PARALLEL_SUITES = ("Gemma4TensorParallelTests",)
 BATCH_SESSION_SUITES = ("QwenTensorParallelBatchSessionTests",)

@@ -216,28 +216,14 @@ final class DesktopClusterSessions: @unchecked Sendable {
     }
   }
 
-  /// Each line of `handle` as it arrives, until it ends (a line longer than `maximumLine` is dropped), then closes it.
+  /// Each line of `handle` as it arrives, framed as the console frames them (a line longer than `maximumLine` is
+  /// dropped), then its unterminated last line, if any; then closes it.
   private static func lines(of handle: FileHandle, _ line: (String) -> Void) {
     defer { try? handle.close() }
-    var pending = [UInt8]()
-    var skipping = false
-    var buffer = [UInt8](repeating: 0, count: 65_536)
-    while true {
-      let count = Darwin.read(handle.fileDescriptor, &buffer, buffer.count)
-      if count < 0, errno == EINTR { continue }
-      guard count > 0 else { break }
-      pending.append(contentsOf: buffer[0..<count])
-      while let newline = pending.firstIndex(of: 0x0A) {
-        let text = String(decoding: pending[..<newline], as: UTF8.self)
-        pending.removeSubrange(...newline)
-        if skipping { skipping = false } else { line(text) }
-      }
-      if pending.count > maximumLine {
-        pending.removeAll()
-        skipping = true
-      }
-    }
-    if !pending.isEmpty, !skipping { line(String(decoding: pending, as: UTF8.self)) }
+    let rest = ClusterOnboardingAppConsole.readLines(
+      handle.fileDescriptor, maximumBytes: maximumLine, readBytes: 65_536
+    ) { line(String(decoding: $0, as: UTF8.self)) }
+    if let rest { line(String(decoding: rest, as: UTF8.self)) }
   }
 
   private static func write(_ line: String, to descriptor: Int32) -> Bool {

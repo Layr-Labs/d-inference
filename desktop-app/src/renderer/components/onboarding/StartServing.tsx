@@ -6,7 +6,16 @@ import { Button, External, Notice } from '../UI';
 import { AdvancedOptions } from './AdvancedOptions';
 import { ServingSummary } from './ServingSummary';
 import { pinnedMemory, startingModel } from '../../models/selection';
-import { methodFor, startAction, startModels, usablePins, type StartMethod } from './startPlan';
+import {
+  methodFor,
+  pairBlocked,
+  pairLead,
+  pairStartable,
+  startAction,
+  startModels,
+  usablePins,
+  type StartMethod,
+} from './startPlan';
 import { useStartServing } from './useStartServing';
 import styles from './startServing.module.css';
 import { networkEarnings, recommendedModels } from '../../features/models/recommendations';
@@ -24,6 +33,14 @@ const copy: Record<StartMethod, { lead: string; start: string; empty: string }> 
     empty: 'Choose a model to serve.',
   },
 };
+
+// A paired Mac starts its pair (`startAction`), never Autopilot, which serves one Mac: the plain
+// start's page, with the pair's words, and why there is no Start where the pair needs Terminal.
+const pairCopy = (pair: NonNullable<Snapshot['pair']>) => ({
+  ...copy.manual,
+  lead: pairLead(pair),
+  empty: pairBlocked(pair),
+});
 
 function accountLine(snapshot: Snapshot) {
   return snapshot.linked
@@ -53,14 +70,15 @@ export function StartServing({
     setPinned((current) => (current.length || !starting ? current : [starting.id])),
   );
   const manualOnly = !!snapshot.capabilities && !snapshot.capabilities.includes('autopilot');
-  const method = methodFor(serving.rejected || manualOnly);
-  const text = copy[method];
+  const pair = snapshot.pair;
+  const method = methodFor(serving.rejected || manualOnly || !!pair);
+  const text = pair ? pairCopy(pair) : copy[method];
   const pins = usablePins(snapshot, pinned);
   const network = networkEarnings(backend.network);
   const recommended =
     method === 'autopilot' && !pins.length ? recommendedModels(snapshot.models, network) : [];
   const showRecommendations = recommended.length > 0;
-  const empty = !startModels(snapshot, method, pinned).length;
+  const empty = pair ? !pairStartable(pair) : !startModels(snapshot, method, pinned).length;
   const tooLarge = pinnedMemory(snapshot, pins).exceeds;
   const running = snapshot.operations.find((operation) => operation.state === 'running');
   // Serving needs a linked account: an unlinked Mac goes back to link it first.
@@ -71,7 +89,7 @@ export function StartServing({
       {!showRecommendations && (
         <>
           <p>{text.lead}</p>
-          <ServingSummary snapshot={snapshot} method={method} pinned={pins} />
+          {!(pair && empty) && <ServingSummary snapshot={snapshot} method={method} pinned={pins} />}
         </>
       )}
       {serving.rejected && method === 'manual' && (
@@ -123,7 +141,7 @@ export function StartServing({
       <p className="terms-note">
         By turning on, you agree to our <External target="terms">Terms of Service</External>
       </p>
-      <div className={styles.more}>
+      <div className={styles.more} hidden={!!pair}>
         <AdvancedOptions
           snapshot={snapshot}
           open={open}

@@ -129,7 +129,12 @@ public final class ClusterLinkStatusPublisher: @unchecked Sendable {
             let source = DispatchSource.makeTimerSource(queue: queue)
             let nanoseconds = max(Int(interval.components.seconds) * 1_000_000_000
                 + Int(interval.components.attoseconds / 1_000_000_000), 50_000_000)
-            source.schedule(deadline: .now(), repeating: .nanoseconds(nanoseconds), leeway: .milliseconds(100))
+            // A tick may come up to a tenth of the interval late, 100 ms at
+            // most. A leeway as long as the interval lets the system deliver
+            // a tick at the next one's deadline, and Dispatch then runs one
+            // handler for both: that interval sends no status.
+            source.schedule(deadline: .now(), repeating: .nanoseconds(nanoseconds),
+                            leeway: .nanoseconds(min(nanoseconds / 10, 100_000_000)))
             source.setEventHandler { [weak self] in self?.tick() }
             timer = source
             source.resume()

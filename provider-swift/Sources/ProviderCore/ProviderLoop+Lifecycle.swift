@@ -14,12 +14,18 @@ extension ProviderLoop {
         }
         localResponseTracker.setAccepting(false)
         state.refusingNewWork = true
+        // A pair leader's waiting local requests hear the drain now.
+        wakeClusterPairLocalWaiters()
     }
 
     internal var lifecycleRemaining: Int {
-        let coordinator = Set(requestToModel.keys.filter { !$0.hasPrefix(Self.engineV2RecoveryPinPrefix) })
+        coordinatorRequestsInFlight + max(localReservations.totalInFlight, localResponseTracker.activeCount)
+    }
+
+    /// Darkbloom (coordinator) requests accepted and not yet finished.
+    internal var coordinatorRequestsInFlight: Int {
+        Set(requestToModel.keys.filter { !$0.hasPrefix(Self.engineV2RecoveryPinPrefix) })
             .union(inflightTasks.keys).union(acceptedLifecycleRequests).count
-        return coordinator + max(localReservations.totalInFlight, localResponseTracker.activeCount)
     }
 
     /// Unstructured ownership is intentional: interrupting the CLI, a schedule

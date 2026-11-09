@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-08
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -978,6 +978,51 @@ The peer check is exercised only negatively: no signed add-on is available to
 the test runner, and a test authenticator stands in for it in the socket and
 serve-loop flows. Physical add-on interoperation remains a separate check.
 
+## OpenCode and Hermes config writers
+
+The [config writers'](../architecture/tool-integrations.md) suites are CPU-only
+and need no model, credential or live provider. The planners' goldens are
+inline strings; the writer and end-to-end cases use temp homes and fresh fake
+keys, and the live-endpoint case runs in a child process that alone points
+`DARKBLOOM_LOCAL_DIR` at a temp folder. Every case that reaches
+`IntegrationEndpoint.live` keeps it off this Mac's cluster service: it gives
+`pairPart`, binds `ClusterPairSummary.readerForTesting`, or, in a child
+process, calls `keepCommandsOffThisMacsCluster()`. None reads a real OpenCode
+or Hermes config, or this Mac's cluster service.
+
+```bash
+swift test --skip-build --no-parallel \
+  --filter 'OpenCodeConfigPlanTests|HermesConfigPlanTests|HermesVersionTests|ToolConfigWriterTests|IntegrationModelsTests|ToolIntegrationTests|ToolSetupWordsTests|ModelLoadWaitTests|ToolAddressTests|AtomicFileTests|keyFileIsTheFileHoldingThePortsKey'
+```
+
+| Coverage | Suites |
+|---|---|
+| New file, an owner's commented JSONC file, strict `.json`, a V1 `provider` map, the default model (also when the other global file sets one, this file's own winning, named when kept; two `model` keys name none; a remembered `/models` pick, and how its `model.json` is read), re-runs, refusals, the config file choice | `OpenCodeConfigPlanTests` |
+| New file, Hermes' fresh-install `model: ""`, a file as oMLX writes it (PyYAML's column-0 lists too), the `model:` alias key, the kept default, the main model it replaces, a pair's model as the main one, the 64,000-token floor, quoting, refusals, every written key against Hermes' documented keys; the `key_cmd` version warning | `HermesConfigPlanTests`, `HermesVersionTests` |
+| Backups (exact bytes, 0600, five kept), unchanged writes nothing, atomic replace, symlinks, a concurrent edit, dry run, the undo command run through `/bin/sh` | `ToolConfigWriterTests`, `AtomicFileTests` |
+| Catalog names, limits and capability aliases; a pair's models named `(your pair)`, with their engine's image input and reasoning; the fetch with the key file's key; `local.json`'s endpoint and key file; the modes of new files; the owner's default in the other global OpenCode file; no written file holds the key | `IntegrationModelsTests`, `ToolIntegrationTests`, `keyFileIsTheFileHoldingThePortsKey` |
+| What a start says, in a temp home with a user's two OpenCode files and his Hermes config: the default model's own line (none set, set in either file, set without a name, OpenCode 1's `config.json`, a `/models` pick OpenCode remembers in a fake `model.json`, under `XDG_STATE_HOME` too), Hermes' main model before, the URL for an API on `0.0.0.0`, a pair's API (`(your pair)`, a member's relay, a run again online and offline changes nothing); every `Changed:` wording and default line | `ToolSetupWordsTests` |
+| The wait for this Mac's models (a scripted process and a clock that moves only between looks; every fake ends a wait at its bound, so a regression fails instead of hanging, and each suite has a one-minute limit), Ctrl-C (SIGUSR2 stands in for SIGINT), the run-again line; a plain start's notice, the address rule and the start's two hooks | `ModelLoadWaitTests`, `ToolAddressTests` |
+
+`scripts/integrations/opencode-smoke.sh` then runs the real OpenCode 2 on the
+written config. It runs the writer through the opt-in `OpenCodeSmokeSetup`
+test (enabled only by `DARKBLOOM_OPENCODE_SMOKE_HOME`), against a fake
+OpenAI-compatible server on a port the system picks, with HOME, every `XDG_*`
+folder, `TMPDIR` and the discovery folder inside one temp folder and OpenCode
+under `env -i` with `--standalone`:
+
+```bash
+scripts/integrations/opencode-smoke.sh --skip-build --scratch-path <build folder>
+```
+
+It checks that OpenCode lists the models and hides the key, that its agent turn
+sends the key file's key and `max_tokens` (the model's `limit.output`) and no
+`X-Darkbloom-Route`, that a second run changes nothing, that an owner's
+`opencode.json` keeps its V1 provider and default model and is restored exactly
+by the printed undo command, and that with both global files the owner's
+default in `opencode.json` stays the only one OpenCode loads. It proves OpenCode accepts the block, not a real
+engine's answers; Hermes is checked against its documentation only.
+
 ## Watchdog Launch Acknowledgement
 
 `WatchdogLaunchAdapterTests` (in `LaunchAgentLifecycleTests.swift`) drives the
@@ -1080,8 +1125,9 @@ against the full suite list. Signing requires `qualify-sdk` and optimized
 compilation. GPU suites retain serial execution and exclusive-process isolation.
 A cache hit never skips a test.
 
-The SDK 27.2 Date checks run without a Mac. The `Provider Tests` gate and
-Release Integrity run, from the repository root:
+The SDK 27.2 Date checks run without a Mac. The CI plan checks job of
+`provider-tests.yml` (which the `Provider Tests` gate requires) and Release
+Integrity run, from the repository root:
 
 ```bash
 python3 scripts/test-check-date-comparisons.py
@@ -1219,18 +1265,45 @@ weights. The downloader identifies itself as `darkbloom-prompt-fixtures/1` to
 the CDN and retains same-origin HTTPS, byte-budget and integrity checks.
 It retries only a cut or failed transfer (a TLS, socket or connection error, a
 timeout, a body that ends before its declared size, or HTTP 5xx), at most 3
-attempts per artifact with 1 s and 3 s backoff inside the 120 s deadline. A
-full-size body with the wrong SHA-256, an oversize body, a Content-Length
-mismatch, a cross-origin response, another non-200 status or the deadline fails
-at once. `scripts/prepare-mimo-prompt-fixtures.py` and
+attempts per artifact with 1 s and 3 s backoff inside the contract's deadline.
+The deadline is 120 s plus the time the contract's missing bytes take at
+128 KiB/s, at most 900 s: 256 s for the 17 MB Nemotron contract and 376 s for a
+32 MB Gemma 4 contract. A full-size body with the wrong SHA-256, an oversize
+body, a Content-Length mismatch, a cross-origin response, another non-200
+status or the deadline fails at once.
+
+With `PROMPT_PARITY_DOWNLOAD_CACHE` set (CI sets it for both parity scripts),
+`--download-cache` names a directory with one file per pinned SHA-256
+(`scripts/verified_download_cache.py`). An artifact is copied from it only if
+the entry is a regular file with the pinned size and digest; a missing, linked,
+special, short, long or changed entry, or one that cannot be read, is
+downloaded, and the verified download replaces it. A failure to store an entry
+is printed and ignored. The cache's bytes do not count toward the deadline, and
+the Gemma 4 and Qwen contracts that share a `tokenizer.json` download it once.
+For each contract the script prints how many artifacts came from the cache, how
+many it downloaded, their bytes and the seconds it took.
+
+`scripts/prepare-mimo-prompt-fixtures.py` and
 `scripts/prepare-mimo-image-http-fixtures.py` apply the same retry rule to each
-metadata file, with these differences. They refuse a redirect to plain HTTP but
-follow a redirect to a different HTTPS host. The MiMo prompt script has no total
+metadata file, with these differences. The MiMo prompt script has no total
 deadline: each connect and read has a 60 s socket timeout. The image script has
 a 120 s deadline for each file, and it classifies curl's exit code: a cut
-transfer (for example exit 18 or 56) retries, and an oversize body (63), a
-certificate failure or a plain-HTTP redirect does not. Provisioning failures
-fail qualification; they must not silently skip vectors.
+transfer (for example exit 18 or 56) retries, and an oversize body (63) or a
+certificate failure does not. curl does not follow redirects for the image
+script.
+
+The three downloaders share one redirect rule (`scripts/fixture_redirects.py`),
+for at most 10 redirects. A download follows a redirect only when the target
+has the scheme, host and port of the URL that answered with it, and the target
+has no credentials. The MiMo prompt script also follows an HTTPS redirect from
+`https://huggingface.co` to a Hugging Face CDN host on port 443: `hf.co` or a
+name that ends in `.hf.co`. Hugging Face answers `tokenizer.json` at the pinned
+revision with a 302 to `us.aws.cdn.hf.co`; the other three metadata files take a
+same-origin 307. The pinned SHA-256 values still protect the bytes. Any other
+redirect (another host, another port or plain HTTP) fails at once, is not
+retried, and its target is never requested. The prompt-asset downloader also
+refuses a redirect target with a query or fragment. Provisioning failures fail
+qualification; they must not silently skip vectors.
 
 Public validation means **this implementation matches those fixed expectations**.
 It does not run private Go/Rust implementations, establish current cross-implementation
@@ -1245,6 +1318,47 @@ repository copies the file byte-for-byte and records the source revision and
 SHA-256 in the commit. A provider change to the rendered prompt, such as the
 Qwen JSON `response_format` thinking default, lands with the regenerated
 vectors and must pass `scripts/verify-prompt-parity.sh` before review.
+
+`fixtures/prompt-contract/v1/native_reasoning_vectors.json` (28 cases) is this
+repository's: the template context the provider gives each reasoning control,
+or its refusal. `CachePromptParityTests` checks the provider against it, and
+the platform's prompt sidecar and first-party pool read the same cases, so a
+change lands here first and the platform follows. Since the reasoning-effort
+levels ([reasoning effort](../architecture/inference.md#reasoning-effort)),
+Qwen 3.8 Flash-Next's `high`, `max`, `minimal` and ` low ` render a level and
+`turbo` is refused. `ReasoningEffortValuesTests` checks every family's table
+against the rounding rule and sends every effort to every family through the
+production prompt pipeline, and
+`ReasoningEffortLocalAPITests` sends them to one Mac's local API and a pair
+leader's over the `ClusterAPIParityTests` harness. It also renders Nemotron 3.5
+Super's refusal of two efforts that differ through `SuperHTTPErrors` and
+`CORSResponder`; `NemotronSuperLocalHTTPTests`' live text route sends it, and
+an unknown `reasoning.effort`, through the real application (it needs Metal,
+so it runs in CI).
+
+`fixtures/prompt-contract/v1/reasoning_effort_vectors.json` (446 cases) is
+also this repository's, and it is the contract with the coordinator: every
+family's reading of every effort, in both fields and other spellings (a
+non-ASCII `HİGH` among them), with the field an unknown effort is refused in,
+and cases for every type that reasons. It also lists the sets the table keeps:
+the types that reason, the Qwen 3.5 template family's, the types whose effort
+sets a thinking switch, and the concrete Qwen 3.8 builds. It is generated,
+never edited by hand: `scripts/generate-reasoning-effort-vectors.py` restates
+the tables in `ReasoningEffort.swift` and writes it, and running the script
+again must leave the file unchanged. Regenerate it with the tables, and check
+the result with `CachePromptParityTests.reasoningEffortVectors`, which requires
+each set to equal the table's and every type that reasons to have cases, and
+runs every case through the production prompt pipeline. darkbloom-platform
+copies the file byte for byte from a reviewed commit of this repository (its
+provider contract snapshot, which `make contracts-check` verifies there) and
+checks its ingress refusal, first-party pool and prompt sidecar against it,
+sets included, so a type added or dropped on one side only fails a test on the
+other, and a change to a table changes the file in both repositories together.
+A new family that reasons adds its model types to the sets, its table (if it
+has levels) with a row in
+`ReasoningEffortValuesTests.everyFamilyTableCoversEveryEffort`, a `Family` to
+the script, and the regenerated file with its new case count; the coordinator
+learns the family when the platform takes that commit's file.
 
 darkbloom-platform keeps byte-identical copies of the provider's
 `paged_footprint_wire.json` and `process_memory_wire.json` for its own
@@ -1285,9 +1399,12 @@ release build of the cluster runtime. Shard 2 of `test-cluster-focused`
 `libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py`,
 `libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh`,
 `libs/darkbloom-cluster/Tests/NemotronStageChecks/run.sh`,
-`provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning` and
-the onboarding checks. Shard 1 runs every other runner under
-`libs/darkbloom-cluster/Tests`. Each runner compiles only its own small source
+`provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning`,
+the onboarding checks and `provider-swift/Tests/ClusterConsoleChecks/run.sh`.
+Shard 1 runs every other runner under `libs/darkbloom-cluster/Tests`,
+`provider-swift/Tests/ClusterPairingChecks/run.sh`,
+`provider-swift/Tests/ClusterDiagnosticsChecks/run.sh` and
+`provider-swift/Tests/ClusterPlacementChecks/run-flow.sh`. Each runner compiles only its own small source
 closure. The provisioning runner runs the
 provisioning checks only. Its download cache-policy check
 reads how many written pages stay in the file cache, which the host's kernel
@@ -1310,9 +1427,9 @@ other provider files the cluster runners compile, the cluster plan and the
 shared build recipe. The
 `Provider Tests` gate accepts a skipped cluster job only when `cluster` was not
 selected. A provider-only change runs 3 Macs (the provider build and the 2
-provider shards). A cluster change adds 9 Macs (the cluster build, the release
-build checks, 3 runtime shards, 2 focused shards and 2 GPU shards). Every
-Mac job but the 2 GPU shards is routed; the GPU shards run on Blacksmith
+provider shards). A cluster change adds 12 Macs (the cluster build, the release
+build checks, 5 runtime shards, 2 focused shards and 3 GPU shards). Every
+Mac job but the 3 GPU shards is routed; the GPU shards run on Blacksmith
 ([job sizes](build.md#job-sizes)). A change whose tree a successful run of the
 same workflow already tested runs no test job at all
 (`scripts/ci-tested-tree.py`).
@@ -1324,14 +1441,27 @@ in a process of its own through `scripts/run-nested-suite.sh`, which fails when
 the selection runs no test or skips a test. Runtime shard 1 runs `base` alone,
 then the share probe alone. The probe times each rank's share against a 1.5 s
 budget, so it never runs on a Mac right after the concurrent GPU groups.
-Shard 2 runs two groups at the same time, each in plan order with its own
-`TMPDIR` (the CPU batch-session suite with the GLM paged-KV, invariance and
-census, TF32 and Gemma selections; the Qwen GPU chain with `glm53-prefix-ssd`).
+Shards 2 and 3 each run two groups at the same time, each in plan order with
+its own `TMPDIR`: a Qwen GPU group beside a CPU group of the batch-session
+suite (`QwenTensorParallelBatchSessionTests`, 672 s in one process). Shard 2
+runs `qwen-tp-batch-gpu` and `qwen-tp-batch-gpu-paged`, then the GLM paged-KV,
+invariance and census, TF32 and Gemma selections, beside `base-batch-session`.
+Shard 3 runs `qwen-tp-mtp-gpu`, `qwen-tp-aqv-gpu`, `qwen-tp-moe-gpu` and
+`glm53-prefix-ssd` beside `base-batch-session-prefix-tiers`, the suite's warm
+and SSD prefix tier tests (`BATCH_SESSION_PREFIX_TIER_TESTS`, 325 of the 672 s).
+`base-batch-session` skips those tests and runs every other test of the suite,
+so a new test of the suite runs there.
 The second group starts `CLUSTER_TEST_START_GAP` seconds (default 15) after
 the first, as the provider shards' processes do, so their SwiftPM startups do
 not meet on the shared build database.
-Shard 3 runs `base-gemma` alone: the Gemma 4 base suites (`GEMMA_SUITES`, 592 of
-the base tests' 970 s), so each model family still shares one process. A grouped selection that finds SwiftPM's build database locked, and whose log
+Shards 4 and 5 each run one half of the Gemma 4 base suites (`GEMMA_SUITES`,
+610 s in one process) alone: shard 4 runs `base-gemma-tensor-parallel`
+(`Gemma4TensorParallelTests`, 296 s), shard 5 `base-gemma` (the other Gemma
+suites, 314 s). Each Gemma suite runs whole in one of the two.
+Cluster GPU Tests shards 1 and 3 each run one half of the real-geometry rows
+check alone ([Qwen27 capacity consistency checks](#qwen27-capacity-consistency-checks));
+shard 2 runs the other non-blocking selections one at a time.
+A grouped selection that finds SwiftPM's build database locked, and whose log
 proves every test passed, runs once more, as in the provider shards; the job
 log prints both attempts' logs. Every process starts with
 `MLX_QMV_BATCH_INVARIANT=1`, as every cluster process does.
@@ -1343,9 +1473,13 @@ log prints both attempts' logs. Every process starts with
 | Opt-in | Cluster GPU Tests (non-blocking) | The switched tests that fail on the CI runners' GPU, the long-running tests and the benchmarks. The job reports their results and does not fail the workflow |
 | Needs a model | None | The tests that need a model directory, an artifact or its metadata (`REQUIRES_MODEL`). CI has no model |
 
-`python3 scripts/test-cluster-test-plan.py` (the `Provider Tests` gate and Release Integrity) checks that the
+`python3 scripts/test-cluster-test-plan.py` (the CI plan checks job, which the `Provider Tests` gate requires, and Release Integrity) checks that the
 plan names each gated test in the sources once, each runner under
-`libs/darkbloom-cluster/Tests` once, and every Gemma suite in `GEMMA_SUITES`. When you add an environment gate to a
+`libs/darkbloom-cluster/Tests` once, and every Gemma suite in `GEMMA_SUITES`,
+each in exactly one base selection of Gemma suites. It also checks that each
+test a selection of suite functions names (`functions`) is an ungated test of
+that suite, named once, and that one other base selection runs the suite's
+other tests. When you add an environment gate to a
 runtime test, add the test to a selection or to `REQUIRES_MODEL`.
 
 Build the runtime tests once (`swift build --package-path libs/darkbloom-cluster
@@ -3192,7 +3326,13 @@ that widened them inside the matmul and each row alone. `QwenTensorParallelBatch
 runs the resident assistant's transitions on the 9B ratio (`QWEN_TP_MTP_GPU=1`).
 `QWEN_TP_REAL_GEOMETRY_GPU=1` runs `QwenTensorParallelRealGeometryRowsTests` (about 3 GB of random
 weights): the 27B row contract at its registered per-rank widths (`QwenTensorParallelRowsCheck`), both
-ranks in one process; start it with the worker's arithmetic environment.
+ranks in one process; start it with the worker's arithmetic environment. Its two tests each run one half
+of the check (`QwenTensorParallelRowsCheck.Part`), and each half compares only against the solo runs it
+makes itself: `rowsEqualTheirSoloStepsAndWindowPositionsAtRealWidths` runs the rows of 100 to 4,090
+tokens (one- and eight-lane hosts, rows that join and leave, the observed cohort, the verify windows),
+and `rowsAcrossKVSegmentsEqualTheirSoloStepsAtRealWidths` runs the rows of 4,000 to 4,600 tokens across
+KV segments. CI runs them alone on Cluster GPU Tests shards 1 and 3; as one test they took 1,098 s
+(run 42268059756) and set the run's wall time. The tool's `qwen-rows run` runs both halves.
 `darkbloom-cluster-tp-check qwen-rows synthesize --output DIR` writes that checkpoint (about 2.1 GB), and
 `darkbloom-cluster-tp-check qwen-rows run --model-dir DIR --report FILE` runs the check as two processes
 (`MLX_RANK`, `MLX_HOSTFILE` with two free `127.0.0.1` ports; `--backend ring` or `socket`,

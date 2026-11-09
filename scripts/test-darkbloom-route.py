@@ -91,14 +91,15 @@ def built(component):
 
 
 # Every routed macOS job of CI: lane -> (count, size, required), each size
-# from the job's sampled memory (provider-plan.yml). The 7 blocking test jobs
+# from the job's sampled memory (provider-plan.yml). The 9 blocking test jobs
 # come first, critical path first; while sizes are off they ask without a
-# size. The two focused shards share the lane the approval names. Then the
-# build jobs and the release build checks, `required`: while sizes are off
-# they keep Blacksmith without asking.
+# size. Two shards share each of the lanes test-cluster-2 (runtime shards 2
+# and 3), test-cluster-3 (runtime shards 4 and 5) and test-cluster-focused,
+# lanes the approval names. Then the build jobs and the release build checks,
+# `required`: while sizes are off they keep Blacksmith without asking.
 PLAN_LANES = {
-    "test-cluster-2": (requested("cluster"), "12x32", False),
-    "test-cluster-3": (requested("cluster"), "4x24", False),
+    "test-cluster-2": (requested("cluster", 2), "12x32", False),
+    "test-cluster-3": (requested("cluster", 2), "4x24", False),
     "test-cluster-focused": (requested("cluster", 2), "4x16", False),
     "test-provider-2": (requested("provider"), "4x24", False),
     "test-cluster-1": (requested("cluster"), "4x16", False),
@@ -109,14 +110,14 @@ PLAN_LANES = {
 }
 # The request CI sent before sizes, with every lane's jobs running: the request
 # must stay byte for byte this one while sizes are off.
-UNSIZED_PLAN_REQUEST = [{"lane": "test-cluster-2", "profile": "macos_arm64", "count": 1},
-                        {"lane": "test-cluster-3", "profile": "macos_arm64", "count": 1},
+UNSIZED_PLAN_REQUEST = [{"lane": "test-cluster-2", "profile": "macos_arm64", "count": 2},
+                        {"lane": "test-cluster-3", "profile": "macos_arm64", "count": 2},
                         {"lane": "test-cluster-focused", "profile": "macos_arm64", "count": 2},
                         {"lane": "test-provider-2", "profile": "macos_arm64", "count": 1},
                         {"lane": "test-cluster-1", "profile": "macos_arm64", "count": 1},
                         {"lane": "test-provider-1", "profile": "macos_arm64", "count": 1}]
 # Cluster GPU Tests are not routed: shard 2 uses more memory than any signed
-# size, and one lane would carry one size for both shards.
+# size, and one lane would carry one size for every shard.
 UNROUTED_MACOS = {("provider-tests.yml", "test-cluster-gpu")}
 MASTER_LINUX_LANES = (f"release-integrity linux_arm64 {LINUX_FALLBACK}", f"docs linux_arm64 {LINUX_FALLBACK}")
 # (workflow, job): the expression its runs-on reads.
@@ -129,15 +130,21 @@ CI_ROUTED = {
     ("ci-master.yml", "docs"): "needs.plan.outputs.routes",
 }
 # darkbloom-sandbox's GitHub-side watchdog (public/darkbloom-actions
-# .github/workflows/watchdog.yml at 31236c54), copied unchanged.
+# .github/workflows/watchdog.yml at d6d257c2), copied unchanged.
 WATCHDOG = "darkbloom-watchdog.yml"
+# The hourly full run of dev: a schedule on master that dispatches CI (dev) on
+# dev. One GitHub-hosted job that routes nothing and tests nothing.
+HOURLY = "ci-dev-hourly.yml"
 # Credentialed, release, review or publication workflows keep literal runners.
 UNROUTED = ("release-swift.yml", "release-provider.yml", "release-dev-branch.yml",
             "release-desktop.yml", "provider-signing-validation.yml", "register-model.yml",
             "threat-model-review.yml", "bedrock-smoke.yml", "claude.yml", "codex.yml")
 # The plane grants a lane whole, so each shard of these jobs reads a lane of its
 # own, `<job>-<shard>`, and gets a free sandbox even when the others fall back.
-SHARDED = {"test-provider", "test-cluster"}
+SHARDED = {"test-provider"}
+# These jobs' matrix names each shard's lane (`include: - {shard: N, lane: L}`);
+# a lane that several shards read is requested for all of them.
+LANE_MATRIX = {"test-cluster"}
 # Master and dispatched warming feed release builds, so only PRs read the route.
 RUNS_ON = {"warm": "${{ github.event_name == 'pull_request' && "
                    "fromJSON(needs.route.outputs.routes)['warm'] || 'blacksmith-12vcpu-macos-27' }}"}
@@ -201,8 +208,16 @@ def matrix_shards(job):
     return [shard.strip() for shard in matrix.group(1).split(",")] if matrix else []
 
 
+def matrix_lanes(job):
+    """Return the `lane` of each `include` entry of the job's matrix, in order."""
+    return re.findall(r"(?m)^          - \{shard: [0-9]+, lane: ([A-Za-z0-9_-]+)\}$", job)
+
+
 def job_lanes(name, job):
-    """Return the lanes a routed job reads: one per shard when SHARDED, else its own."""
+    """Return the lanes a routed job reads: one per shard when SHARDED, each
+    shard's matrix lane when LANE_MATRIX, else its own."""
+    if name in LANE_MATRIX:
+        return list(dict.fromkeys(matrix_lanes(job)))
     return [f"{name}-{shard}" for shard in matrix_shards(job)] if name in SHARDED else [name]
 
 
@@ -599,7 +614,7 @@ class RouteStepTests(unittest.TestCase):
                     self.assertIn("Request: " + expected.decode(), result.stdout)
                     self.assertIn("Job sizes are off: DARKBLOOM_JOB_SHAPES is not 'on'. No size was requested.",
                                   summary)
-                    self.assertIn("| `test-cluster-2` | macos_arm64 | 1 | - | `self-hosted, macOS, ARM64, "
+                    self.assertIn("| `test-cluster-2` | macos_arm64 | 2 | - | `self-hosted, macOS, ARM64, "
                                   "darkbloom-macos-arm64` | darkbloom: granted |", summary)
                     self.assertIn("| `cluster-release-checks` | macos_arm64 | 1 | - | `blacksmith-12vcpu-macos-27` | "
                                   "fallback: needs its size, and job sizes are off (DARKBLOOM_JOB_SHAPES) |", summary)
@@ -659,13 +674,13 @@ class RouteStepTests(unittest.TestCase):
     def test_macos_cap_keeps_the_test_lanes_first_with_sizes_on_or_off(self):
         lanes = plan_lanes_text()
         tests = [lane for lane, (_, _, required) in PLAN_LANES.items() if not required]
-        cases = (("on", "", list(PLAN_LANES)), ("on", "10", list(PLAN_LANES)),
-                 ("on", "9", [*tests, "build-cluster", "build-provider"]),
-                 ("on", "8", [*tests, "build-cluster"]), ("on", "7", tests),
+        cases = (("on", "", list(PLAN_LANES)), ("on", "12", list(PLAN_LANES)),
+                 ("on", "11", [*tests, "build-cluster", "build-provider"]),
+                 ("on", "10", [*tests, "build-cluster"]), ("on", "9", tests),
                  # A lane that does not fit is passed over; a later, smaller one can still fit.
-                 ("on", "3", ["test-cluster-2", "test-cluster-3", "test-provider-2"]),
+                 ("on", "3", ["test-cluster-2", "test-provider-2"]),
                  # Held lanes take no place under the cap.
-                 ("", "", tests), ("", "7", tests))
+                 ("", "", tests), ("", "9", tests))
         for shapes, cap, asked in cases:
             with self.subTest(shapes=shapes, cap=cap), self.plane() as plane:
                 result, routes, summary = self.route(plane.url, lanes=lanes, JOB_SHAPES=shapes, MACOS_LANES=cap)
@@ -703,7 +718,8 @@ class RouteWorkflowTests(unittest.TestCase):
 
     def test_every_workflow_is_classified(self):
         self.assertEqual(set(self.texts), set(ROUTED) | set(UNROUTED) | set(CALLERS) |
-                         {"darkbloom-route.yml", "component-changes.yml", PLAN, "provider-tests.yml", WATCHDOG})
+                         {"darkbloom-route.yml", "component-changes.yml", PLAN, "provider-tests.yml", WATCHDOG,
+                          HOURLY})
 
     def test_router_is_isolated_and_defaults_to_the_sandbox_plane(self):
         text = self.texts["darkbloom-route.yml"]
@@ -832,7 +848,7 @@ class RouteWorkflowTests(unittest.TestCase):
                 self.assertEqual(job_field(workflow["tests"], "uses"), "./.github/workflows/provider-tests.yml")
                 self.assertEqual(needs(workflow["tests"]), ["plan"])
                 self.assertNotIn("darkbloom-route.yml", self.texts[filename])
-        self.assertEqual(set(jobs(self.texts["ci-dev.yml"])), {"plan", "tests"})
+        self.assertEqual(set(jobs(self.texts["ci-dev.yml"])), {"plan", "tests", "hourly-failures"})
         self.assertNotIn("linux_lanes", self.texts["ci-dev.yml"])
         self.assertEqual(set(jobs(self.texts["ci-master.yml"])), {"plan", "tests", "release-integrity", "docs"})
         self.assertEqual(literal_block(jobs(self.texts["ci-master.yml"])["plan"], "linux_lanes", 6).splitlines(),
@@ -843,18 +859,23 @@ class RouteWorkflowTests(unittest.TestCase):
         for (filename, name), source in CI_ROUTED.items():
             job = jobs(self.texts[filename])[name]
             with self.subTest(workflow=filename, job=name):
-                if name in SHARDED:
+                if name in LANE_MATRIX:
+                    lane = "matrix.lane"
+                    self.assertTrue(matrix_lanes(job))
+                elif name in SHARDED:
                     lane = f"format('{name}-{{0}}', matrix.shard)"
-                    read |= {f"{name}-{shard}" for shard in matrix_shards(job)}
                 else:
                     lane = f"'{name}'"
-                    read.add(name)
+                read |= set(job_lanes(name, job))
                 self.assertEqual(job_field(job, "runs-on"), f"${{{{ fromJSON({source})[{lane}] }}}}")
                 # A lane is requested exactly when its job runs; a shared lane
-                # for every job of its matrix.
+                # for every job of its matrix that reads it.
                 if filename == "provider-tests.yml":
-                    jobs_requested = 1 if name in SHARDED else len(matrix_shards(job)) or 1
                     for each in job_lanes(name, job):
+                        if name in LANE_MATRIX:
+                            jobs_requested = matrix_lanes(job).count(each)
+                        else:
+                            jobs_requested = 1 if name in SHARDED else len(matrix_shards(job)) or 1
                         self.assertEqual(PLAN_LANES[each][0], plan_count(job_field(job, "if"), jobs_requested))
         self.assertEqual(read, set(PLAN_LANES) | {line.split()[0] for line in MASTER_LINUX_LANES})
         # The router accepts both callers' lane sets, with every count either
@@ -884,16 +905,17 @@ class RouteWorkflowTests(unittest.TestCase):
                             self.assertEqual(runner, MACOS_FALLBACK)
                             continue
                         self.assertEqual(runner, "ubuntu-24.04")
-                        self.assertIn(name, ("tested", "components", "provider-test-gate"))
+                        self.assertIn(name, ("tested", "components", "ci-plan-checks", "provider-test-gate",
+                                             "hourly-failures"))
 
     def test_ci_sizes_every_routed_macos_job_and_asks_for_the_test_lanes_first(self):
         sizes = {size for _, size, _ in PLAN_LANES.values()}
         self.assertLessEqual(sizes, VALID_SIZES)
-        # 10 macOS jobs ask while sizes are on: the 7 blocking test jobs, which
+        # 12 macOS jobs ask while sizes are on: the 9 blocking test jobs, which
         # ask without a size while sizes are off, then the 3 `required` jobs.
         unsized = [lane for lane, (_, _, required) in PLAN_LANES.items() if not required]
-        self.assertEqual(sum(lane_jobs(count) for count, _, _ in PLAN_LANES.values()), 10)
-        self.assertEqual(sum(lane_jobs(PLAN_LANES[lane][0]) for lane in unsized), 7)
+        self.assertEqual(sum(lane_jobs(count) for count, _, _ in PLAN_LANES.values()), 12)
+        self.assertEqual(sum(lane_jobs(PLAN_LANES[lane][0]) for lane in unsized), 9)
         self.assertTrue(all(lane.startswith("test-") for lane in unsized))
         # The cap keeps lanes in table order: every test lane comes before the `required` lanes.
         self.assertEqual(list(PLAN_LANES)[:len(unsized)], unsized)
@@ -946,6 +968,46 @@ class RouteWorkflowTests(unittest.TestCase):
         self.assertIn('route_job=${ROUTE_JOB:-Select Runners}', body)
         self.assertIn('(.name | endswith(" / " + $name))', body)
         self.assertIn("    name: Select Runners\n", jobs(self.texts["darkbloom-route.yml"])["select"])
+        # A listing reaches jq through a file or stdin, never as an argument:
+        # one argument is at most 128 KiB on Linux, less than a busy day of
+        # this repository's runs ("Argument list too long", exit 126).
+        for listing in ("all", "more", "runs", "jobs", "cancelled"):
+            self.assertNotRegex(body, rf'--arg(json)? [a-z_]+ "\${listing}"', listing)
+
+    def test_hourly_full_run_only_dispatches_ci_dev_on_dev(self):
+        text = self.texts[HOURLY]
+        header, body = text.split("\njobs:\n", 1)
+        # Hourly at minute 7 and on demand; no token permission at the top.
+        self.assertEqual(re.findall(r"(?m)^  ([a-z_]+):$", header.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]),
+                         ["schedule", "workflow_dispatch"])
+        self.assertIn("    - cron: '7 * * * *'\n", header)
+        self.assertIn("\npermissions: {}\n", header)
+        dispatch, = jobs(text).values()
+        self.assertEqual(job_field(dispatch, "runs-on"), "ubuntu-24.04")
+        self.assertEqual(permissions(dispatch, 4), {"actions": "write", "contents": "read"})
+        # It runs no action and no checkout, and dispatches only CI (dev) on
+        # dev, unless a dispatched run of it is unfinished.
+        for forbidden in ("uses:", "secrets.", "checkout", "id-token", "self-hosted", "darkbloom-"):
+            self.assertNotIn(forbidden, body)
+        self.assertEqual(re.findall(r"gh workflow run .+", body), ['gh workflow run ci-dev.yml --repo "$REPOSITORY" --ref dev'])
+        self.assertIn("actions/workflows/ci-dev.yml/runs?event=workflow_dispatch&branch=dev", body)
+        self.assertIn('select(.status != "completed")', body)
+
+    def test_hourly_failures_report_only_dispatched_runs(self):
+        # CI (dev)'s last job comments on the tracking issue when a job of a
+        # dispatched run failed; it is the only job with issues: write.
+        report = jobs(self.texts["ci-dev.yml"])["hourly-failures"]
+        self.assertEqual(needs(report), ["plan", "tests"])
+        self.assertEqual(job_field(report, "if"), "${{ always() && github.event_name == 'workflow_dispatch' && "
+                                                  "contains(needs.*.result, 'failure') }}")
+        self.assertEqual(permissions(report, 4), {"actions": "read", "issues": "write"})
+        self.assertIn('select(.title == "Hourly full dev CI failures")', report)
+        for forbidden in ("uses:", "secrets.", "checkout"):
+            self.assertNotIn(forbidden, report)
+        for filename in (*CALLERS, PLAN, "provider-tests.yml", "component-changes.yml", "darkbloom-route.yml", HOURLY):
+            for name, job in jobs(self.texts[filename]).items():
+                if (filename, name) != ("ci-dev.yml", "hourly-failures"):
+                    self.assertNotIn("issues:", job, f"{filename} {name}")
 
     def test_classifier_gate_and_route_need_no_routed_runner(self):
         ci = jobs(self.texts["provider-tests.yml"])

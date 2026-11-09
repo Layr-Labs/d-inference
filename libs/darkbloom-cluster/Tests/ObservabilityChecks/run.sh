@@ -26,5 +26,6 @@ build DarkbloomClusterSecurity DarkbloomClusterBootstrap
 build DarkbloomClusterRemote DarkbloomClusterProtocol DarkbloomClusterProcess DarkbloomClusterBootstrap DarkbloomClusterSecurity
 xcrun swiftc "${flags[@]}" -I "$task_build" -L "$task_build" -lDarkbloomClusterRemote -lDarkbloomClusterSecurity \
   -lDarkbloomClusterProtocol -lDarkbloomClusterProcess -Xlinker -rpath -Xlinker @executable_path \
-  "$task_root/Tests/ObservabilityChecks/main.swift" -o "$task_build/observability-check"
+  "$task_root/Tests/ObservabilityChecks/main.swift" "$task_root/Tests/Support/WakeLatencyProbe.swift" \
+  -o "$task_build/observability-check"
 "$task_build/observability-check" "$task_build/scratch"

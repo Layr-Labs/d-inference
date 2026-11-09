@@ -92,6 +92,14 @@ extension EngineV2Bridge {
             continuation.yield(.error(Qwen4SupportPolicy.contextRejectionMessage))
             continuation.finish()
             return stream
+        } catch MultiModelBatchSchedulerEngineError.promptExceedsContext(let message) {
+            // The model window's refusal keeps its marker and its words (the
+            // window, never request content), which callers map back.
+            let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
+            continuation.yield(.error(
+                MultiModelBatchSchedulerEngineError.promptExceedsContext(message).errorDescription ?? message))
+            continuation.finish()
+            return stream
         } catch MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(let message),
             MultiModelBatchSchedulerEngineError.unsupportedOutputControl(let message) {
             // Capacity and output-control refusals already finalized their
@@ -99,6 +107,13 @@ extension EngineV2Bridge {
             // callers, which map them back to the same typed errors.
             let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
             continuation.yield(.error(message))
+            continuation.finish()
+            return stream
+        } catch MultiModelBatchSchedulerEngineError.distributedRequestRefused(let refusal, let message) {
+            // A pair's refusal finalized its lookup too; it keeps its marker
+            // and its words (the rule and the model's limits) in-band.
+            let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
+            continuation.yield(.error(EngineV2Translation.distributedRefusalMessage(refusal, text: message)))
             continuation.finish()
             return stream
         } catch {
@@ -199,6 +214,11 @@ extension EngineV2Bridge {
         // This is our frame-receipt clock when available, never an upstream wall
         // timestamp. Local engines are unaffected by the distributed-only context.
         let httpResponse = DistributedHTTPResponseScope.current
+        // A streamed local request's prompt progress: what the engine reports of
+        // its prompt, from acceptance to the first token. Only the local API's
+        // streamed requests bind it; nil on every other request, the coordinator's
+        // included.
+        let prefillProgress = LocalPrefillProgress.current
         let distributedOrigin = DistributedRequestOrigin.earliest(
             handler: distributedRequestOrigin, profile: profile?.continuousAnchor,
             now: ContinuousClock.now)
@@ -251,12 +271,13 @@ extension EngineV2Bridge {
         }
         try checkBeforeServiceAdmission(firstContentDeadline, profile: profile, usageSignal: usageSignal)
         let retirementTransfer = EngineV2RetirementTransfer()
+        let maxOutputTokens = outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count)
         guard acquireServiceAllowance(requestID: id, serviceReservationID: serviceReservationID,
             serviceReservation: serviceReservation, promptTokens: promptTokens.count,
-            maxOutputTokens: max(0, request.max_tokens ?? defaultMaxTokens),
+            maxOutputTokens: max(0, maxOutputTokens),
             qualifiedTextWork: multimodal == nil && mediaKind == nil,
             recoverPrefillEvidence: canRecoverPrefillEvidence(
-                promptTokens: promptTokens.count, maxOutputTokens: request.max_tokens ?? defaultMaxTokens,
+                promptTokens: promptTokens.count, maxOutputTokens: maxOutputTokens,
                 deadline: firstContentDeadline,
                 isMultimodal: multimodal != nil || mediaKind != nil)) else {
             // A full Mac refuses as capacity before any stream exists, so
@@ -322,13 +343,15 @@ extension EngineV2Bridge {
             // The same coordinator hint that gates the write also tells the
             // engine which fork boundary is worth staging.
             prefixCheckpointTargetTokens: donationDemand?.repeatedPrefixTokens,
-            defaultMaxTokensContextLimit: defaultMaxTokensContextLimit,
             // The native block engine's decoder matches stops over the whole
             // output, so its requests carry no scope and the reported stop
             // agrees with the one that matched.
             stopStringScope: ownedEngine is CBv2NativeBlockEngine
                 ? nil : stopStringScope ?? self.stopStringScope
         )
+        // The engine is asked for the output resolved above, which the service
+        // allowance was sized for, not the translation's `max_tokens ?? default`.
+        cbv2Request.maxTokens = maxOutputTokens
         cbv2Request.mimoClusterImages = mimoClusterImages
         cbv2Request.clusterStillImages = clusterStillImages
         cbv2Request.clusterGLMMedia = clusterGLMMedia
@@ -345,8 +368,20 @@ extension EngineV2Bridge {
             ssdStaged: false,
             readyReceiptRegistered: false,
             usageSignal: usageSignal)
+        // A single Mac slot refuses a prompt that fills its window, naming the
+        // window: no output fits after it. Any other prompt's output is already
+        // cut to what it leaves (`outputTokens(requested:promptTokens:)`). A
+        // pair's engine refuses the same prompt in the same words.
+        if let window = modelWindowTokens, promptTokens.count >= window {
+            usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
+            continuation.finish()
+            throw MultiModelBatchSchedulerEngineError.promptExceedsContext(
+                DistributedRequestRefusal.contextLengthExceededMessage(contextTokens: window))
+        }
         let (worstCaseTokens, tokenCountOverflow) = promptTokens.count.addingReportingOverflow(
             cbv2Request.maxTokens)
+        // The advertised context's own guard: with the output cut above, only a
+        // negative output reaches it on a single Mac.
         if let cap = advertisedContextTokens,
             cbv2Request.maxTokens < 0 || tokenCountOverflow || worstCaseTokens > cap
         {
@@ -641,11 +676,14 @@ extension EngineV2Bridge {
                 usageSignal?.finalizeLookup(
                     failure: .capacity,
                     fallbackTier: prefixCacheFallbackTier)
-                continuation.yield(.error(
-                    "token_budget_exhausted: request requires \(worstCaseTokens) tokens "
-                        + "but the shared KV budget has no headroom"))
+                // As the service allowance above: refused before any stream
+                // exists, so a streamed local request gets 503, not a 200 SSE
+                // stream that fails at once. Nonthrowing callers still get the
+                // message in-band.
                 continuation.finish()
-                return stream
+                throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(
+                    "token_budget_exhausted: request requires \(worstCaseTokens) tokens "
+                        + "but the shared KV budget has no headroom")
             }
         }
 
@@ -693,6 +731,7 @@ extension EngineV2Bridge {
             nativeRateEvidence: nativeMediaEvidence)
         cbv2Request.onPrefillCompleted = { [weak self, prefillReceipt] usage in
             prefillReceipt.complete(usage)
+            prefillProgress?.advance(to: usage.promptTokens)
             Task { await self?.consumePrefillReceipt(id: id, receipt: prefillReceipt) }
         }
         // Accepted requests transfer interval ownership to active state or its
@@ -1035,20 +1074,33 @@ extension EngineV2Bridge {
             }
             if let failure = error as? PreContentDeadlineFailure { throw failure }
             if error is CancellationError { throw CancellationError() }
-            // A refused distributed admission has no native terminal for the
-            // HTTP writer to report. Throw the mapped error before response
-            // headers instead of returning a stream that can only abort.
-            let distributedProfile = (ownedEngine as? DistributedCBv2Engine)?.profile
-            if distributed != nil, httpResponse != nil, !retirementTransfer.isClaimed {
-                throw MultiModelBatchSchedulerEngineError.fromSchedulerMessage(
-                    EngineV2Translation.admissionErrorMessage(for: error, distributedProfile: distributedProfile))
-            }
             // Admission failure. The message keeps the canonical
             // `token_budget_exhausted:` prefix contract so
             // `fromSchedulerMessage` classifies it as a retryable capacity
             // error (429/503) exactly as the legacy engine's rejections.
-            continuation.yield(.error(EngineV2Translation.admissionErrorMessage(
-                for: error, distributedProfile: distributedProfile)))
+            let message = EngineV2Translation.admissionErrorMessage(for: error, distributedProfile: distributed?.profile)
+            let typed = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message)
+            // Refusals are typed, as on one Mac: thrown before any stream
+            // exists, so a streamed request gets its status rather than a 200
+            // that fails at once ("Response generation failed": a long prompt
+            // to a Gemma 4 pair on the leader's local API, pair-2 2026-11-08).
+            // - Memory: the 503, on this Mac (a paged slot's only memory gate,
+            //   a request that can never fit its grant) and on a pair (both
+            //   Macs' memory now).
+            // - A pair's refusal of this request by its limits: its typed 400.
+            // - Anything else a pair refuses on its own API, whose HTTP writer
+            //   has no native terminal to report.
+            // Nonthrowing callers still get the message in-band.
+            let refusedBeforeStream = switch typed {
+            case .tokenBudgetExhausted: true
+            case .distributedRequestRefused: distributed != nil
+            default: distributed != nil && httpResponse != nil
+            }
+            if refusedBeforeStream, !retirementTransfer.isClaimed {
+                continuation.finish()
+                throw typed
+            }
+            continuation.yield(.error(message))
             continuation.finish()
             return stream
         }
@@ -1058,9 +1110,12 @@ extension EngineV2Bridge {
             maxTokens: cbv2Request.maxTokens,
             submittedAt: engineAdmittedAt,
             profile: profile,
-            prefillReceipt: prefillReceipt
+            prefillReceipt: prefillReceipt,
+            darkbloomRequestId: MeFirstDarkbloomRequest.id
         )
         consumePrefillReceipt(id: id, receipt: prefillReceipt)
+        // Me first: while the owner's request waits in the queue, Darkbloom work still queued gives way.
+        if let makeRoom = MeFirstOwnerRequest.makeRoom { watchOwnerWait(id: id, makeRoom: makeRoom) }
         // Wedge instrumentation: the request is now in the engine's hands.
         wedgeMonitor.recordAdmit(
             now: .now, id: id, firstTokenDeadline: distributedFirstTokenAllowance ?? firstContentDeadline?.instant)
@@ -1068,6 +1123,17 @@ extension EngineV2Bridge {
         // Emit one engagement event for an accepted media request.
         if multimodal != nil {
             emitVisionSubmitTelemetry(requestId: id, mediaKind: mediaKind)
+        }
+
+        // A streamed request on this Mac's API sends its response head only once the engine admits it, so an end
+        // before admission for this Mac's memory is answered with the memory 503 (`holdHeadUntilAdmitted`). Its
+        // prompt progress starts there too. A pair's API, whose queue is before its engine, says its prompt now.
+        // Held before the pump starts, so the pump's terminal finds it (`recordHeadHoldRefusal`).
+        let holdsHead = prefillProgress != nil && distributed == nil && LocalHeadHold.enabled
+        if holdsHead {
+            heldHeads[id] = .waiting
+        } else {
+            prefillProgress?.accept(promptTokens: promptTokens.count)
         }
 
         // The pump owns these resources through engine terminal; each cache
@@ -1084,7 +1150,8 @@ extension EngineV2Bridge {
             readyReceiptRegistered: readyReceiptRegistered,
             profile: profile,
             nativeRetirement: nativeRetirement,
-            httpResponse: distributed == nil ? nil : httpResponse
+            httpResponse: distributed == nil ? nil : httpResponse,
+            prefillProgress: prefillProgress
         )
 
         let bridge = self
@@ -1092,6 +1159,11 @@ extension EngineV2Bridge {
             if case .cancelled = termination {
                 Task { await bridge.cancel(requestId: id) }
             }
+        }
+        if holdsHead {
+            try await holdHeadUntilAdmitted(id: id)
+            // The engine has admitted the prompt: it says so until its first token.
+            prefillProgress?.accept(promptTokens: promptTokens.count)
         }
         return stream
     }

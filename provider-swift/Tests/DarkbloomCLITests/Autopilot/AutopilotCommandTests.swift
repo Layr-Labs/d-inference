@@ -61,14 +61,14 @@ extension AutopilotCommandTests {
             selectedModels: ["chosen"], revision: "saved")
         let start = try Start.parse([])
         var asked = false
-        let choice = try start.resolveAutopilotChoice(config, interactive: true) { previous in
+        let choice = try start.resolveAutopilotChoice(config, mode: .network, interactive: true) { previous in
             asked = true
             #expect(previous == enabled)
             return !previous
         }
         #expect(asked)
         #expect(choice == !enabled)
-        #expect(try start.resolveAutopilotChoice(config, interactive: false) { _ in
+        #expect(try start.resolveAutopilotChoice(config, mode: .network, interactive: false) { _ in
             Issue.record("Automatic starts must not prompt")
             return false
         } == enabled)
@@ -163,15 +163,15 @@ extension AutopilotCommandTests {
         var config = ProviderConfig(provider:ProviderSettings(name:"choice"))
         config.backend.modelAutopilot = .init(enabled:true,consentRecorded:true,selectedModels:["chosen"],revision:"selection")
         var start = try Start.parse(["--all"])
-        #expect(try start.resolveAutopilotChoice(config))
+        #expect(try start.resolveAutopilotChoice(config, mode: .network))
         start.model = ["chosen"]
-        #expect(try start.resolveAutopilotChoice(config))
+        #expect(try start.resolveAutopilotChoice(config, mode: .network))
         start.autopilot = false
-        #expect(try start.resolveAutopilotChoice(config) == false)
+        #expect(try start.resolveAutopilotChoice(config, mode: .network) == false)
         start.all = false; start.autopilot = nil; start.local = true
-        #expect(try start.resolveAutopilotChoice(config) == false)
+        #expect(try start.resolveAutopilotChoice(config, mode: .network) == false)
         start.autopilot = true
-        #expect(throws:(any Error).self) { try start.resolveAutopilotChoice(config) }
+        #expect(throws:(any Error).self) { try start.resolveAutopilotChoice(config, mode: .network) }
     }
 
     @Test func inventoryEnrollmentPreservesEveryServingPreference() throws {

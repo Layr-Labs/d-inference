@@ -264,6 +264,11 @@ struct EngineV2PrefillSamplingTests {
         // Above the 20k tok/s plausibility ceiling → dropped.
         #expect(EngineV2Bridge.classifyPrefillSample(
             prefilledTokens: 400_000, prefillSeconds: 1.0) == nil)
+        // A bridge's own ceiling governs; the window floor still applies.
+        #expect(EngineV2Bridge.classifyPrefillSample(
+            prefilledTokens: 400_000, prefillSeconds: 1.0, ceiling: .infinity) == 400_000)
+        #expect(EngineV2Bridge.classifyPrefillSample(
+            prefilledTokens: 500, prefillSeconds: 0.0005, ceiling: .infinity) == nil)
         // Zero/negative tokens → dropped.
         #expect(EngineV2Bridge.classifyPrefillSample(
             prefilledTokens: 0, prefillSeconds: 1.0) == nil)

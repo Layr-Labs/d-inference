@@ -133,9 +133,24 @@ public actor EngineV2Bridge {
     /// that has not been admitted.
     let samplingDefaults: EngineV2SamplingDefaults
     let defaultMaxTokens: Int
-    /// A cluster pair's context: an omitted `max_tokens` is the default cut
-    /// to what still fits after the prompt (nil everywhere else).
-    let defaultMaxTokensContextLimit: Int?
+    /// The context an omitted `max_tokens` is cut to fit after the prompt: the
+    /// smaller of the advertised context and the limit the slot was built with
+    /// (`defaultMaxTokensContextLimit`: a cluster pair's context, or a single
+    /// Mac slot's model window); nil when neither is known.
+    nonisolated let defaultOutputContextLimit: Int?
+    /// The window a single Mac slot holds every request to: its advertised
+    /// context, else its model's own (from its config), the smaller when it has
+    /// both. A `max_tokens` past what the prompt leaves is cut to fit
+    /// (`outputTokens(requested:promptTokens:)`), and only a prompt that leaves
+    /// no room is refused, naming the window. Nil on a pair, which cuts to the
+    /// limits its mode serves (`pairServedLimits`), and on a slot that knows
+    /// no window.
+    nonisolated let modelWindowTokens: Int?
+    /// A cluster pair's output limit and context, as its mode serves them
+    /// (`DistributedResidentExecutionProfile.served`): a `max_tokens` past
+    /// either is cut to fit, as on one Mac; only a prompt that leaves no room
+    /// is refused, by the pair's engine, naming the context. Nil on one Mac.
+    nonisolated let pairServedLimits: (outputTokens: Int, contextTokens: Int)?
     let maxConcurrentRequests: Int
     nonisolated let performanceProfile: ServingPerformanceProfile?
     nonisolated let deadlineProfile: DeadlinePerformanceProfile?
@@ -246,6 +261,8 @@ public actor EngineV2Bridge {
         /// first token, cancel, and finish — never per token.
         var profile: RequestProfileBuilder? = nil
         var prefillReceipt: EnginePrefillReceipt? = nil
+        /// A Darkbloom request's coordinator id (`MeFirstDarkbloomRequest`); nil for every other request.
+        var darkbloomRequestId: String? = nil
     }
 
     var active: [String: ActiveRequestState] = [:]
@@ -315,6 +332,14 @@ public actor EngineV2Bridge {
     /// bridge-side limit would just shadow the engine's admission with a
     /// second constant to keep in sync.
     var pumpTasks: [String: Task<Void, Never>] = [:]
+    /// How often a request watched while it has no first token looks whether it still waits in the engine's queue
+    /// (`EngineV2Bridge+QueueState.swift`): the owner's request under me first (`EngineV2Bridge+OwnerWait.swift`), and
+    /// a streamed local request whose head is held (`EngineV2Bridge+HeadHold.swift`), whose looks start 1 ms apart and
+    /// grow to this.
+    var queuePollInterval: Duration = .milliseconds(250)
+    /// Streamed local requests whose response head waits for the engine to admit them, each still waiting or refused
+    /// for this Mac's memory (`EngineV2Bridge+HeadHold.swift`).
+    var heldHeads: [String: HeldHead] = [:]
 
     /// Upper bound on a caller-supplied request-id we will use verbatim.
     /// Coordinator/provider ids are short (`req-<uuid-prefix>` or a
@@ -359,6 +384,11 @@ public actor EngineV2Bridge {
     /// Latest published calibration-cell isolated rate: measured idle at
     /// nominal posture with caching off. Anchors admission's isolated rate.
     var calibratedIsolatedPrefillTps: Double?
+    /// Prompt samples faster than this are dropped, calibration cells
+    /// included. Equal to the coordinator's bound on published prefill rates.
+    /// Tests of toy-weight models, which prefill near it, remove it, so
+    /// whether a sample counts does not depend on the runner's GPU speed.
+    var prefillRateCeiling = EngineV2Bridge.maxPlausiblePrefillTps
     var nativeMediaPrefillRates = NativeMediaPrefillRates()
     var nativeMediaBootstrapRequestID: String?
     var nativeMediaLearnedRequestIDs: Set<String> = []
@@ -455,11 +485,18 @@ public actor EngineV2Bridge {
         self.pagedPageSize = kvBackendKind == .paged && (pagedPageSize ?? 0) > 0 ? pagedPageSize : nil
         self.kvBackendFallbackReason = kvBackendFallbackReason
         self.distributedFirstTokenBudgetPolicy = distributedFirstTokenBudgetPolicy
-        self.advertisedContextTokens =
-            Qwen4SupportPolicy.validatedContextTokens(advertisedContextTokens)
+        let advertised = Qwen4SupportPolicy.validatedContextTokens(advertisedContextTokens)
             ?? Qwen4SupportPolicy.contextLimit(modelID: modelId)
             ?? performanceProfile?.contextTokensMax
             ?? deadlineProfile?.configuredContextTokens
+        self.advertisedContextTokens = advertised
+        self.defaultOutputContextLimit = advertised.map { min($0, defaultMaxTokensContextLimit ?? $0) }
+            ?? defaultMaxTokensContextLimit
+        self.modelWindowTokens = engine is DistributedCBv2Engine
+            ? nil : defaultOutputContextLimit.flatMap { $0 > 0 ? $0 : nil }
+        self.pairServedLimits = (engine as? DistributedCBv2Engine).map {
+            ($0.profile.served.outputTokens, $0.profile.served.contextTokens)
+        }
         self.clampedKVBackendFallbackReason =
             Self.heartbeatFallbackReason(kvBackendFallbackReason)
         self.stopTokenIds = EngineV2Translation.stopTokenIds(
@@ -471,7 +508,6 @@ public actor EngineV2Bridge {
         self.stopStringScope = stopStringScope
         self.samplingDefaults = samplingDefaults
         self.defaultMaxTokens = defaultMaxTokens
-        self.defaultMaxTokensContextLimit = defaultMaxTokensContextLimit
         self.maxConcurrentRequests = maxConcurrentRequests
         self.performanceProfile = performanceProfile
         self.deadlineProfile = deadlineProfile

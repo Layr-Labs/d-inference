@@ -663,7 +663,7 @@ public struct ClusterPairWatch: Sendable, Equatable {
     }
 
     /// One supervision tick. `otherAnsweredAt`: `ClusterControlNode.otherAnsweredAt` (nil: not in this process's
-    /// lifetime). `serving`: this Mac's part runs and its pair serves now.
+    /// lifetime). `serving`: this Mac's part serves now, as far as this Mac can tell (`ClusterService.partServesNow`).
     public mutating func tick(now: Double, intent: Bool, otherAnsweredAt: Double?, serving: Bool) -> Verdict {
         guard intent else { startedAt = nil; servedAt = nil; return .stopped }
         let start = startedAt ?? now
@@ -682,7 +682,7 @@ public struct ClusterPairWatch: Sendable, Equatable {
     /// stopped. `otherMac`: the other Mac's name, when known.
     public static func line(_ verdict: Verdict, otherMac: String?, cli: String) -> String? {
         let other = otherMac.map { "The other Mac (\($0))" } ?? "The other Mac"
-        let next = "Run `\(cli) start` to serve this Mac alone, or `\(cli) cluster` to start the pair again."
+        let next = "Run `\(cli) start --solo` to serve this Mac alone, or `\(cli) start` to start the pair again."
         switch verdict {
         case .stopped, .running: return nil
         case .otherMacSilent(let seconds):
@@ -783,16 +783,19 @@ public struct ClusterControlRequest: Codable, Sendable, Equatable {
     public var model: String?
     public var localOnly: Bool?
     public var bind: String?
+    /// `scope`: true for Both, me first, with the local API's address in `bind`. Nil from an older build.
+    public var localAPI: Bool?
     /// `adopt`: the mode family chosen on the forwarding Mac's screen (a `ClusterForcedMode` raw value); nil keeps the
     /// listed plan's, and from an older build.
     public var mode: String?
     public init(op: Operation, index: Int? = nil, model: String? = nil, scope: ClusterServingScope? = nil, mode: String? = nil) {
-        self.op = op; self.index = index; self.model = model; self.localOnly = scope.map(\.isLocalOnly); self.bind = scope?.bind
+        self.op = op; self.index = index; self.model = model; self.localOnly = scope.map(\.isLocalOnly); self.bind = scope?.localAPIBind
+        self.localAPI = scope?.addsLocalAPI == true ? true : nil
         self.mode = mode
     }
 
     /// `scope`'s value; nil when it names none or an address the local API does not take.
-    public var scope: ClusterServingScope? { ClusterServingScope.carried(localOnly: localOnly, bind: bind) }
+    public var scope: ClusterServingScope? { ClusterServingScope.carried(localOnly: localOnly, localAPI: localAPI, bind: bind) }
 }
 
 /// The leader's answer, shown as it is on the Mac that asked.

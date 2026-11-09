@@ -26,7 +26,9 @@ enum EngineV2Translation {
     ///
     /// * `maxTokens` defaulting matches the legacy path
     ///   (`BatchScheduler.resolvedMaxTokens`: `request.max_tokens ??
-    ///   defaultMaxTokens`).
+    ///   defaultMaxTokens`). The bridge then asks the engine for the output
+    ///   it resolves for the prompt instead
+    ///   (`EngineV2Bridge.outputTokens(requested:promptTokens:)`).
     /// * `stopTokens` is the bridge-resolved EOS set (see
     ///   ``stopTokenIds(eosTokenIds:tokenizerEOSTokenId:extraEOSTokens:convertTokenToId:)``)
     ///   — resolved once at engine construction per the contract, so B=1
@@ -66,15 +68,13 @@ enum EngineV2Translation {
         tokenConstraint: (any CBv2TokenConstraint)? = nil,
         samplingDefaults: EngineV2SamplingDefaults = .legacy,
         prefixCheckpointTargetTokens: Int? = nil,
-        defaultMaxTokensContextLimit: Int? = nil,
         stopStringScope: CBv2StopStringScope? = nil
     ) -> CBv2Request {
         CBv2Request(
             id: id,
             promptTokens: promptTokens,
             sampling: samplingParams(from: request, defaults: samplingDefaults),
-            maxTokens: request.max_tokens ?? defaultOutputTokens(
-                defaultMaxTokens, promptTokens: promptTokens.count, contextLimit: defaultMaxTokensContextLimit),
+            maxTokens: request.max_tokens ?? defaultMaxTokens,
             stopTokens: stopTokenIds,
             stopStrings: request.stop?.asArray ?? [],
             priority: 0,
@@ -87,10 +87,10 @@ enum EngineV2Translation {
         )
     }
 
-    /// The output allowance of a request that omits `max_tokens`: the default,
-    /// or on a cluster pair (`contextLimit`) the default cut to the context
-    /// left after the prompt, at least 1. An explicit `max_tokens` is never
-    /// changed; one that does not fit is refused with the pair's reason.
+    /// The output of a request that omits `max_tokens`: `value`, cut to what
+    /// the prompt leaves of `contextLimit` when that is known (a cluster pair's
+    /// context, or a single Mac slot's window). At least 1, so a prompt that
+    /// fills the context alone is refused for the context, not for its output.
     static func defaultOutputTokens(_ value: Int, promptTokens: Int, contextLimit: Int?) -> Int {
         guard let contextLimit else { return value }
         return max(1, min(value, contextLimit - promptTokens))
@@ -278,9 +278,10 @@ enum EngineV2Translation {
     /// stopping): retry later, 503.
     static let distributedUnavailableMessage = "distributed_session_unavailable"
 
-    static func distributedRefusalMessage(_ refusal: DistributedRequestRefusal,
-                                          profile: DistributedResidentExecutionProfile?) -> String {
-        distributedRefusalPrefix + refusal.rawValue + ": " + refusal.message(profile)
+    /// A refusal and its client-facing text as the marker: the one encoding,
+    /// whether the text was just rendered or carried by a typed refusal.
+    static func distributedRefusalMessage(_ refusal: DistributedRequestRefusal, text: String) -> String {
+        distributedRefusalPrefix + refusal.rawValue + ": " + text
     }
 
     static func distributedRefusal(fromMessage message: String) -> (refusal: DistributedRequestRefusal, message: String)? {
@@ -304,7 +305,7 @@ enum EngineV2Translation {
         if let distributed = error as? DistributedEngineError {
             switch distributed {
             case .refused(let refusal):
-                return distributedRefusalMessage(refusal, profile: distributedProfile)
+                return distributedRefusalMessage(refusal, text: refusal.message(distributedProfile))
             case .unavailable:
                 return distributedUnavailableMessage
             case .shuttingDown:
@@ -389,5 +390,40 @@ enum EngineV2Translation {
         // Unknown throw: do NOT claim capacity exhaustion (which would be
         // retried) — surface as a generic generation failure (500).
         return "engine_v2 submit failed: \(error.localizedDescription)"
+    }
+}
+
+extension EngineV2Bridge {
+    /// The output a request may write after a prompt of `promptTokens`: the one
+    /// value its service allowance, KV reservation, engine request and token
+    /// constraint are all sized for. No request reaches the engine past its
+    /// window:
+    /// - without `requested`, the default is cut to what the prompt leaves of
+    ///   `defaultOutputContextLimit` (`EngineV2Translation.defaultOutputTokens`);
+    /// - on a single Mac slot (`modelWindowTokens`: its advertised context, else
+    ///   its model's window), `requested` is cut to what the prompt leaves. Cut,
+    ///   not refused, so a client gets the model's whole window: OpenCode and
+    ///   Hermes name a `max_tokens` on every request, and a long conversation
+    ///   would otherwise be refused long before the window is full; the
+    ///   coordinator sizes a request by its own estimate of the prompt, so one it
+    ///   sends may pass the window once tokenized here, and is served within it.
+    ///   Only a prompt that leaves no room is refused (`promptExceedsContext`);
+    /// - on a pair (`pairServedLimits`) `requested` is cut by the same rule, to
+    ///   the output limit and the context its mode serves (one Mac's output
+    ///   limit is its window); a prompt that leaves no room is refused by the
+    ///   pair's engine, in one Mac's code and words
+    ///   (`DistributedRequestRefusal.contextLengthExceeded`). These are the
+    ///   limits the pair lists in `/v1/models` and reports to the coordinator,
+    ///   so a client that sizes `max_tokens` from the list is served.
+    /// Resolving the result again for the same prompt gives the same value, so
+    /// the text path can name it on the request before the bridge resolves it.
+    nonisolated func outputTokens(requested: Int?, promptTokens: Int) -> Int {
+        guard let requested else {
+            return EngineV2Translation.defaultOutputTokens(defaultMaxTokens, promptTokens: promptTokens,
+                contextLimit: defaultOutputContextLimit)
+        }
+        guard let limits = pairServedLimits ?? modelWindowTokens.map({ (outputTokens: $0, contextTokens: $0) }),
+              promptTokens < limits.contextTokens else { return requested }
+        return min(requested, limits.outputTokens, limits.contextTokens - promptTokens)
     }
 }

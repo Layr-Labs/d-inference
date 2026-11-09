@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-08
 
 Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -26,7 +26,7 @@ This process-local opt-in is independent of the coordinator supported-model set.
 | `DARKBLOOM_EXPERIMENTAL_GLM5_NEXT` | Unset: disabled. Otherwise an absolute path to a regular JSON selection file, at most 4 MiB; not a boolean and not forwarded to launchd | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLocalQualification.swift` (`selection`) |
 | `catalog`, `manifest` | Required complete `CatalogModel` and `ModelManifest` objects using their ordinary JSON keys; dates are ISO-8601. Both identify exactly `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`. The catalog's Hugging Face artifact binds that repository and a concrete revision. No network catalog request is made | `GLM5NextLocalQualification.selection` |
 | `expectedAggregateSHA256` | Required lowercase 64-digit SHA-256 pin; must equal both catalog and manifest aggregates. This is the exact local artifact selection, not an assertion that bytes are verified or published | `GLM5NextLocalQualification.validate` |
-| `maximumContextLength` | Optional positive enforced context bound, default `4096`; must not exceed the source model's maximum. Read once per LOAD together with the artifact plan; controls engine sizing and request admission, not source metadata. A request that omits `max_tokens` gets the smaller of the model's default output budget (4,096 for the pinned artifact) and half the bound. A prompt plus output budget above the bound is refused with HTTP 400 `advertised_context_exceeded` before native admission | `GLM5NextLocalQualification.LocalPlan.boundedSizing`; `EngineV2Factory.makeBridge` |
+| `maximumContextLength` | Optional positive enforced context bound, default `4096`; must not exceed the source model's maximum. Read once per LOAD together with the artifact plan; controls engine sizing and request admission, not source metadata. A request that omits `max_tokens` gets the smaller of the local default output (32,768) and half the bound (2,048 at the default bound). An output budget past what the prompt leaves of the bound is cut to fit, and a prompt that fills the bound is refused with HTTP 400 `context_length_exceeded` (naming the bound) before native admission | `GLM5NextLocalQualification.LocalPlan.boundedSizing`; `EngineV2Factory.makeBridge` |
 | `tokenizer` | Not supported. A present field refuses the whole selection: the LOAD quotation covers only the tokenizer shipped in the pinned weight snapshot | `GLM5NextLocalQualification.Selection` |
 | `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY` | On: a published GLM engine holds standing wired residency for its weights, bounded by the MiMo safe ceiling (physical memory minus max(16 GiB, 10%)) and released only after proven retirement. Rollback: trimmed, case-insensitive `0`, `false`, `no`, `off`. Acceleration only, never load admission; without it 512-token prefill chunks measured 263–367 instead of 1,246 tok/s on a 256 GiB M5 Ultra. Forwarded to the launchd provider job | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextWiredResidency.swift` (`isEnabled`, `prepare`) |
 
@@ -115,7 +115,7 @@ before the next read.
 | `TMPDIR` | When absent, Foundation's temporary directory. When present, an absolute path without NUL bytes to an existing writable directory; invalid or inaccessible values fail snapshot creation without fallback. Read when creating the snapshot. | `provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift` (`makeRuntimeMetallibSnapshot`) |
 
 Set `TMPDIR` in the environment of the process that serves inference. A shell
-export applies to `darkbloom start --foreground` and `darkbloom start --local`.
+export applies to `darkbloom start --foreground` and `darkbloom start --local --here`.
 For background `darkbloom start`, it applies to the invoking CLI's startup
 snapshot, but is not copied into the installed provider's launchd environment:
 `TMPDIR` is not in `LaunchAgent.passthroughEnvKeys`
@@ -288,12 +288,12 @@ M5 Pro, Max and Ultra and return to `4` under Low Power Mode or thermal pressure
 explicit backend or live packed quantization keeps `4`. Serialization
 preserves that distinction; historical literal values, including a stamped `4`,
 are not silently raised. Per-model overrides remain explicit limits.
-Daemon and standalone engines use the same profile resolver and preserve
+Daemon and Only me (`StandaloneServer`) engines use the same profile resolver and preserve
 narrower architecture and physical memory constraints. `darkbloom status` and
 `doctor` explain the selection. See [qualification](../developer/serving-performance-qualification.md).
 
 Startup loading is independent of the idle-unload policy. The default
-preloads selected models on coordinator-connected and standalone `--local`
+preloads selected models on coordinator-connected and Only me (`--local`)
 starts and at each scheduled window opening, never before that opening; an
 explicit list takes precedence within the selected serving set. All loads retain
 the normal memory and slot admission checks, and a failed preload remains
@@ -304,10 +304,10 @@ sets the existing `startup_preload` key, not a separate scheduling preload key.
 |---|---|---|
 | `[backend] startup_preload` | `true` | Enable startup/window-opening loading in `ProviderLoop.runStartupPreloadGate` and `Start.runLocalStandalone`; wizard on-demand mode sets `false`, skipping preload but not coordinator load commands or request-triggered loads (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `BackendSettings`). |
 | `[backend] preload_models` | `[]` | Explicit startup order when nonempty; otherwise selected models, with the previously loaded set first on coordinator starts (`ProviderLoop.startupPreloadPlan`, `StandaloneServer.startupPreloadPlan`). |
-| `[backend] startup_preload_timeout_secs` | `120` | Maximum delay before coordinator registration; remaining loads continue in the background. Standalone `--local` finishes its preload before opening the listener (`ProviderLoop.runStartupPreloadGate`, `Start.runLocalStandalone`). |
-| `[backend] startup_selftest` | `true` | Coordinator-connected startup runs a one-token serving-path decode after each load; standalone `--local` loads weights and the engine but does not run this decode (`ProviderLoop.runStartupPreloadGate`, `StandaloneServer.preloadSelectedModels`). |
-| `[backend] startup_selftest_fail_closed` | `false` | Coordinator-connected self-test failures can retire the model when enabled; there is no synthetic self-test or fail-closed retirement in standalone `--local` (`ProviderLoop.runStartupPreloadGate`, `StandaloneServer.preloadSelectedModels`). |
-| `[backend] idle_timeout_mins` | `60` | Controls later idle unloading for coordinator serving, not whether models load at startup (`provider-swift/Sources/ProviderCore/ProviderLoop+IdleTimeout.swift`, `ProviderLoop.startupPreloadPlan`). |
+| `[backend] startup_preload_timeout_secs` | `120` | Maximum delay before coordinator registration; remaining loads continue in the background. Only me (`--local`) finishes its preload before opening the listener (`ProviderLoop.runStartupPreloadGate`, `Start.runLocalStandalone`). |
+| `[backend] startup_selftest` | `true` | Coordinator-connected startup runs a one-token serving-path decode after each load; Only me (`--local`) loads weights and the engine but does not run this decode (`ProviderLoop.runStartupPreloadGate`, `StandaloneServer.preloadSelectedModels`). |
+| `[backend] startup_selftest_fail_closed` | `false` | Coordinator-connected self-test failures can retire the model when enabled; there is no synthetic self-test or fail-closed retirement in Only me (`--local`) (`ProviderLoop.runStartupPreloadGate`, `StandaloneServer.preloadSelectedModels`). |
+| `[backend] idle_timeout_mins` | `60` | Controls later idle unloading for coordinator serving and for Only me, not whether models load at startup (`provider-swift/Sources/ProviderCore/ProviderLoop+IdleTimeout.swift`, `StandaloneServer+IdleUnload.swift`, `ProviderLoop.startupPreloadPlan`). |
 
 ### Provider availability
 
@@ -337,11 +337,84 @@ The editor changes only availability and `startup_preload`, retaining
 in `provider-swift/Sources/darkbloom/Scheduling/ScheduleSettings.swift`).
 Both `schedule` and `start --schedule` support `--config`. Edits require the
 next start/restart; they are not a live daemon update. Availability applies to
-coordinator serving and attached `--local-endpoint`, not standalone `--local`
+Darkbloom network and Both, me first (`--me-first`, `--local-endpoint`), not
+Only me (`--local`)
 (`Start.run` in `provider-swift/Sources/darkbloom/Start/StartCommand.swift`).
 There is no saved timezone or wake-up setting: keep the Mac awake and use its
 local timezone. [Scheduling architecture](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/scheduling.md#provider-availability-windows)
 defines DST adjustment, merged windows, full-week coverage and fail-closed parsing.
+
+### Local-first use (`[local]`)
+
+`[local]` in `provider.toml` holds how this Mac serves its owner beside, or
+instead of, Darkbloom ([Use your Mac yourself, first](../provider/local-first.md)).
+`darkbloom start` reads `mode`, `port` and `bind`. A provider serving Darkbloom
+with the local API beside it reads `me_first` and `me_first_idle_minutes`: they
+decide the [owner pause](../architecture/owner-pause.md), which stops Darkbloom
+requests while the owner's local requests run (`LocalSettings.meFirstIdle`), for
+the mode that process serves. The local API's router reads `route` (see
+[the local router](../provider/direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
+Every key is optional, and an absent key keeps today's behaviour
+(`LocalSettings` in `provider-swift/Sources/ProviderCore/Config/LocalSettings.swift`;
+`StartServingResolver` in `provider-swift/Sources/darkbloom/Start/StartLocalFirst.swift`).
+
+| `provider.toml` key | Accepted values | When absent (`LocalSettings` resolver) |
+|---|---|---|
+| `[local] mode` | `"local"` (**Only me**), `"network"` (**Darkbloom network**), `"both"` (**Both, me first**) | The launch flags decide, as today: plain `start` = `network`, `--local` = `local`, `--local-endpoint` = `both` (`launchMode`, `resolvedMode`). In a terminal, `darkbloom start` asks once and saves the answer; a mode flag saves it too, and so does the desktop app's "Local only" (`local`). The background service always serves it: `restart` and `update` rewrite a job serving another way to it first (`SavedChoiceService.align`) |
+| `[local] me_first` | `true` or `false` | On with `mode = "both"`, off otherwise; `false` keeps today's shared serving (`meFirstEnabled`). It applies only to Both, me first, never to Only me (`--local`, `meFirstIdle`) |
+| `[local] me_first_idle_minutes` | Whole minutes, `1`–`120` | `2` (`defaultMeFirstIdleMinutes`, `resolvedMeFirstIdleMinutes`): Darkbloom requests return this long after the owner's last local request ends |
+| `[local] route` | `"this-mac"` (only this Mac), `"my-macs"` (only your Macs), `"my-macs-first"` (your Macs first, then the Darkbloom network) | `this-mac`; `my-macs` once an account key is saved with `darkbloom route key` (`resolvedRoute`). Without a saved key, or without a local key (`--no-auth`), nothing leaves this Mac, whatever the route (`LocalRouterConfig.effectiveRoute`); a saved `my-macs` or `my-macs-first` with no key then answers why, with code `account_key_needed` ([the local router](../provider/direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)). `my-macs` sends `X-Darkbloom-Route: self`; `my-macs-first` sends `prefer`, then `self` once on a `402`, and only `self` for a client on another machine (a TCP peer that isn't loopback, `LocalRouterPolicy.route`). A running local API reads it again when the file changes, from its next request that needs it (`LocalRouterRouteFile`) |
+| `[local] port` | Whole number, `1`–`65535` | This Mac's one local API port, for every local API it serves, a pair's API, this Mac's port for it and the solo server a pair falls back to included (`LocalAPIPort`, `provider-swift/Sources/ProviderCore/Config/LocalAPIPort.swift`; the cluster service reads it through `ClusterService.ownAPIPort` when a relay, rank 0's part or the solo server starts). When absent, the first start that serves a local API keeps the port this Mac's local API already uses: its running API's, else its installed LaunchAgent job's (`LaunchAgent.installedLocalAPIPort`), even `8000`, so a Mac updated from 0.10.10 keeps `8000`. Only a Mac with no local API at all chooses the first free port from the build's `defaultLocalPort` (production's `8000`, so `8001`), never `8000` or `47420`–`47423`. Either is saved (`LocalAPIPort.choose`); the desktop app's local mode saves it, with `mode = "local"`, once its service started (`Desktop.StartLocal.serve`). Once saved it is used as it is, never moved; only `--port <n>` replaces it (on a paired Mac, edit this key, then run `darkbloom restart`) |
+| `[local] bind` | `localhost` or a numeric IPv4 or IPv6 address (`ClusterServingScope.isValidBind`) | `127.0.0.1` (`defaultBind`, `resolvedBind`) |
+
+Who writes which key (`Start.saveServingChoice`, once the start goes ahead; a
+cancelled picker or a refused start writes nothing):
+
+| Writer | Keys |
+|---|---|
+| The start question, in a terminal (no saved `mode`, or `--choose`) | `mode`; `route` from its follow-up, asked only with an account key saved |
+| A mode flag: `--local`, `--network`, `--me-first`, `--local-endpoint` (`LocalFirstOptions.savesModeFlag`) | `mode`, so the background service, `restart` and `update` serve it from now on; never with `--local --here` (one terminal session) or for a service's child |
+| The desktop app's "Local only" (`desktop start-local`), once its service started (`Desktop.StartLocal.serve`) | `mode = "local"`, as `--local` writes it; the app's other choices pass `--local-endpoint`, a mode flag |
+| `--no-me-first`, `--me-first` (only to undo a saved `me_first = false`), `--me-first-idle <min>`, `--route <route>` | `me_first`, `me_first_idle_minutes`, `route`, as `--idle-timeout` writes `idle_timeout_mins` |
+| `darkbloom route this-mac`, `my-macs`, `my-macs-first` (`RouteChoiceFlow`) | `route` only, at once and without a start, and a running local API uses it from its next request; `my-macs` and `my-macs-first` write nothing while no account key is saved |
+| Any start that serves a local API (the question's Only me or Both, a saved `mode`, `--me-first`, `--local`, `--local-endpoint`, the desktop app's starts), except a service's child (`--foreground`, or `start --local` a service runs) | `port`, when none is saved (the one this Mac's local API already uses, else the first free one, as above) or `--port <n>` names another |
+| The cluster service of a paired Mac, when its port for the pair's API (its relay), rank 0's part or the solo server starts with no `port` saved (`ClusterService.ownAPIPort`) | `port`, the same way; never a new `provider.toml` |
+| `--bind`, `--no-auth`, and every other start; the mode of `--local --here` | Nothing: a start with no saved `mode`, no mode flag and no terminal keeps today's behaviour exactly (no local API, so no port) |
+
+The LaunchAgent keeps the arguments `--local-endpoint` has always baked
+(`--local-endpoint --port <n> --bind <address>`, plus `--no-auth`), built from
+the resolved mode, port and address (`StartServing.launchAgentEndpoint`), so a
+rolled-back older provider reads the same plist. **Only me** and the desktop
+app's local mode bake `--foreground --local --port <n> --bind <address>` the
+same way (`LaunchAgent.localProgramArguments`). The `--foreground` child serves as those
+arguments say, reads `me_first`, `me_first_idle_minutes` and `route`, and never
+asks or writes.
+
+```toml
+[local]
+mode = "both"
+me_first = true
+me_first_idle_minutes = 2
+route = "my-macs"
+port = 8001
+bind = "127.0.0.1"
+```
+
+- **Refusals:** a value outside these is refused when the file loads, with one
+  plain line that names the key, what it takes and what the file has, for
+  example `[local] me_first_idle_minutes must be a whole number of minutes from
+  1 to 120, not 0.` (`LocalSettingsError`). Unknown keys in `[local]` are
+  accepted when the file loads.
+- **Writing:** `ConfigManager.updateLocal` (CLI: `setLocalSettings` in
+  `provider-swift/Sources/darkbloom/ConfigMutation.swift`) changes only the
+  `[local]` keys it is given, under the config lock. It edits the raw TOML table,
+  so every other value keeps its value, unknown keys included. Like every
+  config writer, it rewrites the whole file: comments are dropped and sections
+  and keys are re-sorted. It refuses a bad value before writing, writes nothing
+  when the file already holds the change, and writes an explicit value even
+  when it equals the default. Other config writers (`ConfigManager.save`, used
+  by `idle`, `beta` and `start`) re-encode only the keys this build knows, so
+  they drop unknown keys, in `[local]` as in every section.
 
 ### Model cache location
 
@@ -415,7 +488,7 @@ provider or model command is running. Code:
 |---|---|---|---|---|
 | `DARKBLOOM_NO_UPDATE_CHECK` | any value | unset | `provider-swift/Sources/darkbloom/Darkbloom.swift`; `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift`; `provider-swift/Sources/darkbloom/WatchdogCommand.swift`; `provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift`; `provider-swift/Sources/darkbloom/ClusterServiceCommand.swift` (`supervisorConfiguration`); forwarded by `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift` | Skips the startup version banner, the in-daemon auto-update loop, the start-mode check, the watchdog's update check and the `darkbloom cluster` pair's update at its slot; `scripts/install.sh` sets it for the runtime smoke test. It does not stop a pair Mac from following the other Mac's rollback to the release it ran before ([a rollback on one Mac](../provider/cluster-always-on.md#a-rollback-on-one-mac)). |
 | `DARKBLOOM_AUTH_TOKEN_PATH` | file path | `~/.darkbloom/auth_token` | `provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift` | A nonempty explicit path replaces the token path. Without it, the token is read only from `~/.darkbloom/auth_token` (for `sudo darkbloom report`, the invoking user's, read-only through `AuthTokenStore.loadReadOnly`); there is no legacy-path fallback. |
-| `DARKBLOOM_LOCAL_DIR` | directory | `~/.darkbloom` | `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift` | Directory for `local_token` and `local.json` (direct mode). |
+| `DARKBLOOM_LOCAL_DIR` | directory | `~/.darkbloom` | `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift` | Directory for `local_token` and `local.json` (the local API). |
 | `DARKBLOOM_STATE_FILE` | file path | `~/.darkbloom/daemon-state.json` | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift` | Daemon state snapshot read by `status`, `doctor` and the watchdog. |
 | `DARKBLOOM_LOADED_MODELS_FILE` | file path | `~/.darkbloom/loaded-models.json` | `provider-swift/Sources/ProviderCore/Service/LoadedModelsStore.swift` | Warm-model journal. |
 | `DARKBLOOM_VERIFIED_WEIGHTS_FILE` | file path | `~/.darkbloom/verified-weights.json` | `provider-swift/Sources/ProviderCore/Service/VerifiedWeightHashStore.swift` | Owner-only records of fully verified managed-load weight hashes, each bound to every file's device, inode, size and modification and status-change times; startup registration reuses a matching record instead of re-hashing. |
@@ -740,6 +813,7 @@ variable; its required input and backend are documented in the
 | `DARKBLOOM_QWEN_FCFS_LIVE` | `1` | unset | `provider-swift/Sources/ProviderBenchmark/SchedulerPrefillDecisionCLI.swift` | Enables the live Qwen FCFS harness. |
 | `DARKBLOOM_QWEN_FCFS_MODEL_PATH`, `DARKBLOOM_QWEN_FCFS_MODEL_ID`, `DARKBLOOM_QWEN_FCFS_EXPECTED_MODEL_HASH`, `DARKBLOOM_QWEN_FCFS_SOURCE_SHA`, `DARKBLOOM_QWEN_FCFS_ITERATIONS`, `DARKBLOOM_QWEN_FCFS_KV_BACKEND`, `DARKBLOOM_QWEN_FCFS_OUTPUT` | strings | unset | `provider-swift/Sources/ProviderBenchmark/SchedulerPrefillDecisionCLI.swift` | Harness inputs. |
 | `DARKBLOOM_QWEN_MTP_SERIAL` | affirmative | off | `provider-swift/Tests/ProviderCoreTests/Inference/Live/Fixtures/Qwen38ProductionCanarySupport.swift` (tests only) | Forces serial MTP verification in the Qwen canary. |
+| `DARKBLOOM_OPENCODE_SMOKE_HOME` | temp directory | unset | `provider-swift/Tests/DarkbloomCLITests/ToolIntegration/OpenCodeSmokeSetup.swift` (tests only) | Runs the writer step of `scripts/integrations/opencode-smoke.sh`, which writes OpenCode's config into that throwaway home; the test refuses a path outside the temp folder. |
 
 ### Retired (parsed only to warn)
 
@@ -754,6 +828,8 @@ variable; its required input and backend are documented in the
 | `SUDO_UID` | uid | set by `sudo` | `provider-swift/Sources/darkbloom/Fan/FanServiceManager.swift` | Resolves the invoking user when `darkbloom fan` runs under `sudo`. |
 | `SUDO_USER` | user name | set by `sudo` | `provider-swift/Sources/darkbloom/Diagnostics/ReportAppAttestEvidence.swift` | Under `sudo darkbloom report`, selects the invoking user's state, config and read-only canonical token lookup instead of root's; explicit config/token overrides retain precedence. |
 | `GITHUB_SHA` | commit | unset | `provider-swift/Sources/ProviderBenchmark/SchedulerPrefillDecisionCLI.swift` | Fallback source SHA in benchmark reports. |
+| `XDG_CONFIG_HOME` | directory | `~/.config` | `provider-swift/Sources/darkbloom/ToolIntegration/OpenCodeConfigPlan.swift` (`configFile`) | Where the OpenCode config writer finds OpenCode's global config: `<dir>/opencode/opencode.jsonc`, else an existing `opencode.json`, as OpenCode itself does ([config writers](../architecture/tool-integrations.md)). |
+| `HERMES_HOME` | directory | `~/.hermes` | `provider-swift/Sources/darkbloom/ToolIntegration/HermesConfigPlan.swift` (`configFile`) | Where the Hermes config writer finds `config.yaml`, as Hermes itself does. |
 | `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, `DYLD_FRAMEWORK_PATH`, `LD_PRELOAD`, `MallocStackLogging`, `MallocStackLoggingNoCompact`, `MallocScribble`, `MallocGuardEdges`, `MallocLogFile`, `MallocErrorAbort`, `NSZombieEnabled`, `OBJC_DEBUG_POOL_ALLOCATION`, `CFNETWORK_DIAGNOSTICS` | — | — | `provider-swift/Sources/ProviderCore/Security/EnvironmentScrubber.swift` | Removed from the daemon's environment at start; reported as the `env_scrubbed` capability. |
 
 `scripts/install.sh` additionally reads `COORD_URL` (substituted by the coordinator when it serves `/install.sh`; required when the script is run from source), `HOME` (install root `$HOME/.darkbloom`), `TMPDIR` (enrollment-profile temp dir only) and the two code-signing requirement constants `DARKBLOOM_DESIGNATED_REQUIREMENT` and `DARKBLOOM_FAN_HELPER_REQUIREMENT`. See [`../provider/installation.md`](../provider/installation.md).
@@ -1111,7 +1187,7 @@ pair's placement; [serving a pair](cluster-control-protocol.md#serving-a-pair)).
 | Match | The entry whose `model` is the setup's `publicModelID`, whose `schedule` is its prefill schedule (`1` serial, `2` one-chunk lookahead), and that is still current. A model approval matches when its `artifact_sha256` is the saved setup's `capability.artifactSHA256`; no runtime facts are computed for it. A build-pinned entry matches when its eight digests all equal this Mac's own cluster runtime facts (computed at most once per check from the helpers beside the setup's worker and the setup's model folder). Latest `not_after` first, across both shapes. An entry for another build or another copy of the model does not match | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalLifetime.swift` (`select`) |
 | Check | On each Mac, against its own files: no saved unequal `tensorShares`, which the member's registration cannot name (refusal: "Unequal tensor-parallel shares serve local clusters only …", `unequalTensorSharesServeLocally`; a cluster served through Darkbloom is planned with equal shares, `ClusterPlacementPolicy.equalTensorShares`); every digest of a build-pinned entry (`ClusterApprovalAttachment.mismatches`), or the artifact of a model approval (refusal: "the approval's artifact_sha256 differs from this Mac's setup"); the member's own start refusals (`requireLocalRankGranted`); the roster of this Mac's pairing (S17); `validate` below | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalAttachment.swift` (`attachment`) |
 | Save | Both parts stop. The leader checks the entry, sends it to the other Mac over the cable (service command `approval`), and saves it only after the other Mac checked and saved it. A refusal on either Mac saves it on neither. Both parts then start as cluster members | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalSync.swift` (`run`, `receive`) |
-| When | After the guided setup's Test stage passed (control operation `register`, run by the control leader: `OnboardingLive.localRegister`), once at each start of the control leader's cluster service and after an update re-adopted the setups (the re-adopted setups find the same model approval again, because it names no build), and every minute while a serving pair is offered or has its approval kept aside (`ClusterService.checkApproval`). A local-only cluster never asks (`ClusterApprovalSync.asks`) | as named |
+| When | After the guided setup's Test stage passed (control operation `register`, run by the control leader: `OnboardingLive.localRegister`), once at each start of the control leader's cluster service and after an update re-adopted the setups (the re-adopted setups find the same model approval again, because it names no build), and every minute while a serving pair is offered or has its approval kept aside (`ClusterService.checkApproval`). A pair serving Only me never asks (`ClusterApprovalSync.asks`) | as named |
 | Lifetime | A saved approval with more than `renewWithinSeconds = 86_400` left is kept. Within that day a later matching entry replaces it. An entry that the operator replaced under the same `id` (other bytes, for example a new `not_after`) is no longer the saved approval: a matching entry replaces it, else it is withdrawn (Serve locally). An ended one is removed: each Mac saves its setup without it before its part starts, and its part then serves on the leader's local API (`ClusterService.supervise`) | `ClusterApprovalLifetime.decide` |
 | Serve locally | Both Macs save their setups without the approval, the other Mac first, and the pair serves on the leader's local API, when: no request gets an HTTP answer for the absence grace (`ClusterService.soloGraceSeconds`: 600 s; `DARKBLOOM_DEBUG_CLUSTER_SOLO_GRACE_SECONDS` in a development build); the coordinator answers (a 404, or a list) without the saved approval as saved and serves no other matching entry; or either Mac's coordinator-paired parts ended `ClusterControlSoloAdmission.maximumQuickEnds = 3` times in a row right after starting (each Mac's status, `memberQuickEnds`). An end the coordinator decided is not counted: one because it was out of reach (`ClusterMemberControlError.coordinatorUnreachable`, which also starts the count again) or because it did not accept the member role in its negotiation window (`negotiationFailed`, which leaves the count as it is; a part that ran `quickEndSeconds = 120` or longer starts it again, as always) (`ClusterApprovalCheck.memberQuickEnds`). It complements a coordinator that ends each pair session before its shutdown closes the members' connections, which makes a deploy's ends cleaner; the rule still covers coordinators without that change, coordinator crashes and slow negotiation. When either Mac cannot save, both keep the approval and the next check tries again. The leader keeps the approval, the reason, the setup's worker digest and the time in its setup record (`approvalSetAside`, `runtimeBinarySHA256`, `setAt`). When an answer lists a matching entry, the pair is registered again through the Save step; after repeated failures, a later entry at once, the same entry `ClusterApprovalFallback.failingSeconds = 3_600` after it was set aside, or the same entry after an update installs another worker. A record without `setAt` (an older build's) is past that bound | `ClusterApprovalCheck.step`, `ClusterApprovalSync.serveLocally`; `ClusterService.checkApproval` |
 | Both or neither | A send whose reply is lost may come after the other Mac saved: the leader gives it its setup back. Each Mac's status names its saved cluster approval (`approvalID`, `""` for none; a build without the field is unknown and never compared). On every check the leader compares it with its own; while they differ, it gives the other Mac its approval (while offered) or none, and saves its own setup without an approval it does not offer; when the other Mac refuses its approval, it saves its own setup without it too | `ClusterApprovalCheck.peerApprovalID`, `macsDiffer`, `ClusterApprovalSync.converge` |
@@ -1708,11 +1784,11 @@ For the existing `qwen35-dense-layer-stage` / `registered_qwen38_27b` / `registe
 
 ### Qwen27 TP assistant policy
 
-Normal setup discovers the embedded assistant from the native quote on a cluster that serves locally only; the saved fields below bind that decision through both workers' actual READY. The assistant's speculative decoding has no parity qualification, so a setup saved for coordinator pairing carries none; public speculative decoding for Qwen pairs needs qualification evidence of its own.
+Normal setup discovers the embedded assistant from the native quote on a pair that serves Only me; the saved fields below bind that decision through both workers' actual READY. The assistant's speculative decoding has no parity qualification, so a setup saved for coordinator pairing carries none; public speculative decoding for Qwen pairs needs qualification evidence of its own.
 
 | Setting | Bound and behavior | Source |
 |---|---|---|
-| `[backend] mtp_mode` | Selects embedded-assistant discovery for the 9B and the 27B (`ClusterQwenTensorAssistantPolicy.runtimeModelIDs`) by how the cluster serves (`ClusterServingScope`): `auto` (default) discovers it for a cluster that serves locally only (`darkbloom cluster local`) and plans a cluster served through Darkbloom with the assistant the build declares public for the artifact (`ClusterPublicModels.tensorAssistant`: its depth and verification) or, when none is declared, without one, as the re-plans after an update or a memory refusal do; `on` discovers it either way, and a cluster served through Darkbloom whose assistant is not declared is then not offered to the coordinator (its public-traffic line says so, `ClusterPairOwnerServing.tensorAssistantNotOffered`); `off` retains the ordinary fully quoted target. Automatic discovery for a local cluster selects depth `3` and admitted-cohort verification. The developer six-step wizard and `darkbloom cluster plan` discover it as for a local cluster. | `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorAssistantSelection.swift`, `discoveryMode`, `automaticCandidate`, `automaticDepth`; `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingLive.swift` (`OnboardingLive.localPlanModels`) |
+| `[backend] mtp_mode` | Selects embedded-assistant discovery for the 9B and the 27B (`ClusterQwenTensorAssistantPolicy.runtimeModelIDs`) by how the cluster serves (`ClusterServingScope`): `auto` (default) discovers it for a pair that serves Only me (`darkbloom cluster local`) and plans a cluster served through Darkbloom with the assistant the build declares public for the artifact (`ClusterPublicModels.tensorAssistant`: its depth and verification) or, when none is declared, without one, as the re-plans after an update or a memory refusal do; `on` discovers it either way, and a cluster served through Darkbloom whose assistant is not declared is then not offered to the coordinator (its public-traffic line says so, `ClusterPairOwnerServing.tensorAssistantNotOffered`); `off` retains the ordinary fully quoted target. Automatic discovery for a pair that serves Only me selects depth `3` and admitted-cohort verification. The developer six-step wizard and `darkbloom cluster plan` discover it as for Only me. | `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorAssistantSelection.swift`, `discoveryMode`, `automaticCandidate`, `automaticDepth`; `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingLive.swift` (`OnboardingLive.localPlanModels`) |
 | Saved `tensorAssistant` | Optional `qwen27_tensor_assistant_v1` object containing `depth` 1...4 and native `inventorySHA256`; omitted policy preserves legacy ordinary setup bytes. Beside `nativeMember` only as the exact policy the build declares public for the artifact (`ClusterPublicModels.tensorAssistant`; this build declares Qwen3.8-27B's: depth 3, the registered head inventory, `admitted_target_cohort_v1`): any other is refused when saved or loaded ("Qwen's speculative assistant serves local clusters only unless declared public …"), and the leader refuses a coordinator's approval for it before any part stops. | `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterQwenTensorAssistantPolicy.swift`, `ClusterQwenTensorAssistantPolicy`; `provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift` (`tensorAssistantServesLocally`) |
 | Saved `tensorAssistant.verification` | `singleton_ready_set_v1` is the omitted legacy value; `admitted_target_cohort_v1` verifies eligible rows together up to the completely priced capacity. Unknown/null values are refused. | `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterQwenTensorAssistantPolicy.swift`, `Verification` |
 | Native worker `--mtp-depth`, `--tp-mtp-inventory-sha256`, `--tp-mtp-verification` | Installed launch arguments derived from saved policy, bilaterally bound at LOAD. Normal setup does not ask the user to choose them. | `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledGenerationSelection.swift`; `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/Startup/WorkerConfiguration.swift` |

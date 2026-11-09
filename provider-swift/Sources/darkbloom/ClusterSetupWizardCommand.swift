@@ -115,7 +115,7 @@ extension Cluster.Setup {
         Darkbloom.ensureLogging()
         try await requireNewPairApproval(request: request, gate: clusterWaitlistGate(access: .live(configPath: config)))
         let settings = try onboardingSettings(config: config, modelDir: modelDir, worker: worker, request: request)
-        let operations = try ClusterOnboardingOperations.live(settings)
+        let operations = withServingChoice(try ClusterOnboardingOperations.live(settings), config: config, request: request)
         let instance: ClusterConsoleInstanceLock
         do { instance = try ClusterConsoleInstanceLock.acquire() } catch let held as ClusterConsoleInstanceLock.Held {
             fputs(held.description + "\n", stderr)
@@ -132,6 +132,43 @@ extension Cluster.Setup {
         }.value
         withExtendedLifetime(instance) {}
         if code != 0 { throw ExitCode(code) }
+    }
+
+    /// Plain `darkbloom cluster` (and `darkbloom start` on a paired Mac) asks how the pair serves; `darkbloom cluster
+    /// local` names it, so its screens stay as they were.
+    static func asksServingChoice(request: ClusterOnboardingRequest) -> Bool { request.scope == nil }
+
+    /// The live operations, which ask how the pair serves and save the answer where `asksServingChoice` says so. Only
+    /// this screen sets them, and it runs only in a terminal (`entry`): every other caller of the operations (the
+    /// cluster service, status, stop) asks and saves nothing. So without a terminal a pair serves as its record says,
+    /// and a record from before this question as the Darkbloom network.
+    static func withServingChoice(_ live: ClusterOnboardingOperations, config: String?,
+                                  request: ClusterOnboardingRequest) -> ClusterOnboardingOperations {
+        guard asksServingChoice(request: request) else { return live }
+        var operations = live
+        operations.servingChoice = { servingChoiceAsk(config: config) }
+        operations.saveServingChoice = { saveServingChoice($0, config: config) }
+        return operations
+    }
+
+    /// What the question asks with: the answer saved in `[local] mode`, and the idle minutes the pair's pause keeps
+    /// (`[local] me_first_idle_minutes`). A config that can't be read asks as on a new Mac.
+    static func servingChoiceAsk(config: String?) -> ClusterServingChoiceAsk {
+        let local = try? savedLocalSettings(configPath: config)
+        return .init(saved: local?.mode.flatMap { ClusterServingChoice(rawValue: $0.rawValue) },
+                     idleMinutes: Int(local?.resolvedMeFirstIdleMinutes ?? LocalSettings.defaultMeFirstIdleMinutes))
+    }
+
+    /// Saves the answer as `[local] mode`, and nothing else, as `darkbloom start`'s question does.
+    static func saveServingChoice(_ choice: ClusterServingChoice, config: String?) -> Result<[String], ClusterOnboardingFailure> {
+        guard let mode = LocalSettings.Mode(rawValue: choice.rawValue) else { return .success([]) }
+        do {
+            try setLocalSettings(configPath: config) { $0.mode = mode }
+            return .success([])
+        } catch {
+            let why = String(String(describing: error).map { $0.isNewline ? " " : $0 }.prefix(160))
+            return .failure(.init(["Your choice wasn't saved in [local] (\(why)); the pair serves that way all the same."]))
+        }
     }
 
     /// The clusters waitlist's id in the coordinator's catalog.

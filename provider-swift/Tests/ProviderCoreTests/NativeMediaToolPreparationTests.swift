@@ -76,12 +76,12 @@ struct NativeMediaToolPreparationTests {
     /// native model type, exactly as `EngineV2VisionPrefill` builds them.
     @Test(arguments: [("DarkBloom/Qwen3.8-Flash-Next-Q4-mtp", true, "qwen4_exp"),
                       ("EigenLabs/Qwen3.8-27B-4bit-mtp", false, nil)] as [(String, Bool, String?)])
-    func nativeMediaRejectsUnsupportedEffortBeforeDecodingPixels(
+    func nativeMediaRejectsAnUnknownEffortBeforeDecodingPixels(
         model: String, preserveTemplateFields: Bool, modelType: String?
     ) async throws {
         let body = #"""
         {"model":"\#(model)",
-         "reasoning":{"enabled":true,"effort":"high"},
+         "reasoning":{"enabled":true,"effort":"turbo"},
          "messages":[{"role":"user","content":[
            {"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}},
            {"type":"text","text":"Inspect the picture"}]}]}
@@ -91,8 +91,8 @@ struct NativeMediaToolPreparationTests {
         do {
             _ = try await MediaIngest.buildUserInput(
                 from: decoded, preserveTemplateFields: preserveTemplateFields, modelType: modelType)
-            Issue.record("unsupported native effort unexpectedly reached pixel decoding")
-        } catch MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort {
+            Issue.record("an unknown effort unexpectedly reached pixel decoding")
+        } catch MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(.reasoningObject) {
             // The invalid image must not be decoded before the control error.
         }
     }

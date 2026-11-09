@@ -251,8 +251,10 @@ final class ParityClusterSession: DistributedLocalServerSession, @unchecked Send
     private var phase: DistributedInstalledSessionStatus = .prepared
 
     init(family: ParityFamily, directory: URL, supportsLogprobs: Bool = true) throws {
+        // The standard request's output, as the registered rows serve it, so an
+        // omitted max_tokens defaults alike on both endpoints (32,768).
         profile = try .init(id: "fabricated-greedy", vocabularySize: 512, maxPromptTokens: 8192,
-                            maxOutputTokens: 4096, maxContextTokens: 8192 + 4096, requestTimeout: .seconds(315),
+                            maxOutputTokens: 32_768, maxContextTokens: 8192 + 32_768, requestTimeout: .seconds(315),
                             supportsLogprobs: supportsLogprobs)
         model = .init(publicModelID: family.modelID, directory: directory, modelType: family.modelType,
                       eosTokenIDs: try family.installedEOS(), vocabularySize: 512)
@@ -306,8 +308,10 @@ struct ParitySoloServer {
     let task: Task<Void, Never>
     let port: UInt16
 
-    static func start(family: ParityFamily, directory: URL, script: ParityScript) async throws -> Self {
-        let tokenizer = family.tokenizer
+    /// `tokenizer`: the family's own when nil.
+    static func start(family: ParityFamily, directory: URL, script: ParityScript,
+                      tokenizer: (any MLXLMCommon.Tokenizer)? = nil) async throws -> Self {
+        let tokenizer = tokenizer ?? family.tokenizer
         // `ProviderModelContainer.tokenizerHandle`: the Gemma contract check.
         let handle = TokenizerHandle(tokenizer, toolConstraintContractVerified:
             Gemma4ToolConstraintContract.isVerified(modelType: family.modelType, modelDirectory: directory))
@@ -362,9 +366,11 @@ struct ParityClusterServer {
     let host: DistributedLocalServer
     let port: UInt16
 
-    static func start(family: ParityFamily, directory: URL, supportsLogprobs: Bool = true) async throws -> Self {
+    /// `tokenizer`: the family's own when nil.
+    static func start(family: ParityFamily, directory: URL, supportsLogprobs: Bool = true,
+                      tokenizer: (any MLXLMCommon.Tokenizer)? = nil) async throws -> Self {
         let session = try ParityClusterSession(family: family, directory: directory, supportsLogprobs: supportsLogprobs)
-        let tokenizer = family.tokenizer
+        let tokenizer = tokenizer ?? family.tokenizer
         // As `StartCommand+Distributed`: the plan's first-token budget is bound.
         let host = DistributedLocalServer(session: session,
             config: .init(host: "127.0.0.1", port: 0, authToken: parityToken),

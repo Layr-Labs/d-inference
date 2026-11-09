@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-11-01
+> Last updated: 2026-11-07
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -1028,7 +1028,7 @@ reach both ranks in its reservation: `ClusterWorkerReservation.prefixCache`
 
 | Request | Reservation field | Both ranks |
 |---|---|---|
-| Cache on, no salt: the local endpoint and the qualification tools | absent; the reservation's bytes are a worker's without it | the earlier scopes, which only such requests use |
+| Cache on, no salt: the local API and the qualification tools | absent; the reservation's bytes are a worker's without it | the earlier scopes, which only such requests use |
 | Cache on, a salt: a coordinator request with its authenticated cache scope | `{"enabled":true,"tenantSHA256":<digest>}` | every key and SSD record scope carries `\|tenant=<digest>`; only requests with the same salt find them |
 | Cache off: a remote request without an authenticated scope, or one with GLM or Qwen media (`EngineV2Bridge.submitTokenized` turns the cache off for those) | `{"enabled":false}` | no offer, vote, restore, capture or SSD record |
 

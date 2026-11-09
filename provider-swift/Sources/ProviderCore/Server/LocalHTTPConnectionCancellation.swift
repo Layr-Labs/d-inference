@@ -40,6 +40,8 @@ final class LocalHTTPConnectionCancellation: @unchecked Sendable {
     // Retain the channel until close: its ObjectIdentifier cannot be reused
     // by another connection before this registry entry is removed.
     private let channel: any Channel
+    /// The connection's TCP peer is another machine (`LocalHTTPClient`), read once.
+    let fromAnotherMachine: Bool
     private let lock = NSLock()
     private var closed = false
     private var requests: [UUID: WeakScope] = [:]
@@ -50,7 +52,10 @@ final class LocalHTTPConnectionCancellation: @unchecked Sendable {
         init(_ value: LocalRequestCancellationScope) { self.value = value }
     }
 
-    init(channel: any Channel) { self.channel = channel }
+    init(channel: any Channel) {
+        self.channel = channel
+        fromAnotherMachine = LocalHTTPClient.isAnotherMachine(peer: channel.remoteAddress)
+    }
 
     func makeScope() -> LocalRequestCancellationScope {
         let id = UUID()

@@ -55,8 +55,7 @@ extension EngineV2VisionPrefill {
     /// moving decoded assets or opting into an autoregressive tool grammar.
     static func prepareDiffusionUserInput(request: OpenAIChatCompletionRequest,
         templateControls: ChatTemplateControls) async throws -> UserInput {
-        try DiffusionGemmaReasoningControl.validate(request: request, controls: templateControls,
-            modelType: "diffusion_gemma")
+        try ReasoningEffortPolicy.validate(request, controls: templateControls, modelType: "diffusion_gemma")
         for message in request.messages where message.role != .user && message.role != .tool {
             if case .parts(let parts) = message.content, parts.contains(where: { part in
                 switch part { case .imageURL, .videoURL: true; default: false }

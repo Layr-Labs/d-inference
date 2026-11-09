@@ -21,6 +21,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from fixture_redirects import OriginRedirect, origin
+from verified_download_cache import restore_file, store_file
+
 MAX_MANIFEST_BYTES = 1 << 20
 MAX_ARTIFACT_BYTES = 128 << 20
 MAX_CONTRACT_BYTES = 512 << 20
@@ -35,6 +38,12 @@ VERSIONS = {
 PROMPT_ROLES = {"tokenizer", "template", "config"}
 DOWNLOAD_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = (1, 3)
+# A contract's downloads must finish within 120 s plus the time its missing
+# bytes take at 128 KiB/s (just below the slowest CI transfers), at most 900 s
+# (the audio fixture script's per-attempt limit), so a stall still fails.
+BASE_DOWNLOAD_SECONDS = 120
+MIN_DOWNLOAD_BYTES_PER_SECOND = 128 << 10
+MAX_DOWNLOAD_SECONDS = 900
 
 
 class TransientTransfer(ValueError):
@@ -145,11 +154,9 @@ def https_url(value):
     return parsed
 
 
-class SameOriginRedirect(urllib.request.HTTPRedirectHandler):
+class SameOriginRedirect(OriginRedirect):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        old, new = urllib.parse.urlsplit(req.full_url), https_url(newurl)
-        if (old.scheme, old.netloc) != (new.scheme, new.netloc):
-            raise ValueError("cross-origin artifact redirect")
+        https_url(newurl)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -174,8 +181,8 @@ def download_once(opener, url, output, artifact, deadline):
             raise TransientTransfer("artifact request returned an HTTP server error")
         if response.status != 200:
             raise ValueError("artifact request did not return HTTP 200")
-        original, final = https_url(url), https_url(response.url)
-        if (original.scheme, original.netloc) != (final.scheme, final.netloc):
+        https_url(response.url)
+        if origin(url) != origin(response.url):
             raise ValueError("cross-origin artifact response")
         length = response.headers.get("Content-Length")
         if length is not None and int(length) != artifact["size_bytes"]:
@@ -200,6 +207,10 @@ def download_once(opener, url, output, artifact, deadline):
     output.chmod(0o400)
 
 
+def download_seconds(size_bytes):
+    return min(MAX_DOWNLOAD_SECONDS, BASE_DOWNLOAD_SECONDS + size_bytes / MIN_DOWNLOAD_BYTES_PER_SECOND)
+
+
 def download(opener, url, output, artifact, deadline):
     for attempt in range(DOWNLOAD_ATTEMPTS):
         try:
@@ -215,7 +226,7 @@ def download(opener, url, output, artifact, deadline):
             time.sleep(delay)
 
 
-def provision(source, root, destination, cdn_url):
+def provision(source, root, destination, cdn_url, download_cache=None):
     source = safe_directory(source)
     root = safe_directory(root, create=True)
     destination = safe_directory(destination, create=True)
@@ -267,13 +278,28 @@ def provision(source, root, destination, cdn_url):
         else:
             temporary = Path(tempfile.mkdtemp(prefix=".tmp-", dir=root))
             try:
-                deadline = time.monotonic() + 120
+                started, missing = time.monotonic(), []
+                # A download cache entry is used only if its bytes still have
+                # the pinned size and digest; any other entry is downloaded.
                 for artifact in artifacts:
                     output = temporary / artifact["path"]
                     output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    if download_cache is not None and restore_file(
+                            download_cache, artifact["sha256"], artifact["size_bytes"], output):
+                        output.chmod(0o400)
+                    else:
+                        missing.append((artifact, output))
+                missing_bytes = sum(artifact["size_bytes"] for artifact, _ in missing)
+                deadline = time.monotonic() + download_seconds(missing_bytes)
+                for artifact, output in missing:
                     path = "/".join((cdn.path.rstrip("/"), manifest["r2_prefix"], artifact["path"]))
                     url = urllib.parse.urlunsplit((cdn.scheme, cdn.netloc, urllib.parse.quote(path, safe="/"), "", ""))
                     download(opener, url, output, artifact, deadline)
+                    if download_cache is not None:
+                        store_file(download_cache, artifact["sha256"], output)
+                print(f"{manifest['model_id']}: {len(artifacts) - len(missing)} of {len(artifacts)} artifacts "
+                      f"from the download cache, {len(missing)} downloaded ({missing_bytes} bytes) "
+                      f"in {time.monotonic() - started:.1f} s", flush=True)
                 (temporary / "prompt-contract.json").write_bytes(encoded)
                 (temporary / "prompt-contract.json").chmod(0o400)
                 for directory, _, _ in os.walk(temporary, topdown=False):
@@ -298,10 +324,12 @@ def main():
     parser.add_argument("--artifact-root", required=True)
     parser.add_argument("--manifest-directory", required=True)
     parser.add_argument("--cdn-url", default="https://models.darkbloom.ai")
+    parser.add_argument("--download-cache", type=Path,
+                        help="content-addressed directory of verified downloads (scripts/verified_download_cache.py)")
     args = parser.parse_args()
     try:
         count = provision(args.manifest_source_directory, args.artifact_root,
-                          args.manifest_directory, args.cdn_url)
+                          args.manifest_directory, args.cdn_url, args.download_cache)
     except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException) as error:
         parser.exit(1, f"prompt fixture provisioning failed: {error}\n")
     print(f"provisioned {count} pinned public prompt manifests (no weights)")

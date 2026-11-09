@@ -25,37 +25,6 @@ func cpuNanoseconds() -> UInt64 {
 func now() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
 func milliseconds(_ value: UInt64) -> String { String(format: "%.3f", Double(value) / 1_000_000) }
 
-/// How late this host wakes a thread that waits for a deadline. The writer
-/// sleeps on a semaphore until its renewal is due, on a user-interactive
-/// queue; the probe does the same every 20 ms while the renewals run and
-/// keeps the worst overshoot. A renewal may be late by that much, which
-/// depends on the host (Blacksmith's VMs wake within a few milliseconds, a
-/// Darkbloom VM was 17 ms late once); a writer that rested a whole idle wait
-/// instead would be late by up to `writerIdleNanoseconds` more.
-final class WakeLatencyProbe: @unchecked Sendable {
-    private let lock = NSLock(), sleeper = DispatchSemaphore(value: 0), stopped = DispatchSemaphore(value: 0)
-    private var running = true, worst: UInt64 = 0, samples = 0
-
-    init(periodNanoseconds: UInt64 = 20_000_000) {
-        DispatchQueue(label: "owner-writer-wake.probe", qos: .userInteractive).async { [self] in
-            while lock.withLock({ running }) {
-                let deadline = now() + periodNanoseconds
-                _ = sleeper.wait(timeout: .init(uptimeNanoseconds: deadline))
-                let woke = now(), late = woke > deadline ? woke - deadline : 0
-                lock.withLock { worst = max(worst, late); samples += 1 }
-            }
-            stopped.signal()
-        }
-    }
-
-    /// Stops the probe; returns its worst overshoot and its number of waits.
-    func stop() -> (worst: UInt64, samples: Int) {
-        lock.withLock { running = false }
-        stopped.wait()
-        return lock.withLock { (worst, samples) }
-    }
-}
-
 @main struct OwnerWriterWakeTests {
     static func main() throws {
         let owner = URL(fileURLWithPath: CommandLine.arguments[1]), worker = CommandLine.arguments[2]
@@ -67,10 +36,12 @@ final class WakeLatencyProbe: @unchecked Sendable {
     }
 
     static func endpoint(_ owner: URL, _ worker: String, _ dir: URL, behavior: String,
-                         lifetimeNanoseconds: UInt64 = 15_000_000_000) throws -> ClusterRemoteWorkerEndpoint {
+                         lifetimeNanoseconds: UInt64 = 15_000_000_000,
+                         writerIdleNanoseconds: UInt64 = ClusterRemoteWorkerEndpoint.writerIdleNanoseconds) throws -> ClusterRemoteWorkerEndpoint {
         try .init(transport: .init(executable: owner, arguments: [worker, dir.path, "0", behavior], environment: [:]),
             clusterID: "cpu-test", expectedIdentity: fixtureIdentity, profile: fixtureProfile, rank: 0,
-            executionPlanSHA256: fixturePlan, lifetimeDeadlineUptimeNanoseconds: now() + lifetimeNanoseconds)
+            executionPlanSHA256: fixturePlan, lifetimeDeadlineUptimeNanoseconds: now() + lifetimeNanoseconds,
+            writerIdleNanoseconds: writerIdleNanoseconds)
     }
     static func event(_ e: ClusterRemoteWorkerEndpoint) throws -> ClusterWorkerEvent {
         try e.receiveWorkerEvent(until: now() + 5_000_000_000).event
@@ -88,7 +59,8 @@ final class WakeLatencyProbe: @unchecked Sendable {
     /// the hello it is zero and after a fence it is stale, and either would
     /// otherwise put the wake in the past and spin the writer.
     static func idleWakeDeadline() throws {
-        let wake = ClusterRemoteWorkerEndpoint.writerWakeDeadline, idle = ClusterRemoteWorkerEndpoint.writerIdleNanoseconds
+        let deadline = ClusterRemoteWorkerEndpoint.writerWakeDeadline, idle = ClusterRemoteWorkerEndpoint.writerIdleNanoseconds
+        func wake(_ now: UInt64, _ renewal: UInt64, _ canBeSent: Bool) -> UInt64 { deadline(now, renewal, canBeSent, idle) }
         let t: UInt64 = 1_000_000_000_000
         try require(idle == 50_000_000, "The idle bound is not 50 ms")
         try require(wake(t, 0, false) == t + idle, "Before the hello the zero renewal time was used")
@@ -96,6 +68,10 @@ final class WakeLatencyProbe: @unchecked Sendable {
         try require(wake(t, t + 10_000_000, false) == t + idle, "A renewal that cannot be sent woke the writer")
         try require(wake(t, t + 10_000_000, true) == t + 10_000_000, "A renewal due within the idle bound was not the wake")
         try require(wake(t, t + 5_000_000_000, true) == t + idle, "A renewal beyond the idle bound was not capped")
+        // The cadence check below rests its writer longer than a renewal interval.
+        let renew = ClusterWorkerLease.renewNanoseconds, longRest = renew + 1_000_000_000
+        try require(deadline(t, t + renew, true, longRest) == t + renew, "A renewal due within a longer idle rest was not the wake")
+        try require(deadline(t, t + renew, false, longRest) == t + longRest, "A longer idle rest was not the wake when no renewal can be sent")
         try require(wake(t, t - 1, true) == t, "An overdue renewal that can be sent is not due now")
         try require(wake(UInt64.max - 10, UInt64.max - 5, false) == UInt64.max, "The idle bound overflowed")
         try require(wake(UInt64.max - 10, UInt64.max - 5, true) == UInt64.max - 5, "The renewal time near the end of the clock was lost")
@@ -176,36 +152,46 @@ final class WakeLatencyProbe: @unchecked Sendable {
 
     /// An idle writer still renews on time: each renewal follows the last by
     /// the renewal interval, late by no more than this host wakes any waiting
-    /// thread (`WakeLatencyProbe`, at least 15 ms allowed), not by a whole
-    /// idle wait. After a fence no renewal is sent, and the stale renewal time
-    /// does not make the writer spin while the owner retires its child (this
-    /// child needs 3 s).
+    /// thread (`WakeLatencyProbe`, at least 15 ms allowed). After a fence no
+    /// renewal is sent, and the stale renewal time does not make the writer
+    /// spin while the owner retires its child (this child needs 3 s).
+    ///
+    /// This writer's idle rest is one second longer than the renewal
+    /// interval, so it renews on time only if it wakes for the renewal. One
+    /// that rested a whole idle wait instead is woken last by the readiness
+    /// and next one rest later: its first renewal is at least a second late
+    /// and its interval at least a second too long, whatever this host's wake
+    /// latency. With the 50 ms rest such a writer was late by anything from 0
+    /// to 50 ms, so it could pass, and a host that wakes threads 46 ms late
+    /// left no room for the allowance at all.
     static func renewalsKeepTheirCadenceAndAFencedWriterRests(_ owner: URL, _ worker: String) throws {
         let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
-        let begin = now()
-        let e = try endpoint(owner, worker, dir, behavior: "slow-exit")
+        let begin = now(), idleRest = ClusterWorkerLease.renewNanoseconds + 1_000_000_000
+        let e = try endpoint(owner, worker, dir, behavior: "slow-exit", writerIdleNanoseconds: idleRest)
         guard case .ready = try event(e) else { throw OwnerWire.invalid("Expected readiness") }
-        let readyAt = now(), cpu = cpuNanoseconds(), probe = WakeLatencyProbe()
+        // The writer sleeps on a semaphore until its renewal is due, on a
+        // user-interactive queue; the probe waits the same way.
+        let readyAt = now(), cpu = cpuNanoseconds(), probe = WakeLatencyProbe(qos: .userInteractive)
         // Each renewal moves the grant to its own send time plus the time to live.
         var last = e.localLifetimeDeadlineUptimeNanoseconds, renewals: [UInt64] = []
-        while renewals.count < 2 && now() < readyAt + 11_000_000_000 {
+        // Long enough for two renewals of a writer that rests whole idle waits.
+        while renewals.count < 2 && now() < readyAt + 2 * idleRest + 1_000_000_000 {
             let grant = e.localLifetimeDeadlineUptimeNanoseconds
             if grant != last { renewals.append(grant - ClusterWorkerLease.ttlNanoseconds); last = grant }
             Thread.sleep(forTimeInterval: 0.002)
         }
         let latency = probe.stop()
         let idleCPU = cpuNanoseconds() - cpu, idle = now() - readyAt
-        // A renewal may be as late as this host's slowest observed wake, with
-        // 5 ms to spare, and never less than the 15 ms a fast host gets.
-        let late = max(15_000_000, latency.worst + 5_000_000)
-        try require(renewals.count == 2, "Expected two renewals in 11 s of idle, saw \(renewals.count)")
+        // A renewal may be as late as the probe allows a wake on this host.
+        let late = latency.allowedLateness
+        try require(renewals.count == 2, "Expected two renewals in \(milliseconds(idle)) ms of idle, saw \(renewals.count)")
         let interval = renewals[1] - renewals[0]
         let afterReady = Double(Int64(bitPattern: renewals[0] &- readyAt)) / 1_000_000
         print("owner-writer-wake: first renewal \(String(format: "%.3f", afterReady)) ms after readiness, interval \(milliseconds(interval)) ms; idle CPU \(milliseconds(idleCPU)) ms in \(milliseconds(idle)) ms")
         print("owner-writer-wake: host wake latency worst \(milliseconds(latency.worst)) ms in \(latency.samples) waits; a renewal may be \(milliseconds(late)) ms late")
         try require(latency.samples >= 100, "The wake latency probe ran only \(latency.samples) waits")
-        // Past the idle bound, a late wake and a whole idle wait look alike.
-        try require(late < ClusterRemoteWorkerEndpoint.writerIdleNanoseconds,
+        // A writer that rested whole idle waits renews at least this late.
+        try require(late < idleRest - ClusterWorkerLease.renewNanoseconds,
             "This host wakes threads \(milliseconds(latency.worst)) ms late: too late to tell a renewal on time from one a whole idle wait late")
         try require(renewals[0] >= begin + ClusterWorkerLease.renewNanoseconds, "The first renewal came before one interval")
         try require(renewals[0] <= readyAt + ClusterWorkerLease.renewNanoseconds + late, "The first renewal was late")

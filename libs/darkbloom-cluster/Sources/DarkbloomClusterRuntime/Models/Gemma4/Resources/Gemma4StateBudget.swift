@@ -26,8 +26,11 @@ struct Gemma4StateBudget: Equatable {
     let largestSingleHostStateComponentBytes: Int
     let stateAndBoundaryBytes: Int
 
+    /// Any context the wire carries (`ClusterWorkerLimits.wireContextTokens`):
+    /// the profile holds a request to the model's own, and each rank's live
+    /// gate decides whether it fits.
     static func estimate(maximumTokens: Int, chunkSize: Int, ranks: Int = 1) throws -> Self {
-        guard (1...ClusterWorkerLimits.contextTokens).contains(maximumTokens), (1...512).contains(chunkSize),
+        guard (1...ClusterWorkerLimits.wireContextTokens).contains(maximumTokens), (1...512).contains(chunkSize),
               [1, 2].contains(ranks), Gemma4StageGeometry.fullKVHeads % ranks == 0,
               Gemma4StageGeometry.slidingKVHeads % ranks == 0 else {
             throw ProbeError("Gemma state budget requires bounded tokens, chunk and ranks")

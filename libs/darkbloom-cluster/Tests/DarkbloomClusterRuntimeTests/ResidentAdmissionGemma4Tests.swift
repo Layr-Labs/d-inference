@@ -276,8 +276,8 @@ struct ResidentAdmissionGemma4Tests {
             #expect(ranks[0].arithmeticContract == Gemma4ArithmeticEnvironment.contract)
             #expect(ranks[0].profile.identifier == model.rawValue + "_greedy_generation_v1")
             #expect(ranks[0].profile.vocabularySize == 262_144 && ranks[0].profile.hiddenSize == 2816)
-            // Derived from the declared 262,144 positions and the protocol.
-            #expect(ranks[0].profile.maximumPromptTokens == 32_768 && ranks[0].profile.maximumContextTokens == 65_536)
+            // The declared 262,144 positions, with the catalog's output limit.
+            #expect(ranks[0].profile.maximumPromptTokens == 262_143 && ranks[0].profile.maximumContextTokens == 262_144)
             #expect(ranks[0].profile.maximumOutputTokens == 32_768 && ranks[0].profile.maximumChunkTokens == 512)
             // The residual crosses in the activation dtype; the logits row is float32, as in the product.
             #expect(ranks[0].profile.activationDType == "bfloat16" && ranks[0].profile.selectedRowDType == "float32")
@@ -343,22 +343,64 @@ struct ResidentAdmissionGemma4Tests {
         #expect(throws: (any Error).self) {
             try admission.request(reservation(profile: QwenResidentAdapterDefinition.profileID), id: UUID(), now: Self.now)
         }
-        // Long context: past the earlier 8,192-token reservation, up to the derived limits.
+        // Long context: past the earlier 8,192-token reservation and the standard
+        // 32,768-token prompt, up to the declared context.
         #expect(try admission.request(reservation(prompt: 8193, chunk: 512), id: UUID(), now: Self.now).promptCount == 8193)
-        #expect(throws: (any Error).self) { try admission.request(reservation(prompt: 32_769), id: UUID(), now: Self.now) }
+        #expect(try admission.request(reservation(prompt: 32_769, chunk: 512), id: UUID(), now: Self.now).promptCount == 32_769)
+        #expect(try admission.request(reservation(prompt: 262_143, output: 1, chunk: 512), id: UUID(), now: Self.now)
+            .maximumTokens == 262_144)
+        #expect(throws: (any Error).self) { try admission.request(reservation(prompt: 262_144, output: 1), id: UUID(), now: Self.now) }
+        #expect(throws: (any Error).self) { try admission.request(reservation(prompt: 262_143, output: 2), id: UUID(), now: Self.now) }
         #expect(throws: (any Error).self) { try admission.request(reservation(output: 32_769), id: UUID(), now: Self.now) }
         #expect(throws: (any Error).self) { try admission.request(reservation(chunk: 513), id: UUID(), now: Self.now) }
         #expect(throws: (any Error).self) { try admission.request(reservation(stops: [106, 1]), id: UUID(), now: Self.now) }
+    }
+
+    /// Both modes serve the declared context; LOAD, every quote and the
+    /// planner size a pair for the memory plan's request (the standard 32,768
+    /// + 32,768 tokens), which both ranks agree on beside the profile.
+    @Test func bothModesServeTheDeclaredContextAndLoadSizesTheMemoryPlan() throws {
+        for model in Gemma4RegisteredModel.allCases {
+            let admission = try Self.admit(model)
+            let memory = try Gemma4ResidentAdapterDefinition.memoryProfile(specification: admission.specification)
+            #expect(admission.memoryProfile == memory && admission.servedProfile == admission.profile)
+            #expect(memory.identifier == admission.profile.identifier && memory.fingerprint != admission.profile.fingerprint)
+            #expect(memory.maximumPromptTokens == 32_768 && memory.maximumOutputTokens == 32_768
+                && memory.maximumContextTokens == 65_536 && memory.maximumChunkTokens == 512)
+            // The wire profile's memory scope, as the provider reads it, is the memory plan.
+            let scope = admission.wireProfile.memoryScope
+            #expect(scope.maximumPromptTokens == 32_768 && scope.maximumOutputTokens == 32_768
+                && scope.maximumContextTokens == 65_536 && scope.maximumChunkTokens == 512)
+            let files = try Self.files(model)
+            #expect(try Gemma4PlacementFamily(configuration: files.configuration, manifest: files.manifest).profile == memory)
+        }
+        let a = try Self.admit(.twentySixBQAT4Bit), identity = a.configuration.identity
+        func reservation(prompt: Int, output: Int) -> ClusterWorkerReservation {
+            .init(profileID: a.profile.identifier, promptTokenIDs: Array(repeating: 1000, count: prompt),
+                stopTokenIDs: [1, 106], outputCount: output, chunkSize: 512,
+                deadlineUptimeNanoseconds: Self.now + 1_000_000_000, capacityLimitBytes: 1, sampling: nil, prefixCache: nil)
+        }
+        // A stage takes a reservation past the memory plan, up to the declared context, and no further.
+        try a.requireWithinServedProfile(reservation(prompt: 32_769, output: 32_768))
+        try a.requireWithinServedProfile(reservation(prompt: 262_143, output: 1))
+        #expect(throws: (any Error).self) { try a.requireWithinServedProfile(reservation(prompt: 262_144, output: 1)) }
+        #expect(throws: (any Error).self) { try a.requireWithinServedProfile(reservation(prompt: 16, output: 32_769)) }
+        let fields = ["gemma4-resident-load-v1", identity.membershipEpoch.uuidString.lowercased(), identity.modelID,
+            identity.configurationSHA256, identity.artifactSHA256, a.specification.manifestSHA256,
+            a.plan.fingerprint, a.profile.fingerprint, a.arithmeticSHA256, a.jaccl.fingerprint,
+            a.configuration.allocatorPolicy.rawValue] + identity.peers.flatMap { [$0.id, $0.buildSHA256] }
+            + QwenResidentPrefillSelection.loadAgreementFields(a.configuration.prefillSchedule)
+        #expect(try a.loadAgreementFingerprint() == sha256(try canonicalJSONData(fields + ["memory=" + a.memoryProfile.fingerprint])))
     }
 
     @Test func ceilingsAndStateLedgerBelongToTheGeometry() throws {
         for spec in Gemma4RegisteredSpecification.all {
             let ceilings = try Gemma4ResidentResourceCeilings(specification: spec)
             #expect(ceilings.maximumManifestPayloadBytes == spec.manifestBytes)
-            // The pinned figure at the earlier reservation; the ceiling is the same ledger at the derived 65,536.
+            // The pinned figure at the earlier reservation; the ceiling is the same ledger at the declared 262,144.
             #expect(ceilings.maximumNamedStateBytes == 719_380_600)
             #expect(ceilings.namedStateByteCeiling
-                == (try Gemma4StateBudget.estimate(maximumTokens: 65_536, chunkSize: 512)).stateAndBoundaryBytes)
+                == (try Gemma4StateBudget.estimate(maximumTokens: 262_144, chunkSize: 512)).stateAndBoundaryBytes)
         }
         let largest = try Gemma4StateBudget.estimate(maximumTokens: 8320, chunkSize: 512)
         #expect(largest.fullLayers == 5 && largest.slidingLayers == 25)

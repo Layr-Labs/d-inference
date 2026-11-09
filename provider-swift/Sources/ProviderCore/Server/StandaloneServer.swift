@@ -92,6 +92,8 @@ public struct StandaloneServerConfig: Sendable {
     public let mtpAcceptance: String?
     public let mtpAcceptanceByModel: [String: String]
     public let coordinatorURL: String
+    /// The local router (`LocalRouter`); nil serves this Mac's engine only.
+    public let router: LocalRouterConfig?
 
     public init(
         port: UInt16 = BuildEnvironment.current.defaultLocalPort,
@@ -112,7 +114,8 @@ public struct StandaloneServerConfig: Sendable {
         mtpDrafterPath: String? = nil,
         mtpAcceptance: String? = nil,
         mtpAcceptanceByModel: [String: String] = [:],
-        coordinatorURL: String = CoordinatorSettings().url
+        coordinatorURL: String = CoordinatorSettings().url,
+        router: LocalRouterConfig? = nil
     ) {
         self.port = port
         self.host = host
@@ -134,6 +137,7 @@ public struct StandaloneServerConfig: Sendable {
         self.mtpAcceptance = mtpAcceptance
         self.mtpAcceptanceByModel = mtpAcceptanceByModel
         self.coordinatorURL = coordinatorURL
+        self.router = router
     }
 }
 
@@ -149,6 +153,15 @@ public actor StandaloneServer {
     var lifecycleDrainTask: Task<ProviderDrainStatus, Never>?
     var lifecycleCommandID: String?
     var lifecycleStatus = ProviderDrainStatus()
+    /// Only me's background service: its update cycle (`StandaloneServer+AutoUpdate`) and idle unload
+    /// (`StandaloneServer+IdleUnload`).
+    var autoUpdateTask: Task<Void, Never>?
+    var updateSession: SelfUpdater.UpdateSession?
+    var stagedUpdateBundle: SelfUpdater.StagedBundle?
+    var updateDraining = false
+    /// The lifecycle drain request in force when the update's drain began (`lifecycleCommandID`).
+    var updateDrainLifecycleCommand: String?
+    var idleUnloadTask: Task<Void, Never>?
 
     /// One resident model: its v2 bridge, loaded container (the VLM owns both
     /// vision and the exact text tower served by the bridge), and KV sizing
@@ -445,7 +458,7 @@ public actor StandaloneServer {
 
     /// Internal access so the +HTTP extension can pass the same
     /// default through to ``MultiModelBatchSchedulerEngine``.
-    static let slotDefaultMaxTokens = 4096
+    static let slotDefaultMaxTokens = SlotSizingSnapshot.defaultOutputTokens
 
     /// Update the advertised model list (e.g. after a rescan). Applies the
     /// same CBv2 supported-set filter as init. The serving set is part of
@@ -628,6 +641,10 @@ public actor StandaloneServer {
     public func stop() async {
         lifecycleControlTask?.cancel()
         lifecycleControlTask = nil
+        autoUpdateTask?.cancel()
+        autoUpdateTask = nil
+        idleUnloadTask?.cancel()
+        idleUnloadTask = nil
         responseTracker.setAccepting(false)
         do { try closeNativeMiMoLifecycle() }
         catch {
@@ -1413,7 +1430,9 @@ public actor StandaloneServer {
         bridge.isGLM5NextManaged && GLM5NextLoadFaultState.isRetained
     }
 
-    private func evictLRUIdleSlot() async -> Bool {
+    /// Evicts the least recently used slot with no request, reservation or load on it; with `usedBefore`, only one
+    /// last used before then (the idle unload, `StandaloneServer+IdleUnload`).
+    func evictLRUIdleSlot(usedBefore cutoff: ContinuousClock.Instant? = nil) async -> Bool {
         guard nativeMiMoReclaimAllowed else { return false }
         // The base implementation retained complete CachedSlot copies in
         // both this snapshot and the selected local. Those copies could keep
@@ -1429,6 +1448,7 @@ public actor StandaloneServer {
             // A retained GLM slot can never release its memory, so selecting it
             // would block every eviction another load needs.
             guard !Self.isRetainedGLM5Next(entry.bridge),
+                  cutoff.map({ entry.lastUsedAt < $0 }) ?? true,
                   slots[entry.key]?.bridge === entry.bridge,
                   !evictingModels.contains(entry.key),
                   !isMTPUpgradeTargetRetained(entry.key),
@@ -1470,6 +1490,7 @@ public actor StandaloneServer {
               !evictingModels.contains(evictKey),
               !isMTPUpgradeTargetRetained(evictKey),
               (slotReservations[evictKey] ?? 0) == 0,
+              cutoff.map({ (slots[evictKey]?.lastUsedAt ?? .now) < $0 }) ?? true,
               active == 0 else {
             return false
         }
@@ -1602,6 +1623,8 @@ public actor StandaloneServer {
 
     func releaseSlot(_ modelId: String) {
         guard let count = slotReservations[modelId] else { return }
+        // A request's end is its last use: idle time counts from there (`StandaloneServer+IdleUnload`).
+        touchSlot(modelId)
         if count <= 1 {
             slotReservations.removeValue(forKey: modelId)
         } else {

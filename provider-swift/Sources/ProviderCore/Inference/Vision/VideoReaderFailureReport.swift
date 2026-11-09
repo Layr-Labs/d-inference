@@ -4,23 +4,25 @@ import Foundation
 import MLXLMCommon
 
 /// Reports each failed `AVAssetReader` pass of a media decode (MLX-Swift-LM's
-/// `VideoReaderRetry`, and the Super video reader) as one WARN `engine_health`
-/// event and one provider log line. Both carry the reader status and the
-/// domain and code of its errors only, never media bytes, frames or prompt
-/// content.
+/// `VideoReaderRetry` over a video or audio track, and the Super video reader)
+/// as one WARN `engine_health` event and one provider log line. Both carry the
+/// track's medium, the reader status and the domain and code of its errors
+/// only, never media bytes, frames, samples or prompt content.
 enum VideoReaderFailureReport {
     private static let logger = ProviderLogger(
         subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "video-reader")
 
+    /// Operation `video_reader_failed` or `audio_reader_failed`, by the track's medium.
     static func event(_ failure: VideoReaderFailure, retrying: Bool) -> TelemetryEvent {
-        TelemetryEvent(
+        let medium = failure.medium.rawValue
+        return TelemetryEvent(
             source: .provider, severity: .warn, kind: .engineHealth,
             message: retrying
-                ? "video reader pass failed; decoding again with a new reader"
-                : "video reader pass failed again; the video is refused"
+                ? "\(medium) reader pass failed; decoding again with a new reader"
+                : "\(medium) reader pass failed again; the \(medium) is refused"
         ).withFields([
             "component": .string("engine"),
-            "operation": .string("video_reader_failed"),
+            "operation": .string("\(medium)_reader_failed"),
             "retrying": .bool(retrying),
             "transient": .bool(failure.isTransient),
             "reader_status": .int(failure.status),
@@ -35,7 +37,7 @@ enum VideoReaderFailureReport {
         _ operation: () async throws -> Result
     ) async rethrows -> Result {
         try await VideoReaderRetry.$failedPassObserver.withValue({ failure, retrying in
-            logger.warning("video reader pass failed (retrying: \(retrying)): \(failure)")
+            logger.warning("\(failure.medium.rawValue) reader pass failed (retrying: \(retrying)): \(failure)")
             emit(event(failure, retrying: retrying))
         }, operation: operation)
     }

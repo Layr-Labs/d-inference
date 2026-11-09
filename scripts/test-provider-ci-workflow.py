@@ -142,9 +142,11 @@ def run_command(step):
 CHECKOUT = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2"
 CACHE_RESTORE = "actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0"
 CACHE_SAVE = "actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0"
-# Pushes to master and dev save caches; pull requests never do.
-SAVE_POLICY = ("  SAVE_CACHES: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/master' "
-               "|| github.ref == 'refs/heads/dev') }}\n")
+# Pushes to master and dev, and dispatches on dev (the hourly full run),
+# save caches; pull requests never do.
+SAVE_POLICY = ("  SAVE_CACHES: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/master' "
+               "|| github.ref == 'refs/heads/dev')) || (github.event_name == 'workflow_dispatch' "
+               "&& github.ref == 'refs/heads/dev') }}\n")
 SAVE_CACHES = "env.SAVE_CACHES == 'true'"
 SAVE_INPUT = "inputs.save-caches == 'true'"
 VALIDATE_GIT = """if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
@@ -264,7 +266,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
     def test_existing_required_check_requires_every_lane_even_after_failures(self):
         job = self.jobs["provider-test-gate"]
         self.assertIn("    name: Provider Tests\n", job)
-        self.assertIn("    needs: [test-provider, test-cluster, test-cluster-focused, cluster-release-checks]\n", job)
+        self.assertIn("    needs: [test-provider, test-cluster, test-cluster-focused, cluster-release-checks, ci-plan-checks]\n",
+                      job)
         self.assertNotIn("test-provider-sdk", job)
         self.assertIn("    if: ${{ always() }}\n", job)
         self.assertNotIn("continue-on-error:", job)
@@ -281,13 +284,28 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                                              **results},
                                         capture_output=True, timeout=5)
                 self.assertEqual(result.returncode == 0, failed is None, results)
+        # The CI plan checks pass only when their job succeeded.
+        plan_checks = {field(step, "name", indent=6): step for step in step_blocks(job)}["Require the CI plan checks"]
+        self.assertEqual(field(plan_checks, "PLAN_CHECKS_RESULT", indent=10), "${{ needs.ci-plan-checks.result }}")
+        self.assertIsNone(field(plan_checks, "if"))
+        for outcome in ("success", "failure", "skipped", "cancelled", ""):
+            result = subprocess.run(["bash", "-e", "-c", run_command(plan_checks)],
+                                    env={**os.environ, "PLAN_CHECKS_RESULT": outcome}, capture_output=True, timeout=5)
+            self.assertEqual(result.returncode == 0, outcome == "success", outcome)
 
-    def test_the_gate_checks_the_ci_plans_on_every_run(self):
-        # dev has no Release Integrity: the gate audits the cluster plan and
-        # runs the plan self-tests on every run, skipped or not.
-        steps = {field(step, "name", indent=6): step for step in step_blocks(self.jobs["provider-test-gate"])}
+    def test_the_gate_requires_the_ci_plan_checks_of_every_run(self):
+        # dev has no Release Integrity: a job beside the test jobs audits the
+        # cluster plan and runs the plan self-tests on every run, skipped or
+        # not, and the gate requires it. It waits for nothing.
+        job = self.jobs["ci-plan-checks"]
+        self.assertIn("    name: Check the CI plans\n", job)
+        self.assertIn("    runs-on: ubuntu-24.04\n", job)
+        self.assertNotRegex(job, r"(?m)^    (needs|if):")
+        self.assertNotIn("continue-on-error:", job)
+        self.assertNotIn("Check the CI plans", self.jobs["provider-test-gate"])
+        steps = {field(step, "name", indent=6): step for step in step_blocks(job)}
         check = steps["Check the CI plans"]
-        # They run even when the requirement above failed; only a cancel stops them.
+        # Each runs even when an earlier one failed; only a cancel stops them.
         self.assertEqual(field(check, "if"), "${{ !cancelled() }}")
         commands = run_command(check).splitlines()
         for command in ("python3 scripts/cluster-test-plan.py audit", "python3 scripts/test-cluster-test-plan.py",
@@ -304,9 +322,11 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         fixtures = steps["Test the prompt fixture downloaders offline"]
         self.assertEqual(field(fixtures, "if"), "${{ !cancelled() }}")
         self.assertEqual(run_command(fixtures).splitlines(), ["python3 scripts/test-prepare-prompt-fixtures.py",
-                                                              "python3 scripts/test-prepare-mimo-prompt-fixtures.py"])
+                                                              "python3 scripts/test-prepare-mimo-prompt-fixtures.py",
+                                                              "python3 scripts/test-prepare-mimo-image-http-fixtures.py"])
         # The record names its change through the lookup's own code, and only
         # a run that tested something records.
+        steps = {field(step, "name", indent=6): step for step in step_blocks(self.jobs["provider-test-gate"])}
         record = steps["Name the record of the change these tests passed"]
         self.assertIn('python3 scripts/ci-tested-tree.py name --tree "$TREE" --base "$BASE" --head "$HEAD"', record)
         for name in ("Name the record of the change these tests passed", "Upload the record"):
@@ -331,10 +351,13 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 restores = [step for step in steps
                             if "actions/cache/restore@" in step and field(step, "id") != "git-cache"]
                 if lane == "provider":
-                    # The verified MiMo metadata downloads, then the audio codec.
-                    self.assertEqual([field(step, "id") for step in restores], ["mimo-metadata-cache", "mimo-audio-cache"])
+                    # The verified MiMo metadata downloads, the prompt fixture
+                    # downloads, then the audio codec.
+                    self.assertEqual([field(step, "id") for step in restores],
+                                     ["mimo-metadata-cache", "prompt-fixture-cache", "mimo-audio-cache"])
                     self.assertIn("mimo-metadata-v1-", restores[0])
-                    self.assertIn("mimo-audio-source-v2-", restores[1])
+                    self.assertIn("prompt-fixtures-v1-", restores[1])
+                    self.assertIn("mimo-audio-source-v2-", restores[2])
                     for restore in restores:
                         self.assertGreater(steps.index(restore), steps.index(builds[0]))
                 else:
@@ -586,6 +609,48 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("run-nested-suite.sh NemotronTemplateParityLiveTests",
                       (ROOT / "scripts/verify-nemotron-prompt-parity.sh").read_text())
 
+    def test_prompt_parity_reuses_only_verified_downloads(self):
+        steps = step_blocks(self.jobs["test-provider"])
+        names = [field(step, "name", indent=6) for step in steps]
+        cache = CI_CACHE_ROOT + "/prompt-fixture-cache"
+        restore = steps[names.index("Restore verified prompt fixture downloads")]
+        save = steps[names.index("Save verified prompt fixture downloads")]
+        parity = [steps[names.index(name)] for name in PARITY_STEPS]
+        self.assertEqual(field(restore, "id"), "prompt-fixture-cache")
+        self.assertEqual(field(restore, "uses"), CACHE_RESTORE)
+        self.assertEqual(field(save, "uses"), CACHE_SAVE)
+        # The key is the pinned content: every manifest both parity steps read,
+        # never the run or the branch; only the exact key restores.
+        manifests = ("fixtures/prompt-contract/v1/manifests/*.json",
+                     "fixtures/prompt-contract/nemotron/manifests/*.json")
+        self.assertEqual(field(restore, "key", indent=10),
+                         "prompt-fixtures-v1-${{ hashFiles('%s', '%s') }}" % manifests)
+        for manifest in manifests:
+            self.assertTrue(list(ROOT.glob(manifest)), manifest)
+        self.assertNotIn("restore-keys", restore)
+        self.assertEqual(field(save, "key", indent=10), "${{ steps.prompt-fixture-cache.outputs.cache-primary-key }}")
+        for step in (restore, save):
+            self.assertEqual(field(step, "path", indent=10), cache)
+        self.assertEqual(field(restore, "if"),
+                         "${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' }}")
+        # A push saves once both parity steps verified every artifact; a pull
+        # request or an exact hit saves nothing.
+        self.assertEqual(field(save, "if"),
+                         "${{ !cancelled() && " + SAVE_CACHES + " && matrix.shard == 1 && "
+                         "steps.prompt-parity.outcome == 'success' && steps.nemotron-parity.outcome == 'success' && "
+                         "steps.prompt-fixture-cache.outputs.cache-hit != 'true' }}")
+        self.assertEqual(field(parity[1], "id"), "nemotron-parity")
+        self.assertLess(steps.index(restore), steps.index(parity[0]))
+        self.assertLess(steps.index(parity[1]), steps.index(save))
+        for step in parity:
+            self.assertEqual(field(step, "PROMPT_PARITY_DOWNLOAD_CACHE", indent=10), cache)
+        # Both scripts hand the cache to the one downloader, which re-verifies it.
+        for script, _, _ in PARITY_STEPS.values():
+            source = (ROOT / script).read_text()
+            self.assertIn('[[ -z "${PROMPT_PARITY_DOWNLOAD_CACHE:-}" ]] || '
+                          'download_cache=(--download-cache "$PROMPT_PARITY_DOWNLOAD_CACHE")', source)
+            self.assertIn('${download_cache[@]+"${download_cache[@]}"}', source)
+
     def test_fixture_prerequisites_are_fail_closed_in_provider(self):
         steps = step_blocks(self.jobs["test-provider"])
         fixtures = [step for step in steps if run_command(step) == MIMO_HTTP_PREPARE]
@@ -679,6 +744,10 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             "Run cluster model provisioning checks":
                 (focused, 2, "bash provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning"),
             "Run cluster onboarding checks": (focused, 2, "bash provider-swift/Tests/ClusterOnboardingChecks/run.sh"),
+            "Run cluster console checks": (focused, 2, "bash provider-swift/Tests/ClusterConsoleChecks/run.sh"),
+            "Run cluster pairing checks": (focused, 1, "bash provider-swift/Tests/ClusterPairingChecks/run.sh"),
+            "Run cluster diagnostics checks": (focused, 1, "bash provider-swift/Tests/ClusterDiagnosticsChecks/run.sh"),
+            "Run cluster placement flow checks": (focused, 1, "bash provider-swift/Tests/ClusterPlacementChecks/run-flow.sh"),
             "Run cluster focused checks": (focused, 1, "python3 scripts/cluster-test-plan.py run focused 1"),
         }
         for job in (focused, release):
@@ -833,12 +902,12 @@ class ProviderCIWorkflowTests(unittest.TestCase):
 
     def test_parity_has_no_backend_caches_or_credentials(self):
         # Prompt Parity now runs in the provider shards; besides .git, the only
-        # caches that job saves directly are the verified MiMo downloads.
+        # caches that job saves directly are the verified fixture downloads.
         steps = step_blocks(self.jobs["test-provider"])
         saves = [step for step in steps if "actions/cache/save@" in step]
         self.assertEqual([field(step, "name", indent=6) for step in saves],
                          ["Save .git for later runs", "Save verified MiMo metadata downloads",
-                          "Cache verified MiMo audio codec"])
+                          "Save verified prompt fixture downloads", "Cache verified MiMo audio codec"])
         self.assertNotIn("test-provider-parity", workflow_text())
         for forbidden in ("coordinator/", "cargo ", "rust-key", "secrets.", "darkbloom-platform"):
             self.assertNotIn(forbidden, self.jobs["test-provider"])
@@ -898,14 +967,17 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("  strict-cache:\n", ACTION.read_text().split("\nruns:\n", 1)[0])
 
     def test_every_checkout_reuses_master_git_and_falls_back_to_a_cold_checkout(self):
-        # The tree lookup checks out only its script, and the gate the files of
-        # its CI plan checks (blobs on demand), both without the .git cache.
-        self.assertIn("sparse-checkout: scripts/ci-tested-tree.py", self.jobs["tested"])
-        gate = self.jobs["provider-test-gate"]
-        self.assertEqual(gate.count("actions/checkout@"), 1)
-        self.assertIn("          filter: blob:none\n          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}\n", gate)
+        # The tree lookup and the gate check out only the tree lookup's script,
+        # and the CI plan checks the files they read (blobs on demand), all
+        # without the .git cache.
+        for job_id in ("tested", "provider-test-gate"):
+            self.assertEqual(self.jobs[job_id].count("actions/checkout@"), 1, job_id)
+            self.assertIn("sparse-checkout: scripts/ci-tested-tree.py\n", self.jobs[job_id])
+        plan_checks = self.jobs["ci-plan-checks"]
+        self.assertEqual(plan_checks.count("actions/checkout@"), 1)
+        self.assertIn("          filter: blob:none\n          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}\n", plan_checks)
         checkouts = {job_id: job for job_id, job in self.jobs.items()
-                     if "actions/checkout@" in job and job_id not in ("tested", "provider-test-gate")}
+                     if "actions/checkout@" in job and job_id not in ("tested", "provider-test-gate", "ci-plan-checks")}
         self.assertEqual(set(checkouts), {"release-integrity", "docs", *MAC_JOBS})
         for job_id, job in checkouts.items():
             with self.subTest(job=job_id):
@@ -985,7 +1057,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 env = path.read_text().split("\njobs:\n", 1)[0]
                 self.assertIn("  CHECKOUT_SPARSE: |\n" + "".join(f"    {pattern}\n" for pattern in SPARSE_PATTERNS),
                               env)
-        # The macOS checkouts, Release Integrity's and the gate's for its CI plan checks.
+        # The macOS checkouts, Release Integrity's and the CI plan checks'.
         self.assertEqual(self.workflow.count("sparse-checkout: ${{ env.CHECKOUT_SPARSE }}"), len(MAC_JOBS) + 2)
         docs_impact = (ROOT / ".github/workflows/docs-impact.yml").read_text()
         self.assertIn("          filter: blob:none\n          sparse-checkout: |\n"
@@ -1142,10 +1214,12 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 self.assertNotRegex(path, r"runner\.temp|RUNNER_TEMP|^~|HOME|^\$\{\{")
                 self.assertTrue(not path.startswith("/") or path.startswith(CI_CACHE_ROOT + "/"), path)
         # Each moved cache: the metallib, SwiftPM's repositories, the MiMo
-        # downloads and codec, restored and saved at one path.
+        # downloads and codec and the prompt fixture downloads, restored and
+        # saved at one path.
         self.assertEqual(sorted({path for _, path in paths if path.startswith(CI_CACHE_ROOT)}),
                          [CI_CACHE_ROOT + "/" + name for name in
-                          ("metallib-cache", "mimo-audio-source", "mimo-metadata-cache", "swiftpm-repositories")])
+                          ("metallib-cache", "mimo-audio-source", "mimo-metadata-cache", "prompt-fixture-cache",
+                           "swiftpm-repositories")])
         self.assertIn("METALLIB_CACHE_DIR: " + CI_CACHE_ROOT + "/metallib-cache", ACTION.read_text())
 
     def test_composite_restores_swiftpm_repositories_per_lane_and_runner_layout(self):

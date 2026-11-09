@@ -33,6 +33,7 @@ import Foundation
         arguments = CommandLine.arguments
         guard arguments.count == 4 else { print("usage: PairingCheck <terminal child> <vector json> <scratch dir>"); exit(2) }
         let groups: [(String, () -> Void)] = [
+            ("pseudo-terminal harness: last bytes read, nothing read after close", terminalHarness),
             ("coordinator vector: pins and roster bytes", coordinatorVector),
             ("message shapes", messageShapes),
             ("ceremony: both confirm", ceremonyBothConfirm),

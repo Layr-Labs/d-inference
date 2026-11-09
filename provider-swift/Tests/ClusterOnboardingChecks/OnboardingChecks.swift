@@ -82,6 +82,8 @@ import Darwin
         localSwitchesAServingCluster()
         localAgainShowsTheMenu()
         menuKeysSwitchTheScope()
+        // Local-first L5b (2026-11-07): the single-Mac start's three choices for a pair, Both, me first preselected.
+        bothMeFirstChecks()
         localNamesTheModel()
         memberJoinsWithLocal()
         servingScopeValues()
@@ -719,7 +721,8 @@ import Darwin
             saveDiagnostics: { recorder.note("saveDiagnostics"); return .success(["Saved a diagnostics file (no keys, addresses or names in it): darkbloom-cluster-diagnostics.json in your home folder."]) },
             developerNotice: { developerNotice },
             setScope: { scope in
-                recorder.note(scope.bind.map { "setScope local \($0)" } ?? "setScope public")
+                recorder.note(scope.addsLocalAPI ? "setScope both \(scope.localAPIBind ?? "")"
+                    : scope.bind.map { "setScope local \($0)" } ?? "setScope public")
                 return .success([scope.isLocalOnly ? "Saved: this cluster serves locally only." : "Saved: this cluster serves through Darkbloom."])
             },
             register: { recorder.note("register"); return registerResult },
@@ -4497,10 +4500,12 @@ import Darwin
     // MARK: - UX audit P3 (2026-11-04): silence is not a broken pairing
 
     /// What a Mac says when the other Mac does not answer over the cable, word for word (the audit's P2 words): that
-    /// Mac by its name, its likely reasons, and what to run there.
+    /// Mac by its name, its likely reasons, and what to run there; then, for a Mac that left the pair (`darkbloom
+    /// cluster leave`), which silence can't be told from, what to do here.
     static func silentLine(_ mac: String) -> String {
         "The other Mac (\(mac)) isn't answering over the cable. Its cluster service is off, or that Mac is asleep, off, or waiting for "
-            + "someone to log in. On that Mac, run `darkbloom start` or `darkbloom cluster`."
+            + "someone to log in. On that Mac, run `darkbloom start` or `darkbloom cluster`. If it left the pair, choose Start "
+            + "over to pair again, or Quit and run `darkbloom cluster leave` here."
     }
 
     /// About 8 s of silence (a FileVault login window after a restart, sleep, a closed lid, `darkbloom cluster stop`)

@@ -147,4 +147,28 @@ struct LocalEndpointFileTests {
         #expect(!LocalEndpoint.isProcessAlive(-1))
         #expect(!LocalEndpoint.isProcessAlive(999_999))
     }
+
+    @Test func keyFileIsTheFileHoldingThePortsKey() throws {
+        try withTempDir { dir in
+            #expect(LocalEndpoint.keyFile(forPort: 8123) == nil)
+            let own = try LocalEndpoint.loadOrCreateToken()
+            #expect(LocalEndpoint.keyFile(forPort: 8123)?.path == dir.appendingPathComponent("local_token").path)
+
+            // A pair's key wins for a port local.json doesn't name, as `token(forPort:)` decides.
+            _ = try LocalEndpoint.loadOrCreateClusterToken()
+            let pairFile = dir.appendingPathComponent("cluster_local_token").path
+            #expect(LocalEndpoint.keyFile(forPort: 8123)?.path == pairFile)
+
+            let pid = ProcessInfo.processInfo.processIdentifier
+            try LocalEndpoint.writeInfo(LocalEndpoint.Info(
+                host: "127.0.0.1", port: 8123, apiKey: own, version: "1", pid: pid, updatedAt: "t"))
+            #expect(LocalEndpoint.keyFile(forPort: 8123)?.path == dir.appendingPathComponent("local_token").path)
+            #expect(LocalEndpoint.keyFile(forPort: 8124)?.path == pairFile)
+
+            // A key no file holds has no key file.
+            try LocalEndpoint.writeInfo(LocalEndpoint.Info(
+                host: "127.0.0.1", port: 8123, apiKey: "dk-local-elsewhere", version: "1", pid: pid, updatedAt: "t"))
+            #expect(LocalEndpoint.keyFile(forPort: 8123) == nil)
+        }
+    }
 }

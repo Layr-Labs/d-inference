@@ -1,6 +1,6 @@
 # Darkbloom Provider Documentation
 
-> Last updated: 2026-11-04
+> Last updated: 2026-11-08
 
 This repository documents the Swift provider, local native inference and
 landing. Backend, console and admin source, development and operating guides
@@ -9,14 +9,16 @@ belong to
 
 ## Operate A Provider
 
-- [Installation](provider/installation.md) and [quickstart](provider/quickstart.md)
+- [Quickstart](provider/quickstart.md): install, then `darkbloom --opencode` for OpenCode or Hermes on this Mac's own models
+- [Use your Mac yourself, first](provider/local-first.md): Only me, Darkbloom network, or Both, me first; what each runs, costs and earns, and switching
+- [The local API](provider/direct-mode.md) for any OpenAI client, and [network self-route](provider/self-route.md)
+- [Installation](provider/installation.md): what the installer checks, updates, uninstall
 - [Set up with an AI agent](provider/agent-setup.md): point your agent at this page to set up one Mac or a two-Mac cluster end to end
 - [CLI reference](provider/cli-reference.md) and [configuration](reference/configuration.md)
 - [Hardware requirements](provider/hardware-requirements.md)
 - [Check a missing base reward](provider/base-rewards.md)
 - [Cache storage and daily writes](provider/cache-storage.md)
 - [Attestation](provider/attestation.md) and [troubleshooting](provider/troubleshooting.md)
-- [Local direct mode](provider/direct-mode.md) and [network self-route](provider/self-route.md)
 - [Fan control](provider/fan-control.md) and [beta features](provider/beta-features.md)
 - [Always-on cluster members](provider/cluster-always-on.md): link wait, restart budget, coordinated update, permissions asked once
 - [Host Darkbloom Sandbox CI jobs](provider/sandboxes.md) beside inference

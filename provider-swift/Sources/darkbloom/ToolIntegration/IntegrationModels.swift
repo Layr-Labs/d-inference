@@ -250,7 +250,7 @@ enum IntegrationModels {
             // The engine's word, for a model served here.
             let engineImageInput = location.servedHere
                 ? entry.inputModalities.map { LocalInputModalities.takesImages($0) } : nil
-            let engineReasoning = location == .thisMac
+            let engineReasoning = location.servedHere
                 ? entry.supportedFeatures.map { LocalModelFeatures.listsReasoning($0) } : nil
             return IntegrationModel(
                 id: entry.id, name: IntegrationModel.name(display, at: location), location: location,

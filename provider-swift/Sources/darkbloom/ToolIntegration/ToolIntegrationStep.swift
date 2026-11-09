@@ -302,19 +302,23 @@ struct ToolIntegrationStep {
         }
     }
 
-    /// OpenCode's default model after a written edit, on its own line: Darkbloom's when no global config file set
-    /// one, else the one they set, which stays.
+    /// OpenCode's default model after a written edit, on its own line: Darkbloom's when OpenCode had none, with the way
+    /// back that lasts (`/models` doesn't: a config's `model` comes first at every launch), `file` being the edited
+    /// one; else the default that stays, or the pick OpenCode remembers from `/models`, which Darkbloom's can be too.
     static func openCodeDefault(_ summary: ToolConfigSummary, models: [IntegrationModel],
                                 provider: IntegrationProvider, file: String) -> String {
         let ours = provider.id + "/"
         if let set = summary.defaultModel {
             let id = set.hasPrefix(ours) ? String(set.dropFirst(ours.count)) : set
-            return "New OpenCode sessions now use Darkbloom's \(name(of: id, in: models)). Switch back with /models."
+            return "New OpenCode sessions now use Darkbloom's \(name(of: id, in: models)). To go back, remove \"model\" "
+                + "from \(file) or run the Undo below."
         }
-        guard let kept = summary.keptDefault else {
-            return "Your default model stays as your config sets it; pick Darkbloom with /models."
+        if let kept = summary.keptDefault {
+            return kept.hasPrefix(ours) ? "Your default stays \(kept) (the \"model\" in your OpenCode config)."
+                : "Your default stays \(kept); pick Darkbloom with /models."
         }
-        return "Your default stays \(kept); " + (kept.hasPrefix(ours) ? "switch with /models." : "pick Darkbloom with /models.")
+        if summary.rememberedPick != nil { return "Pick Darkbloom once with /models; OpenCode remembers it." }
+        return "Your default model stays as your config sets it; pick Darkbloom with /models."
     }
 
     /// A model's name without where it runs (`Qwen 3.8 27B`), else its ID.

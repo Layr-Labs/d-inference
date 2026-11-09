@@ -4,10 +4,9 @@ import { Button, Notice } from '../../components/UI';
 import { LinkPanel } from '../../components/onboarding/LinkPanel';
 import { useAccountLink } from '../../components/onboarding/useAccountLink';
 import type { BackendState } from '../../useBackend';
+import type { WaitlistProblemKind } from './useWaitlist';
 import { printableLines } from './words';
 import styles from './waitlists.module.css';
-
-export type WaitlistProblemKind = 'login' | 'none' | 'unavailable';
 
 const linkFirst = 'Link this Mac to your Darkbloom account first.';
 const relink = 'Unlink this Mac in Settings, then link it again.';

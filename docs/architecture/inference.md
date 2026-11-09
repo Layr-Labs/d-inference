@@ -5494,9 +5494,9 @@ See [focused Gemma 4 tensor-parallel checks](../developer/test.md#focused-gemma-
 
 ### Gemma 4 native context on a pair
 
-A Gemma 4 26B pair in tensor parallel serves the model's declared context, as
-one Mac serving it does: prompts up to 262,143 tokens and up to 32,768 output
-tokens (the catalog's `max_output_length`) within 262,144
+A Gemma 4 26B pair serves the model's declared context, as one Mac serving it
+does, in tensor parallel and in the pipeline: prompts up to 262,143 tokens and
+up to 32,768 output tokens (the catalog's `max_output_length`) within 262,144
 (`Gemma4ResidentAdapterDefinition.contextLimits`,
 `QwenResidentContextLimits.Ceiling.native`). Before, the pair advertised
 65,536. On pair-2 (2026-11-08) a streamed prompt longer than 32,768 tokens to
@@ -5523,27 +5523,33 @@ it alone:
   longest context the reservation gate admits now (`servingContextTokens`,
   `refreshServingContext`; kept prefix entries count as room). The paged
   host's bound is the profile's; pages grow with each request.
-- Pipeline: the memory plan's request, as for every family. The adapter says
-  whether its stages serve the whole profile
-  (`ClusterRuntimeAdapter.pipelineServesWholeProfile`, false for every
-  adapter), and the worker's stages (`LayerStageResidentAdmission.servedProfile`)
-  and the provider (`ClusterModelFeaturePolicy.servedProfile`) both read that
-  one rule, so a pair never advertises a context its ranks refuse. A Gemma
-  pipeline served its whole profile in `dev` before 0.10.11. On pair-2 a 128K
-  request then failed the M5 Max stage's running-request memory check
-  mid-prefill (594 MiB compressed, so no file cache counted). The stage's
-  worker exited, so the client got a 500 and the pair stopped serving for
-  about a minute (journey 3, D6). Such a refusal now ends that request alone
+- Pipeline: the adapter says whether its stages serve the whole profile
+  (`ClusterRuntimeAdapter.pipelineServesWholeProfile`; the memory plan for
+  every other adapter). The worker's stages
+  (`LayerStageResidentAdmission.servedProfile`) and the provider
+  (`ClusterModelFeaturePolicy.servedProfile`) both read that one rule, so a
+  pair never advertises a context its ranks refuse. Gemma's pipeline serves
+  its whole profile. Each stage charges the whole model's ledger
+  (`Gemma4StateBudget`) at the request's context and, on a stage with a
+  full-attention layer, one prompt frame's FP32 scores over the whole
+  context: 6.4 GB and 8.6 GB at 262,144 tokens, against 2.0 GB and 2.2 GB at
+  the standard request. Its lookahead frame does not grow with the prompt.
+  READY's capacity covers the longest request, and each stage's serving
+  context is searched up to 262,144; the pair serves the smaller of the two.
+  A pipeline with lanes keeps its READY figure, as every lane owner of the
+  stage modes does. A stage whose memory refuses a request while it runs ends
+  that request alone, on both ranks
   ([a pipeline stage's memory refusal](#a-pipeline-stages-memory-refusal-ends-that-request-alone)).
-  Tensor parallel's ranks stop such a request after the same step, but rank 0
-  then fails its worker too ("The peer rank stopped …"). Each stage charges the whole
-  model's ledger (`Gemma4StateBudget`) at the request's context: 2.0 GB, plus
-  one prompt frame's 2.2 GB on a stage with a full-attention layer, at the
-  standard request.
+  0.10.11 served the memory plan's request in the pipeline instead: on pair-2
+  a 128K request had failed the M5 Max stage's running-request memory check
+  mid-prefill (594 MiB compressed, so no file cache counted), and the stage's
+  worker exited, so the client got a 500 and the pair stopped serving for
+  about a minute (journey 3, D6). Tensor parallel's ranks stop such a request
+  after the same step, but rank 0 then fails its worker ("The peer rank
+  stopped …"), a follow-up.
 
 The provider holds a request to what its mode serves
-(`ClusterModelFeaturePolicy.servedProfile`: tensor parallel's whole profile, a
-pipeline's memory plan)
+(`ClusterModelFeaturePolicy.servedProfile`: a Gemma pipeline's whole profile)
 as one Mac holds a request to its window. A `max_tokens` past the output limit,
 or past what the prompt leaves of the context, is cut to fit
 (`EngineV2Bridge.pairServedLimits`, by the rule that cuts one Mac's to its

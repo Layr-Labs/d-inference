@@ -1,10 +1,11 @@
 import { LoaderCircle, LogOut, Monitor, RotateCw, Square, Play, ArrowRight } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
-import type { Action, NativeModel } from '../../../shared/contracts';
+import type { Action } from '../../../shared/contracts';
 import type { ClusterStatus } from '../../../shared/cluster';
-import type { ServingMode } from '../../../shared/localServing';
+import { startFlags } from '../../../shared/localServing';
 import type { BackendState } from '../../useBackend';
 import { Button, Modal } from '../../components/UI';
+import { servableModels } from '../../models/selection';
 import { PairGlyph, type PairMood } from './PairGlyph';
 import { CopyCommand, Rich } from './Rich';
 import {
@@ -100,21 +101,6 @@ function Fact({ label, children }: { label: string; children: ReactNode }) {
 
 type Confirm = 'alone' | 'leave' | null;
 
-// Serving this Mac alone (`start --solo`) without a terminal names its models and keeps the way
-// this Mac serves (the saved `[local] mode`); a network way takes catalog models only.
-const servingFlag = (mode: ServingMode | null | undefined) =>
-  mode === 'local'
-    ? { local: true }
-    : mode === 'both'
-      ? { endpoint: true }
-      : mode === 'network'
-        ? { network: true }
-        : {};
-const aloneCandidates = (models: NativeModel[], mode: ServingMode | null | undefined) =>
-  models.filter(
-    (model) => model.downloaded && model.eligible && (mode === 'local' || model.network !== false),
-  );
-
 // A paired Mac: both Macs, the model and how it serves, the state with the runtime's own reason
 // and next step, and what can be done from here. Start, Stop and Restart serving act on the pair;
 // the model is chosen on the Mac that leads.
@@ -134,8 +120,10 @@ export function PairStatus({
 }) {
   const [pending, setPending] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<Confirm>(null);
+  // Serving this Mac alone (`start --solo`) without a terminal names its models and keeps the
+  // way this Mac serves (the saved `[local] mode`); a network way takes catalog models only.
   const mode = backend.state?.local?.mode;
-  const candidates = aloneCandidates(backend.state?.models ?? [], mode);
+  const candidates = servableModels(backend.state?.models ?? [], mode);
   const [alone, setAlone] = useState<string[]>([]);
   const actions = pairActions(status);
   const way = servingWay(status);
@@ -158,7 +146,10 @@ export function PairStatus({
     setPending('Serve this Mac alone');
     try {
       if (status.state !== 'stopped' && !(await backend.act({ action: 'stop' }, true))) return;
-      await backend.act({ action: 'start', models, solo: true, ...servingFlag(mode) }, true);
+      await backend.act(
+        { action: 'start', models, solo: true, ...(mode ? startFlags[mode] : {}) },
+        true,
+      );
     } finally {
       await refresh();
       setPending(null);
@@ -172,7 +163,6 @@ export function PairStatus({
     ) : (
       text
     );
-  const primaryStart = actions.start;
   return (
     <>
       <section className={styles.pair} aria-label="Pair" aria-busy={refreshing || undefined}>
@@ -227,7 +217,7 @@ export function PairStatus({
           <div className={styles.actions}>
             {actions.start && (
               <Button
-                variant={primaryStart ? 'primary' : 'secondary'}
+                variant="primary"
                 disabled={busy}
                 onClick={() => void run('Start serving', { action: 'start', models: [] })}
               >

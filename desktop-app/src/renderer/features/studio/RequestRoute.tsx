@@ -1,10 +1,14 @@
 import { useEffect, useId, useState, type FormEvent } from 'react';
 import { KeyRound } from 'lucide-react';
-import type { LocalServing, RequestRoute as Route } from '../../../shared/localServing';
+import {
+  effectiveRoute,
+  type LocalServing,
+  type RequestRoute as Route,
+} from '../../../shared/localServing';
 import type { BackendState } from '../../useBackend';
 import { Button, Status } from '../../components/UI';
 import { ChoiceCard } from './ChoiceCard';
-import { effectiveRoute, keyRefusal, routeChoices } from './words';
+import { keyRefusal, routeChoices } from './words';
 import styles from './studio.module.css';
 
 // Where your requests go when this Mac can't take them (`darkbloom route …`). A running local API

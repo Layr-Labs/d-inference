@@ -1,8 +1,8 @@
 import { expect, it } from 'vitest';
+import { effectiveRoute } from '../src/shared/localServing';
 import {
   address,
   backIn,
-  effectiveRoute,
   idleMinutes,
   keyRefusal,
   localServing,

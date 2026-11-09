@@ -1,24 +1,18 @@
 import { useEffect, useId, useState } from 'react';
 import { ArrowUpRight, Play } from 'lucide-react';
 import type { Route } from '../../../shared/contracts';
-import type { LocalServing, ServingMode } from '../../../shared/localServing';
+import { startFlags, type LocalServing, type ServingMode } from '../../../shared/localServing';
 import type { BackendState } from '../../useBackend';
 import { Button } from '../../components/UI';
 import { modelName } from '../../models/facts';
+import { servableModels } from '../../models/selection';
 import { ChoiceCard } from './ChoiceCard';
-import { names, servableModels, servingChoices, servingDetail, servingNow } from './words';
+import { names, servingChoices, servingDetail, servingNow } from './words';
 import styles from './studio.module.css';
 
-// Each way to serve is one `start` flag; the start saves it as `[local] mode` once it goes ahead,
-// and the background service, restart and update serve it from then on.
-const startFlag: Record<ServingMode, { local?: true; network?: true; endpoint?: true }> = {
-  local: { local: true },
-  network: { network: true },
-  both: { endpoint: true },
-};
-
 // The start question as three answers, the saved one marked. Nothing changes until Apply, which
-// restarts serving the chosen way with the models serving now.
+// restarts serving the chosen way with the models serving now; the background service, restart
+// and update serve that way from then on.
 export function ServingChoice({
   backend,
   local,
@@ -36,7 +30,7 @@ export function ServingChoice({
   const [draft, setDraft] = useState<ServingMode>(saved ?? 'both');
   useEffect(() => setDraft(saved ?? 'both'), [saved]);
   const keep = servingNow(state, draft);
-  const choices = servableModels(state, draft);
+  const choices = servableModels(state.models, draft);
   const [chosen, setChosen] = useState('');
   const pick = choices.some((model) => model.id === chosen) ? chosen : (choices[0]?.id ?? '');
   const models = keep.length ? keep.map((model) => model.id) : pick ? [pick] : [];
@@ -95,7 +89,7 @@ export function ServingChoice({
             <Button
               variant="primary"
               disabled={!changed || !models.length || backend.busy}
-              onClick={() => void backend.act({ action: 'start', models, ...startFlag[draft] })}
+              onClick={() => void backend.act({ action: 'start', models, ...startFlags[draft] })}
             >
               <Play size={14} /> Apply
             </Button>

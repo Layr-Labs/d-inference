@@ -1,6 +1,6 @@
-import type { NativeModel, Snapshot } from '../../../shared/contracts';
+import type { Snapshot } from '../../../shared/contracts';
 import type { LocalServing, RequestRoute, ServingMode } from '../../../shared/localServing';
-import { servesNetwork } from '../../models/selection';
+import { servableModels } from '../../models/selection';
 
 // Studio's words are the CLI's own (`ServingQuestion`, `LocalFirstWords`, `MeFirstWords`,
 // `RouteChoiceFlow`, `LocalRouterAccountKeyFormat` in provider-swift/Sources), so the app and
@@ -39,15 +39,9 @@ export function servingDetail(
     : 'Darkbloom keeps serving while you use this Mac (me first is off).';
 }
 
-// Only me runs any model on this Mac; the network routes only catalog models.
-export const servableModels = (state: Snapshot, mode: ServingMode): NativeModel[] =>
-  state.models.filter(
-    (model) => model.downloaded && (mode === 'local' ? model.eligible : servesNetwork(model)),
-  );
-
 // The models serving now that the chosen way can serve; applying keeps them.
 export const servingNow = (state: Snapshot, mode: ServingMode) =>
-  servableModels(state, mode).filter((model) => model.serving);
+  servableModels(state.models, mode).filter((model) => model.serving);
 
 // "A", "A and B", "A, B and C".
 export function names(items: string[]) {
@@ -89,10 +83,6 @@ export const routeChoices: { route: RequestRoute; title: string; detail: string 
     detail: 'Your other Macs, then the Darkbloom network, billed to your balance.',
   },
 ];
-
-// The saved route, else this Mac only or, once an account key is saved, only my Macs.
-export const effectiveRoute = (local: LocalServing): RequestRoute =>
-  local.route ?? (local.route_key ? 'my-macs' : 'this-mac');
 
 // Why a pasted value can't be an account API key, in the CLI's words; undefined when it can be.
 // The CLI trims spaces and line breaks around the key first, and so does the app.

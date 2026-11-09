@@ -1,6 +1,6 @@
 # Desktop control API
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-09
 
 The Electron app controls the Swift CLI/backend through its authenticated local
 API. The backend owns provider operations, configuration, model state, credentials,
@@ -75,6 +75,7 @@ credential (`desktop-app/src/main/backend.ts`, `Backend`; `DesktopHTTP.authorize
 | `GET /control/v1/endpoint-key` | Existing local inference credential for explicit reveal | `DesktopBackend.resource` |
 | `GET /control/v1/hardware` | Chip topology and the latest whole-machine load sample (see [Hardware load](#hardware-load)); waits up to 1.5 s for a first sample | `DesktopHardware.resource` |
 | `GET /control/v1/hardware/events` | One full `hardware` sample per SSE frame at 1 Hz; connection renews after 120 frames; shares the eight-stream limit with `/events` | `DesktopHardware.events`, `DesktopStreamLimiter` |
+| `POST /control/v1/cluster/session`, `GET /control/v1/cluster/session`, `POST /control/v1/cluster/session/answer`, `GET /control/v1/cluster/session/events` | The guided two-Mac setup run with the app's screens (see [Cluster setup session](#cluster-setup-session)) | `DesktopHTTP.clusterSessionRoute`, `DesktopClusterSessions` |
 
 Failures return `{"error": "<message>"}` (`DesktopHTTP.errorResponse`):
 
@@ -83,6 +84,7 @@ Failures return `{"error": "<message>"}` (`DesktopHTTP.errorResponse`):
 | `400` | Malformed action body, or failed validation | `Invalid request body`, or the validation message verbatim (the app displays it) |
 | `401` | Missing/wrong token, browser `Origin`, non-loopback authority | `Unauthorized local client` |
 | `404` | Unknown route or resource | `Unknown route` / `Unknown resource` |
+| `409` | A cluster setup session that can't start or take the answer now ([below](#cluster-setup-session)) | The session's message verbatim |
 | `413` | Action body over 16 KiB | `Content Too Large` |
 | `415` | Action without `Content-Type: application/json` | `JSON required` |
 | `429` | A ninth concurrent event stream | `Too Many Requests` |
@@ -274,6 +276,72 @@ allowance and current/configured slot limit (`DesktopBackend.state`). Pins prote
 from unloading while Autopilot controls residency; a cold pin is not reported as
 loaded. Operations optionally report the current download `model` and `progress`
 in `[0,1]` (`DesktopBackend.runAutopilot`, `downloadProgress`).
+
+## Cluster setup session
+
+The app runs the two-Mac setup (pairing, the pair's model and how it serves,
+serving) with its own screens: the API runs `darkbloom cluster` in a child that
+writes its screen as JSON lines and reads the app's answers
+([`--app-console`](../provider/cli-reference.md#darkbloom-cluster---app-console-the-desktop-apps-setup)),
+and keeps that screen as a session (`provider-swift/Sources/darkbloom/Desktop/DesktopClusterSession.swift`,
+`DesktopClusterSessions`; the app's types are `ClusterSession` and its neighbours in
+`desktop-app/src/shared/cluster.ts`). A runtime that has these routes lists
+`cluster_session` in `capabilities` (`DesktopBackend.snapshotCapabilities`).
+
+| Route | Body and result | Refusals |
+|---|---|---|
+| `POST /control/v1/cluster/session` | `{"kind": "setup" \| "local", "model"?: string, "bind"?: string}`; `202` and the new session | `400` for a `kind` other than these, `model` or `bind` with `setup`, a `model` that fails `DesktopAction.validateModel`, or a `bind` that fails `ClusterServingScope.isValidBind`; `409` `A cluster setup is already running.`; `409` `An operation is already running. Wait for it to finish.` (`DesktopBackend.startClusterSession`) |
+| `GET /control/v1/cluster/session` | The current or last session, or `null` | — |
+| `POST /control/v1/cluster/session/answer` | `{"question": "<id>", "choice": <index>}`, `{"question": "<id>", "key": "q"}` or `{"cancel": true}`; the line goes to the child and the session comes back with `question` `null` until the child asks again | `409` `No cluster setup is running.` (also once the child wrote its `exit`); `409` `That question is no longer asked.`; `400` `Invalid answer` for a choice outside the options, a key not offered, or mixed fields (`DesktopClusterSessions.answer`, `answerLine`) |
+| `GET /control/v1/cluster/session/events` | SSE frames `event: cluster-session` whose `data` is the whole session (or `null`): one at once, then one per change, at most five a second; the stream renews after 300 frames or 60 s and shares the eight-stream limit | `429` (`DesktopClusterSessions.events`) |
+
+Bodies need `Content-Type: application/json` (`415` otherwise) and at most
+16 KiB. `setup` runs `darkbloom cluster --app-console`; `local` runs
+`darkbloom cluster local --app-console [--bind <bind>] [<model>]`; both add
+`--config` as every child gets it, made absolute (`DesktopClusterSessionStart.arguments`).
+The child has no terminal and runs with `DARKBLOOM_NO_UPDATE_CHECK=1` and `NO_COLOR=1`.
+
+A running session holds the mutation slot actions use, since the setup starts
+and stops this Mac's services itself: it starts only while no operation runs,
+every action except `cancel` is refused with `A cluster setup is already running.`
+while it runs (`DesktopBackend.submit`), and the restart for a replaced
+executable waits for it (`exitWhenExecutableReplaced`). The session lives in the
+API process: a restarted API has none, and its child sees its input end, which
+leaves the setup as a cancel does.
+
+| Session field | Meaning |
+|---|---|
+| `id`, `kind` | A UUID; `setup` or `local` |
+| `state` | `running` until the child exits; then `cancelled` after a cancel, else `succeeded` (exit status 0) or `failed` |
+| `started_at`, `finished_at` | Epoch seconds; `finished_at` only once ended |
+| `events` | The screen in order, at most the last 600. Live work (`working`, `progress`) is only ever the last event: the next live work replaces it, and the next line or a `settle` ends it |
+| `question` | What the setup waits for (below), or `null` |
+| `exit_code` | Only once ended: the child's exit status, 128 + the signal for one it died of |
+| `error` | Only when the child ended without its `exit` event: ``The installed Darkbloom runtime doesn’t support this yet. It needs a runtime release that includes the desktop app’s commands.`` for a runtime without `--app-console`, else its last standard-error lines, else its status (`DesktopClusterSessions.endedEarly`). The setup's own outcome is its `result` event |
+
+Each event is the console's, with its `event` named `type` (`DesktopClusterSessions.event`);
+a standard-output line that isn't JSON is a `say` of that line.
+
+| `type` | Fields | What it is |
+|---|---|---|
+| `banner` | `title`, `subtitle` | The setup's opening (`Darkbloom cluster`, or with the Mac's part: `Darkbloom cluster · Leading Mac`) |
+| `heading` | `text` | A step: `1/4 Connect` … `4/4 Start` in the first setup, else `Model`, `Start`, `Change model` |
+| `say` | `text`; `stressed` `{lead, stressed, tail}` where a terminal shows bold | A line as Terminal shows it, its indent kept, blank lines left out. An answered list adds `  ▸ <the option's first row>`, as Terminal folds the list to it |
+| `working` | `rows` | Work still running, one row per Mac while the parts load |
+| `progress` | `text` | A copy's or download's whole report line |
+| `result` | `ok`, `title`, `lines` | The outcome block: ✓ (`ok`) with what serves, or ✗ with why nothing does |
+| `needs_terminal` | `text` | A step the app can't take (sudo where macOS shows no prompt; **Log in on this Mac**): ``Run `darkbloom cluster` in a Terminal window on this Mac.`` (`cluster local`'s line for `local`). The step then runs with nothing to read, so sudo fails at once |
+
+| Question `type` | Fields | Asked |
+|---|---|---|
+| `choose` | `id`, `options` (each option's rows: its title, then its detail rows), `selected` (the default) | Every list of the setup, after the line that asks it; and the clusters waitlist's ``Join the Clusters waitlist now?`` with `Yes` and `No`, `No` selected (`Cluster.Setup.appWaitlistGate`) |
+| `key` | `id`, `keys` `[{key, label}]` | While a wait acts on a key (`ClusterOnboardingWaitKey`): `q` `Cancel` in the pairing's wait and the wait for Local Network's Allow; `q` `Leave` in the start's wait and in the other Mac's start that the joining Mac follows. None in a copy or download, or while the pairing waits for the other Mac to confirm the code. Asked again when the keys change or one was taken; otherwise it stays while the waits go on |
+
+A cancel answers as q and escape do in Terminal: the list asked now, and every
+later one, returns nothing, and every wait that takes `q` gets it, so the setup
+ends at its next question or wait in its own words (``Cancelled: nothing paired.``,
+``Nothing changed.``, …). Work that takes no key, such as a copy, runs to its end
+first. The child's input ending is a cancel too.
 
 ## Account session and refresh
 

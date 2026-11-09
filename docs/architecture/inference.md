@@ -543,6 +543,18 @@ link setup's owner-only script runs with sudo in the same terminal
 `ClusterLocalNetworkAccess.runLinkScriptWithSudo`), with the terminal in its
 ordinary mode while sudo reads the password (`ClusterOnboardingConsole.suspended`).
 
+The desktop app runs the same flow on a second console, with no terminal
+(`ClusterOnboardingAppConsole`, `darkbloom cluster --app-console`): each call is
+one JSON line out (a list becomes a `choose` question, `suspended` a
+`needs_terminal` line) and each answer one JSON line in, read on its own thread.
+The flow says which keys a wait acts on (`ClusterOnboardingConsole.key(milliseconds:taking:)`,
+`ClusterOnboardingWaitKey`): q cancels the pairing's wait and the wait for Allow,
+q leaves the start's waits, and a copy or the pairing's last confirmation takes
+none, so the app offers a key only where the flow honours it; a terminal reads
+any key as before. A cancel, or the input's end, answers every later list with
+nothing and every wait that takes q with q. The desktop API's session runs it
+([cluster setup session](../reference/desktop-control.md#cluster-setup-session)).
+
 A DevNet build is installed as `Darkbloom Dev.app`, and its CLI is
 `darkbloom-dev`. A saved setup accepts a space in its installed paths
 (`ClusterConfigurationSyntax.installedPath`). The orphan sweep, the teardown

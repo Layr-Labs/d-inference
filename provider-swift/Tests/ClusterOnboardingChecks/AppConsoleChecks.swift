@@ -16,6 +16,7 @@ extension OnboardingChecks {
         appCopyOffersNoKey()
         appSudoNeedsTheTerminal()
         appLocalNetworkWaitOffersCancel()
+        appLocalNamesTheModel()
     }
 
     static let appNeedsTerminal = "Run `darkbloom cluster` in a Terminal window on this Mac."
@@ -338,5 +339,20 @@ extension OnboardingChecks {
         run.key(wait, "q")
         expect(run.finish() == 1, "app allow: stops")
         expect(run.said.last?.hasPrefix("Local Network is off for Terminal.") == true, "app allow: where to turn it on: \(run.said.suffix(2))")
+    }
+
+    /// `darkbloom cluster local --app-console <model>` on the leading Mac: no list, the model served locally, the outcome.
+    static func appLocalNamesTheModel() {
+        let recorder = Recorder()
+        var request = localRequest
+        request.model = "qwen3.8-27b-4bit-MTP"
+        let run = AppRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M5 Ultra, 256 GB", serving: true, modelName: "Qwen3.8-27B-4bit-mtp"),
+            pairEvents: [], pairResult: .failed([]), readyResult: .success(localReady)), request: request)
+        expect(run.finish() == 0, "app local: exit 0")
+        appLinesAreEvents(run, "app local", code: 0)
+        expect(run.questions.allSatisfy { $0["type"] as? String == "key" }, "app local: no list asked: \(run.questions)")
+        expect(run.of("result").last?["ok"] as? Bool == true, "app local: the outcome block")
+        expect(recorder.all == ["ensureService", "reachMembers", "planModels", "recheckFit 0", "adopt 0", "setScope local 0.0.0.0", "serve", "waitReady", "testRequest"],
+               "app local: the terminal's operations: \(recorder.all)")
     }
 }

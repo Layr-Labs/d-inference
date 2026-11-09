@@ -360,9 +360,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             ?? distributedRequestOrigin
         // Preparation, on this task or the lease's child task, decodes media.
         return try await VideoReaderFailureReport.reporting(to: (engineV2Vision ?? .production).emitTelemetry) {
-            try await prepareAcquiredCompletion(
-                request: request, templateControls: templateControls, requestUsage: requestUsage,
-                distributedRequestOrigin: origin, acquired: acquired)
+            try await MeFirstOwnerRequest.$makeRoom.withValue(acquired.makeRoomForOwner) {
+                try await prepareAcquiredCompletion(
+                    request: request, templateControls: templateControls, requestUsage: requestUsage,
+                    distributedRequestOrigin: origin, acquired: acquired)
+            }
         }
     }
 

@@ -146,7 +146,14 @@ See [inference and logprob admission](../architecture/inference.md).
    provider stops taking Darkbloom requests from the moment one of your
    requests holds a model, and takes them again once none of your requests
    has run for `[local] me_first_idle_minutes` (2 minutes by default).
-   Darkbloom requests already running finish. Model lists, health checks,
+   Darkbloom requests the engine has started finish. While one of your
+   requests waits for the engine's memory or room, each Darkbloom request on
+   that model still waiting in the engine's queue ends with the typed
+   `capacity / 503 / draining` refusal, with no health strike against this
+   one (`ProviderLoop.giveWayToOwner`): the coordinator serves it on another
+   Mac, or answers its client with a retryable 429 if no other Mac has room.
+   Your request then waits only for requests the engine has started, at most
+   the engine's 120 s admission lease. Model lists, health checks,
    `/metrics`, the tokenizer utilities and requests refused before they hold
    a model do not count. This is on for every Mac that serves Both, me first,
    including the desktop app's "Alongside the network". To share the Mac
@@ -372,7 +379,8 @@ coordinator's `self` list names this Mac's own builds by their aliases.
 | `owned_by` | `this-mac`, `my-macs` (your other Macs, free) or `darkbloom` (the network, billed). Before the router, this Mac's entries said `local` |
 | `context_length`, `max_model_len` | This Mac's engine for its resident models (a pair's leader: the context the pair's mode serves); else the Darkbloom catalog (`/v1/models/catalog`), by model or by the alias's build; omitted when unknown |
 | `max_output_length` | This Mac's loaded models: their context window too, as a request's prompt and output together may fill it ([each model's whole window](#each-models-whole-window-on-this-mac)). A pair's leader lists the output the pair's mode serves, which the pair holds every `max_tokens` to (it refuses a larger one, `output_too_long`), as its slot reports to the coordinator (`ProviderLoop.localModelLimits`). Else the catalog's; omitted when unknown |
-| `input_modalities` | What a request may carry, as this Mac's engine serves the model, loaded or not: `["text", "image"]` for a model it serves with vision (`is_vision`, which the coordinator routes images on), else `["text"]`. On a pair's leader, the media the pair takes in its mode: `["text", "image", "video"]` for GLM-5.3-Flash and Qwen 3.8 27B in tensor parallel, `["text", "image"]` on the GLM and MiMo image candidate profiles, `["text"]` for every other pair, and nothing until its slot is up. Your Macs' and the network's models keep the coordinator's, when its list has one. Reasoning isn't listed: the catalog says which models reason (`provider-swift/Sources/ProviderCore/Server/LocalInputModalities.swift`, `LocalInputModalities`) |
+| `input_modalities` | What a request may carry, as this Mac's engine serves the model, loaded or not: `["text", "image"]` for a model it serves with vision (`is_vision`, which the coordinator routes images on), else `["text"]`. On a pair's leader, the media the pair takes in its mode: `["text", "image", "video"]` for GLM-5.3-Flash and Qwen 3.8 27B in tensor parallel, `["text", "image"]` on the GLM and MiMo image candidate profiles, `["text"]` for every other pair, and nothing until its slot is up. Your Macs' and the network's models keep the coordinator's, when its list has one (`provider-swift/Sources/ProviderCore/Server/LocalInputModalities.swift`, `LocalInputModalities`) |
+| `supported_features` | For a model this Mac or its pair serves, loaded or not: `["reasoning"]` when the model reasons, `[]` when it doesn't, by the `model_type` it registers (a pair: its installed one). A model reasons when it takes every [reasoning effort](#reasoning-effort) and refuses one that is none of the names, the same table (`ReasoningEffortPolicy.reasons`): the Qwen 3.5 template family (Qwen 3.5, 3.6 and 3.8, Bonsai 2), Qwen4 Flash-Next, Gemma 4, DiffusionGemma, GPT-OSS, Nemotron 3.5 Lightning and Super, MiMo V2.6, GLM-5.3-Flash and Flint; a Qwen3-VL build (`qwen3_vl_moe`, instruct only) lists `[]`. Nothing else is listed here: tools, JSON output and the rest stay the catalog's. Your Macs' and the network's models keep the coordinator's, the catalog's capabilities in OpenRouter's names (`reasoning`, `tools`, `json_mode`, …) (`provider-swift/Sources/ProviderCore/Server/LocalModelFeatures.swift`, `LocalModelFeatures`) |
 | `name` | The coordinator's or the catalog's display name for your Macs' and the network's models |
 
 The coordinator's lists are cached for 30 s and the catalog for 5 minutes; a
@@ -395,18 +403,21 @@ memory decides: each request reserves room for its prompt and its output when
 it starts. The answer says which bound a request met
 ([refused request shapes](#refused-request-shapes)): the window (400
 `context_length_exceeded`, in words that name it) or this Mac's memory (503),
-both before any SSE header, streamed or not, except a request that first queued
-for memory and then waited out the 120 s admission lease or a full paged pool's
-requeues, which still ends a streamed answer with an error event; the router
-passes a 503 on when a route dials out.
+both before any SSE header, streamed or not. A streamed request's head waits
+until the engine admits it, so one the engine queued for memory and couldn't
+admit (the 120 s admission lease, or a full paged pool's requeues) gets the 503
+too. The router passes a 503 on when a route dials out.
 
 Each model's input is in the list too (`input_modalities`, above), and for a
 model served here (this Mac, or the pair it leads or relays to) the engine's
 word is the one the tools follow: `start --opencode` and `--hermes` offer images
 for it exactly when its engine takes them, whatever the catalog says. A Gemma 4
 pair, which serves text alone, gets none (an image would be refused with 400);
-MiMo V2.6 on one Mac gets them, though its catalog row lists text only. For your
-other Macs' and the network's models, the catalog decides.
+MiMo V2.6 on one Mac gets them, though its catalog row lists text only. So does
+whether it reasons (`supported_features`): `start --opencode` offers reasoning
+for a model served here exactly when the list says `reasoning`, so Qwen 3.8 27B
+gets it though its catalog row lacks it. For your other Macs' and the network's
+models, the catalog decides.
 
 <!-- pending R-FULL: GLM-5.3-Flash and Nemotron Super at their 1,048,576-token configs on one Mac; video and audio input for the models this Mac serves them for, in this list; a memory refusal that names how many tokens this Mac holds; the same for direct use through the network; OpenRouter is separate. -->
 
@@ -461,7 +472,7 @@ finishing the cancelled request
 A long prompt takes minutes before its first token: a 255K-token prompt took 9
 minutes on an M3 Ultra. While it is processed, a streamed request (chat
 completions or Responses) gets an SSE comment every 5 seconds, from the moment
-the engine accepts the request until its first token:
+the engine admits the request until its first token:
 
 ```text
 : prefill in progress, 254953 prompt tokens
@@ -485,10 +496,14 @@ Each streamed request has one timer, from its first frame to its first token,
 and nothing runs per token. A request that isn't streamed gets nothing until its
 answer, as HTTP has no interim bytes: give such a client a timeout of minutes
 for a long prompt (the OpenAI SDKs wait 10 minutes by default), or stream.
-Before the engine accepts a request, nothing is sent either, not even the
-headers: while the model loads for it, while it waits for a pair's lane, and
-while its prompt is tokenized. A client that limits how long it waits for
-headers must allow a cold model load.
+Before the engine admits a request (on a pair, accepts it), nothing is sent
+either, not even the headers: while the model loads for it, while it waits for
+a pair's lane, while its prompt is tokenized, and, on one Mac, while it waits
+in the engine's queue for memory or room. That queue wait lasts up to the
+engine's 120 s admission lease, so a streamed request can see no bytes for up
+to 120 s before its 503. One the engine admits at once gets its headers within
+a few milliseconds. A client that limits how long it waits for headers must
+allow a cold model load and, on a busy Mac, those 120 s.
 
 ### Reasoning effort
 
@@ -502,9 +517,11 @@ off where it can. So Hermes's `max` and an OpenAI client's `high` on Qwen 3.8
 [local router](#when-this-mac-cant-take-a-request-the-local-router) answer
 alike. Each family's levels are in
 [reasoning effort](../architecture/inference.md#reasoning-effort). A model
-that doesn't reason ignores the effort. Send the effort in one field:
-`reasoning.effort` wins over `reasoning_effort`, and Nemotron 3.5 Super, which
-reads both, refuses two that differ.
+that doesn't reason ignores the effort. `GET /v1/models` says which models
+reason: `"supported_features": ["reasoning"]` on exactly these, `[]` on the
+others ([the list](#when-this-mac-cant-take-a-request-the-local-router)). Send
+the effort in one field: `reasoning.effort` wins over `reasoning_effort`, and
+Nemotron 3.5 Super, which reads both, refuses two that differ.
 
 ```bash
 curl -s "$OPENAI_BASE_URL/chat/completions" \
@@ -520,7 +537,7 @@ envelope, the same on one Mac and on a [two-Mac cluster](./two-mac-cluster.md):
 | Request | Answer | Source |
 |---|---|---|
 | On one Mac, a prompt that fills the model's context window: the context it advertises (GLM-5.3-Flash and Nemotron Super: 262,144; MiMo V2.6, Qwen4, Flint, Bonsai 9B and Diffusion Gemma: their configs'), else its model's own (Gemma 4, Qwen 3.5, 3.6 and 3.8, GPT-OSS, Nemotron Lightning) | HTTP `400`, code `context_length_exceeded`, before the engine and before any SSE header: `The prompt fills this model's context window of <N> tokens, leaving no room for an answer. Shorten the prompt or start a new conversation.` A `max_tokens` beyond what a shorter prompt leaves is cut to it instead, on every model, and the answer ends with `finish_reason: length` if it gets there | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Translation.swift` (`outputTokens(requested:promptTokens:)`, `promptExceedsContextMessage`) |
-| On one Mac, a request its memory can't hold now: the shared KV reservation of a contiguous slot, the engine's own admission of a paged slot (the automatic backend; it refuses one that can never fit and queues the rest), or the whole Mac's request limit | HTTP `503` before any SSE header, streamed or not: `This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt (or send less media), or retry when this Mac's other requests finish.` The local router passes it on when a route dials out. A request a paged slot queued and then couldn't admit (the 120 s admission lease, or the pool full through its requeues) fails later: a streamed answer, whose head is already sent, ends with an error event, and a non-streamed one gets 503 (after the lease, with the older `Provider capacity is temporarily unavailable.`) | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
+| On one Mac, a request its memory can't hold now: the shared KV reservation of a contiguous slot, the engine's own admission of a paged slot (the automatic backend; it refuses one that can never fit and queues the rest), or the whole Mac's request limit | HTTP `503` before any SSE header, streamed or not: `This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt (or send less media), or retry when this Mac's other requests finish.` The local router passes it on when a route dials out. A request the engine queued and then couldn't admit (the 120 s admission lease, or a paged pool full through its requeues) gets the same 503: a streamed one's head waits for its admission, and one that isn't streamed answers after the queue anyway. Only a request admitted and later preempted, and never admitted again, still ends a streamed answer with an error event, as does a Nemotron Super request that asks for logprobs, whose head doesn't wait (its entries are spliced as the stream is read) | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+HeadHold.swift` (`holdHeadUntilAdmitted`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
 | A content part whose `type` is none of `text`, `input_text`, `output_text`, `image_url`, `input_image`, `video_url`, `input_audio` (for example `input_file`, `input_video`, `refusal`) | HTTP `400` before model acquisition or SSE headers: `Content part type "<type>" is not supported. Send text, image_url, video_url or input_audio parts.` The type is shown with at most 64 of its letters, digits and `_.-:/`. Models without native audio still refuse `input_audio` | `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/OpenAIRequestValidation.swift` (`OpenAIRequestValidationError.unsupportedContentPart`) |
 | A reasoning effort that is none of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` (for example `turbo`), on a model that reasons | HTTP `400` before the prompt renders or any KV is reserved, code `invalid_reasoning_effort`, `param` the field it came in (`reasoning_effort`, `reasoning.effort`, or GLM-5.3-Flash's `chat_template_kwargs.reasoning_effort`): `reasoning_effort must be one of: none, minimal, low, medium, high, xhigh, max.` The request may hold its model first: a cold model loads, and with Both, me first it counts as your use of the Mac. Through the coordinator the same request gets HTTP `400` `invalid inference request` | `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningEffort.swift` (`ReasoningEffortPolicy.validate`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
 | On Nemotron 3.5 Super, `reasoning_effort` and `reasoning.effort` that differ, even two names (`high` and `max`). The same effort in both, in any spelling, is served | HTTP `400` at the same point, code `invalid_reasoning_effort`, `param` `reasoning_effort, reasoning.effort`: `reasoning_effort and reasoning.effort must be the same when both are sent, one of: none, minimal, low, medium, high, xhigh, max.` Through the coordinator, HTTP `400` `invalid inference request` | `provider-swift/Sources/ProviderCore/Inference/Prompting/NemotronSuperPromptContract.swift` (`controls(body:)`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |

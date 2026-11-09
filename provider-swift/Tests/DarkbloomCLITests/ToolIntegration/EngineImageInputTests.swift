@@ -9,7 +9,8 @@ private typealias F = ToolIntegrationFixtures
 /// The tools take a model's image input from the engine that serves it here: a model the endpoint lists with `image`
 /// among its `input_modalities` gets image input in OpenCode and Hermes, offline too, and when the catalog lists it
 /// text only (MiMo V2.6 today); one it lists without gets none, whatever the catalog says (a Gemma 4 pair). A model
-/// served elsewhere takes the catalog's word. Reasoning still comes from the catalog alone.
+/// served elsewhere takes the catalog's word. This list says nothing of reasoning, so it is the catalog's
+/// (`EngineReasoningTests`).
 @Suite("Image input from the engine")
 struct EngineImageInputTests {
     /// What this Mac's `/v1/models` lists for MiMo V2.6 and GPT-OSS.
@@ -54,7 +55,7 @@ struct EngineImageInputTests {
             let models = IntegrationModels.resolve(listed, catalog: catalog)
             let mimo = try #require(models.first { $0.id == "mimo-v2.6-flash-mopd" })
             #expect(mimo.imageInput, "catalog: \(catalog == nil ? "offline" : "text only")")
-            // Reasoning is the catalog's word alone.
+            // The list says nothing of reasoning: the catalog's word.
             #expect(mimo.reasoning == (catalog != nil))
             #expect(models.first { $0.id == "gpt-oss-20b" }?.imageInput == false)
             #expect(models.first { $0.id == "odd" }?.imageInput == false)

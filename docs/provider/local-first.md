@@ -123,8 +123,16 @@ With **Both, me first**, Darkbloom pauses while you use this Mac:
   answer, through its local API. Listing models doesn't count, and neither does
   a request this Mac passes on to your other Macs.
 - **While you use it:** Darkbloom sends no new requests here. Requests it sent
-  before you started finish normally; nothing is cut off. Your models stay
-  loaded.
+  before you started that have begun answering finish normally; none of them
+  is cut off. Your models stay loaded.
+- **When your request has to wait:** if this Mac's memory, or its room for
+  requests, is taken when you send one, Darkbloom requests still waiting in
+  this Mac's queue go back to the network. Each is served by another Mac, or
+  gets a retryable "busy" error if the whole network is full, and it doesn't
+  count against this Mac. Darkbloom requests this Mac has started, in their
+  prompt or answering, finish. Your request then waits only for requests this
+  Mac has started, Darkbloom's or your own. If they don't make room within 2
+  minutes, it fails, as before.
 - **When you stop:** Darkbloom traffic comes back by itself once none of your
   requests has run for 2 minutes.
 
@@ -259,8 +267,12 @@ model.
   serves, they get image input exactly when it serves images, whatever
   Darkbloom's catalog says: MiMo V2.6 gets it on one Mac, loaded or not, though
   the catalog lists it as text only, and a Gemma 4 pair, which serves text
-  alone, gets none. Your other Macs' models get the catalog's. Which models
-  reason still comes from the catalog.
+  alone, gets none. OpenCode likewise offers reasoning for exactly the models
+  this Mac or its pair serves that reason (those that take every reasoning
+  effort), so Qwen 3.8 27B gets it though the catalog doesn't say so. Hermes
+  has no per-model reasoning setting, and sends your effort to every model:
+  the ones that reason take it, the others ignore it. Your other Macs' models
+  get the catalog's.
   <!-- pending R-FULL: the tools get each model's full output length. -->
 - **Run it again** when your models change; with nothing new, it changes
   nothing. A model that isn't loading as it runs (one unloaded when idle, or
@@ -276,10 +288,11 @@ model.
   name when the API listens on every address. On one Mac only for now: a
   paired Mac's start doesn't say it.
 - **Offline** (Darkbloom's catalog unreachable), a run again keeps the names,
-  image support and limits already set up, but image input for a model served
-  here follows this Mac. A model set up for the first time then gets its ID,
-  and text input unless this Mac serves it with images, and the start says to
-  run it again online.
+  image support, reasoning and limits already set up, but image input and
+  reasoning for a model served here follow this Mac. A model set up for the
+  first time then gets its ID, text input unless this Mac serves it with
+  images, and reasoning if it reasons, and the start says to run it again
+  online.
 - **Hermes v0.20.2 or later** reads Darkbloom's key from its file; with an older
   Hermes the start still sets it up and says, in one line, to run
   `hermes update`.

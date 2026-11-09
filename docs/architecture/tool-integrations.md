@@ -38,12 +38,14 @@ flowchart LR
 
 1. **Endpoint.** `IntegrationEndpoint.live` reads the live server's address from `local.json`, so the port is
    whatever that server bound, and takes the key file from `LocalEndpoint.keyFile(forPort:)`
-   (`provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift`): the file that holds exactly the key the server
-   on that port requires, `local_token` or a pair's `cluster_local_token`. The endpoint serves the pair
-   (`servesThePair`) when `local.json`'s pid is one of this Mac's running pair's processes
+   (`provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift`): the file that holds exactly the key the
+   discovery record names for that port. That is this Mac's own `local_token` whatever serves here: a pair's API
+   takes it beside the pair's key, and on a pair's other Macs the relay's record names it too (it passes requests on
+   with the pair's key). Only a pair API an older build started names `cluster_local_token`. The endpoint serves the
+   pair (`servesThePair`) when `local.json`'s pid is one of this Mac's running pair's processes
    (`ClusterPairSummary.runningPairProcesses()`): its part's, as `status` decides whose API it is, or, while the part
-   runs, the cluster service's own, whose relay answers a member's local API for the pair (`ClusterService.relayTick`
-   writes `local.json` with the service's pid).
+   runs, the cluster service's own, whose relays answer a member's local API for the pair (`ClusterService.relayTick`,
+   and `relayDiscovery` for Both, write `local.json` with the service's pid).
 2. **Models.** `IntegrationModels.fetch` asks the endpoint's `GET /v1/models` with that key; `resolve` names each
    chat model from the catalog (`display_name`, with where it runs: this Mac, or your pair when the endpoint serves
    it, whatever its size; your Macs; the network), takes its

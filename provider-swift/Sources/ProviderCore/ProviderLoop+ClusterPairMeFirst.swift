@@ -11,8 +11,12 @@ import Foundation
 //   that owns the pair's local API (the member that hosts the slot) owns the
 //   pause. Its draining heartbeat takes the whole pair out of routing without
 //   ending the pair's session. Nothing here counts ranks.
-// - Every other member stays control-only: it runs no local API, so me first
-//   stays off there, and its heartbeat stays `draining` with no busy fields.
+// - A request on another Mac's own port counts here like any local request:
+//   that Mac's cluster service relays it to this local API
+//   (`ClusterLocalRelay`).
+// - Every other member stays control-only: its part runs no local API, so me
+//   first stays off there, and its heartbeat stays `draining` with no busy
+//   fields.
 // - Nothing in flight is cancelled: Darkbloom requests already running finish,
 //   and a dispatch that races the heartbeat gets the pause's typed refusal
 //   before it reaches the pair.

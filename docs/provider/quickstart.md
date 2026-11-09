@@ -18,9 +18,7 @@ opencode                             # then /models → Darkbloom
 ```
 
 Two Macs: run `darkbloom cluster` on each, then `darkbloom --opencode` on
-the leading Mac.
-
-<!-- pending LS-3: in a pair, start with opencode on either Mac. -->
+either Mac.
 
 ## Prerequisites
 
@@ -141,7 +139,7 @@ client: `darkbloom local` prints the address, the key and a `curl` to try
 - **Switch later:** `darkbloom start --choose` asks how this Mac serves again,
   then goes on as above.
 - **Two Macs:** run `darkbloom cluster` on each Mac to pair them and choose
-  how the pair serves, then `darkbloom --opencode` on the leading Mac
+  how the pair serves, then `darkbloom --opencode` on either Mac
   ([Two Macs as one provider](./two-mac-cluster.md)). The wait for your model
   and the line when a tool points elsewhere are for one Mac for now: on a pair
   that is still loading, run it again once the pair serves.

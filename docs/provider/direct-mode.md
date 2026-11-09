@@ -192,14 +192,16 @@ See [inference and logprob admission](../architecture/inference.md).
 | API key | `~/.darkbloom/local_token`, mode `0600`; `dk-local-` + base64url of 32 random bytes; created once, reused across restarts | `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift` (`loadOrCreateToken`, `tokenPrefix`) |
 | Discovery record | `~/.darkbloom/local.json`, mode `0600`: `base_url`, `api_key`, `host`, `port`, `pid`, `version`, `updated_at`; removed on graceful shutdown | `LocalEndpoint.Info`, `writeInfo`, `removeInfo` |
 | Directory | `~/.darkbloom`; a dev build (`darkbloom-dev`) uses `~/.darkbloom-dev`. `DARKBLOOM_LOCAL_DIR` replaces it for both files | `LocalEndpoint.directory`, `BuildEnvironment.installDirectory` |
-| Key file for tools | A tool that reads the key from a file instead of keeping a copy (OpenCode's `{file:}`, Hermes' `key_cmd`) uses the file holding exactly the key of the server on that port: `local_token`, or `cluster_local_token` for a pair's API. Both files hold only the key and are replaced atomically, never partly written. A start without `--opencode` / `--hermes` says in one line when a tool set up for Darkbloom reads another file than `local_token` (or points at another address), and changes nothing. See the [config writers](../architecture/tool-integrations.md) | `LocalEndpoint.keyFile(forPort:)`, `LocalEndpoint.tokenPath()`, `provider-swift/Sources/ProviderCore/Service/AtomicFile.swift` (`AtomicFile.write`) |
+| Key file for tools | A tool that reads the key from a file instead of keeping a copy (OpenCode's `{file:}`, Hermes' `key_cmd`) uses the file holding exactly the key the discovery record names for that port: this Mac's own `local_token`, whatever serves here, a pair's API or its relay included (`cluster_local_token` only for a pair API an older build started). Both files hold only the key and are replaced atomically, never partly written. A start without `--opencode` / `--hermes` says in one line when a tool set up for Darkbloom reads another file than `local_token` (or points at another address), and changes nothing. See the [config writers](../architecture/tool-integrations.md) | `LocalEndpoint.keyFile(forPort:)`, `LocalEndpoint.tokenPath()`, `provider-swift/Sources/ProviderCore/Service/AtomicFile.swift` (`AtomicFile.write`) |
+| A pair's key | `~/.darkbloom/cluster_local_token`, the same on every Mac of a pair (the leading Mac sends it with each start). A pair's API (**Only me**, or **Both, me first**) takes it beside that Mac's own key: every other Mac's relay passes its requests on with it, in place of that Mac's own key | `LocalEndpoint.loadOrCreateClusterToken`, `LocalInferenceHTTPConfig.pairToken`, `ClusterLocalRelay.Keys` |
 | `--bind 0.0.0.0` | Advertised `base_url` uses `127.0.0.1`; other hosts use the machine's address, and `darkbloom local` prints its Bonjour URL on a `network:` line. [`darkbloom cluster local`](./two-mac-cluster.md#serving-locally-only) binds the cluster's API this way by default | `LocalEndpoint.Info.init`, `Local.networkURL` |
 | `--no-auth` | No token check; `api_key` is empty in the discovery record. The [local router](#when-this-mac-cant-take-a-request-the-local-router) then passes nothing on and never uses the account key | `LocalInferenceHTTPConfig.authToken == nil`; `LocalRouterConfig.localKeyRequired` |
 
 `LocalAuthResponder` (`provider-swift/Sources/ProviderCore/Server/LocalAuthResponder.swift`)
 is the outermost layer: `OPTIONS` preflights, `GET /health`, `GET /v1/health`
 and `GET /` pass without a token; everything else needs
-`Authorization: Bearer <token>`, compared in constant time; failures return
+`Authorization: Bearer <token>` (on a pair's API, this Mac's own key or the
+pair's), compared in constant time; failures return
 `401` with an OpenAI-style error envelope and `Access-Control-Allow-Origin: *`
 so browser clients can read it. There is no rate limiting and no TLS: keep the
 default loopback bind, or put a reverse proxy in front before exposing it.
@@ -707,8 +709,15 @@ copy of the stream (`provider-swift/Sources/ProviderCore/ProviderLoop+ClusterPai
 **Both, me first** for the pair
 ([Both, me first](./two-mac-cluster.md#both-me-first-the-pairs-own-api-beside-darkbloom)):
 the cluster service adds `--local-endpoint --port <port> --bind <address>` to
-that part's `darkbloom start --foreground --cluster-member`, with the pair's
-key. Every other member runs none. <!-- pending LS-3: every other member runs the relay darkbloom cluster local uses (ClusterLocalRelay), so tools on each Mac of the pair use their own Mac's address and the same key. -->
+that part's `darkbloom start --foreground --cluster-member`, which takes that
+Mac's own key and the pair's. The port is that Mac's own saved `[local] port`,
+as for every local API on it (`LocalAPIPort`, [above](#steps)). Every
+other member's part runs none. With the API on every address, each other Mac's
+cluster service passes that Mac's own port, its own `[local] port`, to it
+(`ClusterLocalRelay`, as for **Only me**), swapping that Mac's own key for the
+pair's, so tools on each Mac of the pair use their own Mac's address and key.
+While Darkbloom doesn't have the pair, the API answers on its Mac only, and the
+other Macs pass nothing on.
 
 | Case | Answer | Source |
 |---|---|---|
@@ -719,6 +728,8 @@ key. Every other member runs none. <!-- pending LS-3: every other member runs th
 | The pair's warm-up request is running | Waits until admission opens; `503` if the slot retires instead | `ProviderLoop.publishClusterPairSlot` |
 | A stop or an update drain | Waiting requests get `429` at once, as new ones do; running ones finish before the slot retires | `ProviderLoop.beginServingDrain` |
 | A lost rank | Waiting requests get `503`; running ones end with their terminal | `ProviderLoop.retireClusterPairSlot` |
+| A request on another Mac's port while this Mac can't be reached (unplugged, asleep) | `503` at once, `{"error":{"code":"pair_mac_unreachable","message":"Your pair's other Mac (…) isn't reachable; this Mac relays to it. Requests resume when it's back, or run `darkbloom stop`, then `darkbloom start --solo`, to serve this Mac alone.","type":"server_error"}}`, `Retry-After: 10`, to a request with that Mac's own key or the pair's. Any other gets this API's own `401`, as if it had reached it, and a liveness check or a CORS preflight, which need no key, the `503` with no names, chip or memory. Relaying resumes once this Mac answers over the cable again; this Mac is away after 12 s without an answer there. Never a connection that just closes | `ClusterLocalRelay.pass`, `ClusterLocalRelay.Refusals`, `ClusterLocalRelay.Caller`, `ClusterService.relayAway` |
+| A request on another Mac's port while this API doesn't listen (its part starting again) | `503` with `code` `pair_api_unavailable`, to the same callers the same way | `ClusterLocalRelay.connect(_:within:)` |
 
 A waiting request costs nothing: it is parked, not polled, until a local
 request releases a lane, a Darkbloom request ends (the capacity refresh that

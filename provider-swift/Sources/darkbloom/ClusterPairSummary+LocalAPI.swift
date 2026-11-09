@@ -23,9 +23,9 @@ extension ClusterPairSummary {
     /// pair's local API listens, and what the other Macs do. The Mac whose part runs rank 0 says it from its own part,
     /// and that the other Macs pass requests to it only while its API listens on every address. With the API on every
     /// address, every other Mac names its own relay's address, which passes your requests to it, or why it can't answer
-    /// now (`memberAPIDown`). Otherwise it says where to look. Nothing while the pair is stopped, or for the Darkbloom
-    /// network alone. With Only me it names no address (`darkbloom local` does), only why this Mac's own port for the
-    /// pair can't answer now. No key and no speed.
+    /// now (`memberAPIUnavailable`). Otherwise it says where to look. Nothing while the pair is stopped, or for the
+    /// Darkbloom network alone. With Only me it names no address (`darkbloom local` does), only why this Mac's own port
+    /// for the pair can't answer now. No key and no speed.
     ///
     /// The pause comes only from the part that runs rank 0, never worked out here. The leading Mac's status carries it
     /// when that part is its own (`OnboardingLive.pauseLines`), and every Mac shows those lines under the pair's line: it
@@ -33,7 +33,7 @@ extension ClusterPairSummary {
     /// build is older, or its answer didn't come) leaves it to the Mac whose part runs rank 0, from its own part; the
     /// other Mac says where to look.
     func localAPILines(now: Date = Date()) -> [String] {
-        guard let localAPI else { return (memberAPIDown ?? memberAPIRestarting).map { ["Local API: " + $0] } ?? [] }
+        guard let localAPI else { return memberAPIUnavailable.map { ["Local API: " + $0] } ?? [] }
         guard started, paired, !pairingUnreadable else { return [] }
         let statusSaysPause = lines.contains { $0.hasPrefix(MeFirstWords.pairPrefix) }
         guard localAPI.runsRankZero else {
@@ -43,7 +43,7 @@ extension ClusterPairSummary {
                         "Members: this Mac is part of the pair; it runs no local API"]
             }
             let passes = "Members: \(otherMac) runs the pair's API; this Mac passes your requests to it, and Darkbloom pauses for them too"
-            if let down = memberAPIDown ?? memberAPIRestarting {
+            if let down = memberAPIUnavailable {
                 return ["Local API: " + down, "Members: \(otherMac) runs the pair's API; this Mac is part of the pair"]
             }
             guard let relaying else { return ["Local API: " + relayStartingWords, passes] }
@@ -60,20 +60,20 @@ extension ClusterPairSummary {
     }
 
 
+    /// Why this Mac's own port for the pair's API can't pass a request on now, after "Local API: ", as `status`,
+    /// `darkbloom local` and `doctor` say it: `memberAPIDown`, else `memberAPIRestarting`. Nil otherwise.
+    var memberAPIUnavailable: String? { memberAPIDown ?? memberAPIRestarting }
+
     /// Why this Mac, which relays the pair's API on every address (Both, me first or Only me), has no working address for
     /// it now, after "Local API: ", as `status`, `darkbloom local`, `--opencode` and the app's Start all say it: rank 0
     /// answers on its own Mac only while Darkbloom doesn't have the pair, another program holds this Mac's port, or rank
     /// 0's Mac can't be reached (the relay answers 503, in these words). Nil while it has one, while it starts, and on any
-    /// other Mac or pair. With Only me, `localAPI` (Both's) doesn't say whether this Mac's part runs rank 0, but only a Mac
-    /// that relays has these from its cluster service (`ClusterService.relayStatus`).
+    /// other Mac or pair (`mayRelayPairAPI`).
     var memberAPIDown: String? {
-        guard localAPI.map({ !$0.runsRankZero }) ?? localOnly, answersOnEveryMac, started, paired, !pairingUnreadable else {
-            return nil
-        }
+        guard mayRelayPairAPI else { return nil }
         if let relaying {
             guard relayRankZeroAway else { return nil }
-            return "http://127.0.0.1:\(relaying.port)/v1 on this Mac answers 503 for now. "
-                + ClusterLocalRelay.Refusals.pair(otherMac: otherMacName, cli: Self.cli).unreachable
+            return Self.answers503(at: relaying, relayWords.unreachable)
         }
         if relayWaitsForOffer {
             return "none on this Mac while Darkbloom doesn't have the pair; meanwhile the pair answers only on \(otherMac) "
@@ -92,10 +92,23 @@ extension ClusterPairSummary {
     /// `memberAPIDown`, it ends by itself, so the app's Start and `start --opencode` still take the address as this
     /// Mac's. Nil otherwise, and while `memberAPIDown` says why.
     var memberAPIRestarting: String? {
-        guard relayRankZeroAPIDown, memberAPIDown == nil, let relaying, localAPI.map({ !$0.runsRankZero }) ?? localOnly,
-              answersOnEveryMac, started, paired, !pairingUnreadable else { return nil }
-        return "http://127.0.0.1:\(relaying.port)/v1 on this Mac answers 503 for now. "
-            + ClusterLocalRelay.Refusals.pair(otherMac: otherMacName, cli: Self.cli).notAnswering
+        guard relayRankZeroAPIDown, memberAPIDown == nil, let relaying, mayRelayPairAPI else { return nil }
+        return Self.answers503(at: relaying, relayWords.notAnswering)
+    }
+
+    /// The pair is started and serves its API on every address, and this Mac's part isn't rank 0, so this Mac may relay
+    /// that API. With Only me, `localAPI` (Both's) doesn't say whether this Mac's part runs rank 0, but only a Mac that
+    /// relays has the relay's facts from its cluster service (`ClusterService.RelayState.publish`).
+    private var mayRelayPairAPI: Bool {
+        (localAPI.map { !$0.runsRankZero } ?? localOnly) && answersOnEveryMac && started && paired && !pairingUnreadable
+    }
+
+    /// The words of this Mac's relay's 503s, which name the other Mac.
+    private var relayWords: ClusterLocalRelay.Refusals { .pair(otherMac: otherMacName, cli: Self.cli) }
+
+    /// This Mac's relay, on `relaying`, answers each request a 503 for now, in `words`.
+    private static func answers503(at relaying: ClusterPairLocalAPI.Address, _ words: String) -> String {
+        "http://127.0.0.1:\(relaying.port)/v1 on this Mac answers 503 for now. " + words
     }
 
     /// This Mac relays the pair's API on every address, and its port for it isn't up yet, with nothing against it

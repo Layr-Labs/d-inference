@@ -162,6 +162,14 @@ extension ProviderLoop {
         .requestRejected(DistributedRequestQueue.unavailableMessage)
     }
 
+    /// A pair's API takes requests only while its pair does: its gate
+    /// (`LocalPairGateResponder`) follows the slot's admission
+    /// (`clusterPairAdmissionOpenSlotID`). A single Mac's API has no gate.
+    func syncClusterPairGate() {
+        guard isClusterMember else { return }
+        localResponseTracker.setPairServes(clusterPairAdmissionOpenSlotID != nil)
+    }
+
     /// A local request on the leader: 404 for a model this member does not
     /// serve, 503 while the pair does not serve or stops (a drain), a single
     /// Mac's other refusals, otherwise one of the pair's lanes

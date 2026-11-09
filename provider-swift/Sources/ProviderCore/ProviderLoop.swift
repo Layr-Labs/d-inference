@@ -800,7 +800,7 @@ public actor ProviderLoop {
     /// the leader's local requests wait for it (`ProviderLoop+ClusterPairLocal`),
     /// and its API's gate opens and closes with it (`LocalPairGateResponder`).
     internal var clusterPairAdmissionOpenSlotID: UUID? {
-        didSet { if isClusterMember { localResponseTracker.setPairServes(clusterPairAdmissionOpenSlotID != nil) } }
+        didSet { syncClusterPairGate() }
     }
     /// The leader's local requests on its pair's lanes: waiting, or holding one.
     internal var clusterPairLocalLanes = ClusterPairLocalLanes(limits: .fromEnvironment())

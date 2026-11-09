@@ -463,13 +463,10 @@ struct ClusterPairMemberRelayTests {
     @Test func theRelaysWordsNameTheOtherMacAndWhatToDo() {
         let words = ClusterLocalRelay.Refusals.pair(otherMac: "Apple M3 Ultra, 256 GB", cli: "darkbloom")
         #expect(ClusterPairWatch.giveUpSeconds == 15 * 60)
-        let alone = ", or run `darkbloom stop`, then `darkbloom start --solo`, to serve this Mac alone (`darkbloom start "
-            + "--solo` by itself is refused while this Mac's part of the pair holds its serving lock: up to 15 minutes after "
-            + "the other Mac last answered over the cable)."
         #expect(words.unreachable == "Your pair's other Mac (Apple M3 Ultra, 256 GB) isn't reachable; this Mac relays to it. "
-            + "Requests resume when it's back" + alone)
+            + "Requests resume when it's back" + Self.servingAloneWords)
         #expect(words.notAnswering == "The pair's API on your pair's other Mac (Apple M3 Ultra, 256 GB) isn't answering yet; "
-            + "this Mac relays to it. Requests resume when it answers" + alone)
+            + "this Mac relays to it. Requests resume when it answers" + Self.servingAloneWords)
         #expect(ClusterLocalRelay.Refusals.pair(otherMac: nil, cli: "darkbloom-dev").unreachable
             .hasPrefix("Your pair's other Mac isn't reachable; this Mac relays to it."))
         #expect(words.unauthorized == "missing or invalid local API key — get it from `darkbloom local`")
@@ -1202,12 +1199,16 @@ struct ClusterPairMemberRelayTests {
         #expect(await leader.retireClusterPairSlot(reason: "test"))
     }
 
+    /// How every pair 503 ends, the relay's and the pair's API's own: how to serve this Mac alone, and exactly when
+    /// `start --solo` by itself is refused.
+    static let servingAloneWords = ", or run `darkbloom stop`, then `darkbloom start --solo`, to serve this Mac alone "
+        + "(`darkbloom start --solo` by itself is refused while this Mac's part of the pair holds its serving lock: up to "
+        + "15 minutes after the other Mac last answered over the cable)."
+
     /// The words rank 0's own API answers while its pair doesn't serve: true on every Mac of the pair, and through a
     /// relay too, with what to do as the relay's own 503s say it.
     static let pairNotServingWords = "The pair's API takes no requests right now: the pair is starting or stopping. Requests "
-        + "resume when it serves, or run `darkbloom stop`, then `darkbloom start --solo`, to serve this Mac alone (`darkbloom "
-        + "start --solo` by itself is refused while this Mac's part of the pair holds its serving lock: up to 15 minutes after "
-        + "the other Mac last answered over the cable)."
+        + "resume when it serves" + servingAloneWords
 
     /// Rank 0's pair API while its pair doesn't serve, as a member's tools meet it through the relay: before the pair's
     /// slot (its part binds the API before the pair forms, as when it starts again after a stop), while the warmup

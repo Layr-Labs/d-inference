@@ -33,7 +33,7 @@ extension ProviderLoop {
         guard localServerTask == nil else { return }
         enableMeFirstIfConfigured()
         // A pair's API takes requests only while its pair does: none before its slot's admission opens.
-        if isClusterMember { localResponseTracker.setPairServes(clusterPairAdmissionOpenSlotID != nil) }
+        syncClusterPairGate()
         // Fires only once OUR server has actually bound the socket — the
         // authoritative bind signal. We publish discovery here (never from a
         // best-effort HTTP probe that a foreign process on the same port

@@ -3,9 +3,10 @@ import Foundation
 // What a relay answers when it can't pass a connection on to rank 0: never a connection that just closes, but what the
 // local API would answer that caller. While the cluster service finds rank 0's Mac away (`setAway`), at once; otherwise
 // when a connection to rank 0 fails. A caller with this Mac's key or the pair's gets a typed 503 in words that name the
-// pair's other Mac and say what to do; one with a key this Mac can't judge (the other Mac's own) the same 503 without
-// names; one without a key the local API's own 401, and one the API takes without a key (a CORS preflight, a liveness
-// check) the 503 with no names, chip, memory or commands. No unauthenticated caller learns the other Mac's hardware.
+// pair's other Mac and say what to do; one with another key in the local key format, which this Mac can't judge (the
+// other Mac's own), the same 503 without names; one with any other key, or none, the local API's own 401; and one the
+// API takes without a key (a CORS preflight, a liveness check) the 503 with no names, chip, memory or commands. No
+// unauthenticated caller learns the other Mac's hardware.
 extension ClusterLocalRelay {
     /// The words of the relay's answers: one 503 per reason, the two again without the other Mac's name, and the local
     /// API's 401.
@@ -124,17 +125,14 @@ extension ClusterLocalRelay {
     /// What the relay answers a request it can't pass on for `reason`, from `caller`: the 503 in `refusals`' words, the
     /// same without the other Mac's name, in words with no names or commands, or the local API's 401.
     static func answer(_ reason: Reason, to caller: Caller, refusals: Refusals) -> [UInt8] {
+        let words: (unreachable: String, notAnswering: String)
         switch caller {
-        case .keyed:
-            return refusal(code: reason.code, message: reason == .unreachable ? refusals.unreachable : refusals.notAnswering)
-        case .otherKey:
-            return refusal(code: reason.code,
-                           message: reason == .unreachable ? refusals.otherKeyUnreachable : refusals.otherKeyNotAnswering)
-        case .open:
-            return refusal(code: reason.code, message: reason == .unreachable ? unnamedUnreachable : unnamedNotAnswering)
-        case .unknown:
-            return unauthorized(message: refusals.unauthorized)
+        case .keyed: words = (refusals.unreachable, refusals.notAnswering)
+        case .otherKey: words = (refusals.otherKeyUnreachable, refusals.otherKeyNotAnswering)
+        case .open: words = (unnamedUnreachable, unnamedNotAnswering)
+        case .unknown: return unauthorized(message: refusals.unauthorized)
         }
+        return refusal(code: reason.code, message: reason == .unreachable ? words.unreachable : words.notAnswering)
     }
 
     /// Answers `client` instead of closing its connection, as the local API would answer it (`answer`, with `keys` to

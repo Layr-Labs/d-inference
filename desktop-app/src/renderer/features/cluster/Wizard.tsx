@@ -198,6 +198,16 @@ const stepFailed = (step: Step) =>
       (block.kind === 'line' && block.line.tone === 'failed'),
   );
 
+// True once `key` has stayed the same for `ms`.
+function useSettled(key: string, ms: number) {
+  const [settled, setSettled] = useState<string | null>(null);
+  useEffect(() => {
+    const timer = setTimeout(() => setSettled(key), ms);
+    return () => clearTimeout(timer);
+  }, [key, ms]);
+  return settled === key;
+}
+
 // The guided setup: the CLI's own screen, step by step, with its questions as the app's own
 // controls. Finished steps fold to their title, as the terminal folds them.
 export function Wizard({
@@ -212,12 +222,21 @@ export function Wizard({
   const view = useMemo(() => transcript(session), [session]);
   const root = useRef<HTMLElement>(null);
   const foot = useRef<HTMLElement>(null);
+  const titleRef = useRef<HTMLHeadingElement>(null);
   const [confirm, setConfirm] = useState(false);
   const running = session.state === 'running';
   const busy = control.pending !== null;
   const current = view.steps.at(-1);
   const question = running ? session.question : null;
   const stepCount = view.steps.length;
+  // The setup's title takes focus when it replaces the page and nothing else has it, so a screen
+  // reader starts there; a question takes it from there.
+  useEffect(() => {
+    const active = document.activeElement;
+    if (!active || active === document.body) titleRef.current?.focus();
+  }, []);
+  // "Working…" only when nothing has changed for a moment: lines often come in quick bursts.
+  const idle = useSettled(`${session.events.length}:${session.question?.id ?? ''}`, 1200);
   // The outcome's Done takes focus when the session ends with nothing else focused.
   useEffect(() => {
     if (running) return;
@@ -242,7 +261,9 @@ export function Wizard({
       <header className={styles.wizardHead}>
         <PairGlyph mood={mood} className={styles.wizardGlyph} />
         <div className={styles.wizardTitle}>
-          <h1>{title}</h1>
+          <h1 ref={titleRef} tabIndex={-1}>
+            {title}
+          </h1>
           {view.subtitle && <p>{view.subtitle}</p>}
         </div>
         {view.meter && running && (
@@ -336,7 +357,7 @@ export function Wizard({
           onAnswer={(answer) => void control.answer(answer)}
         />
       )}
-      {running && !view.live && !question && (
+      {running && idle && !view.live && !question && (
         <p className={styles.waiting} role="status">
           <LoaderCircle className="spin" size={14} aria-hidden="true" /> Working…
         </p>

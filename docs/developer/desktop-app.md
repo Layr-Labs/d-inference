@@ -563,7 +563,119 @@ Chat is documented with its implementation.
 
 ## Clusters
 
-Clusters are documented with their implementation.
+Clusters sets up a two-Mac pair, chooses its model and how it serves, and runs
+it, with `darkbloom cluster`'s own steps and words
+(`desktop-app/src/renderer/features/cluster/`; for users:
+[Two Macs as one provider](../provider/two-mac-cluster.md)).
+
+- **Capabilities.** The page needs `cluster` (the `cluster` resource,
+  `cluster_leave`, `start` with `solo`); without it, one line, "Clusters need a
+  newer Darkbloom CLI.", and **Updates**. The guided setup needs
+  `cluster_session`; without it, the page names the Terminal commands instead
+  (`darkbloom cluster`, `darkbloom cluster local`), each with Copy.
+- **Reading.** The `cluster` resource is
+  [`darkbloom cluster status --json`](../provider/cli-reference.md#darkbloom-cluster-status)
+  (`ClusterStatus` in `desktop-app/src/shared/cluster.ts`), read while the page
+  is shown (`useResource`): on `resource_revision`, when the window becomes
+  visible, on **Refresh** and after each action. On the Mac that follows it can
+  take 10 s; meanwhile the page names the pair from `Snapshot.pair`. A status
+  the API couldn't read (`error`) shows "Couldn’t read the pair." with the API's
+  words. A state this app doesn't know reads as Unknown, with the runtime's
+  `reason` and `next`.
+- **Not paired.** Two Macs joined by a cable, what a pair needs (two Apple
+  silicon Macs, a Thunderbolt cable, Darkbloom on both), the compact cluster
+  waitlist notice (`WaitlistCard` with `compact`), **Set up a pair** (session
+  `setup`) while the waitlist is open, and **Serve on my own Macs only** (session
+  `local`), which needs no approval. On a runtime without `waitlists`, **Set up
+  a pair** is offered and the CLI's
+  [waitlist gate](../provider/cli-reference.md#the-cluster-waitlist-gate) checks
+  first.
+- **Paired** (`PairStatus.tsx`). Both Macs (this Mac by its name, the other by
+  the hardware name pairing showed, which one leads, whether the other
+  answers), the model with its mode as a tag and the split as a bar, how the
+  pair serves (`serves`; Both, me first from its `Serves:` line, "not offered"
+  when that line says so), the state with `reason` and `next` verbatim, commands
+  in `<code>`, the cluster service, and the status lines under **Details**. The
+  actions follow the state (`status.ts`, `pairActions`):
+
+  | Action | Offered | Sends |
+  |---|---|---|
+  | **Start serving** | stopped, unknown | `{ action: 'start', models: [] }` |
+  | **Stop serving** | serving, loading, not serving, other Mac away, unknown | `{ action: 'stop' }` |
+  | **Restart serving** | serving, not serving | `{ action: 'restart' }` |
+  | **Change model or how it serves** | the Mac that leads (on the Mac that follows: "The other Mac leads: choose the model there.") | session `setup` |
+  | **Check the pairing** | a pairing record that can't be read | session `setup` |
+  | **Serve this Mac alone** | every paired state, after a confirm that says the pair stops serving | `{ action: 'start', models: [], solo: true }` |
+  | **Leave the pair** | a readable pairing, after a confirm in `darkbloom cluster leave`'s words | `{ action: 'cluster_leave' }` |
+
+  On a paired Mac, start, stop and restart act on the pair. Each waits for its
+  operation (`backend.act(action, true)`), then reads the status again.
+- **The relay** (`desktop-app/src/main/clusterSession.ts`,
+  `ClusterSessionRelay`). `current()` reads `cluster/session` (JSON `null` when
+  none ran), `start()` posts a `ClusterSessionStart` rebuilt from checked fields
+  (`sessionStart`: kind `setup` or `local`; for `local` only, a model matching
+  `^[A-Za-z0-9._/-]{1,256}$` without `..` or a leading `-` or `/`, and a bind of
+  `localhost` or a numeric IPv4 or IPv6 address), and `answer()` posts a choice,
+  a key or cancel (`sessionAnswer`). Replies are checked (`isClusterSession`)
+  before they reach the renderer. While the renderer watches, one
+  reference-counted stream of `cluster/session/events`
+  (`Backend.openClusterSessionEvents`) publishes each `event: cluster-session`
+  frame's session. It opens again when it ends or says nothing for 120 s, waits
+  longer after each failure (2 s, doubling to 30 s), drops a stream over 4 MB,
+  and on opening publishes the current session unless a frame came first.
+- **The session** (`useClusterSession.ts`). Opening the page restores a running
+  session (`clusterSession()` and `onClusterSession`; a streamed session wins
+  over the first read). While a session runs and its stream is silent for 5 s,
+  the page reads it every 3 s. The page shows a session from when it runs until
+  **Done**; one cancelled from the page ends at once. A failed session offers
+  **Run again**.
+- **The screen** (`transcript.ts`, `Wizard.tsx`, `Question.tsx`). The banner is
+  the title. Headings are steps; a numbered one ("2/4 Pair") drives the step
+  meter, and finished steps fold to their title. Said lines keep the CLI's
+  order, with ✓ and ✗ as marks. "Run `…`" lines are the one thing to do, with
+  Copy. "Label:   value" rows and command rows read as a table. `working` rows
+  each have a spinner, and a bar when a row carries a percentage. `progress` is
+  a bar when it carries one. `result` is a ✓ or ✗ card. `needs_terminal` is a
+  notice with its command to copy. An event type this app doesn't know is
+  skipped.
+- **Questions.** The question's own lines (the last said lines, from the one
+  that asks, with a pairing code just above it) move into the question card: a
+  pairing code ("Pairing code:  482 913", "Code 482 913. Same on the other
+  Mac?") is shown large, with its question as the card's heading. `choose` is a
+  list of option cards: ↑↓ (or ←→), Home and End move, Enter takes, and the
+  default starts selected and focused. An option's first row is its title and
+  the rest its detail. Its " · " markers show as tags: the split ("tensor
+  parallel", "pipeline"), "serving now", "last used" or "recommended", and
+  "does not fit now" or "not enough free disk". `key` is one button per key,
+  labelled from `keys`. **Cancel** sends `{ cancel: true }`. While the pairing
+  step runs and hasn't said "Paired", it asks first ("Stop pairing?").
+- **This Mac's overview.** With `Snapshot.pair` set, the pair in one line
+  (`PairCard.tsx`) and a link to Clusters.
+
+Preview links (`?preview` plus):
+
+| Query | Shows |
+|---|---|
+| none, `&cluster=not_paired` | No pair, Clusters approved. **Set up a pair** plays the leading Mac's setup |
+| `&cluster=serving`, `loading`, `not_serving`, `stopped`, `away`, `unreadable` | That state, on the Mac that leads |
+| `&cluster=error` | A status the API couldn't read |
+| `&cluster=unsupported` | A runtime from before clusters |
+| `&cluster-role=member` | The Mac that follows (its status takes 1.6 s). Its setup plays the joining Mac |
+| `&waitlist-cluster=waitlisted` (and the other standings) | Where the account stands on the cluster waitlist |
+
+The scripted setup (`desktop-app/src/renderer/preview/clusterSession.ts`) uses
+the CLI's own lines. On the Mac that leads it checks the cable, says "Run
+`darkbloom cluster` on the other Mac." with **Stop waiting** (the other Mac
+shows up after 5 s), then shows the code 482 913 with Yes and No, asks how the
+pair serves (Only me, Darkbloom network, Both, me first), and lists the models
+(one tensor parallel, one downloaded with the mode question, one copied, one
+that doesn't fit). Then it shows copy and download bars, each Mac's loading
+row, and the ✓ card, and the status reads serving. The joining Mac follows the
+leading Mac's start. On a set-up pair, **Change model or how it serves** plays
+the list with "serving now", **Change how the pair serves** and **Start over**.
+A preview module holds the preview's store only during an action, so
+`Snapshot.pair` follows a finished setup at the next action. Tests:
+`tests/cluster*.test.ts(x)`.
 
 ## Sandboxes
 

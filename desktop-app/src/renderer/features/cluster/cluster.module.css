@@ -362,7 +362,7 @@
   content: '';
   position: absolute;
   top: 31px;
-  bottom: 0;
+  bottom: -8px;
   left: 8px;
   width: 1px;
   background: var(--line);
@@ -452,7 +452,7 @@
   align-items: center;
   gap: 10px;
   min-height: 41px;
-  padding: 10px 0 6px;
+  padding: 10px 0;
   font-size: 16px;
   font-weight: 500;
 }
@@ -804,6 +804,11 @@
   outline: none;
   border-color: var(--accent-brand);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-brand) 22%, transparent);
+}
+
+.choiceTitle,
+.choiceDetail {
+  grid-column: 1;
 }
 
 .choiceTitle {

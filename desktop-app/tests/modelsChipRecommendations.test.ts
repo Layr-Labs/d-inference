@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { NetworkData } from '../src/shared/contracts';
+import type { ChipModelEarning, NetworkData } from '../src/shared/contracts';
 import {
   chipEarnings,
   chipRanking,
@@ -7,7 +7,12 @@ import {
   recommendedModels,
 } from '../src/renderer/features/models/recommendations';
 import { poolModels } from './modelsFixtures';
-import { chipNetwork, uncoveredChipNetwork } from './chipNetworkFixture';
+import {
+  chipNetwork,
+  partialChipNetwork,
+  skewedChipNetwork,
+  uncoveredChipNetwork,
+} from './chipNetworkFixture';
 
 describe('recommendations from Macs with the same chip', () => {
   it('reads what Macs with this chip earned per model and ignores other chips', () => {
@@ -34,6 +39,40 @@ describe('recommendations from Macs with the same chip', () => {
     expect(
       recommendedModels(poolModels, totals, chipEarnings(network, 'Apple M4 Max')).map((m) => m.id),
     ).toEqual(['qwen-3.5-9b', 'gpt-oss-20b', 'gemma-4-26b']);
+  });
+
+  it('ranks by the typical Mac of this chip before the average one', () => {
+    // GPT-OSS's mean is the highest only because a few of these Macs earned a lot from it.
+    expect(
+      recommendedModels(poolModels, null, chipEarnings(skewedChipNetwork(), 'Apple M4 Max')).map(
+        (m) => m.id,
+      ),
+    ).toEqual(['qwen-3.5-9b', 'gpt-oss-20b', 'gemma-4-26b']);
+  });
+
+  it('ranks the models with per-chip rows when another model has none, unless a row is malformed', () => {
+    const partial = chipEarnings(partialChipNetwork(), 'Apple M4 Max');
+    expect(partial && [...partial.keys()].sort()).toEqual([
+      'gpt-oss-20b',
+      'qwen-3.5-9b',
+      'qwen-3.6-35b',
+    ]);
+    expect(
+      recommendedModels(poolModels, null, chipRanking(poolModels, partial)).map((m) => m.id),
+    ).toEqual(['qwen-3.5-9b', 'gpt-oss-20b']);
+    // An omitted by_chip is partial data; a null one is malformed, so the totals rank.
+    const earnings = chipNetwork().model_earnings!;
+    const nulled: NetworkData = {
+      model_earnings: {
+        ...earnings,
+        models: earnings.models.map((model) =>
+          model.id === 'gemma-4-26b'
+            ? { ...model, by_chip: null as unknown as ChipModelEarning[] }
+            : model,
+        ),
+      },
+    };
+    expect(chipEarnings(nulled, 'Apple M4 Max')).toBeNull();
   });
 
   it('falls back to network totals when per-chip data is absent, stale or malformed', () => {

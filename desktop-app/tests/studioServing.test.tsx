@@ -175,11 +175,14 @@ it('saves me first and its minutes, then offers Restart serving to apply them', 
   render(<Studio backend={backend} />);
   const meFirst = within(screen.getByRole('region', { name: 'Me first' }));
   const save = meFirst.getByRole('button', { name: 'Save' });
-  const minutes = meFirst.getByRole('spinbutton', { name: 'Minutes before Darkbloom comes back' });
+  const minutes = meFirst.getByRole('spinbutton', { name: 'Back after minutes' });
   expect(
     meFirst.getByRole('switch', { name: /Pause Darkbloom while you use this Mac/ }),
   ).toBeChecked();
   expect(minutes).toHaveValue(2);
+  expect(minutes).toHaveAccessibleDescription(
+    'Minutes with none of your requests before Darkbloom comes back.',
+  );
   expect(save).toBeDisabled();
   fireEvent.change(minutes, { target: { value: '5' } });
   await act(async () => fireEvent.click(save));
@@ -232,7 +235,7 @@ it.each(['0', '121', '2.5', ''])('refuses %j minutes before saving', (value) => 
   const backend = backendWith(localSnapshot());
   render(<Studio backend={backend} />);
   const meFirst = within(screen.getByRole('region', { name: 'Me first' }));
-  const minutes = meFirst.getByRole('spinbutton', { name: 'Minutes before Darkbloom comes back' });
+  const minutes = meFirst.getByRole('spinbutton', { name: 'Back after minutes' });
   fireEvent.change(minutes, { target: { value } });
   expect(minutes).toHaveAttribute('aria-invalid', 'true');
   expect(minutes).toHaveAccessibleDescription('From 1 to 120 minutes.');

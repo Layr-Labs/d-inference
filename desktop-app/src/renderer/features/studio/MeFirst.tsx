@@ -12,6 +12,9 @@ import styles from './studio.module.css';
 export function MeFirst({ backend, local }: { backend: BackendState; local: LocalServing }) {
   const state = backend.state!;
   const heading = useId();
+  const label = useId();
+  const hint = useId();
+  const unit = useId();
   const errorId = useId();
   const [on, setOn] = useState(local.me_first);
   const [idle, setIdle] = useState(String(local.me_first_idle_minutes));
@@ -69,8 +72,8 @@ export function MeFirst({ backend, local }: { backend: BackendState; local: Loca
       {on && (
         <div className="setting-row">
           <span>
-            <strong>Back after</strong>
-            <small>Minutes with none of your requests before Darkbloom comes back.</small>
+            <strong id={label}>Back after</strong>
+            <small id={hint}>Minutes with none of your requests before Darkbloom comes back.</small>
           </span>
           <span className={styles.field}>
             <span className={styles.minutes}>
@@ -80,13 +83,13 @@ export function MeFirst({ backend, local }: { backend: BackendState; local: Loca
                 min={meFirstRange.min}
                 max={meFirstRange.max}
                 step={1}
-                aria-label="Minutes before Darkbloom comes back"
+                aria-labelledby={`${label} ${unit}`}
                 aria-invalid={invalid}
-                aria-describedby={invalid ? errorId : undefined}
+                aria-describedby={invalid ? errorId : hint}
                 value={idle}
                 onChange={(event) => setIdle(event.target.value)}
               />
-              minutes
+              <span id={unit}>minutes</span>
             </span>
             {invalid && (
               <small id={errorId} className={styles.error} role="alert">

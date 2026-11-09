@@ -147,6 +147,8 @@ struct Local: AsyncParsableCommand {
                 "             or: \(cli) start --local      (only you, on this Mac)"]
     }
 
+    static func keyFileLine(keyFile: URL?, pairKeyFile: URL?, home: URL) -> String? { nil }
+
     /// The line under a keyed server's address: the commands that set the tools up for it.
     static var toolsLine: String { "  tools:    \(BuildEnvironment.current.cliName) --opencode · --hermes" }
 

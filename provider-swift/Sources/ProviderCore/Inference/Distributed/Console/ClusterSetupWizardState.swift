@@ -182,6 +182,11 @@ public struct ClusterSetupPlanSummary: Codable, Sendable, Equatable {
         /// will serve (`ClusterSetupPlanning.earlierFigures`): what the mode question ranks by until this build has served.
         /// Nil when no earlier build did (never a prediction), and in a summary written before it existed.
         public var earlierServedDecodeTokensPerSecond: Double? = nil
+        /// The context the pair serves in this mode, and its longest prompt (`ClusterModelFeaturePolicy.servedProfile`):
+        /// tensor parallel the model's whole profile, a pipeline its memory plan's request. Nil when not known, and in a
+        /// summary written before it existed.
+        public var contextTokens: Int? = nil
+        public var promptTokens: Int? = nil
     }
 }
 

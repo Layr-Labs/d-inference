@@ -105,4 +105,16 @@ private final class BundleAnchor {}
         #expect(status == 64)
         #expect(out.contains("Error: Unknown option '--opencod'\nUsage: darkbloom <subcommand>"), "Got:\n\(out)")
     }
+
+    /// Journey 1 (J-10): a refusal a command makes once it runs ended with the root's "Usage: darkbloom <subcommand> /
+    /// See 'darkbloom --help'…", which names no step. It ends with its own words, exit 64 as before.
+    @Test func aRefusalAfterTheParseEndsWithItsOwnWords() throws {
+        let home = try makeTempHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let config = home.appendingPathComponent("provider.toml").path
+        let (out, status) = try runWithStatus(["start", "--network", "--opencode", "--config", config], home: home)
+        #expect(status == 64)
+        #expect(out.contains("Error: This Mac serves only the Darkbloom network, so OpenCode has no local address"), "Got:\n\(out)")
+        #expect(!out.contains("Usage: darkbloom <subcommand>") && !out.contains("See 'darkbloom --help'"), "Got:\n\(out)")
+    }
 }

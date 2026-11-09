@@ -21,6 +21,11 @@ extension Doctor {
         return unsure ? "Daemon: single-Mac serving off (this Mac may be in a two-Mac cluster)"
             : "Daemon: single-Mac serving off (this Mac serves in its two-Mac cluster)"
     }
+
+    static func clusterLine(config: String?) async -> String? {
+        let pair = ClusterPairSummary.local()
+        return pair.paired ? pair.statusLine : nil
+    }
 }
 
 /// The cluster checks that ran, named as cluster checks; one that could not run or observe anything is left out

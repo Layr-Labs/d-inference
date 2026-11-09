@@ -504,10 +504,16 @@ public struct ClusterOnboardingMode: Codable, Sendable, Equatable {
     /// Requests the pair serves at once in this mode, from the plan that loads (1: one at a time); nil when not known
     /// and from an older leader.
     public var concurrentRequests: Int?
+    /// The context the pair serves in this mode (`ClusterModelFeaturePolicy.servedProfile`), and its longest prompt;
+    /// nil when not known and from an older leader.
+    public var contextTokens: Int?
+    public var promptTokens: Int?
 
-    public init(mode: String, split: String?, measuredTokensPerSecond: Double?, concurrentRequests: Int? = nil) {
+    public init(mode: String, split: String?, measuredTokensPerSecond: Double?, concurrentRequests: Int? = nil,
+                contextTokens: Int? = nil, promptTokens: Int? = nil) {
         self.mode = mode; self.split = split; self.measuredTokensPerSecond = measuredTokensPerSecond
         self.concurrentRequests = concurrentRequests
+        self.contextTokens = contextTokens; self.promptTokens = promptTokens
     }
 
     /// How many requests it serves at once, plainly (R4-15: GLM's pipeline took one request at a time, and Darkbloom
@@ -597,13 +603,15 @@ public struct ClusterOnboardingModeAdvice: Codable, Sendable, Equatable {
         public var concurrentRequests: Int?
         /// Darkbloom's coordinator serves this mode publicly; nil when not known.
         public var publicTraffic: Bool?
+        /// The context the pair serves in this mode; nil when not known.
+        public var contextTokens: Int?
         public init(mode: String, planned: Bool, fitsNow: Bool, measuredTokensPerSecond: Double? = nil,
                     earlierMeasuredTokensPerSecond: Double? = nil, predictedTokensPerSecond: Double? = nil,
-                    concurrentRequests: Int? = nil, publicTraffic: Bool? = nil) {
+                    concurrentRequests: Int? = nil, publicTraffic: Bool? = nil, contextTokens: Int? = nil) {
             self.mode = mode; self.planned = planned; self.fitsNow = fitsNow; self.measuredTokensPerSecond = measuredTokensPerSecond
             self.earlierMeasuredTokensPerSecond = earlierMeasuredTokensPerSecond
             self.predictedTokensPerSecond = predictedTokensPerSecond; self.concurrentRequests = concurrentRequests
-            self.publicTraffic = publicTraffic
+            self.publicTraffic = publicTraffic; self.contextTokens = contextTokens
         }
     }
 

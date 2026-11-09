@@ -526,6 +526,26 @@ struct ClusterRuntimeApprovalFactsTests {
         #expect(try qualifications(nine, publicModels: [otherArtifact]).isEmpty)
     }
 
+    /// #1930 (D6): a Gemma 4 pipeline serves the memory plan's request, as every family's pipeline does, so its parity
+    /// qualifications carry prompts up to 32,768 tokens: a coordinator sends a longer Gemma prompt to tensor parallel or
+    /// one Mac instead of to the pipeline pair. Tensor parallel's carry the whole profile. #1930's review found no test
+    /// that pins this: with the provider's served profile back at the whole profile for a Gemma pipeline, these facts
+    /// passed.
+    @Test func aGemmaPipelinesQualificationsCarryItsMemoryPlansPromptLimit() throws {
+        let f = try Fixture()
+        let gemma = try f.model("gemma-qat", fixture: "registered-gemma4-26b-qat-4bit")
+        let facts = try ClusterRuntimeApprovalFacts.compute(installation: f.installation, models: [.init(directory: gemma)],
+                                                            publicModels: ClusterPublicModels.declared)
+        let described = try #require(facts.models.first)
+        #expect(described.model == "gemma-4-26b-qat-4bit")
+        let qualifications = described.parityQualifications
+        #expect(qualifications.map(\.mode) == [.pipeline, .pipeline, .tensorParallel, .tensorParallel])
+        for q in qualifications {
+            let limits = (q.requestEnvelope.maxPromptTokens, q.requestEnvelope.maxOutputTokens)
+            #expect(limits == (q.mode == .pipeline ? (32_768, 32_768) : (262_143, 32_768)), "\(q.mode) schedule \(q.schedule)")
+        }
+    }
+
     /// The pipeline's cut comes from the layer count of the model's config.json (`num_hidden_layers`, at the top level or
     /// in `text_config`); without a usable one the pipeline's qualifications are left out, the grant still names the
     /// family, and the facts say so.

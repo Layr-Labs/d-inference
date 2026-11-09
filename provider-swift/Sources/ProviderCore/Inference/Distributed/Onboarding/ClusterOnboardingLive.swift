@@ -2412,6 +2412,11 @@ final class OnboardingLive: @unchecked Sendable {
         return MeFirstWords.pairLines(state.meFirst, now: now)
     }
 
+    static func awayLines(_ control: ClusterServiceStatus.Control, started: Bool, stopped: String, there: String, prefix: String,
+                          soloNote: () -> String?) -> [String] {
+        [prefix + control.line + (control.mode == "alone" ? soloNote() ?? "" : "") + "."]
+    }
+
     func localStatus() -> [String] {
         var lines = [String]()
         // After a Darkbloom update this Mac's service sets the cluster up again by itself; said first while it runs.

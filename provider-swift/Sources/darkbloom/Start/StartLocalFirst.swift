@@ -45,6 +45,7 @@ struct LocalFirstOptions: Equatable, Sendable {
     var foreground = false
     /// `--local --here`: Only me in this terminal, for this session only; nothing is saved but this Mac's port.
     var here = false
+    var solo = false
 
     /// The mode flags given, in `ServingModeFlag` order.
     var modeFlags: [ServingModeFlag] {

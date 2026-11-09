@@ -78,6 +78,12 @@ struct Darkbloom: AsyncParsableCommand {
     static func ensureLogging() {
         _ = _bootstrapLogging
     }
+
+    static func refusalText(afterParse error: Error) -> String? { nil }
+}
+
+struct QuietShutdownLogHandler {
+    static func drops(source: String, message: String) -> Bool { false }
 }
 
 // MARK: - `darkbloom --opencode` and `darkbloom --hermes`

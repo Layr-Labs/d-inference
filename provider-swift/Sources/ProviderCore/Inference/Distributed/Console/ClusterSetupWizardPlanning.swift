@@ -84,6 +84,9 @@ enum ClusterSetupPlanning {
     struct Loads: Sendable, Equatable {
         var shares: [ClusterSetupPlanSummary.Mode.Share]
         var concurrentRequests: Int?
+        /// The context the pair then serves, and its longest prompt; nil when not known.
+        var contextTokens: Int? = nil
+        var promptTokens: Int? = nil
     }
 
     /// The modes the question offers, each with what loads when it is chosen: the listed plan's split for the listed

@@ -1780,7 +1780,11 @@ the ordinary path also submits through `EngineV2.submitWithRetirement` and sets
 waits for its complete-checkpoint write, while the service and KV reservations,
 staging and the ready receipt are released at retirement, after that write
 settles (`EngineV2Bridge+Submission.swift`). Seeded requests keep the default
-order because their sampling reuses a stable engine ID.
+order because their sampling reuses a stable engine ID. The pump times each
+such request from its terminal to its retirement; one that retires at least
+1 ms after its answer is marked with that time in the provider log and an
+`engine_health` event (`EngineV2Bridge.noteRetirementAfterTerminal`,
+[early-terminal marker](../reference/telemetry-schema.md#provider-early-terminal)).
 
 For queued native requests, `CBv2NativeBlockEngine.pump` makes one cancellation
 decision for both `finishWaiting` and queue removal, so a concurrent cancellation

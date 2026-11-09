@@ -9,3 +9,8 @@
   capacity. A follow-up that arrives before the write finishes can't use
   that checkpoint yet: it restores an earlier one, if any, and prefills the
   rest. Seeded requests keep the old order.
+- For an installed provider, set it in the shell for `darkbloom start`,
+  which writes it into the provider's launchd job; an ordinary `darkbloom
+  restart` keeps the saved value. Each request answered at least 1 ms before
+  its write settled is logged with how long the write then held its capacity
+  (`Early terminal: request … retired N ms after its answer`).

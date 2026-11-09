@@ -1134,6 +1134,7 @@ extension EngineV2Bridge {
             readyReceiptRegistered: readyReceiptRegistered,
             profile: profile,
             nativeRetirement: nativeRetirement,
+            terminalPrecedesPublication: engineRequest.terminalPrecedesCheckpointPublication,
             httpResponse: distributed == nil ? nil : httpResponse,
             prefillProgress: prefillProgress
         )

@@ -197,6 +197,24 @@ field allowlist.
 |---|---|---|---|
 | `mtp_acceptance` | `exact`, `typical` | Present when `ProviderMTPStatusSnapshot.acceptance` supplies the installed rule; otherwise omitted. Distinguishes the rule from `mtp_acceptance_rate`: typical deliberately keeps more drafts, so a higher ratio alone is not a better-drafter claim. | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MTP.swift`, `emitSlotPostureTelemetry` |
 
+### Provider early terminal
+
+With `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION`, the event pump
+times each request that asked to be answered before its complete-checkpoint
+publication, from its terminal to its retirement (that publication, then the
+rows' release). One that retires at least 1 ms after its answer
+(`retirementAfterTerminalMarkFloor`) gets an INFO `engine_health` event with
+`operation = ssd_terminal_before_publication`, its `request_id`, and one
+provider-log line (`darkbloom.EarlyTerminal`: `Early terminal: request … retired
+N ms after its answer`). A request that retires with its terminal had nothing
+left to publish and is not marked. The `TelemetryClient` facade discards the
+event; the log line is what a measurement on a provider reads, joined with the
+request's `inference_complete` profile by request ID.
+
+| Key | Values | Presence and meaning | Code |
+|---|---|---|---|
+| `retired_after_terminal_ms` | integer ≥ 1 | Present on this operation: milliseconds from the client's terminal to the request's retirement, i.e. how long its complete-checkpoint publication held its rows, KV reservation and service allowance after the answer. | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+PrefixCacheTelemetry.swift`, `noteRetirementAfterTerminal` |
+
 ## External Emitter
 
 The [platform emitter and sinks](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/telemetry.md)

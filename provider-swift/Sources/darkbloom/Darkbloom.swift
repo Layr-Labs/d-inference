@@ -79,6 +79,17 @@ struct Darkbloom: AsyncParsableCommand {
         _ = _bootstrapLogging
     }
 
+    /// The command `arguments` name, parsed as ArgumentParser's own `main()` parses them. A parse error (a mistyped
+    /// flag, options `validate()` refuses together) ends the process with its usage block, as before (`main.swift` and
+    /// the AppKit host; a command's own refusal once it runs: `exit(afterRunWithError:)`).
+    static func parseAsRootOrExit(_ arguments: [String]) -> any ParsableCommand {
+        do {
+            return try parseAsRoot(arguments)
+        } catch {
+            exit(withError: error)
+        }
+    }
+
     /// What a refusal thrown by a command that already parsed and ran prints: its own words, without the root's usage
     /// block ("Usage: darkbloom <subcommand> / See 'darkbloom --help' …"), which names no step (journey 1, J-10). Nil
     /// for any other error, which `exit(withError:)` prints as before. Exit 64 either way.

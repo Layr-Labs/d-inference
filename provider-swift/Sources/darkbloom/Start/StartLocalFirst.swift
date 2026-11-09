@@ -6,9 +6,10 @@ import ProviderCore
 // owner first. A mode flag decides it, and is saved; otherwise the saved choice; otherwise, in a terminal, one
 // question, whose answer is saved. So the background service always serves the saved choice, and `restart` and
 // `update` bring that back (`SavedChoiceService`). Only `--local --here`, one terminal session, a service's own
-// child, and a flag beside `--solo` (on a Mac in a pair `[local] mode` holds the pair's answer) save nothing. Without a terminal and without a saved choice or a mode flag (the LaunchAgent after an upgrade,
-// the desktop app, scripts), a start keeps today's behaviour exactly: the Darkbloom network, with no local API, no
-// Keychain look-up, no port probe and nothing written, so an upgraded Mac never opens a local port by itself.
+// child, and a flag beside `--solo` (on a Mac in a pair `[local] mode` holds the pair's answer) save nothing.
+// Without a terminal and without a saved choice or a mode flag (the LaunchAgent after an upgrade, the desktop app,
+// scripts), a start keeps today's behaviour exactly: the Darkbloom network, with no local API, no Keychain look-up,
+// no port probe and nothing written, so an upgraded Mac never opens a local port by itself.
 // Every local API this Mac serves takes its one port (`LocalAPIPort`), so the address tools were given never moves.
 // No line here names a speed (`StartLocalFirstTests.noSpeedAnywhere` reads them all) or prints a key.
 

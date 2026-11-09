@@ -69,12 +69,7 @@ final class ProviderAppDelegate: NSObject, NSApplicationDelegate {
         terminationSignals = ProviderSignalHandler { _ = await ProviderTermination.shared.request() }
         let args = self.args
         serveTask = Task {
-            let command: any ParsableCommand
-            do {
-                command = try Darkbloom.parseAsRoot(args)
-            } catch {
-                Darkbloom.exit(withError: error)
-            }
+            let command = Darkbloom.parseAsRootOrExit(args)
             do {
                 if let asyncCommand = command as? AsyncParsableCommand {
                     var cmd = asyncCommand

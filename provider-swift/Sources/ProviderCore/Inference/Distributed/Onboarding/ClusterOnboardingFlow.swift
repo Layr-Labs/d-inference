@@ -594,10 +594,10 @@ public struct ClusterOnboardingMode: Codable, Sendable, Equatable {
 }
 
 /// The mode the setup recommends for these two Macs (owner, 2026-11-04: "it also does not suggest which one to select
-/// for the hardware"), from what the plans already know: whether each mode fits now, the context it serves, its speed on this pair (measured
-/// with this build, else as this pair served it with an earlier build, else the planner's prediction), how many
-/// requests it serves at once, and whether Darkbloom serves it publicly. Exactly one mode, or none with the reason: it
-/// never guesses past the evidence.
+/// for the hardware"), from what the plans already know: whether each mode fits now, the context it serves, its speed
+/// on this pair (measured with this build, else as this pair served it with an earlier build, else the planner's
+/// prediction), how many requests it serves at once, and whether Darkbloom serves it publicly. Exactly one mode, or
+/// none with the reason: it never guesses past the evidence.
 public struct ClusterOnboardingModeAdvice: Codable, Sendable, Equatable {
     /// The recommended `ClusterOnboardingMode.mode`; nil when none is recommended.
     public var mode: String?
@@ -744,12 +744,15 @@ public struct ClusterOnboardingModeAdvice: Codable, Sendable, Equatable {
     static func longestContextWords(_ longest: Int, others: [Int]) -> String {
         let rest = others.count == 1 ? "the other serves " + ClusterOnboardingMode.grouped(others[0])
             : "the others serve up to " + ClusterOnboardingMode.grouped(others.max() ?? 0)
-        return "the longest context here (\(ClusterOnboardingMode.grouped(longest)) tokens; \(rest))"
+        return longestContextLead + " here (\(ClusterOnboardingMode.grouped(longest)) tokens; \(rest))"
     }
+
+    /// How `longestContextWords` begins, which `brief` reads.
+    static let longestContextLead = "the longest context"
 
     /// The reason in a few words, for a narrow window (`line`): "faster, up to 8 at once", "the only one that fits".
     var brief: String {
-        if reason.hasPrefix("the longest context") { return "longest context" }
+        if reason.hasPrefix(Self.longestContextLead) { return "longest context" }
         let atOnce = reason.range(of: #"up to (\d+) requests at once"#, options: .regularExpression)
             .map { String(reason[$0]).replacingOccurrences(of: " requests", with: "") }
         if reason.hasPrefix("faster here") { return atOnce.map { "faster, \($0)" } ?? "faster here" }

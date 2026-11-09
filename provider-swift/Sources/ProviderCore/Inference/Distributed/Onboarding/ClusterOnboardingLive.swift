@@ -2425,15 +2425,17 @@ final class OnboardingLive: @unchecked Sendable {
         return [prefix + control.line + (control.mode == "alone" ? soloNote() ?? "" : "") + "."]
     }
 
+    /// A stopped pair's status line: "Stopped; last model Qwen 3.8 27B.", or "Stopped." before a model was chosen.
+    private var stoppedLine: String { "Stopped\(leadership?.modelName.map { "; last model " + modelTitle($0) } ?? "")." }
+
     func localStatus() -> [String] {
         var lines = [String]()
         // After a Darkbloom update this Mac's service sets the cluster up again by itself; said first while it runs.
         if let updating = ClusterService.publishedLive()?.updating { lines.append(updating) }
         let answering = self.answering
         if let control = ClusterService.published()?.control, ["alone", "cannotServe", "waiting"].contains(control.mode) {
-            let stopped = "Stopped\(leadership?.modelName.map { "; last model " + modelTitle($0) } ?? "")."
             // Serving alone is said only once this service's own solo server answers, as the setup's wait counts it.
-            return lines + Self.awayLines(control, started: leadership?.serving == true, stopped: stopped, there: there,
+            return lines + Self.awayLines(control, started: leadership?.serving == true, stopped: stoppedLine, there: there,
                                           prefix: answering ? Self.sentence(hereShort) + ": " : "") {
                 let published = ClusterService.published()
                 switch ClusterService.soloReadiness(published) {
@@ -2451,7 +2453,7 @@ final class OnboardingLive: @unchecked Sendable {
             lines.append(ClusterOnboardingNotServing.statusLine(model: model, reason: ClusterOnboardingSoloServing.title(solo.soloServing)))
             lines += ClusterOnboardingSoloServing.remedies(solo.soloServing).map(ClusterOnboardingCommand.named)
         } else if leadership?.serving != true {
-            lines.append("Stopped\(leadership?.modelName.map { "; last model " + modelTitle($0) } ?? "").")
+            lines.append(stoppedLine)
             if let scope = leadership?.scope, scope.localAPIBind != nil { lines.append("When it starts: " + scope.line + ".") }
         } else if let split = versionSplit() {
             // Different versions never clear by themselves: both windows say it, with the versions and the command.
